@@ -562,6 +562,9 @@ a.v-card:hover {
     font-weight: 400;
     color: var(--muted);
     margin-left: 2px;
+    /* "уд/мин" and "/166 уд/мин" carry a slash, i.e. a break opportunity — in a
+       narrow tile the unit split across two lines as "уд/" + "мин". */
+    white-space: nowrap;
 }
 
 /* Garmin overview "day strip" — 5 cells side by side on desktop. Written by
@@ -1322,6 +1325,16 @@ a.v-seg-btn {
        the date onto a second line and pushes the row into its neighbour. Numbers
        are short enough that never wrapping is the safer default. */
     white-space: nowrap;
+}
+
+/* A capped list inside a card always ends mid-row, which reads as a rendering
+   fault rather than as "there is more below". Fading the last ~28px turns the
+   cut into a signal. Covers every capped list at once (injection history,
+   exercise catalog, marker catalog, phases, side effects) — they all use the
+   same overflow utility inside a card. */
+.v-card .overflow-y-auto {
+    -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(180deg, #000 calc(100% - 28px), transparent);
 }
 
 /* ── Modals ────────────────────────────────────────────────────────────── */
@@ -2237,6 +2250,12 @@ sup {
     justify-content: space-between;
 }
 .v-garmin-recovery { border-left: 3px solid var(--warn); }
+/* The tile row is sized by its card, not by the viewport: sm:grid-cols-4 keeps
+   four columns from 640px up, but inside a half-width card on a 1024 laptop
+   that is 61px per tile and "126/166 уд/мин" runs straight out of it. */
+.v-page-garmin-activities .v-card > .grid {
+    grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+}
 .v-garmin-history .v-table-wrap { max-height: 28rem; }
 
 /* Hevy — workout log beside the catalog, progress beneath. */
@@ -2284,9 +2303,11 @@ sup {
 .v-supplement-archive { background: color-mix(in srgb, var(--surface) 72%, var(--bg-inset)); }
 
 /* Timeline — one continuous chronological spine grouped by day. */
+/* No max-width: every other card on every other page runs the full 1240px
+   column, so a feed that stopped 160px short read as a rendering fault rather
+   than as a reading column. Measure is controlled inside the cards instead. */
 .v-timeline-feed {
     position: relative;
-    max-width: 920px;
 }
 .v-timeline-feed > .space-y-6 { position: relative; }
 .v-timeline-feed > .space-y-6::before {
@@ -2324,8 +2345,10 @@ sup {
         linear-gradient(145deg, rgba(245, 166, 35, .055), transparent 45%),
         var(--surface);
 }
+/* The card keeps the column's edges — the reading measure lives on the prose
+   inside it (.v-digest), so the digest doesn't sit 100px shy of the goal cards
+   directly above it. */
 .v-report-narrative {
-    max-width: 980px;
     border-color: rgba(111, 197, 142, .22);
 }
 .v-report-narrative .v-digest {
@@ -2349,8 +2372,11 @@ sup {
 .v-page-charts > [x-data^="chartBuilder"] { border-color: rgba(111, 182, 201, .22); }
 
 /* GLP-1 — current protocol, injection history and supporting context. */
-.v-glp1-current { align-items: stretch; }
-.v-glp1-current > [x-show="!showForm"] > .v-card { height: 100%; }
+/* Explicitly start-aligned, never stretched: the sidebar column holds two
+   stacked cards, so forcing each to height:100% of a row as tall as the
+   injection history made both of them full-column height — a screen and a half
+   of empty card under three lines of text. Each card is worth its own content. */
+.v-glp1-current { align-items: start; }
 .v-glp1-history .v-card {
     border-color: rgba(176, 147, 214, .22);
     background:

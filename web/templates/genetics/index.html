@@ -28,9 +28,8 @@
             <button @click="activeTab = '{{ key }}'" :class="activeTab === '{{ key }}' ? 'v-pill-on' : ''" class="v-pill">{{ t(tkey) }}</button>
             {% endfor %}
         </div>
-        <div class="v-text-label">
-            {{ t("genetics.interpreted") }} <span class="v-num" style="color: var(--fg-2)">{{ variants | length }}</span>
-        </div>
+        {# The same count already stands 60px above as the masthead metric —
+           printing it twice on one screen just made the page look unfinished. #}
     </div>
 
     <!-- Profile cards -->

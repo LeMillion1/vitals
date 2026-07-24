@@ -12,7 +12,9 @@
     {{ garmin_tabs('activities') }}
 
     {% set zone_colors = ['var(--cool)', 'var(--good)', 'var(--accent)', 'var(--warn)', 'var(--bad)'] %}
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    {# items-start: each card is an accordion, and without it expanding one
+       stretched its row-mate to the same height with nothing to put in it. #}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
         {% for a in activities %}
         {% set type_label = t("garmin.activity." + (a.activity_type or "other")) %}
         {% set has_detail = a.hr_zone_seconds or (a.splits and a.splits | length > 1) or a.training_effect_aerobic is not none or a.training_effect_anaerobic is not none or a.elevation_gain_m is not none or a.avg_power is not none %}

@@ -864,7 +864,12 @@ body.ui-masthead .mh-tab { font-size: 15px; }
 body.ui-masthead .mh-hero-row {
     display: flex;
     align-items: flex-end;
-    justify-content: space-between;
+    /* Metrics are anchored to the title, not to the right gutter. Pushed to the
+       far edge the strip's distance from the H1 changed with every page — four
+       wide metrics on Weight read as one composition, "52 события · 1 вручную"
+       on Timeline read as two unrelated things at opposite ends of the screen.
+       A constant 56px gap makes every page's masthead the same object. */
+    justify-content: flex-start;
     /* Wrap the row, not the metrics. Whether title + metrics fit on one line
        depends on both (a long title, a metric reading "LLM подключена", the
        rail expanded at 901px), so no breakpoint gets it right — instead the
@@ -872,7 +877,7 @@ body.ui-masthead .mh-hero-row {
        fitting, rather than shedding its last metric onto a second line with
        the divider left hanging. */
     flex-wrap: wrap;
-    gap: 22px 40px;
+    gap: 22px 56px;
     margin-top: 28px;
 }
 body.ui-masthead .mh-title {
@@ -882,7 +887,7 @@ body.ui-masthead .mh-title {
     letter-spacing: -.025em;
 }
 body.ui-masthead .mh-metrics {
-    justify-content: flex-end;
+    justify-content: flex-start;
     /* min() is the whole trick: while the metrics fit on a line of their own the
        floor is their natural width, so they refuse to shrink and the hero row
        wraps them under the title as one block. Once even a full line is too
@@ -919,6 +924,15 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
     body.ui-masthead .mh-rail-wordmark::after { content: none; }
     body.ui-masthead .mh-rail-nav,
     body.ui-masthead .mh-rail-foot { padding-inline: 16px; }
+}
+
+/* Below ~1200 the column gets too narrow for four wide metrics on one line, so
+   the strip wraps inside itself — and a divider that lands on a line break is
+   left standing in empty space. Spacing separates them just as well once the
+   row is no longer a single line. */
+@media (max-width: 1200px) {
+    body.ui-masthead .mh-metric-div { display: none; }
+    body.ui-masthead .mh-metrics { gap: 16px 34px; }
 }
 
 @media (max-width: 900px) {
