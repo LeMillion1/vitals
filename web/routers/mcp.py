@@ -2078,11 +2078,13 @@ class MCPAuthMiddleware:
             return
 
         if scope.get("method") == "OPTIONS":
+            # No access-control-allow-origin: the actual MCP responses carry no CORS
+            # headers, so a wildcard here grants nothing. Claude.ai's connector is
+            # server-side (not a browser), so it never sends a preflight anyway.
             await send({
                 "type": "http.response.start",
                 "status": 200,
                 "headers": [
-                    (b"access-control-allow-origin", b"*"),
                     (b"access-control-allow-methods", b"GET, POST, OPTIONS"),
                     (b"access-control-allow-headers", b"Authorization, Content-Type"),
                     (b"content-length", b"0"),
@@ -2142,10 +2144,35 @@ class MCPAuthMiddleware:
             })
             return
 
+        # Track whether the downstream app already began the response, so on a
+        # mid-stream failure we don't try to start a second one (that would raise).
+        response_started = False
+
+        async def _send(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
         try:
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, _send)
         except TypeError:
             logger.exception("MCP app raised TypeError handling %s", scope.get("path"))
+            if not response_started:
+                body = b'{"detail":"Internal server error in MCP handler."}'
+                await send({
+                    "type": "http.response.start",
+                    "status": 500,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode("utf-8")),
+                    ],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": body,
+                    "more_body": False,
+                })
 
 
 def get_mcp_app() -> object:

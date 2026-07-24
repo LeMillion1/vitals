@@ -20,6 +20,7 @@ from vitals.i18n import t
 from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import alerts_service, labs_service, raw_payload_service
 from web.deps import get_session, require_auth
+from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
 from web.uploads import DOC_EXTS, file_ext, read_capped, validate_extension
 
@@ -128,6 +129,7 @@ async def upload_document(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
+    _rl: None = Depends(rate_limit("labs_upload", limit=20, window=60)),
 ):
     """Step 1: a photo/PDF of a lab report -> vision extraction -> editable
     preview. The original file + verbatim vision payload are stored now

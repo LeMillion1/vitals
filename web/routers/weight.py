@@ -21,6 +21,7 @@ from vitals.services import alerts_service, body_scan_service, raw_payload_servi
 from vitals.services.analytics import body_metrics
 from vitals.services.conflict_engine import ConflictBlocked
 from web.deps import get_session, require_auth, require_module
+from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
 from web.uploads import DOC_EXTS, IMAGE_EXTS, file_ext, read_capped, validate_extension
 
@@ -381,6 +382,7 @@ async def body_scan_upload(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
     _gate: None = Depends(require_module("body_comp")),
+    _rl: None = Depends(rate_limit("body_scan_upload", limit=20, window=60)),
 ):
     """Step 1: a photo/PDF of a scan sheet → vision extraction → editable preview.
 

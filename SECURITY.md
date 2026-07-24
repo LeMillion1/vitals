@@ -41,6 +41,14 @@ Key security controls already in place:
 - **Loopback-only port binding** in `docker-compose.yml` (`127.0.0.1:8000`)
 - **MCP OAuth 2.0 + PKCE** for Claude.ai integration
 
+## Revoking Claude.ai Access
+
+MCP access tokens are stateless (signed, not stored), so there is no per-token
+revoke. To revoke Claude.ai's access, **rotate `VITALS_SESSION_SECRET`** in your
+`.env` and restart the app. That invalidates every signature at once — all MCP
+tokens *and* your browser session cookie — so you will need to log in again and
+reconnect the Claude.ai connector.
+
 ## What is NOT a Security Issue
 
 - The application being accessible on your own local network

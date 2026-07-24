@@ -25,15 +25,17 @@ router = APIRouter(tags=["oauth"])
 
 
 def verify_pkce(code_verifier: str, code_challenge: str, method: Optional[str]) -> bool:
-    """Verifies the Proof Key for Code Exchange (PKCE) challenge."""
-    if not method or method == "plain":
-        return secrets.compare_digest(code_verifier, code_challenge)
-    elif method == "S256":
-        sha256_hash = hashlib.sha256(code_verifier.encode("utf-8")).digest()
-        calculated_challenge = base64.urlsafe_b64encode(sha256_hash).decode("utf-8").rstrip("=")
-        stripped_challenge = code_challenge.rstrip("=")
-        return secrets.compare_digest(calculated_challenge, stripped_challenge)
-    return False
+    """Verifies the Proof Key for Code Exchange (PKCE) challenge.
+
+    Only ``S256`` is accepted — ``plain`` offers no protection and Claude.ai always
+    uses S256, so a plain challenge can only come from a misconfigured or malicious
+    client."""
+    if method != "S256":
+        return False
+    sha256_hash = hashlib.sha256(code_verifier.encode("utf-8")).digest()
+    calculated_challenge = base64.urlsafe_b64encode(sha256_hash).decode("utf-8").rstrip("=")
+    stripped_challenge = code_challenge.rstrip("=")
+    return secrets.compare_digest(calculated_challenge, stripped_challenge)
 
 
 # ── Metadata Discovery (RFC 8414) ────────────────────────────────────────────
@@ -49,7 +51,7 @@ async def oauth_metadata(request: Request):
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
-        "code_challenge_methods_supported": ["S256", "plain"]
+        "code_challenge_methods_supported": ["S256"]
     }
 
 
@@ -204,7 +206,7 @@ async def oauth_token(
                     client_id = cid
                 client_secret = csec
             except Exception:
-                pass
+                logger.warning("Failed to decode Basic auth header on token exchange", exc_info=True)
 
     if client_id != cfg.mcp_client_id:
         return JSONResponse(

@@ -162,8 +162,8 @@ async def test_oauth_full_flow_and_token_exchange(auth_client, redis):
             "client_id": "vitals-claude-connector",
             "redirect_uri": "https://claude.ai/callback",
             "state": "oauth-state-123",
-            "code_challenge": "some_challenge",
-            "code_challenge_method": "plain",
+            "code_challenge": "bhmDDzo_BXLob8jrOdLgvkzIe7gymOatjCthDDsvQIE",
+            "code_challenge_method": "S256",
         },
     )
     assert response.status_code == 302
@@ -190,7 +190,7 @@ async def test_oauth_full_flow_and_token_exchange(auth_client, redis):
             "redirect_uri": "https://claude.ai/callback",
             "client_id": "vitals-claude-connector",
             "client_secret": "test-mcp-secret",
-            "code_verifier": "some_challenge",  # matches plain code_challenge
+            "code_verifier": "some_challenge",  # S256 hashes to code_challenge above
         },
     )
     assert token_response.status_code == 200
@@ -280,6 +280,42 @@ async def test_session_token_rejected_as_mcp_bearer(client):
     session_token = create_session("tester")
     response = await client.get("/mcp/sse", headers={"Authorization": f"Bearer {session_token}"})
     assert response.status_code == 401
+
+
+async def test_mcp_middleware_typeerror_returns_500_not_hang():
+    """A TypeError from the wrapped MCP app must produce a 500 JSON response, not a
+    silent no-response that leaves the client hanging (B3)."""
+    from web.routers.mcp import MCPAuthMiddleware
+
+    async def _raising_app(scope, receive, send):
+        raise TypeError("boom")
+
+    middleware = MCPAuthMiddleware(_raising_app, client_id="vitals-claude-connector")
+    token = _get_mcp_serializer().dumps({
+        "username": "tester",
+        "client_id": "vitals-claude-connector",
+        "type": "mcp_access_token",
+    })
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp/messages",
+        "headers": [(b"authorization", f"Bearer {token}".encode("utf-8"))],
+    }
+    sent: list[dict] = []
+
+    async def _receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def _send(message):
+        sent.append(message)
+
+    await middleware(scope, _receive, _send)
+
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 500
+    body = next(m for m in sent if m["type"] == "http.response.body")
+    assert b"Internal server error" in body["body"]
 
 
 async def test_mcp_auth_middleware(client, redis):

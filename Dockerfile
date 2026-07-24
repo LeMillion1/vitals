@@ -16,5 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Run alembic migrations, then launch FastAPI + APScheduler process
-CMD ["sh", "-c", "alembic upgrade head && uvicorn web.main:app --host 0.0.0.0 --port 8000"]
+# Run alembic migrations, then launch FastAPI + APScheduler process.
+# --forwarded-allow-ips="*": trust X-Forwarded-For so per-IP login throttling
+# sees the real client IP, not Caddy's. Safe here — the port binds loopback only
+# and Caddy is the sole upstream.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn web.main:app --host 0.0.0.0 --port 8000 --forwarded-allow-ips=*"]

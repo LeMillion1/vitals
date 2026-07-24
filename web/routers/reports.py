@@ -15,6 +15,7 @@ from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import digest_service, milestones_service
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
+from web.ratelimit import rate_limit
 from web.templating import templates
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,7 @@ async def generate_digest_now(
     period_days: int = Form(7),
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
+    _rl: None = Depends(rate_limit("digest_generate", limit=5, window=60)),
 ):
     """Generate this week's digest on demand."""
     try:

@@ -63,7 +63,7 @@ async def garmin_dashboard(
             if local_dt:
                 last_sync = local_dt.strftime("%d-%m-%Y %H:%M")
         except Exception:
-            pass
+            logger.warning("Failed to format Garmin last-sync time", exc_info=True)
 
     return templates.TemplateResponse(
         request,

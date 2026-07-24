@@ -63,6 +63,8 @@ class LLMClient:
             api_key=self._config.openrouter_api_key,
             default_headers=headers or None,
             timeout=_REQUEST_TIMEOUT_SECONDS,
+            # SDK default is 2 retries -> a paid call can cost 3x on transient errors.
+            max_retries=0,
         )
         return self._client
 
