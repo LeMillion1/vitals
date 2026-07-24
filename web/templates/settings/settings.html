@@ -19,37 +19,37 @@
 
     <!-- Saved / Error banners -->
     {% if saved == 'profile' %}
-    <div class="v-alert info">✅ {{ t("settings.saved.profile") }}</div>
+    <div class="v-alert info">{{ t("settings.saved.profile") }}</div>
     {% elif saved == 'ai' %}
-    <div class="v-alert info">✅ {{ t("settings.saved.ai") }}</div>
+    <div class="v-alert info">{{ t("settings.saved.ai") }}</div>
     {% elif saved == 'hevy' %}
-    <div class="v-alert info">✅ {{ t("settings.saved.hevy") }}</div>
+    <div class="v-alert info">{{ t("settings.saved.hevy") }}</div>
     {% elif saved == 'garmin' %}
-    <div class="v-alert info">✅ {{ t("settings.saved.garmin") }}</div>
+    <div class="v-alert info">{{ t("settings.saved.garmin") }}</div>
     {% elif saved == 'mcp' %}
-    <div class="v-alert info">✅ {{ t("settings.saved.mcp") }}</div>
+    <div class="v-alert info">{{ t("settings.saved.mcp") }}</div>
     {% elif saved == 'password' %}
-    <div class="v-alert info">✅ {{ t("settings.saved.password") }}</div>
+    <div class="v-alert info">{{ t("settings.saved.password") }}</div>
     {% elif saved == 'restart' %}
-    <div class="v-alert info" style="background: var(--good-soft); border-color: rgba(111,197,142,0.3); color: var(--good);">✅ {{ t("settings.saved.restart") }}</div>
+    <div class="v-alert info" style="background: var(--good-soft); border-color: rgba(111,197,142,0.3); color: var(--good);">{{ t("settings.saved.restart") }}</div>
     {% elif saved == 'language' %}
-    <div class="v-alert info">✅ {{ t("settings.saved.language") }}</div>
+    <div class="v-alert info">{{ t("settings.saved.language") }}</div>
 
     {% endif %}
 
     {% if error == 'wrong_password' %}
-    <div class="v-alert warn">❌ {{ t("settings.error.wrong_password") }}</div>
+    <div class="v-alert warn">{{ t("settings.error.wrong_password") }}</div>
     {% elif error == 'password_mismatch' %}
-    <div class="v-alert warn">❌ {{ t("settings.error.password_mismatch") }}</div>
+    <div class="v-alert warn">{{ t("settings.error.password_mismatch") }}</div>
     {% elif error == 'password_too_short' %}
-    <div class="v-alert warn">❌ {{ t("settings.error.password_too_short") }}</div>
+    <div class="v-alert warn">{{ t("settings.error.password_too_short") }}</div>
     {% endif %}
 
     <!-- ─── LANGUAGE ───────────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
         <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
             <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">🌐 {{ t("settings.language_title") }}</span>
+            <span class="v-text-card">{{ t("settings.language_title") }}</span>
         </div>
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.language_description") }}
@@ -81,7 +81,7 @@
     <div class="v-card v-setting-row p-6 space-y-5">
         <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
             <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">🧬 {{ t("settings.profile_title") }}</span>
+            <span class="v-text-card">{{ t("settings.profile_title") }}</span>
         </div>
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.profile_description") }}
@@ -157,7 +157,7 @@
     <div class="v-card v-setting-row p-6 space-y-5">
         <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
             <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">🤖 {{ t("settings.ai_title") }}</span>
+            <span class="v-text-card">{{ t("settings.ai_title") }}</span>
         </div>
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.ai_description") }}
@@ -212,7 +212,7 @@
     <div class="v-card v-setting-row p-6 space-y-5">
         <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
             <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">🏋️ {{ t("settings.hevy_title") }}</span>
+            <span class="v-text-card">{{ t("settings.hevy_title") }}</span>
         </div>
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.hevy_description") }}
@@ -242,7 +242,7 @@
     <div class="v-card v-setting-row p-6 space-y-5">
         <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
             <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">⌚ {{ t("settings.garmin_title") }}</span>
+            <span class="v-text-card">{{ t("settings.garmin_title") }}</span>
         </div>
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.garmin_description") }}
@@ -278,7 +278,7 @@
     <div class="v-card v-setting-row p-6 space-y-5">
         <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
             <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">🤖 {{ t("settings.mcp_title") }}</span>
+            <span class="v-text-card">{{ t("settings.mcp_title") }}</span>
         </div>
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.mcp_description") }}
@@ -314,7 +314,7 @@
     <div class="v-card v-setting-row p-6 space-y-5">
         <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
             <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">💾 {{ t("settings.data_title") }}</span>
+            <span class="v-text-card">{{ t("settings.data_title") }}</span>
         </div>
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.data_description") }}
@@ -332,7 +332,7 @@
                 <a href="/settings/export-llm" class="v-btn-ghost text-xs text-center" download hx-boost="false"
                     data-export-toast="{{ t('settings.export_started') }}"
                     onclick="window.vitalsToast(this.dataset.exportToast, 'success')">
-                    🤖 {{ t("settings.export_llm") }}
+                    {{ t("settings.export_llm") }}
                 </a>
             </div>
             <p class="v-text-micro" style="color: var(--muted)">
@@ -369,7 +369,7 @@
     <div class="v-card v-setting-row p-6 space-y-5">
         <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
             <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">🔐 {{ t("settings.password_title") }}</span>
+            <span class="v-text-card">{{ t("settings.password_title") }}</span>
         </div>
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.password_description") }}

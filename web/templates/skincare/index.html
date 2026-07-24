@@ -53,7 +53,7 @@
                 <div class="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <!-- Morning -->
                     <div class="space-y-1.5 p-3 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)]">
-                        <span class="v-text-micro flex items-center gap-1">☀️ {{ t("skincare.morning") }}</span>
+                        <span class="v-text-micro flex items-center gap-1.5"><svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.8 0l.7 -.7" /></svg> {{ t("skincare.morning") }}</span>
                         <div class="flex flex-wrap gap-1.5">
                             {% set has_morning = namespace(value=false) %}
                             {% for p in products if p.active and day_index in (p.schedule_days or []) and p.default_time in ['morning', 'both'] %}
@@ -66,7 +66,7 @@
 
                     <!-- Evening -->
                     <div class="space-y-1.5 p-3 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)]">
-                        <span class="v-text-micro flex items-center gap-1">🌙 {{ t("skincare.evening") }}</span>
+                        <span class="v-text-micro flex items-center gap-1.5"><svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" /></svg> {{ t("skincare.evening") }}</span>
                         <div class="flex flex-wrap gap-1.5">
                             {% set has_evening = namespace(value=false) %}
                             {% for p in products if p.active and day_index in (p.schedule_days or []) and p.default_time in ['evening', 'both'] %}
@@ -160,7 +160,7 @@
                 {% for r in conflict_rules %}
                 <div class="rounded-xl p-4 space-y-1.5" style="{% if r.severity == 'block' %}background: var(--bad-soft); border: 1px solid rgba(232,112,86,.35){% else %}background: var(--warn-soft); border: 1px solid rgba(240,178,74,.35){% endif %}">
                     <div class="flex items-center gap-2 font-semibold v-text-label" style="color: {% if r.severity == 'block' %}var(--bad){% else %}var(--warn){% endif %}">
-                        <span>{% if r.rule_type == 'hard_block' %}🚫{% else %}⚠️{% endif %}</span>
+                        {% if r.rule_type == 'hard_block' %}<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M5.7 5.7l12.6 12.6" /></svg>{% else %}<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z" /><path d="M12 9v4" /><path d="M12 16h.01" /></svg>{% endif %}
                         <span>{% if r.domain_a == 'skincare' and r.domain_b == 'skincare' %}{{ t("skincare.rule_compatibility") }}{% elif r.domain_a == 'supplements' or r.domain_b == 'supplements' %}{{ t("skincare.rule_supplements") }}{% else %}{{ t("skincare.rule_safety") }}{% endif %}</span>
                     </div>
                     <p class="v-text-body leading-relaxed font-medium" style="color: var(--fg-2)">{{ r.message }}</p>
@@ -173,7 +173,7 @@
 
                 <div class="rounded-xl p-4 space-y-1.5" style="background: var(--surface-3); border: 1px solid var(--line)">
                     <div class="flex items-center gap-2 font-semibold v-text-label" style="color: var(--fg-2)">
-                        <span>💧</span><span>{{ t("skincare.moisture_title") }}</span>
+                        <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l5.5 8.5a6.5 6.5 0 1 1 -11 0z" /></svg><span>{{ t("skincare.moisture_title") }}</span>
                     </div>
                     <p class="v-text-body leading-relaxed font-medium" style="color: var(--fg-2)">
                         {{ t("skincare.moisture_text") }}

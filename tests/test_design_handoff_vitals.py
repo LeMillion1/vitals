@@ -6,6 +6,7 @@ uses the same rail and masthead macros, so keeping those contracts exact gives
 the whole application the handoff's visual structure.
 """
 
+import re
 from pathlib import Path
 
 
@@ -82,7 +83,13 @@ def test_weight_page_uses_handoff_main_and_sticky_entry_sidebar():
 
 
 def test_tables_use_dense_handoff_pattern():
-    assert "table-layout: fixed" in TOKENS_CSS
+    # Auto layout on purpose: the handoff's fixed layout assumes a per-table
+    # <colgroup>, and without one it wraps dates and starves text columns.
+    # Comments stripped first — the rule above is *explained* in a CSS comment
+    # that names the very declaration this asserts is absent.
+    declarations = re.sub(r"/\*.*?\*/", "", TOKENS_CSS, flags=re.S)
+    assert "table-layout: fixed" not in declarations
+    assert "font-variant-numeric: tabular-nums" in TOKENS_CSS
     assert ".v-table tbody tr:nth-child(even)" in TOKENS_CSS
     assert "text-transform: uppercase" in TOKENS_CSS
     assert "background: var(--bg-inset)" in TOKENS_CSS

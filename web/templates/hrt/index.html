@@ -178,8 +178,11 @@
         <div class="border-t border-[var(--line)] pt-4 space-y-3">
             <span class="v-label">{{ t("hrt.new_cycle") }}</span>
             {% if active_cycle %}<p class="v-text-body">{{ t("hrt.new_cycle_note") }}</p>{% endif %}
+            {# One column on a phone: half of 390px leaves the date field too narrow
+               for a localised value plus Chrome's calendar button, which then sits
+               on top of the year. #}
             <form method="post" action="/hrt/cycle"
-                  class="grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
+                  class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
                 <div>
                     <div class="flex items-center gap-1.5">
                         <label class="v-label">{{ t("hrt.cycle_kind") }}</label>

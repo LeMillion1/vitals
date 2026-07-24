@@ -41,10 +41,10 @@
                 {% for w in workouts %}
                 <div class="p-6 rounded-xl border border-[var(--line)] bg-[var(--bg-inset)] hover:border-[var(--line-2)] transition duration-200 space-y-4">
                     <!-- Card Header -->
-                    <div class="flex justify-between items-start border-b border-[var(--line)] pb-3">
+                    <div class="flex justify-between items-start gap-3 border-b border-[var(--line)] pb-3">
                         <div class="flex items-center gap-3">
                             <div class="flex items-center justify-center w-8 h-8 rounded-lg" style="background: var(--surface-3); border: 1px solid var(--line)">
-                                <svg class="h-4.5 w-4.5 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg class="h-4 w-4 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18H4a2 2 0 01-2-2v-8a2 2 0 012-2h2m0 12V6m12 12h2a2 2 0 002-2v-8a2 2 0 00-2-2h-2m0 12V6M6 12h12M9 8v8m6-8v8" />
                                 </svg>
                             </div>
@@ -113,7 +113,7 @@
                     <div class="v-text-label font-semibold transition duration-150 {% if c.exercise_template_id == selected %}text-[var(--fg)]{% else %}text-[var(--fg-2)] hover:text-[var(--fg)]{% endif %}">
                         {{ c.title }}
                     </div>
-                    <div class="flex items-center justify-between v-text-micro mt-2 v-num">
+                    <div class="flex items-center justify-between flex-wrap gap-2 v-text-micro mt-2 v-num">
                         <span class="flex items-center gap-1">
                             <span class="w-1 h-1 rounded-full bg-[var(--muted)] opacity-60"></span>
                             {{ t("hevy.sessions_count") }} <strong class="text-[var(--fg)] font-semibold">{{ c.sessions }}</strong>

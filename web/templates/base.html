@@ -411,9 +411,10 @@
     <!-- Masthead: compact mobile top bar; the desktop rail is included below -->
     {% if username %}
     <header class="mh-topbar">
+        <!-- Wordmark only, no logo glyph: the handoff puts the "A" mark on the
+             app icon/favicon and keeps the interface itself text-only. -->
         <a href="/" class="mh-topbar-brand">
-            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12h2.5l2.5-6 3.5 12 2.5-9 1.5 3h3" /></svg>
-            <span>VITALS</span>
+            <span>Vitals</span>
         </a>
         <button type="button" @click="mobileMenuOpen = true" class="mh-topbar-menu">
             {{ t("nav.menu_title") }}
@@ -654,9 +655,18 @@
                 {{ t("nav.settings_title") }}
             </a>
 
-            <!-- Logout inside Drawer -->
+            <!-- Logout inside Drawer — deliberately the same quiet row as Settings
+                 above it. As a full-width danger button it was the loudest thing on
+                 the phone screen, which is the wrong emphasis for the one action
+                 nobody comes to this menu for. -->
             <form action="/logout" method="POST" class="w-full" hx-boost="false">
-                <button type="submit" class="v-btn-danger w-full py-3 text-xs font-bold">{{ t("nav.logout") }}</button>
+                <button type="submit"
+                    class="flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition text-xs font-bold text-[var(--fg-2)]">
+                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V6a3 3 0 013-3h4a3 3 0 013 3v1" />
+                    </svg>
+                    {{ t("nav.logout") }}
+                </button>
             </form>
         </div>
     </div>

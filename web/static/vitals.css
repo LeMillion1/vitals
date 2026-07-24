@@ -379,15 +379,14 @@ html {
     }
 }
 
+/* Brand handoff: Bricolage Grotesque ExtraBold, −2% tracking, solid --fg. No
+   gradient fill and no accent inside the word — the accent lives in the mark. */
 .v-wordmark {
-    font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, sans-serif;
-    font-size: 1.35rem;
-    font-weight: 900;
-    letter-spacing: -0.04em;
-    background: linear-gradient(135deg, var(--fg) 30%, var(--fg-2) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    font-family: 'Bricolage Grotesque', 'Outfit', ui-sans-serif, system-ui, sans-serif;
+    font-size: 1.75rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--fg);
 }
 
 .v-nav-link {
@@ -886,7 +885,11 @@ a.v-seg-btn {
 .v-night-row-head,
 .v-night-row {
     display: grid;
-    grid-template-columns: 5.5rem 4.5rem 2.75rem 1fr 3.5rem 3.75rem 1rem;
+    /* Tracks are fixed, not auto: head and rows are separate grid containers, so
+       content-sized tracks would drift apart. Each width fits the wider of its
+       header label and its value — the Russian labels ("Длительность",
+       "Пробуждения") are what set the minimum, not the numbers under them. */
+    grid-template-columns: 6.5rem 5.5rem 3.25rem 1fr 5.5rem 3.25rem 1rem;
     align-items: center;
     gap: var(--space-3);
 }
@@ -914,12 +917,28 @@ a.v-seg-btn {
 
 @media (max-width: 640px) {
 
-    .v-night-row-head,
-    .v-night-row {
-        grid-template-columns: 4.5rem 3.75rem 2.5rem 1fr 1rem;
+    /* Four columns can't hold three Russian labels plus the phase bar, so the
+       bar drops to a full-width second line and the header goes away with it —
+       date, duration and score read fine unlabelled next to the hero card. */
+    .v-night-row-head {
+        display: none;
     }
 
-    .v-night-row-head .hide-xs,
+    .v-night-row {
+        grid-template-columns: 6.5rem 1fr 2.75rem 1rem;
+        row-gap: var(--space-2);
+    }
+
+    .v-night-row > svg {
+        grid-row: 1;
+        grid-column: 4;
+    }
+
+    .v-night-row .v-phase-bar {
+        grid-row: 2;
+        grid-column: 1 / -1;
+    }
+
     .v-night-row .hide-xs {
         display: none;
     }
@@ -1298,6 +1317,11 @@ a.v-seg-btn {
 .v-num {
     font-variant-numeric: tabular-nums;
     letter-spacing: 0;
+    /* Dates are the widest thing wearing this class and "17-07-2026" carries two
+       hyphens, i.e. two break opportunities — a column a pixel too narrow snaps
+       the date onto a second line and pushes the row into its neighbour. Numbers
+       are short enough that never wrapping is the safer default. */
+    white-space: nowrap;
 }
 
 /* ── Modals ────────────────────────────────────────────────────────────── */
@@ -1424,7 +1448,7 @@ a.v-seg-btn {
     }
 
     .v-wordmark {
-        font-size: 1.15rem;
+        font-size: 1.5rem;
     }
 
     .v-brand-icon {
@@ -1694,10 +1718,12 @@ a.v-seg-btn {
 }
 
 /* ── Fixed Column Widths ── */
+/* 90px was sized for a date that wrapped to two lines; a one-line
+   "17-07-2026" needs 91px of text plus the cell's 12px padding on each side. */
 .v-col-date {
-    width: 90px;
-    min-width: 90px;
-    max-width: 90px;
+    width: 116px;
+    min-width: 116px;
+    max-width: 116px;
 }
 
 .v-col-actions {
@@ -2075,9 +2101,21 @@ sup {
         animation: none !important;
     }
 }
-/* Design handoff: dense data tables and weight entry */
+/* Design handoff: dense data tables and weight entry.
+   Deliberately NOT `table-layout: fixed` — the handoff pairs fixed layout with a
+   per-table <colgroup>, and without one every column gets an equal slice, which
+   wrapped every "17-07-2026" onto two lines and starved the notes column. Auto
+   layout sizes each column to its content, which is the same goal (no dead
+   space) with no per-table markup. */
 .v-table {
-    table-layout: fixed;
+    font-variant-numeric: tabular-nums;
+}
+/* First column is a date/time in almost every table here, and CSS treats the
+   hyphens in "17-07-2026" as break opportunities — so it wrapped to two lines
+   as soon as the column got tight. */
+.v-table thead th:first-child,
+.v-table tbody td:first-child {
+    white-space: nowrap;
 }
 .v-table thead th {
     padding: 7px 12px;
@@ -2343,14 +2381,10 @@ sup {
 }
 .v-genetics-card .v-chip { font-variant-numeric: tabular-nums; }
 
-/* Skincare — AM/PM routine board and prominent conflict guidance. */
+/* Skincare — AM/PM routine board and prominent conflict guidance. One day per
+   full-width row: each tile already splits into day column + AM/PM columns, so
+   packing two days per row only squeezed the routines and left dead space. */
 .v-routine-grid { overflow: hidden; }
-.v-routine-grid > .space-y-3 {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-}
-.v-routine-grid > .space-y-3 > .v-card-tile { margin: 0; }
 .v-routine-warning {
     position: sticky;
     top: 32px;
@@ -2378,21 +2412,10 @@ sup {
     max-width: none;
 }
 .v-settings-sections > .v-card:first-child { margin-bottom: 4px; }
+/* Stacked, not label-left/control-right: the card heading carries a full-width
+   rule under it, and several of these forms are multi-field (profile, API
+   keys), so a two-column split cut the rule in half and squeezed the inputs. */
 .v-setting-row { border-color: var(--line-2); }
-@media (min-width: 901px) {
-    .v-setting-row:has(> form) {
-        display: grid;
-        grid-template-columns: minmax(180px, .72fr) minmax(0, 1.28fr);
-        column-gap: 36px;
-        align-items: start;
-    }
-    .v-setting-row:has(> form) > :first-child,
-    .v-setting-row:has(> form) > p { grid-column: 1; }
-    .v-setting-row:has(> form) > form {
-        grid-column: 2;
-        grid-row: 1 / span 3;
-    }
-}
 
 /* HRT — active cycle as the hero surface, logs as dense evidence. */
 .v-hrt-overview {
@@ -2411,7 +2434,6 @@ sup {
     .v-routine-warning,
     .v-interaction-summary { position: static; }
     .v-chart-gallery { grid-template-columns: 1fr; }
-    .v-routine-grid > .space-y-3 { grid-template-columns: 1fr; }
     .v-protocol-grid .v-card-tile { min-height: 0; }
 }
 

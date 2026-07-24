@@ -16,7 +16,9 @@
 
     <!-- Saved charts -->
     {% if charts %}
-    <div class="v-chart-gallery space-y-6">
+    <!-- No space-y-*: the gallery is a grid with its own gap, and the utility's
+         margin-top on every-child-but-the-first pushed the second card down. -->
+    <div class="v-chart-gallery">
         {% for chart in charts %}
         <div class="v-card v-chart-card p-6 space-y-3">
             <div class="flex items-center justify-between">

@@ -75,12 +75,13 @@ body.ui-masthead .mh-rail-spacer {
     }
 }
 
-/* Desktop (>=1101): the rail is permanently expanded — section labels, group
-   headings and every button label are visible. Below that (tablet, 768–1100) it
-   stays a slim icon-only rail. No hover-expand and no pin toggle: the width is
-   purely breakpoint-driven, so <main> never reflows from a stray pointer and
-   there is no client-side rail state to re-sync across boosted navigations. */
-@media (min-width: 1101px) {
+/* Desktop (>=901, the handoff's own breakpoint): the rail is permanently
+   expanded — section labels, group headings and every button label are visible.
+   Below that (tablet, 768–900) it stays a slim icon-only rail. No hover-expand
+   and no pin toggle: the width is purely breakpoint-driven, so <main> never
+   reflows from a stray pointer and there is no client-side rail state to
+   re-sync across boosted navigations. */
+@media (min-width: 901px) {
     body.ui-masthead .mh-rail,
     body.ui-masthead .mh-rail-spacer {
         width: var(--mh-rail-w-expanded);
@@ -230,7 +231,7 @@ body.ui-masthead .mh-rail-label {
     transition: opacity .15s ease, max-width .18s ease;
 }
 
-@media (min-width: 1101px) {
+@media (min-width: 901px) {
     body.ui-masthead .mh-rail-label {
         opacity: 1;
         max-width: 160px;
@@ -310,7 +311,7 @@ body.ui-masthead .mh-topbar-brand svg {
 }
 
 body.ui-masthead .mh-topbar-brand span {
-    font: 700 12px var(--mh-display);
+    font: 800 19px/1 var(--mh-display);
     letter-spacing: -.02em;
     color: var(--fg);
 }
@@ -773,7 +774,16 @@ body.ui-masthead .mh-macro-card-unit {
 
 /* ── Mobile adaptations ──────────────────────────────────────────────────── */
 @media (max-width: 767px) {
+    /* Rubric tabs survive on a phone as a single scrolling row — they are the
+       only in-page way to reach a sibling section without opening the drawer. */
     body.ui-masthead .mh-tabs {
+        gap: 18px;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    body.ui-masthead .mh-tabs::-webkit-scrollbar {
         display: none;
     }
 
@@ -815,17 +825,12 @@ body.ui-masthead .mh-macro-card-unit {
     }
 }
 
-/* Handoff 2026-07: editorial amber shell */
-body.ui-masthead .mh-rail {
-    display: flex;
-    width: var(--mh-rail-w);
-    padding: 20px 0;
-    gap: 18px;
-}
-body.ui-masthead .mh-rail-spacer {
-    display: block;
-    width: var(--mh-rail-w);
-}
+/* Handoff 2026-07: editorial amber shell.
+   Rail visibility stays owned by the breakpoint rules at the top of this file
+   (hidden < 768, icon rail 768–900, expanded ≥ 901) — this block only restyles
+   what the handoff changes, so the mobile top bar + bottom nav + drawer keep
+   working on a phone, where a permanent 68px rail would eat a fifth of the
+   screen and leave the section list unreadable. */
 body.ui-masthead .mh-rail-wordmark {
     width: 100%;
     min-height: 28px;
@@ -842,21 +847,32 @@ body.ui-masthead .mh-rail-wordmark::after {
     content: 'V';
     font: 800 22px/1 var(--mh-display);
 }
+body.ui-masthead .mh-rail { padding: 20px 0; gap: 18px; }
 body.ui-masthead .mh-rail-nav { padding-inline: 12px; }
 body.ui-masthead .mh-rail-btn { height: 42px; }
 body.ui-masthead .mh-rail-foot { padding-inline: 12px; }
-body.ui-masthead .mh-topbar,
-body.ui-masthead .v-bottom-nav { display: none !important; }
 
 body.ui-masthead .mh-tabs {
     border-bottom: 1px solid var(--line);
 }
+/* The eyebrow row carries the section action (Sync / Add meal / …). It must be
+   allowed to wrap: on a phone the button plus its status line is wider than the
+   viewport, and a nowrap row pushed <main> 176px sideways. */
+body.ui-masthead .mh-eyebrow-row { flex-wrap: wrap; }
+body.ui-masthead .mh-actions { flex-wrap: wrap; max-width: 100%; }
 body.ui-masthead .mh-tab { font-size: 15px; }
 body.ui-masthead .mh-hero-row {
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
-    gap: 40px;
+    /* Wrap the row, not the metrics. Whether title + metrics fit on one line
+       depends on both (a long title, a metric reading "LLM подключена", the
+       rail expanded at 901px), so no breakpoint gets it right — instead the
+       metric block moves under the title as a unit the moment it stops
+       fitting, rather than shedding its last metric onto a second line with
+       the divider left hanging. */
+    flex-wrap: wrap;
+    gap: 22px 40px;
     margin-top: 28px;
 }
 body.ui-masthead .mh-title {
@@ -867,6 +883,14 @@ body.ui-masthead .mh-title {
 }
 body.ui-masthead .mh-metrics {
     justify-content: flex-end;
+    /* min() is the whole trick: while the metrics fit on a line of their own the
+       floor is their natural width, so they refuse to shrink and the hero row
+       wraps them under the title as one block. Once even a full line is too
+       narrow the floor drops to 100% and they wrap among themselves instead of
+       running off the edge. */
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    min-width: min(100%, max-content);
     gap: 0;
     border-top: 0;
     padding-top: 0;
@@ -874,26 +898,27 @@ body.ui-masthead .mh-metrics {
 }
 body.ui-masthead .mh-metric-div { margin: 0 26px; }
 body.ui-masthead .mh-metric-value.is-primary { font-size: 48px; }
+/* Content grid: 1240px column, 56px gutters. The vertical padding is on the
+   page wrapper only — #alerts-container shares the horizontal grid but keeps
+   its own tight top padding, otherwise a one-line alert renders as a 141px
+   block with a hole under it. */
 body.ui-masthead main > .max-w-6xl,
 body.ui-masthead main > #alerts-container {
     max-width: 1240px !important;
     padding-left: 56px !important;
     padding-right: 56px !important;
 }
-body.ui-masthead main > .max-w-6xl {
+body.ui-masthead main > .v-page {
     padding-top: 40px !important;
     padding-bottom: 56px !important;
 }
+body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !important; }
 
 @media (min-width: 901px) {
-    body.ui-masthead .mh-rail,
-    body.ui-masthead .mh-rail-spacer { width: var(--mh-rail-w-expanded); }
     body.ui-masthead .mh-rail-wordmark { font-size: 26px; }
     body.ui-masthead .mh-rail-wordmark::after { content: none; }
     body.ui-masthead .mh-rail-nav,
     body.ui-masthead .mh-rail-foot { padding-inline: 16px; }
-    body.ui-masthead .mh-rail-label { opacity: 1; max-width: 160px; }
-    body.ui-masthead .mh-rail-group-label { display: block; }
 }
 
 @media (max-width: 900px) {
@@ -921,12 +946,6 @@ body.ui-masthead main > .max-w-6xl {
     body.ui-masthead main > #alerts-container { padding: 22px 16px !important; }
     body.ui-masthead .mh-title { font-size: 30px; }
     body.ui-masthead .mh-hero-row { margin-top: 20px; }
-    body.ui-masthead .mh-tabs {
-        display: flex;
-        gap: 16px;
-        flex-wrap: nowrap;
-        overflow-x: auto;
-    }
     body.ui-masthead .mh-metrics {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
