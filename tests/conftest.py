@@ -62,6 +62,50 @@ else:
     TEST_ENGINE = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
 
 
+def pytest_sessionfinish(session, exitstatus):
+    """Dispose the shared engine so the process actually exits.
+
+    aiosqlite runs every connection in its own **non-daemon** worker thread, and
+    ``StaticPool`` deliberately keeps one connection open for the whole session
+    (that is how an ``:memory:`` database survives between tests). Nothing ever
+    closed it, so after the last test two live threads kept the interpreter from
+    shutting down: the suite printed its summary and then sat there until
+    something killed it — minutes of wall time per run, and the reason every
+    invocation had to be wrapped in ``timeout``.
+
+    Two engines can be holding such a thread: this module's ``TEST_ENGINE`` and
+    the app's own lazily-built one in ``web.deps`` (any code path that skips the
+    dependency override builds it against the same in-memory URL).
+    """
+    import asyncio
+    import threading
+
+    async def _dispose() -> None:
+        await TEST_ENGINE.dispose()
+        try:
+            from web import deps
+        except Exception:  # web/ not importable in a pure-core run — nothing to do
+            return
+        factory = deps._session_factory
+        if factory is not None:
+            await factory.kw["bind"].dispose()
+
+    asyncio.run(_dispose())
+
+    # Anything still non-daemon here will hang the interpreter the same way, so
+    # name it now instead of leaving the next person with a silent 15-minute run.
+    stragglers = [
+        t.name
+        for t in threading.enumerate()
+        if t is not threading.main_thread() and not t.daemon and t.is_alive()
+    ]
+    if stragglers:
+        print(
+            "\nWARNING: non-daemon threads still alive after teardown — this run "
+            f"will not exit on its own: {', '.join(stragglers)}"
+        )
+
+
 def pytest_collection_modifyitems(config, items):
     """Skip ``@pytest.mark.integration`` unless pointed at a real Postgres."""
     if "postgresql" in TEST_DATABASE_URL:
