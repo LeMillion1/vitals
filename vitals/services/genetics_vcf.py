@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from vitals.enums import Domain
+
 # Curated interpretations of well-studied SNPs, organised by domain. Each entry
 # fills the genetic_variants fields; ``marker`` + ``risk_alt`` are set ONLY where
 # a non-reference allele has a concrete supplement-safety consequence worth
@@ -32,7 +34,7 @@ INTERPRETATIONS: dict[str, dict] = {
         "gene": "HFE",
         "marker": "hemochromatosis_carrier",
         "impact": "Накопление железа (гемохроматоз, C282Y)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "C282Y — главный вариант наследственного гемохроматоза. Гомозигота резко повышает риск перегрузки железом, носительство — умеренно.",
         "action_notes": "Не принимать препараты железа без подтверждённого дефицита (ферритин/трансферрин). Осторожно с высокими дозами витамина C вместе с железом.",
         "risk_alt": True,
@@ -41,7 +43,7 @@ INTERPRETATIONS: dict[str, dict] = {
         "gene": "HFE",
         "marker": "hemochromatosis_carrier",
         "impact": "Накопление железа (гемохроматоз, H63D)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "H63D — более мягкий вклад в перегрузку железом; клинически значим в основном в сочетании с C282Y.",
         "action_notes": "Осторожно с препаратами железа; ориентироваться на ферритин.",
         "risk_alt": True,
@@ -50,7 +52,7 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs1801133": {  # MTHFR C677T — ref=C, alt=T (confirmed dbSNP/ClinVar)
         "gene": "MTHFR",
         "impact": "Метаболизм фолата (C677T)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "T-аллель снижает активность MTHFR (CT ~65%, TT ~30%), хуже превращается фолиевая кислота в активную форму; может расти гомоцистеин.",
         "action_notes": "При T-аллеле предпочтительна метильная форма (L-метилфолат) вместо фолиевой кислоты; следить за B12/B6 и гомоцистеином.",
         "marker_by_zygosity": {"het": "mthfr_heterozygous", "hom_alt": "mthfr_c677t_homozygous"},
@@ -58,21 +60,21 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs1801131": {  # MTHFR A1298C
         "gene": "MTHFR",
         "impact": "Метаболизм фолата (A1298C)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "A1298C слабее влияет на активность фермента, чем C677T; значим в комбинации с ним.",
         "action_notes": "Учитывать вместе с C677T при выборе формы фолата.",
     },
     "rs602662": {  # FUT2 secretor
         "gene": "FUT2",
         "impact": "Статус витамина B12 (секреторный статус)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Варианты FUT2 влияют на сывороточный B12 и состав микробиоты (секретор/несекретор).",
         "action_notes": "Контролировать B12 (актив. B12/голотранскобаламин), особенно на растительном рационе.",
     },
     "rs7946": {  # PEMT
         "gene": "PEMT",
         "impact": "Потребность в холине",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Сниженная активность PEMT повышает потребность в пищевом холине (особенно актуально без яиц/печени).",
         "action_notes": "Обеспечить достаточный холин (яйца, лецитин); при дефиците рассмотреть добавку.",
     },
@@ -80,14 +82,14 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs2282679": {  # GC (vitamin D binding protein)
         "gene": "GC",
         "impact": "Уровень витамина D (транспортный белок)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Минорный аллель GC ассоциирован с более низким 25(OH)D — труднее держать нормальный уровень.",
         "action_notes": "Контролировать 25(OH)D; вероятна потребность в более высокой поддерживающей дозе D3 + K2.",
     },
     "rs10741657": {  # CYP2R1
         "gene": "CYP2R1",
         "impact": "Синтез витамина D (25-гидроксилаза)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Вариант CYP2R1 влияет на превращение витамина D в 25(OH)D.",
         "action_notes": "Учитывать при подборе дозы D3 по анализам.",
     },
@@ -95,14 +97,14 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs174537": {  # FADS1
         "gene": "FADS1",
         "impact": "Конверсия омега-3/6 (ALA→EPA/DHA)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Минорный аллель снижает активность десатуразы — растительная ALA хуже превращается в EPA/DHA.",
         "action_notes": "Предпочесть прямые EPA/DHA (рыбий жир/водорослевое масло), а не льняное масло.",
     },
     "rs7501331": {  # BCO1 (beta-carotene → retinol)
         "gene": "BCO1",
         "impact": "Конверсия бета-каротина в витамин A",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "T-аллель снижает превращение бета-каротина в ретинол — «плохой конвертер».",
         "action_notes": "Не полагаться только на бета-каротин; рассмотреть преформированный витамин A (ретинол) из пищи.",
     },
@@ -110,14 +112,14 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs4880": {  # SOD2 A16V
         "gene": "SOD2",
         "impact": "Антиоксидантная защита митохондрий",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Вариант SOD2 влияет на транспорт супероксиддисмутазы в митохондрии и окислительный стресс.",
         "action_notes": "Поддерживать кофакторы (Mn, Zn, Cu в балансе); богатый антиоксидантами рацион.",
     },
     "rs1695": {  # GSTP1
         "gene": "GSTP1",
         "impact": "Детоксикация (глутатион-S-трансфераза)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Вариант снижает активность GSTP1 — детоксикация ксенобиотиков/оксидативный клиренс.",
         "action_notes": "Поддержка глутатиона (сон, белок, серосодержащие овощи, NAC по показаниям).",
     },
@@ -125,7 +127,7 @@ INTERPRETATIONS: dict[str, dict] = {
         "gene": "G6PD",
         "marker": "g6pd_deficiency",
         "impact": "Дефицит G6PD (риск гемолиза)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Дефицит G6PD повышает риск гемолиза при окислительном стрессе. Сцеплен с X-хромосомой.",
         "action_notes": "Избегать высоких доз витамина C (в/в), менадиона (вит. K3), бобов фава и ряда препаратов. Обсудить с врачом.",
         "risk_alt": True,
@@ -134,7 +136,7 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs762551": {  # CYP1A2 — ref=A (fast/*1F), alt=C (slow/*1A) (confirmed SNPedia)
         "gene": "CYP1A2",
         "impact": "Скорость метаболизма кофеина",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "AA — «быстрый» метаболизатор кофеина; носители C — «медленные», у них кофеин дольше действует и сильнее влияет на давление/сон.",
         "action_notes": "Медленным — ограничить кофеин, не пить во второй половине дня; следить за давлением.",
         "marker": "cyp1a2_slow_metabolizer",
@@ -143,7 +145,7 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs5751876": {  # ADORA2A
         "gene": "ADORA2A",
         "impact": "Тревожность и сон от кофеина",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Вариант ADORA2A повышает чувствительность к кофеину — тревога и нарушение сна даже от умеренных доз.",
         "action_notes": "Снизить дозу кофеина; избегать стимуляторов вечером.",
     },
@@ -151,14 +153,14 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs671": {  # ALDH2
         "gene": "ALDH2",
         "impact": "Метаболизм алкоголя (ацетальдегид)",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "A-аллель (ALDH2*2) резко снижает расщепление ацетальдегида — «флаш-реакция», выше риск при употреблении алкоголя.",
         "action_notes": "Минимизировать алкоголь — повышенный канцерогенный риск при флаш-реакции.",
     },
     "rs1229984": {  # ADH1B
         "gene": "ADH1B",
         "impact": "Скорость окисления алкоголя",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Вариант ADH1B ускоряет превращение этанола в ацетальдегид (быстрее наступает дискомфорт).",
         "action_notes": "Учитывать индивидуальную переносимость алкоголя.",
     },
@@ -166,28 +168,28 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs9939609": {  # FTO
         "gene": "FTO",
         "impact": "Аппетит и склонность к набору веса",
-        "impact_domain": "weight",
+        "impact_domain": Domain.WEIGHT.value,
         "interpretation": "A-аллель FTO ассоциирован с повышенным аппетитом и риском ожирения, но эффект хорошо корректируется белком и нагрузкой.",
         "action_notes": "Акцент на белок, контроль порций, регулярные тренировки; вариант не приговор.",
     },
     "rs17782313": {  # MC4R
         "gene": "MC4R",
         "impact": "Насыщение и аппетит",
-        "impact_domain": "weight",
+        "impact_domain": Domain.WEIGHT.value,
         "interpretation": "Вблизи MC4R — путь регуляции насыщения; C-аллель ассоциирован с большим аппетитом/ИМТ.",
         "action_notes": "Структурировать приёмы пищи, белок и клетчатка для насыщения.",
     },
     "rs7903146": {  # TCF7L2
         "gene": "TCF7L2",
         "impact": "Риск диабета 2 типа, секреция инсулина",
-        "impact_domain": "glp1",
+        "impact_domain": Domain.GLP1.value,
         "interpretation": "T-аллель — один из сильнейших общих факторов риска СД2, влияет на секрецию инсулина (важно в контексте GLP-1/метаболизма).",
         "action_notes": "Контроль гликемии (HbA1c, глюкоза натощак); поддерживать чувствительность к инсулину нагрузкой и составом тела.",
     },
     "rs1801282": {  # PPARG Pro12Ala
         "gene": "PPARG",
         "impact": "Чувствительность к инсулину",
-        "impact_domain": "glp1",
+        "impact_domain": Domain.GLP1.value,
         "interpretation": "Ala-аллель (Pro12Ala) обычно ассоциирован с лучшей чувствительностью к инсулину и меньшим риском СД2.",
         "action_notes": "Информативно; поддерживать метаболическое здоровье общими мерами.",
     },
@@ -195,14 +197,14 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs1815739": {  # ACTN3 R577X
         "gene": "ACTN3",
         "impact": "Мышечный тип (сила/спринт vs выносливость)",
-        "impact_domain": "workouts",
+        "impact_domain": Domain.WORKOUTS.value,
         "interpretation": "RR/RX — есть альфа-актинин-3 (наклон к силе/спринту); XX («ген стоп») — нет белка, чаще профиль выносливости.",
         "action_notes": "Информативно для акцентов в тренировках; не ограничивает прогресс.",
     },
     "rs8192678": {  # PPARGC1A
         "gene": "PPARGC1A",
         "impact": "Аэробная выносливость (биогенез митохондрий)",
-        "impact_domain": "workouts",
+        "impact_domain": Domain.WORKOUTS.value,
         "interpretation": "Вариант PGC-1α влияет на митохондриальный биогенез и отклик на аэробные нагрузки.",
         "action_notes": "Информативно для планирования кардио/выносливости.",
     },
@@ -210,7 +212,7 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs4680": {  # COMT Val158Met — ref=G (Val, fast), alt=A (Met, slow) (confirmed)
         "gene": "COMT",
         "impact": "Дофамин, стресс-устойчивость, болевая чувствительность",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "Val (быстрый клиренс дофамина) — «воин»: устойчивее к стрессу, но ниже базовый дофамин; Met (медленный) — «волнующийся»: выше когнитивный тонус, чувствительнее к стрессу/боли.",
         "action_notes": "Информативно для управления стрессом/восстановлением; при Met/Met — осторожнее со стимуляторами (кофеин, высокие дозы EGCG).",
         # Only the homozygous-Met genotype gets a firm marker — heterozygotes are
@@ -220,7 +222,7 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs6265": {  # BDNF Val66Met
         "gene": "BDNF",
         "impact": "Нейропластичность, настроение, отклик на нагрузку",
-        "impact_domain": "system",
+        "impact_domain": Domain.SYSTEM.value,
         "interpretation": "Met-аллель снижает секрецию BDNF — может влиять на память, настроение и нейропластический ответ на упражнения.",
         "action_notes": "Регулярная аэробная нагрузка и сон поддерживают BDNF.",
     },
@@ -228,7 +230,7 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs4988235": {  # MCM6/LCT
         "gene": "MCM6",
         "impact": "Переносимость лактозы",
-        "impact_domain": "supplements",
+        "impact_domain": Domain.SUPPLEMENTS.value,
         "interpretation": "T-аллель обеспечивает персистенцию лактазы (переносимость молока во взрослом возрасте); CC — вероятна непереносимость лактозы.",
         "action_notes": "При CC — ограничить лактозу или использовать лактазу; следить за источниками кальция.",
     },
@@ -236,21 +238,21 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs4244285": {  # CYP2C19*2
         "gene": "CYP2C19",
         "impact": "Метаболизм препаратов (клопидогрел, ИПП)",
-        "impact_domain": "system",
+        "impact_domain": Domain.SYSTEM.value,
         "interpretation": "*2 — нефункциональный аллель: снижен метаболизм ряда лекарств (клопидогрел — слабее эффект; ИПП — выше концентрация).",
         "action_notes": "Фармакогенетика — учитывать врачу при назначении соответствующих препаратов.",
     },
     "rs9923231": {  # VKORC1
         "gene": "VKORC1",
         "impact": "Чувствительность к варфарину",
-        "impact_domain": "system",
+        "impact_domain": Domain.SYSTEM.value,
         "interpretation": "Вариант VKORC1 повышает чувствительность к варфарину (нужна меньшая доза).",
         "action_notes": "Релевантно только при терапии варфарином — решает врач.",
     },
     "rs1057910": {  # CYP2C9*3
         "gene": "CYP2C9",
         "impact": "Метаболизм препаратов (варфарин, НПВП)",
-        "impact_domain": "system",
+        "impact_domain": Domain.SYSTEM.value,
         "interpretation": "*3 заметно снижает активность CYP2C9 — медленнее метаболизм варфарина и некоторых НПВП.",
         "action_notes": "Фармакогенетика — учитывать врачу.",
     },
@@ -258,14 +260,14 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs429358": {  # APOE
         "gene": "APOE",
         "impact": "ApoE-генотип (липиды, риск; часть пары)",
-        "impact_domain": "labs",
+        "impact_domain": Domain.LABS.value,
         "interpretation": "Один из двух SNP, определяющих ApoE (E2/E3/E4). Полная интерпретация требует и rs7412. E4 ассоциирован с худшим липидным профилем и рисками — но это вероятность, не диагноз.",
         "action_notes": "Интерпретировать только вместе с rs7412; не делать выводов по одному SNP.",
     },
     "rs7412": {  # APOE
         "gene": "APOE",
         "impact": "ApoE-генотип (липиды, риск; часть пары)",
-        "impact_domain": "labs",
+        "impact_domain": Domain.LABS.value,
         "interpretation": "Второй SNP пары ApoE. Совместно с rs429358 определяет изоформу E2/E3/E4.",
         "action_notes": "Интерпретировать вместе с rs429358; ориентироваться на реальный липидный профиль.",
     },
@@ -273,7 +275,7 @@ INTERPRETATIONS: dict[str, dict] = {
     "rs61816761": {  # FLG R501X
         "gene": "FLG",
         "impact": "Барьер кожи (филаггрин)",
-        "impact_domain": "skincare",
+        "impact_domain": Domain.SKINCARE.value,
         "interpretation": "Нулевые мутации FLG нарушают кожный барьер — выше риск сухости, атопического дерматита, трансэпидермальной потери воды.",
         "action_notes": "Акцент на восстановление барьера: церамиды, увлажнение, мягкое очищение; осторожнее с агрессивными активами.",
     },

@@ -13,7 +13,6 @@ from vitals.models import WeightLog, GarminDaily, GarminActivity, HevyWorkout, L
 from web.auth import create_session, read_session, _get_mcp_serializer, _get_serializer
 from web.config import SESSION_COOKIE, get_web_config
 
-pytestmark = pytest.mark.asyncio
 
 
 async def test_oauth_metadata_discovery(client):

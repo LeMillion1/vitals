@@ -2,7 +2,6 @@
 working-weight history, progression verdicts, and the raw-payload safety net."""
 from __future__ import annotations
 
-import pytest
 from sqlalchemy import func, select
 
 from vitals.models.hevy import HevyExercise, HevySet, HevyWorkout
@@ -10,7 +9,6 @@ from vitals.models.raw_payload import RawPayload
 from vitals.services import hevy_service
 from vitals.services.analytics.progression import ADVANCE, DELOAD
 
-pytestmark = pytest.mark.asyncio
 
 
 class FakeHevyClient:

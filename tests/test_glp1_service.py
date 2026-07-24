@@ -10,7 +10,6 @@ import pytest
 from vitals.enums import Drug, InjectionSite, Severity
 from vitals.services import alerts_service, glp1_service, weight_service
 
-pytestmark = pytest.mark.asyncio
 
 
 # ── Injections ────────────────────────────────────────────────────────────────

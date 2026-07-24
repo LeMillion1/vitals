@@ -2,12 +2,10 @@
 and the optional-module gate."""
 from __future__ import annotations
 
-import pytest
 from sqlalchemy import select
 
 from vitals.models.timeline import Annotation
 
-pytestmark = pytest.mark.asyncio
 
 
 async def test_timeline_feed_renders(auth_client):

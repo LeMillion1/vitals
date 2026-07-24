@@ -47,6 +47,20 @@ python -m pytest -q
 bash scripts/test_postgres.sh
 ```
 
+`scripts/test_postgres.sh` is only a convenience wrapper: the test suite reads
+`VITALS_TEST_DATABASE_URL` and switches to Postgres whenever it points at one.
+If Docker isn't available, any local Postgres 15 works — install it natively,
+create an empty database, and run:
+
+```bash
+export VITALS_TEST_DATABASE_URL="postgresql+asyncpg://postgres:<pass>@127.0.0.1:5432/vitals_test"
+python -m pytest -m integration -q
+```
+
+Without that variable the `integration` tests are skipped, not failed — they
+cover the things SQLite only pretends to support (JSONB containment, GIN,
+partial-unique indexes, `func.date` semantics).
+
 ## Code of Conduct
 
 Be respectful. This is a one-person project — patience is appreciated.

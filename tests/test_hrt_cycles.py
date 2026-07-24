@@ -9,7 +9,6 @@ import pytest
 from vitals.services import hrt_catalog, hrt_cycle_service, hrt_service
 from vitals.utils.timeutils import today_local
 
-pytestmark = pytest.mark.asyncio
 
 ANCHOR = date(2026, 6, 1)
 

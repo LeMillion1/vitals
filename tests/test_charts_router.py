@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
 
 from vitals.models.weight import WeightLog
 from vitals.services import custom_charts_service
 
-pytestmark = pytest.mark.asyncio
 
 DAY = date(2026, 6, 1)
 

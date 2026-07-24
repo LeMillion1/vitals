@@ -13,13 +13,11 @@ from __future__ import annotations
 
 import time
 
-import pytest
 
 from vitals.enums import Domain
 from vitals.scheduler import scheduler as scheduler_mod
 from vitals.services import alerts_service
 
-pytestmark = pytest.mark.asyncio
 
 
 def _runner(session_factory, job_id: str, func, redis=None):

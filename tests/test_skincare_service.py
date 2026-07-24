@@ -15,7 +15,6 @@ from vitals.services import (
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
 
-pytestmark = pytest.mark.asyncio
 
 
 async def test_checklist_upsert_is_one_per_day(db_session):

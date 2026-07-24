@@ -339,7 +339,6 @@ async def refresh_noise_alert(
     """Raise an ``info`` alert while today sits inside a noise range; resolve it
     once it doesn't. Idempotent (safe to call on every dashboard load / tick)."""
     today = on_date or today_local()
-    ranges = await _noise_ranges(session)
     active_reason = None
     for marker in await list_noise_markers(session):
         end = marker.end_date

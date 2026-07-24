@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-import pytest
 
 from vitals.services import nutrition_service
 from vitals.utils.timeutils import today_local
 
-pytestmark = pytest.mark.asyncio
 
 
 async def test_nutrition_dashboard_defaults_to_today(auth_client):

@@ -3,11 +3,9 @@ from __future__ import annotations
 
 from datetime import date, time
 
-import pytest
 
 from vitals.services import nutrition_service
 
-pytestmark = pytest.mark.asyncio
 
 
 def _make_cfg(**overrides):

@@ -40,9 +40,10 @@ class ModuleToggleError(ValueError):
 @dataclass(frozen=True)
 class ModuleSpec:
     key: str
-    label: str          # Russian nav label
     category: str       # "core" | "optional"
     route: str          # URL prefix / nav href
+    # No label here on purpose: every surface renders ``t("nav." + key)``, so a
+    # label field would be a second, silently-stale copy of the i18n string.
 
 
 # Ordered registry. ``key`` == route name == nav anchor. Order = render order.
@@ -50,24 +51,24 @@ MODULE_REGISTRY: dict[str, ModuleSpec] = {
     m.key: m
     for m in (
         # ── Core — always on, toggle locked ──────────────────────────────────
-        ModuleSpec("weight", "Вес", "core", "/weight"),
-        ModuleSpec("garmin", "Организм", "core", "/garmin"),
-        ModuleSpec("labs", "Анализы", "core", "/labs"),
-        ModuleSpec("reports", "Отчёты", "core", "/reports"),
-        ModuleSpec("charts", "Графики", "core", "/charts"),
+        ModuleSpec("weight", "core", "/weight"),
+        ModuleSpec("garmin", "core", "/garmin"),
+        ModuleSpec("labs", "core", "/labs"),
+        ModuleSpec("reports", "core", "/reports"),
+        ModuleSpec("charts", "core", "/charts"),
         # ── Optional — user-toggleable ───────────────────────────────────────
-        ModuleSpec("timeline", "Хронология", "optional", "/timeline"),
-        ModuleSpec("glp1", "GLP-1", "optional", "/glp1"),
-        ModuleSpec("hevy", "Тренировки", "optional", "/hevy"),
-        ModuleSpec("supplements", "Добавки", "optional", "/supplements"),
-        ModuleSpec("hrt", "ГЗТ / TRT", "optional", "/hrt"),
-        ModuleSpec("genetics", "Генетика", "optional", "/genetics"),
-        ModuleSpec("skincare", "Кожа", "optional", "/skincare"),
-        ModuleSpec("nutrition", "Питание", "optional", "/nutrition"),
-        ModuleSpec("interactions", "Взаимодействия", "optional", "/interactions"),
+        ModuleSpec("timeline", "optional", "/timeline"),
+        ModuleSpec("glp1", "optional", "/glp1"),
+        ModuleSpec("hevy", "optional", "/hevy"),
+        ModuleSpec("supplements", "optional", "/supplements"),
+        ModuleSpec("hrt", "optional", "/hrt"),
+        ModuleSpec("genetics", "optional", "/genetics"),
+        ModuleSpec("skincare", "optional", "/skincare"),
+        ModuleSpec("nutrition", "optional", "/nutrition"),
+        ModuleSpec("interactions", "optional", "/interactions"),
         # Body composition (InBody / МедАсс) — a tab inside /weight, not its own
         # nav item; the toggle just shows/hides that tab and its routes.
-        ModuleSpec("body_comp", "Состав тела", "optional", "/weight"),
+        ModuleSpec("body_comp", "optional", "/weight"),
     )
 }
 

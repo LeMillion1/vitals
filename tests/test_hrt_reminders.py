@@ -19,7 +19,6 @@ from vitals.services import (
 )
 from vitals.utils.timeutils import today_local
 
-pytestmark = pytest.mark.asyncio
 
 
 # ── Hormone panel seed ────────────────────────────────────────────────────────

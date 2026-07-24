@@ -12,7 +12,6 @@ from vitals.models.app_settings import AppSetting
 from vitals.services import custom_charts_service as svc
 from vitals.services.custom_charts_service import ChartConfigError
 
-pytestmark = pytest.mark.asyncio
 
 WEIGHT_SERIES = [{"domain": "weight", "metric_key": "weight.weight_kg"}]
 STRESS_SERIES = [{"domain": "garmin", "metric_key": "garmin.avg_stress"}]

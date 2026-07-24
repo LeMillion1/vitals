@@ -15,7 +15,8 @@ from vitals.models.system_alert import SystemAlert
 from vitals.models.weight import WeightLog
 from vitals.services.modules_service import SETTINGS_KEY
 
-pytestmark = pytest.mark.asyncio
+# No module-level ``pytest.mark.asyncio``: pytest.ini runs asyncio_mode=auto, and
+# the mark on this file's *sync* template tests only produced warnings.
 
 
 async def test_health_endpoint(client, redis):

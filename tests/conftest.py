@@ -35,7 +35,7 @@ os.environ["VITALS_OPENROUTER_API_KEY"] = ""
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 import vitals.models  # noqa: F401 — register all tables on Base.metadata
 from vitals.models.base import Base
@@ -54,7 +54,12 @@ if "sqlite" in TEST_DATABASE_URL:
         connect_args={"check_same_thread": False},
     )
 else:
-    TEST_ENGINE = create_async_engine(TEST_DATABASE_URL)
+    # NullPool on the Postgres path: pytest-asyncio gives each test its own event
+    # loop, and a pooled asyncpg connection opened in a previous loop blows up on
+    # reuse ("another operation is in progress") — which silently capped this
+    # project at one working integration test per file. Not pooling means every
+    # test opens its own connection, which is what we want for a test run anyway.
+    TEST_ENGINE = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
 
 
 def pytest_collection_modifyitems(config, items):
@@ -62,7 +67,9 @@ def pytest_collection_modifyitems(config, items):
     if "postgresql" in TEST_DATABASE_URL:
         return
     skip_pg = pytest.mark.skip(
-        reason="integration test requires Postgres (run scripts/test_postgres.sh)"
+        reason="integration test requires Postgres: point VITALS_TEST_DATABASE_URL "
+        "at one (scripts/test_postgres.sh does it via Docker; see CONTRIBUTING.md "
+        "for the no-Docker route)"
     )
     for item in items:
         if "integration" in item.keywords:

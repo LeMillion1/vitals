@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
+# No module-level ``pytest.mark.asyncio``: pytest.ini runs asyncio_mode=auto, and
+# the mark on this file's *sync* env_writer tests only produced warnings.
 
 
 def test_env_writer_read_missing_file(tmp_path, monkeypatch):

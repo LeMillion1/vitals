@@ -11,6 +11,7 @@ from datetime import date, datetime
 
 import pytest
 
+from vitals.enums import Domain
 from vitals.models.app_settings import AppSetting
 from vitals.models.garmin import GarminActivity, GarminDaily, GarminIntraday
 from vitals.models.glp1 import Injection
@@ -296,6 +297,112 @@ async def test_llm_export_includes_body_scans(db_session):
     assert block["device"] == "InBody 770"
     metrics = {m["metric"]: m["value"] for m in block["metrics"]}
     assert metrics == {"body_fat_pct": 18.5, "skeletal_muscle_mass": 42.0}
+
+
+# ── Every domain reaches the LLM export ────────────────────────────────────────
+#
+# ``export_llm`` is a long hand-written function, and its real failure mode isn't
+# its length — it's that a new domain gets added to ``Domain`` and nobody
+# remembers to give it a block, so the AI report silently loses a whole module.
+# The map below is the contract: every enum member names the export key(s) it must
+# fill. Adding a Domain member without touching this map fails immediately.
+
+DOMAIN_EXPORT_KEYS: dict[Domain, tuple[str, ...]] = {
+    Domain.WEIGHT: ("weight_history", "body_measurements", "noise_periods"),
+    Domain.BODY_COMPOSITION: ("body_scans",),
+    Domain.GLP1: ("glp1_injections", "glp1_dose_phases", "glp1_side_effects"),
+    Domain.HRT: ("hrt_doses", "hrt_cycles", "hrt_side_effects", "hrt_cycle_templates"),
+    Domain.LABS: ("biomarkers",),
+    Domain.WORKOUTS: ("workouts",),
+    Domain.GARMIN: ("garmin_daily", "garmin_activities"),
+    Domain.NUTRITION: ("nutrition",),
+    Domain.SUPPLEMENTS: ("supplements",),
+    Domain.GENETICS: ("genetics",),
+    Domain.SKINCARE: ("skincare_logs", "skincare_observations"),
+    Domain.MILESTONES: ("milestones", "weekly_digests"),
+    Domain.TIMELINE: ("timeline_annotations",),
+    # Infra/alert rows — deliberately excluded from a digest meant for a chat
+    # window (test_llm_export_is_clean pins that they stay out).
+    Domain.SYSTEM: (),
+}
+
+
+def test_every_domain_is_mapped_to_export_keys():
+    """A new Domain member must be given an export block (or an explicit empty
+    tuple saying it's intentionally not exported)."""
+    assert set(DOMAIN_EXPORT_KEYS) == set(Domain)
+
+
+async def _seed_every_domain(session) -> None:
+    """One row per domain — the domains _seed/_seed_hrt don't already cover."""
+    from vitals.models.body_scan import BodyScan, BodyScanMetric
+    from vitals.models.genetics import GeneticVariant
+    from vitals.models.glp1 import DosePhase, SideEffect
+    from vitals.models.milestones import Milestone, WeeklyDigest
+    from vitals.models.nutrition import MealLog
+    from vitals.models.skincare import SkincareLog, SkincareObservation
+    from vitals.models.timeline import Annotation
+    from vitals.models.weight import NoiseMarker
+
+    await _seed(session)
+    await _seed_hrt(session)
+
+    d = date(2026, 4, 25)
+    scan = BodyScan(date=d, domain="body_comp", source="body_scan", device="InBody 770")
+    session.add(scan)
+    await session.flush()
+    session.add_all(
+        [
+            BodyScanMetric(
+                scan_id=scan.id, metric_key="body_fat_pct", label="Percent Body Fat",
+                value=18.5, unit="%", category="composition",
+            ),
+            NoiseMarker(
+                domain="weight", source="manual", start_date=d, reason="креатин",
+            ),
+            DosePhase(
+                domain="glp1", source="manual", start_date=d, drug="tirzepatide", dose_mg=5.0,
+            ),
+            SideEffect(
+                date=d, domain="glp1", source="manual", effect_type="nausea", severity=1,
+            ),
+            GeneticVariant(
+                domain="genetics", source="vcf_import", gene="MTHFR", rsid="rs1801133",
+                genotype="CT", impact="Фолатный цикл", impact_domain="supplements",
+            ),
+            SkincareLog(date=d, domain="skincare", source="manual", retinoid=True),
+            SkincareObservation(
+                date=d, domain="skincare", source="manual", inflammation=2, zone="лоб",
+            ),
+            MealLog(
+                date=d, domain="nutrition", source="manual", name="Курица с рисом",
+                calories=520, protein_g=45,
+            ),
+            Milestone(domain="weight", name="100 кг", target_value=100.0, target_unit="кг"),
+            WeeklyDigest(
+                date=d, domain="milestones", source="manual", content="Неделя прошла ровно.",
+            ),
+            Annotation(
+                date=d, domain="timeline", source="manual", kind="travel", title="Поездка",
+            ),
+        ]
+    )
+    await session.commit()
+
+
+async def test_llm_export_covers_every_domain(db_session):
+    """With one row seeded per domain, every mapped export key must be non-empty —
+    the test that fails when a domain is added but never wired into export_llm."""
+    await _seed_every_domain(db_session)
+    out = await export_llm(db_session)
+
+    empty = [
+        key
+        for domain, keys in DOMAIN_EXPORT_KEYS.items()
+        for key in keys
+        if not out.get(key)
+    ]
+    assert not empty, f"domains missing from the LLM export: {empty}"
 
 
 # ── Postgres sequence reset (real DB only) ─────────────────────────────────────

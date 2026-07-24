@@ -13,7 +13,6 @@ from vitals.models.weight import WeightLog
 from vitals.services import body_scan_service, chart_data_service, hevy_service, labs_service
 from vitals.services.modules_service import MODULE_REGISTRY
 
-pytestmark = pytest.mark.asyncio
 
 DAY1 = date(2026, 6, 1)
 DAY2 = date(2026, 6, 2)

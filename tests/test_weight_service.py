@@ -5,11 +5,12 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from freezegun import freeze_time
 
 from vitals.enums import Source
 from vitals.services import alerts_service, weight_service
+from vitals.utils.timeutils import today_local
 
-pytestmark = pytest.mark.asyncio
 
 
 async def test_log_weight_creates_active_row(db_session):
@@ -162,6 +163,34 @@ async def test_noise_alert_raise_and_resolve(db_session):
     await db_session.commit()
     active2 = await alerts_service.list_active(db_session, domain="weight")
     assert not any(a.alert_key == weight_service.NOISE_ALERT_KEY for a in active2)
+
+
+async def test_dismissed_noise_alert_returns_after_local_midnight(db_session):
+    """The daily-nag contract crosses the *local* midnight, not UTC's.
+
+    Both frozen instants are the same UTC day; only Chisinau's calendar flips
+    between them. Dismissing at 23:30 local must hide the alert for the rest of
+    that local day and let it back at 00:30 the next one — if the comparison ever
+    slipped to UTC, the second half of every evening would silently un-dismiss.
+    """
+    await weight_service.add_noise_marker(
+        db_session, start_date=date(2026, 6, 1), reason="creatine loading"
+    )
+
+    with freeze_time("2026-06-10 20:30:00"):  # 23:30 local (UTC+3 in June)
+        assert today_local() == date(2026, 6, 10)
+        alert = await weight_service.refresh_noise_alert(db_session)
+        assert alert is not None
+        await alerts_service.resolve_alert(db_session, alert.id)
+        await db_session.commit()
+        # Same local day → stays dismissed.
+        assert await weight_service.refresh_noise_alert(db_session) is None
+
+    with freeze_time("2026-06-10 21:30:00"):  # 00:30 local — next local day
+        assert today_local() == date(2026, 6, 11)
+        again = await weight_service.refresh_noise_alert(db_session)
+        await db_session.commit()
+        assert again is not None and again.id != alert.id
 
 
 async def test_chart_series_excludes_noise_from_trend(db_session):

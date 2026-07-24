@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-import pytest
 
 from vitals.enums import AnnotationKind, Domain, MilestoneStatus
 from vitals.models.body_scan import DOMAIN as BODY_DOMAIN, BodyScan
@@ -17,7 +16,6 @@ from vitals.models.supplements import DOMAIN as SUPP_DOMAIN, Supplement
 from vitals.models.weight import DOMAIN as WEIGHT_DOMAIN, NoiseMarker, ProgressPhoto
 from vitals.services import timeline_service
 
-pytestmark = pytest.mark.asyncio
 
 
 async def test_create_update_delete_annotation(db_session):

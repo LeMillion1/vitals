@@ -14,7 +14,6 @@ from vitals.services import (
 )
 from vitals.utils.timeutils import today_local
 
-pytestmark = pytest.mark.asyncio
 
 
 async def _build_staggered_cycle(db_session):

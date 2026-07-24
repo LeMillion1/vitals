@@ -10,7 +10,6 @@ import pytest
 from vitals.services import hrt_catalog, hrt_service
 from vitals.utils.timeutils import today_local
 
-pytestmark = pytest.mark.asyncio
 
 
 # ── Catalog sync ──────────────────────────────────────────────────────────────

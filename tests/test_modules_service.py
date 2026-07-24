@@ -20,7 +20,6 @@ from vitals.services.modules_service import (
     ModuleToggleError,
 )
 
-pytestmark = pytest.mark.asyncio
 
 
 async def test_defaults_on_empty_db(db_session):
