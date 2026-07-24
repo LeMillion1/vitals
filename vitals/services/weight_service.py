@@ -18,6 +18,7 @@ with later modules.
 """
 from __future__ import annotations
 
+import math
 from datetime import date as date_type
 from typing import Optional, Sequence
 
@@ -72,6 +73,26 @@ def _source_priority(source: str) -> int:
     return _SOURCE_PRIORITY.get(source, 1)
 
 
+# Sanity bounds for the write path. These tools are reachable over MCP (an LLM),
+# which bypasses the HTML form's min/max entirely, so a hallucinated 900 kg or a
+# 0 has to be rejected here rather than land in the data lake — the same reasoning
+# as ``glp1_service._validate_injection``, plus the upper bounds GLP-1 still lacks.
+_WEIGHT_KG_RANGE = (20.0, 400.0)
+_CIRCUMFERENCE_CM_RANGE = (10.0, 300.0)
+
+
+def _check_range(name: str, value: Optional[float], bounds: tuple[float, float]) -> Optional[float]:
+    """Reject a non-finite or out-of-range number, raising ``ValueError``. ``None``
+    passes through untouched (an omitted optional field), so every field can be
+    handed straight in."""
+    if value is None:
+        return None
+    low, high = bounds
+    if not math.isfinite(value) or not low <= value <= high:
+        raise ValueError(f"{name} must be between {low:g} and {high:g} (got {value!r})")
+    return value
+
+
 # ── Weight logs ───────────────────────────────────────────────────────────────
 async def get_active_weight(session: AsyncSession, on_date: date_type) -> Optional[WeightLog]:
     result = await session.execute(
@@ -96,8 +117,9 @@ async def log_weight(
     one-active-per-date invariant.
 
     May raise ``ConflictBlocked`` if a (future) cross-domain block rule fires
-    without ``override``.
+    without ``override``, or ``ValueError`` on an implausible weight.
     """
+    _check_range("weight_kg", weight_kg, _WEIGHT_KG_RANGE)
     await conflict_engine.enforce(
         session,
         Domain.WEIGHT.value,
@@ -175,6 +197,9 @@ async def upsert_body_measurement(
     Partial merge: a field left ``None`` keeps whatever's already on file for
     the date instead of being blanked (e.g. MCP ``log_measurement`` is often
     called with just one of the three circumferences)."""
+    _check_range("neck_cm", neck_cm, _CIRCUMFERENCE_CM_RANGE)
+    _check_range("waist_cm", waist_cm, _CIRCUMFERENCE_CM_RANGE)
+    _check_range("hips_cm", hips_cm, _CIRCUMFERENCE_CM_RANGE)
     await conflict_engine.enforce(
         session,
         Domain.WEIGHT.value,
@@ -544,6 +569,7 @@ async def update_weight_log(
 ) -> Optional[WeightLog]:
     """Edit an existing weight log. If the date has changed, delete the old row
     (triggering reactivation of other rows) and insert a new log."""
+    _check_range("weight_kg", weight_kg, _WEIGHT_KG_RANGE)
     result = await session.execute(select(WeightLog).where(WeightLog.id == log_id))
     row = result.scalar_one_or_none()
     if not row:
@@ -596,24 +622,24 @@ async def update_body_measurement(
         return None
 
     if row.date != on_date:
+        # Carry the untouched fields off the old row *before* deleting it. The
+        # partial merge in upsert_body_measurement reads the row on the target
+        # date, which is empty here — so a caller that passed only one field (the
+        # MCP edit tool routinely does) would otherwise blank the other two, and
+        # body_fat_pct/lbm_kg derived from them, with no way to get them back.
+        neck_cm = neck_cm if neck_cm is not None else row.neck_cm
+        waist_cm = waist_cm if waist_cm is not None else row.waist_cm
+        hips_cm = hips_cm if hips_cm is not None else row.hips_cm
+        note = note if note is not None else row.note
         await session.delete(row)
         await session.flush()
-        return await upsert_body_measurement(
-            session,
-            on_date=on_date,
-            neck_cm=neck_cm,
-            waist_cm=waist_cm,
-            hips_cm=hips_cm,
-            note=note,
-            override=override,
-        )
-    else:
-        return await upsert_body_measurement(
-            session,
-            on_date=on_date,
-            neck_cm=neck_cm,
-            waist_cm=waist_cm,
-            hips_cm=hips_cm,
-            note=note,
-            override=override,
-        )
+
+    return await upsert_body_measurement(
+        session,
+        on_date=on_date,
+        neck_cm=neck_cm,
+        waist_cm=waist_cm,
+        hips_cm=hips_cm,
+        note=note,
+        override=override,
+    )

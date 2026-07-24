@@ -229,19 +229,29 @@ async def health(
 
     redis_ok = False
     heartbeat_age = None
+    stale_jobs = None
     try:
         await redis_client.ping()
         redis_ok = True
 
-        from vitals.scheduler.scheduler import KEEPALIVE_JOB_ID
+        from vitals.config import load_config
+        from vitals.scheduler.scheduler import KEEPALIVE_JOB_ID, heartbeat_budgets
         from vitals.scheduler.scheduler_lock import scheduler_heartbeat_age
 
-        heartbeat_age = await scheduler_heartbeat_age(redis_client, KEEPALIVE_JOB_ID)
+        # Every heartbeating job is checked against a budget derived from its own
+        # schedule — watching the keepalive alone left a module job free to stop
+        # firing while /health stayed green.
+        stale_jobs = []
+        for job_id, budget in heartbeat_budgets(load_config().timezone).items():
+            age = await scheduler_heartbeat_age(redis_client, job_id)
+            if job_id == KEEPALIVE_JOB_ID:
+                heartbeat_age = age
+            if age is None or age > budget:
+                stale_jobs.append(job_id)
     except Exception as e:
         logger.error("Healthcheck Redis check failed: %s", e)
 
-    # We allow the heartbeat age to be up to 120s (since it runs every 60s)
-    scheduler_ok = heartbeat_age is not None and heartbeat_age < 120.0
+    scheduler_ok = stale_jobs is not None and not stale_jobs
     status_str = "ok" if (db_ok and redis_ok and scheduler_ok) else "error"
 
     return {
@@ -249,6 +259,7 @@ async def health(
         "database": "ok" if db_ok else "down",
         "redis": "ok" if redis_ok else "down",
         "scheduler_heartbeat_age_seconds": heartbeat_age,
+        "stale_jobs": stale_jobs or [],
     }
 
 

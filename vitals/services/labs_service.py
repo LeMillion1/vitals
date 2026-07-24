@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import math
 from datetime import date as date_type, timedelta
 from typing import Any, Optional, Sequence
 
@@ -44,6 +45,13 @@ logger = logging.getLogger(__name__)
 
 OUT_OF_RANGE_KEY = "labs.out_of_range"
 RETEST_DUE_KEY = "labs.retest_due"
+
+# Sanity ceiling for a written value. The write path is reachable over MCP (an
+# LLM) and from vision extraction, neither of which goes through the HTML form,
+# so nonsense has to be stopped here. Real markers span many orders of magnitude
+# (ng/ml up to cells per µl) and some are legitimately negative (blood-gas base
+# excess), so this only catches the absurd — it is not a per-marker range.
+_VALUE_ABS_MAX = 1_000_000.0
 
 # "Critical" thresholds. For a two-sided range, a value more than this fraction of
 # the range's *width* beyond a bound is critical (scales sensibly with the range).
@@ -258,8 +266,13 @@ async def add_result(
     """Record a marker value, computing its flag and ensuring its catalog row.
 
     If the result carries no range, fall back to the catalog's default range so a
-    flag can still be computed."""
+    flag can still be computed. Raises ``ValueError`` on a nameless marker or an
+    implausible value."""
     marker = normalize_marker(marker)
+    if not marker:
+        raise ValueError("marker is required")
+    if value is None or not math.isfinite(value) or abs(value) > _VALUE_ABS_MAX:
+        raise ValueError(f"implausible lab value for {marker}: {value!r}")
     catalog = await _ensure_marker(
         session, marker, unit=unit, ref_low=ref_low, ref_high=ref_high
     )
@@ -585,18 +598,25 @@ async def ingest_extracted(
         if await _result_exists(session, on_date, marker, value):
             summary["skipped"] += 1
             continue
-        row = await add_result(
-            session,
-            on_date=on_date,
-            marker=marker,
-            value=value,
-            unit=item.get("unit"),
-            ref_low=_num(item.get("ref_low")),
-            ref_high=_num(item.get("ref_high")),
-            lab_name=lab_name,
-            source=Source.LAB_PARSER.value,
-            raw_payload_id=raw_row.id,
-        )
+        try:
+            row = await add_result(
+                session,
+                on_date=on_date,
+                marker=marker,
+                value=value,
+                unit=item.get("unit"),
+                ref_low=_num(item.get("ref_low")),
+                ref_high=_num(item.get("ref_high")),
+                lab_name=lab_name,
+                source=Source.LAB_PARSER.value,
+                raw_payload_id=raw_row.id,
+            )
+        except ValueError as e:
+            # One garbled row must not cost the whole document — it stays in the
+            # raw payload either way, so it can be re-parsed later.
+            logger.warning("Skipping unusable extracted marker: %s", e)
+            summary["skipped"] += 1
+            continue
         summary["results"].append(row)
         summary["created"] += 1
 

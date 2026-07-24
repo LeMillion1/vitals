@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from vitals.i18n import t
@@ -368,3 +369,75 @@ async def test_add_result_normalizes_marker_name(db_session):
     hist = await labs_service.marker_history(db_session, "Инсулин")
     assert [p["value"] for p in hist] == [38.0, 9.0]
 
+
+
+# ── Write-path validation (S2) ────────────────────────────────────────────────
+async def test_add_result_rejects_nameless_marker(db_session):
+    with pytest.raises(ValueError):
+        await labs_service.add_result(
+            db_session, on_date=date(2026, 6, 10), marker="   ", value=5.0
+        )
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), 1e12])
+async def test_add_result_rejects_implausible_value(db_session, bad_value):
+    """MCP and vision extraction both reach this without an HTML form in between."""
+    with pytest.raises(ValueError):
+        await labs_service.add_result(
+            db_session, on_date=date(2026, 6, 10), marker="Ferritin", value=bad_value
+        )
+
+
+async def test_add_result_allows_negative_and_large_real_values(db_session):
+    """The ceiling only catches the absurd: base excess is legitimately negative
+    and cell counts run into the hundreds of thousands."""
+    await labs_service.add_result(
+        db_session, on_date=date(2026, 6, 10), marker="Base excess", value=-3.5
+    )
+    await labs_service.add_result(
+        db_session, on_date=date(2026, 6, 10), marker="Platelets", value=250000
+    )
+    await db_session.commit()
+    assert len(await labs_service.list_results(db_session, marker="Base excess")) == 1
+
+
+async def test_ingest_skips_bad_row_and_keeps_the_rest(db_session):
+    """One garbled marker must not cost the whole document."""
+    extracted = {
+        "date": "2026-06-11",
+        "results": [
+            {"marker": "Ferritin", "value": 95},
+            {"marker": "Junk", "value": 1e12},
+        ],
+    }
+    summary = await labs_service.ingest_extracted(db_session, extracted, file_key="doc-bad")
+    await db_session.commit()
+    assert summary["created"] == 1 and summary["skipped"] == 1
+
+
+# ── An unparsed model reply still reaches raw_payloads (D2) ───────────────────
+async def test_unparsed_llm_reply_is_kept_verbatim():
+    """``extract_json`` used to swallow a non-JSON reply and hand back ``{}``, so
+    the row written to ``raw_payloads`` — advertised as the verbatim payload —
+    held nothing at all and the failed parse could never be reviewed or redone."""
+    from vitals.integrations.llm_client import LLMClient
+
+    class _Msg:
+        content = "Sorry, I cannot read this image."
+
+    class _Resp:
+        choices = [type("C", (), {"message": _Msg()})()]
+
+    class _Completions:
+        async def create(self, **kw):
+            return _Resp()
+
+    client = LLMClient()
+    client._client = type(
+        "FakeClient", (), {"chat": type("Chat", (), {"completions": _Completions()})()}
+    )()
+
+    out = await client.extract_json("extract", image_url="data:image/png;base64,x")
+    assert out == {"_unparsed": "Sorry, I cannot read this image."}
+    # Whatever comes back still has to behave like a payload dict downstream.
+    assert labs_service.normalize_extracted(out) == []

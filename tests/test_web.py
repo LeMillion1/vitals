@@ -1010,6 +1010,33 @@ async def test_labs_upload_extraction_failure_returns_error_json(auth_client, mo
     assert data["reason"] == "error"
 
 
+async def test_failed_extraction_leaves_no_orphan_file(auth_client, monkeypatch):
+    """The document used to be written to disk before extraction ran, so every
+    failed parse left a file nothing in the DB referenced — unreachable from the
+    UI and accumulating silently. Nothing is written unless the parse succeeds."""
+    import os
+
+    from vitals.services import labs_service
+    from web.templating import STATIC_DIR
+
+    uploads = os.path.join(STATIC_DIR, "uploads", "labs")
+    before = set(os.listdir(uploads)) if os.path.isdir(uploads) else set()
+
+    async def fake_extract(contents, *, llm, content_type, filename=None):
+        raise ValueError("could not parse")
+
+    monkeypatch.setattr(labs_service, "extract_from_file", fake_extract)
+
+    r = await auth_client.post(
+        "/labs/upload",
+        files={"file": ("bad.png", b"\x89PNG\r\n\x1a\n-bytes", "image/png")},
+    )
+    assert r.json()["ok"] is False
+
+    after = set(os.listdir(uploads)) if os.path.isdir(uploads) else set()
+    assert after == before
+
+
 async def test_labs_upload_returns_preview_without_persisting_results(auth_client, db_session, monkeypatch):
     """B2 regression: /labs/upload must extract and return an editable preview
     without writing any LabResult — the whole point of the preview step is that

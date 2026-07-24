@@ -650,6 +650,8 @@ async def log_weight(
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
+        except ValueError as e:
+            return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, row)
 
@@ -943,6 +945,8 @@ async def log_measurement(
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
+        except ValueError as e:
+            return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, row)
 
@@ -1155,6 +1159,8 @@ async def log_body_scan(
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
+        except ValueError as e:
+            return {"error": str(e)}
         await session.commit()
         full = await body_scan_service.get_scan(session, scan.id)
         return _serialize_scan(full) if full else {"scan_id": scan.id}
@@ -1227,17 +1233,20 @@ async def log_lab_result(
     parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
 
     async with session_factory() as session:
-        row = await labs_service.add_result(
-            session,
-            on_date=parsed_date,
-            marker=marker,
-            value=value,
-            unit=unit,
-            ref_low=ref_low,
-            ref_high=ref_high,
-            lab_name=lab_name,
-            note=note,
-        )
+        try:
+            row = await labs_service.add_result(
+                session,
+                on_date=parsed_date,
+                marker=marker,
+                value=value,
+                unit=unit,
+                ref_low=ref_low,
+                ref_high=ref_high,
+                lab_name=lab_name,
+                note=note,
+            )
+        except ValueError as e:
+            return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, row)
 
@@ -1831,6 +1840,8 @@ async def update_measurement(
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
+        except ValueError as e:
+            return {"error": str(e)}
         if row is None:
             return {"error": f"Measurement {measurement_id} not found"}
         await session.commit()

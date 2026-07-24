@@ -208,13 +208,24 @@ async def test_chart_series_excludes_noise_from_trend(db_session):
 
 async def test_weight_check_constraint_rejects_nonpositive(db_session):
     """The DB-level CHECK (weight_kg > 0) rejects junk values — a buggy importer
-    or bad input can't persist a non-physical weight."""
+    or bad input can't persist a non-physical weight.
+
+    Inserted straight through the model: ``log_weight`` now refuses this input
+    before the DB sees it (see the range tests below), and this test exists to
+    prove the constraint underneath is still the last line of defence."""
     from sqlalchemy.exc import IntegrityError
 
-    with pytest.raises(IntegrityError):
-        await weight_service.log_weight(
-            db_session, on_date=date(2026, 6, 1), weight_kg=0.0
+    from vitals.models.weight import DOMAIN, WeightLog
+
+    db_session.add(
+        WeightLog(
+            date=date(2026, 6, 1),
+            domain=DOMAIN,
+            source=Source.MANUAL.value,
+            weight_kg=0.0,
         )
+    )
+    with pytest.raises(IntegrityError):
         await db_session.flush()
     await db_session.rollback()
 
@@ -302,3 +313,87 @@ async def test_delete_progress_photo(db_session):
     photos2 = await weight_service.list_progress_photos(db_session)
     assert len(photos2) == 0
 
+
+
+# ── Write-path validation (S2) ────────────────────────────────────────────────
+# The MCP tools reach these services directly, with no HTML form to bound the
+# numbers, so the service itself has to reject nonsense.
+@pytest.mark.parametrize("bad_kg", [0, -5, 900, float("nan")])
+async def test_log_weight_rejects_implausible_weight(db_session, bad_kg):
+    with pytest.raises(ValueError):
+        await weight_service.log_weight(
+            db_session, on_date=date(2026, 6, 20), weight_kg=bad_kg
+        )
+
+
+async def test_update_weight_log_rejects_implausible_weight(db_session):
+    row = await weight_service.log_weight(
+        db_session, on_date=date(2026, 6, 21), weight_kg=88.0
+    )
+    await db_session.commit()
+    with pytest.raises(ValueError):
+        await weight_service.update_weight_log(
+            db_session, row.id, on_date=date(2026, 6, 21), weight_kg=900.0
+        )
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("neck_cm", 0), ("waist_cm", 500), ("hips_cm", -30)],
+)
+async def test_upsert_measurement_rejects_implausible_circumference(
+    db_session, field, value
+):
+    with pytest.raises(ValueError):
+        await weight_service.upsert_body_measurement(
+            db_session, on_date=date(2026, 6, 22), **{field: value}
+        )
+
+
+async def test_plausible_measurement_still_saves(db_session):
+    """The bounds must not get in the way of a normal entry."""
+    row = await weight_service.upsert_body_measurement(
+        db_session, on_date=date(2026, 6, 23), neck_cm=39.0, waist_cm=86.0
+    )
+    await db_session.commit()
+    assert row.neck_cm == 39.0 and row.waist_cm == 86.0
+
+
+# ── Editing a measurement's date keeps the fields not passed (D1) ─────────────
+async def test_update_measurement_date_change_keeps_untouched_fields(db_session):
+    """Moving a measurement to another date used to blank every field the caller
+    didn't repeat: the row was deleted first, so the partial merge on the new date
+    had nothing left to merge with. The MCP edit tool passes one field at a time,
+    so this quietly destroyed neck/hips and the derived body-fat % / LBM."""
+    await weight_service.log_weight(
+        db_session, on_date=date(2026, 7, 2), weight_kg=88.0
+    )
+    row = await weight_service.upsert_body_measurement(
+        db_session,
+        on_date=date(2026, 7, 1),
+        neck_cm=39.0,
+        waist_cm=86.0,
+        hips_cm=99.0,
+        note="morning",
+    )
+    await db_session.commit()
+    assert row.body_fat_pct is not None
+
+    # Only the date and the waist change — neck/hips/note must survive.
+    moved = await weight_service.update_body_measurement(
+        db_session, row.id, on_date=date(2026, 7, 2), waist_cm=85.0
+    )
+    await db_session.commit()
+
+    assert moved is not None
+    assert moved.date == date(2026, 7, 2)
+    assert moved.waist_cm == 85.0
+    assert moved.neck_cm == 39.0
+    assert moved.hips_cm == 99.0
+    assert moved.note == "morning"
+    # Derived values come back too, now that their inputs survived the move.
+    assert moved.body_fat_pct is not None
+    assert moved.lbm_kg is not None
+
+    rows = await weight_service.list_body_measurements(db_session)
+    assert len(rows) == 1

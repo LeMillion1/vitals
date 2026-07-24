@@ -123,8 +123,8 @@ class LLMClient:
     ) -> dict:
         """Structured extraction → parsed JSON dict. Pass ``image_url`` (a data: or
         https: URL) or ``image_urls`` (a list of data: or https: URLs) to send lab
-        scans to a vision-capable model. Falls back to an empty dict if the model
-        returns non-JSON (caller decides how to handle)."""
+        scans to a vision-capable model. If the model returns non-JSON, the raw
+        text comes back under ``_unparsed`` (caller decides how to handle)."""
         client = self._ensure_client()
 
         user_content: Any
@@ -153,10 +153,16 @@ class LLMClient:
         )
         raw = (resp.choices[0].message.content or "").strip()
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
         except (ValueError, TypeError):
-            logger.warning("LLM extract_json returned non-JSON content")
-            return {}
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+        # Hand the unparsed text back instead of an empty dict: callers store this
+        # verbatim in ``raw_payloads``, and {} would throw away the only artefact
+        # that makes a failed extraction reviewable and re-parseable later.
+        logger.warning("LLM extract_json returned non-JSON content")
+        return {"_unparsed": raw}
 
     async def ping(self) -> bool:
         """Lightweight reachability check (one tiny completion). Returns True on a

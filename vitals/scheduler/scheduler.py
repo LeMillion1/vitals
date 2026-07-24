@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -29,6 +30,10 @@ logger = logging.getLogger(__name__)
 JobFunc = Callable[[async_sessionmaker[AsyncSession], Optional[Redis]], Awaitable[None]]
 
 KEEPALIVE_JOB_ID = "keepalive"
+
+# One active alert per failing job — the id is part of the key (never a timestamp,
+# which would defeat the dedupe index and pile up a row per failed tick).
+JOB_FAILED_KEY_PREFIX = "scheduler.job_failed"
 
 
 @dataclass
@@ -78,6 +83,91 @@ def heartbeat_job_ids() -> list[str]:
     return ids
 
 
+# How many upcoming fires to sample when sizing a job's staleness budget. Eight
+# covers a full cycle of every schedule in use (a 4-times-a-day cron, a weekly
+# digest), so the widest real gap is always among the samples.
+_FIRE_SAMPLES = 8
+# Slack on top of that gap: a tick may start late or run long, and a false
+# "scheduler is dead" is worse than noticing a genuinely dead job minutes later.
+_BUDGET_SLACK_SECONDS = 300.0
+
+
+def _max_gap_seconds(spec: JobSpec, timezone: str) -> float:
+    """Longest wait between two consecutive fires of ``spec``'s schedule.
+
+    Measured with the job's own APScheduler trigger rather than parsed by hand —
+    a cron at 03:00/11:00/16:00/22:00 has an 8-hour worst gap that no arithmetic
+    over the kwargs would give us.
+    """
+    from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    factory = CronTrigger if spec.trigger == "cron" else IntervalTrigger
+    trigger = factory(timezone=timezone, **spec.trigger_kwargs)
+    now = datetime.now(trigger.timezone)
+
+    fires: list[datetime] = []
+    previous: Optional[datetime] = None
+    for _ in range(_FIRE_SAMPLES):
+        nxt = trigger.get_next_fire_time(previous, previous or now)
+        if nxt is None:  # a finite schedule that has run out
+            break
+        fires.append(nxt)
+        previous = nxt
+
+    gaps = [(b - a).total_seconds() for a, b in zip(fires, fires[1:])]
+    return max(gaps) if gaps else 86400.0
+
+
+def heartbeat_budgets(timezone: str) -> dict[str, float]:
+    """How stale each watched job's heartbeat may get before ``/health`` calls the
+    scheduler unhealthy, in seconds.
+
+    A one-minute keepalive and an eight-hour Garmin poll cannot share a single
+    threshold: the old fixed 120s only ever fitted the keepalive, so every module
+    job could stop firing without turning ``/health`` red. Each job now gets a
+    budget derived from its own schedule.
+    """
+    budgets = {KEEPALIVE_JOB_ID: 120.0}
+    for spec in _registry.values():
+        if spec.heartbeat:
+            budgets[spec.id] = _max_gap_seconds(spec, timezone) + _BUDGET_SLACK_SECONDS
+    return budgets
+
+
+async def _record_job_outcome(
+    session_factory: async_sessionmaker[AsyncSession], job_id: str, error: Optional[str]
+) -> None:
+    """Raise a ``warn`` alert when a job run failed; clear it when one succeeds.
+
+    Without this a broken sync is invisible: the heartbeat is stamped before the
+    run, so ``/health`` stays green while the data lake quietly stops filling.
+    One guard on the shared runner covers every registered job — ``hevy_service``
+    handles no errors at all today and ``garmin_service`` only auth/MFA ones.
+    """
+    from vitals.enums import Domain, Severity
+    from vitals.i18n import t
+    from vitals.services import alerts_service
+
+    alert_key = f"{JOB_FAILED_KEY_PREFIX}:{job_id}"
+    try:
+        async with session_factory() as session:
+            if error is None:
+                await alerts_service.resolve_by_key(session, alert_key=alert_key)
+            else:
+                await alerts_service.raise_alert(
+                    session,
+                    domain=Domain.SYSTEM.value,
+                    severity=Severity.WARN.value,
+                    message=t("alert.job_failed", job=job_id, error=error),
+                    alert_key=alert_key,
+                )
+            await session.commit()
+    except Exception:
+        # Alert bookkeeping must never break the tick that reported the failure.
+        logger.exception("Could not record outcome of scheduled job %s", job_id)
+
+
 def _make_runner(
     spec: JobSpec,
     session_factory: async_sessionmaker[AsyncSession],
@@ -94,8 +184,12 @@ def _make_runner(
                 await with_scheduler_lock(
                     redis, spec.id, spec.lock_ttl, spec.func, session_factory, redis
                 )
-        except Exception:
+        except Exception as exc:
             logger.exception("Scheduled job %s failed", spec.id)
+            detail = str(exc)[:200] or exc.__class__.__name__
+            await _record_job_outcome(session_factory, spec.id, detail)
+        else:
+            await _record_job_outcome(session_factory, spec.id, None)
 
     return _run
 

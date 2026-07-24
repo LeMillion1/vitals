@@ -201,6 +201,12 @@ async def log_weight_entry(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [v.to_dict() for v in e.violations]},
         )
+    except ValueError as e:
+        # The service validates ranges for every caller (MCP included); the form
+        # must surface that as a 400, not fall through to a 500.
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST, content={"error": str(e)}
+        )
 
     if "hx-request" in request.headers:
         response = RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
@@ -252,6 +258,10 @@ async def log_measurement_entry(
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [v.to_dict() for v in e.violations]},
+        )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST, content={"error": str(e)}
         )
 
     if "hx-request" in request.headers:
@@ -400,13 +410,6 @@ async def body_scan_upload(
     except LLMNotConfigured:
         return JSONResponse({"ok": False, "reason": "not_configured", "message": t("body.not_configured")})
 
-    # Persist the original sheet image for reference (served at /static/uploads/...).
-    ext = file_ext(file.filename) or ".bin"
-    file_key = f"body/{uuid.uuid4().hex}{ext}"
-    os.makedirs(os.path.join(STATIC_DIR, "uploads", "body"), exist_ok=True)
-    with open(os.path.join(STATIC_DIR, "uploads", file_key), "wb") as fh:
-        fh.write(contents)
-
     try:
         extracted = await body_scan_service.extract_from_file(
             contents,
@@ -419,6 +422,14 @@ async def body_scan_upload(
     except Exception as e:  # noqa: BLE001 — surface parse failures softly
         logger.warning("Body-scan extraction failed for %s: %s", file.filename, e)
         return JSONResponse({"ok": False, "reason": "error", "message": t("body.upload.error")})
+
+    # Persist the original sheet image for reference (served at /static/uploads/...).
+    # Written only once extraction succeeded — see the labs upload for why.
+    ext = file_ext(file.filename) or ".bin"
+    file_key = f"body/{uuid.uuid4().hex}{ext}"
+    os.makedirs(os.path.join(STATIC_DIR, "uploads", "body"), exist_ok=True)
+    with open(os.path.join(STATIC_DIR, "uploads", file_key), "wb") as fh:
+        fh.write(contents)
 
     raw_row = await raw_payload_service.upsert_raw_payload(
         db,
@@ -479,6 +490,11 @@ async def body_scan_confirm(
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [v.to_dict() for v in e.violations]},
+        )
+    except ValueError as e:
+        # A scan bridges its weight into the weight domain, which validates it.
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST, content={"error": str(e)}
         )
     return JSONResponse({"ok": True, "redirect": "/weight"})
 

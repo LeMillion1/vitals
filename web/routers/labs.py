@@ -92,17 +92,22 @@ async def add_result(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await labs_service.add_result(
-        db,
-        on_date=date_type.fromisoformat(date),
-        marker=marker.strip(),
-        value=value,
-        unit=unit,
-        ref_low=ref_low,
-        ref_high=ref_high,
-        lab_name=lab_name,
-        note=note,
-    )
+    try:
+        await labs_service.add_result(
+            db,
+            on_date=date_type.fromisoformat(date),
+            marker=marker.strip(),
+            value=value,
+            unit=unit,
+            ref_low=ref_low,
+            ref_high=ref_high,
+            lab_name=lab_name,
+            note=note,
+        )
+    except ValueError as e:
+        # The service validates for every caller (MCP included) — the form has to
+        # surface that as a 400 rather than fall through to a 500.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     await db.commit()
     return _redirect(request, f"?marker={marker.strip()}&added=1")
 
@@ -148,13 +153,6 @@ async def upload_document(
     except LLMNotConfigured:
         return JSONResponse({"ok": False, "reason": "not_configured", "message": t("labs.upload_not_configured")})
 
-    # Persist the original document for reference (served at /static/uploads/...).
-    ext = file_ext(file.filename) or ".bin"
-    file_key = f"labs/{uuid.uuid4().hex}{ext}"
-    os.makedirs(os.path.join(STATIC_DIR, "uploads", "labs"), exist_ok=True)
-    with open(os.path.join(STATIC_DIR, "uploads", file_key), "wb") as fh:
-        fh.write(contents)
-
     try:
         extracted = await labs_service.extract_from_file(
             contents,
@@ -167,6 +165,16 @@ async def upload_document(
     except Exception as e:  # noqa: BLE001 — surface parse failures softly
         logger.warning("Lab extraction failed for %s: %s", file.filename, e)
         return JSONResponse({"ok": False, "reason": "error", "message": t("labs.upload_error")})
+
+    # Persist the original document for reference (served at /static/uploads/...).
+    # Written only once extraction succeeded: on the failure branches above no DB
+    # row references the file, so writing first left unreferenced files piling up
+    # on disk with nothing pointing at them.
+    ext = file_ext(file.filename) or ".bin"
+    file_key = f"labs/{uuid.uuid4().hex}{ext}"
+    os.makedirs(os.path.join(STATIC_DIR, "uploads", "labs"), exist_ok=True)
+    with open(os.path.join(STATIC_DIR, "uploads", file_key), "wb") as fh:
+        fh.write(contents)
 
     raw_row = await raw_payload_service.upsert_raw_payload(
         db,
@@ -208,13 +216,16 @@ async def labs_confirm(
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date")
 
-    created = await labs_service.confirm_extracted(
-        db,
-        on_date=on_date,
-        markers=[m.model_dump() for m in payload.markers],
-        lab_name=payload.lab_name,
-        raw_payload_id=payload.raw_payload_id,
-    )
+    try:
+        created = await labs_service.confirm_extracted(
+            db,
+            on_date=on_date,
+            markers=[m.model_dump() for m in payload.markers],
+            lab_name=payload.lab_name,
+            raw_payload_id=payload.raw_payload_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     await labs_service.refresh_alerts(db)
     await db.commit()
     return JSONResponse({"ok": True, "created": len(created)})

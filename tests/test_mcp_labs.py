@@ -82,3 +82,41 @@ async def test_notes_for_labs_domain(db_session, session_factory, monkeypatch):
 
     notes = await mcp_router.get_notes(domain="labs")
     assert any(n.get("note") == "повторить через 3 мес" and n.get("_domain") == "labs" for n in notes)
+
+
+async def test_mcp_write_tools_reject_nonsense_without_crashing(
+    db_session, session_factory, monkeypatch
+):
+    """An LLM bypasses every HTML form, so the service validates and the tool has
+    to hand the model a readable error instead of an opaque failure it can't act
+    on. Covers the weight, measurement and lab write paths in one place."""
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+
+    absurd_weight = await mcp_router.log_weight(weight_kg=900, on_date="2026-06-10")
+    assert "error" in absurd_weight and "weight_kg" in absurd_weight["error"]
+
+    zero_weight = await mcp_router.log_weight(weight_kg=0, on_date="2026-06-10")
+    assert "error" in zero_weight
+
+    bad_measurement = await mcp_router.log_measurement(
+        neck_cm=400, on_date="2026-06-10"
+    )
+    assert "error" in bad_measurement and "neck_cm" in bad_measurement["error"]
+
+    bad_lab = await mcp_router.log_lab_result(
+        marker="Ferritin", value=1e12, on_date="2026-06-10"
+    )
+    assert "error" in bad_lab
+
+    # Nothing implausible was written.
+    from vitals.models.labs import LabResult
+    from vitals.models.weight import BodyMeasurement, WeightLog
+    from sqlalchemy import select
+
+    for model in (WeightLog, BodyMeasurement, LabResult):
+        rows = (await db_session.execute(select(model))).scalars().all()
+        assert rows == [], f"{model.__name__} should have no rows"
+
+    # A sane call on the same tools still works.
+    ok = await mcp_router.log_weight(weight_kg=88.0, on_date="2026-06-10")
+    assert "error" not in ok and ok["weight_kg"] == 88.0
