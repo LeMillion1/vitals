@@ -109,6 +109,14 @@ class LLMClient:
                 "LLM returned empty content (model=%s, finish_reason=%s)",
                 model or self.digest_model, choice.finish_reason,
             )
+        elif choice.finish_reason == "length":
+            # Truncation is silent otherwise: the caller gets a normal-looking
+            # string that stops mid-sentence (hit in prod on a reasoning model,
+            # whose thinking tokens eat the same max_tokens budget).
+            logger.warning(
+                "LLM completion truncated by max_tokens (model=%s, max_tokens=%s)",
+                model or self.digest_model, max_tokens,
+            )
         return content
 
     async def extract_json(

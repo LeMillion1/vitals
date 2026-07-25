@@ -25,6 +25,12 @@ from vitals.utils.timeutils import today_local
 
 logger = logging.getLogger(__name__)
 
+# Output budget for one narrative. Was 6000 and prod hit it: a reasoning model
+# (claude-opus-5) spends part of the same budget on thinking tokens, so the
+# visible digest got cut mid-sentence. Russian is ~2 chars/token, and a full
+# cross-domain digest runs 8-10k chars, so leave headroom for both.
+_DIGEST_MAX_TOKENS = 16000
+
 DIGEST_SYSTEM = """\
 Ты пишешь периодический разбор для пользователя дашборда здоровья Vitals.
 
@@ -473,12 +479,12 @@ async def generate_digest(
     prompt = build_prompt(context, lang=lang)
     system = DIGEST_SYSTEM_EN if lang == "en" else DIGEST_SYSTEM
 
-    content = await llm.complete_text(prompt, system=system, max_tokens=6000)
+    content = await llm.complete_text(prompt, system=system, max_tokens=_DIGEST_MAX_TOKENS)
     if not content:
         # Seen in prod: the upstream occasionally returns a blank message with no
         # error at all. One retry clears it in practice; if it's still empty,
         # fail loudly instead of silently persisting nothing.
-        content = await llm.complete_text(prompt, system=system, max_tokens=6000)
+        content = await llm.complete_text(prompt, system=system, max_tokens=_DIGEST_MAX_TOKENS)
     if not content:
         raise LLMEmptyResponse("LLM returned an empty digest narrative twice in a row")
 

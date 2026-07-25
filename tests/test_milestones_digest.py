@@ -458,6 +458,53 @@ async def test_generate_digest_raises_and_persists_nothing_when_llm_stays_blank(
     assert len(stored) == 0
 
 
+async def test_generate_digest_asks_for_enough_output_tokens(db_session):
+    """Regression: prod ran with max_tokens=6000 and the narrative came back cut
+    mid-sentence — a reasoning model spends part of the same budget on thinking."""
+
+    class RecordingLLM(FakeLLM):
+        def __init__(self):
+            super().__init__()
+            self.budgets = []
+
+        async def complete_text(self, prompt, *, system=None, max_tokens=None, **kw):
+            self.budgets.append(max_tokens)
+            return await super().complete_text(prompt, system=system, **kw)
+
+    llm = RecordingLLM()
+    await digest_service.generate_digest(db_session, llm, on_date=DAY)
+    assert llm.budgets and all(b >= 12000 for b in llm.budgets)
+
+
+async def test_complete_text_warns_when_the_answer_is_cut_by_the_token_limit(caplog):
+    """The SDK reports truncation only via finish_reason — without the log line a
+    half-written digest is indistinguishable from a finished one."""
+    import logging
+    from types import SimpleNamespace
+
+    from vitals.integrations.llm_client import LLMClient
+
+    class FakeCompletions:
+        async def create(self, **kw):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="Питание и восстановление рабо"),
+                        finish_reason="length",
+                    )
+                ]
+            )
+
+    client = LLMClient()
+    client._client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    with caplog.at_level(logging.WARNING, logger="vitals.integrations.llm_client"):
+        text = await client.complete_text("prompt", max_tokens=10)
+
+    assert text == "Питание и восстановление рабо"
+    assert any("truncated by max_tokens" in r.getMessage() for r in caplog.records)
+
+
 async def test_generate_digest_retries_once_and_recovers_from_a_blank_response(db_session):
     llm = FakeFlakyLLM()
     row = await digest_service.generate_digest(db_session, llm, on_date=DAY)
