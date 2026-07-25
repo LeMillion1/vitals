@@ -266,6 +266,30 @@ async def test_llm_export_is_clean(db_session):
     assert out["body_scans"] == []
 
 
+async def test_llm_export_includes_full_garmin_rows(db_session):
+    """The Garmin blocks used to be a hand-picked dozen fields out of ~45, so sleep
+    phases, HR zones and splits never reached the AI export. Both rows now go out
+    whole — minus ids/plumbing."""
+    await _seed(db_session)
+    out = await export_llm(db_session)
+
+    daily = out["garmin_daily"][0]
+    assert daily["date"] == "2026-04-29"
+    assert daily["sleep_seconds"] == 27000
+    assert [s["stage"] for s in daily["sleep_stages"]] == ["light", "deep"]
+    assert daily["breathing_events"][0]["value"] == 0
+    # Plumbing stays out.
+    assert not {"id", "raw_payload_id", "domain", "source"} & set(daily)
+
+    act = out["garmin_activities"][0]
+    assert act["activity_type"] == "running"
+    assert act["elevation_gain_m"] == 42.0
+    assert act["training_effect_aerobic"] == 3.4
+    assert act["hr_zone_seconds"][0]["secs"] == 120.0
+    assert act["splits"][0]["distance_m"] == 1000.0
+    assert not {"id", "external_id", "raw_payload_id"} & set(act)
+
+
 async def test_llm_export_includes_body_scans(db_session):
     """D3: the body_comp domain (BIA/InBody scans + every captured metric) must
     appear in the curated LLM export — previously it was dropped entirely."""

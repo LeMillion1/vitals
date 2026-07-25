@@ -307,6 +307,28 @@ def _compact(row: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in row.items() if v is not None and v != ""}
 
 
+# Plumbing an LLM has no use for: ids, FK links and row bookkeeping.
+_LLM_SKIP_COLUMNS = frozenset(
+    {"id", "raw_payload_id", "domain", "source", "external_id", "created_at", "updated_at"}
+)
+
+
+def _row_dump(obj: Any) -> dict[str, Any]:
+    """Every mapped column of a row except the plumbing above.
+
+    Used for the wide Garmin tables, where hand-listing fields meant two thirds of
+    the captured metrics never reached the export — and a new column would have
+    silently missed it too.
+    """
+    return _compact(
+        {
+            name: _serialize_value(getattr(obj, name))
+            for name in obj.__table__.columns.keys()
+            if name not in _LLM_SKIP_COLUMNS
+        }
+    )
+
+
 async def export_llm(session: AsyncSession) -> dict[str, Any]:
     """Curated, flat, secret-free digest grouped by domain — paste-into-chat ready."""
     out: dict[str, Any] = {"profile": _llm_profile()}
@@ -528,47 +550,20 @@ async def export_llm(session: AsyncSession) -> dict[str, Any]:
     # Workouts — rebuild the Hevy tree (workout → exercises → sets) without ids.
     out["workouts"] = await _llm_workouts(session)
 
-    # Garmin daily — wide recovery/activity row, compacted.
+    # Garmin — the whole daily row (sleep phases, HRV, stress, load, …) and the
+    # whole activity row (HR zones, splits, training effect, …). The tall
+    # ``garmin_intraday`` sample table stays out: ~3k samples a day would bury the
+    # rest of the digest, and the daily row already carries its summaries.
     garmin = (
         await session.execute(select(GarminDaily).order_by(GarminDaily.date))
     ).scalars().all()
-    out["garmin_daily"] = [
-        _compact(
-            {
-                "date": g.date.isoformat(),
-                "sleep_score": g.sleep_score,
-                "sleep_hours": round(g.sleep_seconds / 3600, 2) if g.sleep_seconds else None,
-                "resting_hr": g.resting_hr,
-                "hrv_avg": g.hrv_avg,
-                "avg_stress": g.avg_stress,
-                "body_battery_high": g.body_battery_high,
-                "body_battery_low": g.body_battery_low,
-                "steps": g.steps,
-                "active_calories": g.active_calories,
-                "total_calories": g.total_calories,
-                "training_readiness": g.training_readiness,
-                "vo2max": g.vo2max,
-            }
-        )
-        for g in garmin
-    ]
+    out["garmin_daily"] = [_row_dump(g) for g in garmin]
     activities = (
-        await session.execute(select(GarminActivity).order_by(GarminActivity.date))
-    ).scalars().all()
-    out["garmin_activities"] = [
-        _compact(
-            {
-                "date": a.date.isoformat(),
-                "type": a.activity_type,
-                "name": a.name,
-                "duration_min": round(a.duration_seconds / 60, 1) if a.duration_seconds else None,
-                "distance_m": a.distance_m,
-                "calories": a.calories,
-                "avg_hr": a.avg_hr,
-            }
+        await session.execute(
+            select(GarminActivity).order_by(GarminActivity.date, GarminActivity.id)
         )
-        for a in activities
-    ]
+    ).scalars().all()
+    out["garmin_activities"] = [_row_dump(a) for a in activities]
 
     # Nutrition.
     meals = (
