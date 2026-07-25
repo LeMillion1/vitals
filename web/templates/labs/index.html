@@ -68,12 +68,12 @@
             <form action="/labs/result" method="POST" class="space-y-4" hx-disabled-elt="find button[type='submit']">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="v-label">{{ t("common.date") }}</label>
-                        <input type="date" name="date" value="{{ today }}" required class="v-input">
+                        <label for="labs-date" class="v-label">{{ t("common.date") }}</label>
+                        <input id="labs-date" type="date" name="date" value="{{ today }}" required class="v-input">
                     </div>
                     <div>
-                        <label class="v-label">{{ t("labs.marker") }}</label>
-                        <input type="text" name="marker" list="marker-presets" required placeholder="Ferritin" class="v-input">
+                        <label for="labs-marker" class="v-label">{{ t("labs.marker") }}</label>
+                        <input id="labs-marker" type="text" name="marker" list="marker-presets" required placeholder="Ferritin" class="v-input">
                         <datalist id="marker-presets">
                             {% for m in markers %}<option value="{{ m.name }}"></option>{% endfor %}
                         </datalist>
@@ -81,26 +81,26 @@
                 </div>
                 <div class="grid grid-cols-3 gap-3">
                     <div>
-                        <label class="v-label">{{ t("labs.value") }}</label>
-                        <input type="number" name="value" step="any" required placeholder="95" class="v-input">
+                        <label for="labs-value" class="v-label">{{ t("labs.value") }}</label>
+                        <input inputmode="decimal" id="labs-value" type="number" name="value" step="any" required placeholder="95" class="v-input">
                     </div>
                     <div>
-                        <label class="v-label">{{ t("labs.unit") }}</label>
-                        <input type="text" name="unit" placeholder="ng/mL" class="v-input">
+                        <label for="labs-unit" class="v-label">{{ t("labs.unit") }}</label>
+                        <input id="labs-unit" type="text" name="unit" placeholder="ng/mL" class="v-input">
                     </div>
                     <div>
-                        <label class="v-label">{{ t("labs.lab_name") }}</label>
-                        <input type="text" name="lab_name" placeholder="Synevo" class="v-input">
+                        <label for="labs-lab_name" class="v-label">{{ t("labs.lab_name") }}</label>
+                        <input id="labs-lab_name" type="text" name="lab_name" placeholder="Synevo" class="v-input">
                     </div>
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="v-label">{{ t("labs.ref_low") }}</label>
-                        <input type="number" name="ref_low" step="any" placeholder="30" class="v-input">
+                        <label for="labs-ref_low" class="v-label">{{ t("labs.ref_low") }}</label>
+                        <input inputmode="decimal" id="labs-ref_low" type="number" name="ref_low" step="any" placeholder="30" class="v-input">
                     </div>
                     <div>
-                        <label class="v-label">{{ t("labs.ref_high") }}</label>
-                        <input type="number" name="ref_high" step="any" placeholder="400" class="v-input">
+                        <label for="labs-ref_high" class="v-label">{{ t("labs.ref_high") }}</label>
+                        <input inputmode="decimal" id="labs-ref_high" type="number" name="ref_high" step="any" placeholder="400" class="v-input">
                     </div>
                 </div>
                 <button type="submit" class="v-btn-ghost w-full">{{ t("labs.add_result") }}</button>
@@ -214,12 +214,12 @@
             <p class="v-text-micro" style="color: var(--muted)">{{ t("labs.preview_hint") }}</p>
             <div class="grid grid-cols-2 gap-3">
                 <div>
-                    <label class="v-label">{{ t("common.date") }}</label>
-                    <input type="date" x-model="lqLab.date" class="v-input">
+                    <label for="labs-field" class="v-label">{{ t("common.date") }}</label>
+                    <input id="labs-field" type="date" x-model="lqLab.date" class="v-input">
                 </div>
                 <div>
-                    <label class="v-label">{{ t("labs.lab_name") }}</label>
-                    <input type="text" x-model="lqLab.lab_name" placeholder="Synevo" class="v-input">
+                    <label for="labs-field-2" class="v-label">{{ t("labs.lab_name") }}</label>
+                    <input id="labs-field-2" type="text" x-model="lqLab.lab_name" placeholder="Synevo" class="v-input">
                 </div>
             </div>
             <div class="max-h-[50vh] overflow-y-auto v-card-inset">
@@ -238,11 +238,11 @@
                         <template x-for="(row, i) in lqRows" :key="i">
                             <tr>
                                 <td><input type="text" x-model="row.marker" class="v-input" style="min-width: 9rem"></td>
-                                <td><input type="number" step="any" x-model.number="row.value" class="v-input" style="width: 6rem"></td>
+                                <td><input inputmode="decimal" type="number" step="any" x-model.number="row.value" class="v-input" style="width: 6rem"></td>
                                 <td><input type="text" x-model="row.unit" class="v-input" style="width: 4.5rem"></td>
-                                <td><input type="number" step="any" x-model.number="row.ref_low" class="v-input" style="width: 5rem"></td>
-                                <td><input type="number" step="any" x-model.number="row.ref_high" class="v-input" style="width: 5rem"></td>
-                                <td class="text-right"><button type="button" class="v-icon-btn danger"
+                                <td><input inputmode="decimal" type="number" step="any" x-model.number="row.ref_low" class="v-input" style="width: 5rem"></td>
+                                <td><input inputmode="decimal" type="number" step="any" x-model.number="row.ref_high" class="v-input" style="width: 5rem"></td>
+                                <td class="text-right"><button aria-label="{{ t('common.delete') }}" type="button" class="v-icon-btn danger"
                                         @click="lqRemoveRow(i)" title="{{ t('common.delete') }}">✕</button></td>
                             </tr>
                         </template>

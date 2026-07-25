@@ -42,35 +42,71 @@ class ModuleSpec:
     key: str
     category: str       # "core" | "optional"
     route: str          # URL prefix / nav href
+    rubric: str = ""    # "health" | "markers" | "lifestyle"; "" = not in nav
+    bottom_nav: bool = False   # phone: bottom bar (else the "More" drawer)
+    eyebrow: str = ""   # overrides the rubric's masthead eyebrow for one section
     # No label here on purpose: every surface renders ``t("nav." + key)``, so a
     # label field would be a second, silently-stale copy of the i18n string.
 
 
-# Ordered registry. ``key`` == route name == nav anchor. Order = render order.
+# Rubric order = the order the sidebar rail renders its groups, and the number
+# in the masthead eyebrow ("SECTION 02 · Markers"). Label key: ``masthead.rubric.<id>``.
+NAV_RUBRICS: tuple[str, ...] = ("health", "markers", "lifestyle")
+
+# Ordered registry — the ONE source of truth for navigation. ``key`` == route
+# name == nav anchor == i18n suffix. Order within a rubric = render order, so
+# entries are grouped by rubric rather than by core/optional (the settings card
+# filters on ``category`` and doesn't care).
 MODULE_REGISTRY: dict[str, ModuleSpec] = {
     m.key: m
     for m in (
-        # ── Core — always on, toggle locked ──────────────────────────────────
-        ModuleSpec("weight", "core", "/weight"),
-        ModuleSpec("garmin", "core", "/garmin"),
-        ModuleSpec("labs", "core", "/labs"),
-        ModuleSpec("reports", "core", "/reports"),
-        ModuleSpec("charts", "core", "/charts"),
-        # ── Optional — user-toggleable ───────────────────────────────────────
-        ModuleSpec("timeline", "optional", "/timeline"),
-        ModuleSpec("glp1", "optional", "/glp1"),
-        ModuleSpec("hevy", "optional", "/hevy"),
-        ModuleSpec("supplements", "optional", "/supplements"),
-        ModuleSpec("hrt", "optional", "/hrt"),
-        ModuleSpec("genetics", "optional", "/genetics"),
-        ModuleSpec("skincare", "optional", "/skincare"),
-        ModuleSpec("nutrition", "optional", "/nutrition"),
-        ModuleSpec("interactions", "optional", "/interactions"),
+        # ── Health ───────────────────────────────────────────────────────────
+        ModuleSpec("weight", "core", "/weight", "health", bottom_nav=True),
+        ModuleSpec("garmin", "core", "/garmin", "health", bottom_nav=True),
+        ModuleSpec("hevy", "optional", "/hevy", "health", bottom_nav=True),
+        ModuleSpec("nutrition", "optional", "/nutrition", "health"),
+        ModuleSpec("timeline", "optional", "/timeline", "health"),
+        ModuleSpec("reports", "core", "/reports", "health", eyebrow="digest"),
+        ModuleSpec("charts", "core", "/charts", "health"),
+        # ── Markers ──────────────────────────────────────────────────────────
+        ModuleSpec("glp1", "optional", "/glp1", "markers"),
+        ModuleSpec("hrt", "optional", "/hrt", "markers"),
+        ModuleSpec("labs", "core", "/labs", "markers"),
+        ModuleSpec("genetics", "optional", "/genetics", "markers"),
+        # ── Lifestyle ────────────────────────────────────────────────────────
+        ModuleSpec("supplements", "optional", "/supplements", "lifestyle", bottom_nav=True),
+        ModuleSpec("skincare", "optional", "/skincare", "lifestyle"),
+        ModuleSpec("interactions", "optional", "/interactions", "lifestyle"),
         # Body composition (InBody / МедАсс) — a tab inside /weight, not its own
-        # nav item; the toggle just shows/hides that tab and its routes.
+        # nav item; the toggle just shows/hides that tab and its routes. No
+        # rubric: it never appears in navigation.
         ModuleSpec("body_comp", "optional", "/weight"),
     )
 }
+
+
+def nav_modules(
+    enabled: Optional[dict[str, bool]] = None,
+    *,
+    rubric: Optional[str] = None,
+    bottom: Optional[bool] = None,
+) -> list[ModuleSpec]:
+    """Navigation entries visible for ``enabled``, in registry order.
+
+    Core modules are always visible; Optional ones only when their key is on.
+    ``rubric``/``bottom`` narrow the result to one rail group or to the phone's
+    bottom bar (``bottom=False`` → the "More" drawer). Registered as a Jinja
+    global so the rail, the tab bar and the mobile nav all read this one list.
+    """
+    em = enabled or {}
+    return [
+        s
+        for s in MODULE_REGISTRY.values()
+        if s.rubric
+        and (s.category == "core" or em.get(s.key))
+        and (rubric is None or s.rubric == rubric)
+        and (bottom is None or s.bottom_nav == bottom)
+    ]
 
 CORE_KEYS: frozenset[str] = frozenset(
     k for k, s in MODULE_REGISTRY.items() if s.category == "core"

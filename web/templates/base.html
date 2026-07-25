@@ -421,8 +421,7 @@
 <body class="v-app-shell flex flex-col overflow-hidden select-none ui-masthead" x-data="{ mobileMenuOpen: false }" hx-boost="true">
     <div id="top-progress-bar" class="v-progress-bar"></div>
 
-    {% set current_path = request.url.path if request else '' %}
-    {% set em = request.state.enabled_modules or {} %}
+    {% from "partials/nav_mobile.html" import mobile_bottom_nav, mobile_drawer_links with context %}
     <!-- Masthead: compact mobile top bar; the desktop rail is included below -->
     {% if username %}
     <header class="mh-topbar">
@@ -489,61 +488,7 @@
     </div>
 
     {% if username %}
-    <!-- Mobile Bottom Navigation — columns follow the enabled modules so optional
-         slots (Workouts, Supplements) never leave empty cells in a fixed grid.
-         Fixed slots: Weight, Organism, More (3) + whichever optionals are on. -->
-    {% set bottom_count = 3 + (1 if em.get('hevy') else 0) + (1 if em.get('supplements') else 0) %}
-    <nav class="md:hidden v-bottom-nav bg-[rgba(28,25,32,0.95)] backdrop-blur-md border-t border-[var(--line)] grid items-center px-1"
-        style="grid-template-columns: repeat({{ bottom_count }}, minmax(0, 1fr)); padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(3.5rem + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
-        <!-- Weight -->
-        <a href="/weight"
-            class="flex flex-col items-center justify-center gap-1 h-full py-1 text-center {% if current_path.startswith('/weight') %}text-[var(--accent)]{% else %}text-[var(--muted)] hover:text-[var(--fg-2)]{% endif %}">
-            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M7 20l10 0" /><path d="M6 6l6 -1l6 1" /><path d="M12 3l0 17" /><path d="M9 12l-3 -6l-3 6a3 3 0 0 0 6 0" /><path d="M21 12l-3 -6l-3 6a3 3 0 0 0 6 0" />
-            </svg>
-            <span class="text-[0.62rem] font-bold">{{ t("nav.weight") }}</span>
-        </a>
-
-        <!-- Organism -->
-        <a href="/garmin"
-            class="flex flex-col items-center justify-center gap-1 h-full py-1 text-center {% if current_path.startswith('/garmin') %}text-[var(--accent)]{% else %}text-[var(--muted)] hover:text-[var(--fg-2)]{% endif %}">
-            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 12h4.5l1.5 -6l4 12l2 -9l1.5 3h4.5" />
-            </svg>
-            <span class="text-[0.62rem] font-bold">{{ t("nav.organism") }}</span>
-        </a>
-
-        <!-- Workouts -->
-        {% if em.get('hevy') %}
-        <a href="/hevy"
-            class="flex flex-col items-center justify-center gap-1 h-full py-1 text-center {% if current_path.startswith('/hevy') %}text-[var(--accent)]{% else %}text-[var(--muted)] hover:text-[var(--fg-2)]{% endif %}">
-            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M2 12h1" /><path d="M6 8h-2a1 1 0 0 0 -1 1v6a1 1 0 0 0 1 1h2" /><path d="M6 7v10a1 1 0 0 0 1 1h1a1 1 0 0 0 1 -1v-10a1 1 0 0 0 -1 -1h-1a1 1 0 0 0 -1 1z" /><path d="M9 12h6" /><path d="M15 7v10a1 1 0 0 0 1 1h1a1 1 0 0 0 1 -1v-10a1 1 0 0 0 -1 -1h-1a1 1 0 0 0 -1 1z" /><path d="M18 8h2a1 1 0 0 1 1 1v6a1 1 0 0 1 -1 1h-2" /><path d="M22 12h-1" />
-            </svg>
-            <span class="text-[0.62rem] font-bold">{{ t("nav.workouts") }}</span>
-        </a>
-        {% endif %}
-
-        <!-- Supplements -->
-        {% if em.get('supplements') %}
-        <a href="/supplements"
-            class="flex flex-col items-center justify-center gap-1 h-full py-1 text-center {% if current_path.startswith('/supplements') %}text-[var(--accent)]{% else %}text-[var(--muted)] hover:text-[var(--fg-2)]{% endif %}">
-            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M8 8m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0" /><path d="M17 17m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" /><path d="M4.5 4.5l7 7" /><path d="M19.5 14.5l-5 5" />
-            </svg>
-            <span class="text-[0.62rem] font-bold">{{ t("nav.supplements") }}</span>
-        </a>
-        {% endif %}
-
-        <!-- More -->
-        <button @click="mobileMenuOpen = true"
-            class="flex flex-col items-center justify-center gap-1 h-full py-1 text-center text-[var(--muted)] hover:text-[var(--fg-2)] focus:outline-none">
-            <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-            <span class="text-[0.62rem] font-bold">{{ t("nav.more") }}</span>
-        </button>
-    </nav>
+    {{ mobile_bottom_nav() }}
 
     <!-- Mobile Drawer/Overlay -->
     <div x-show="mobileMenuOpen" x-transition:enter="transition ease-out duration-300"
@@ -561,7 +506,7 @@
             <!-- Close Button/Indicator -->
             <div class="flex justify-between items-center pb-3 border-b border-[var(--line)]">
                 <span class="v-text-card">{{ t("nav.menu_title") }}</span>
-                <button @click="mobileMenuOpen = false" class="v-icon-btn">
+                <button aria-label="{{ t('common.close') }}" title="{{ t('common.close') }}" @click="mobileMenuOpen = false" class="v-icon-btn">
                     <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
                             d="M6 18L18 6M6 6l12 12" />
@@ -569,93 +514,7 @@
                 </button>
             </div>
 
-            <!-- Navigation Links inside Drawer -->
-            <div class="grid grid-cols-2 gap-4">
-                {% if em.get('skincare') %}
-                <a href="/skincare" @click="mobileMenuOpen = false"
-                    class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-                    <svg class="h-6 w-6 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M7.502 19.423c2.602 2.105 6.395 2.105 8.996 0c2.602 -2.105 3.262 -5.708 1.566 -8.546l-4.89 -7.26c-.42 -.625 -1.287 -.803 -1.936 -.397a1.376 1.376 0 0 0 -.41 .397l-4.893 7.26c-1.695 2.838 -1.035 6.441 1.567 8.546z" />
-                    </svg>
-                    <span class="text-xs font-bold text-[var(--fg-2)]">{{ t("nav.skincare") }}</span>
-                </a>
-                {% endif %}
-                {% if em.get('nutrition') %}
-                <a href="/nutrition" @click="mobileMenuOpen = false"
-                    class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-                    <svg class="h-6 w-6 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M4 11h16a1 1 0 0 1 1 1v.5c0 1.5 -2.517 5.573 -4 6.5v1a1 1 0 0 1 -1 1h-8a1 1 0 0 1 -1 -1v-1c-1.687 -1.054 -4 -5 -4 -6.5v-.5a1 1 0 0 1 1 -1z" /><path d="M18.5 11c.351 -1.017 .426 -2.236 .5 -3.714v-1.286h-2.256c-2.83 0 -4.616 .804 -5.64 2.076" /><path d="M5.255 11.008a12.204 12.204 0 0 1 -.255 -2.008v-1h1.755c.98 0 1.801 .124 2.479 .35" /><path d="M8 8l1 -4l4 2.5" /><path d="M13 11v-.5a2.5 2.5 0 1 0 -5 0v.5" />
-                    </svg>
-                    <span class="text-xs font-bold text-[var(--fg-2)]">{{ t("nav.nutrition") }}</span>
-                </a>
-                {% endif %}
-                {% if em.get('timeline') %}
-                <a href="/timeline" @click="mobileMenuOpen = false"
-                    class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-                    <svg class="h-6 w-6 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M4 16l6 -7l5 5l5 -6" /><path d="M15 14m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M10 9m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M4 16m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M20 8m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
-                    </svg>
-                    <span class="text-xs font-bold text-[var(--fg-2)]">{{ t("nav.timeline") }}</span>
-                </a>
-                {% endif %}
-                <a href="/reports" @click="mobileMenuOpen = false"
-                    class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-                    <svg class="h-6 w-6 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm0 -12a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm-7 12a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z" />
-                    </svg>
-                    <span class="text-xs font-bold text-[var(--fg-2)]">{{ t("nav.reports") }}</span>
-                </a>
-                <a href="/charts" @click="mobileMenuOpen = false"
-                    class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-                    <svg class="h-6 w-6 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M4 19l16 0" /><path d="M4 15l4 -6l4 2l4 -5l4 4" />
-                    </svg>
-                    <span class="text-xs font-bold text-[var(--fg-2)]">{{ t("nav.charts") }}</span>
-                </a>
-                {% if em.get('glp1') %}
-                <a href="/glp1" @click="mobileMenuOpen = false"
-                    class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-                    <svg class="h-6 w-6 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M17 3l4 4" /><path d="M19 5l-4.5 4.5" /><path d="M11.5 6.5l6 6" /><path d="M16.5 11.5l-6.5 6.5h-4v-4l6.5 -6.5" /><path d="M7.5 12.5l1.5 1.5" /><path d="M10.5 9.5l1.5 1.5" /><path d="M3 21l3 -3" />
-                    </svg>
-                    <span class="text-xs font-bold text-[var(--fg-2)]">{{ t("nav.glp1") }}</span>
-                </a>
-                {% endif %}
-                {% if em.get('hrt') %}
-                <a href="/hrt" @click="mobileMenuOpen = false"
-                    class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-                    <svg class="h-6 w-6 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 20l6-6M14 4l6 6M15 5l4 4M9 11l4 4M13 7l4 4" />
-                    </svg>
-                    <span class="text-xs font-bold text-[var(--fg-2)]">{{ t("nav.hrt") }}</span>
-                </a>
-                {% endif %}
-                <a href="/labs" @click="mobileMenuOpen = false"
-                    class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-                    <svg class="h-6 w-6 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M20 8.04l-12.122 12.124a2.857 2.857 0 1 1 -4.041 -4.04l12.122 -12.124" /><path d="M7 13h8" /><path d="M19 15l1.5 1.6a2 2 0 1 1 -3 0l1.5 -1.6z" /><path d="M15 3l6 6" />
-                    </svg>
-                    <span class="text-xs font-bold text-[var(--fg-2)]">{{ t("nav.labs") }}</span>
-                </a>
-                {% if em.get('genetics') %}
-                <a href="/genetics" @click="mobileMenuOpen = false"
-                    class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-                    <svg class="h-6 w-6 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M17 3v1c-.01 3.352 -1.68 6.023 -5.008 8.014c-3.328 1.99 3.336 -2 .008 -.014c-3.328 1.99 -5 4.662 -5.008 8.014v1" /><path d="M17 21.014v-1c-.01 -3.352 -1.68 -6.023 -5.008 -8.014c-3.328 -1.99 3.336 2 .008 .014c-3.328 -1.991 -5 -4.662 -5.008 -8.014v-1" /><path d="M7 4h10" /><path d="M7 20h10" /><path d="M8 8h8" /><path d="M8 16h8" />
-                    </svg>
-                    <span class="text-xs font-bold text-[var(--fg-2)]">{{ t("nav.genetics") }}</span>
-                </a>
-                {% endif %}
-                {% if em.get('interactions') %}
-                <a href="/interactions" @click="mobileMenuOpen = false"
-                    class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-                    <svg class="h-6 w-6 text-[var(--fg-2)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M7 10h14l-4 -4" /><path d="M17 14h-14l4 4" />
-                    </svg>
-                    <span class="text-xs font-bold text-[var(--fg-2)]">{{ t("nav.interactions") }}</span>
-                </a>
-                {% endif %}
-            </div>
+            {{ mobile_drawer_links() }}
 
             <!-- Settings inside Drawer — the masthead rail (which carries the gear)
                  is hidden on mobile and the mobile top bar has no gear, so without

@@ -144,6 +144,7 @@ _EN: dict[str, str] = {
     # ── Common ────────────────────────────────────────────────────────────
     "common.save": "Save",
     "common.cancel": "Cancel",
+    "common.close": "Close",
     "common.delete": "Delete",
     "common.edit": "Edit",
     "common.date": "Date",
@@ -1284,6 +1285,7 @@ _RU: dict[str, str] = {
     # ── Common ────────────────────────────────────────────────────────────
     "common.save": "Сохранить",
     "common.cancel": "Отмена",
+    "common.close": "Закрыть",
     "common.delete": "Удалить",
     "common.edit": "Редактировать",
     "common.date": "Дата",

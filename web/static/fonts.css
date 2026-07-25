@@ -5,7 +5,16 @@
    actually used across the app, matching what was previously requested from
    Google Fonts. Shared by vitals.css and oauth_authorize.html (which stays
    otherwise standalone, so this is its own small stylesheet rather than
-   folded into vitals.css). */
+   folded into vitals.css).
+
+   CYRILLIC (U1): Inter ships cyrillic + cyrillic-ext. Outfit and Bricolage
+   Grotesque DO NOT — upstream has no Cyrillic subset at all, so there is
+   nothing to vendor and a Russian heading can never be drawn in them. Left
+   alone, the browser picked an arbitrary *system* font for the Cyrillic run
+   (different on every device) while the digits beside it still came from
+   Outfit. Every display stack therefore names 'Inter' right after the display
+   family: Latin and digits stay in Outfit/Bricolage, Cyrillic falls to a font
+   we actually ship. Do not "add the missing subsets" — they don't exist. */
 @font-face {
     font-family: 'Inter';
     font-style: normal;

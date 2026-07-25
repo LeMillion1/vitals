@@ -27,40 +27,40 @@
     <div x-show=" showForm" x-cloak class="v-card p-6 space-y-4">
                     <form action="/timeline" method="POST" class="space-y-4">
                         <div>
-                            <label class="v-label">{{ t("timeline.title_label") }}</label>
-                            <input type="text" name="title" required maxlength="128"
+                            <label for="timeline-title" class="v-label">{{ t("timeline.title_label") }}</label>
+                            <input id="timeline-title" type="text" name="title" required maxlength="128"
                                 placeholder="{{ t('timeline.title_placeholder') }}" class="v-input">
                         </div>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
-                                <label class="v-label">{{ t("common.date") }}</label>
-                                <input type="date" name="date" value="{{ today }}" required class="v-input">
+                                <label for="timeline-date" class="v-label">{{ t("common.date") }}</label>
+                                <input id="timeline-date" type="date" name="date" value="{{ today }}" required class="v-input">
                             </div>
                             <div>
-                                <label class="v-label">{{ t("timeline.end_date_label") }}</label>
-                                <input type="date" name="end_date" class="v-input">
+                                <label for="timeline-end_date" class="v-label">{{ t("timeline.end_date_label") }}</label>
+                                <input id="timeline-end_date" type="date" name="end_date" class="v-input">
                                 <p class="v-text-micro mt-1">{{ t("timeline.end_date_hint") }}</p>
                             </div>
                         </div>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
-                                <label class="v-label">{{ t("timeline.kind_label") }}</label>
-                                <select name="kind" class="v-select">
+                                <label for="timeline-kind" class="v-label">{{ t("timeline.kind_label") }}</label>
+                                <select id="timeline-kind" name="kind" class="v-select">
                                     {% for k in kinds %}<option value="{{ k }}">{{ t("enum.annotation_kind." + k) }}
                                     </option>{% endfor %}
                                 </select>
                             </div>
                             <div>
-                                <label class="v-label">{{ t("timeline.domain_label") }}</label>
-                                <select name="domain" class="v-select">
+                                <label for="timeline-domain" class="v-label">{{ t("timeline.domain_label") }}</label>
+                                <select id="timeline-domain" name="domain" class="v-select">
                                     {% for d in domains %}<option value="{{ d }}">{{ t("enum.domain." + d) }}</option>{%
                                     endfor %}
                                 </select>
                             </div>
                         </div>
                         <div>
-                            <label class="v-label">{{ t("common.note_optional") }}</label>
-                            <textarea name="note" rows="2" class="v-textarea"></textarea>
+                            <label for="timeline-note" class="v-label">{{ t("common.note_optional") }}</label>
+                            <textarea id="timeline-note" name="note" rows="2" class="v-textarea"></textarea>
                         </div>
                         <button type="submit" class="v-btn w-full">{{ t("timeline.save") }}</button>
                     </form>
@@ -97,7 +97,7 @@
             {% if e.source == 'manual' %}
             <form action="/timeline/{{ e.ref.split(':')[1] }}/delete" method="POST" class="inline"
                 data-confirm="{{ t('timeline.confirm_delete') }}">
-                <button type="submit" class="v-icon-btn danger" title="{{ t('common.delete') }}">
+                <button aria-label="{{ t('common.delete') }}" type="submit" class="v-icon-btn danger" title="{{ t('common.delete') }}">
                     <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                             d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />

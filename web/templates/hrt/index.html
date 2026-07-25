@@ -84,23 +84,23 @@
                       class="grid grid-cols-2 md:grid-cols-5 gap-3 items-end pt-2 pb-1">
                     {% if flat %}
                     <div>
-                        <label class="v-label">{{ t("hrt.dose") }}</label>
-                        <input type="number" name="dose" step="0.001" min="0" value="{{ it.schedule[0].dose }}" required class="v-input">
+                        <label for="hrt-dose" class="v-label">{{ t("hrt.dose") }}</label>
+                        <input inputmode="decimal" id="hrt-dose" type="number" name="dose" step="0.001" min="0" value="{{ it.schedule[0].dose }}" required class="v-input">
                     </div>
                     <div>
-                        <label class="v-label">{{ t("hrt.interval_days") }}</label>
-                        <input type="number" name="interval_days" step="0.5" min="0.5" value="{{ it.schedule[0].interval_days }}" required class="v-input">
+                        <label for="hrt-interval_days" class="v-label">{{ t("hrt.interval_days") }}</label>
+                        <input inputmode="decimal" id="hrt-interval_days" type="number" name="interval_days" step="0.5" min="0.5" value="{{ it.schedule[0].interval_days }}" required class="v-input">
                     </div>
                     <div>
-                        <label class="v-label">{{ t("hrt.duration_days") }}</label>
-                        <input type="number" name="duration_days" step="1" min="1" value="{{ it.schedule[0].get('duration_days') or '' }}" class="v-input">
+                        <label for="hrt-duration_days" class="v-label">{{ t("hrt.duration_days") }}</label>
+                        <input inputmode="numeric" id="hrt-duration_days" type="number" name="duration_days" step="1" min="1" value="{{ it.schedule[0].get('duration_days') or '' }}" class="v-input">
                     </div>
                     {% else %}
                     <p class="v-text-body col-span-2 md:col-span-3">{{ t("hrt.item_complex_note") }}</p>
                     {% endif %}
                     <div>
-                        <label class="v-label">{{ t("hrt.start_week") }}</label>
-                        <input type="number" name="start_week" step="1" min="1" value="{{ it.start_offset_days // 7 + 1 }}" class="v-input">
+                        <label for="hrt-start_week" class="v-label">{{ t("hrt.start_week") }}</label>
+                        <input inputmode="numeric" id="hrt-start_week" type="number" name="start_week" step="1" min="1" value="{{ it.start_offset_days // 7 + 1 }}" class="v-input">
                     </div>
                     <button type="submit" class="v-btn">{{ t("hrt.save") }}</button>
                 </form>
@@ -108,33 +108,39 @@
             {% endfor %}
         </div>
         {% else %}
-        <p class="v-text-body">{{ t("hrt.no_plan") }}</p>
+        <div class="v-empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0h-3.5l-1 2h-5l-1-2H4m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5" />
+            </svg>
+            <p>{{ t("hrt.no_plan") }}</p>
+        </div>
         {% endif %}
 
         <!-- Add compound to the active cycle -->
         <form method="post" action="/hrt/cycle/{{ active_cycle.id }}/item"
               class="grid grid-cols-2 md:grid-cols-6 gap-3 items-end border-t border-[var(--line)] pt-4">
             <div class="col-span-2 md:col-span-1">
-                <label class="v-label">{{ t("hrt.compound") }}</label>
-                <select name="compound_key" required class="v-select">
+                <label for="hrt-compound_key" class="v-label">{{ t("hrt.compound") }}</label>
+                <select id="hrt-compound_key" name="compound_key" required class="v-select">
                     {% for c in compounds %}<option value="{{ c.key }}">{{ compound_names.get(c.key, c.name) }}</option>{% endfor %}
                 </select>
             </div>
             <div>
-                <label class="v-label">{{ t("hrt.dose") }}</label>
-                <input type="number" name="dose" step="0.001" min="0" required class="v-input">
+                <label for="hrt-dose-2" class="v-label">{{ t("hrt.dose") }}</label>
+                <input inputmode="decimal" id="hrt-dose-2" type="number" name="dose" step="0.001" min="0" required class="v-input">
             </div>
             <div>
-                <label class="v-label">{{ t("hrt.interval_days") }}</label>
-                <input type="number" name="interval_days" step="0.5" min="0.5" value="3.5" required class="v-input">
+                <label for="hrt-interval_days-2" class="v-label">{{ t("hrt.interval_days") }}</label>
+                <input inputmode="decimal" id="hrt-interval_days-2" type="number" name="interval_days" step="0.5" min="0.5" value="3.5" required class="v-input">
             </div>
             <div>
-                <label class="v-label">{{ t("hrt.start_week") }}</label>
-                <input type="number" name="start_week" step="1" min="1" value="1" class="v-input">
+                <label for="hrt-start_week-2" class="v-label">{{ t("hrt.start_week") }}</label>
+                <input inputmode="numeric" id="hrt-start_week-2" type="number" name="start_week" step="1" min="1" value="1" class="v-input">
             </div>
             <div>
-                <label class="v-label">{{ t("hrt.duration_days") }}</label>
-                <input type="number" name="duration_days" step="1" min="1" class="v-input">
+                <label for="hrt-duration_days-2" class="v-label">{{ t("hrt.duration_days") }}</label>
+                <input inputmode="numeric" id="hrt-duration_days-2" type="number" name="duration_days" step="1" min="1" class="v-input">
             </div>
             <button type="submit" class="v-btn">{{ t("hrt.add_item") }}</button>
         </form>
@@ -144,8 +150,8 @@
         <form method="post" action="/hrt/cycle/{{ active_cycle.id }}/save-template"
               class="flex flex-wrap items-end gap-3 border-t border-[var(--line)] pt-4">
             <div class="grow max-w-xs">
-                <label class="v-label">{{ t("hrt.template_name") }}</label>
-                <input type="text" name="name" maxlength="128" required class="v-input"
+                <label for="hrt-name" class="v-label">{{ t("hrt.template_name") }}</label>
+                <input id="hrt-name" type="text" name="name" maxlength="128" required class="v-input"
                        placeholder="{{ active_cycle.name or t('enum.cycle_kind.' + active_cycle.kind) }}">
             </div>
             <button type="submit" class="v-btn-ghost">{{ t("hrt.save_as_template") }}</button>
@@ -180,7 +186,13 @@
         {% endif %}
 
         {% else %}
-        <p class="v-text-body">{{ t("hrt.no_active_cycle") }}</p>
+        <div class="v-empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0h-3.5l-1 2h-5l-1-2H4m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5" />
+            </svg>
+            <p>{{ t("hrt.no_active_cycle") }}</p>
+        </div>
         {% endif %}
 
         <!-- Create / switch cycle — always available so any kind can be started -->
@@ -194,7 +206,7 @@
                   class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
                 <div>
                     <div class="flex items-center gap-1.5">
-                        <label class="v-label">{{ t("hrt.cycle_kind") }}</label>
+                        <label for="hrt-kind" class="v-label">{{ t("hrt.cycle_kind") }}</label>
                         <span class="relative inline-flex" x-data="{ open: false }"
                               @mouseenter="open = true" @mouseleave="open = false">
                             <button type="button" tabindex="0"
@@ -209,17 +221,17 @@
                             </div>
                         </span>
                     </div>
-                    <select name="kind" required class="v-select">
+                    <select id="hrt-kind" name="kind" required class="v-select">
                         {% for k in cycle_kinds %}<option value="{{ k }}">{{ t("enum.cycle_kind." + k) }}</option>{% endfor %}
                     </select>
                 </div>
                 <div>
-                    <label class="v-label">{{ t("hrt.cycle_name") }}</label>
-                    <input type="text" name="name" maxlength="128" class="v-input">
+                    <label for="hrt-name-2" class="v-label">{{ t("hrt.cycle_name") }}</label>
+                    <input id="hrt-name-2" type="text" name="name" maxlength="128" class="v-input">
                 </div>
                 <div>
-                    <label class="v-label">{{ t("hrt.start") }}</label>
-                    <input type="date" name="start_date" value="{{ today }}" required class="v-input">
+                    <label for="hrt-start_date" class="v-label">{{ t("hrt.start") }}</label>
+                    <input id="hrt-start_date" type="date" name="start_date" value="{{ today }}" required class="v-input">
                 </div>
                 <button type="submit" class="v-btn">{{ t("hrt.create_cycle") }}</button>
             </form>
@@ -265,8 +277,8 @@
                     <form method="post" action="/hrt/template/{{ tp.id }}/create-cycle"
                           class="flex items-end gap-3">
                         <div>
-                            <label class="v-label">{{ t("hrt.start") }}</label>
-                            <input type="date" name="start_date" value="{{ today }}" required class="v-input">
+                            <label for="hrt-start_date-2" class="v-label">{{ t("hrt.start") }}</label>
+                            <input id="hrt-start_date-2" type="date" name="start_date" value="{{ today }}" required class="v-input">
                         </div>
                         <button type="submit" class="v-btn">{{ t("hrt.create_from_template") }}</button>
                     </form>
@@ -280,7 +292,13 @@
             {% endfor %}
         </div>
         {% else %}
-        <p class="v-text-body">{{ t("hrt.no_templates") }}</p>
+        <div class="v-empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0h-3.5l-1 2h-5l-1-2H4m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5" />
+            </svg>
+            <p>{{ t("hrt.no_templates") }}</p>
+        </div>
         {% endif %}
 
         <!-- Import a shared template -->
@@ -301,8 +319,8 @@
             {# override is set by protocolForm().submitForm on the FormData itself #}
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="v-label">{{ t("hrt.compound") }}</label>
-                    <select name="compound_key" required class="v-select">
+                    <label for="hrt-compound_key-2" class="v-label">{{ t("hrt.compound") }}</label>
+                    <select id="hrt-compound_key-2" name="compound_key" required class="v-select">
                         <option value="" disabled selected>{{ t("hrt.compound_hint") }}</option>
                         {% for cls, items in compounds | groupby('compound_class') %}
                         <optgroup label="{{ t('enum.compound_class.' + cls) }}">
@@ -316,48 +334,48 @@
                     </select>
                 </div>
                 <div>
-                    <label class="v-label">{{ t("hrt.date") }}</label>
-                    <input type="date" name="date" value="{{ today }}" required class="v-input">
+                    <label for="hrt-date" class="v-label">{{ t("hrt.date") }}</label>
+                    <input id="hrt-date" type="date" name="date" value="{{ today }}" required class="v-input">
                 </div>
             </div>
 
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
-                    <label class="v-label">{{ t("hrt.dose") }}</label>
-                    <input type="number" name="dose" step="0.001" min="0" placeholder="250" class="v-input">
+                    <label for="hrt-dose-3" class="v-label">{{ t("hrt.dose") }}</label>
+                    <input inputmode="decimal" id="hrt-dose-3" type="number" name="dose" step="0.001" min="0" placeholder="250" class="v-input">
                 </div>
                 <div>
-                    <label class="v-label">{{ t("hrt.unit") }}</label>
-                    <select name="unit" class="v-select">
+                    <label for="hrt-unit" class="v-label">{{ t("hrt.unit") }}</label>
+                    <select id="hrt-unit" name="unit" class="v-select">
                         {% for u in units %}<option value="{{ u }}">{{ u }}</option>{% endfor %}
                     </select>
                 </div>
                 <div>
-                    <label class="v-label">{{ t("hrt.volume_ml") }}</label>
-                    <input type="number" name="volume_ml" step="0.01" min="0" placeholder="1.0" class="v-input">
+                    <label for="hrt-volume_ml" class="v-label">{{ t("hrt.volume_ml") }}</label>
+                    <input inputmode="decimal" id="hrt-volume_ml" type="number" name="volume_ml" step="0.01" min="0" placeholder="1.0" class="v-input">
                 </div>
                 <div>
-                    <label class="v-label">{{ t("hrt.concentration") }}</label>
-                    <input type="number" name="concentration_mg_ml" step="0.1" min="0" placeholder="250" class="v-input">
+                    <label for="hrt-concentration_mg_ml" class="v-label">{{ t("hrt.concentration") }}</label>
+                    <input inputmode="decimal" id="hrt-concentration_mg_ml" type="number" name="concentration_mg_ml" step="0.1" min="0" placeholder="250" class="v-input">
                 </div>
             </div>
 
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
-                    <label class="v-label">{{ t("hrt.brand") }}</label>
-                    <input type="text" name="brand" maxlength="64" class="v-input">
+                    <label for="hrt-brand" class="v-label">{{ t("hrt.brand") }}</label>
+                    <input id="hrt-brand" type="text" name="brand" maxlength="64" class="v-input">
                 </div>
                 <div>
-                    <label class="v-label">{{ t("hrt.lab") }}</label>
-                    <input type="text" name="lab" maxlength="64" class="v-input">
+                    <label for="hrt-lab" class="v-label">{{ t("hrt.lab") }}</label>
+                    <input id="hrt-lab" type="text" name="lab" maxlength="64" class="v-input">
                 </div>
                 <div>
-                    <label class="v-label">{{ t("hrt.batch") }}</label>
-                    <input type="text" name="batch" maxlength="64" class="v-input">
+                    <label for="hrt-batch" class="v-label">{{ t("hrt.batch") }}</label>
+                    <input id="hrt-batch" type="text" name="batch" maxlength="64" class="v-input">
                 </div>
                 <div>
-                    <label class="v-label">{{ t("hrt.site") }}</label>
-                    <select name="site" class="v-select">
+                    <label for="hrt-site" class="v-label">{{ t("hrt.site") }}</label>
+                    <select id="hrt-site" name="site" class="v-select">
                         <option value="">—</option>
                         {% for s in sites %}
                         <option value="{{ s }}">{{ s | replace('_', ' ') }}</option>
@@ -367,8 +385,8 @@
             </div>
 
             <div>
-                <label class="v-label">{{ t("hrt.note") }}</label>
-                <input type="text" name="note" class="v-input">
+                <label for="hrt-note" class="v-label">{{ t("hrt.note") }}</label>
+                <input id="hrt-note" type="text" name="note" class="v-input">
             </div>
 
             <button type="submit" class="v-btn">{{ t("hrt.save") }}</button>
@@ -414,7 +432,13 @@
             </table>
         </div>
         {% else %}
-        <p class="v-text-body">{{ t("hrt.no_doses") }}</p>
+        <div class="v-empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0h-3.5l-1 2h-5l-1-2H4m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5" />
+            </svg>
+            <p>{{ t("hrt.no_doses") }}</p>
+        </div>
         {% endif %}
     </div>
 
@@ -435,16 +459,16 @@
         <h2 class="v-text-heading">{{ t("hrt.side_effects") }}</h2>
         <form method="post" action="/hrt/side-effect" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
             <div>
-                <label class="v-label">{{ t("hrt.date") }}</label>
-                <input type="date" name="date" value="{{ today }}" required class="v-input">
+                <label for="hrt-date-2" class="v-label">{{ t("hrt.date") }}</label>
+                <input id="hrt-date-2" type="date" name="date" value="{{ today }}" required class="v-input">
             </div>
             <div>
-                <label class="v-label">{{ t("hrt.effect_type") }}</label>
-                <input type="text" name="effect_type" required class="v-input">
+                <label for="hrt-effect_type" class="v-label">{{ t("hrt.effect_type") }}</label>
+                <input id="hrt-effect_type" type="text" name="effect_type" required class="v-input">
             </div>
             <div>
-                <label class="v-label">{{ t("hrt.severity") }}</label>
-                <input type="number" name="severity" min="1" max="5" value="3" required class="v-input">
+                <label for="hrt-severity" class="v-label">{{ t("hrt.severity") }}</label>
+                <input inputmode="numeric" id="hrt-severity" type="number" name="severity" min="1" max="5" value="3" required class="v-input">
             </div>
             <button type="submit" class="v-btn">{{ t("hrt.add_side_effect") }}</button>
         </form>
@@ -461,7 +485,13 @@
             {% endfor %}
         </div>
         {% else %}
-        <p class="v-text-body">{{ t("hrt.no_side_effects") }}</p>
+        <div class="v-empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0h-3.5l-1 2h-5l-1-2H4m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5" />
+            </svg>
+            <p>{{ t("hrt.no_side_effects") }}</p>
+        </div>
         {% endif %}
     </div>
 

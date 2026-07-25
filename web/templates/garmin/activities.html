@@ -103,7 +103,13 @@
             {% endif %}
         </div>
         {% else %}
-        <div class="v-card p-6 text-center" style="grid-column: 1 / -1; color: var(--muted)">{{ t("garmin.no_activities") }}</div>
+        <div class="v-card v-empty-state" style="grid-column: 1 / -1">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0h-3.5l-1 2h-5l-1-2H4m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5" />
+            </svg>
+            <p>{{ t("garmin.no_activities") }}</p>
+        </div>
         {% endfor %}
     </div>
 </div>

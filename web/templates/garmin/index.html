@@ -166,7 +166,7 @@
     <!-- HAE Modal -->
     <div x-show="showHaeModal" class="v-backdrop" x-cloak>
         <div class="v-modal p-6 space-y-4" @click.away="showHaeModal = false">
-            <button @click="showHaeModal = false" class="v-icon-btn absolute top-3.5 right-3.5">
+            <button aria-label="{{ t('common.close') }}" title="{{ t('common.close') }}" @click="showHaeModal = false" class="v-icon-btn absolute top-3.5 right-3.5">
                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
             <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">

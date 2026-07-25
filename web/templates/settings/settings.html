@@ -90,7 +90,7 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div class="space-y-1.5">
                     <label for="s-height" class="v-label">{{ t("settings.height") }}</label>
-                    <input id="s-height" name="height_cm" type="number" min="100" max="250" step="0.5"
+                    <input inputmode="decimal" id="s-height" name="height_cm" type="number" min="100" max="250" step="0.5"
                            value="{{ height_cm }}" class="v-input" placeholder="190">
                 </div>
                 <div class="space-y-1.5">
@@ -102,7 +102,7 @@
                 </div>
                 <div class="space-y-1.5">
                     <label for="s-age" class="v-label">{{ t("settings.age") }}</label>
-                    <input id="s-age" name="user_age" type="number" min="10" max="120"
+                    <input inputmode="numeric" id="s-age" name="user_age" type="number" min="10" max="120"
                            value="{{ user_age }}" class="v-input" placeholder="18">
                 </div>
                 <div class="space-y-1.5">
@@ -133,17 +133,17 @@
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div class="space-y-1.5">
                     <label for="s-protein" class="v-label">{{ t("settings.protein_target") }}</label>
-                    <input id="s-protein" name="nutrition_protein_target_g" type="number" min="0" step="1"
+                    <input inputmode="numeric" id="s-protein" name="nutrition_protein_target_g" type="number" min="0" step="1"
                            value="{{ nutrition_protein_target_g }}" class="v-input" placeholder="150">
                 </div>
                 <div class="space-y-1.5">
                     <label for="s-cal-min" class="v-label">{{ t("settings.cal_min") }}</label>
-                    <input id="s-cal-min" name="nutrition_calories_min" type="number" min="0" step="50"
+                    <input inputmode="decimal" id="s-cal-min" name="nutrition_calories_min" type="number" min="0" step="50"
                            value="{{ nutrition_calories_min }}" class="v-input" placeholder="1300">
                 </div>
                 <div class="space-y-1.5">
                     <label for="s-cal-max" class="v-label">{{ t("settings.cal_max") }}</label>
-                    <input id="s-cal-max" name="nutrition_calories_max" type="number" min="0" step="50"
+                    <input inputmode="decimal" id="s-cal-max" name="nutrition_calories_max" type="number" min="0" step="50"
                            value="{{ nutrition_calories_max }}" class="v-input" placeholder="1700">
                 </div>
             </div>

@@ -14,8 +14,8 @@
     <!-- Filters -->
     <form method="get" action="/interactions" class="v-card v-interaction-summary p-4 flex flex-wrap items-end gap-4">
         <div>
-            <label class="v-label">{{ t("interactions.filter_domain") }}</label>
-            <select name="domain" class="v-select" onchange="this.form.submit()">
+            <label for="interactions-domain" class="v-label">{{ t("interactions.filter_domain") }}</label>
+            <select id="interactions-domain" name="domain" class="v-select" onchange="this.form.submit()">
                 <option value="">{{ t("interactions.filter_all") }}</option>
                 {% for d in all_domains %}
                 <option value="{{ d }}" {% if domain_filter == d %}selected{% endif %}>{{ t("enum.domain." + d) }}</option>
@@ -23,8 +23,8 @@
             </select>
         </div>
         <div>
-            <label class="v-label">{{ t("interactions.filter_severity") }}</label>
-            <select name="severity" class="v-select" onchange="this.form.submit()">
+            <label for="interactions-severity" class="v-label">{{ t("interactions.filter_severity") }}</label>
+            <select id="interactions-severity" name="severity" class="v-select" onchange="this.form.submit()">
                 <option value="">{{ t("interactions.filter_all") }}</option>
                 {% for s in ("block", "warn", "info") %}
                 <option value="{{ s }}" {% if severity_filter == s %}selected{% endif %}>{{ t("interactions.severity." + s) }}</option>

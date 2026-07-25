@@ -38,4 +38,4 @@ if __name__ == "__main__":
     asyncio.run(init_db())
     print("Starting local server on http://127.0.0.1:8000")
     print("Username: timur, Password: password")
-    uvicorn.run("web.main:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run("web.main:app", host="127.0.0.1", port=int(os.environ.get("PORT", "8000")), reload=False)

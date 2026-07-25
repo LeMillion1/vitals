@@ -1,0 +1,52 @@
+{# Phone navigation — bottom bar + the "More" drawer's link grid.
+
+   Both are driven by `nav_modules()` (vitals/services/modules_service.py), the
+   same registry the desktop rail reads, so a module can never show up in one
+   surface and not the other. Icons come from the shared `mh_icon` macro.
+
+   Two macros rather than one include because the pieces live in different
+   places in base.html; both take `oob=true` so a module toggle can re-render
+   them out-of-band (modules_oob.html). The drawer *shell* (x-show, transitions,
+   backdrop) stays in base.html and is never swapped — only the grid inside it.
+
+       {% from "partials/nav_mobile.html" import mobile_bottom_nav with context %}
+#}
+{% from "partials/masthead.html" import mh_icon with context %}
+
+{% macro mobile_bottom_nav(oob=false) %}
+{% set current_path = request.url.path if request else '' %}
+{% set bottom = nav_modules(request.state.enabled_modules or {}, bottom=true) %}
+<!-- Bottom bar — columns follow the enabled modules so optional slots
+     (Workouts, Supplements) never leave empty cells in a fixed grid. -->
+<nav id="mobile-bottom-nav" {% if oob %}hx-swap-oob="true"{% endif %}
+    class="md:hidden v-bottom-nav bg-[rgba(28,25,32,0.95)] backdrop-blur-md border-t border-[var(--line)] grid items-center px-1"
+    style="grid-template-columns: repeat({{ bottom|length + 1 }}, minmax(0, 1fr)); padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(3.5rem + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
+    {% for s in bottom %}
+    <a href="{{ s.route }}"
+        class="v-bnav-link flex flex-col items-center justify-center gap-1 h-full py-1 text-center {% if current_path.startswith(s.route) %}text-[var(--accent)]{% else %}text-[var(--muted)] hover:text-[var(--fg-2)]{% endif %}"{% if current_path.startswith(s.route) %} aria-current="page"{% endif %}>
+        <span class="v-nav-ico">{{ mh_icon(s.key) }}</span>
+        <span class="text-[0.62rem] font-bold">{{ t('nav.' + s.key) }}</span>
+    </a>
+    {% endfor %}
+    <button type="button" @click="mobileMenuOpen = true"
+        class="v-bnav-link flex flex-col items-center justify-center gap-1 h-full py-1 text-center text-[var(--muted)] hover:text-[var(--fg-2)] focus:outline-none">
+        <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+        <span class="text-[0.62rem] font-bold">{{ t("nav.more") }}</span>
+    </button>
+</nav>
+{% endmacro %}
+
+{% macro mobile_drawer_links(oob=false) %}
+<!-- Drawer links — every nav module that isn't already in the bottom bar. -->
+<div id="mobile-drawer-links" {% if oob %}hx-swap-oob="true"{% endif %} class="grid grid-cols-2 gap-4">
+    {% for s in nav_modules(request.state.enabled_modules or {}, bottom=false) %}
+    <a href="{{ s.route }}" @click="mobileMenuOpen = false"
+        class="v-drawer-link flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
+        <span class="v-nav-ico text-[var(--fg-2)]">{{ mh_icon(s.key) }}</span>
+        <span class="text-xs font-bold text-[var(--fg-2)]">{{ t('nav.' + s.key) }}</span>
+    </a>
+    {% endfor %}
+</div>
+{% endmacro %}

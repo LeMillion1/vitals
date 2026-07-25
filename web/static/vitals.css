@@ -135,14 +135,14 @@ body {
    text-[...] utilities so every label, heading and value in the app resolves
    to the same scale. */
 .v-text-metric {
-    font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
     font-size: var(--text-metric);
     font-weight: 650;
     line-height: 1.1;
 }
 
 .v-text-title {
-    font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
     font-size: var(--text-title);
     font-weight: 800;
     line-height: 1.15;
@@ -151,7 +151,7 @@ body {
 }
 
 .v-text-heading {
-    font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
     font-size: var(--text-heading);
     font-weight: 700;
     line-height: 1.3;
@@ -168,7 +168,7 @@ h1.v-text-heading {
 }
 
 .v-text-card {
-    font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
     font-size: var(--text-card);
     font-weight: 600;
     line-height: 1.4;
@@ -382,7 +382,7 @@ html {
 /* Brand handoff: Bricolage Grotesque ExtraBold, −2% tracking, solid --fg. No
    gradient fill and no accent inside the word — the accent lives in the mark. */
 .v-wordmark {
-    font-family: 'Bricolage Grotesque', 'Outfit', ui-sans-serif, system-ui, sans-serif;
+    font-family: 'Bricolage Grotesque', 'Outfit', 'Inter', ui-sans-serif, system-ui, sans-serif;
     font-size: 1.75rem;
     font-weight: 800;
     letter-spacing: -0.02em;
@@ -527,7 +527,7 @@ a.v-card:hover {
 }
 
 .v-metric-value {
-    font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
     font-size: var(--text-metric);
     font-weight: 600;
     line-height: 1.1;
@@ -537,7 +537,7 @@ a.v-card:hover {
 }
 
 .v-metric-value-text {
-    font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
     font-size: 1.375rem;
     /* 22px */
     font-weight: 600;
@@ -636,6 +636,37 @@ a.v-card:hover {
     border-color: var(--accent-line);
     color: var(--fg);
     background: var(--accent-soft);
+}
+
+/* ── Touch feedback (U2) ──────────────────────────────────────────────────
+   Tailwind's preflight clears -webkit-tap-highlight-color for the whole
+   document, so without an explicit :active a tap on a phone produces no
+   feedback at all (hover never fires there). Every tappable surface that isn't
+   .v-btn — which has its own :active above — gets one here. */
+.v-btn-ghost:active,
+.v-icon-btn:active,
+.v-pill:active,
+.v-site-btn:active,
+.v-seg-btn:active {
+    background: var(--surface-2);
+    transform: translateY(1px);
+}
+
+.v-icon-btn:active {
+    opacity: 1;
+}
+
+.v-icon-btn.danger:active {
+    background: var(--bad-soft);
+    color: var(--bad);
+}
+
+/* Bottom bar / drawer: no transform (the grid cell would jitter) — the tile
+   just lights up under the finger. */
+.v-bnav-link:active,
+.v-drawer-link:active {
+    background: var(--accent-soft);
+    color: var(--accent);
 }
 
 .v-btn-danger {
@@ -1525,8 +1556,8 @@ a.v-seg-btn {
     }
 
     .v-icon-btn {
-        width: 2.5rem;
-        height: 2.5rem;
+        width: 2.75rem;
+        height: 2.75rem;
     }
 
     /* ── Segmented control — bigger taps ── */
@@ -1845,7 +1876,7 @@ sup {
 
 /* Markdown parsing typography inside text bodies */
 .v-text-body h2 {
-    font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
     font-size: 1.2rem;
     font-weight: 700;
     color: var(--fg);
@@ -1862,7 +1893,7 @@ sup {
 }
 
 .v-text-body h3 {
-    font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
     font-size: 1.05rem;
     font-weight: 650;
     color: var(--fg);
@@ -1871,7 +1902,7 @@ sup {
 }
 
 .v-text-body h4 {
-    font-family: 'Outfit', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
     font-size: 0.95rem;
     font-weight: 600;
     color: var(--fg);
@@ -2057,6 +2088,19 @@ sup {
     z-index: 40;
 }
 
+/* Wrapper for the shared `mh_icon` SVGs when they're used outside the rail
+   (bottom bar, drawer tiles): the macro emits an unsized <svg> and the rail
+   sizes it in vitals-masthead.css, so these surfaces size it here. */
+.v-nav-ico {
+    display: inline-flex;
+}
+
+.v-nav-ico svg {
+    width: 1.5rem;
+    height: 1.5rem;
+    stroke-width: 1.5;
+}
+
 /* ── Mobile table card headers — hide low-priority columns ── */
 @media (max-width: 480px) {
     .v-table .hide-xs {
@@ -2178,7 +2222,7 @@ sup {
     padding: 6px;
     background: var(--bg-inset);
     border: 1px solid var(--line);
-    border-radius: 16px;
+    border-radius: var(--radius);
 }
 .v-weight-stepper .v-input {
     height: 56px;
@@ -2186,7 +2230,7 @@ sup {
     border: 0;
     background: transparent;
     text-align: center;
-    font: 700 38px/1 var(--mh-display, 'Bricolage Grotesque', sans-serif);
+    font: 700 38px/1 var(--mh-display, 'Bricolage Grotesque', 'Inter', sans-serif);
     font-variant-numeric: tabular-nums;
     box-shadow: none;
 }
@@ -2465,7 +2509,7 @@ sup {
 
 @media (max-width: 560px) {
     .v-page { gap: 22px; }
-    .v-page .v-card { border-radius: 16px; }
+    .v-page .v-card { border-radius: var(--radius); }
     .v-page .v-card.p-6 { padding: 18px; }
     .v-garmin-summary .v-daystrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .v-garmin-summary .v-card-inset:last-child { grid-column: 1 / -1; }

@@ -11,7 +11,28 @@
 
 body.ui-masthead {
     /* Display face for titles/tabs only; body text stays on Inter. */
-    --mh-display: 'Bricolage Grotesque', 'Outfit', ui-sans-serif, system-ui, sans-serif;
+    --mh-display: 'Bricolage Grotesque', 'Outfit', 'Inter', ui-sans-serif, system-ui, sans-serif;
+    /* ── Masthead type scale ──────────────────────────────────────────────
+       The editorial layer's own sizes, on top of the six app tokens in
+       vitals.css. Declared once here so no rule below invents a number; sizes
+       that already exist on the app scale (12/13/14/15px) reference the app
+       token instead of getting a duplicate under a new name. Mirrored in
+       docs/DESIGN_SYSTEM.md. */
+    --mh-text-hero: 62px;          /* H1 — pre-handoff base */
+    --mh-text-hero-lg: 54px;       /* H1 — desktop (handoff shell) */
+    --mh-text-hero-md: 38px;       /* H1 + primary metric — tablet */
+    --mh-text-hero-sm: 30px;       /* H1 — narrow phone */
+    --mh-text-metric: 50px;        /* primary key figure */
+    --mh-text-metric-md: 48px;     /* primary key figure — desktop shell */
+    --mh-text-ring: 32px;          /* value inside a progress ring */
+    --mh-text-ring-md: 26px;
+    --mh-text-wordmark: 26px;      /* rail wordmark, expanded */
+    --mh-text-wordmark-sm: 22px;   /* rail wordmark, collapsed ("V") */
+    --mh-text-lead: 21px;          /* secondary key figure */
+    --mh-text-brand: 19px;         /* mobile topbar wordmark */
+    --mh-text-tab: 15px;           /* rubric tab */
+    --mh-text-eyebrow: 11px;       /* uppercase eyebrows / labels */
+    --mh-text-nano: 10px;          /* smallest uppercase micro-label */
     --mh-rail-w: 68px;
     --mh-rail-w-expanded: 244px;
 }
@@ -159,7 +180,7 @@ body.ui-masthead .mh-rail-group-label {
     display: none;
     padding: 0 13px 4px;
     color: var(--faint);
-    font: 700 10px 'Inter', sans-serif;
+    font: 700 var(--mh-text-nano) 'Inter', sans-serif;
     letter-spacing: .12em;
     text-transform: uppercase;
 }
@@ -200,6 +221,18 @@ body.ui-masthead .mh-rail-btn:hover {
     background: var(--surface);
 }
 
+/* Tap feedback (U2) — hover never fires on a phone and Tailwind's preflight
+   clears the native tap highlight, so the press needs its own state. */
+body.ui-masthead .mh-rail-btn:active,
+body.ui-masthead .mh-topbar-menu:active {
+    color: var(--accent-2);
+    background: var(--accent-soft);
+}
+
+body.ui-masthead .mh-tab:active {
+    color: var(--accent-2);
+}
+
 body.ui-masthead .mh-rail-btn.is-active {
     color: var(--accent-2);
     background: var(--accent-soft);
@@ -223,7 +256,7 @@ body.ui-masthead .mh-rail-btn.is-active::before {
    (>=1101), the same breakpoint that expands the rail's own width. */
 body.ui-masthead .mh-rail-label {
     margin-left: 12px;
-    font: 600 13px 'Inter', sans-serif;
+    font: 600 var(--text-label) 'Inter', sans-serif;
     white-space: nowrap;
     opacity: 0;
     max-width: 0;
@@ -267,7 +300,7 @@ body.ui-masthead .mh-rail-avatar {
     display: flex;
     align-items: center;
     justify-content: center;
-    font: 600 11px 'Inter', sans-serif;
+    font: 600 var(--mh-text-eyebrow) 'Inter', sans-serif;
     color: var(--fg-2);
     text-decoration: none;
 }
@@ -311,7 +344,7 @@ body.ui-masthead .mh-topbar-brand svg {
 }
 
 body.ui-masthead .mh-topbar-brand span {
-    font: 800 19px/1 var(--mh-display);
+    font: 800 var(--mh-text-brand)/1 var(--mh-display);
     letter-spacing: -.02em;
     color: var(--fg);
 }
@@ -328,7 +361,7 @@ body.ui-masthead .mh-topbar-menu {
     padding: 0 8px;
     margin-right: -8px;
     color: var(--fg-2);
-    font: 600 10px 'Inter', sans-serif;
+    font: 600 var(--mh-text-nano) 'Inter', sans-serif;
     letter-spacing: .08em;
     text-transform: uppercase;
     background: none;
@@ -356,7 +389,7 @@ body.ui-masthead .mh-eyebrow-row {
 }
 
 body.ui-masthead .mh-eyebrow {
-    font: 600 11px 'Inter', sans-serif;
+    font: 600 var(--mh-text-eyebrow) 'Inter', sans-serif;
     letter-spacing: .14em;
     text-transform: uppercase;
     color: var(--faint);
@@ -378,7 +411,7 @@ body.ui-masthead .mh-tabs {
 }
 
 body.ui-masthead .mh-tab {
-    font: 500 14px var(--mh-display);
+    font: 500 var(--text-body) var(--mh-display);
     color: var(--muted);
     text-decoration: none;
     padding-bottom: 8px;
@@ -398,7 +431,7 @@ body.ui-masthead .mh-tab.is-active {
 }
 
 body.ui-masthead .mh-title {
-    font: 800 62px/1.05 var(--mh-display);
+    font: 800 var(--mh-text-hero)/1.05 var(--mh-display);
     color: var(--fg);
     letter-spacing: -.02em;
     margin: 16px 0 0;
@@ -428,13 +461,13 @@ a.mh-metric {
 }
 
 body.ui-masthead .mh-metric-value {
-    font: 600 21px 'Inter', sans-serif;
+    font: 600 var(--mh-text-lead) 'Inter', sans-serif;
     color: var(--fg);
     font-variant-numeric: tabular-nums;
 }
 
 body.ui-masthead .mh-metric-value.is-primary {
-    font: 700 50px var(--mh-display);
+    font: 700 var(--mh-text-metric) var(--mh-display);
     letter-spacing: -.01em;
 }
 
@@ -447,13 +480,13 @@ body.ui-masthead .mh-metric.bad .mh-metric-value {
 }
 
 body.ui-masthead .mh-metric-unit {
-    font: 400 12px 'Inter', sans-serif;
+    font: 400 var(--text-micro) 'Inter', sans-serif;
     color: var(--muted);
     margin-left: 4px;
 }
 
 body.ui-masthead .mh-metric-label {
-    font: 600 11px 'Inter', sans-serif;
+    font: 600 var(--mh-text-eyebrow) 'Inter', sans-serif;
     letter-spacing: .1em;
     text-transform: uppercase;
     color: var(--faint);
@@ -481,7 +514,7 @@ body.ui-masthead .mh-date-nav-btn {
     height: 28px;
     border-radius: 50%;
     color: var(--muted);
-    transition: all 0.2s ease;
+    transition: color 0.2s ease, background 0.2s ease;
 }
 
 body.ui-masthead .mh-date-nav-btn:hover {
@@ -553,16 +586,16 @@ body.ui-masthead .mh-ring-inner {
 }
 
 body.ui-masthead .mh-ring-val {
-    font-size: 32px;
+    font-size: var(--mh-text-ring);
     font-weight: 800;
     color: var(--fg);
-    font-family: 'Unbounded', 'Outfit', system-ui, sans-serif;
+    font-family: 'Outfit', 'Inter', system-ui, sans-serif;
     line-height: 1;
     letter-spacing: -0.02em;
 }
 
 body.ui-masthead .mh-ring-lbl {
-    font-size: 11px;
+    font-size: var(--mh-text-eyebrow);
     font-weight: 700;
     text-transform: uppercase;
     color: var(--muted);
@@ -571,7 +604,7 @@ body.ui-masthead .mh-ring-lbl {
 }
 
 body.ui-masthead .mh-ring-goal {
-    font-size: 11px;
+    font-size: var(--mh-text-eyebrow);
     color: var(--faint);
     margin-top: 2px;
 }
@@ -683,7 +716,7 @@ body.ui-masthead .mh-value-highlight {
 }
 
 body.ui-masthead .mh-macro-badge {
-    font-size: 10px;
+    font-size: var(--mh-text-nano);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -788,12 +821,12 @@ body.ui-masthead .mh-macro-card-unit {
     }
 
     body.ui-masthead .mh-title {
-        font-size: 38px;
+        font-size: var(--mh-text-hero-md);
         margin-top: 8px;
     }
 
     body.ui-masthead .mh-metric-value.is-primary {
-        font-size: 38px;
+        font-size: var(--mh-text-hero-md);
     }
 
     body.ui-masthead .mh-metrics {
@@ -816,12 +849,12 @@ body.ui-masthead .mh-macro-card-unit {
     }
 
     body.ui-masthead .mh-ring-val {
-        font-size: 26px;
+        font-size: var(--mh-text-ring-md);
     }
 
     body.ui-masthead .mh-ring-lbl,
     body.ui-masthead .mh-ring-goal {
-        font-size: 10px;
+        font-size: var(--mh-text-nano);
     }
 }
 
@@ -845,7 +878,7 @@ body.ui-masthead .mh-rail-wordmark {
 }
 body.ui-masthead .mh-rail-wordmark::after {
     content: 'V';
-    font: 800 22px/1 var(--mh-display);
+    font: 800 var(--mh-text-wordmark-sm)/1 var(--mh-display);
 }
 body.ui-masthead .mh-rail { padding: 20px 0; gap: 18px; }
 body.ui-masthead .mh-rail-nav { padding-inline: 12px; }
@@ -860,7 +893,7 @@ body.ui-masthead .mh-tabs {
    viewport, and a nowrap row pushed <main> 176px sideways. */
 body.ui-masthead .mh-eyebrow-row { flex-wrap: wrap; }
 body.ui-masthead .mh-actions { flex-wrap: wrap; max-width: 100%; }
-body.ui-masthead .mh-tab { font-size: 15px; }
+body.ui-masthead .mh-tab { font-size: var(--mh-text-tab); }
 body.ui-masthead .mh-hero-row {
     display: flex;
     align-items: flex-end;
@@ -883,7 +916,7 @@ body.ui-masthead .mh-hero-row {
 body.ui-masthead .mh-title {
     flex: none;
     margin: 0;
-    font: 800 54px/.95 var(--mh-display);
+    font: 800 var(--mh-text-hero-lg)/.95 var(--mh-display);
     letter-spacing: -.025em;
 }
 body.ui-masthead .mh-metrics {
@@ -902,7 +935,7 @@ body.ui-masthead .mh-metrics {
     margin-top: 0;
 }
 body.ui-masthead .mh-metric-div { margin: 0 26px; }
-body.ui-masthead .mh-metric-value.is-primary { font-size: 48px; }
+body.ui-masthead .mh-metric-value.is-primary { font-size: var(--mh-text-metric-md); }
 /* Content grid: 1240px column, 56px gutters. The vertical padding is on the
    page wrapper only — #alerts-container shares the horizontal grid but keeps
    its own tight top padding, otherwise a one-line alert renders as a 141px
@@ -920,7 +953,7 @@ body.ui-masthead main > .v-page {
 body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !important; }
 
 @media (min-width: 901px) {
-    body.ui-masthead .mh-rail-wordmark { font-size: 26px; }
+    body.ui-masthead .mh-rail-wordmark { font-size: var(--mh-text-wordmark); }
     body.ui-masthead .mh-rail-wordmark::after { content: none; }
     body.ui-masthead .mh-rail-nav,
     body.ui-masthead .mh-rail-foot { padding-inline: 16px; }
@@ -946,8 +979,8 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
         flex-direction: column;
         gap: 22px;
     }
-    body.ui-masthead .mh-title { font-size: 38px; }
-    body.ui-masthead .mh-metric-value.is-primary { font-size: 38px; }
+    body.ui-masthead .mh-title { font-size: var(--mh-text-hero-md); }
+    body.ui-masthead .mh-metric-value.is-primary { font-size: var(--mh-text-hero-md); }
     body.ui-masthead .mh-metrics {
         justify-content: flex-start;
         flex-wrap: wrap;
@@ -958,7 +991,7 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
 @media (max-width: 560px) {
     body.ui-masthead main > .max-w-6xl,
     body.ui-masthead main > #alerts-container { padding: 22px 16px !important; }
-    body.ui-masthead .mh-title { font-size: 30px; }
+    body.ui-masthead .mh-title { font-size: var(--mh-text-hero-sm); }
     body.ui-masthead .mh-hero-row { margin-top: 20px; }
     body.ui-masthead .mh-metrics {
         display: grid;

@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import t
 from vitals.services import data_portability_service, language_service, modules_service
-from vitals.services.modules_service import MODULE_REGISTRY, ModuleToggleError
+from vitals.services.modules_service import ModuleToggleError
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
 from web.ratelimit import rate_limit
@@ -99,8 +99,7 @@ def _page(request: Request, username: str, *, saved: Optional[str] = None, error
         "nutrition_protein_target_g": read_key("VITALS_NUTRITION_PROTEIN_TARGET_G") or "150",
         "nutrition_calories_min": read_key("VITALS_NUTRITION_CALORIES_MIN") or "1300",
         "nutrition_calories_max": read_key("VITALS_NUTRITION_CALORIES_MAX") or "1700",
-        # Dashboard modules
-        "module_registry": MODULE_REGISTRY,
+        # Dashboard modules — ``module_registry`` is a Jinja global (templating.py).
         "enabled_modules": getattr(request.state, "enabled_modules", {}) or {},
     }
     return templates.TemplateResponse(request, "settings/settings.html", ctx)

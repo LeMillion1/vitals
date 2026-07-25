@@ -46,7 +46,13 @@
         {% endfor %}
     </div>
     {% else %}
-    <div class="v-card p-6 text-center" style="color: var(--muted)">{{ t("charts.no_charts") }}</div>
+    <div class="v-card v-empty-state">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0h-3.5l-1 2h-5l-1-2H4m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5" />
+        </svg>
+        <p>{{ t("charts.no_charts") }}</p>
+    </div>
     {% endif %}
 
     <!-- Builder -->
@@ -58,8 +64,8 @@
         <form action="/charts" method="POST" class="space-y-4"
               hx-disabled-elt="find button[type='submit']">
             <div>
-                <label class="v-label">{{ t("charts.name_label") }}</label>
-                <input type="text" name="name" required class="v-input" x-model="name">
+                <label for="charts-name" class="v-label">{{ t("charts.name_label") }}</label>
+                <input id="charts-name" type="text" name="name" required class="v-input" x-model="name">
             </div>
 
             <div class="space-y-3">
@@ -73,10 +79,10 @@
                         </div>
                         <div class="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
                             <div class="lg:col-span-4">
-                                <label class="v-label">{{ t("charts.select_domain") }}</label>
+                                <span class="v-label">{{ t("charts.select_domain") }}</span>
                                 <div class="v-dropdown" @click.outside="closeRowDropdownIfOpen(row, 'domain')">
                                     <button type="button" class="v-dropdown-trigger"
-                                            :aria-expanded="row.open === 'domain'"
+                                            :aria-expanded="row.open === 'domain'" aria-label="{{ t('charts.select_domain') }}"
                                             @click="toggleRowDropdown(row, 'domain', $el)" @keydown.escape="closeRowDropdown(row)">
                                         <span class="v-dropdown-value" :class="{ 'is-placeholder': !row.domain }" x-text="domainLabel(row) || '—'"></span>
                                         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6" /></svg>
@@ -91,10 +97,10 @@
                                 <input type="hidden" name="domain" :value="row.domain">
                             </div>
                             <div class="lg:col-span-4">
-                                <label class="v-label">{{ t("charts.select_metric") }}</label>
+                                <span class="v-label">{{ t("charts.select_metric") }}</span>
                                 <div class="v-dropdown" @click.outside="closeRowDropdownIfOpen(row, 'metric')">
                                     <button type="button" class="v-dropdown-trigger" :disabled="!row.domain"
-                                            :aria-expanded="row.open === 'metric'"
+                                            :aria-expanded="row.open === 'metric'" aria-label="{{ t('charts.select_metric') }}"
                                             @click="toggleRowDropdown(row, 'metric', $el)" @keydown.escape="closeRowDropdown(row)">
                                         <span class="v-dropdown-value" :class="{ 'is-placeholder': !row.metricKey }" x-text="metricLabel(row) || '—'"></span>
                                         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6" /></svg>
@@ -110,10 +116,10 @@
                                 <input type="hidden" name="metric_key" :value="row.metricKey">
                             </div>
                             <div class="lg:col-span-4" x-show="needsParam(row.domain, row.metricKey)">
-                                <label class="v-label">{{ t("charts.select_param") }}</label>
+                                <span class="v-label">{{ t("charts.select_param") }}</span>
                                 <div class="v-dropdown" @click.outside="closeRowDropdownIfOpen(row, 'param')">
                                     <button type="button" class="v-dropdown-trigger"
-                                            :aria-expanded="row.open === 'param'"
+                                            :aria-expanded="row.open === 'param'" aria-label="{{ t('charts.select_param') }}"
                                             @click="toggleRowDropdown(row, 'param', $el)" @keydown.escape="closeRowDropdown(row)">
                                         <span class="v-dropdown-value" :class="{ 'is-placeholder': !row.param }" x-text="paramLabel(row) || '—'"></span>
                                         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6" /></svg>

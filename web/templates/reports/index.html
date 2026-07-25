@@ -24,26 +24,26 @@
     <div x-show="showGoalForm" x-cloak class="v-card p-6">
         <form action="/reports/milestone" method="POST" class="grid grid-cols-1 md:grid-cols-6 gap-4 items-end">
             <div class="md:col-span-2">
-                <label class="v-label">{{ t("reports.goal_name") }}</label>
-                <input type="text" name="name" required placeholder="{{ t("reports.goal_name_placeholder") }}" class="v-input">
+                <label for="reports-name" class="v-label">{{ t("reports.goal_name") }}</label>
+                <input id="reports-name" type="text" name="name" required placeholder="{{ t("reports.goal_name_placeholder") }}" class="v-input">
             </div>
             <div>
-                <label class="v-label">{{ t("reports.goal_domain") }}</label>
-                <select name="domain" class="v-select">
+                <label for="reports-domain" class="v-label">{{ t("reports.goal_domain") }}</label>
+                <select id="reports-domain" name="domain" class="v-select">
                     {% for d in goal_domains %}<option value="{{ d }}">{{ t("enum.domain." + d) }}</option>{% endfor %}
                 </select>
             </div>
             <div>
-                <label class="v-label">{{ t("reports.goal_target") }}</label>
-                <input type="number" name="target_value" step="any" placeholder="82" class="v-input">
+                <label for="reports-target_value" class="v-label">{{ t("reports.goal_target") }}</label>
+                <input inputmode="decimal" id="reports-target_value" type="number" name="target_value" step="any" placeholder="82" class="v-input">
             </div>
             <div>
-                <label class="v-label">{{ t("reports.goal_unit") }}</label>
-                <input type="text" name="target_unit" placeholder="{{ t("common.kg") }}" class="v-input">
+                <label for="reports-target_unit" class="v-label">{{ t("reports.goal_unit") }}</label>
+                <input id="reports-target_unit" type="text" name="target_unit" placeholder="{{ t("common.kg") }}" class="v-input">
             </div>
             <div>
-                <label class="v-label">{{ t("reports.goal_deadline") }}</label>
-                <input type="date" name="deadline" class="v-input">
+                <label for="reports-deadline" class="v-label">{{ t("reports.goal_deadline") }}</label>
+                <input id="reports-deadline" type="date" name="deadline" class="v-input">
             </div>
             <div class="md:col-span-6">
                 <button type="submit" class="v-btn-ghost">{{ t("reports.create_goal") }}</button>
@@ -60,7 +60,7 @@
                     <div class="v-text-micro mt-0.5">{{ t("enum.domain." + c.domain) }} · {{ t("enum.status." + c.status) }}</div>
                 </div>
                 <form action="/reports/milestone/{{ c.id }}/delete" method="POST" data-confirm="{{ t("reports.confirm_delete_goal") }}">
-                    <button type="submit" class="v-icon-btn danger" style="width:1.6rem;height:1.6rem" title="{{ t("common.delete") }}">
+                    <button aria-label="{{ t('common.delete') }}" type="submit" class="v-icon-btn danger" style="width:1.6rem;height:1.6rem" title="{{ t("common.delete") }}">
                         <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                     </button>
                 </form>
@@ -123,7 +123,13 @@
             <div class="v-text-body v-digest"></div>
         </div>
         {% else %}
-        <p class="v-text-body" style="color: var(--muted)">{{ t("reports.no_digests") }}</p>
+        <div class="v-empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0h-3.5l-1 2h-5l-1-2H4m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5" />
+            </svg>
+            <p>{{ t("reports.no_digests") }}</p>
+        </div>
         {% endif %}
 
         {% if history | length > 1 %}

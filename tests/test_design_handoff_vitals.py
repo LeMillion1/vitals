@@ -63,7 +63,10 @@ def test_rail_matches_handoff_widths_and_wordmark():
 def test_masthead_title_and_metrics_share_one_hero_row():
     assert 'class="mh-hero-row"' in MASTHEAD_TEMPLATE
     assert ".mh-hero-row" in MASTHEAD_CSS
-    assert "font: 800 54px/.95" in MASTHEAD_CSS
+    # The 54px lives on --mh-text-hero-lg since U6 pulled every masthead size
+    # into a named token; the rule references the token.
+    assert "--mh-text-hero-lg: 54px" in MASTHEAD_CSS
+    assert "font: 800 var(--mh-text-hero-lg)/.95" in MASTHEAD_CSS
     assert "max-width: 1240px" in MASTHEAD_CSS
     assert ".grid.grid-cols-3" in MASTHEAD_CSS
 

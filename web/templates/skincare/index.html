@@ -107,11 +107,11 @@
                                 {% endif %}
                             </div>
                             <span class="v-icon-actions shrink-0">
-                                <button @click="showFormModal = true; editRow('form-skincare-product', {id: {{ p.id }}, name: {{ p.name | tojson | forceescape }}, type: {{ p.type | tojson | forceescape }}, active_ingredient: {{ p.active_ingredient | tojson | forceescape }}, description: {{ p.description | tojson | forceescape }}, usage_instructions: {{ p.usage_instructions | tojson | forceescape }}, default_time: {{ p.default_time | tojson | forceescape }}, active: {{ p.active | tojson }}, schedule_days: {{ p.schedule_days | tojson | forceescape }}}, '{{ t("common.save") }}')" class="v-icon-btn" title="{{ t("common.edit") }}">
+                                <button aria-label="{{ t('common.edit') }}" @click="showFormModal = true; editRow('form-skincare-product', {id: {{ p.id }}, name: {{ p.name | tojson | forceescape }}, type: {{ p.type | tojson | forceescape }}, active_ingredient: {{ p.active_ingredient | tojson | forceescape }}, description: {{ p.description | tojson | forceescape }}, usage_instructions: {{ p.usage_instructions | tojson | forceescape }}, default_time: {{ p.default_time | tojson | forceescape }}, active: {{ p.active | tojson }}, schedule_days: {{ p.schedule_days | tojson | forceescape }}}, '{{ t("common.save") }}')" class="v-icon-btn" title="{{ t("common.edit") }}">
                                     <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
                                 </button>
                                 <form action="/skincare/product/{{ p.id }}/delete" method="POST" class="inline" data-confirm="{{ t("skincare.confirm_delete") }}">
-                                    <button type="submit" class="v-icon-btn danger" title="{{ t("common.delete") }}">
+                                    <button aria-label="{{ t('common.delete') }}" type="submit" class="v-icon-btn danger" title="{{ t("common.delete") }}">
                                         <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                                     </button>
                                 </form>
@@ -221,7 +221,13 @@
                 </form>
             </div>
             {% else %}
-            <p class="v-text-body" style="color: var(--muted)">{{ t("skincare.no_logs") }}</p>
+            <div class="v-empty-state">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                        d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0h-3.5l-1 2h-5l-1-2H4m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5" />
+                </svg>
+                <p>{{ t("skincare.no_logs") }}</p>
+            </div>
             {% endfor %}
         </div>
 
@@ -253,7 +259,13 @@
                 </form>
             </div>
             {% else %}
-            <p class="v-text-body" style="color: var(--muted)">{{ t("skincare.no_observations") }}</p>
+            <div class="v-empty-state">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                        d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0h-3.5l-1 2h-5l-1-2H4m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5" />
+                </svg>
+                <p>{{ t("skincare.no_observations") }}</p>
+            </div>
             {% endfor %}
         </div>
     </div>
@@ -261,7 +273,7 @@
     <!-- Add/Edit Modal -->
     <div x-show="showFormModal" class="v-backdrop" x-cloak>
         <div class="v-modal p-6 space-y-5" @click.away="showFormModal = false">
-            <button @click="showFormModal = false" class="v-icon-btn absolute top-3.5 right-3.5">
+            <button aria-label="{{ t('common.close') }}" title="{{ t('common.close') }}" @click="showFormModal = false" class="v-icon-btn absolute top-3.5 right-3.5">
                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
 
@@ -273,23 +285,23 @@
             <form @submit.prevent="submitForm($event)" action="/skincare/product/save" method="POST" id="form-skincare-product" hx-boost="false" class="space-y-4">
                 <input type="hidden" name="override" x-model="overrideFlag">
                 <div>
-                    <label class="v-label">{{ t("supplements.name") }}</label>
-                    <input type="text" name="name" required placeholder="{{ t("skincare.name_placeholder") }}" class="v-input">
+                    <label for="skincare-name" class="v-label">{{ t("supplements.name") }}</label>
+                    <input id="skincare-name" type="text" name="name" required placeholder="{{ t("skincare.name_placeholder") }}" class="v-input">
                 </div>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                        <label class="v-label">{{ t("skincare.type_label") }}</label>
-                        <input type="text" name="type" required placeholder="{{ t("skincare.type_placeholder") }}" class="v-input">
+                        <label for="skincare-type" class="v-label">{{ t("skincare.type_label") }}</label>
+                        <input id="skincare-type" type="text" name="type" required placeholder="{{ t("skincare.type_placeholder") }}" class="v-input">
                     </div>
                     <div>
-                        <label class="v-label">{{ t("skincare.ingredient_label") }}</label>
-                        <input type="text" name="active_ingredient" placeholder="{{ t("skincare.ingredient_placeholder") }}" class="v-input">
+                        <label for="skincare-active_ingredient" class="v-label">{{ t("skincare.ingredient_label") }}</label>
+                        <input id="skincare-active_ingredient" type="text" name="active_ingredient" placeholder="{{ t("skincare.ingredient_placeholder") }}" class="v-input">
                     </div>
                 </div>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
                     <div>
-                        <label class="v-label">{{ t("skincare.time_label") }}</label>
-                        <select name="default_time" class="v-select">
+                        <label for="skincare-default_time" class="v-label">{{ t("skincare.time_label") }}</label>
+                        <select id="skincare-default_time" name="default_time" class="v-select">
                             <option value="morning">{{ t("skincare.time_morning") }}</option>
                             <option value="evening" selected>{{ t("skincare.time_evening") }}</option>
                             <option value="both">{{ t("skincare.time_both") }}</option>
@@ -301,7 +313,7 @@
                     </label>
                 </div>
                 <div>
-                    <label class="v-label">{{ t("skincare.schedule_days_label") }}</label>
+                    <span class="v-label">{{ t("skincare.schedule_days_label") }}</span>
                     <div class="grid grid-cols-4 gap-2 v-card-inset p-3">
                         {% for val, tkey in [('1','skincare.day.mon'),('2','skincare.day.tue'),('3','skincare.day.wed'),('4','skincare.day.thu'),('5','skincare.day.fri'),('6','skincare.day.sat'),('0','skincare.day.sun')] %}
                         <label class="flex items-center gap-1.5 text-sm cursor-pointer" style="color: var(--fg-2)">
@@ -312,12 +324,12 @@
                     </div>
                 </div>
                 <div>
-                    <label class="v-label">{{ t("skincare.description_label") }}</label>
-                    <textarea name="description" rows="2" placeholder="…" class="v-textarea"></textarea>
+                    <label for="skincare-description" class="v-label">{{ t("skincare.description_label") }}</label>
+                    <textarea id="skincare-description" name="description" rows="2" placeholder="…" class="v-textarea"></textarea>
                 </div>
                 <div>
-                    <label class="v-label">{{ t("skincare.usage_label") }}</label>
-                    <textarea name="usage_instructions" rows="2" placeholder="…" class="v-textarea"></textarea>
+                    <label for="skincare-usage_instructions" class="v-label">{{ t("skincare.usage_label") }}</label>
+                    <textarea id="skincare-usage_instructions" name="usage_instructions" rows="2" placeholder="…" class="v-textarea"></textarea>
                 </div>
                 <div class="flex gap-3 pt-1">
                     <button type="submit" class="v-btn flex-1">{{ t("common.save") }}</button>

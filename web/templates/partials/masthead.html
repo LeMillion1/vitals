@@ -9,31 +9,10 @@
    ============================================================================ #}
 
 {# ── Section registry ────────────────────────────────────────────────────────
-   Ordered by rubric. `gate` = the enabled_modules key that must be on (none =
-   Core, always shown), mirroring nav_primary.html exactly. `cat` overrides the
-   rubric's eyebrow category for one section (reports → "AI digest"). #}
-{% set MH_RUBRICS = [
-    {'id': 'main',      'cat': 'masthead.rubric.health',    'members': ['weight', 'garmin', 'hevy', 'nutrition', 'timeline', 'reports', 'charts']},
-    {'id': 'markers',   'cat': 'masthead.rubric.markers',   'members': ['glp1', 'hrt', 'labs', 'genetics']},
-    {'id': 'lifestyle', 'cat': 'masthead.rubric.lifestyle', 'members': ['supplements', 'skincare', 'interactions']},
-] %}
-
-{% set MH_SECTIONS = {
-    'weight':      {'href': '/weight',      'label': 'nav.weight',      'gate': none,          'cat': none},
-    'garmin':      {'href': '/garmin',      'label': 'nav.organism',    'gate': none,          'cat': none},
-    'hevy':        {'href': '/hevy',        'label': 'nav.workouts',    'gate': 'hevy',        'cat': none},
-    'nutrition':   {'href': '/nutrition',   'label': 'nav.nutrition',   'gate': 'nutrition',   'cat': none},
-    'timeline':    {'href': '/timeline',    'label': 'nav.timeline',    'gate': 'timeline',    'cat': none},
-    'reports':     {'href': '/reports',     'label': 'nav.reports',     'gate': none,          'cat': 'masthead.rubric.digest'},
-    'charts':      {'href': '/charts',      'label': 'nav.charts',      'gate': none,          'cat': none},
-    'glp1':        {'href': '/glp1',        'label': 'nav.glp1',        'gate': 'glp1',        'cat': none},
-    'hrt':         {'href': '/hrt',         'label': 'nav.hrt',         'gate': 'hrt',         'cat': none},
-    'labs':        {'href': '/labs',        'label': 'nav.labs',        'gate': none,          'cat': none},
-    'genetics':    {'href': '/genetics',    'label': 'nav.genetics',    'gate': 'genetics',    'cat': none},
-    'supplements': {'href': '/supplements', 'label': 'nav.supplements', 'gate': 'supplements', 'cat': none},
-    'skincare':    {'href': '/skincare',    'label': 'nav.skincare',    'gate': 'skincare',    'cat': none},
-    'interactions': {'href': '/interactions', 'label': 'nav.interactions', 'gate': 'interactions', 'cat': none},
-} %}
+   There isn't one here any more: `module_registry` / `module_rubrics` /
+   `nav_modules(enabled, rubric=…, bottom=…)` are Jinja globals fed by
+   vitals/services/modules_service.py, so the rail, the tab bar and the mobile
+   nav in base.html can no longer drift apart. Labels are `t("nav." + key)`. #}
 
 {# ── Section icons — Tabler outline set (stroke width set to 1.5 in CSS on
    .mh-rail-btn svg, so it reads lighter than Tabler's native 2). ───────────── #}
@@ -83,14 +62,13 @@
            when the rail is expanded) turn a flat 12-item list into scannable
            sections. A rubric whose every member is gated off is skipped entirely
            so its heading never floats over an empty group. #}
-        {% for r in MH_RUBRICS %}
-        {% set members_vis = [] %}
-        {% for key in r.members %}{% if MH_SECTIONS[key].gate is none or em.get(MH_SECTIONS[key].gate) %}{% set _ = members_vis.append(key) %}{% endif %}{% endfor %}
+        {% for rubric in module_rubrics %}
+        {% set members_vis = nav_modules(em, rubric=rubric) %}
         {% if members_vis %}
         <div class="mh-rail-group">
-            <div class="mh-rail-group-label">{{ t(r.cat) }}</div>
-            {% for key in members_vis %}{% set meta = MH_SECTIONS[key] %}
-            <a href="{{ meta.href }}" title="{{ t(meta.label) }}" class="mh-rail-btn {% if current_path.startswith(meta.href) %}is-active{% endif %}"{% if current_path.startswith(meta.href) %} aria-current="page"{% endif %}>{{ mh_icon(key) }}<span class="mh-rail-label">{{ t(meta.label) }}</span></a>
+            <div class="mh-rail-group-label">{{ t('masthead.rubric.' + rubric) }}</div>
+            {% for s in members_vis %}
+            <a href="{{ s.route }}" title="{{ t('nav.' + s.key) }}" class="mh-rail-btn {% if current_path.startswith(s.route) %}is-active{% endif %}"{% if current_path.startswith(s.route) %} aria-current="page"{% endif %}>{{ mh_icon(s.key) }}<span class="mh-rail-label">{{ t('nav.' + s.key) }}</span></a>
             {% endfor %}
         </div>
         {% endif %}
@@ -117,18 +95,23 @@
    top-right. #}
 {% macro masthead_header(section, title, metrics) %}
 {% set em = request.state.enabled_modules or {} %}
+{% set spec = module_registry.get(section) %}
 {% set rb = namespace(cat=none, members=[], num=0) %}
-{% for r in MH_RUBRICS %}{% if section in r.members %}{% set rb.members = r.members %}{% set rb.cat = MH_SECTIONS[section].cat or r.cat %}{% set rb.num = loop.index %}{% endif %}{% endfor %}
-{% if section == 'settings' %}{% set rb.cat = 'nav.settings' %}{% set rb.num = 4 %}{% endif %}
+{% if spec and spec.rubric %}
+{% set rb.members = nav_modules(em, rubric=spec.rubric) %}
+{% set rb.cat = 'masthead.rubric.' + (spec.eyebrow or spec.rubric) %}
+{% set rb.num = module_rubrics.index(spec.rubric) + 1 %}
+{% endif %}
+{% if section == 'settings' %}{% set rb.cat = 'nav.settings' %}{% set rb.num = module_rubrics|length + 1 %}{% endif %}
 <div class="mh-head">
     <div class="mh-eyebrow-row">
         <span class="mh-eyebrow">{{ t("masthead.section_word") }} {{ "%02d" | format(rb.num) }} · {{ t(rb.cat) if rb.cat else '' }}</span>
         {% if caller %}<div class="mh-actions">{{ caller() }}</div>{% endif %}
     </div>
     <nav class="mh-tabs">
-        {% for mem in rb.members %}{% set meta = MH_SECTIONS[mem] %}{% if meta.gate is none or em.get(meta.gate) %}
-        <a href="{{ meta.href }}" class="mh-tab {% if mem == section %}is-active{% endif %}">{{ t(meta.label) }}</a>
-        {% endif %}{% endfor %}
+        {% for s in rb.members %}
+        <a href="{{ s.route }}" class="mh-tab {% if s.key == section %}is-active{% endif %}">{{ t('nav.' + s.key) }}</a>
+        {% endfor %}
     </nav>
     <div class="mh-hero-row">
         <h1 class="mh-title">{{ title }}</h1>

@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
 from vitals.i18n import t, get_js_strings, plural
+from vitals.services.modules_service import MODULE_REGISTRY, NAV_RUBRICS, nav_modules
 from vitals.services.supplements_service import timing_bucket
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
@@ -123,3 +124,8 @@ templates.env.globals["static_version"] = static_version
 templates.env.globals["t"] = t
 templates.env.globals["get_js_strings"] = get_js_strings
 templates.env.globals["plural"] = plural
+# Navigation registry — the rail, the masthead tabs and the mobile nav all read
+# these instead of keeping their own copy of the section list.
+templates.env.globals["module_registry"] = MODULE_REGISTRY
+templates.env.globals["module_rubrics"] = NAV_RUBRICS
+templates.env.globals["nav_modules"] = nav_modules
