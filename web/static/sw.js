@@ -1,4 +1,6 @@
-const CACHE_NAME = 'vitals-os-v6';
+// v7 — bumped so `activate` drops the v6 cache, which may already hold
+// /static/uploads/* entries from before the exclusion below.
+const CACHE_NAME = 'vitals-os-v7';
 
 const OFFLINE_PAGE = '/static/offline.html';
 
@@ -37,7 +39,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (sameOrigin && url.pathname.startsWith('/static/')) {
+  // /static/uploads/* is user data (lab sheets, InBody printouts, progress
+  // photos), not app shell — caching it would leave medical images in Cache
+  // Storage forever, outside the session and untouched by logout.
+  if (sameOrigin && url.pathname.startsWith('/static/')
+      && !url.pathname.startsWith('/static/uploads/')) {
     // Stale-while-revalidate: serve the cached copy instantly (offline-friendly),
     // but ALWAYS kick off a background fetch to refresh the cache. Cache-first
     // (the old strategy) pinned /static/* to whatever was cached until CACHE_NAME

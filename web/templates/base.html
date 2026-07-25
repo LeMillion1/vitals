@@ -93,7 +93,17 @@
                 const main = document.querySelector('main');
                 if (main) main.scrollTop = restoreData.y;
             }
-            window.addEventListener('load', restoreScroll);
+            // Same stash, one extra passenger: messages that must survive the
+            // redirect that produced them (labs_upload.js names each file the
+            // vision parser couldn't read — a toast fired before the redirect
+            // would be wiped by it).
+            window.addEventListener('load', function () {
+                restoreScroll();
+                const errors = restoreData && restoreData.errors;
+                if (Array.isArray(errors) && window.vitalsToast) {
+                    errors.forEach((msg) => window.vitalsToast(msg, 'error'));
+                }
+            });
             document.addEventListener('htmx:load', restoreScroll);
         })();
     </script>
@@ -207,15 +217,20 @@
          listeners) with no top-level DOM access, so loading it on every page — not just
          the one that uses it — is inert elsewhere and safe. Placed before alpine-script
          so protocol.js's alpine:init listener (a secondary Alpine.data() registration,
-         kept for named-component syntax) is attached before Alpine dispatches that event. -->
+         kept for named-component syntax) is attached before Alpine dispatches that event.
+         charts.js goes first: it owns vitalsFormatDateStr, which app.js and hevy.js call
+         from their own top-level init (readyState is already "interactive" while deferred
+         scripts run, so those inits fire during evaluation, not at DOMContentLoaded). -->
+    <script defer src="{{ static_version('/static/charts.js') }}"></script>
     <script defer src="{{ static_version('/static/app.js') }}"></script>
     <script defer src="{{ static_version('/static/glp1.js') }}"></script>
     <script defer src="{{ static_version('/static/nutrition.js') }}"></script>
     <script defer src="{{ static_version('/static/protocol.js') }}"></script>
-    <script defer src="{{ static_version('/static/charts.js') }}"></script>
     <script defer src="{{ static_version('/static/garmin.js') }}"></script>
     <script defer src="{{ static_version('/static/garmin_sleep.js') }}"></script>
     <script defer src="{{ static_version('/static/labs_upload.js') }}"></script>
+    <script defer src="{{ static_version('/static/labs.js') }}"></script>
+    <script defer src="{{ static_version('/static/hevy.js') }}"></script>
 
     <!-- Alpine — lives in <head> (not a page script) with `defer` so it survives boosted
          navigations: hx-boost only swaps <body> innerHTML, so anything inside <body> gets
@@ -926,13 +941,16 @@
 
         // Surface server error responses (e.g. a 400 from a rejected import/upload)
         // as a toast. HTMX doesn't swap non-2xx by default, so without this the
-        // user would see nothing. Reads {"detail": "..."} from a JSON error body.
+        // user would see nothing. Error bodies come in three shapes here:
+        // {"detail": …} (FastAPI HTTPException), {"error": …} (hrt.py's 12
+        // handlers, garmin.py, /settings/modules) and {"message": …}.
         document.addEventListener('htmx:responseError', (evt) => {
             let message = window.t('error.generic');
             try {
                 const data = JSON.parse(evt.detail.xhr.responseText);
-                if (data && data.detail) {
-                    message = typeof data.detail === 'string' ? data.detail : message;
+                const detail = data && (data.detail || data.error || data.message);
+                if (typeof detail === 'string') {
+                    message = detail;
                 }
             } catch (e) { /* non-JSON body — keep the generic message */ }
             if (window.vitalsToast) window.vitalsToast(message, 'error');

@@ -185,8 +185,8 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         except Exception:
             logger.exception("Could not resolve user for 404 page")
         # Unmatched routes skip the global load_* dependencies, so base.html's
-        # request.state.{lang,enabled_modules,ui_version} are unset — populate them
-        # or the template render 500s instead of showing the branded 404.
+        # request.state.{lang,enabled_modules} are unset — populate them or the
+        # template render 500s instead of showing the branded 404.
         await _populate_state_for_error_page(request)
         return templates.TemplateResponse(
             request,

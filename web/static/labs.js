@@ -106,8 +106,9 @@ if (document.readyState !== 'loading') {
 } else {
     document.addEventListener('DOMContentLoaded', initLabChartSafe);
 }
-// Register boosted-navigation hooks once (this script re-runs on every hx-boost
-// swap into /labs); historyRestore re-draws the chart after browser back/forward.
+// Register boosted-navigation hooks once (this file is loaded once from <head>,
+// so afterSettle is what re-draws the chart when a boosted swap lands on /labs);
+// historyRestore re-draws it after browser back/forward.
 if (!window.__labChartBound) {
     window.__labChartBound = true;
     document.addEventListener('htmx:afterSettle', initLabChartSafe);

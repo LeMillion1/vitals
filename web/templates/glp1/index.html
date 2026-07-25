@@ -80,7 +80,7 @@
 
             <!-- TAB: Dose Phase -->
             <div x-show="activeTab === 'phase'" class="space-y-4">
-                <form action="/glp1/phase" method="POST" class="space-y-4" onsubmit="this.querySelector('button[type=submit]').disabled = true">
+                <form action="/glp1/phase" method="POST" class="space-y-4" hx-disabled-elt="find button[type='submit']">
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="v-label">{{ t("glp1.phase_start") }}</label>
@@ -110,7 +110,7 @@
 
             <!-- TAB: Side Effect -->
             <div x-show="activeTab === 'side'" class="space-y-4">
-                <form action="/glp1/side-effect" method="POST" class="space-y-4" onsubmit="this.querySelector('button[type=submit]').disabled = true">
+                <form action="/glp1/side-effect" method="POST" class="space-y-4" hx-disabled-elt="find button[type='submit']">
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="v-label">{{ t("common.date") }}</label>

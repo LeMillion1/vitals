@@ -142,8 +142,15 @@ def test_referenced_keys_exist_in_dictionaries():
             if key not in en_keys:
                 missing_tpl.add(key)
 
+    # window.t() is called from inline <script> blocks too (base.html, settings,
+    # weight), and those calls resolve against the same js.* slice. _TPL_KEY_RE
+    # can't see them — its `[^\w.]` lead-in excludes the dot in `window.t(` — so
+    # scanning only web/static left ~24 inline calls guarded by nothing.
+    js_sources = list((_REPO_ROOT / "web" / "static").glob("*.js"))
+    js_sources += list((_REPO_ROOT / "web" / "templates").rglob("*.html"))
+
     missing_js: set[str] = set()
-    for path in (_REPO_ROOT / "web" / "static").glob("*.js"):
+    for path in js_sources:
         for key in _JS_KEY_RE.findall(path.read_text(encoding="utf-8")):
             if key not in js_keys:
                 missing_js.add(key)

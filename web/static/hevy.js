@@ -5,15 +5,6 @@
  * The template only renders the canvas when there are 2+ points — a single
  * session is shown as a stat card instead, so this can assume a real series.
  */
-function formatDateStr(dateStr) {
-    if (!dateStr) return '';
-    const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (match) {
-        return `${match[3]}-${match[2]}-${match[1]}`;
-    }
-    return dateStr;
-}
-
 function initHevyChart() {
     const canvas = document.getElementById('hevyChart');
     if (!canvas) return;
@@ -23,7 +14,7 @@ function initHevyChart() {
 
     const C = (window.vitalsChartTheme && window.vitalsChartTheme()) || {};
 
-    const labels = data.map(p => formatDateStr(p.date));
+    const labels = data.map(p => vitalsFormatDateStr(p.date));
     const weights = data.map(p => p.weight_kg);
     const reps = data.map(p => p.top_reps);
 
@@ -98,8 +89,9 @@ if (document.readyState !== 'loading') {
 } else {
     document.addEventListener('DOMContentLoaded', initHevyChartSafe);
 }
-// Register boosted-navigation hooks once (this script re-runs on every hx-boost
-// swap into /hevy); historyRestore re-draws the chart after browser back/forward.
+// Register boosted-navigation hooks once (this file is loaded once from <head>,
+// so afterSettle is what re-draws the chart when a boosted swap lands on /hevy);
+// historyRestore re-draws it after browser back/forward.
 if (!window.__hevyChartBound) {
     window.__hevyChartBound = true;
     document.addEventListener('htmx:afterSettle', initHevyChartSafe);

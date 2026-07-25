@@ -56,7 +56,7 @@
             <span class="v-text-card">{{ t("charts.builder_title") }}</span>
         </div>
         <form action="/charts" method="POST" class="space-y-4"
-              onsubmit="this.querySelector('button[type=submit]').disabled = true">
+              hx-disabled-elt="find button[type='submit']">
             <div>
                 <label class="v-label">{{ t("charts.name_label") }}</label>
                 <input type="text" name="name" required class="v-input" x-model="name">

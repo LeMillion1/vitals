@@ -65,7 +65,7 @@
                 <span class="v-bar v-bar-sm"></span>
                 <span class="v-text-card">{{ t("labs.manual_title") }}</span>
             </div>
-            <form action="/labs/result" method="POST" class="space-y-4" onsubmit="this.querySelector('button[type=submit]').disabled = true">
+            <form action="/labs/result" method="POST" class="space-y-4" hx-disabled-elt="find button[type='submit']">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label class="v-label">{{ t("common.date") }}</label>
@@ -252,5 +252,4 @@
 <script>
     window.labChartData = {{ series | tojson | safe }};
 </script>
-<script src="{{ static_version('/static/labs.js') }}"></script>
 {% endblock %}

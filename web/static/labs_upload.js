@@ -28,6 +28,7 @@ window.labsUpload = function (showUploadInitial) {
         lqSaving: false,
         lqPreviewOpen: false,
         lqFailed: 0,
+        lqErrors: [],
         lqConfirmed: 0,
         lqLab: { date: '', lab_name: '', file_key: null, raw_payload_id: null },
         lqRows: [],
@@ -39,6 +40,7 @@ window.labsUpload = function (showUploadInitial) {
             this.lqTotal = this.lqQueue.length;
             this.lqIndex = 0;
             this.lqFailed = 0;
+            this.lqErrors = [];
             this.lqConfirmed = 0;
             form.reset();
             const hint = form.querySelector('.v-file-drop__hint');
@@ -73,7 +75,11 @@ window.labsUpload = function (showUploadInitial) {
                         window.location.href = '/labs?upload=not_configured';
                         return;
                     }
-                    this.lqFailed += 1;
+                    // Name the file and say why. The summary banner only counts
+                    // failures ("failed: 2"), which is useless when several
+                    // photos were queued — the owner can't tell which one to
+                    // re-shoot, or whether it was a bad photo or a dead key.
+                    this._lqFail(file, (data && (data.message || data.detail)) || window.t('save_error'));
                     await this._lqProcessNext();
                     return;
                 }
@@ -86,12 +92,17 @@ window.labsUpload = function (showUploadInitial) {
                 this.lqRows = (data.lab.markers || []).map(r => ({ ...r }));
                 this.lqPreviewOpen = true;
             } catch (err) {
-                this.lqFailed += 1;
+                this._lqFail(file, window.t('network_error'));
                 await this._lqProcessNext();
             } finally {
                 this.lqUploading = false;
                 if (window.vitalsLoader) window.vitalsLoader.hide();
             }
+        },
+
+        _lqFail(file, reason) {
+            this.lqFailed += 1;
+            this.lqErrors.push(((file && file.name) ? file.name + ' — ' : '') + reason);
         },
 
         lqAddRow() {
@@ -148,6 +159,11 @@ window.labsUpload = function (showUploadInitial) {
         // nothing if the user skipped every file.
         _lqFinish() {
             if (this.lqConfirmed > 0 || this.lqFailed > 0) {
+                // The banner only carries counts; hand the per-file reasons to the
+                // stash base.html drains on load, so they survive this redirect.
+                if (this.lqErrors.length && window.vitalsStashRestore) {
+                    window.vitalsStashRestore({ errors: this.lqErrors.slice() });
+                }
                 const qs = new URLSearchParams({ upload: 'ok', added: this.lqConfirmed, failed: this.lqFailed });
                 window.location.href = '/labs?' + qs.toString();
             }

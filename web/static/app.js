@@ -308,15 +308,6 @@ window.weightOSDashboard = function () {
     };
 };
 
-function formatDateStr(dateStr) {
-    if (!dateStr) return '';
-    const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (match) {
-        return `${match[3]}-${match[2]}-${match[1]}`;
-    }
-    return dateStr;
-}
-
 // ── Chart.js Setup ───────────────────────────────────────────────────────────
 
 function initWeightChart() {
@@ -474,7 +465,7 @@ function initWeightChart() {
     window.vitalsChartInstance = new Chart(canvas, {
         type: 'line',
         data: {
-            labels: sortedLabels.map(formatDateStr),
+            labels: sortedLabels.map(vitalsFormatDateStr),
             datasets: [
                 {
                     label: window.t('chart.trend_ma'),
