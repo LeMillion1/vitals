@@ -1,17 +1,16 @@
 # Vitals — Design System
 
-> **Scope note:** Vitals ships two interface shells that read from the *same* token
-> layer — `classic` (default) and `masthead` (opt-in, toggled per-user in
-> Settings → Interface, see [`ui_version_service.py`](../vitals/services/ui_version_service.py)).
-> This document canonizes **Masthead** as the reference visual language: it's
-> what new screens should be designed against. Classic is documented where it
-> still differs, but treat it as legacy — don't invest new visual design in
-> classic-only patterns.
+> **Scope note:** Vitals ships **one** interface shell — **Masthead**. `<body>`
+> always carries `.ui-masthead` (see [`base.html`](../web/templates/base.html));
+> there is no per-user toggle and no `ui_version` setting anymore. Design every
+> new screen against Masthead. The older `classic` frame is gone; where this
+> document still describes it, treat that as historical background only.
 >
 > Grounded entirely in the current implementation — every token and class below
 > exists in [`web/static/vitals.css`](../web/static/vitals.css) and
 > [`web/static/vitals-masthead.css`](../web/static/vitals-masthead.css) at the time
-> of writing (2026-07-17). If you change a token, update this file in the same PR.
+> of writing (updated 2026-07-25). If you change a token, update this file in the
+> same PR.
 
 ## At a glance
 
@@ -143,6 +142,13 @@ no Google Fonts CDN dependency):
 | **Outfit** | 400–900 | Headings, card titles, classic KPI metric values — the "display sans" |
 | **Bricolage Grotesque** | 600–800 | Masthead-only: big editorial titles and tab labels (`--mh-display`) |
 
+**Cyrillic:** only Inter has it. Outfit and Bricolage Grotesque have no Cyrillic
+subset upstream at all, so **every display stack names `'Inter'` right after the
+display family** — Latin and digits render in Outfit/Bricolage, Russian falls to
+a font we actually ship instead of an arbitrary system font that differs per
+device. Never write a stack that goes straight from a display family to a
+generic (`sans-serif`, `system-ui`); `tests/test_review_run3.py` enforces it.
+
 No monospace typeface is loaded or used. `.font-mono` / `.tnum` force Inter with
 `font-variant-numeric: tabular-nums` and `cv01`/`ss01` feature settings, so
 number-heavy tables still align in columns.
@@ -159,16 +165,26 @@ number-heavy tables still align in columns.
 | `--text-label` | 13px | 13px | Labels, column headers (muted) |
 | `--text-micro` | 12px | 12px | Units, dates, secondary info (muted) |
 
-**Masthead display type** (layered on top of the core scale, `.mh-*` classes):
+**Masthead scale** — the editorial layer needs sizes the core six don't cover,
+so it has its own token set declared once in `body.ui-masthead`
+(`web/static/vitals-masthead.css`). No `.mh-*` rule may write a raw pixel size;
+sizes that already exist on the core scale (12/13/14px) reference the core token.
 
-| Class | Spec | Use |
+| Token | Size | Use |
 |---|---|---|
-| `.mh-eyebrow` | 11px/600, uppercase, `.14em` tracking, `--faint` | Section-number eyebrow row |
-| `.mh-tab` | 14px/500 display font → 600/`--fg` + amber underline when active | In-rubric section switcher |
-| `.mh-title` | 62px/800 display font, 1.05 line-height → 38px on mobile | The big editorial `<h1>` |
-| `.mh-metric-value.is-primary` | 50px/700 display font → 38px on mobile | The one "hero" key figure |
-| `.mh-metric-value` | 21px/600 Inter, tabular-nums | Secondary key figures |
-| `.mh-metric-label` | 11px/600, uppercase, `.1em` tracking, `--faint` | Key-figure caption |
+| `--mh-text-hero` | 62px | `.mh-title` base |
+| `--mh-text-hero-lg` | 54px | `.mh-title` on desktop |
+| `--mh-text-hero-md` | 38px | `.mh-title` + hero figure on tablet |
+| `--mh-text-hero-sm` | 30px | `.mh-title` on a narrow phone |
+| `--mh-text-metric` | 50px | `.mh-metric-value.is-primary` |
+| `--mh-text-metric-md` | 48px | the same on the desktop shell |
+| `--mh-text-ring` / `-md` | 32px / 26px | value inside a progress ring |
+| `--mh-text-wordmark` / `-sm` | 26px / 22px | rail wordmark, expanded / collapsed "V" |
+| `--mh-text-lead` | 21px | `.mh-metric-value` (secondary figures) |
+| `--mh-text-brand` | 19px | mobile topbar wordmark |
+| `--mh-text-tab` | 15px | `.mh-tab` |
+| `--mh-text-eyebrow` | 11px | uppercase eyebrows and key-figure captions |
+| `--mh-text-nano` | 10px | smallest uppercase micro-label |
 
 ### 2.3 Spacing & radius
 
@@ -267,14 +283,14 @@ instead of `<div>`, for a key figure that should double as a shortcut (e.g.
 Garmin's Sleep figure linking straight to the latest night's detail page).
 Omit it and you get the plain non-interactive tile, same as before.
 
-### 3.2 Classic (legacy default)
+### 3.2 Classic (removed)
 
-A blurred-glass top `.v-header` navbar (4rem tall, active link picks up the
-amber wayfinding treatment) plus a `.v-metric` KPI-card grid where Masthead
-would use the inline key-figures row. Same tokens and same components below
-the fold — only the top-of-page frame differs. `ui_version` defaults to
-`"classic"` (see [`ui_version_service.py`](../vitals/services/ui_version_service.py));
-it's the safe fallback, not the design target.
+The old frame: a blurred-glass top `.v-header` navbar (4rem tall, active link
+picking up the amber wayfinding treatment) plus a `.v-metric` KPI-card grid
+where Masthead uses the inline key-figures row. It no longer ships — there is
+no `ui_version` setting and no toggle. Some `.v-header` / `.v-metric` CSS
+survives because Masthead reuses parts of it; don't build new screens on the
+classic frame.
 
 ### 3.3 Responsive & PWA plumbing
 
@@ -354,7 +370,7 @@ span and hides the native text below 768px.
 ### Segmented control
 
 `.v-seg` (track) / `.v-seg-btn.is-active` (surface-2 pill, **not** amber) — used
-for the classic/masthead toggle itself, chart range pickers, and similar
+for the Settings language switch, chart range pickers, and similar
 mutually-exclusive choices. Also doubles as real navigation: `<a class="v-seg-btn">`
 for sub-tabs that are separate routes (e.g. Garmin's Overview/Sleep/Activities).
 The `a.v-seg-btn { display: block; text-decoration: none; }` pair in `vitals.css`

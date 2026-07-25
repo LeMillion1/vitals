@@ -7,7 +7,7 @@
 
 <p align="center">
   <strong>Self-hosted personal health data lake & dashboard with 69 MCP tools for Claude.ai</strong><br>
-  <sub>Quiet Precision UI · Masthead Shell · 14 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · AI Digests</sub>
+  <sub>Masthead UI · EN/RU interface · 14 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · AI Digests</sub>
 </p>
 
 <p align="center">
@@ -41,7 +41,7 @@
 
 **Vitals** — персональный дашборд здоровья и полноценное «озеро данных» (data lake) для одного пользователя. Система спроектирована для долгосрочного отслеживания биомаркеров, рекомпозиции тела, контроля терапии GLP-1, прохождения курсов гормональной терапии (ГЗТ / TRT), анализа спортивных показателей и построения еженедельных AI-отчётов с помощью языковых моделей через OpenRouter.
 
-Система разработана с использованием визуального языка **Quiet Precision** и полностью стандартизирована на премиальном интерфейсе **Masthead** — издательском (editorial) дизайне с тёплой глубокой темой (`#1D1A21` / `#332F3C`), milk-white текстом, точечными акцентами цвета янтарного мёда (`#F5A623`) и высококлассной типографикой (Outfit/Bricolage Grotesque/Inter, без использования моноширинных шрифтов).
+Интерфейс полностью стандартизирован на единственной оболочке **Masthead** — издательском (editorial) дизайне с тёплой глубокой темой (`#1D1A21` / `#332F3C`), milk-white текстом, точечными акцентами цвета янтарного мёда (`#F5A623`) и высококлассной типографикой (Outfit/Bricolage Grotesque/Inter, без использования моноширинных шрифтов). Дизайн-система целиком описана в [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md).
 
 Главное отличие от фитнес-трекеров — **принцип максимального сохранения сырых данных**. Vitals — умный навигатор здоровья, который подсвечивает неочевидные взаимосвязи между сном, тренировками, медикаментами и весом, помогая принимать взвешенные решения. Не надзиратель — штурман.
 
@@ -90,6 +90,7 @@ Vitals написан с Claude в качестве основного инст�
 
 **📱 Мобильный опыт**
 - PWA с установкой на Home Screen (iOS/Android)
+- Двуязычный интерфейс (русский / английский) — переключение в настройках
 - Адаптация под все размеры (Mobile / Tablet / Desktop)
 - HTMX — мгновенные переходы без перезагрузок страниц
 - Alpine.js — микро-интерактивность на клиенте
@@ -316,7 +317,7 @@ graph TD
 | :--- | :--- |
 | **`vitals/`** (ядро) | Модели, сервисы, бизнес-логика. Не знает о FastAPI. Импортируется в скрипты и тесты. |
 | **`web/`** (доставка) | FastAPI-роутинг, авторизация, CSRF, шаблоны Jinja2. Вызывает сервисы, не содержит бизнес-логику. |
-| **Фронтенд** | HTML-over-the-wire: HTMX + Alpine.js + Chart.js. Visual-слой Masthead (Quiet Precision). |
+| **Фронтенд** | HTML-over-the-wire: HTMX + Alpine.js + Chart.js. Единственная оболочка — Masthead (см. [DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)). Тексты — через `vitals/i18n.py` (RU/EN). |
 
 ---
 
@@ -454,6 +455,12 @@ python -c "import bcrypt; print(bcrypt.hashpw(b'ваш-пароль', bcrypt.gen
 VITALS_SESSION_SECRET="результат-первой-команды"
 VITALS_AUTH_USERNAME="your-username"
 VITALS_AUTH_PASSWORD_HASH="результат-второй-команды"
+
+# Пароль PostgreSQL внутри Docker-сети — обязателен, без него compose не стартует
+VITALS_DB_PASSWORD="любой-длинный-пароль"
+
+# Секрет OAuth для подключения Claude.ai по MCP
+VITALS_MCP_CLIENT_SECRET="ещё-один-случайный-секрет"
 ```
 
 #### 4. Запустите
@@ -632,8 +639,14 @@ curl -s http://127.0.0.1:8000/health
 | Переменная | Описание | Дефолт |
 | :--- | :--- | :--- |
 | `VITALS_DATABASE_URL` | PostgreSQL (asyncpg) | `postgresql+asyncpg://...` |
+| `VITALS_DB_USER` | Пользователь PostgreSQL (для контейнера БД) | `vitals` |
+| `VITALS_DB_PASSWORD` | Пароль PostgreSQL | *Обязательный* |
+| `VITALS_DB_NAME` | Имя базы | `vitals_db` |
 | `VITALS_REDIS_URL` | Redis для кэша и локов | `redis://vitals_redis:6379/0` |
 | `VITALS_TIMEZONE` | Зона пользователя | `Europe/Chisinau` |
+| `VITALS_BACKUP_RETENTION_DAYS` | Сколько дней хранить авто-бэкапы | `7` |
+
+Тонкая настройка пула соединений и таймаутов (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFLOW`, `VITALS_DB_POOL_TIMEOUT`, `VITALS_DB_POOL_RECYCLE`, `VITALS_DB_STATEMENT_TIMEOUT_MS`) — с рабочими дефолтами в `.env.example`, трогать не обязательно.
 </details>
 
 <details>
@@ -654,9 +667,9 @@ curl -s http://127.0.0.1:8000/health
 
 | Переменная | Описание | Дефолт |
 | :--- | :--- | :--- |
-| `VITALS_HEIGHT_CM` | Рост (см) | `175` |
+| `VITALS_HEIGHT_CM` | Рост (см) | `190` |
 | `VITALS_SEX` | Пол (`male` / `female`) | `male` |
-| `VITALS_USER_AGE` | Возраст | `25` |
+| `VITALS_USER_AGE` | Возраст | `18` |
 | `VITALS_BODY_FAT_SOURCE` | Главный источник жира%/LBM: `latest` / `navy` / `bia` | `latest` |
 | `VITALS_USER_PROGRAM` | Описание программы | *Встроено* |
 | `VITALS_USER_GOALS` | Цели (через запятую) | `снижение жира, сохранение мышц` |
@@ -678,14 +691,17 @@ curl -s http://127.0.0.1:8000/health
 | Переменная | Описание | Дефолт |
 | :--- | :--- | :--- |
 | `VITALS_OPENROUTER_API_KEY` | API-ключ OpenRouter | *Опционально* |
+| `VITALS_OPENROUTER_BASE_URL` | Адрес API OpenRouter | `https://openrouter.ai/api/v1` |
 | `VITALS_LLM_MODEL_DIGEST` | Модель для дайджестов | `anthropic/claude-sonnet-4.6` |
 | `VITALS_LLM_MODEL_PARSER` | Модель для OCR анализов и BIA | `google/gemini-2.5-flash` |
 | `VITALS_HEVY_API_KEY` | API-ключ Hevy | *Опционально* |
+| `VITALS_HEVY_BASE_URL` | Адрес API Hevy | `https://api.hevyapp.com` |
 | `VITALS_GARMIN_EMAIL` | Email Garmin Connect | *Опционально* |
 | `VITALS_GARMIN_PASSWORD` | Пароль Garmin Connect | *Опционально* |
 | `VITALS_GARMIN_TOKEN_DIR` | Путь к токенам Garmin | `/data/garmin_session` |
 | `VITALS_MCP_CLIENT_ID` | OAuth Client ID для MCP | `vitals-claude-connector` |
 | `VITALS_MCP_CLIENT_SECRET` | OAuth Client Secret для MCP | *Обязательно* |
+| `VITALS_MCP_REDIRECT_URIS` | Разрешённые OAuth-callback'и (через запятую) | `https://claude.ai/api/mcp/auth_callback` |
 | `VITALS_EXTERNAL_API_TOKEN` | Токен для сервер-сервер Glance API | *Опционально* |
 </details>
 
@@ -753,7 +769,7 @@ bash scripts/test_postgres.sh
 
 **Vitals** is a personal health dashboard and data lake designed for a single user. Built for long-term tracking of biomarkers, body recomposition, GLP-1 therapy, hormone replacement therapy (HRT / TRT) cycles, athletic performance, and AI-powered weekly analytical digests via OpenRouter LLMs.
 
-The interface is built using the **Quiet Precision** design language, standardizing entirely on the premium **Masthead** UI shell — featuring a warm dark plum-charcoal aesthetic (`#1D1A21` / `#332F3C`), milk-white typography, selective honey-amber (`#F5A623`) highlights, and editorial-grade typography (Outfit / Bricolage Grotesque / Inter, without a single monospace font).
+The interface standardizes entirely on a single UI shell — **Masthead** — featuring a warm dark plum-charcoal aesthetic (`#1D1A21` / `#332F3C`), milk-white typography, selective honey-amber (`#F5A623`) highlights, and editorial-grade typography (Outfit / Bricolage Grotesque / Inter, without a single monospace font). The full design system is documented in [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md).
 
 Unlike typical fitness trackers, Vitals prioritizes **preserving raw historical data**. It serves as a smart wellness navigator — uncovering correlations between sleep, workouts, supplements, and body composition. Not a watchdog — a co-pilot.
 
@@ -806,6 +822,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 
 **📱 Mobile Experience**
 - PWA with Home Screen install (iOS/Android)
+- Bilingual interface (English / Russian) — switchable in Settings
 - Fully responsive across Mobile / Tablet / Desktop
 - HTMX — instant transitions, no page reloads
 - Alpine.js — client-side micro-interactivity
@@ -1032,7 +1049,7 @@ graph TD
 | :--- | :--- |
 | **`vitals/`** (core) | Models, services, business logic. Zero web dependencies. Importable in scripts and tests. |
 | **`web/`** (delivery) | FastAPI routing, auth, CSRF, Jinja2 templates. Calls services — contains no business logic. |
-| **Frontend** | HTML-over-the-wire: HTMX + Alpine.js + Chart.js. Masthead layout (Quiet Precision system). |
+| **Frontend** | HTML-over-the-wire: HTMX + Alpine.js + Chart.js. One shell — Masthead (see [DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)). All copy flows through `vitals/i18n.py` (EN/RU). |
 
 ---
 
@@ -1170,6 +1187,12 @@ python -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(4
 VITALS_SESSION_SECRET="your-session-secret"
 VITALS_AUTH_USERNAME="your-username"
 VITALS_AUTH_PASSWORD_HASH="your-bcrypt-hash"
+
+# PostgreSQL password inside the Docker network — required, compose refuses to start without it
+VITALS_DB_PASSWORD="any-long-password"
+
+# OAuth secret for connecting Claude.ai over MCP
+VITALS_MCP_CLIENT_SECRET="another-random-secret"
 ```
 
 #### 4. Launch
@@ -1350,8 +1373,14 @@ The standard path if you want direct public access to your Vitals dashboard usin
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `VITALS_DATABASE_URL` | PostgreSQL (asyncpg) | `postgresql+asyncpg://...` |
+| `VITALS_DB_USER` | PostgreSQL user (for the DB container) | `vitals` |
+| `VITALS_DB_PASSWORD` | PostgreSQL password | *Required* |
+| `VITALS_DB_NAME` | Database name | `vitals_db` |
 | `VITALS_REDIS_URL` | Redis for cache and locks | `redis://vitals_redis:6379/0` |
 | `VITALS_TIMEZONE` | User timezone | `Europe/Chisinau` |
+| `VITALS_BACKUP_RETENTION_DAYS` | How many days of automatic backups to keep | `7` |
+
+Connection-pool and timeout tuning (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFLOW`, `VITALS_DB_POOL_TIMEOUT`, `VITALS_DB_POOL_RECYCLE`, `VITALS_DB_STATEMENT_TIMEOUT_MS`) ships with working defaults in `.env.example` — you don't need to touch it.
 </details>
 
 <details>
@@ -1372,9 +1401,9 @@ The standard path if you want direct public access to your Vitals dashboard usin
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `VITALS_HEIGHT_CM` | Height (cm) | `175` |
+| `VITALS_HEIGHT_CM` | Height (cm) | `190` |
 | `VITALS_SEX` | Sex (`male` / `female`) | `male` |
-| `VITALS_USER_AGE` | Age | `25` |
+| `VITALS_USER_AGE` | Age | `18` |
 | `VITALS_BODY_FAT_SOURCE` | Primary body-fat%/LBM source: `latest` / `navy` / `bia` | `latest` |
 | `VITALS_USER_PROGRAM` | Program description | *Embedded* |
 | `VITALS_USER_GOALS` | Goals (comma-separated) | `снижение жира, сохранение мышц` |
@@ -1396,14 +1425,17 @@ The standard path if you want direct public access to your Vitals dashboard usin
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `VITALS_OPENROUTER_API_KEY` | OpenRouter API key | *Optional* |
+| `VITALS_OPENROUTER_BASE_URL` | OpenRouter API base URL | `https://openrouter.ai/api/v1` |
 | `VITALS_LLM_MODEL_DIGEST` | Digest model | `anthropic/claude-sonnet-4.6` |
 | `VITALS_LLM_MODEL_PARSER` | Lab OCR model | `google/gemini-2.5-flash` |
 | `VITALS_HEVY_API_KEY` | Hevy API key | *Optional* |
+| `VITALS_HEVY_BASE_URL` | Hevy API base URL | `https://api.hevyapp.com` |
 | `VITALS_GARMIN_EMAIL` | Garmin Connect email | *Optional* |
 | `VITALS_GARMIN_PASSWORD` | Garmin Connect password | *Optional* |
 | `VITALS_GARMIN_TOKEN_DIR` | Garmin session token path | `/data/garmin_session` |
 | `VITALS_MCP_CLIENT_ID` | MCP OAuth Client ID | `vitals-claude-connector` |
 | `VITALS_MCP_CLIENT_SECRET` | MCP OAuth Client Secret | *Required* |
+| `VITALS_MCP_REDIRECT_URIS` | Allowed OAuth callbacks (comma-separated) | `https://claude.ai/api/mcp/auth_callback` |
 | `VITALS_EXTERNAL_API_TOKEN` | Token for server-server Glance API | *Optional* |
 </details>
 

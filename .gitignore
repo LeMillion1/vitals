@@ -53,11 +53,14 @@ oauth_tokens*.json
 
 # ── Promo drafts & local plans ───────────────────────────────────────────────
 docs/promo-drafts.md
+docs/vitals_mcp_instruction.md
 
 # ── Tooling, IDEs & AI Assistants ────────────────────────────────────────────
 CLAUDE.md
+AGENTS.md
 claude-color.svg
 .claude/
+.codegraph/
 .clinerules
 .cursorrules
 .cursor/
