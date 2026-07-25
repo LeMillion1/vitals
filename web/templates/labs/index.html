@@ -128,7 +128,7 @@
                     <div class="v-table-wrap">
                         <table class="v-table">
                         <thead>
-                            <tr><th>{{ t("labs.marker") }}</th><th>{{ t("labs.value") }}</th><th>{{ t("labs.norm") }}</th><th>{{ t("labs.status") }}</th><th>{{ t("common.date") }}</th></tr>
+                            <tr><th>{{ t("labs.marker") }}</th><th>{{ t("labs.value") }}</th><th>{{ t("labs.norm") }}</th><th>{{ t("labs.status") }}</th><th>{{ t("common.date") }}</th><th></th></tr>
                         </thead>
                         <tbody>
                             {% for r in latest %}
@@ -147,9 +147,20 @@
                                     </span>
                                 </td>
                                 <td class="v-num v-text-micro">{{ r.date | format_date }}</td>
+                                {# The row itself navigates to the marker, so the delete
+                                   form must swallow the click before it bubbles up. #}
+                                <td class="text-right" onclick="event.stopPropagation()">
+                                    <form method="post" action="/labs/result/{{ r.id }}/delete" class="inline"
+                                          data-confirm="{{ t('labs.confirm_delete_result') }}">
+                                        <button type="submit" class="v-icon-btn danger" title="{{ t('common.delete') }}"
+                                                aria-label="{{ t('common.delete') }}">
+                                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                        </button>
+                                    </form>
+                                </td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="5" class="text-center" style="color: var(--muted)">{{ t("labs.no_data") }}</td></tr>
+                            <tr><td colspan="6" class="text-center" style="color: var(--muted)">{{ t("labs.no_data") }}</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>

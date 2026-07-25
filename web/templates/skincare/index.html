@@ -183,6 +183,81 @@
         </div>
     </div>
 
+    <!-- Diary + observations. Both are written from MCP / the API; the page had no
+         way to see or remove a wrong entry until now. -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+        <div class="v-card p-6 space-y-4">
+            <div class="flex items-center gap-2.5">
+                <span class="v-bar"></span>
+                <div>
+                    <h2 class="v-text-heading">{{ t("skincare.diary_title") }}</h2>
+                    <p class="v-text-micro mt-0.5">{{ t("skincare.diary_hint") }}</p>
+                </div>
+            </div>
+            {% set actives = [
+                ('retinoid', 'skincare.active.retinoid'),
+                ('azelaic', 'skincare.active.azelaic'),
+                ('peel', 'skincare.active.peel'),
+                ('niacinamide_spf', 'skincare.active.niacinamide_spf'),
+                ('moisturizer', 'skincare.active.moisturizer'),
+                ('vitamin_c', 'skincare.active.vitamin_c'),
+                ('benzoyl_peroxide', 'skincare.active.benzoyl_peroxide')
+            ] %}
+            {% for l in logs[:30] %}
+            <div class="flex items-start justify-between gap-3 pt-3" style="border-top: 1px solid var(--line)">
+                <div class="space-y-1 min-w-0">
+                    <span class="v-num v-text-label">{{ l.date | format_date }}</span>
+                    <div class="flex flex-wrap gap-1.5">
+                        {% for attr, key in actives if l[attr] %}<span class="v-chip">{{ t(key) }}</span>{% else %}<span class="v-text-body" style="color: var(--muted)">—</span>{% endfor %}
+                    </div>
+                    {% if l.note %}<p class="v-text-micro">{{ l.note }}</p>{% endif %}
+                </div>
+                <form action="/skincare/log/{{ l.id }}/delete" method="POST" class="inline shrink-0"
+                      data-confirm="{{ t('skincare.confirm_delete_log') }}">
+                    <button type="submit" class="v-icon-btn danger" title="{{ t('common.delete') }}"
+                            aria-label="{{ t('common.delete') }}">
+                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                    </button>
+                </form>
+            </div>
+            {% else %}
+            <p class="v-text-body" style="color: var(--muted)">{{ t("skincare.no_logs") }}</p>
+            {% endfor %}
+        </div>
+
+        <div class="v-card p-6 space-y-4">
+            <div class="flex items-center gap-2.5">
+                <span class="v-bar"></span>
+                <div>
+                    <h2 class="v-text-heading">{{ t("skincare.observations_title") }}</h2>
+                    <p class="v-text-micro mt-0.5">{{ t("skincare.observations_hint") }}</p>
+                </div>
+            </div>
+            {% for o in observations[:30] %}
+            <div class="flex items-start justify-between gap-3 pt-3" style="border-top: 1px solid var(--line)">
+                <div class="space-y-1 min-w-0">
+                    <span class="v-num v-text-label">{{ o.date | format_date }}</span>
+                    <div class="flex flex-wrap gap-1.5">
+                        {% if o.inflammation is not none %}<span class="v-chip">{{ t("skincare.inflammation") }} {{ o.inflammation }}/5</span>{% endif %}
+                        {% if o.pih is not none %}<span class="v-chip">{{ t("skincare.pih") }} {{ o.pih }}/5</span>{% endif %}
+                        {% if o.zone %}<span class="v-chip">{{ t("skincare.zone") }}: {{ o.zone }}</span>{% endif %}
+                    </div>
+                    {% if o.note %}<p class="v-text-micro">{{ o.note }}</p>{% endif %}
+                </div>
+                <form action="/skincare/observation/{{ o.id }}/delete" method="POST" class="inline shrink-0"
+                      data-confirm="{{ t('skincare.confirm_delete_observation') }}">
+                    <button type="submit" class="v-icon-btn danger" title="{{ t('common.delete') }}"
+                            aria-label="{{ t('common.delete') }}">
+                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                    </button>
+                </form>
+            </div>
+            {% else %}
+            <p class="v-text-body" style="color: var(--muted)">{{ t("skincare.no_observations") }}</p>
+            {% endfor %}
+        </div>
+    </div>
+
     <!-- Add/Edit Modal -->
     <div x-show="showFormModal" class="v-backdrop" x-cloak>
         <div class="v-modal p-6 space-y-5" @click.away="showFormModal = false">

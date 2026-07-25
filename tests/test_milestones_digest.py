@@ -7,6 +7,7 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import select
 
+from vitals.enums import Domain
 from vitals.models.milestones import WeeklyDigest
 from vitals.services import (
     digest_service,
@@ -295,6 +296,91 @@ async def test_assemble_context_with_custom_period_days(db_session):
     # With period_days=4, only the one from 2 days ago should be counted
     ctx_4 = await digest_service.assemble_context(db_session, on_date=DAY, period_days=4)
     assert ctx_4["hevy"]["total_workouts"] == 1
+
+
+async def test_assemble_context_includes_hrt_and_timeline(db_session):
+    """B1: hormones and the timeline must reach the digest. Without them the
+    strongest intervention in the lake (a compound change) and the ready-made
+    explanation for a dip (illness, travel) were invisible to the narrative."""
+    from vitals.services import hrt_cycle_service, hrt_service, timeline_service
+
+    await hrt_cycle_service.add_cycle(
+        db_session, kind="course", name="TRT", start_date=DAY - timedelta(days=30)
+    )
+    await hrt_service.log_dose(
+        db_session, compound_key="testosterone_enanthate", on_date=DAY - timedelta(days=2),
+        dose=125.0, unit="mg", site="glute_left",
+    )
+    await hrt_service.log_side_effect(
+        db_session, on_date=DAY - timedelta(days=1), effect_type="acne", severity=2
+    )
+    await timeline_service.create_annotation(
+        db_session, title="Грипп", on_date=DAY - timedelta(days=3),
+        end_date=DAY - timedelta(days=1), kind="illness",
+    )
+    # Outside the 7-day window — must not leak in.
+    await timeline_service.create_annotation(
+        db_session, title="Старая поездка", on_date=DAY - timedelta(days=60), kind="travel"
+    )
+    await db_session.commit()
+
+    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+
+    assert ctx["hrt"] is not None
+    assert ctx["hrt"]["doses"][0]["compound_key"] == "testosterone_enanthate"
+    assert ctx["hrt"]["doses"][0]["dose"] == 125.0
+    assert ctx["hrt"]["side_effects"][0]["effect_type"] == "acne"
+    assert ctx["hrt"]["cycle"]["name"] == "TRT"
+    assert ctx["hrt"]["cycle"]["kind"] == "course"
+    assert [a["title"] for a in ctx["timeline"]] == ["Грипп"]
+
+    # The model ignores keys the system prompt never names.
+    llm = FakeLLM()
+    await digest_service.generate_digest(db_session, llm, on_date=DAY)
+    system_prompt = llm.prompts[0][0]
+    assert "hrt:" in system_prompt
+    assert "timeline:" in system_prompt
+
+
+# ── Every domain reaches the digest ───────────────────────────────────────────
+#
+# Same contract as DOMAIN_EXPORT_KEYS in test_data_portability: assemble_context
+# is a long hand-written function whose real failure mode is a new domain being
+# added and nobody remembering to give it a block — the AI report then silently
+# loses a whole module (which is exactly how hrt and timeline went missing).
+
+DIGEST_DOMAIN_KEYS: dict[Domain, tuple[str, ...]] = {
+    Domain.WEIGHT: ("weight",),
+    Domain.BODY_COMPOSITION: ("body_comp",),
+    Domain.GLP1: ("glp1",),
+    Domain.HRT: ("hrt",),
+    Domain.LABS: ("labs",),
+    Domain.WORKOUTS: ("hevy",),
+    Domain.GARMIN: ("garmin",),
+    Domain.NUTRITION: ("nutrition",),
+    Domain.SUPPLEMENTS: ("supplements",),
+    Domain.GENETICS: ("genetics",),
+    Domain.SKINCARE: ("skincare",),
+    Domain.MILESTONES: ("milestones",),
+    Domain.TIMELINE: ("timeline",),
+    # Infra rows reach the digest as the active-alert list, not as their own block.
+    Domain.SYSTEM: ("alerts",),
+}
+
+
+def test_every_domain_is_mapped_to_digest_keys():
+    """A new Domain member must be given a digest block (or an explicit empty
+    tuple saying it deliberately stays out of the report)."""
+    assert set(DIGEST_DOMAIN_KEYS) == set(Domain)
+
+
+async def test_assemble_context_has_a_key_for_every_domain(db_session):
+    """Every mapped key is actually assembled — on an empty database too, so a
+    domain can't be "present" only when it happens to have rows."""
+    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    for keys in DIGEST_DOMAIN_KEYS.values():
+        for key in keys:
+            assert key in ctx, f"digest context is missing {key!r}"
 
 
 # ── Digest generation ─────────────────────────────────────────────────────────

@@ -926,6 +926,42 @@ async def test_labs_dashboard_renders(auth_client, monkeypatch):
     assert "LLM подключена" in response.text
 
 
+async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_session):
+    """U4: four delete routes existed with no button anywhere — a mis-parsed lab
+    result, a diary entry, an observation and a whole cycle could only be removed
+    through the API. Also covers the diary/observation lists themselves, which the
+    skincare page never rendered."""
+    from vitals.services import (
+        hrt_cycle_service,
+        labs_service,
+        skincare_service,
+    )
+    from vitals.utils.timeutils import today_local
+
+    day = today_local()
+    result = await labs_service.add_result(
+        db_session, on_date=day, marker="TSH", value=5.5, ref_low=0.4, ref_high=4.0
+    )
+    log = await skincare_service.upsert_log(db_session, on_date=day, retinoid=True)
+    obs = await skincare_service.add_observation(
+        db_session, on_date=day, inflammation=3, zone="cheeks"
+    )
+    cycle = await hrt_cycle_service.add_cycle(db_session, kind="course", start_date=day)
+    await db_session.commit()
+
+    page = (await auth_client.get("/labs", headers={"Accept": "text/html"})).text
+    assert f'action="/labs/result/{result.id}/delete"' in page
+
+    page = (await auth_client.get("/skincare", headers={"Accept": "text/html"})).text
+    assert f'action="/skincare/log/{log.id}/delete"' in page
+    assert f'action="/skincare/observation/{obs.id}/delete"' in page
+    assert "Ретиноид" in page  # the diary row shows what was actually applied
+    assert "Воспаление 3/5" in page
+
+    page = (await auth_client.get("/hrt", headers={"Accept": "text/html"})).text
+    assert f'action="/hrt/cycle/{cycle.id}/delete"' in page
+
+
 async def test_labs_manual_add_and_flag(auth_client, db_session):
     """POST /labs/result stores a result with a computed flag."""
     from vitals.models.labs import LabResult

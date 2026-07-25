@@ -204,6 +204,31 @@ async def test_delete_scan_cascades_metrics(db_session):
     assert await body_scan_service.delete_scan(db_session, sid) is False  # already gone
 
 
+@pytest.mark.integration
+async def test_scan_delete_cascades_in_the_database_not_just_the_orm(db_session):
+    """The test above deletes through the ORM, which cleans the children itself —
+    so it passes even if the FK carries no ``ondelete``. Anything that removes a
+    scan row without the ORM (a manual fix, a future bulk delete) then leaves
+    orphaned metrics behind. This asserts the constraint itself."""
+    from sqlalchemy import text
+
+    scan = await body_scan_service.save_scan(
+        db_session, on_date=DAY, metrics=[{"label": "Белок", "value": 10.2}]
+    )
+    await db_session.commit()
+    sid = scan.id
+
+    await db_session.execute(text("DELETE FROM body_scans WHERE id = :id"), {"id": sid})
+    await db_session.commit()
+
+    remaining = (
+        await db_session.execute(
+            select(BodyScanMetric).where(BodyScanMetric.scan_id == sid)
+        )
+    ).scalars().all()
+    assert remaining == []
+
+
 # ── ingest_extracted convenience (raw + save in one) ──────────────────────────
 async def test_ingest_extracted(db_session):
     extracted = {"date": DAY.isoformat(), "device": "МедАсс",

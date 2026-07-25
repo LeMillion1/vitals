@@ -44,6 +44,8 @@ DIGEST_SYSTEM = """\
 - hevy: тренировок за период, дата последней
 - labs: маркеры вне нормы (marker, value, flag, date)
 - nutrition: avg калории/белок в день, days_with_logs, цели
+- hrt: гормональный протокол — active_compounds (что идёт сейчас), doses за период (дата, соединение, доза, место укола), side_effects (тип, тяжесть 1-5). Самое сильное вмешательство: связывай его со сном/HRV, анализами, кожей и настроением.
+- timeline: ручные аннотации, пересекающие период (болезнь, поездка, смена протокола, событие). Это готовое объяснение для провала или скачка в других доменах — сверяйся с ними, прежде чем списать всё на тренировки или питание.
 - milestones: активные цели с прогрессом и дедлайнами
 
 ИНВАРИАНТЫ (нарушение = баг):
@@ -93,6 +95,8 @@ Any domain can be null (no data). Don't invent what isn't there.
 - hevy: workouts in period, last workout date
 - labs: out-of-range markers (marker, value, flag, date)
 - nutrition: avg calories/protein per day, days_with_logs, targets
+- hrt: hormone protocol — active_compounds (what's running now), doses in the period (date, compound, dose, injection site), side_effects (type, severity 1-5). The strongest intervention here: relate it to sleep/HRV, labs, skin and mood.
+- timeline: manual annotations overlapping the period (illness, travel, protocol change, life event). These are the ready-made explanation for a dip or spike in the other domains — check them before blaming training or nutrition.
 - milestones: active goals with progress and deadlines
 
 INVARIANTS (breaking = bug):
@@ -358,6 +362,73 @@ async def assemble_context(
         if active_alerts
         else None
     )
+
+    # HRT — the strongest intervention in the lake and, until now, invisible to the
+    # digest: a compound change and the sleep/labs/skin shift that follows it could
+    # never be connected. Active protocol + doses inside the period + side effects.
+    from vitals.services import hrt_cycle_service, hrt_service
+
+    # active_cycle takes on_date (resolve_active is pinned to "now" — wrong for a
+    # digest generated for a past date).
+    cycle = await hrt_cycle_service.active_cycle(session, on_date=today)
+    hrt_doses = await hrt_service.list_doses(session, start=since, end=today)
+    hrt_effects = [
+        e for e in await hrt_service.list_side_effects(session) if e.date >= since
+    ]
+    ctx["hrt"] = (
+        {
+            "cycle": (
+                {
+                    "kind": cycle.kind,
+                    "name": cycle.name,
+                    "start_date": cycle.start_date.isoformat(),
+                    "end_date": cycle.end_date.isoformat() if cycle.end_date else None,
+                    "compounds": [i.compound_key for i in cycle.items],
+                }
+                if cycle is not None
+                else None
+            ),
+            "doses": [
+                {
+                    "date": d.date.isoformat(),
+                    "compound_key": d.compound_key,
+                    "dose": d.dose,
+                    "unit": d.unit,
+                    "site": d.site,
+                }
+                for d in hrt_doses
+            ],
+            "side_effects": [
+                {
+                    "date": e.date.isoformat(),
+                    "effect_type": e.effect_type,
+                    "severity": e.severity,
+                    "note": e.note,
+                }
+                for e in hrt_effects
+            ],
+        }
+        if (cycle is not None or hrt_doses or hrt_effects)
+        else None
+    )
+
+    # Timeline — manual annotations (illness, travel, protocol change) overlapping
+    # the period. These are exactly the "why" behind a wobble in every other domain,
+    # so the narrative has to see them.
+    from vitals.services import timeline_service
+
+    annotations = await timeline_service.list_annotations(session, start=since, end=today)
+    ctx["timeline"] = [
+        {
+            "date": a.date.isoformat(),
+            "end_date": a.end_date.isoformat() if a.end_date else None,
+            "kind": a.kind,
+            "domain": a.domain,
+            "title": a.title,
+            "note": a.note,
+        }
+        for a in annotations
+    ] or None
 
     from vitals.services import milestones_service
 

@@ -4,7 +4,7 @@
 
 {% block content %}
 {% from "partials/masthead.html" import masthead_header with context %}
-<div class="v-page v-page-hrt px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="{ showForm: false }">
+<div class="v-page v-page-hrt px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="protocolForm()">
 
     {% call masthead_header('hrt', t('hrt.heading'), [
         {'label': t('hrt.last_dose'), 'primary': true, 'value': compound_names.get(last_dose.compound_key, last_dose.compound_key) if last_dose else '—'},
@@ -12,8 +12,8 @@
         {'label': t('hrt.compounds_count'), 'value': compounds | length},
         {'label': t('hrt.side_effects'), 'value': side_effects | length}
     ]) %}
-        <button @click="showForm = !showForm" class="v-btn-ghost text-xs">
-            <span x-text="showForm ? '{{ t('hrt.toggle_history') }}' : '{{ t('hrt.add_dose') }}'"></span>
+        <button @click="showFormModal = !showFormModal" class="v-btn-ghost text-xs">
+            <span x-text="showFormModal ? '{{ t('hrt.toggle_history') }}' : '{{ t('hrt.add_dose') }}'"></span>
         </button>
     {% endcall %}
 
@@ -22,9 +22,18 @@
         <div class="flex items-center justify-between">
             <h2 class="v-text-heading">{{ t("hrt.active_cycle") }}</h2>
             {% if active_cycle %}
-            <form method="post" action="/hrt/cycle/{{ active_cycle.id }}/close" class="inline">
-                <button type="submit" class="v-btn-ghost text-xs">{{ t("hrt.close_cycle") }}</button>
-            </form>
+            <div class="flex items-center gap-2">
+                <form method="post" action="/hrt/cycle/{{ active_cycle.id }}/close" class="inline">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("hrt.close_cycle") }}</button>
+                </form>
+                <form method="post" action="/hrt/cycle/{{ active_cycle.id }}/delete" class="inline"
+                      data-confirm="{{ t('hrt.confirm_delete_cycle') }}">
+                    <button type="submit" class="v-icon-btn danger" title="{{ t('hrt.delete_cycle') }}"
+                            aria-label="{{ t('hrt.delete_cycle') }}">
+                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                    </button>
+                </form>
+            </div>
             {% endif %}
         </div>
 
@@ -286,8 +295,10 @@
     </div>
 
     <!-- Dose form -->
-    <div class="v-card p-6" x-show="showForm" x-cloak>
-        <form method="post" action="/hrt/dose" class="space-y-4">
+    <div class="v-card p-6" x-show="showFormModal" x-cloak>
+        <form method="post" action="/hrt/dose" class="space-y-4"
+              @submit.prevent="submitForm($event)" hx-boost="false">
+            {# override is set by protocolForm().submitForm on the FormData itself #}
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                     <label class="v-label">{{ t("hrt.compound") }}</label>
@@ -454,5 +465,6 @@
         {% endif %}
     </div>
 
+    {% include "partials/conflict_modal.html" %}
 </div>
 {% endblock %}
