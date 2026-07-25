@@ -211,6 +211,17 @@ def test_every_icon_button_has_an_accessible_name(path):
 
 
 @pytest.mark.parametrize("path", PAGES, ids=lambda p: p.name)
+def test_icon_buttons_keep_the_44px_touch_target(path):
+    """An inline width/height wins over the mobile media query, so a hand-sized
+    icon button stays a 24px tap target on a phone no matter what the scale says."""
+    src = path.read_text(encoding="utf-8")
+    for _, tag in _tags(src, ("button", "a")):
+        if "v-icon-btn" not in tag:
+            continue
+        assert not re.search(r'style="[^"]*(width|height)\s*:', tag), f"{path.name}: {tag[:90]}"
+
+
+@pytest.mark.parametrize("path", PAGES, ids=lambda p: p.name)
 def test_numeric_inputs_ask_for_the_right_keyboard(path):
     src = path.read_text(encoding="utf-8")
     for _, tag in _tags(src, ("input",)):
