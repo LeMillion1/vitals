@@ -110,6 +110,18 @@ class Config:
     garmin_password: str = ""
     garmin_token_dir: str = DEFAULT_GARMIN_TOKEN_DIR
 
+    # ── Telegram (proactive channel) ────────────────────────────────────────────
+    # All four empty by default: the bot simply never sends and the webhook fails
+    # closed, so the app runs exactly as before until the owner configures it.
+    # ``chat_id`` is the single recipient — everything from any other chat is
+    # dropped. ``webhook_path`` is a random secret segment (the URL itself is a
+    # credential); ``webhook_secret`` is what Telegram echoes back in the
+    # ``X-Telegram-Bot-Api-Secret-Token`` header. Both are compared constant-time.
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_webhook_path: str = ""
+    telegram_webhook_secret: str = ""
+
     db_statement_timeout_ms: int = DEFAULT_DB_STATEMENT_TIMEOUT_MS
     db_pool_size: int = DEFAULT_DB_POOL_SIZE
     db_max_overflow: int = DEFAULT_DB_MAX_OVERFLOW
@@ -180,6 +192,10 @@ def load_config() -> Config:
         garmin_token_dir=(
             os.getenv("VITALS_GARMIN_TOKEN_DIR") or DEFAULT_GARMIN_TOKEN_DIR
         ),
+        telegram_bot_token=os.getenv("VITALS_TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_chat_id=os.getenv("VITALS_TELEGRAM_CHAT_ID", "").strip(),
+        telegram_webhook_path=os.getenv("VITALS_TELEGRAM_WEBHOOK_PATH", "").strip(),
+        telegram_webhook_secret=os.getenv("VITALS_TELEGRAM_WEBHOOK_SECRET", "").strip(),
         db_statement_timeout_ms=_pos_int(
             "VITALS_DB_STATEMENT_TIMEOUT_MS", DEFAULT_DB_STATEMENT_TIMEOUT_MS
         ),

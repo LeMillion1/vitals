@@ -53,14 +53,16 @@ def rate_limit(bucket: str, *, limit: int, window: int) -> Callable:
     return _dep
 
 
-def login_rate_limit(*, limit: int, window: int) -> Callable:
-    """Build a dependency throttling repeated login attempts **by client IP**.
+def login_rate_limit(*, limit: int, window: int, bucket: str = "login") -> Callable:
+    """Build a dependency throttling repeated requests **by client IP**.
 
     Unlike :func:`rate_limit`, this must NOT depend on ``require_auth`` — the whole
-    point is to guard the pre-auth ``/login`` endpoint, where there is no username
-    yet, so password-guessing there is otherwise completely unbounded. Keyed by the
-    caller's IP. Fail-open like ``rate_limit`` — a missing Redis must never lock the
-    owner out of their own app.
+    point is to guard endpoints where there is no username yet: ``/login``, where
+    password-guessing would otherwise be completely unbounded, and the Telegram
+    webhook, which authenticates with its own secret. ``bucket`` keeps those
+    counters apart so webhook traffic can't exhaust the login allowance. Keyed by
+    the caller's IP. Fail-open like ``rate_limit`` — a missing Redis must never
+    lock the owner out of their own app.
     """
 
     async def _dep(
@@ -68,7 +70,7 @@ def login_rate_limit(*, limit: int, window: int) -> Callable:
         redis: Redis = Depends(get_redis),
     ) -> None:
         ip = request.client.host if request.client else "unknown"
-        key = f"ratelimit:login:{ip}"
+        key = f"ratelimit:{bucket}:{ip}"
         try:
             count = await redis.incr(key)
             if count == 1:

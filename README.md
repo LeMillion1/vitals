@@ -703,6 +703,10 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_MCP_CLIENT_SECRET` | OAuth Client Secret для MCP | *Обязательно* |
 | `VITALS_MCP_REDIRECT_URIS` | Разрешённые OAuth-callback'и (через запятую) | `https://claude.ai/api/mcp/auth_callback` |
 | `VITALS_EXTERNAL_API_TOKEN` | Токен для сервер-сервер Glance API | *Опционально* |
+| `VITALS_TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather | *Опционально* |
+| `VITALS_TELEGRAM_CHAT_ID` | Единственный чат, который бот слушает | *Опционально* |
+| `VITALS_TELEGRAM_WEBHOOK_PATH` | Секретный сегмент URL вебхука (`/tg/<path>`) | *Опционально* |
+| `VITALS_TELEGRAM_WEBHOOK_SECRET` | Секрет из заголовка `X-Telegram-Bot-Api-Secret-Token` | *Опционально* |
 </details>
 
 ---
@@ -1437,6 +1441,10 @@ Connection-pool and timeout tuning (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFL
 | `VITALS_MCP_CLIENT_SECRET` | MCP OAuth Client Secret | *Required* |
 | `VITALS_MCP_REDIRECT_URIS` | Allowed OAuth callbacks (comma-separated) | `https://claude.ai/api/mcp/auth_callback` |
 | `VITALS_EXTERNAL_API_TOKEN` | Token for server-server Glance API | *Optional* |
+| `VITALS_TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | *Optional* |
+| `VITALS_TELEGRAM_CHAT_ID` | The only chat the bot listens to | *Optional* |
+| `VITALS_TELEGRAM_WEBHOOK_PATH` | Secret segment of the webhook URL (`/tg/<path>`) | *Optional* |
+| `VITALS_TELEGRAM_WEBHOOK_SECRET` | Secret in the `X-Telegram-Bot-Api-Secret-Token` header | *Optional* |
 </details>
 
 ---
