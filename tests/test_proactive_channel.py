@@ -230,6 +230,34 @@ async def test_a_message_with_no_facts_is_kept_and_answered_without_alarm(
     assert (await db_session.execute(select(SystemAlert))).scalars().all() == []
 
 
+async def test_the_off_switch_stops_the_capture_too(bot_client, db_session, monkeypatch):
+    """U1 is an emergency switch, not a mute button: with the module off the bot
+    was still parsing every message and writing it to the lake, paying for a model
+    call each time, and only the reply was suppressed."""
+    from vitals.services import modules_service
+
+    c, fake = bot_client
+    await modules_service.set_module_enabled(db_session, key="signals", enabled=False)
+    await db_session.commit()
+
+    def _never(*a, **kw):
+        raise AssertionError("a switched-off module must not reach the parser")
+
+    monkeypatch.setattr(inbound, "make_signal_parser", _never)
+
+    r = await c.post(
+        f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "башка трещит"), headers=HEADERS
+    )
+
+    # 200 all the same: anything else and Telegram retries the update forever.
+    assert r.status_code == 200
+    assert await _signals(db_session) == []
+    assert (await db_session.execute(
+        select(RawPayload).where(RawPayload.external_id == "tg:1")
+    )).scalars().first() is None
+    assert fake.sent == []
+
+
 async def test_a_dead_parser_raises_an_alert_instead_of_going_quiet(
     bot_client, db_session, monkeypatch
 ):

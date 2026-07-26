@@ -34,7 +34,7 @@ from vitals.enums import Domain, SignalKind, Source
 from vitals.integrations.llm_client import LLMClient
 from vitals.models.raw_payload import RawPayload
 from vitals.services import signals_service
-from vitals.services.proactive import day_plan, delivery
+from vitals.services.proactive import day_plan, delivery, prefs
 from vitals.services.proactive.channels import Notifier
 from vitals.services.raw_payload_service import upsert_raw_payload
 from vitals.utils.timeutils import now_local, today_local
@@ -133,6 +133,14 @@ async def handle_update(
     parse: Optional[signals_service.Parser] = None,
 ) -> None:
     """Entry point for one Telegram update. Safe to call twice with the same one."""
+    # The emergency switch cuts *both* directions (U1). ``delivery.send`` already
+    # refuses to speak when the module is off, so without this the bot went quiet
+    # while still parsing every message and writing it to the lake — "выключено"
+    # that keeps spending model calls is the worst reading of an off switch.
+    if not await prefs.bot_enabled(session):
+        logger.info("ignoring inbound update: the signals module is switched off")
+        return
+
     update_id = update.get("update_id")
     external_id = f"tg:{update_id}" if update_id is not None else None
     if external_id and await _already_handled(session, external_id):
