@@ -83,5 +83,15 @@ async def telegram_webhook(
         logger.info("telegram webhook: update from chat %s discarded", chat_id)
         return {"ok": True}
 
-    await inbound.handle_update(session, update, notifier=notifier)
+    try:
+        await inbound.handle_update(session, update, notifier=notifier)
+    except Exception:
+        # Anything that escapes here would be a 500, and Telegram retries a 500
+        # for hours — each retry another model call on the same message. The text
+        # itself is already committed to the lake, so the re-parse sweep picks up
+        # whatever this run failed to finish. The rollback is by hand because
+        # ``get_session`` commits on a clean return, and committing a transaction
+        # that has already failed raises on the way out.
+        logger.exception("telegram update failed; acknowledged anyway")
+        await session.rollback()
     return {"ok": True}

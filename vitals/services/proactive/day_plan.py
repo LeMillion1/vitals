@@ -221,6 +221,23 @@ async def record_plan(
 
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
+# The one line a tap changes, in each message that carries the buttons. Kept as
+# data because :func:`redraw` has to find it again inside a message that was sent
+# hours ago: a tap knows which day it answers, not which message it came from.
+LINE_TOMORROW = "Завтра: "
+LINE_TODAY = "Сегодня: "
+LINE_TODAY_PLANNED = "Сегодня по шаблону: "
+HINT_FIX = "Не угадал — поправь кнопками ниже."
+
+# «по шаблону» is what the line says while the day is still a guess. A tap is the
+# owner speaking, so the redrawn line stops calling his answer a template's.
+_REDRAWN_PREFIX = {
+    LINE_TOMORROW: LINE_TOMORROW,
+    LINE_TODAY: LINE_TODAY,
+    LINE_TODAY_PLANNED: LINE_TODAY,
+}
+
+
 def describe(answers: dict) -> str:
     """``{"where": "remote", "gym": False}`` → "удалёнка · без зала".
 
@@ -290,8 +307,8 @@ def day_block(day: Optional[dict]) -> Optional[compose.Block]:
     line = describe(day.get("answers") or {})
     if not line:
         return None
-    prefix = "Сегодня" if day.get("source") == Source.MANUAL.value else "Сегодня по шаблону"
-    return compose.Block(compose.KIND_DAY, f"{prefix}: {line}", 30)
+    prefix = LINE_TODAY if day.get("source") == Source.MANUAL.value else LINE_TODAY_PLANNED
+    return compose.Block(compose.KIND_DAY, f"{prefix}{line}", 30)
 
 
 def buttons_from_context(day: Optional[dict], on_date: date_type):
@@ -309,6 +326,26 @@ def buttons_from_context(day: Optional[dict], on_date: date_type):
         )
         or None
     )
+
+
+def redraw(text: str, answers: dict, *, has_buttons: bool) -> str:
+    """An already-sent message, with its day line telling the truth again (U3).
+
+    Only that one line is touched. A tap changes what the day *is*, not the step
+    count or the «Как день?» above it, and rebuilding the whole message would mean
+    re-fetching the Garmin row it was composed from — for a line the answer is
+    already sitting in. The hint about the buttons leaves with the last button.
+    """
+    lines = []
+    for line in text.split("\n"):
+        prefix = next((p for p in _REDRAWN_PREFIX if line.startswith(p)), None)
+        if prefix is not None:
+            lines.append(_REDRAWN_PREFIX[prefix] + describe(answers))
+        elif line == HINT_FIX and not has_buttons:
+            continue
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def summary_line(garmin) -> str:
@@ -365,9 +402,9 @@ async def evening_job(session_factory, redis=None) -> None:
         # are for, which is what makes them unreadable as an answer about today.
         # Splitting this into two messages would do the same job, at the price of
         # a second slot of the four-message daily budget for a wording problem.
-        tomorrow_line = f"Завтра: {describe(answers)}"
+        tomorrow_line = f"{LINE_TOMORROW}{describe(answers)}"
         if buttons:
-            tomorrow_line += "\nНе угадал — поправь кнопками ниже."
+            tomorrow_line += f"\n{HINT_FIX}"
 
         blocks = [
             compose.Block(compose.KIND_DAY, summary_line(await garmin_service.get_daily(session, today)), 10),

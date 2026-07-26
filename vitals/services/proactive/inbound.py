@@ -204,15 +204,17 @@ async def handle_update(
         return
 
     if not enabled:
-        raw = await signals_service.store_raw_text(
-            session, text=text, external_id=external_id, source=SOURCE
-        )
         # A slash command is addressed to the bot, not a fact about the day —
         # same call B4 makes on the enabled path. Left unstamped it would sit in
         # the queue until the module came back on and then cost a model call to
         # learn that «/start» holds no signals.
-        if text.startswith("/"):
-            raw.processed_at = now_local()
+        await signals_service.store_raw_text(
+            session,
+            text=text,
+            external_id=external_id,
+            source=SOURCE,
+            processed=text.startswith("/"),
+        )
         logger.info("stored inbound text unparsed: the signals module is switched off")
         return
 
@@ -246,6 +248,7 @@ async def _handle_callback(
         )
 
     toast = ""
+    answered_date: Optional[date_type] = None
     if data.startswith(CB_MISPARSE):
         batch_id = data[len(CB_MISPARSE):]
         changed = await signals_service.mark_misparse(session, batch_id)
@@ -253,17 +256,61 @@ async def _handle_callback(
         # registry from — real mistakes, not remembered ones.
         toast = "Убрал из графиков" if changed else "Уже убрано"
     elif data.startswith(CB_CONTEXT):
-        toast = "Записал" if await _apply_context(session, data) else ""
+        answered_date = await _apply_context(session, data)
+        toast = "Записал" if answered_date is not None else ""
 
     if notifier is not None and callback_id:
+        # Acknowledged first: Telegram spins on the button until this lands, and
+        # the redraw below is a second round-trip the spinner shouldn't wait for.
         try:
             await notifier.answer_callback(callback_id, toast)
         except Exception:
             logger.warning("could not acknowledge tap %s", callback_id, exc_info=True)
 
+    if notifier is not None and answered_date is not None:
+        await _redraw(session, callback, answered_date, notifier=notifier)
 
-async def _apply_context(session: AsyncSession, data: str) -> bool:
+
+async def _redraw(
+    session: AsyncSession,
+    callback: dict,
+    on_date: date_type,
+    *,
+    notifier: Notifier,
+) -> None:
+    """The message that asked now says what was answered (U3).
+
+    Without it a tap leaves nothing but a grey toast: the line still reads out the
+    template's guess and the same keyboard still sits under it, which looks like
+    "не нажалось" and gets tapped again. Rebuilt from the day, not from the tap —
+    two taps in a row must not each drop the other's answer.
+    """
+    message = callback.get("message") or {}
+    message_id = message.get("message_id")
+    text = message.get("text") or ""
+    if not message_id or not text:
+        return
+
+    answers, answered = await day_plan.resolve(session, on_date)
+    buttons = day_plan.exception_buttons(answers, on_date, answered)
+    try:
+        await notifier.edit(
+            str(message_id),
+            day_plan.redraw(text, answers, has_buttons=bool(buttons)),
+            buttons=buttons or None,
+        )
+    except Exception:
+        # The answer is already stored; a channel that refused the edit (the
+        # message is old, or nothing actually changed) is worth a log, not a
+        # failed update Telegram would then retry for hours.
+        logger.warning("could not redraw message %s", message_id, exc_info=True)
+
+
+async def _apply_context(session: AsyncSession, data: str) -> Optional[date_type]:
     """``ctx:<iso date>:<key>:<value>`` → merge one answer into that day's context.
+
+    Returns the day answered (``None`` if the payload was rejected), which is also
+    the day the redraw has to rebuild.
 
     The date rides in the payload rather than being "today": the evening block
     asks about *tomorrow*, and a tap that lands after midnight must still answer
@@ -279,16 +326,16 @@ async def _apply_context(session: AsyncSession, data: str) -> bool:
         on_date = date_type.fromisoformat(iso_date)
     except ValueError:
         logger.warning("unparseable context payload: %s", data)
-        return False
+        return None
 
     question = day_plan.QUESTIONS_BY_KEY.get(key)
     answer = day_plan.decode(value)
     if question is None or answer not in question.labels:
         logger.warning("context payload outside the question registry: %s", data)
-        return False
+        return None
 
     await day_plan.record_answer(session, on_date, key, answer)
-    return True
+    return on_date
 
 
 # ── Text ──────────────────────────────────────────────────────────────────────
@@ -311,12 +358,11 @@ async def handle_text(
     if text.startswith("/"):
         # Stored anyway, and marked done on the spot: the raw row is what a
         # webhook retry trips over, and without it Telegram's second delivery of
-        # the same ``/start`` gets a second identical answer. ``processed_at``
-        # keeps the re-parse sweep from feeding «/start» to the parser later.
-        raw = await signals_service.store_raw_text(
-            session, text=text, external_id=external_id, source=SOURCE
+        # the same ``/start`` gets a second identical answer. ``processed`` keeps
+        # the re-parse sweep from feeding «/start» to the parser later.
+        await signals_service.store_raw_text(
+            session, text=text, external_id=external_id, source=SOURCE, processed=True
         )
-        raw.processed_at = now_local()
         await delivery.send(
             session,
             notifier,
@@ -340,14 +386,13 @@ async def handle_text(
     to_evening = answered is not None and answered.category == delivery.CATEGORY_EVENING
     if not to_evening and (answered is not None or looks_like_question(text)):
         # A question is data too, and this is also what stops a webhook retry
-        # from paying for a second model call on the same question.
-        raw = await signals_service.store_raw_text(
-            session, text=text, external_id=external_id, source=SOURCE
+        # from paying for a second model call on the same question. Marked done
+        # in the same breath: a question is not a message waiting to be parsed
+        # into signals, so the re-parse sweep must not pick it up and turn «почему
+        # пульс низкий?» into a symptom row.
+        await signals_service.store_raw_text(
+            session, text=text, external_id=external_id, source=SOURCE, processed=True
         )
-        # Marked done on the spot: a question is not a message waiting to be
-        # parsed into signals, so the re-parse sweep must not pick it up and
-        # turn «почему пульс низкий?» into a symptom row.
-        raw.processed_at = now_local()
         await _answer_reply(session, text, answered, notifier=notifier, message_id=message_id)
         return
 

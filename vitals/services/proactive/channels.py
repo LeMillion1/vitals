@@ -2,16 +2,18 @@
 
 ``Notifier`` is the whole contract: send some text, optionally with tap-buttons,
 optionally as a reply to an earlier message; get back the channel's own id for
-what was sent (so a later reply can be matched to it). Nothing above this module
-imports ``httpx``, knows a chat id, or has heard of Telegram.
+what was sent (so a later reply can be matched to it) — plus redraw one already
+sent. Nothing above this module imports ``httpx``, knows a chat id, or has heard
+of Telegram.
 
-    Adding web push / email / anything else: a class with these two methods plus
-    one line in :func:`build_notifier`. No caller changes.
+    Adding web push / email / anything else: a class with these three methods
+    plus one line in :func:`build_notifier`. No caller changes.
 
-``answer_callback`` is in the protocol on purpose even though only Telegram has
-the concept: acknowledging a tap is a *channel* detail, and a channel without
-taps implements it as a no-op. The alternative — callers sniffing for the method
-with ``getattr`` — would leak "is this Telegram?" back up the stack.
+``answer_callback`` and ``edit`` are in the protocol on purpose even though only
+Telegram has the concept: acknowledging a tap and redrawing a message are
+*channel* details, and a channel without taps implements them as no-ops. The
+alternative — callers sniffing for the method with ``getattr`` — would leak "is
+this Telegram?" back up the stack.
 """
 from __future__ import annotations
 
@@ -34,6 +36,21 @@ _MAX_TEXT = 4096
 Buttons = Sequence[tuple[str, str]]
 
 
+def _clip(text: str) -> str:
+    if len(text) > _MAX_TEXT:
+        logger.warning("message of %s chars truncated to %s", len(text), _MAX_TEXT)
+        return text[: _MAX_TEXT - 1] + "…"
+    return text
+
+
+def _keyboard(buttons: Optional[Buttons]) -> dict:
+    return {
+        "inline_keyboard": [
+            [{"text": label, "callback_data": data}] for label, data in buttons or ()
+        ]
+    }
+
+
 @runtime_checkable
 class Notifier(Protocol):
     channel: str
@@ -49,6 +66,15 @@ class Notifier(Protocol):
 
     async def answer_callback(self, callback_id: str, text: str = "") -> None:
         """Acknowledge a button tap (no-op on channels without buttons)."""
+
+    async def edit(
+        self,
+        message_id: str,
+        text: str,
+        *,
+        buttons: Optional[Buttons] = None,
+    ) -> None:
+        """Redraw an already-sent message (no-op where the channel can't)."""
 
 
 class TelegramNotifier:
@@ -86,14 +112,9 @@ class TelegramNotifier:
         # No parse_mode: everything sent so far is plain prose, and Markdown/HTML
         # would turn an unescaped '_' or '*' in the owner's own words into a
         # failed send. Formatting can be switched on when a message wants it.
-        if len(text) > _MAX_TEXT:
-            logger.warning("message of %s chars truncated to %s", len(text), _MAX_TEXT)
-            text = text[: _MAX_TEXT - 1] + "…"
-        payload: dict = {"chat_id": self._chat_id, "text": text}
+        payload: dict = {"chat_id": self._chat_id, "text": _clip(text)}
         if buttons:
-            payload["reply_markup"] = {
-                "inline_keyboard": [[{"text": label, "callback_data": data}] for label, data in buttons]
-            }
+            payload["reply_markup"] = _keyboard(buttons)
         if reply_to:
             payload["reply_to_message_id"] = int(reply_to)
             # The message may have been deleted; a reply that can't attach should
@@ -105,6 +126,26 @@ class TelegramNotifier:
     async def answer_callback(self, callback_id: str, text: str = "") -> None:
         await self._call(
             "answerCallbackQuery", {"callback_query_id": callback_id, "text": text}
+        )
+
+    async def edit(
+        self,
+        message_id: str,
+        text: str,
+        *,
+        buttons: Optional[Buttons] = None,
+    ) -> None:
+        # ``reply_markup`` always rides along, empty included: left out entirely,
+        # Telegram keeps the previous keyboard — so the question just answered
+        # would stay tappable under a line that already says it was answered.
+        await self._call(
+            "editMessageText",
+            {
+                "chat_id": self._chat_id,
+                "message_id": int(message_id),
+                "text": _clip(text),
+                "reply_markup": _keyboard(buttons),
+            },
         )
 
 

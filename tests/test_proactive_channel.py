@@ -41,6 +41,7 @@ class FakeNotifier:
     def __init__(self, *, fail: bool = False):
         self.sent: list[dict] = []
         self.acks: list[tuple[str, str]] = []
+        self.edits: list[dict] = []
         self._fail = fail
         self._next_id = 700
 
@@ -55,6 +56,9 @@ class FakeNotifier:
 
     async def answer_callback(self, callback_id, text="") -> None:
         self.acks.append((callback_id, text))
+
+    async def edit(self, message_id, text, *, buttons=None) -> None:
+        self.edits.append({"message_id": message_id, "text": text, "buttons": buttons})
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -98,14 +102,13 @@ def _text_update(update_id, text, *, chat=CHAT_ID, message_id=5, reply_to=None):
     return {"update_id": update_id, "message": message}
 
 
-def _tap_update(update_id, data, *, chat=CHAT_ID, callback_id="cb-1"):
+def _tap_update(update_id, data, *, chat=CHAT_ID, callback_id="cb-1", text=None):
+    message = {"message_id": 9, "chat": {"id": int(chat)}}
+    if text is not None:
+        message["text"] = text
     return {
         "update_id": update_id,
-        "callback_query": {
-            "id": callback_id,
-            "data": data,
-            "message": {"message_id": 9, "chat": {"id": int(chat)}},
-        },
+        "callback_query": {"id": callback_id, "data": data, "message": message},
     }
 
 
@@ -333,6 +336,55 @@ async def test_repeated_update_id_is_not_processed_twice(bot_client, parses_to, 
     assert len(fake.sent) == 1
 
 
+async def test_the_message_is_committed_before_the_model_is_called(db_session, monkeypatch):
+    """Telegram re-sends an update it got no 200 for, and the model call in the
+    middle takes 5-20 seconds. The retry arrives on its own connection and can
+    only see what is *committed* — so a raw row still sitting in the request's
+    open transaction means the retry finds no trace of the first attempt and pays
+    for a second parse and a second reply to the same message."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    fake = FakeNotifier()
+    commits: list[int] = []
+    real_commit = AsyncSession.commit
+
+    async def _counting_commit(self):
+        await real_commit(self)
+        commits.append(1)
+
+    monkeypatch.setattr(AsyncSession, "commit", _counting_commit)
+
+    durable: list[bool] = []
+
+    async def _parse(_text):
+        # Recorded, not asserted: ``ingest_text`` swallows anything the parser
+        # raises, so an assertion here would be turned into a warning and lost.
+        durable.append(bool(commits))
+        return []
+
+    await inbound.handle_text(
+        db_session, "спать хочу", notifier=fake, external_id="tg:1", parse=_parse
+    )
+
+    assert durable == [True]
+
+
+async def test_a_crash_in_the_handler_is_still_answered_with_200(bot_client, monkeypatch):
+    """A 500 makes Telegram retry the same update for hours, each retry another
+    model call. The message is already in the lake by then and the re-parse sweep
+    finishes what this run didn't."""
+    c, _ = bot_client
+
+    async def _boom(*a, **kw):
+        raise RuntimeError("something broke mid-update")
+
+    monkeypatch.setattr(inbound, "handle_update", _boom)
+
+    r = await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "спать хочу"), headers=HEADERS)
+
+    assert r.status_code == 200
+
+
 async def test_a_message_after_midnight_lands_on_the_day_that_just_ended(db_session):
     """«кофе поздно» written at 00:30 is about the evening just spent. Filed under
     the fresh calendar date it lands in tomorrow's brief, and tonight's — the one
@@ -449,6 +501,95 @@ async def test_a_tap_outside_the_question_registry_is_dropped(bot_client, db_ses
                  headers=HEADERS)
 
     assert await signals_service.get_day_context(db_session, tomorrow) is None
+
+
+# 2026-07-27 is a Monday: the default template calls it "в офисе · без зала".
+MONDAY = date(2026, 7, 27)
+EVENING_MESSAGE = (
+    "Итог дня: 8000 шагов\n\n"
+    "Как день? Напиши пару слов — запишу.\n\n"
+    "Завтра: в офисе · без зала\n"
+    "Не угадал — поправь кнопками ниже."
+)
+
+
+async def test_a_tap_redraws_the_message_it_came_from(bot_client, db_session):
+    """A tap used to leave nothing but a grey toast: the line still read out the
+    template's guess and the same keyboard sat under it — which looks like «не
+    нажалось» and gets tapped again."""
+    c, fake = bot_client
+
+    await c.post(f"/tg/{WEBHOOK_PATH}",
+                 json=_tap_update(1, f"{inbound.CB_CONTEXT}{MONDAY.isoformat()}:where:remote",
+                                  text=EVENING_MESSAGE),
+                 headers=HEADERS)
+
+    assert len(fake.edits) == 1
+    edit = fake.edits[0]
+    assert edit["message_id"] == "9"
+    # The day line says what he answered; the rest of the message is his own
+    # evening, not something a tap has any business rewriting.
+    assert "Завтра: удалёнка · без зала" in edit["text"]
+    assert "Итог дня: 8000 шагов" in edit["text"]
+    assert "Как день? Напиши пару слов — запишу." in edit["text"]
+    # …and the question he just answered is gone from the keyboard, while the
+    # two he hasn't stay tappable.
+    payloads = [data for _, data in edit["buttons"]]
+    assert not any(":where:" in data for data in payloads)
+    assert any(":gym:" in data for data in payloads)
+    assert any(":load:" in data for data in payloads)
+
+
+async def test_the_last_answer_takes_the_keyboard_and_the_hint_with_it(bot_client, db_session):
+    """Nothing left to correct: an empty keyboard under «поправь кнопками ниже»
+    is the message pointing at buttons that aren't there."""
+    c, fake = bot_client
+    text = EVENING_MESSAGE
+    for i, (key, value) in enumerate((("where", "remote"), ("gym", "1"), ("load", "heavy"))):
+        await c.post(f"/tg/{WEBHOOK_PATH}",
+                     json=_tap_update(i + 1, f"{inbound.CB_CONTEXT}{MONDAY.isoformat()}:{key}:{value}",
+                                      callback_id=f"cb-{i}", text=text),
+                     headers=HEADERS)
+        text = fake.edits[-1]["text"]  # the next tap sees the redrawn message
+
+    assert fake.edits[-1]["buttons"] is None
+    assert "Не угадал" not in text
+    assert "Завтра: удалёнка · зал · тяжёлый день" in text
+
+
+async def test_a_tap_on_the_brief_stops_calling_the_answer_a_template(bot_client, db_session):
+    """The morning brief says «Сегодня по шаблону» while the day is still a guess.
+    A tap is the owner speaking — the redrawn line must not keep crediting the
+    template for what he just said."""
+    c, fake = bot_client
+
+    await c.post(f"/tg/{WEBHOOK_PATH}",
+                 json=_tap_update(1, f"{inbound.CB_CONTEXT}{MONDAY.isoformat()}:where:remote",
+                                  text="Сегодня по шаблону: в офисе · без зала"),
+                 headers=HEADERS)
+
+    assert fake.edits[-1]["text"] == "Сегодня: удалёнка · без зала"
+
+
+async def test_a_redraw_the_channel_refuses_does_not_lose_the_answer(bot_client, db_session, monkeypatch):
+    """Telegram rejects an edit that changes nothing, and old messages stop being
+    editable at all. The answer is already stored by then — a raised update would
+    only buy hours of retries."""
+    c, fake = bot_client
+
+    async def _refuse(*a, **kw):
+        raise RuntimeError("message can't be edited")
+
+    monkeypatch.setattr(fake, "edit", _refuse)
+
+    r = await c.post(f"/tg/{WEBHOOK_PATH}",
+                     json=_tap_update(1, f"{inbound.CB_CONTEXT}{MONDAY.isoformat()}:where:remote",
+                                      text=EVENING_MESSAGE),
+                     headers=HEADERS)
+
+    assert r.status_code == 200
+    ctx = await signals_service.get_day_context(db_session, MONDAY)
+    assert ctx is not None and ctx.answers == {"where": "remote"}
 
 
 # ── Replies ───────────────────────────────────────────────────────────────────

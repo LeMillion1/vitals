@@ -110,19 +110,35 @@ async def store_raw_text(
     text: str,
     external_id: Optional[str] = None,
     source: str = Source.TELEGRAM.value,
+    processed: bool = False,
 ) -> RawPayload:
     """Park the incoming message in ``raw_payloads`` before anything can fail.
 
     ``external_id`` is the channel's own message id when there is one, so a
     webhook retry refreshes the same raw row instead of adding a duplicate.
+
+    ``processed`` is for text that is not a message waiting to become signals —
+    a question, a slash command — so the re-parse sweep never hands it to the
+    parser. Stamped here rather than by the caller because it has to land in the
+    same commit as the row itself.
+
+    Committed here rather than at the end of the request (B10), which is the only
+    thing that makes "parked" true: the very next step is a model call of 5-20
+    seconds, and Telegram re-sends an update it hasn't been answered about. An
+    uncommitted row is invisible to that retry, so it finds no trace of the first
+    attempt and pays for a second parse and a second reply to the same message.
     """
-    return await upsert_raw_payload(
+    raw = await upsert_raw_payload(
         session,
         domain=DOMAIN,
         source=source,
         external_id=external_id or uuid4().hex,
         payload={"text": text, "received_at": now_local().isoformat(timespec="seconds")},
     )
+    if processed:
+        raw.processed_at = now_local()
+    await session.commit()
+    return raw
 
 
 def _coerce_item(item: dict) -> Optional[dict]:
