@@ -153,6 +153,17 @@ def test_normalize_key_slugs_and_maps():
     assert svc.normalize_key("unknown key") == "unknown_key"  # untouched, just slugged
 
 
+def test_how_the_day_went_folds_onto_one_key_each():
+    """«Весь день за компом» is the most natural answer to the evening question and
+    the one with the most ways to spell it. The anchors the parser is pointed at
+    have to survive the model reaching for a synonym instead."""
+    for alias in ("computer_day", "desk_day", "inactive", "low_activity"):
+        assert svc.normalize_key(alias) == "sedentary"
+    assert svc.normalize_key("on_the_move") == "on_feet"
+    assert svc.normalize_key("overtime") == "long_work_day"
+    assert svc.normalize_key("busy_day") == "workload_high"
+
+
 # ── misparse: out of the charts, still in the table ───────────────────────────
 async def test_misparse_leaves_charts_but_not_the_table(db_session):
     rows = await svc.ingest_text(

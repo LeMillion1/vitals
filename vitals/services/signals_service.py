@@ -63,6 +63,19 @@ KEY_ALIASES: dict[str, str] = {
     "coffee_late": "caffeine_late",
     "late_coffee": "caffeine_late",
     "energy": "energy_level",
+    # How the day went. The parser is told to reach for these five anchors, and
+    # these are the spellings it reaches for instead when it forgets.
+    "computer_day": "sedentary",
+    "desk_day": "sedentary",
+    "inactive": "sedentary",
+    "low_activity": "sedentary",
+    "walking_day": "on_feet",
+    "on_the_move": "on_feet",
+    "worked_late": "long_work_day",
+    "overtime": "long_work_day",
+    "busy_day": "workload_high",
+    "work_overload": "workload_high",
+    "stressful_day": "stress",
 }
 
 
