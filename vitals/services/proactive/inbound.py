@@ -48,6 +48,16 @@ SOURCE = Source.TELEGRAM.value
 CB_MISPARSE = "mis:"   # mis:<batch_id>
 CB_CONTEXT = "ctx:"    # ctx:<iso date>:<key>:<value>
 
+# The answer to any slash command, ``/start`` included. One reply for all of them
+# on purpose: this bot has no command surface — everything it does is either
+# initiated by it or written in plain words.
+COMMAND_REPLY = (
+    "Утром приношу разбор, вечером — итог дня.\n\n"
+    "Пиши обычным текстом, как есть: «голова раскалывается», «кофе в 22», "
+    "«спать хочу пиздец» — запишу и учту в разборах.\n\n"
+    "Вес, уколы и еду вноси в приложении — здесь их нет."
+)
+
 # How many already-used keys the parser is shown. Reusing an existing key is the
 # only thing keeping the open registry from drifting into 60 near-synonyms before
 # прогон 7 can consolidate it; the cap keeps the prompt small.
@@ -223,6 +233,20 @@ async def handle_text(
     on_date: Optional[date_type] = None,
 ) -> None:
     """The channel-agnostic entry point (C8): already text, whatever produced it."""
+    # A slash command is addressed to the bot, not a fact about the day. Caught
+    # before anything else because ``/start`` is the very first thing anyone sends
+    # a new bot: capturing it costs a model call and answers "разобрать не смог",
+    # which reads as broken on the first ever message.
+    if text.startswith("/"):
+        await delivery.send(
+            session,
+            notifier,
+            text=COMMAND_REPLY,
+            category=delivery.CATEGORY_REPLY,
+            reply_to=str(message_id) if message_id else None,
+        )
+        return
+
     if reply_to_message_id is not None:
         answered = await delivery.find_sent(session, str(reply_to_message_id))
         # The evening block *asks* «как день?», so a reply to it is an answer, not

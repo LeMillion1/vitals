@@ -278,6 +278,23 @@ async def test_context_tap_answers_the_day_it_was_asked_about(bot_client, db_ses
     assert fake.acks[-1] == ("cb-2", "Записал")
 
 
+async def test_a_slash_command_is_answered_not_captured(bot_client, db_session, monkeypatch):
+    """``/start`` is the first thing anyone ever sends a bot. Parsing it costs a
+    model call and replies "разобрать не смог" — which reads as broken."""
+    c, fake = bot_client
+
+    def _never(*a, **kw):
+        raise AssertionError("a command must not reach the parser")
+
+    monkeypatch.setattr(inbound, "make_signal_parser", _never)
+
+    r = await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "/start"), headers=HEADERS)
+
+    assert r.status_code == 200
+    assert await _signals(db_session) == []
+    assert fake.sent[-1]["text"] == inbound.COMMAND_REPLY
+
+
 async def test_a_tap_outside_the_question_registry_is_dropped(bot_client, db_session):
     """Telegram keeps old keyboards tappable forever: a button from before a
     question was renamed must not write a key nothing reads back."""
