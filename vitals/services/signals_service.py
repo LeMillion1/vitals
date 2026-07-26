@@ -212,6 +212,22 @@ async def ingest_text(
     )
 
 
+async def delete_signal(session: AsyncSession, signal_id: int) -> bool:
+    """Pinpoint removal from the ``/signals`` page — the counterpart of the "не то"
+    button, which cancels a whole batch.
+
+    A real delete, unlike ``misparse``: this is for a row that is simply *wrong*
+    and shouldn't feed the key registry either. The raw message stays in
+    ``raw_payloads`` regardless, so nothing said is ever lost.
+    """
+    row = await session.get(Signal, signal_id)
+    if row is None:
+        return False
+    await session.delete(row)
+    await session.flush()
+    return True
+
+
 async def mark_misparse(session: AsyncSession, batch_id: str) -> int:
     """"Не то" — drop the whole batch out of charts, keep the rows and the raw text."""
     result = await session.execute(

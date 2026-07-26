@@ -92,6 +92,25 @@ class GarminLoginThrottled(GarminAuthError):
     Garmin rate-limit into a multi-day account block."""
 
 
+async def login_breaker_state(redis: Any) -> dict:
+    """What the credential-login breaker has spent — read-only, for the settings
+    card (U4). Without it the poll-frequency fields would be set blind: the whole
+    reason a higher frequency is safe is that logins stay rationed.
+
+    Unreadable state reports as ``paused=None`` rather than as "fine": a breaker
+    nobody can see is exactly what the owner needs told.
+    """
+    if redis is None:
+        return {"used": 0, "max": MAX_LOGINS_PER_DAY, "paused": None}
+    try:
+        used = int(await redis.get(LOGIN_ATTEMPTS_KEY) or 0)
+        paused = bool(await redis.get(LOGIN_PAUSE_KEY))
+    except Exception:  # noqa: BLE001
+        logger.warning("Garmin breaker state unreadable", exc_info=True)
+        return {"used": 0, "max": MAX_LOGINS_PER_DAY, "paused": None}
+    return {"used": used, "max": MAX_LOGINS_PER_DAY, "paused": paused}
+
+
 class GarminClient:
     def __init__(self, config: Optional[Config] = None, redis: Any = None):
         self._config = config or load_config()

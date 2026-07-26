@@ -18,6 +18,10 @@ from vitals.models.system_alert import SystemAlert
 from vitals.services import digest_service, garmin_service, weight_service
 from vitals.services.proactive import brief, compose, delivery
 
+# The bot only speaks when the ``signals`` module is on — the same switch the
+# owner flips in Settings, and it defaults off.
+pytestmark = pytest.mark.usefixtures("signals_module_on")
+
 DAY = date(2026, 7, 26)
 
 # One day of Garmin as it arrives from the API, with exactly the five numbers the

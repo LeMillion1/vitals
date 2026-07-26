@@ -1,12 +1,14 @@
 """The gate every outgoing message passes through: may this be sent, and was it.
 
-Four rules, in the order they're checked:
+Five rules, in the order they're checked:
 
 1. **No channel** → nothing happens (the app before the bot exists).
-2. **Dedupe.** A ``dedupe_key`` that's already in the journal means this exact
+2. **Module off** → nothing happens either: switching ``signals`` off in Settings
+   is the emergency switch, and it has to silence the bot without a deploy.
+3. **Dedupe.** A ``dedupe_key`` that's already in the journal means this exact
    message went out; a re-run of the job is a no-op, not a second ping.
-3. **Quiet hours** (02:00–10:00 local) and 4. **the daily budget** (4) apply to
-   *self-initiated* messages only — the brief, the evening block, nudges.
+4. **Quiet hours** and 5. **the daily budget** (both from the settings card) apply
+   to *self-initiated* messages only — the brief, the evening block, nudges.
 
    Answers to the owner (``reply``, ``echo``) are deliberately exempt. Counting
    them would mean that after the fourth thing you logged, the bot stops replying
@@ -29,6 +31,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.proactive import Notification
+from vitals.services.proactive import prefs
 from vitals.services.proactive.channels import Buttons, Notifier
 from vitals.utils.timeutils import now_local
 
@@ -47,9 +50,11 @@ CATEGORY_TEST = "test"
 
 INITIATIVE_CATEGORIES = frozenset({CATEGORY_BRIEF, CATEGORY_EVENING, CATEGORY_NUDGE})
 
-DAILY_BUDGET = 4
-QUIET_START = time_type(2, 0)
-QUIET_END = time_type(10, 0)
+# Fallbacks only — the live values come from ``prefs`` (the settings card), which
+# is why they are read per send rather than captured at import.
+DAILY_BUDGET = prefs.DEFAULTS["daily_budget"]
+QUIET_START = prefs.as_time(prefs.DEFAULTS["quiet_start"])
+QUIET_END = prefs.as_time(prefs.DEFAULTS["quiet_end"])
 
 
 def in_quiet_hours(
@@ -114,6 +119,13 @@ async def send(
         return None
     if not text.strip():
         return None
+    # The emergency switch (U1). Checked here because *every* outgoing message —
+    # brief, evening block, nudge, echo, reply, the test send from /reports —
+    # passes through this one function; a guard per job would leak the ones that
+    # aren't jobs.
+    if not await prefs.bot_enabled(session):
+        logger.info("skipping %s: the signals module is switched off", category)
+        return None
 
     if dedupe_key and await _already_sent(session, dedupe_key):
         logger.info("skipping %s: already sent (%s)", category, dedupe_key)
@@ -121,11 +133,15 @@ async def send(
 
     now = now or now_local()
     if category in INITIATIVE_CATEGORIES:
-        if in_quiet_hours(now.time()):
+        settings = await prefs.get_prefs(session)
+        quiet_start = prefs.as_time(settings["quiet_start"])
+        quiet_end = prefs.as_time(settings["quiet_end"])
+        budget = settings["daily_budget"]
+        if in_quiet_hours(now.time(), start=quiet_start, end=quiet_end):
             logger.info("skipping %s: quiet hours (%s)", category, now.time())
             return None
-        if await sent_today(session, on_date=now.date()) >= DAILY_BUDGET:
-            logger.info("skipping %s: daily budget of %s used", category, DAILY_BUDGET)
+        if await sent_today(session, on_date=now.date()) >= budget:
+            logger.info("skipping %s: daily budget of %s used", category, budget)
             return None
 
     try:

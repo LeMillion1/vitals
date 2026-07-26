@@ -19,6 +19,10 @@ from vitals.services import garmin_service, nutrition_service
 from vitals.services.proactive import delivery, nudges
 from vitals.utils.timeutils import now_local
 
+# The bot only speaks when the ``signals`` module is on — the same switch the
+# owner flips in Settings, and it defaults off.
+pytestmark = pytest.mark.usefixtures("signals_module_on")
+
 TODAY = now_local().date()
 EVENING = datetime.combine(TODAY, datetime.min.time()).replace(hour=19)
 AFTERNOON = datetime.combine(TODAY, datetime.min.time()).replace(hour=17)

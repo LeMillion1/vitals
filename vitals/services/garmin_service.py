@@ -746,11 +746,9 @@ async def sync(
 
 
 # ── Light pulse (N3) ──────────────────────────────────────────────────────────
-# Outside these local hours the pulse doesn't run: nothing it reads (steps,
-# active calories, intensity minutes) moves while he's asleep, and every skipped
-# poll is one fewer chance to spend a login on a night nobody reads.
-PULSE_ACTIVE_START = 8
-PULSE_ACTIVE_END = 24
+# Outside the active hours on the settings card the pulse doesn't run: nothing it
+# reads (steps, active calories, intensity minutes) moves while he's asleep, and
+# every skipped poll is one fewer chance to spend a login on a night nobody reads.
 
 
 async def pulse(
@@ -794,24 +792,28 @@ async def pulse(
 
 
 async def pulse_job(session_factory, redis=None) -> None:
-    """The light pulse on its own interval (``VITALS_GARMIN_PULSE_MINUTES``).
+    """The light pulse on its own interval (both from the settings card).
 
     Cheap by construction, but it still opens a Garmin session — which is safe
     only because the credential-login breaker rations logins. No-ops when Garmin
-    isn't configured, when the pulse is switched off, or outside active hours."""
-    from vitals.config import load_config
+    isn't configured, when the pulse is switched off, or outside active hours.
+
+    The active-hours check is here rather than in the trigger because APScheduler
+    intervals have no concept of a window, and because a saved setting must apply
+    to the *next* tick without touching the job."""
     from vitals.integrations.garmin_client import GarminClient
+    from vitals.services.proactive import prefs
 
-    config = load_config()
-    if not config.garmin_pulse_minutes:
-        return
-    if not PULSE_ACTIVE_START <= now_local().hour < PULSE_ACTIVE_END:
-        return
-
-    client = GarminClient.from_config(config, redis=redis)
-    if not client.is_configured:
-        return
     async with session_factory() as session:
+        settings = await prefs.get_prefs(session)
+        if not settings["pulse_seconds"]:
+            return
+        if not settings["pulse_start_hour"] <= now_local().hour < settings["pulse_end_hour"]:
+            return
+
+        client = GarminClient.from_config(redis=redis)
+        if not client.is_configured:
+            return
         await pulse(session, client)
         await session.commit()
 

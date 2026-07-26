@@ -12,6 +12,7 @@ Three things here fail *silently* if they regress, which is why each gets a test
 """
 from datetime import date, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from vitals.enums import Source
@@ -20,6 +21,10 @@ from vitals.models.proactive import Notification
 from vitals.models.signals import Signal
 from vitals.services import garmin_service, signals_service
 from vitals.services.proactive import brief, day_plan, delivery, inbound
+
+# The bot only speaks when the ``signals`` module is on — the same switch the
+# owner flips in Settings, and it defaults off.
+pytestmark = pytest.mark.usefixtures("signals_module_on")
 
 DAY = date(2026, 7, 26)          # Sunday
 TOMORROW = DAY + timedelta(days=1)

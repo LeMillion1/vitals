@@ -25,8 +25,10 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import t
+from vitals.integrations.garmin_client import login_breaker_state
 from vitals.services import data_portability_service, language_service, modules_service
 from vitals.services.modules_service import ModuleToggleError
+from vitals.services.proactive import day_plan, prefs
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
 from web.ratelimit import rate_limit
@@ -67,8 +69,17 @@ def _redirect(suffix: str = "") -> RedirectResponse:
     return RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
 
 
-def _page(request: Request, username: str, *, saved: Optional[str] = None, error: Optional[str] = None) -> HTMLResponse:
+async def _page(
+    request: Request,
+    username: str,
+    *,
+    db: AsyncSession,
+    redis: Optional[Redis] = None,
+    saved: Optional[str] = None,
+    error: Optional[str] = None,
+) -> HTMLResponse:
     """Build the template context and render settings.html."""
+    proactive = await prefs.get_prefs(db)
     ctx = {
         "username": username,
         "saved": saved,
@@ -85,6 +96,9 @@ def _page(request: Request, username: str, *, saved: Optional[str] = None, error
         "openrouter_base_url": read_key("VITALS_OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1",
         "llm_model_digest": read_key("VITALS_LLM_MODEL_DIGEST") or "anthropic/claude-sonnet-4.6",
         "llm_model_parser": read_key("VITALS_LLM_MODEL_PARSER") or "google/gemini-2.5-flash",
+        # Empty = "use the digest model", which is what keeps the brief working
+        # before this is ever set. Placeholder, not a pre-filled default.
+        "llm_model_brief": read_key("VITALS_LLM_MODEL_BRIEF"),
         # Hevy
         "hevy_api_key_set": bool(read_key("VITALS_HEVY_API_KEY")),
         # Garmin
@@ -101,6 +115,19 @@ def _page(request: Request, username: str, *, saved: Optional[str] = None, error
         "nutrition_calories_max": read_key("VITALS_NUTRITION_CALORIES_MAX") or "1700",
         # Dashboard modules — ``module_registry`` is a Jinja global (templating.py).
         "enabled_modules": getattr(request.state, "enabled_modules", {}) or {},
+        # Proactive layer (прогон 6) — DB-backed, unlike everything above.
+        "proactive": proactive,
+        "week_template": await day_plan.get_week_template(db),
+        "weekdays": day_plan.WEEKDAYS,
+        "day_questions": day_plan.QUESTIONS,
+        "encode": day_plan.encode,
+        "nudge_categories": prefs.NUDGE_CATEGORIES,
+        "budget_range": prefs.BUDGET_RANGE,
+        "sync_hours_range": prefs.SYNC_HOURS_RANGE,
+        "pulse_range": prefs.PULSE_SECONDS_RANGE,
+        # The прогон-0 login breaker: how many credential logins today's poll
+        # frequency has actually cost, right next to the field that sets it.
+        "breaker": await login_breaker_state(redis),
     }
     return templates.TemplateResponse(request, "settings/settings.html", ctx)
 
@@ -112,10 +139,12 @@ def _page(request: Request, username: str, *, saved: Optional[str] = None, error
 async def settings_page(
     request: Request,
     username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
     saved: Optional[str] = None,
     error: Optional[str] = None,
 ):
-    return _page(request, username, saved=saved, error=error)
+    return await _page(request, username, db=db, redis=redis, saved=saved, error=error)
 
 
 @router.post("/profile")
@@ -168,6 +197,7 @@ async def save_ai(
     openrouter_base_url: str = Form(""),
     llm_model_digest: str = Form(""),
     llm_model_parser: str = Form(""),
+    llm_model_brief: str = Form(""),
 ):
     updates: dict[str, str] = {}
     # Only overwrite the API key if user typed a real value (not the sentinel).
@@ -179,6 +209,9 @@ async def save_ai(
         updates["VITALS_LLM_MODEL_DIGEST"] = llm_model_digest.strip()
     if llm_model_parser.strip():
         updates["VITALS_LLM_MODEL_PARSER"] = llm_model_parser.strip()
+    # Cleared on purpose = "use the digest model", so an empty value is written
+    # rather than skipped like the others.
+    updates["VITALS_LLM_MODEL_BRIEF"] = llm_model_brief.strip()
 
     if updates:
         write_keys(updates)
@@ -274,6 +307,85 @@ async def toggle_module(
     )
 
 
+@router.post("/proactive")
+async def save_proactive(
+    request: Request,
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    brief_time: str = Form(prefs.DEFAULTS["brief_time"]),
+    evening_time: str = Form(prefs.DEFAULTS["evening_time"]),
+    quiet_start: str = Form(prefs.DEFAULTS["quiet_start"]),
+    quiet_end: str = Form(prefs.DEFAULTS["quiet_end"]),
+    daily_budget: int = Form(prefs.DEFAULTS["daily_budget"]),
+    garmin_sync_hours: int = Form(prefs.DEFAULTS["garmin_sync_hours"]),
+    pulse_seconds: int = Form(prefs.DEFAULTS["pulse_seconds"]),
+    pulse_start_hour: int = Form(prefs.DEFAULTS["pulse_start_hour"]),
+    pulse_end_hour: int = Form(prefs.DEFAULTS["pulse_end_hour"]),
+    nudges: list[str] = Form([]),
+):
+    """Save the proactive settings **and rebuild the schedule on the spot** (U5).
+
+    Everything else on this page writes ``.env`` and needs a restart; these are in
+    the DB precisely so they don't. ``prefs.sanitize`` clamps whatever arrives —
+    the HTML min/max are a courtesy, not the guard.
+    """
+    # The week template is 7 days × 3 questions; reading it off the raw form beats
+    # declaring 21 parameters that the question registry would immediately
+    # contradict the moment a fourth question is added.
+    form = await request.form()
+    template = {
+        day: {
+            q.key: day_plan.decode(str(form.get(f"tpl_{day}_{q.key}", day_plan.encode(q.default))))
+            for q in day_plan.QUESTIONS
+        }
+        for day in day_plan.WEEKDAYS
+    }
+
+    settings = await prefs.set_prefs(
+        db,
+        {
+            "brief_time": brief_time,
+            "evening_time": evening_time,
+            "quiet_start": quiet_start,
+            "quiet_end": quiet_end,
+            "daily_budget": daily_budget,
+            "garmin_sync_hours": garmin_sync_hours,
+            "pulse_seconds": pulse_seconds,
+            "pulse_start_hour": pulse_start_hour,
+            "pulse_end_hour": pulse_end_hour,
+            # Unchecked boxes don't post, so the checked list *is* the answer.
+            "nudges": {c: c in nudges for c in prefs.NUDGE_CATEGORIES},
+        },
+    )
+    await day_plan.set_week_template(db, template)
+    await db.commit()
+
+    apply_schedule(request.app, settings)
+    return _redirect("?saved=proactive")
+
+
+def apply_schedule(app, settings: dict) -> None:
+    """Re-register the jobs and push them onto the running scheduler.
+
+    Best-effort on purpose: the settings *are* saved by the time this runs, so a
+    scheduler that isn't up (tests, a worker that never started one) must not turn
+    a successful save into a 500 — the new schedule is picked up at next boot
+    either way.
+    """
+    from vitals.scheduler.jobs import register_all_jobs
+    from vitals.scheduler.scheduler import apply_registry
+    from web.deps import get_redis_client, get_session_factory
+
+    scheduler = getattr(app.state, "scheduler", None)
+    if scheduler is None:
+        return
+    try:
+        register_all_jobs(settings)
+        apply_registry(scheduler, get_session_factory(), get_redis_client())
+    except Exception:
+        logger.exception("could not apply the new schedule; it takes effect on restart")
+
+
 @router.post("/language")
 async def save_language(
     request: Request,
@@ -295,6 +407,8 @@ async def save_language(
 async def change_password(
     request: Request,
     username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
     old_password: str = Form(""),
     new_password: str = Form(""),
     new_password_confirm: str = Form(""),
@@ -306,13 +420,13 @@ async def change_password(
     cfg = get_web_config()
 
     if not authenticate(cfg.auth_username, old_password):
-        return _page(request, username, error="wrong_password")
+        return await _page(request, username, db=db, redis=redis, error="wrong_password")
 
     if not new_password or len(new_password) < 8:
-        return _page(request, username, error="password_too_short")
+        return await _page(request, username, db=db, redis=redis, error="password_too_short")
 
     if new_password != new_password_confirm:
-        return _page(request, username, error="password_mismatch")
+        return await _page(request, username, db=db, redis=redis, error="password_mismatch")
 
     hashed = hash_password(new_password)
     write_keys({"VITALS_AUTH_PASSWORD_HASH": hashed})

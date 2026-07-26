@@ -2,7 +2,7 @@
 
 A nudge is four things: when it applies (``condition``), what it says
 (``render``), how often it may repeat (``cooldown_h``), and which switch turns it
-off (``category``, wired to Settings in прогон 6). The engine knows none of them
+off (``category``, a toggle on the settings card). The engine knows none of them
 — it walks the registry, checks the cooldown, asks the condition, and hands the
 text to :mod:`delivery`, which owns quiet hours and the daily budget.
 
@@ -29,17 +29,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.proactive import Notification
-from vitals.services.proactive import channels, delivery
+from vitals.services.proactive import channels, delivery, prefs
 from vitals.utils.timeutils import now_local
 
 logger = logging.getLogger(__name__)
 
-# Categories = the toggles the settings card will render (прогон 6). Grouping
-# rather than one switch per nudge: "не пиши мне про активность" is the decision
-# a person actually makes.
-CATEGORY_ACTIVITY = "activity"
-CATEGORY_NUTRITION = "nutrition"
-CATEGORY_DATA = "data"
+# Categories = the toggles the settings card renders (прогон 6). They are defined
+# in ``prefs`` — a category is a setting first — and re-exported here so a nudge
+# spec reads as one thing.
+CATEGORY_ACTIVITY = prefs.CATEGORY_ACTIVITY
+CATEGORY_NUTRITION = prefs.CATEGORY_NUTRITION
+CATEGORY_DATA = prefs.CATEGORY_DATA
 
 # Below this the evening walk is a real suggestion; above it he's basically there
 # and a ping is noise. Not a настройка until it's ever wrong.
@@ -189,9 +189,12 @@ async def run(
     """
     now = now or now_local()
     ctx: dict = {"now": now, "today": today or now.date()}
+    categories = (await prefs.get_prefs(session))["nudges"]
 
     sent: list[Notification] = []
     for spec in NUDGES:
+        if not categories.get(spec.category, True):
+            continue
         last = await last_sent_at(session, spec.key)
         if last is not None and now - last < timedelta(hours=spec.cooldown_h):
             continue

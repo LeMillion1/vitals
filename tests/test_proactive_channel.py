@@ -17,6 +17,10 @@ from vitals.models.signals import Signal
 from vitals.services import signals_service
 from vitals.services.proactive import delivery, inbound
 
+# The bot only speaks when the ``signals`` module is on — the same switch the
+# owner flips in Settings, and it defaults off.
+pytestmark = pytest.mark.usefixtures("signals_module_on")
+
 CHAT_ID = "424242"
 WEBHOOK_PATH = "s3cr3t-path"
 WEBHOOK_SECRET = "s3cr3t-header"

@@ -11,13 +11,23 @@ fixture stays effective and jobs only exist when the app actually boots.
 """
 from __future__ import annotations
 
-from vitals.config import load_config
-from vitals.scheduler.scheduler import register_job
+from typing import Any, Optional
+
+from vitals.scheduler.scheduler import clear_jobs, register_job
+from vitals.services.proactive import prefs
 
 
-def register_all_jobs() -> None:
-    """Register every module's scheduled jobs. Idempotent (re-registering an id
-    replaces it), so it's safe to call once per startup."""
+def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
+    """Register every module's scheduled jobs from ``settings`` (прогон 6).
+
+    ``None`` → the defaults, which is what the app used before the settings card
+    existed. Called at startup *and* on every settings save, so it clears the
+    registry first: re-registering has to be able to *remove* a job (the Garmin
+    pulse switched off), not only replace one.
+    """
+    settings = prefs.sanitize(settings)
+    clear_jobs()
+
     from vitals.services.glp1_service import plateau_job
     from vitals.services.hevy_service import sync_job as hevy_sync_job
     from vitals.services.garmin_service import sync_job as garmin_sync_job
@@ -68,51 +78,55 @@ def register_all_jobs() -> None:
         hours=6,
     )
 
-    # Garmin poll — scheduled at 03:00, 11:00, 16:00, and 22:00 local.
+    # Garmin poll — every N hours on the clock (default 6 → 00/06/12/18, the same
+    # four polls a day the old fixed 3/11/16/22 cron did). A cron rather than an
+    # interval so the times survive a deploy instead of re-phasing off boot.
     # No-ops when Garmin isn't configured.
     register_job(
         "garmin_sync",
         garmin_sync_job,
         trigger="cron",
-        hour="3,11,16,22",
+        hour=f"*/{settings['garmin_sync_hours']}",
         minute=0,
     )
 
-    # Morning brief — 11:00 local. Syncs Garmin itself first (last night's sleep is
-    # the point of the message), stays silent on an empty day, and sends nothing at
-    # all until a Telegram channel is configured. Its own lock TTL: the Garmin pull
-    # in front of it makes this the slowest job in the registry.
+    # Morning brief — 11:00 local by default. Syncs Garmin itself first (last
+    # night's sleep is the point of the message), stays silent on an empty day, and
+    # sends nothing at all until a Telegram channel is configured. Its own lock
+    # TTL: the Garmin pull in front of it makes this the slowest job in the registry.
+    brief_hour, brief_minute = prefs.hhmm(settings["brief_time"])
     register_job(
         "daily_brief",
         brief_job,
         trigger="cron",
-        hour=11,
-        minute=0,
+        hour=brief_hour,
+        minute=brief_minute,
         lock_ttl=900,
     )
 
-    # Evening block — 23:45 local, deliberately not midnight: past 00:00 the
-    # message would ask about the wrong "tomorrow". Sums the day up, invites a
-    # free-text answer, and offers one-tap corrections to tomorrow's template.
+    # Evening block — 23:45 local by default, deliberately not midnight: past 00:00
+    # the message would ask about the wrong "tomorrow", which is why the settings
+    # field is a time input (it cannot express anything past 23:59). Sums the day
+    # up, invites a free-text answer, offers one-tap corrections for tomorrow.
+    evening_hour, evening_minute = prefs.hhmm(settings["evening_time"])
     register_job(
         "evening_block",
         evening_job,
         trigger="cron",
-        hour=23,
-        minute=45,
+        hour=evening_hour,
+        minute=evening_minute,
     )
 
-    # Garmin light pulse (N3) — today's step count between the four full syncs, so
-    # an evening nudge isn't reasoning off a number from 16:00. One request, no
-    # login (the token session is resumed), and skipped outside active hours.
-    # Interval from VITALS_GARMIN_PULSE_MINUTES; 0 switches the job off entirely.
-    pulse_minutes = load_config().garmin_pulse_minutes
-    if pulse_minutes:
+    # Garmin light pulse (N3) — today's step count between the full syncs, so an
+    # evening nudge isn't reasoning off a number from hours ago. One request, no
+    # login (the token session is resumed), and skipped outside the active hours
+    # from the settings card. 0 seconds switches the job off entirely.
+    if settings["pulse_seconds"]:
         register_job(
             "garmin_pulse",
             garmin_pulse_job,
             trigger="interval",
-            minutes=pulse_minutes,
+            seconds=settings["pulse_seconds"],
             lock_ttl=120,
             heartbeat=False,
         )

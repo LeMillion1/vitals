@@ -196,16 +196,8 @@ async def _apply_context(session: AsyncSession, data: str) -> bool:
         logger.warning("unparseable context payload: %s", data)
         return False
 
-    await day_plan.record_answer(session, on_date, key, _coerce_answer(value))
+    await day_plan.record_answer(session, on_date, key, day_plan.decode(value))
     return True
-
-
-def _coerce_answer(value: str) -> Any:
-    if value in ("1", "true", "yes"):
-        return True
-    if value in ("0", "false", "no"):
-        return False
-    return value
 
 
 # ── Text ──────────────────────────────────────────────────────────────────────

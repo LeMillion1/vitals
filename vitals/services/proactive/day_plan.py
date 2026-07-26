@@ -204,10 +204,22 @@ def describe(answers: dict) -> str:
 
 
 def encode(value: Any) -> str:
-    """Value → callback payload. ``inbound._coerce_answer`` is the other half."""
+    """Value → wire form (a callback payload, a form field). :func:`decode` back."""
     if isinstance(value, bool):
         return "1" if value else "0"
     return str(value)
+
+
+def decode(value: str) -> Any:
+    """Wire form → value. Used by both halves of the UI — the button taps coming
+    back through Telegram and the week-template selects on the settings page —
+    because ``bool("0")`` is ``True`` and getting that wrong silently inverts an
+    answer."""
+    if value in ("1", "true", "yes"):
+        return True
+    if value in ("0", "false", "no"):
+        return False
+    return value
 
 
 def exception_buttons(current: dict, on_date: date_type) -> list[tuple[str, str]]:
