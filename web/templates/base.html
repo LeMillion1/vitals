@@ -51,60 +51,73 @@
         window.__LANG__ = "{{ request.state.lang|default('en') }}";
         window.t = function (key) { return window.__STRINGS__[key] || key; };
     </script>
-    <!-- Save→restore scroll/tab (U9): submitForm() in app/glp1/nutrition/protocol.js
-         redirects via window.location.href after a successful save — a full
-         navigation that reloads the page from scratch, always landing scrolled to
-         top on whichever tab is Alpine's default. vitalsStashRestore(extra) saves
-         the scroll position (and anything else the caller passes, e.g. the active
-         tab) to sessionStorage right before that redirect; this restores it here.
-         The tab must be exposed (window.__vitalsRestoreTab) synchronously, in
-         <head>, before Alpine — its own script is deferred, so by the time
-         window.load fires a dashboard component's init() has already run with the
-         default tab. Keyed by location.pathname on both ends: a redirect back to
-         the same page (the common case) restores; a redirect elsewhere doesn't try
-         to reapply a stale position to a different page, which is correct.
-         <main>, not window/body, is the actual scroll container (.v-app-shell
-         pins the document itself so it can never scroll — see vitals.css), so the
-         scroll restore waits for window.load/htmx:load, once <main> has its real
-         content laid out, rather than running synchronously like the tab read. -->
+    <!-- In-place refresh after a save (U9). submitForm() in app/glp1/nutrition/
+         protocol/labs_upload.js used to finish with window.location.href — a full
+         document reload that always paints at the top, so the page visibly jumped
+         up and then snapped back down once a load-time handler reapplied the saved
+         scroll offset. vitalsRefresh() does the same POST-redirect-GET without the
+         reload: it re-fetches the target page over htmx and swaps only the guts of
+         <main>, which is itself the scroll container (.v-app-shell pins the
+         document so it can never scroll — see vitals.css), so the element the user
+         is scrolling inside survives the swap. innerHTML clearing still clamps
+         scrollTop to 0, so it is reapplied in htmx:afterSwap — that fires in the
+         same task as the DOM insert, before the browser paints, hence no flicker.
+         The <main> the response carries is unwrapped with select="main > *" (the
+         GET routes render the whole page; only their POSTs branch on hx-request).
+         Alpine rebuilds the swapped-in x-data root from scratch, so the active tab
+         still travels via window.__vitalsRestoreTab, read in each component's
+         init(); errors are toasts the caller wants shown on the fresh content
+         (labs_upload.js names each file the vision parser couldn't read).
+         Holding the scroll offset across the swap is NOT done here — the
+         beforeSwap/afterSwap pair below does it for every htmx swap at once. -->
     <script>
-        window.vitalsStashRestore = function (extra) {
-            try {
-                const main = document.querySelector('main');
-                const data = Object.assign({ y: main ? main.scrollTop : 0 }, extra);
-                sessionStorage.setItem('vitals_restore:' + location.pathname, JSON.stringify(data));
-            } catch (e) { /* sessionStorage unavailable — nothing to restore, not fatal */ }
-        };
+        window.vitalsRefresh = function (url, extra) {
+            extra = extra || {};
+            if (extra.tab) window.__vitalsRestoreTab = extra.tab;
+            var main = document.querySelector('main');
+            if (!main || !window.htmx) { window.location.href = url; return; }
 
-        (function () {
-            let restoreData = null;
-            try {
-                const key = 'vitals_restore:' + location.pathname;
-                const raw = sessionStorage.getItem(key);
-                if (raw) {
-                    sessionStorage.removeItem(key);
-                    restoreData = JSON.parse(raw);
-                    window.__vitalsRestoreTab = restoreData.tab || null;
+            htmx.ajax('GET', url, {
+                source: main, target: main, swap: 'innerHTML', select: 'main > *'
+            }).then(function () {
+                // Keep the address bar honest when the save redirects somewhere
+                // else (labs appends ?upload=…). replaceState, not pushState: a
+                // save is not a navigation, Back should leave the page entirely.
+                if (url !== location.pathname + location.search) {
+                    try { history.replaceState(history.state, '', url); } catch (e) { }
                 }
-            } catch (e) { /* ignore — nothing to restore */ }
-
-            function restoreScroll() {
-                if (!restoreData || typeof restoreData.y !== 'number') return;
-                const main = document.querySelector('main');
-                if (main) main.scrollTop = restoreData.y;
-            }
-            // Same stash, one extra passenger: messages that must survive the
-            // redirect that produced them (labs_upload.js names each file the
-            // vision parser couldn't read — a toast fired before the redirect
-            // would be wiped by it).
-            window.addEventListener('load', function () {
-                restoreScroll();
-                const errors = restoreData && restoreData.errors;
-                if (Array.isArray(errors) && window.vitalsToast) {
-                    errors.forEach((msg) => window.vitalsToast(msg, 'error'));
+                if (Array.isArray(extra.errors) && window.vitalsToast) {
+                    extra.errors.forEach(function (msg) { window.vitalsToast(msg, 'error'); });
                 }
             });
-            document.addEventListener('htmx:load', restoreScroll);
+        };
+
+        // Stay where you were on every in-page htmx action (save, delete, sync,
+        // digest, alert dismissal, a vitalsRefresh above): the swap tears out
+        // <main>'s children, which clamps its scrollTop to 0, so it is re-applied
+        // in afterSwap — the same task as the DOM insert, before the browser
+        // paints, so there is no jump-up-then-back-down.
+        // Navigation is told apart from action by the response's final URL
+        // (xhr.responseURL survives the POST→303→GET hop, unlike the request
+        // path): landing on a DIFFERENT page must still start at the top, only a
+        // swap that re-renders the page you are already on holds its position.
+        (function () {
+            var heldY = null;
+            document.addEventListener('htmx:beforeSwap', function (evt) {
+                heldY = null;
+                var main = document.querySelector('main');
+                var xhr = evt.detail && evt.detail.xhr;
+                if (!main || !xhr || !xhr.responseURL) return;
+                try {
+                    if (new URL(xhr.responseURL).pathname === location.pathname) heldY = main.scrollTop;
+                } catch (e) { /* unparseable URL — treat as a navigation, start at top */ }
+            });
+            document.addEventListener('htmx:afterSwap', function () {
+                if (heldY === null) return;
+                var main = document.querySelector('main');
+                if (main) main.scrollTop = heldY;
+                heldY = null;
+            });
         })();
     </script>
     <!-- Chart palette bridge (U7): a <canvas> can't resolve CSS var(), so expose the

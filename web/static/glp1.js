@@ -23,9 +23,9 @@ window.glp1Dashboard = function (lastSite) {
         // Pre-select the last-used site so rotation away from it is one tap.
         selectedSite: lastSite || null,
 
-        // U9: restore the tab a save redirected away from (see vitalsStashRestore
-        // in base.html <head> — must read this in init(), not later, since
-        // window.load fires after Alpine has already built this component).
+        // U9: restore the tab a save swapped this component away from (set by
+        // vitalsRefresh in base.html <head> before the swap, so it is already
+        // there when Alpine rebuilds this component on the fresh content).
         init() {
             if (window.__vitalsRestoreTab) {
                 this.activeTab = window.__vitalsRestoreTab;
@@ -93,8 +93,7 @@ window.glp1Dashboard = function (lastSite) {
                     restoreBtn();
                 } else if (response.ok) {
                     const redirectUrl = response.headers.get('HX-Redirect') || '/glp1';
-                    if (window.vitalsStashRestore) window.vitalsStashRestore({ tab: this.activeTab });
-                    window.location.href = redirectUrl;
+                    window.vitalsRefresh(redirectUrl, { tab: this.activeTab });
                 } else {
                     restoreBtn();
                     if (window.vitalsToast) window.vitalsToast(window.t('save_error'));
