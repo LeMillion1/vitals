@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from typing import Any, Awaitable, Callable, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -239,8 +240,14 @@ def setup_scheduler(
 
     # Always-on heartbeat so a dead scheduler is detectable even before any module
     # job is registered.
+    #
+    # ``partial``, not ``lambda: _keepalive(redis)``: a lambda that *returns* a
+    # coroutine is not a coroutine function, so APScheduler's executor called it
+    # synchronously and threw the coroutine away — the heartbeat was never
+    # recorded, and /health reported the scheduler dead from two minutes after
+    # boot forever. ``partial`` keeps ``iscoroutinefunction`` true.
     scheduler.add_job(
-        lambda: _keepalive(redis),
+        partial(_keepalive, redis),
         trigger="interval",
         minutes=1,
         id=KEEPALIVE_JOB_ID,
