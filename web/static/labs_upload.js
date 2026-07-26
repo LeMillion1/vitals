@@ -72,7 +72,7 @@ window.labsUpload = function (showUploadInitial) {
                     // earlier files already saved (then a plain failure tally reads
                     // better than abandoning the summary banner mid-queue).
                     if (data && data.reason === 'not_configured' && this.lqConfirmed === 0 && this.lqFailed === 0) {
-                        window.location.href = '/labs?upload=not_configured';
+                        window.vitalsRefresh('/labs?upload=not_configured');
                         return;
                     }
                     // Name the file and say why. The summary banner only counts
@@ -159,13 +159,10 @@ window.labsUpload = function (showUploadInitial) {
         // nothing if the user skipped every file.
         _lqFinish() {
             if (this.lqConfirmed > 0 || this.lqFailed > 0) {
-                // The banner only carries counts; hand the per-file reasons to the
-                // stash base.html drains on load, so they survive this redirect.
-                if (this.lqErrors.length && window.vitalsStashRestore) {
-                    window.vitalsStashRestore({ errors: this.lqErrors.slice() });
-                }
+                // The banner only carries counts; the per-file reasons ride along
+                // as toasts vitalsRefresh fires once the fresh content is in.
                 const qs = new URLSearchParams({ upload: 'ok', added: this.lqConfirmed, failed: this.lqFailed });
-                window.location.href = '/labs?' + qs.toString();
+                window.vitalsRefresh('/labs?' + qs.toString(), { errors: this.lqErrors.slice() });
             }
         },
 
