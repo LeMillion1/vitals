@@ -34,7 +34,7 @@ from vitals.enums import Domain, SignalKind, Source
 from vitals.integrations.llm_client import LLMClient
 from vitals.models.raw_payload import RawPayload
 from vitals.services import signals_service
-from vitals.services.proactive import delivery
+from vitals.services.proactive import day_plan, delivery
 from vitals.services.proactive.channels import Notifier
 from vitals.services.raw_payload_service import upsert_raw_payload
 from vitals.utils.timeutils import today_local
@@ -186,7 +186,8 @@ async def _apply_context(session: AsyncSession, data: str) -> bool:
 
     The date rides in the payload rather than being "today": the evening block
     asks about *tomorrow*, and a tap that lands after midnight must still answer
-    the day it was asked about.
+    the day it was asked about. Merging (and keeping the template's guess beside
+    the answer) is ``day_plan``'s job — here we only decode the payload.
     """
     try:
         _, iso_date, key, value = data.split(":", 3)
@@ -195,12 +196,7 @@ async def _apply_context(session: AsyncSession, data: str) -> bool:
         logger.warning("unparseable context payload: %s", data)
         return False
 
-    existing = await signals_service.get_day_context(session, on_date)
-    answers: dict[str, Any] = dict(existing.answers or {}) if existing else {}
-    answers[key] = _coerce_answer(value)
-    await signals_service.set_day_context(
-        session, on_date, answers=answers, source=Source.MANUAL.value
-    )
+    await day_plan.record_answer(session, on_date, key, _coerce_answer(value))
     return True
 
 
@@ -227,7 +223,10 @@ async def handle_text(
     """The channel-agnostic entry point (C8): already text, whatever produced it."""
     if reply_to_message_id is not None:
         answered = await delivery.find_sent(session, str(reply_to_message_id))
-        if answered is not None:
+        # The evening block *asks* «как день?», so a reply to it is an answer, not
+        # a question — it falls through to capture. Every other message of ours is
+        # something he might ask about.
+        if answered is not None and answered.category != delivery.CATEGORY_EVENING:
             # A question is data too, and this is also what stops a webhook retry
             # from paying for a second model call on the same question.
             await signals_service.store_raw_text(

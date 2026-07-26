@@ -27,6 +27,8 @@ from typing import Iterable, Optional
 # Block kinds (also the priority ladder below).
 KIND_GARMIN = "garmin"
 KIND_WEIGHT = "weight"
+KIND_DAY = "day"        # what kind of day it is — see ``day_plan``
+KIND_ASK = "ask"        # a question to the owner, answered in free text
 KIND_NARRATIVE = "narrative"
 
 # Protocol stays out of the brief entirely (B2): no doses, no compounds, no

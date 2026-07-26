@@ -33,7 +33,7 @@ from vitals.enums import DigestKind, Domain, Severity, Source
 from vitals.i18n import t
 from vitals.models.milestones import DOMAIN as DIGEST_DOMAIN, WeeklyDigest
 from vitals.services import alerts_service, digest_service
-from vitals.services.proactive import compose
+from vitals.services.proactive import compose, day_plan
 from vitals.utils.timeutils import today_local
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,10 @@ Garmin). Базовые понятия объяснять не надо.
 Числа пользователь уже видит в шапке сообщения — не пересказывай их, объясняй.
 Если данных мало — скажи это одним предложением и не тяни.
 
+Блок `day` — что за день сегодня (удалёнка, зал, нагрузка). Если его `source` =
+"template", это догадка шаблона недели, а не ответ пользователя: учитывай мягко,
+не утверждай как факт.
+
 ОГРАНИЧЕНИЯ (нарушение = баг):
 - Опирайся ТОЛЬКО на JSON. Ничего не выдумывай, новых чисел не вводи.
 - Никаких заголовков, списков и разметки — обычный текст, его читают в мессенджере.
@@ -68,9 +72,22 @@ Garmin). Базовые понятия объяснять не надо.
 async def build_context(
     session: AsyncSession, *, on_date: Optional[date_type] = None
 ) -> dict:
-    """Today's cross-domain snapshot, minus the protocol (B2)."""
+    """Today's cross-domain snapshot, minus the protocol (B2), plus the day (E4).
+
+    The day context is the difference between "спал плохо — отдохни" and advice
+    that knows there is a gym session and a heavy workday ahead, so it goes into
+    the model's JSON as well as onto the header line.
+    """
     ctx = await digest_service.assemble_context(session, on_date=on_date, period_days=1)
-    return compose.strip_protocol(ctx)
+    ctx = compose.strip_protocol(ctx)
+    answers, answered = await day_plan.resolve(session, on_date or today_local())
+    ctx["day"] = {
+        "answers": answers,
+        # His answer or the template's guess — the model is told which, so it can
+        # hedge on a guess instead of asserting it.
+        "source": Source.MANUAL.value if answered else Source.TEMPLATE.value,
+    }
+    return ctx
 
 
 def build_prompt(ctx: dict) -> str:
@@ -110,6 +127,9 @@ async def generate_brief(
         return None
 
     blocks = compose.header_blocks(ctx)
+    day = day_plan.day_block(ctx.get("day"))
+    if day is not None:
+        blocks.append(day)
     tail = await narrative(llm, ctx)
     if tail:
         blocks.append(compose.Block(compose.KIND_NARRATIVE, tail, 90))
@@ -176,6 +196,9 @@ async def brief_job(session_factory, redis=None) -> None:
             text=row.content,
             category=delivery.CATEGORY_BRIEF,
             dedupe_key=dedupe_key(today),
+            # Nothing answered for today → the header shows the template's guess
+            # and the buttons are how it gets corrected in one tap (E4).
+            buttons=day_plan.buttons_from_context((row.context_json or {}).get("day"), today),
         )
         await alerts_service.resolve_by_key(session, alert_key=EMPTY_DAY_ALERT_KEY)
         await session.commit()

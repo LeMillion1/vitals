@@ -24,6 +24,7 @@ def register_all_jobs() -> None:
     from vitals.services.nutrition_service import day_end_job as nutrition_day_end_job
     from vitals.services.hrt_reminders import reminders_job as hrt_reminders_job
     from vitals.services.proactive.brief import brief_job
+    from vitals.services.proactive.day_plan import evening_job
 
     # GLP-1 plateau check — once a day at 06:00 local. Cheap read; raises/clears a
     # passive warn alert so it's fresh even on days the dashboard isn't opened.
@@ -85,6 +86,17 @@ def register_all_jobs() -> None:
         hour=11,
         minute=0,
         lock_ttl=900,
+    )
+
+    # Evening block — 23:45 local, deliberately not midnight: past 00:00 the
+    # message would ask about the wrong "tomorrow". Sums the day up, invites a
+    # free-text answer, and offers one-tap corrections to tomorrow's template.
+    register_job(
+        "evening_block",
+        evening_job,
+        trigger="cron",
+        hour=23,
+        minute=45,
     )
 
     # Weekly AI digest — Mondays at 08:00 local. No-ops when no OpenRouter key.
