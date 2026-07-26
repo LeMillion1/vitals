@@ -28,6 +28,7 @@ DEFAULT_HEVY_BASE_URL = "https://api.hevyapp.com"
 # the Redis session cache, so a restart doesn't force a fresh login (which risks
 # a captcha/MFA challenge and a temporary block).
 DEFAULT_GARMIN_TOKEN_DIR = "/data/garmin_session"
+DEFAULT_GARMIN_PULSE_MINUTES = 15
 
 
 def _pos_int(env_name: str, default: int) -> int:
@@ -113,6 +114,11 @@ class Config:
     garmin_email: str = ""
     garmin_password: str = ""
     garmin_token_dir: str = DEFAULT_GARMIN_TOKEN_DIR
+    # Light pulse (today's steps only) between the four full syncs. Minutes, 0 =
+    # off. Clamped to 1..60 on load: the Home Assistant integration — same author
+    # as the library, thousands of users — polls every 5 min with a 1 min floor,
+    # and a read costs nothing while a *login* is what Garmin rate-limits.
+    garmin_pulse_minutes: int = DEFAULT_GARMIN_PULSE_MINUTES
 
     # ── Telegram (proactive channel) ────────────────────────────────────────────
     # All four empty by default: the bot simply never sends and the webhook fails
@@ -160,6 +166,12 @@ def load_config() -> Config:
     else:
         user_goals = ["снижение жира", "сохранение мышц"]
 
+    garmin_pulse_minutes = _env_int(
+        "VITALS_GARMIN_PULSE_MINUTES", DEFAULT_GARMIN_PULSE_MINUTES
+    )
+    if garmin_pulse_minutes:
+        garmin_pulse_minutes = max(1, min(60, garmin_pulse_minutes))
+
     nutrition_protein_target_g = _env_float("VITALS_NUTRITION_PROTEIN_TARGET_G", 150.0)
     nutrition_calories_min = _env_int("VITALS_NUTRITION_CALORIES_MIN", 1300)
     nutrition_calories_max = _env_int("VITALS_NUTRITION_CALORIES_MAX", 1700)
@@ -197,6 +209,7 @@ def load_config() -> Config:
         garmin_token_dir=(
             os.getenv("VITALS_GARMIN_TOKEN_DIR") or DEFAULT_GARMIN_TOKEN_DIR
         ),
+        garmin_pulse_minutes=garmin_pulse_minutes,
         telegram_bot_token=os.getenv("VITALS_TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_chat_id=os.getenv("VITALS_TELEGRAM_CHAT_ID", "").strip(),
         telegram_webhook_path=os.getenv("VITALS_TELEGRAM_WEBHOOK_PATH", "").strip(),

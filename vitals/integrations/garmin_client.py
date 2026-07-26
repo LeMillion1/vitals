@@ -280,6 +280,25 @@ class GarminClient:
 
         return await asyncio.to_thread(_blocking)
 
+    async def fetch_summary(self, on_date: date_type) -> dict:
+        """The day summary alone — **one** upstream call (N3).
+
+        The light pulse: steps, calories and intensity minutes move all day, the
+        rest of the bundle (sleep, HRV, readiness) is settled by morning. Polling
+        this every quarter hour costs one request and no login — the full
+        :meth:`fetch_daily` would cost ten for numbers that haven't changed."""
+        garmin = await self._ensure_login()
+        ds = on_date.isoformat()
+
+        def _blocking() -> dict:
+            try:
+                return garmin.get_user_summary(ds) or {}
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Garmin get_user_summary(%s) failed: %s", ds, e)
+                return {}
+
+        return await asyncio.to_thread(_blocking)
+
     async def fetch_activities(self, start: date_type, end: date_type) -> list[dict]:
         """Recorded activities between ``start`` and ``end`` (inclusive)."""
         garmin = await self._ensure_login()

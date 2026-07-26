@@ -11,6 +11,7 @@ fixture stays effective and jobs only exist when the app actually boots.
 """
 from __future__ import annotations
 
+from vitals.config import load_config
 from vitals.scheduler.scheduler import register_job
 
 
@@ -23,8 +24,10 @@ def register_all_jobs() -> None:
     from vitals.services.digest_service import digest_job
     from vitals.services.nutrition_service import day_end_job as nutrition_day_end_job
     from vitals.services.hrt_reminders import reminders_job as hrt_reminders_job
+    from vitals.services.garmin_service import pulse_job as garmin_pulse_job
     from vitals.services.proactive.brief import brief_job
     from vitals.services.proactive.day_plan import evening_job
+    from vitals.services.proactive.nudges import nudges_job
 
     # GLP-1 plateau check — once a day at 06:00 local. Cheap read; raises/clears a
     # passive warn alert so it's fresh even on days the dashboard isn't opened.
@@ -97,6 +100,31 @@ def register_all_jobs() -> None:
         trigger="cron",
         hour=23,
         minute=45,
+    )
+
+    # Garmin light pulse (N3) — today's step count between the four full syncs, so
+    # an evening nudge isn't reasoning off a number from 16:00. One request, no
+    # login (the token session is resumed), and skipped outside active hours.
+    # Interval from VITALS_GARMIN_PULSE_MINUTES; 0 switches the job off entirely.
+    pulse_minutes = load_config().garmin_pulse_minutes
+    if pulse_minutes:
+        register_job(
+            "garmin_pulse",
+            garmin_pulse_job,
+            trigger="interval",
+            minutes=pulse_minutes,
+            lock_ttl=120,
+            heartbeat=False,
+        )
+
+    # Nudges — hourly, at :05 so it never lands on top of the polls. Nothing is
+    # sent unless a condition actually holds; quiet hours and the daily budget are
+    # enforced downstream by delivery.send.
+    register_job(
+        "nudges",
+        nudges_job,
+        trigger="cron",
+        minute=5,
     )
 
     # Weekly AI digest — Mondays at 08:00 local. No-ops when no OpenRouter key.

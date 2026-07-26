@@ -745,6 +745,77 @@ async def sync(
     return summary
 
 
+# ── Light pulse (N3) ──────────────────────────────────────────────────────────
+# Outside these local hours the pulse doesn't run: nothing it reads (steps,
+# active calories, intensity minutes) moves while he's asleep, and every skipped
+# poll is one fewer chance to spend a login on a night nobody reads.
+PULSE_ACTIVE_START = 8
+PULSE_ACTIVE_END = 24
+
+
+async def pulse(
+    session: AsyncSession, client: Any, *, on_date: Optional[date_type] = None
+) -> dict:
+    """Today's summary only — one upstream call, merged into the day's bundle.
+
+    The merge is the whole trick: the fresh summary replaces exactly that key of
+    the stored raw payload and the *whole* bundle is re-ingested, so last night's
+    sleep and HRV survive a mid-day poll. Normalising a bare ``{"summary": …}``
+    over an existing day would blank every column the summary doesn't carry.
+
+    An empty response is treated as no data rather than as "the day has no
+    summary" — same reason. Auth failures are caught and logged, never alerted:
+    the 4×/day sync owns that alert, and a job running every quarter hour would
+    flap it. Does not commit.
+    """
+    day = on_date or now_local().date()
+    out: dict = {"steps": None, "error": None}
+    try:
+        fresh = await client.fetch_summary(day)
+    except GarminAuthError as e:
+        logger.warning("Garmin pulse skipped: %s", e)
+        out["error"] = "throttled" if isinstance(e, GarminLoginThrottled) else "auth"
+        return out
+    if not fresh:
+        out["error"] = "empty"
+        return out
+
+    raw: dict = {}
+    existing = await get_daily(session, day)
+    if existing is not None and existing.raw_payload_id is not None:
+        stored = await session.get(RawPayload, existing.raw_payload_id)
+        if stored is not None and isinstance(stored.payload, dict):
+            raw = dict(stored.payload)
+    raw["summary"] = fresh
+
+    row = await ingest_daily(session, day, raw)
+    out["steps"] = row.steps
+    return out
+
+
+async def pulse_job(session_factory, redis=None) -> None:
+    """The light pulse on its own interval (``VITALS_GARMIN_PULSE_MINUTES``).
+
+    Cheap by construction, but it still opens a Garmin session — which is safe
+    only because the credential-login breaker rations logins. No-ops when Garmin
+    isn't configured, when the pulse is switched off, or outside active hours."""
+    from vitals.config import load_config
+    from vitals.integrations.garmin_client import GarminClient
+
+    config = load_config()
+    if not config.garmin_pulse_minutes:
+        return
+    if not PULSE_ACTIVE_START <= now_local().hour < PULSE_ACTIVE_END:
+        return
+
+    client = GarminClient.from_config(config, redis=redis)
+    if not client.is_configured:
+        return
+    async with session_factory() as session:
+        await pulse(session, client)
+        await session.commit()
+
+
 # ── Health Auto Export (backup channel) ───────────────────────────────────────
 # Map Health Auto Export metric names → the daily column they populate, with the
 # unit conversion needed (HAE reports minutes for sleep, count for steps, etc.).
