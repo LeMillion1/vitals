@@ -166,7 +166,7 @@ async def brief_job(session_factory, redis=None) -> None:
     from vitals.services import garmin_service
     from vitals.services.language_service import get_language
     from vitals.i18n import current_lang
-    from vitals.services.proactive import channels, delivery
+    from vitals.services.proactive import channels, delivery, inbound
 
     try:
         await garmin_service.sync_job(session_factory, redis)
@@ -176,6 +176,18 @@ async def brief_job(session_factory, redis=None) -> None:
     notifier = channels.build_notifier()
     async with session_factory() as session:
         current_lang.set(await get_language(session, redis))
+
+        # Second pass at yesterday's unparsed messages, in its own transaction and
+        # behind its own guard: a recovered row belongs in the lake before the
+        # brief reads it, and a model that is still down must not cost the brief.
+        try:
+            recovered = await inbound.reparse_pending(session)
+            await session.commit()
+            if recovered:
+                logger.info("re-parsed %d stored message(s) before the brief", len(recovered))
+        except Exception:
+            await session.rollback()
+            logger.warning("re-parse sweep before the brief failed", exc_info=True)
 
         today = today_local()
         row = await generate_brief(session, LLMClient(), source=Source.SCHEDULER.value)

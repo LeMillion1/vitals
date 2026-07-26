@@ -37,7 +37,7 @@ from vitals.services import signals_service
 from vitals.services.proactive import day_plan, delivery
 from vitals.services.proactive.channels import Notifier
 from vitals.services.raw_payload_service import upsert_raw_payload
-from vitals.utils.timeutils import today_local
+from vitals.utils.timeutils import now_local, today_local
 
 logger = logging.getLogger(__name__)
 
@@ -221,17 +221,20 @@ async def handle_text(
         if answered is not None and answered.category != delivery.CATEGORY_EVENING:
             # A question is data too, and this is also what stops a webhook retry
             # from paying for a second model call on the same question.
-            await signals_service.store_raw_text(
+            raw = await signals_service.store_raw_text(
                 session, text=text, external_id=external_id, source=SOURCE
             )
+            # Marked done on the spot: a question is not a message waiting to be
+            # parsed into signals, so the re-parse sweep must not pick it up and
+            # turn «почему пульс низкий?» into a symptom row.
+            raw.processed_at = now_local()
             await _answer_reply(session, text, answered, notifier=notifier, message_id=message_id)
             return
 
-    known = [key for key, _ in await signals_service.key_frequency(session)][:_KNOWN_KEYS_LIMIT]
     rows = await signals_service.ingest_text(
         session,
         text=text,
-        parse=parse or make_signal_parser(known),
+        parse=parse or make_signal_parser(await known_keys(session)),
         external_id=external_id,
         on_date=on_date or today_local(),
         source=SOURCE,
@@ -310,18 +313,36 @@ def render_echo(rows) -> str:
 
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
-def make_signal_parser(known_keys: Optional[list[str]] = None) -> signals_service.Parser:
+async def known_keys(session: AsyncSession) -> list[str]:
+    """The vocabulary the parser is reminded of, most-used first."""
+    stats = await signals_service.key_frequency(session)
+    return [stat.key for stat in stats][:_KNOWN_KEYS_LIMIT]
+
+
+async def reparse_pending(session: AsyncSession) -> list:
+    """Give the messages the parser choked on one more go (R3).
+
+    Lives next to the parser because that is what it needs; called from the
+    morning-brief job rather than from a schedule of its own, so a recovered row
+    is in the lake *before* the brief reads it.
+    """
+    return await signals_service.reparse_unparsed(
+        session, parse=make_signal_parser(await known_keys(session))
+    )
+
+
+def make_signal_parser(known: Optional[list[str]] = None) -> signals_service.Parser:
     """Build the parser handed to ``ingest_text``.
 
     A factory, not a bare function, because the prompt carries the keys already in
     use — the parser is only as consistent as the vocabulary it is reminded of.
     Injected as a parameter everywhere downstream, so tests never touch a network.
     """
-    known = ", ".join(known_keys or []) or "пока пусто"
+    vocabulary = ", ".join(known or []) or "пока пусто"
     system = (
         f"{_PARSER_SYSTEM}\n\n"
         f"Уже использованные ключи — переиспользуй подходящий, новый заводи только "
-        f"если ни один не подходит: {known}"
+        f"если ни один не подходит: {vocabulary}"
     )
 
     async def _parse(text: str) -> list[dict]:

@@ -24,11 +24,13 @@ are the actual evidence the key registry gets built from.
 from __future__ import annotations
 
 import inspect
-from datetime import date as date_type, time as time_type
+import logging
+from dataclasses import dataclass
+from datetime import date as date_type, time as time_type, timedelta
 from typing import Awaitable, Callable, Optional, Sequence, Union
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, SignalKind, Source
@@ -36,6 +38,8 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import DayContext, Signal
 from vitals.services.raw_payload_service import upsert_raw_payload
 from vitals.utils.timeutils import now_local, today_local
+
+logger = logging.getLogger(__name__)
 
 DOMAIN = Domain.SIGNALS.value
 
@@ -199,17 +203,91 @@ async def ingest_text(
         if inspect.isawaitable(parsed):
             parsed = await parsed
     except Exception:
-        # The message survives in raw_payloads; a re-parse sweep can pick it up
-        # (``processed_at IS NULL``). Nothing to salvage here.
+        # The message survives in raw_payloads and stays ``processed_at IS NULL``,
+        # which is what :func:`reparse_unparsed` sweeps. Nothing to salvage here.
         return []
 
-    return await create_signals(
+    rows = await create_signals(
         session,
         items=parsed or [],
         on_date=on_date,
         source=source,
         raw_id=raw.id,
     )
+    if rows:
+        # Same bookkeeping every other importer does — and it is what tells the
+        # re-parse sweep "this one is done" from "this one never became anything".
+        raw.processed_at = now_local()
+        await session.flush()
+    return rows
+
+
+# How far back a second attempt is worth making, and how many messages one sweep
+# may cost. A phrase still unparseable after a few days is material for the key
+# registry, not something to keep paying a model for.
+REPARSE_WINDOW_DAYS = 7
+REPARSE_BATCH = 20
+
+
+async def reparse_unparsed(
+    session: AsyncSession,
+    *,
+    parse: Parser,
+    limit: int = REPARSE_BATCH,
+    since_days: int = REPARSE_WINDOW_DAYS,
+) -> list[Signal]:
+    """Second pass over messages that never became rows (R3).
+
+    Which is the promise the echo already makes out loud — «Сохранил как есть —
+    разобрать не смог. Посмотрю позже» — and that nothing was keeping until now.
+
+    A candidate is a stored message with **no signals of its own**: the model was
+    down, timed out, or returned junk. Rows that already produced signals are
+    excluded in SQL, so running this twice cannot duplicate anything. A second
+    failure leaves the row pending rather than burning it — the model being down
+    is not the message's fault — and the window is what stops that from being
+    forever.
+    """
+    cutoff = now_local() - timedelta(days=since_days)
+    has_signals = select(Signal.id).where(Signal.raw_id == RawPayload.id).exists()
+    stmt = (
+        select(RawPayload)
+        .where(
+            RawPayload.domain == DOMAIN,
+            RawPayload.processed_at.is_(None),
+            RawPayload.fetched_at >= cutoff,
+            ~has_signals,
+        )
+        .order_by(RawPayload.id)
+        .limit(limit)
+    )
+
+    made: list[Signal] = []
+    for raw in (await session.execute(stmt)).scalars().all():
+        payload = raw.payload if isinstance(raw.payload, dict) else {}
+        text = (payload.get("text") or "").strip()
+        if not text:
+            continue  # a button tap, not something anyone said
+        try:
+            parsed = parse(text)
+            if inspect.isawaitable(parsed):
+                parsed = await parsed
+        except Exception:
+            logger.warning("re-parse failed for raw %s", raw.id, exc_info=True)
+            continue
+        rows = await create_signals(
+            session,
+            items=parsed or [],
+            on_date=raw.fetched_at.date(),
+            source=raw.source,
+            raw_id=raw.id,
+        )
+        if rows:
+            raw.processed_at = now_local()
+            made.extend(rows)
+    if made:
+        await session.flush()
+    return made
 
 
 async def delete_signal(session: AsyncSession, signal_id: int) -> bool:
@@ -264,34 +342,75 @@ async def list_signals(
     return list((await session.execute(stmt)).scalars().all())
 
 
+@dataclass(frozen=True)
+class KeyStat:
+    """One canonical key, as the revision screen needs to see it (R1).
+
+    ``count`` alone cannot answer "is this the same thing as that?" — that call is
+    made by reading the phrasings the key came from, and by seeing which stored
+    spellings already fold into it. So all three travel together.
+    """
+
+    key: str
+    count: int
+    variants: tuple[str, ...]   # stored spellings that fold into ``key``
+    examples: tuple[str, ...]   # his own wording, newest first
+
+
+EXAMPLES_PER_KEY = 3
+
+# Everything folds in Python (aliases can't be expressed in a GROUP BY), so the
+# scan is bounded rather than unbounded. A year of one person's messages is well
+# under this.
+# ponytail: full scan of the recent window, per-key SQL aggregates if it ever grows.
+_SCAN_LIMIT = 3000
+
+
 async def key_frequency(
     session: AsyncSession,
     *,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
     include_misparse: bool = True,
-) -> list[tuple[str, int]]:
-    """``[(canonical_key, count)]``, most-used first — the прогон-7 raw material.
+) -> list[KeyStat]:
+    """Canonical keys, most-used first — the прогон-7 raw material.
 
     Counts default to **including** misparses: the point of this list is to see
     what the parser actually emits, mistakes included.
     """
-    stmt = select(Signal.key, func.count()).where(Signal.domain == DOMAIN)
+    stmt = select(Signal.key, Signal.note).where(Signal.domain == DOMAIN)
     if not include_misparse:
         stmt = stmt.where(Signal.misparse.is_(False))
     if start is not None:
         stmt = stmt.where(Signal.date >= start)
     if end is not None:
         stmt = stmt.where(Signal.date <= end)
-    stmt = stmt.group_by(Signal.key)
+    stmt = stmt.order_by(Signal.id.desc()).limit(_SCAN_LIMIT)
 
-    # Aliases fold in Python — the DB groups the stored spellings, we merge them.
-    # A month of one person's messages is a few hundred rows; nothing to optimize.
-    folded: dict[str, int] = {}
-    for stored_key, count in (await session.execute(stmt)).all():
+    counts: dict[str, int] = {}
+    variants: dict[str, set[str]] = {}
+    examples: dict[str, list[str]] = {}
+    for stored_key, note in (await session.execute(stmt)).all():
         canonical = normalize_key(stored_key)
-        folded[canonical] = folded.get(canonical, 0) + count
-    return sorted(folded.items(), key=lambda kv: (-kv[1], kv[0]))
+        counts[canonical] = counts.get(canonical, 0) + 1
+        if stored_key != canonical:
+            variants.setdefault(canonical, set()).add(stored_key)
+        seen = examples.setdefault(canonical, [])
+        if note and note not in seen and len(seen) < EXAMPLES_PER_KEY:
+            seen.append(note)
+
+    return sorted(
+        (
+            KeyStat(
+                key=key,
+                count=count,
+                variants=tuple(sorted(variants.get(key, ()))),
+                examples=tuple(examples.get(key, ())),
+            )
+            for key, count in counts.items()
+        ),
+        key=lambda s: (-s.count, s.key),
+    )
 
 
 # ── Day context ───────────────────────────────────────────────────────────────

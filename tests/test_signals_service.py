@@ -5,7 +5,7 @@ later: the raw text surviving a broken parse, one phrase producing several rows,
 alias folding happening on read, and a misparse leaving the charts without
 leaving the table.
 """
-from datetime import date, time
+from datetime import date, time, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -141,7 +141,11 @@ async def test_alias_folds_on_read_without_touching_stored_rows(db_session):
     # But both spellings answer to the canonical key, from either direction.
     assert len(await svc.list_signals(db_session, key="sleepiness")) == 2
     assert len(await svc.list_signals(db_session, key="sleepy")) == 2
-    assert await svc.key_frequency(db_session) == [("sleepiness", 2)]
+
+    stats = await svc.key_frequency(db_session)
+    assert [(s.key, s.count) for s in stats] == [("sleepiness", 2)]
+    # …and the drifted spelling is named on the screen, not hidden by the folding.
+    assert stats[0].variants == ("sleepy",)
 
 
 def test_normalize_key_slugs_and_maps():
@@ -208,6 +212,136 @@ async def test_list_signals_filters_by_kind_and_date(db_session):
     assert len(await svc.list_signals(db_session, end=D1)) == 1
     # Newest first.
     assert [r.date for r in await svc.list_signals(db_session)] == [D2, D1]
+
+
+# ── R1: the revision screen's raw material ────────────────────────────────────
+async def test_key_stats_carry_the_phrasings_they_came_from(db_session):
+    """Counting keys can't answer "is this the same thing?" — the wording can."""
+    await svc.create_signals(
+        db_session,
+        items=[
+            {"kind": "state", "key": "sleepiness", "note": "спать пиздец хочу"},
+            {"kind": "state", "key": "sleepy", "note": "вырубает"},
+            {"kind": "state", "key": "sleepiness", "note": "вырубает"},  # a repeat
+            {"kind": "symptom", "key": "headache", "note": "голова раскалывается"},
+        ],
+        on_date=D1,
+    )
+    await db_session.commit()
+
+    stats = {s.key: s for s in await svc.key_frequency(db_session)}
+    # Most-used first, so the consolidation candidates surface on their own.
+    assert [s.key for s in await svc.key_frequency(db_session)] == ["sleepiness", "headache"]
+    assert set(stats["sleepiness"].examples) == {"спать пиздец хочу", "вырубает"}
+    assert stats["headache"].examples == ("голова раскалывается",)
+    assert stats["headache"].variants == ()
+
+
+async def test_key_stats_cap_the_examples_per_key(db_session):
+    await svc.create_signals(
+        db_session,
+        items=[
+            {"kind": "state", "key": "sleepiness", "note": f"фраза {n}"}
+            for n in range(svc.EXAMPLES_PER_KEY + 3)
+        ],
+        on_date=D1,
+    )
+    await db_session.commit()
+
+    stat = (await svc.key_frequency(db_session))[0]
+    assert stat.count == svc.EXAMPLES_PER_KEY + 3      # every row counted…
+    assert len(stat.examples) == svc.EXAMPLES_PER_KEY  # …a readable few shown
+
+
+# ── R3: a second pass at what the model choked on ─────────────────────────────
+def _explode(_text):
+    raise RuntimeError("model timed out")
+
+
+async def _unparsed_message(db_session, text="спать хочу", external_id="tg:1"):
+    """Ingest a message with a broken parser → raw stored, no rows, still pending."""
+    assert await svc.ingest_text(
+        db_session, text=text, parse=_explode, external_id=external_id, on_date=D1
+    ) == []
+    await db_session.commit()
+    return (await db_session.execute(select(RawPayload))).scalars().one()
+
+
+async def test_a_parsed_message_is_marked_done_a_failed_one_stays_pending(db_session):
+    raw = await _unparsed_message(db_session)
+    assert raw.processed_at is None
+
+    await svc.ingest_text(
+        db_session,
+        text="голова болит",
+        parse=_parse_fixed([{"kind": "symptom", "key": "headache"}]),
+        external_id="tg:2",
+        on_date=D1,
+    )
+    await db_session.commit()
+
+    done = (await db_session.execute(
+        select(RawPayload).where(RawPayload.external_id == "tg:2")
+    )).scalars().one()
+    assert done.processed_at is not None
+
+
+async def test_reparse_recovers_a_message_the_model_choked_on(db_session):
+    raw = await _unparsed_message(db_session)
+
+    rows = await svc.reparse_unparsed(
+        db_session,
+        parse=_parse_fixed([{"kind": "state", "key": "sleepiness", "value_num": 4}]),
+    )
+    await db_session.commit()
+
+    assert [r.key for r in rows] == ["sleepiness"]
+    assert rows[0].raw_id == raw.id
+    # Dated when it was said, not when the sweep happened to run.
+    assert rows[0].date == raw.fetched_at.date()
+    await db_session.refresh(raw)
+    assert raw.processed_at is not None
+
+
+async def test_reparse_is_safe_to_run_twice(db_session):
+    await _unparsed_message(db_session)
+    parse = _parse_fixed([{"kind": "state", "key": "sleepiness"}])
+
+    assert len(await svc.reparse_unparsed(db_session, parse=parse)) == 1
+    await db_session.commit()
+    assert await svc.reparse_unparsed(db_session, parse=parse) == []
+    await db_session.commit()
+
+    assert len((await db_session.execute(select(Signal))).scalars().all()) == 1
+
+
+async def test_reparse_leaves_the_row_pending_when_the_model_is_still_down(db_session):
+    """A second outage must not burn the message's last chance."""
+    raw = await _unparsed_message(db_session)
+
+    assert await svc.reparse_unparsed(db_session, parse=_explode) == []
+    await db_session.commit()
+
+    await db_session.refresh(raw)
+    assert raw.processed_at is None
+
+
+async def test_reparse_ignores_taps_and_anything_older_than_the_window(db_session):
+    from vitals.services.raw_payload_service import upsert_raw_payload
+    from vitals.utils.timeutils import now_local
+
+    # A button tap: stored like everything else, but nobody said it.
+    await upsert_raw_payload(
+        db_session, domain=svc.DOMAIN, source=Source.TELEGRAM.value,
+        external_id="tg:tap", payload={"data": "mis:abc"},
+    )
+    stale = await svc.store_raw_text(db_session, text="кофе в 22", external_id="tg:old")
+    stale.fetched_at = now_local() - timedelta(days=svc.REPARSE_WINDOW_DAYS + 3)
+    await db_session.commit()
+
+    assert await svc.reparse_unparsed(
+        db_session, parse=_parse_fixed([{"kind": "state", "key": "sleepiness"}])
+    ) == []
 
 
 # ── day_context ───────────────────────────────────────────────────────────────

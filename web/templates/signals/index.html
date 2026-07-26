@@ -24,10 +24,37 @@
         </div>
         <p class="v-text-micro" style="color: var(--muted)">{{ t("signals.frequency_hint") }}</p>
         {% if frequency %}
-        <div class="flex flex-wrap gap-2">
-            {% for key, count in frequency %}
-            <span class="v-chip v-chip-sm"><span class="font-mono">{{ key }}</span> · <span class="v-num">{{ count }}</span></span>
-            {% endfor %}
+        <div class="v-table-wrap">
+            <table class="v-table">
+                <thead>
+                    <tr>
+                        <th>{{ t("signals.col_key") }}</th>
+                        <th>{{ t("signals.col_count") }}</th>
+                        <th>{{ t("signals.col_phrasings") }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stat in frequency %}
+                    <tr>
+                        <td>
+                            <span class="v-text-body font-mono">{{ stat.key }}</span>
+                            {% if stat.variants %}
+                            <div class="v-text-micro font-mono mt-1" style="color: var(--muted)"
+                                title="{{ t('signals.alias_hint') }}">← {{ stat.variants | join(', ') }}</div>
+                            {% endif %}
+                        </td>
+                        <td class="v-num">{{ stat.count }}</td>
+                        <td class="v-text-micro" style="color: var(--fg-2)">
+                            {% for example in stat.examples %}
+                            <div class="truncate" title="{{ example }}">{{ example }}</div>
+                            {% else %}
+                            <span style="color: var(--muted)">—</span>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
         {% else %}
         <p class="v-text-body" style="color: var(--muted)">{{ t("signals.frequency_empty") }}</p>
