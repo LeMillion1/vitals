@@ -33,7 +33,8 @@ from uuid import uuid4
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Domain, SignalKind, Source
+from vitals.enums import Domain, Severity, SignalKind, Source
+from vitals.i18n import t
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import DayContext, Signal
 from vitals.services.raw_payload_service import upsert_raw_payload
@@ -42,6 +43,9 @@ from vitals.utils.timeutils import now_local, today_local
 logger = logging.getLogger(__name__)
 
 DOMAIN = Domain.SIGNALS.value
+
+# One unresolved row while the parser is down, not one per message he sends.
+PARSER_FAILED_ALERT_KEY = "signal_parser_failed"
 
 _VALID_KINDS = {k.value for k in SignalKind}
 
@@ -204,7 +208,20 @@ async def ingest_text(
             parsed = await parsed
     except Exception:
         # The message survives in raw_payloads and stays ``processed_at IS NULL``,
-        # which is what :func:`reparse_unparsed` sweeps. Nothing to salvage here.
+        # which is what :func:`reparse_unparsed` sweeps. Nothing to salvage here —
+        # but a dead parser must not be silent: swallowed whole, a week of "no
+        # model, no key, no balance" is indistinguishable from a week of messages
+        # that simply held no facts.
+        logger.warning("signal parser failed; message kept raw", exc_info=True)
+        from vitals.services import alerts_service
+
+        await alerts_service.raise_alert(
+            session,
+            domain=DOMAIN,
+            severity=Severity.WARN.value,
+            message=t("alert.signal_parser_failed"),
+            alert_key=PARSER_FAILED_ALERT_KEY,
+        )
         return []
 
     rows = await create_signals(

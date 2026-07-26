@@ -205,9 +205,14 @@ async def test_text_becomes_signals_plus_an_echo_with_an_undo_button(
     assert payload == f"{inbound.CB_MISPARSE}{rows[0].batch_id}"
 
 
-async def test_unparseable_message_is_still_kept_and_answered(
+async def test_a_message_with_no_facts_is_kept_and_answered_without_alarm(
     bot_client, parses_to, db_session
 ):
+    """The evening block asks «как день?» — «весь день за компом» is a good answer
+    that simply holds no state, symptom or exposure. Saying "разобрать не смог" to
+    the answer it just asked for makes a working bot look broken."""
+    from vitals.models.system_alert import SystemAlert
+
     c, fake = bot_client
     parses_to([])
 
@@ -218,8 +223,42 @@ async def test_unparseable_message_is_still_kept_and_answered(
         select(RawPayload).where(RawPayload.external_id == "tg:1")
     )).scalars().first()
     assert raw is not None
-    assert "Сохранил как есть" in fake.sent[0]["text"]
+    assert fake.sent[0]["text"].startswith("Записал.")
+    assert "не смог" not in fake.sent[0]["text"]
     assert fake.sent[0]["buttons"] is None
+    # Nothing broke, so nothing to raise: an alert here would cry wolf daily.
+    assert (await db_session.execute(select(SystemAlert))).scalars().all() == []
+
+
+async def test_a_dead_parser_raises_an_alert_instead_of_going_quiet(
+    bot_client, db_session, monkeypatch
+):
+    """No key, no balance, upstream down — swallowed whole, a week of that is
+    indistinguishable from a week of messages that held no facts."""
+    from vitals.models.system_alert import SystemAlert
+    from vitals.services import signals_service
+
+    c, fake = bot_client
+
+    def _boom(known=None):
+        async def _parse(_text):
+            raise RuntimeError("upstream down")
+
+        return _parse
+
+    monkeypatch.setattr(inbound, "make_signal_parser", _boom)
+
+    await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "башка трещит"), headers=HEADERS)
+    await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(2, "спать хочу"), headers=HEADERS)
+
+    alerts = (await db_session.execute(select(SystemAlert))).scalars().all()
+    assert len(alerts) == 1, "one open alert while it's down, not one per message"
+    assert alerts[0].alert_key == signals_service.PARSER_FAILED_ALERT_KEY
+    assert alerts[0].severity == "warn"
+    # The message still survives: raw first, parse second.
+    assert (await db_session.execute(
+        select(RawPayload).where(RawPayload.external_id == "tg:1")
+    )).scalars().first() is not None
 
 
 async def test_repeated_update_id_is_not_processed_twice(bot_client, parses_to, db_session):

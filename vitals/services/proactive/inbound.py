@@ -275,10 +275,15 @@ async def handle_text(
     )
 
     if not rows:
+        # Not an error, and it must not read like one. The evening block asks «как
+        # день?» and «весь день за компом» is a perfectly good answer that simply
+        # holds no state, symptom or exposure — the schema has nowhere to put it.
+        # The text is saved either way and the re-parse sweep sees it again, so
+        # the honest thing to say is that it is written down.
         await delivery.send(
             session,
             notifier,
-            text="Сохранил как есть — разобрать не смог. Посмотрю позже.",
+            text="Записал. Фактов для графиков тут не нашёл — если что-то важное, скажи прямо.",
             category=delivery.CATEGORY_ECHO,
             reply_to=str(message_id) if message_id else None,
         )
