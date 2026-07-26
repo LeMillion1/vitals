@@ -363,6 +363,11 @@ DIGEST_DOMAIN_KEYS: dict[Domain, tuple[str, ...]] = {
     Domain.SKINCARE: ("skincare",),
     Domain.MILESTONES: ("milestones",),
     Domain.TIMELINE: ("timeline",),
+    # Signals reach Claude.ai through the LLM export (DOMAIN_EXPORT_KEYS) — that's
+    # where the deep cross-domain analysis lives. The weekly digest's context stays
+    # exactly as it was; the composer that reads signals is прогон 3's block layer,
+    # not this domain's.
+    Domain.SIGNALS: (),
     # Infra rows reach the digest as the active-alert list, not as their own block.
     Domain.SYSTEM: ("alerts",),
 }

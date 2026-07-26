@@ -345,6 +345,7 @@ DOMAIN_EXPORT_KEYS: dict[Domain, tuple[str, ...]] = {
     Domain.SKINCARE: ("skincare_logs", "skincare_observations"),
     Domain.MILESTONES: ("milestones", "weekly_digests"),
     Domain.TIMELINE: ("timeline_annotations",),
+    Domain.SIGNALS: ("signals", "day_context"),
     # Infra/alert rows — deliberately excluded from a digest meant for a chat
     # window (test_llm_export_is_clean pins that they stay out).
     Domain.SYSTEM: (),
@@ -364,6 +365,7 @@ async def _seed_every_domain(session) -> None:
     from vitals.models.glp1 import DosePhase, SideEffect
     from vitals.models.milestones import Milestone, WeeklyDigest
     from vitals.models.nutrition import MealLog
+    from vitals.models.signals import DayContext, Signal
     from vitals.models.skincare import SkincareLog, SkincareObservation
     from vitals.models.timeline import Annotation
     from vitals.models.weight import NoiseMarker
@@ -409,6 +411,13 @@ async def _seed_every_domain(session) -> None:
             Annotation(
                 date=d, domain="timeline", source="manual", kind="travel", title="Поездка",
             ),
+            Signal(
+                date=d, domain="signals", source="telegram", kind="symptom",
+                key="head_ache", value_num=4, batch_id="b1", note="голова раскалывается",
+            ),
+            DayContext(
+                date=d, domain="signals", source="manual", answers={"remote": True},
+            ),
         ]
     )
     await session.commit()
@@ -427,6 +436,27 @@ async def test_llm_export_covers_every_domain(db_session):
         if not out.get(key)
     ]
     assert not empty, f"domains missing from the LLM export: {empty}"
+
+
+async def test_llm_export_folds_signal_key_aliases(db_session):
+    """The export ships canonical keys — otherwise the model sees 'head_ache' and
+    'headache' as two unrelated things and the correlation is split in half."""
+    from vitals.models.signals import Signal
+
+    d = date(2026, 4, 25)
+    db_session.add_all([
+        Signal(date=d, domain="signals", source="telegram", kind="symptom",
+               key="head_ache", batch_id="b1"),
+        Signal(date=d, domain="signals", source="telegram", kind="symptom",
+               key="headache", batch_id="b2"),
+        # A cancelled batch stays out of the export entirely.
+        Signal(date=d, domain="signals", source="telegram", kind="state",
+               key="sleepiness", batch_id="b3", misparse=True),
+    ])
+    await db_session.commit()
+
+    out = await export_llm(db_session)
+    assert [s["key"] for s in out["signals"]] == ["headache", "headache"]
 
 
 # ── Postgres sequence reset (real DB only) ─────────────────────────────────────

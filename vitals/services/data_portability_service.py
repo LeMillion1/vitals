@@ -51,11 +51,13 @@ from vitals.models.hrt import HrtCycle, HrtCycleTemplate, HrtDose, HrtSideEffect
 from vitals.models.labs import LabResult
 from vitals.models.milestones import Milestone, WeeklyDigest
 from vitals.models.nutrition import MealLog
+from vitals.models.signals import DayContext, Signal
 from vitals.models.skincare import SkincareLog, SkincareObservation
 from vitals.models.supplements import Supplement
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, NoiseMarker, WeightLog
 from vitals.i18n import t
+from vitals.services.signals_service import normalize_key
 from vitals.utils.timeutils import now_local
 
 # Bump when the on-disk shape changes in a backward-incompatible way.
@@ -691,6 +693,38 @@ async def export_llm(session: AsyncSession) -> dict[str, Any]:
             }
         )
         for a in annotations
+    ]
+
+    # Signals — the "how it actually felt" layer, and the day's context. This is
+    # the block that lets the model answer *why* a Garmin number moved, so keys go
+    # out canonical (aliases folded on read) rather than in whatever spelling the
+    # parser happened to use. Misparsed batches stay out: they're key-registry
+    # material, not evidence.
+    signals = (
+        await session.execute(
+            select(Signal).where(Signal.misparse.is_(False)).order_by(Signal.date)
+        )
+    ).scalars().all()
+    out["signals"] = [
+        _compact(
+            {
+                "date": s.date.isoformat(),
+                "kind": s.kind,
+                "key": normalize_key(s.key),
+                "value": s.value_num,
+                "unit": s.unit,
+                "at_time": s.at_time.isoformat() if s.at_time else None,
+                "note": s.note,
+            }
+        )
+        for s in signals
+    ]
+    contexts = (
+        await session.execute(select(DayContext).order_by(DayContext.date))
+    ).scalars().all()
+    out["day_context"] = [
+        _compact({"date": c.date.isoformat(), "answers": c.answers, "source": c.source})
+        for c in contexts
     ]
 
     return out
