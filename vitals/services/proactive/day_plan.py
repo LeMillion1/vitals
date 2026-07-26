@@ -5,8 +5,10 @@ Vitals knows everything about the body and nothing about the **day**. Without
 отдохни". This module is that missing half, and it is deliberately cheap:
 
   * **The week template** (E1) is one ``app_settings`` row, exactly like
-    ``enabled_modules``: weekday → the same three answers. It is a *guess*, never
-    a fact — it fills in the day until the owner says otherwise.
+    ``enabled_modules``: weekday → the answers a weekday can actually predict. It
+    is a *guess*, never a fact — it fills in the day until the owner says
+    otherwise. Questions a calendar cannot know (how heavy the day is) are marked
+    ``in_template=False`` and only ever asked.
   * **The evening block** (E2) runs at **23:45**, not at midnight: past 00:00
     "tomorrow" means a different day than the one being planned, and the message
     would silently ask about the wrong date.
@@ -20,10 +22,10 @@ could ever learn from, and it is only collectable if the guess is written down a
 the time it was made — hence :func:`record_plan`, which runs even on evenings
 when nothing is ever tapped.
 
-The question set is three yes/no-ish knobs, data-driven like the rest of the
-project's registries (``conflict_rules``, ``body_metrics``): adding a fourth is one
-tuple entry, and everything — the summary line, the buttons, the sanitizer —
-follows from it.
+The question set is a small registry, data-driven like the rest of the project's
+registries (``conflict_rules``, ``body_metrics``): adding a fourth question is one
+tuple entry, and everything — the summary line, the buttons, the sanitizer, the
+settings form — follows from it.
 """
 from __future__ import annotations
 
@@ -56,38 +58,57 @@ class Question:
     key: str
     default: Any
     labels: dict  # value → the word used both in the line and on the button
+    in_template: bool = True  # can a weekday predict this in advance?
 
 
 # Order here is the order the summary line reads and the buttons render.
 QUESTIONS: tuple[Question, ...] = (
-    Question("remote", False, {True: "удалёнка", False: "в офисе"}),
+    Question(
+        "where",
+        "office",
+        {"office": "в офисе", "remote": "удалёнка", "off": "выходной"},
+    ),
     Question("gym", False, {True: "зал", False: "без зала"}),
+    # Asked, never scheduled: how heavy a day turns out is not a property of its
+    # weekday, so there is nothing here for the template to guess. Pre-setting it
+    # in Settings would only bake in a value the brief then reads out as fact —
+    # this one is answered in the evening block, or stays unsaid.
     Question(
         "load",
         "normal",
         {"light": "лёгкий день", "normal": "обычный день", "heavy": "тяжёлый день"},
+        in_template=False,
     ),
 )
 
 QUESTIONS_BY_KEY = {q.key: q for q in QUESTIONS}
+TEMPLATE_QUESTIONS: tuple[Question, ...] = tuple(q for q in QUESTIONS if q.in_template)
 
-# Neutral on every day of the week: guessing a gym schedule from nothing would
-# just be a wrong answer pre-filled. The owner edits this in Settings (прогон 6),
-# and until then the exception buttons are one tap away.
-DEFAULT_DAY: dict[str, Any] = {q.key: q.default for q in QUESTIONS}
-DEFAULT_TEMPLATE: dict[str, dict] = {day: dict(DEFAULT_DAY) for day in WEEKDAYS}
+WEEKEND: tuple[str, ...] = ("sat", "sun")
+
+# Neutral except for the one thing the calendar does know: Saturday and Sunday
+# are not office days. Guessing a gym schedule from nothing would just be a wrong
+# answer pre-filled. The owner edits this in Settings (прогон 6), and until then
+# the exception buttons are one tap away.
+DEFAULT_DAY: dict[str, Any] = {q.key: q.default for q in TEMPLATE_QUESTIONS}
+DEFAULT_TEMPLATE: dict[str, dict] = {
+    day: {**DEFAULT_DAY, "where": "off" if day in WEEKEND else "office"}
+    for day in WEEKDAYS
+}
 
 
 # ── The template (E1) ─────────────────────────────────────────────────────────
-def _sanitize_day(raw: Any) -> dict[str, Any]:
-    """One weekday's answers, projected onto the question registry.
+def _sanitize_day(raw: Any, weekday: str) -> dict[str, Any]:
+    """One weekday's answers, projected onto the template questions.
 
-    Unknown keys are dropped and an out-of-registry value falls back to the
-    default — this is a hand-editable JSON blob, so it is a trust boundary.
+    Unknown keys are dropped and an out-of-registry value falls back to that
+    weekday's default — this is a hand-editable JSON blob, so it is a trust
+    boundary. Questions outside the template (``load``) are dropped here too:
+    they belong to the day, not to the weekday.
     """
-    day = dict(DEFAULT_DAY)
+    day = dict(DEFAULT_TEMPLATE[weekday])
     if isinstance(raw, dict):
-        for question in QUESTIONS:
+        for question in TEMPLATE_QUESTIONS:
             if question.key not in raw:
                 continue
             value = raw[question.key]
@@ -101,7 +122,7 @@ def _sanitize_day(raw: Any) -> dict[str, Any]:
 def sanitize_template(raw: Any) -> dict[str, dict]:
     """Arbitrary stored data → a full 7-day template. Never raises."""
     source = raw if isinstance(raw, dict) else {}
-    return {day: _sanitize_day(source.get(day)) for day in WEEKDAYS}
+    return {day: _sanitize_day(source.get(day), day) for day in WEEKDAYS}
 
 
 async def get_week_template(session: AsyncSession) -> dict[str, dict]:
@@ -193,11 +214,18 @@ async def record_plan(
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
 def describe(answers: dict) -> str:
-    """``{"remote": True, ...}`` → "удалёнка · без зала · обычный день"."""
+    """``{"where": "remote", "gym": False}`` → "удалёнка · без зала".
+
+    Only what is actually known: a question with no answer prints nothing rather
+    than its default. Otherwise every unanswered day would read "обычный день" —
+    a guess stated as fact, about the one thing the template deliberately does
+    not guess.
+    """
     words = []
     for question in QUESTIONS:
-        value = answers.get(question.key, question.default)
-        word = question.labels.get(value)
+        if question.key not in answers:
+            continue
+        word = question.labels.get(answers[question.key])
         if word:
             words.append(word)
     return " · ".join(words)
@@ -225,13 +253,14 @@ def decode(value: str) -> Any:
 def exception_buttons(current: dict, on_date: date_type) -> list[tuple[str, str]]:
     """One button per *other* answer — corrections, not a questionnaire.
 
-    Asking all three questions from scratch every evening would be five taps a day
-    for a template that is right most of the time; offering only the exceptions
-    makes the common case zero taps.
+    Re-asking what the template already knows would be taps a day for a guess
+    that is right most of the time; offering only the exceptions makes the common
+    case zero taps. A question with no answer at all (``load``, which no weekday
+    predicts) has no "other" to be — so every one of its options is offered.
     """
     buttons: list[tuple[str, str]] = []
     for question in QUESTIONS:
-        value = current.get(question.key, question.default)
+        value = current.get(question.key)
         for option, label in question.labels.items():
             if option != value:
                 buttons.append((label, f"ctx:{on_date.isoformat()}:{question.key}:{encode(option)}"))

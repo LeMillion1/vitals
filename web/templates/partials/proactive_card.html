@@ -77,7 +77,7 @@
             <p class="v-text-micro" style="color: var(--muted)">{{ t("settings.week_template_hint") }}</p>
             <div class="space-y-3">
                 {% for day in weekdays %}
-                <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 items-center">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
                     <span class="v-text-body" style="color: var(--fg-2)">{{ t("skincare.day." + day) }}</span>
                     {% for question in day_questions %}
                     <select name="tpl_{{ day }}_{{ question.key }}" class="v-select"

@@ -147,7 +147,7 @@ async def test_evening_block_drops_the_summary_when_garmin_has_nothing(
 
 # ── Taps (E3) ─────────────────────────────────────────────────────────────────
 async def test_tap_overwrites_the_answer_and_keeps_the_guess(db_session):
-    await day_plan.record_plan(db_session, TOMORROW, {"remote": False, "gym": False, "load": "normal"})
+    await day_plan.record_plan(db_session, TOMORROW, {"where": "office", "gym": False})
 
     await day_plan.record_answer(db_session, TOMORROW, "gym", True)
     await day_plan.record_answer(db_session, TOMORROW, "load", "heavy")
@@ -155,7 +155,7 @@ async def test_tap_overwrites_the_answer_and_keeps_the_guess(db_session):
 
     row = await signals_service.get_day_context(db_session, TOMORROW)
     assert row.answers == {"gym": True, "load": "heavy"}
-    assert row.planned == {"remote": False, "gym": False, "load": "normal"}
+    assert row.planned == {"where": "office", "gym": False}
     assert row.source == Source.MANUAL.value
 
 
@@ -163,39 +163,81 @@ async def test_a_tap_on_an_unasked_day_still_records_what_the_template_thought(
     db_session,
 ):
     """The brief's exception buttons can be the first thing ever tapped for a day."""
-    await day_plan.record_answer(db_session, DAY, "remote", True)
+    await day_plan.record_answer(db_session, DAY, "where", "remote")
     await db_session.commit()
 
     row = await signals_service.get_day_context(db_session, DAY)
-    assert row.answers == {"remote": True}
-    assert row.planned == day_plan.DEFAULT_DAY
+    assert row.answers == {"where": "remote"}
+    assert row.planned == day_plan.DEFAULT_TEMPLATE["sun"]
 
 
 async def test_exception_buttons_offer_every_other_answer(db_session):
-    buttons = day_plan.exception_buttons({"remote": False, "gym": False, "load": "normal"}, DAY)
+    buttons = day_plan.exception_buttons({"where": "office", "gym": False, "load": "normal"}, DAY)
     payloads = dict((payload, label) for label, payload in buttons)
 
-    assert f"ctx:{DAY.isoformat()}:remote:1" in payloads
+    assert f"ctx:{DAY.isoformat()}:where:remote" in payloads
+    assert f"ctx:{DAY.isoformat()}:where:off" in payloads
     assert f"ctx:{DAY.isoformat()}:gym:1" in payloads
     assert f"ctx:{DAY.isoformat()}:load:heavy" in payloads
     # Never a button for what he is already down as doing.
     assert f"ctx:{DAY.isoformat()}:load:normal" not in payloads
-    assert f"ctx:{DAY.isoformat()}:remote:0" not in payloads
+    assert f"ctx:{DAY.isoformat()}:where:office" not in payloads
+
+
+async def test_an_unanswered_day_type_offers_all_three_options(db_session):
+    """No weekday predicts how heavy a day is, so there is no "other" to offer —
+    every option has to be a button or the question can never be answered."""
+    buttons = day_plan.exception_buttons({"where": "office", "gym": False}, DAY)
+    payloads = {payload for _, payload in buttons}
+
+    assert {f"ctx:{DAY.isoformat()}:load:{v}" for v in ("light", "normal", "heavy")} <= payloads
+
+
+def test_an_unanswered_question_is_left_unsaid():
+    """Falling back to the default would print "обычный день" for a day nobody
+    described — a guess read out as fact."""
+    assert day_plan.describe({"where": "remote", "gym": False}) == "удалёнка · без зала"
+    assert day_plan.describe({"where": "off"}) == "выходной"
 
 
 # ── The template (E1) ─────────────────────────────────────────────────────────
 async def test_template_is_stored_per_weekday_and_sanitized(db_session):
     await day_plan.set_week_template(
         db_session,
-        {"sun": {"remote": True, "gym": True, "load": "heavy", "нечто": 1}, "junk": {}},
+        {"sun": {"where": "remote", "gym": True, "нечто": 1}, "junk": {}},
     )
     await db_session.commit()
 
     template = await day_plan.get_week_template(db_session)
     assert set(template) == set(day_plan.WEEKDAYS)
-    assert template["sun"] == {"remote": True, "gym": True, "load": "heavy"}
+    assert template["sun"] == {"where": "remote", "gym": True}
     assert template["mon"] == day_plan.DEFAULT_DAY
     assert day_plan.guess_for(template, DAY) == template["sun"]  # DAY is a Sunday
+
+
+async def test_the_template_never_carries_the_day_type(db_session):
+    """A weekday cannot know how heavy a day will be, so it is not offered in
+    Settings — and a hand-edited row that smuggles one in gets dropped."""
+    assert "load" not in day_plan.DEFAULT_DAY
+    assert "load" not in {q.key for q in day_plan.TEMPLATE_QUESTIONS}
+
+    await day_plan.set_week_template(db_session, {"sun": {"load": "heavy"}})
+    await db_session.commit()
+
+    assert "load" not in (await day_plan.get_week_template(db_session))["sun"]
+
+
+async def test_a_day_off_is_a_kind_of_day_and_the_weekend_defaults_to_it(db_session):
+    assert day_plan.DEFAULT_TEMPLATE["sat"]["where"] == "off"
+    assert day_plan.DEFAULT_TEMPLATE["sun"]["where"] == "off"
+    assert day_plan.DEFAULT_TEMPLATE["mon"]["where"] == "office"
+
+    await day_plan.set_week_template(db_session, {"mon": {"where": "off"}})
+    await db_session.commit()
+
+    template = await day_plan.get_week_template(db_session)
+    assert template["mon"]["where"] == "off"
+    assert day_plan.describe(template["mon"]).startswith("выходной")
 
 
 async def test_a_broken_template_row_does_not_take_the_evening_block_down(db_session):
@@ -209,11 +251,11 @@ async def test_a_broken_template_row_does_not_take_the_evening_block_down(db_ses
 async def test_an_out_of_registry_value_falls_back_instead_of_reaching_the_message(
     db_session,
 ):
-    await day_plan.set_week_template(db_session, {"sun": {"load": "чудовищный"}})
+    await day_plan.set_week_template(db_session, {"sun": {"where": "на луне"}})
     await db_session.commit()
 
     template = await day_plan.get_week_template(db_session)
-    assert template["sun"]["load"] == "normal"
+    assert template["sun"]["where"] == "off"  # Sunday's default, not the garbage
 
 
 # ── The brief (E4) ────────────────────────────────────────────────────────────
@@ -226,7 +268,7 @@ async def test_brief_prefers_his_answer_to_the_template(db_session, monkeypatch)
     """And only for the question he actually answered: one tap must not silently
     cancel the rest of the guess he was correcting."""
     await _seed_brief_day(db_session)
-    await day_plan.set_week_template(db_session, {"sun": {"remote": True, "gym": False}})
+    await day_plan.set_week_template(db_session, {"sun": {"where": "remote", "gym": False}})
     await day_plan.record_answer(db_session, DAY, "gym", True)
     await db_session.commit()
 
@@ -234,7 +276,7 @@ async def test_brief_prefers_his_answer_to_the_template(db_session, monkeypatch)
     row = await brief.generate_brief(db_session, llm, on_date=DAY)
     await db_session.commit()
 
-    assert "Сегодня: удалёнка · зал · обычный день" in row.content
+    assert "Сегодня: удалёнка · зал" in row.content
     assert "по шаблону" not in row.content
     # …and the model is told this is his answer, not a guess.
     assert '"source": "manual"' in llm.calls[0]["prompt"]
@@ -257,13 +299,13 @@ async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
     monkeypatch.setattr(day_plan, "today_local", lambda: DAY)
 
-    await day_plan.set_week_template(db_session, {"sun": {"remote": True, "load": "heavy"}})
+    await day_plan.set_week_template(db_session, {"sun": {"where": "remote"}})
     await _seed_brief_day(db_session)
 
     await brief.brief_job(session_factory)
 
     message = notifier.sent[0]
-    assert "Сегодня по шаблону: удалёнка · без зала · тяжёлый день" in message["text"]
+    assert "Сегодня по шаблону: удалёнка · без зала" in message["text"]
     assert message["buttons"], "an unanswered day has to be correctable in one tap"
     for _, payload in message["buttons"]:
         assert payload.startswith(f"{inbound.CB_CONTEXT}{DAY.isoformat()}:")

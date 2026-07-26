@@ -119,7 +119,8 @@ async def _page(
         "proactive": proactive,
         "week_template": await day_plan.get_week_template(db),
         "weekdays": day_plan.WEEKDAYS,
-        "day_questions": day_plan.QUESTIONS,
+        # Only the questions a weekday can predict: the rest are asked, not set.
+        "day_questions": day_plan.TEMPLATE_QUESTIONS,
         "encode": day_plan.encode,
         "nudge_categories": prefs.NUDGE_CATEGORIES,
         "budget_range": prefs.BUDGET_RANGE,
@@ -329,14 +330,14 @@ async def save_proactive(
     the DB precisely so they don't. ``prefs.sanitize`` clamps whatever arrives —
     the HTML min/max are a courtesy, not the guard.
     """
-    # The week template is 7 days × 3 questions; reading it off the raw form beats
-    # declaring 21 parameters that the question registry would immediately
-    # contradict the moment a fourth question is added.
+    # The week template is 7 days × the template questions; reading it off the raw
+    # form beats declaring a parameter per cell that the question registry would
+    # immediately contradict the moment a question is added or dropped.
     form = await request.form()
     template = {
         day: {
             q.key: day_plan.decode(str(form.get(f"tpl_{day}_{q.key}", day_plan.encode(q.default))))
-            for q in day_plan.QUESTIONS
+            for q in day_plan.TEMPLATE_QUESTIONS
         }
         for day in day_plan.WEEKDAYS
     }

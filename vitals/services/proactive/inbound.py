@@ -188,6 +188,10 @@ async def _apply_context(session: AsyncSession, data: str) -> bool:
     asks about *tomorrow*, and a tap that lands after midnight must still answer
     the day it was asked about. Merging (and keeping the template's guess beside
     the answer) is ``day_plan``'s job — here we only decode the payload.
+
+    The decoded pair is checked against the question registry: Telegram keeps old
+    keyboards tappable forever, so a button sent before a question was renamed or
+    dropped would otherwise write a key nothing reads back.
     """
     try:
         _, iso_date, key, value = data.split(":", 3)
@@ -196,7 +200,13 @@ async def _apply_context(session: AsyncSession, data: str) -> bool:
         logger.warning("unparseable context payload: %s", data)
         return False
 
-    await day_plan.record_answer(session, on_date, key, day_plan.decode(value))
+    question = day_plan.QUESTIONS_BY_KEY.get(key)
+    answer = day_plan.decode(value)
+    if question is None or answer not in question.labels:
+        logger.warning("context payload outside the question registry: %s", data)
+        return False
+
+    await day_plan.record_answer(session, on_date, key, answer)
     return True
 
 

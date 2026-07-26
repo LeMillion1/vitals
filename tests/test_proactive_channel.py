@@ -264,7 +264,7 @@ async def test_context_tap_answers_the_day_it_was_asked_about(bot_client, db_ses
     tomorrow = date(2026, 7, 27)
 
     await c.post(f"/tg/{WEBHOOK_PATH}",
-                 json=_tap_update(1, f"{inbound.CB_CONTEXT}{tomorrow.isoformat()}:remote:1"),
+                 json=_tap_update(1, f"{inbound.CB_CONTEXT}{tomorrow.isoformat()}:where:remote"),
                  headers=HEADERS)
     await c.post(f"/tg/{WEBHOOK_PATH}",
                  json=_tap_update(2, f"{inbound.CB_CONTEXT}{tomorrow.isoformat()}:gym:0",
@@ -274,8 +274,25 @@ async def test_context_tap_answers_the_day_it_was_asked_about(bot_client, db_ses
     ctx = await signals_service.get_day_context(db_session, tomorrow)
     assert ctx is not None
     # Second tap merges into the first answer rather than replacing it.
-    assert ctx.answers == {"remote": True, "gym": False}
+    assert ctx.answers == {"where": "remote", "gym": False}
     assert fake.acks[-1] == ("cb-2", "Записал")
+
+
+async def test_a_tap_outside_the_question_registry_is_dropped(bot_client, db_session):
+    """Telegram keeps old keyboards tappable forever: a button from before a
+    question was renamed must not write a key nothing reads back."""
+    c, _ = bot_client
+    tomorrow = date(2026, 7, 27)
+
+    await c.post(f"/tg/{WEBHOOK_PATH}",
+                 json=_tap_update(1, f"{inbound.CB_CONTEXT}{tomorrow.isoformat()}:remote:1"),
+                 headers=HEADERS)
+    await c.post(f"/tg/{WEBHOOK_PATH}",
+                 json=_tap_update(2, f"{inbound.CB_CONTEXT}{tomorrow.isoformat()}:where:луна",
+                                  callback_id="cb-2"),
+                 headers=HEADERS)
+
+    assert await signals_service.get_day_context(db_session, tomorrow) is None
 
 
 # ── Replies ───────────────────────────────────────────────────────────────────
