@@ -5,10 +5,12 @@ Three inbound shapes, deliberately three code paths:
   * **a tap** (``callback_query``) — the "не то" undo, and the day-context answers
     the evening block will ask for (прогон 4). Stateless: the button carries
     everything needed in its payload, so a tap works days later.
-  * **a reply to one of our messages** — answered from the context that message
-    was built on, and nothing else. This is *not* a second chat with the data:
-    deep questions belong in Claude.ai over MCP, which has 69 tools and a better
-    model. Here the model sees one message and is told to invent nothing.
+  * **a question** — either a reply to one of our messages or a plain «почему hrv
+    просел?». Answered from the message replied to *plus* the context the last
+    brief was built on, and nothing else. This is still not a second chat with
+    the data: deep questions belong in Claude.ai over MCP, which has 69 tools and
+    a better model. Here the model sees one message, the day's numbers, and is
+    told to invent nothing.
   * **anything else typed** — free text into ``signals`` (raw first, always),
     followed by an echo of what was understood plus one "не то" button.
 
@@ -23,21 +25,22 @@ is one transcription step *in front of* this pipeline, not a rewrite of it.
 """
 from __future__ import annotations
 
+import json
 import logging
-from datetime import date as date_type
+from datetime import date as date_type, datetime, timedelta
 from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Domain, SignalKind, Source
+from vitals.enums import DigestKind, Domain, SignalKind, Source
 from vitals.integrations.llm_client import LLMClient
 from vitals.models.raw_payload import RawPayload
-from vitals.services import signals_service
+from vitals.services import digest_service, signals_service
 from vitals.services.proactive import day_plan, delivery, prefs
 from vitals.services.proactive.channels import Notifier
 from vitals.services.raw_payload_service import upsert_raw_payload
-from vitals.utils.timeutils import now_local, today_local
+from vitals.utils.timeutils import now_local
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +94,50 @@ _PARSER_SYSTEM = """\
 """
 
 _REPLY_SYSTEM = """\
-Ты отвечаешь на вопрос владельца по сообщению, которое бот прислал ему раньше.
-Отвечай по-русски, коротко (2-4 предложения), только по приведённому тексту.
-Если ответа в тексте нет — так и скажи. Никаких выдуманных чисел.\
+Ты отвечаешь на вопрос владельца дашборда здоровья.
+Перед тобой может быть сообщение, которое бот прислал раньше, и JSON с данными
+последнего разбора дня. Отвечай по-русски, коротко (2-4 предложения), опираясь
+и на текст, и на JSON — числа бери только оттуда.
+Если ответа в них нет — так и скажи. Никаких выдуманных чисел.\
 """
 
 _REPLY_MAX_TOKENS = 800
 _NO_LLM_REPLY = "Сейчас не отвечу — модель недоступна. Загляни в приложение."
+# The day's numbers as JSON, capped: the brief's context grows a field per module
+# and the prompt is paid for by the token.
+_DAY_FACTS_LIMIT = 4000
+
+# A question typed on its own has to be told apart from a fact, and asking the
+# model which it is costs a call on every message. So: a question mark, or an
+# opening question word. Matched as a *word*, never as a prefix — «что-то тошнит»
+# is a symptom, not a question about «что».
+_QUESTION_WORDS = frozenset({"почему", "что", "чем", "как", "сколько", "когда", "зачем"})
+
+# Before this hour a message still belongs to the day that is ending: «кофе в 2»
+# written at 00:30 is about the evening just spent, and filing it under the fresh
+# calendar date buries it in tomorrow's brief while tonight's never sees it.
+_DAY_ROLLS_OVER_AT = 4
+
+
+def looks_like_question(text: str) -> bool:
+    """Is this asked *of* the bot rather than told to it?"""
+    stripped = text.strip()
+    if stripped.endswith("?"):
+        return True
+    words = stripped.lower().replace(",", " ").split()
+    if not words:
+        return False
+    return words[0] in _QUESTION_WORDS or words[:2] == ["стоит", "ли"]
+
+
+def conversation_day(now: Optional[datetime] = None) -> date_type:
+    """Which day a message written *now* is talking about."""
+    moment = now or now_local()
+    return (
+        moment.date() - timedelta(days=1)
+        if moment.hour < _DAY_ROLLS_OVER_AT
+        else moment.date()
+    )
 
 
 # ── Telegram update shape (the only place that knows it) ──────────────────────
@@ -133,22 +173,26 @@ async def handle_update(
     parse: Optional[signals_service.Parser] = None,
 ) -> None:
     """Entry point for one Telegram update. Safe to call twice with the same one."""
-    # The emergency switch cuts *both* directions (U1). ``delivery.send`` already
-    # refuses to speak when the module is off, so without this the bot went quiet
-    # while still parsing every message and writing it to the lake — "выключено"
-    # that keeps spending model calls is the worst reading of an off switch.
-    if not await prefs.bot_enabled(session):
-        logger.info("ignoring inbound update: the signals module is switched off")
-        return
-
     update_id = update.get("update_id")
     external_id = f"tg:{update_id}" if update_id is not None else None
     if external_id and await _already_handled(session, external_id):
         logger.info("ignoring repeated update %s", external_id)
         return
 
+    # The emergency switch (U1) stops the expensive and the outgoing half — the
+    # model call and every reply — but not the ears. A message written while the
+    # module is off still lands in the lake: "выключено" must not read as
+    # "потерял", and the re-parse sweep picks the text up whenever it comes back
+    # on. What it cannot do is answer, which is enforced in ``delivery.send`` too.
+    enabled = await prefs.bot_enabled(session)
+
     callback = update.get("callback_query")
     if callback:
+        # A tap is an answer to a question this bot asked; with the module off
+        # there is nothing asking, so it is dropped rather than stored.
+        if not enabled:
+            logger.info("ignoring tap: the signals module is switched off")
+            return
         await _handle_callback(session, callback, notifier=notifier, external_id=external_id)
         return
 
@@ -157,6 +201,19 @@ async def handle_update(
     if not text:
         # Photos, stickers, voice notes: nothing to capture yet (voice arrives as
         # a transcription step in front of handle_text, not as a branch here).
+        return
+
+    if not enabled:
+        raw = await signals_service.store_raw_text(
+            session, text=text, external_id=external_id, source=SOURCE
+        )
+        # A slash command is addressed to the bot, not a fact about the day —
+        # same call B4 makes on the enabled path. Left unstamped it would sit in
+        # the queue until the module came back on and then cost a model call to
+        # learn that «/start» holds no signals.
+        if text.startswith("/"):
+            raw.processed_at = now_local()
+        logger.info("stored inbound text unparsed: the signals module is switched off")
         return
 
     await handle_text(
@@ -252,6 +309,14 @@ async def handle_text(
     # a new bot: capturing it costs a model call and answers "разобрать не смог",
     # which reads as broken on the first ever message.
     if text.startswith("/"):
+        # Stored anyway, and marked done on the spot: the raw row is what a
+        # webhook retry trips over, and without it Telegram's second delivery of
+        # the same ``/start`` gets a second identical answer. ``processed_at``
+        # keeps the re-parse sweep from feeding «/start» to the parser later.
+        raw = await signals_service.store_raw_text(
+            session, text=text, external_id=external_id, source=SOURCE
+        )
+        raw.processed_at = now_local()
         await delivery.send(
             session,
             notifier,
@@ -261,30 +326,37 @@ async def handle_text(
         )
         return
 
-    if reply_to_message_id is not None:
-        answered = await delivery.find_sent(session, str(reply_to_message_id))
-        # The evening block *asks* «как день?», so a reply to it is an answer, not
-        # a question — it falls through to capture. Every other message of ours is
-        # something he might ask about.
-        if answered is not None and answered.category != delivery.CATEGORY_EVENING:
-            # A question is data too, and this is also what stops a webhook retry
-            # from paying for a second model call on the same question.
-            raw = await signals_service.store_raw_text(
-                session, text=text, external_id=external_id, source=SOURCE
-            )
-            # Marked done on the spot: a question is not a message waiting to be
-            # parsed into signals, so the re-parse sweep must not pick it up and
-            # turn «почему пульс низкий?» into a symptom row.
-            raw.processed_at = now_local()
-            await _answer_reply(session, text, answered, notifier=notifier, message_id=message_id)
-            return
+    answered = (
+        await delivery.find_sent(session, str(reply_to_message_id))
+        if reply_to_message_id is not None
+        else None
+    )
+    # The evening block *asks* «как день?», so a reply to it is an answer, not a
+    # question — «норм, а ты как?» falls through to capture, question mark and
+    # all. Everything else that replies to us, and anything typed as a question
+    # on its own, is asked *of* us: «почему hrv просел?» answered with «фактов
+    # для графиков тут не нашёл» is the single most broken-looking thing the bot
+    # could say.
+    to_evening = answered is not None and answered.category == delivery.CATEGORY_EVENING
+    if not to_evening and (answered is not None or looks_like_question(text)):
+        # A question is data too, and this is also what stops a webhook retry
+        # from paying for a second model call on the same question.
+        raw = await signals_service.store_raw_text(
+            session, text=text, external_id=external_id, source=SOURCE
+        )
+        # Marked done on the spot: a question is not a message waiting to be
+        # parsed into signals, so the re-parse sweep must not pick it up and
+        # turn «почему пульс низкий?» into a symptom row.
+        raw.processed_at = now_local()
+        await _answer_reply(session, text, answered, notifier=notifier, message_id=message_id)
+        return
 
     rows = await signals_service.ingest_text(
         session,
         text=text,
         parse=parse or make_signal_parser(await known_keys(session)),
         external_id=external_id,
-        on_date=on_date or today_local(),
+        on_date=on_date or conversation_day(),
         source=SOURCE,
     )
 
@@ -321,9 +393,11 @@ async def _answer_reply(
     notifier: Optional[Notifier],
     message_id: Optional[Any],
 ) -> None:
-    context = (answered.payload or {}).get("text") or ""
+    """``answered`` is the message being replied to, or ``None`` for a question
+    typed on its own — in which case the day's numbers are all there is."""
+    context = ((answered.payload or {}).get("text") or "") if answered is not None else ""
     try:
-        text = await answer_reply(question, context)
+        text = await answer_reply(question, context, await _day_facts(session))
     except Exception:
         logger.warning("could not answer a reply", exc_info=True)
         text = _NO_LLM_REPLY
@@ -336,20 +410,40 @@ async def _answer_reply(
     )
 
 
+async def _day_facts(session: AsyncSession) -> str:
+    """The numbers behind the latest brief, as JSON — or ``""`` if there is none.
+
+    Without it the model answers «почему hrv просел?» from the prose of one
+    message and nothing else: it cannot see the HRV it is being asked about, so
+    the honest answer is always "в тексте этого нет". The brief already assembled
+    the day and stored the context it was built from, so this reads *that* rather
+    than assembling a second, subtly different picture of the same day.
+    """
+    digest = await digest_service.latest_digest(session, kind=DigestKind.DAILY_BRIEF.value)
+    if digest is None or not digest.context_json:
+        return ""
+    try:
+        return json.dumps(digest.context_json, ensure_ascii=False, default=str)[:_DAY_FACTS_LIMIT]
+    except (TypeError, ValueError):
+        logger.warning("brief context is not serialisable; answering without it", exc_info=True)
+        return ""
+
+
 def _fmt_num(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{value:g}"
 
 
 def render_echo(rows) -> str:
-    """What was understood, in his own words next to the key it became.
+    """What was understood, in his own words and with the value attached.
 
-    Showing both halves is the point: he can tell at a glance whether the parse
-    matched, and the drifting key is visible the day it drifts — which is exactly
-    what the прогон-7 consolidation needs and what a pretty label would hide.
+    The canonical slug is deliberately *not* here: `голова раскалывается →
+    headache 4/5` reads like the bot answering in a language he did not use, and
+    the half he can actually check is the number. The slug stays visible on
+    ``/signals``, which is where the прогон-7 consolidation reads keys anyway.
     """
     lines = []
     for row in rows:
-        bits = [signals_service.normalize_key(row.key)]
+        bits = []
         if row.value_num is not None:
             number = _fmt_num(row.value_num)
             if row.unit:
@@ -361,7 +455,10 @@ def render_echo(rows) -> str:
         if row.at_time is not None:
             bits.append(f"в {row.at_time.strftime('%H:%M')}")
         parsed = " ".join(bits)
-        lines.append(f"• {row.note} → {parsed}" if row.note else f"• {parsed}")
+        # No note (the parser found a fact but quoted nothing) leaves the key as
+        # the only thing left to name the row by — better than a bare «→ 4/5».
+        label = row.note or signals_service.normalize_key(row.key)
+        lines.append(f"• {label} → {parsed}" if parsed else f"• {label}")
     return "Записал:\n" + "\n".join(lines)
 
 
@@ -406,9 +503,19 @@ def make_signal_parser(known: Optional[list[str]] = None) -> signals_service.Par
     return _parse
 
 
-async def answer_reply(question: str, context: str) -> str:
-    """Answer a reply using only the message it replied to."""
-    prompt = f"Сообщение бота:\n{context}\n\nВопрос:\n{question}"
+async def answer_reply(question: str, context: str, facts: str = "") -> str:
+    """Answer using the message replied to and the day the brief was built on.
+
+    Either half can be empty — a question typed on its own has no message behind
+    it, and a day with no brief yet has no numbers — so the prompt only carries
+    what exists rather than a labelled hole the model might fill in.
+    """
+    parts = []
+    if context:
+        parts.append(f"Сообщение бота:\n{context}")
+    if facts:
+        parts.append(f"Данные последнего разбора дня (JSON):\n{facts}")
+    parts.append(f"Вопрос:\n{question}")
     return await LLMClient().complete_text(
-        prompt, system=_REPLY_SYSTEM, max_tokens=_REPLY_MAX_TOKENS
+        "\n\n".join(parts), system=_REPLY_SYSTEM, max_tokens=_REPLY_MAX_TOKENS
     )

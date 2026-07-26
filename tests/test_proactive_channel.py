@@ -28,6 +28,9 @@ HEADERS = {"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET}
 
 NOON = datetime(2026, 7, 26, 12, 0)
 NIGHT = datetime(2026, 7, 26, 3, 0)
+# Inside the default quiet window (02:00–10:00) and a perfectly normal hour for
+# the brief the owner scheduled himself.
+MORNING = datetime(2026, 7, 26, 9, 0)
 
 
 class FakeNotifier:
@@ -196,10 +199,12 @@ async def test_text_becomes_signals_plus_an_echo_with_an_undo_button(
 
     assert len(fake.sent) == 1
     echo = fake.sent[0]
-    # His own words next to the key they became — that is what makes a bad parse
-    # visible at a glance.
-    assert "голова раскалывается → headache 4/5" in echo["text"]
-    assert "кофе в 22 → caffeine_late в 22:00" in echo["text"]
+    # His own words next to the value they became. The canonical slug is not in
+    # the message — it reads like the bot answering in a language he didn't use,
+    # and it stays visible on /signals where the key registry is actually read.
+    assert "голова раскалывается → 4/5" in echo["text"]
+    assert "кофе в 22 → в 22:00" in echo["text"]
+    assert "headache" not in echo["text"] and "caffeine_late" not in echo["text"]
     label, payload = echo["buttons"][0]
     assert label == "не то"
     assert payload == f"{inbound.CB_MISPARSE}{rows[0].batch_id}"
@@ -230,10 +235,13 @@ async def test_a_message_with_no_facts_is_kept_and_answered_without_alarm(
     assert (await db_session.execute(select(SystemAlert))).scalars().all() == []
 
 
-async def test_the_off_switch_stops_the_capture_too(bot_client, db_session, monkeypatch):
-    """U1 is an emergency switch, not a mute button: with the module off the bot
-    was still parsing every message and writing it to the lake, paying for a model
-    call each time, and only the reply was suppressed."""
+async def test_the_off_switch_stops_the_parse_and_the_reply_but_keeps_the_text(
+    bot_client, db_session, monkeypatch
+):
+    """The switch is for the expensive and the outgoing half — a model call per
+    message and every word back. It is not an amnesia switch: a message written
+    while the bot was off is still his message, and dropping it on the floor is
+    worse than either thing it was switched off to stop."""
     from vitals.services import modules_service
 
     c, fake = bot_client
@@ -252,10 +260,32 @@ async def test_the_off_switch_stops_the_capture_too(bot_client, db_session, monk
     # 200 all the same: anything else and Telegram retries the update forever.
     assert r.status_code == 200
     assert await _signals(db_session) == []
-    assert (await db_session.execute(
-        select(RawPayload).where(RawPayload.external_id == "tg:1")
-    )).scalars().first() is None
     assert fake.sent == []
+    raw = (await db_session.execute(
+        select(RawPayload).where(RawPayload.external_id == "tg:1")
+    )).scalars().first()
+    assert raw is not None and raw.payload["text"] == "башка трещит"
+    # Left pending on purpose: the re-parse sweep turns it into signals whenever
+    # the module comes back on.
+    assert raw.processed_at is None
+
+
+async def test_a_tap_while_the_module_is_off_is_ignored(bot_client, db_session):
+    """A tap answers a question this bot asked — with the module off there is
+    nothing asking, so it is dropped rather than stored."""
+    from vitals.services import modules_service
+
+    c, fake = bot_client
+    await modules_service.set_module_enabled(db_session, key="signals", enabled=False)
+    await db_session.commit()
+    tomorrow = date(2026, 7, 27)
+
+    await c.post(f"/tg/{WEBHOOK_PATH}",
+                 json=_tap_update(1, f"{inbound.CB_CONTEXT}{tomorrow.isoformat()}:where:remote"),
+                 headers=HEADERS)
+
+    assert await signals_service.get_day_context(db_session, tomorrow) is None
+    assert fake.acks == []
 
 
 async def test_a_dead_parser_raises_an_alert_instead_of_going_quiet(
@@ -301,6 +331,29 @@ async def test_repeated_update_id_is_not_processed_twice(bot_client, parses_to, 
     assert r.status_code == 200
     assert len(await _signals(db_session)) == 1
     assert len(fake.sent) == 1
+
+
+async def test_a_message_after_midnight_lands_on_the_day_that_just_ended(db_session):
+    """«кофе поздно» written at 00:30 is about the evening just spent. Filed under
+    the fresh calendar date it lands in tomorrow's brief, and tonight's — the one
+    that would have explained the sleep it ruined — never sees it."""
+    from freezegun import freeze_time
+
+    fake = FakeNotifier()
+
+    async def _parse(_text):
+        return [{"kind": "exposure", "key": "caffeine_late", "note": "кофе поздно"}]
+
+    # 21:30 UTC = 00:30 local (Europe/Chisinau is UTC+3 in July).
+    with freeze_time("2026-07-26 21:30:00"):
+        await inbound.handle_text(db_session, "кофе поздно", notifier=fake, parse=_parse)
+    # …and the normal case is untouched: an afternoon message is today's.
+    with freeze_time("2026-07-27 12:00:00"):
+        await inbound.handle_text(db_session, "кофе поздно", notifier=fake, parse=_parse)
+
+    assert sorted(row.date for row in await _signals(db_session)) == [
+        date(2026, 7, 26), date(2026, 7, 27),
+    ]
 
 
 # ── Taps ──────────────────────────────────────────────────────────────────────
@@ -362,6 +415,25 @@ async def test_a_slash_command_is_answered_not_captured(bot_client, db_session, 
     assert fake.sent[-1]["text"] == inbound.COMMAND_REPLY
 
 
+async def test_a_retried_slash_command_is_answered_once(bot_client, db_session):
+    """The command branch used to answer and leave, writing nothing to the lake —
+    so Telegram's retry found no trace of the update and got a second identical
+    wall of text."""
+    c, fake = bot_client
+    update = _text_update(1, "/start")
+
+    await c.post(f"/tg/{WEBHOOK_PATH}", json=update, headers=HEADERS)
+    await c.post(f"/tg/{WEBHOOK_PATH}", json=update, headers=HEADERS)
+
+    assert len(fake.sent) == 1
+    raw = (await db_session.execute(
+        select(RawPayload).where(RawPayload.external_id == "tg:1")
+    )).scalars().first()
+    # Marked done: «/start» is not a message waiting to become signals, so the
+    # re-parse sweep must never hand it to the parser.
+    assert raw is not None and raw.processed_at is not None
+
+
 async def test_a_tap_outside_the_question_registry_is_dropped(bot_client, db_session):
     """Telegram keeps old keyboards tappable forever: a button from before a
     question was renamed must not write a key nothing reads back."""
@@ -389,7 +461,7 @@ async def test_reply_to_our_message_is_answered_not_captured(
                                category=delivery.CATEGORY_BRIEF, now=NOON)
     asked = {}
 
-    async def _answer(question, context):
+    async def _answer(question, context, facts=""):
         asked["question"], asked["context"] = question, context
         return "HRV чуть ниже твоей нормы."
 
@@ -413,7 +485,7 @@ async def test_reply_falls_back_to_a_line_when_the_model_is_down(
     sent = await delivery.send(db_session, fake, text="Утро: сон 6:10.",
                                category=delivery.CATEGORY_BRIEF, now=NOON)
 
-    async def _boom(question, context):
+    async def _boom(question, context, facts=""):
         raise RuntimeError("no key")
 
     monkeypatch.setattr(inbound, "answer_reply", _boom)
@@ -423,6 +495,88 @@ async def test_reply_falls_back_to_a_line_when_the_model_is_down(
                  headers=HEADERS)
 
     assert "Сейчас не отвечу" in fake.sent[-1]["text"]
+
+
+async def test_a_question_typed_without_a_reply_is_answered_not_parsed(
+    bot_client, db_session, monkeypatch
+):
+    """Telegram-reply is a feature almost nobody uses on mobile. Typed plainly,
+    «почему hrv просел?» went to the fact parser and came back as «фактов для
+    графиков тут не нашёл» — the single most broken-looking thing the bot says."""
+    c, fake = bot_client
+
+    def _never(*a, **kw):
+        raise AssertionError("a question must not reach the signal parser")
+
+    monkeypatch.setattr(inbound, "make_signal_parser", _never)
+    asked = {}
+
+    async def _answer(question, context, facts=""):
+        asked["question"] = question
+        return "HRV просел после позднего кофеина."
+
+    monkeypatch.setattr(inbound, "answer_reply", _answer)
+
+    await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "почему hrv просел?"),
+                 headers=HEADERS)
+
+    assert await _signals(db_session) == []
+    assert asked["question"] == "почему hrv просел?"
+    assert fake.sent[-1]["text"] == "HRV просел после позднего кофеина."
+
+
+async def test_a_fact_that_opens_with_a_question_word_is_still_captured(
+    bot_client, parses_to, db_session, monkeypatch
+):
+    """The predicate matches the first *word*, not a prefix: «что-то тошнит» is a
+    symptom, and routing it to Q&A would lose the row it was written for."""
+    c, _ = bot_client
+    parses_to([{"kind": "symptom", "key": "nausea", "value_num": 3, "note": "что-то тошнит"}])
+
+    async def _never(*a, **kw):
+        raise AssertionError("a symptom must not go to the Q&A path")
+
+    monkeypatch.setattr(inbound, "answer_reply", _never)
+
+    await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "что-то тошнит"), headers=HEADERS)
+
+    assert [row.key for row in await _signals(db_session)] == ["nausea"]
+
+
+async def test_the_question_path_is_given_the_days_numbers(
+    bot_client, db_session, monkeypatch
+):
+    """Fed one message's prose and nothing else, the model cannot see the HRV it
+    is being asked about, so the only honest answer it has is "в тексте этого
+    нет". The brief already stored the day it was built from — read that."""
+    from vitals.enums import DigestKind
+    from vitals.integrations import llm_client
+    from vitals.models.milestones import DOMAIN as INSIGHTS_DOMAIN, WeeklyDigest
+
+    c, fake = bot_client
+    db_session.add(WeeklyDigest(
+        date=date(2026, 7, 26),
+        domain=INSIGHTS_DOMAIN,
+        kind=DigestKind.DAILY_BRIEF.value,
+        content="Утро: разбор дня.",
+        context_json={"hrv": 42, "sleep_hours": 6.1},
+    ))
+    await db_session.flush()
+
+    seen = {}
+
+    async def _complete(self, prompt, **kwargs):
+        seen["prompt"] = prompt
+        return "HRV 42 — ниже твоей нормы."
+
+    monkeypatch.setattr(llm_client.LLMClient, "complete_text", _complete)
+
+    await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "почему hrv просел?"),
+                 headers=HEADERS)
+
+    assert "42" in seen["prompt"] and "6.1" in seen["prompt"]
+    assert "почему hrv просел?" in seen["prompt"]
+    assert fake.sent[-1]["text"] == "HRV 42 — ниже твоей нормы."
 
 
 # ── Budget & quiet hours ──────────────────────────────────────────────────────
@@ -471,6 +625,22 @@ async def test_quiet_hours_hold_initiative_but_not_answers(db_session):
     assert await delivery.send(db_session, fake, text="эхо в три ночи",
                                category=delivery.CATEGORY_ECHO, now=NIGHT) is not None
     assert len(fake.sent) == 1
+
+
+async def test_quiet_hours_hold_nudges_but_not_the_times_he_set_himself(db_session):
+    """The brief and the evening block go out at an hour typed by hand into the
+    same settings card. If quiet hours could cancel them, one field would silently
+    override another — a brief scheduled for 09:00 that simply never arrives."""
+    fake = FakeNotifier()
+
+    assert await delivery.send(db_session, fake, text="утренний разбор",
+                               category=delivery.CATEGORY_BRIEF, now=MORNING) is not None
+    assert await delivery.send(db_session, fake, text="итог дня",
+                               category=delivery.CATEGORY_EVENING, now=MORNING) is not None
+    # The bot's own idea of a good moment still waits for the window to close.
+    assert await delivery.send(db_session, fake, text="надж",
+                               category=delivery.CATEGORY_NUDGE, now=MORNING) is None
+    assert len(fake.sent) == 2
 
 
 def test_quiet_window_can_wrap_past_midnight():

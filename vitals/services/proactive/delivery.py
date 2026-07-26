@@ -7,8 +7,12 @@ Five rules, in the order they're checked:
    is the emergency switch, and it has to silence the bot without a deploy.
 3. **Dedupe.** A ``dedupe_key`` that's already in the journal means this exact
    message went out; a re-run of the job is a no-op, not a second ping.
-4. **Quiet hours** and 5. **the daily budget** (both from the settings card) apply
-   to *self-initiated* messages only — the brief, the evening block, nudges.
+4. **Quiet hours** hold back *nudges* — the bot's own idea of a good moment. The
+   brief and the evening block go out at a time the owner typed by hand into the
+   same settings card, so silencing them by quiet hours is one field quietly
+   cancelling another with no way to see which won.
+5. **The daily budget** (also from the settings card) covers all three
+   self-initiated categories — the brief, the evening block, nudges.
 
    Answers to the owner (``reply``, ``echo``) are deliberately exempt. Counting
    them would mean that after the fourth thing you logged, the bot stops replying
@@ -134,10 +138,15 @@ async def send(
     now = now or now_local()
     if category in INITIATIVE_CATEGORIES:
         settings = await prefs.get_prefs(session)
-        quiet_start = prefs.as_time(settings["quiet_start"])
-        quiet_end = prefs.as_time(settings["quiet_end"])
         budget = settings["daily_budget"]
-        if in_quiet_hours(now.time(), start=quiet_start, end=quiet_end):
+        # Nudges only: a brief scheduled for 09:00 inside a 02:00-10:00 quiet
+        # window must still arrive. Both times came from the same card, and the
+        # one he set for the brief is the more specific instruction.
+        if category == CATEGORY_NUDGE and in_quiet_hours(
+            now.time(),
+            start=prefs.as_time(settings["quiet_start"]),
+            end=prefs.as_time(settings["quiet_end"]),
+        ):
             logger.info("skipping %s: quiet hours (%s)", category, now.time())
             return None
         if await sent_today(session, on_date=now.date()) >= budget:
