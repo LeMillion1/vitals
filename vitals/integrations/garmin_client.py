@@ -1,11 +1,24 @@
-"""Garmin Connect client (web session via ``garminconnect`` / ``garth``).
+"""Garmin Connect client (web session via ``garminconnect``).
 
 Garmin has no official API, so this wraps the community ``garminconnect`` library,
 which logs in with the user's credentials and reuses an OAuth token session. To
 avoid repeated logins (each one risks a captcha/MFA challenge and a temporary
-block), the garth token session is cached in **Redis** (fast, shared) **and on
-disk** (survives a Redis flush) — the plan's "session/token cache in Redis +
-disk".
+block), the token session is cached in **Redis** (fast, shared) **and on disk**
+(survives a Redis flush) — the plan's "session/token cache in Redis + disk".
+
+**Garmin rate-limits the login, not the reads.** A resumed token session costs
+nothing, but a credential login runs five SSO strategies, and a burst of those
+gets the *account* (not the IP) blocked for 48h+ — with every further attempt
+extending the block. So this module keeps two guarantees:
+
+  * a token session is never allowed to escalate into a credential login by
+    accident (``_resume_blocking`` vs ``_fresh_login_blocking``), and
+  * credential logins are rationed by a Redis breaker (``_reserve_login``).
+
+Everything that keeps the token alive is therefore load-bearing, and a failure
+to store it is reported (``token_warnings`` → a ``warn`` alert in the service)
+rather than logged and forgotten: a session that silently fails to persist means
+*every* poll logs in again, which is exactly how the account gets blocked.
 
 The library is synchronous (``requests`` under the hood), so every blocking call
 runs in a thread via ``asyncio.to_thread``. ``garminconnect`` is **lazy-imported**
@@ -31,6 +44,19 @@ logger = logging.getLogger(__name__)
 REDIS_SESSION_KEY = "garmin:session"
 # Re-use a cached session for a day before forcing a token refresh.
 SESSION_TTL_SECONDS = 24 * 3600
+
+# ── Credential-login breaker ─────────────────────────────────────────────────
+# A healthy token session never moves these counters: they only tick when a
+# login actually happens. Three a day is generous for a working setup and far
+# below the burst that triggers a block.
+LOGIN_ATTEMPTS_KEY = "garmin:login_attempts"
+LOGIN_PAUSE_KEY = "garmin:login_pause"
+MAX_LOGINS_PER_DAY = 3
+LOGIN_PAUSE_SECONDS = 6 * 3600
+
+# Below this length garminconnect reads a token store argument as a filesystem
+# path instead of token JSON; the real session is ~2 KB.
+_TOKEN_STRING_MIN_LEN = 512
 
 # Sub-metrics fetched for a day. Each maps to a garminconnect method; a failure on
 # one metric never aborts the day (maximal capture, best-effort).
@@ -60,11 +86,20 @@ class GarminMFARequired(GarminAuthError):
     out-of-band to recover."""
 
 
+class GarminLoginThrottled(GarminAuthError):
+    """The breaker refused a credential login — the daily allowance is spent or a
+    pause is in force. Never a reason to retry sooner: retries are what turn a
+    Garmin rate-limit into a multi-day account block."""
+
+
 class GarminClient:
     def __init__(self, config: Optional[Config] = None, redis: Any = None):
         self._config = config or load_config()
         self._redis = redis
         self._garmin: Any = None  # cached logged-in garminconnect.Garmin
+        # Token-store failures collected during this client's life; the service
+        # turns them into a warn alert instead of letting them pass as log noise.
+        self.token_warnings: list[str] = []
 
     @classmethod
     def from_config(cls, config: Optional[Config] = None, redis: Any = None) -> "GarminClient":
@@ -75,62 +110,131 @@ class GarminClient:
         return bool(self._config.garmin_email and self._config.garmin_password)
 
     # ── Session / login ─────────────────────────────────────────────────────────
+    def _warn_token(self, message: str) -> None:
+        """Record a token-store failure. These used to be swallowed, which is the
+        worst possible outcome: the sync keeps working off the in-memory session
+        while the stored one rots, and the day the process restarts every poll
+        starts logging in again."""
+        logger.warning("Garmin token store: %s", message)
+        self.token_warnings.append(message)
+
     async def _load_cached_tokens(self) -> Optional[str]:
         if self._redis is None:
             return None
         try:
             return await self._redis.get(REDIS_SESSION_KEY)
-        except Exception:
+        except Exception as e:  # noqa: BLE001
+            self._warn_token(f"could not read the cached session from Redis: {e}")
             return None
 
     async def _store_tokens(self, garmin: Any) -> None:
-        try:
-            token_str = await asyncio.to_thread(garmin.garth.dumps)
-        except Exception:
+        if self._redis is None:
             return
-        if self._redis is not None and token_str:
-            try:
-                await self._redis.set(REDIS_SESSION_KEY, token_str, ex=SESSION_TTL_SECONDS)
-            except Exception:
-                logger.warning("Could not cache Garmin session in Redis")
+        try:
+            token_str = await asyncio.to_thread(garmin.client.dumps)
+        except Exception as e:  # noqa: BLE001
+            self._warn_token(f"could not serialise the session: {e}")
+            return
+        if not token_str:
+            self._warn_token("the library returned an empty session")
+            return
+        try:
+            await self._redis.set(REDIS_SESSION_KEY, token_str, ex=SESSION_TTL_SECONDS)
+        except Exception as e:  # noqa: BLE001
+            self._warn_token(f"could not cache the session in Redis: {e}")
 
-    def _login_blocking(self, cached_token: Optional[str]) -> Any:
-        """Resume from a cached token if possible, else the disk token store, else
-        a full credential login. Runs in a worker thread."""
+    def _resume_blocking(self, cached_token: Optional[str]) -> Any:
+        """Log in from a stored token session — Redis first, then the disk store.
+        Returns ``None`` when neither works, and **never** falls back to
+        credentials. Runs in a worker thread.
+
+        The split from ``_fresh_login_blocking`` is the whole point:
+        ``Garmin.login(store)`` silently escalates to a full credential login when
+        the store doesn't parse, so calling it blind would spend the expensive
+        path without the breaker ever seeing it. Loading the tokens ourselves
+        first is a local read with no network — and once they load, ``login()`` is
+        guaranteed to stay on the token path."""
         from garminconnect import Garmin  # lazy
 
-        garmin = Garmin(self._config.garmin_email, self._config.garmin_password)
-
-        # 1) Redis-cached garth token session.
-        if cached_token:
+        sources = (("Redis", cached_token), ("disk", self._config.garmin_token_dir))
+        for label, tokenstore in sources:
+            if not tokenstore:
+                continue
+            if label == "Redis" and len(tokenstore) < _TOKEN_STRING_MIN_LEN:
+                self._warn_token("the cached session is too short to be a token")
+                continue
+            # A fresh instance per attempt so a half-loaded store can't leak into
+            # the next source.
+            garmin = Garmin(
+                self._config.garmin_email, self._config.garmin_password, return_on_mfa=True
+            )
             try:
-                garmin.garth.loads(cached_token)
+                if label == "Redis":
+                    garmin.client.loads(tokenstore)
+                else:
+                    garmin.client.load(tokenstore)
+                garmin.login(tokenstore)
                 return garmin
-            except Exception:
-                logger.info("Cached Garmin token unusable — falling back to disk/login")
+            except Exception as e:  # noqa: BLE001
+                logger.info("Garmin %s token session unusable: %s", label, e)
+        return None
 
-        # 2) On-disk token store (survives a Redis flush / restart).
-        try:
-            garmin.login(self._config.garmin_token_dir)
-            return garmin
-        except Exception:
-            logger.info("No usable Garmin disk session — performing a fresh login")
+    def _fresh_login_blocking(self) -> Any:
+        """A real credential login — the rationed path. Runs in a worker thread.
 
-        # 3) Fresh credential login.
+        Called with no token store on purpose: the stored session has already been
+        tried and rejected by ``_resume_blocking``, and passing it again would just
+        make the library retry the same dead token instead of the credentials."""
+        from garminconnect import Garmin  # lazy
+
+        garmin = Garmin(
+            self._config.garmin_email, self._config.garmin_password, return_on_mfa=True
+        )
         try:
             result = garmin.login()
         except Exception as e:  # noqa: BLE001
             raise GarminAuthError(str(e)) from e
 
-        # Newer garminconnect returns ("needs_mfa", state) when MFA is required.
+        # With return_on_mfa the library hands back ("needs_mfa", state) instead of
+        # prompting on a stdin nobody is attached to.
         if isinstance(result, tuple) and result and result[0] == "needs_mfa":
             raise GarminMFARequired("Garmin requires an MFA code")
 
         try:
-            garmin.garth.dump(self._config.garmin_token_dir)
-        except Exception:
-            logger.warning("Could not persist Garmin session to disk")
+            garmin.client.dump(self._config.garmin_token_dir)
+        except Exception as e:  # noqa: BLE001
+            self._warn_token(f"could not write the new session to the token store: {e}")
         return garmin
+
+    async def _reserve_login(self) -> None:
+        """Spend one credential login from the daily allowance, or refuse.
+
+        Fails **closed**: if the counter can't be read or written we refuse rather
+        than risk an uncounted login, because a missed sync costs a few hours and a
+        blocked account costs days."""
+        if self._redis is None:
+            # Never the case in the app — the scheduler and the web both pass one.
+            logger.warning("Garmin login breaker inactive: no Redis available")
+            return
+        try:
+            if await self._redis.get(LOGIN_PAUSE_KEY):
+                raise GarminLoginThrottled(
+                    f"login paused for up to {LOGIN_PAUSE_SECONDS // 3600}h "
+                    "after the daily limit was hit"
+                )
+            used = int(await self._redis.incr(LOGIN_ATTEMPTS_KEY))
+            if used == 1:
+                await self._redis.expire(LOGIN_ATTEMPTS_KEY, SESSION_TTL_SECONDS)
+            if used > MAX_LOGINS_PER_DAY:
+                await self._redis.set(LOGIN_PAUSE_KEY, "1", ex=LOGIN_PAUSE_SECONDS)
+                raise GarminLoginThrottled(
+                    f"{MAX_LOGINS_PER_DAY} logins already used in 24h — "
+                    f"pausing for {LOGIN_PAUSE_SECONDS // 3600}h"
+                )
+        except GarminLoginThrottled:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise GarminLoginThrottled(f"login breaker unavailable: {e}") from e
 
     async def _ensure_login(self) -> Any:
         if self._garmin is not None:
@@ -138,7 +242,10 @@ class GarminClient:
         if not self.is_configured:
             raise GarminNotConfigured("VITALS_GARMIN_EMAIL / VITALS_GARMIN_PASSWORD not set")
         cached = await self._load_cached_tokens()
-        garmin = await asyncio.to_thread(self._login_blocking, cached)
+        garmin = await asyncio.to_thread(self._resume_blocking, cached)
+        if garmin is None:
+            await self._reserve_login()
+            garmin = await asyncio.to_thread(self._fresh_login_blocking)
         await self._store_tokens(garmin)
         self._garmin = garmin
         return garmin

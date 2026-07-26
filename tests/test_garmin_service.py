@@ -1,7 +1,7 @@
 """Garmin service tests — daily normalisation/upsert, the weight bridge with
 manual-over-Garmin priority, activities, intraday stress/Body Battery series,
-the nightly sleep series + hypnogram, recovery advice, the MFA alert path, and
-the Health Auto Export backup channel."""
+the nightly sleep series + hypnogram, recovery advice, the MFA alert path, the
+Health Auto Export backup channel, and the client's credential-login breaker."""
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
@@ -9,7 +9,16 @@ from datetime import date, datetime, timezone
 import pytest
 from sqlalchemy import func, select
 
-from vitals.integrations.garmin_client import GarminMFARequired
+from vitals.config import Config
+from vitals.integrations.garmin_client import (
+    LOGIN_ATTEMPTS_KEY,
+    LOGIN_PAUSE_KEY,
+    MAX_LOGINS_PER_DAY,
+    REDIS_SESSION_KEY,
+    GarminClient,
+    GarminLoginThrottled,
+    GarminMFARequired,
+)
 from vitals.models.garmin import (
     SERIES_BODY_BATTERY,
     SERIES_SLEEP_BB,
@@ -251,12 +260,18 @@ ACTIVITY_DETAILS = {"hr_zones": HR_ZONES_DETAIL, "splits": SPLITS_DETAIL}
 
 
 class FakeGarminClient:
-    def __init__(self, *, daily=None, activities=None, details=None, raise_exc=None):
+    def __init__(
+        self, *, daily=None, activities=None, details=None, raise_exc=None,
+        token_warnings=None,
+    ):
         self._daily = daily if daily is not None else {DAY: RAW_DAY}
         self._activities = activities or []
         self._details = details or {}
         self._raise = raise_exc
         self.is_configured = True
+        # The real client collects token-store failures here for the service to
+        # turn into an alert.
+        self.token_warnings = list(token_warnings or ())
 
     async def fetch_daily(self, on_date):
         if self._raise is not None:
@@ -805,6 +820,155 @@ async def test_sync_persists_activity_detail_columns(db_session):
     assert raw.payload["_details"]["hr_zones"][0]["zoneNumber"] == 1
 
 
+# ── Token store: silence is the failure mode ──────────────────────────────────
+async def test_sync_raises_warn_alert_when_the_token_store_fails(db_session):
+    """A token that can't be stored is invisible until the next restart, and then
+    every single poll logs into Garmin again — which is how the account gets
+    blocked. The sync itself succeeds, so only an alert can surface it."""
+    from vitals.services import alerts_service
+
+    client = FakeGarminClient(token_warnings=["could not write the session: boom"])
+    summary = await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await db_session.commit()
+
+    assert summary["error"] is None  # the data still arrived
+    active = await alerts_service.list_active(db_session, domain="garmin")
+    token_alerts = [a for a in active if a.alert_key == garmin_service.TOKEN_ALERT_KEY]
+    assert len(token_alerts) == 1
+    assert token_alerts[0].severity == "warn"
+
+
+async def test_healthy_token_store_resolves_the_alert(db_session):
+    from vitals.services import alerts_service
+
+    await garmin_service.sync(
+        db_session, FakeGarminClient(token_warnings=["boom"]), days=1, on_date=DAY
+    )
+    await db_session.commit()
+    await garmin_service.sync(db_session, FakeGarminClient(), days=1, on_date=DAY)
+    await db_session.commit()
+
+    active = await alerts_service.list_active(db_session, domain="garmin")
+    assert not [a for a in active if a.alert_key == garmin_service.TOKEN_ALERT_KEY]
+
+
+# ── Credential-login breaker (the account-block guard) ────────────────────────
+TOKEN_JSON = '{"di_token": "%s"}' % ("x" * 600)
+
+
+class _FakeSession:
+    """Stand-in for garminconnect's inner client — only the token-store surface
+    this module actually touches."""
+
+    def __init__(self, dumps_error=None):
+        self._dumps_error = dumps_error
+
+    def dumps(self):
+        if self._dumps_error is not None:
+            raise self._dumps_error
+        return TOKEN_JSON
+
+    def dump(self, path):
+        return None
+
+
+class _FakeGarmin:
+    def __init__(self, dumps_error=None):
+        self.client = _FakeSession(dumps_error)
+
+
+def _login_client(redis, *, resume=None, dumps_error=None):
+    """A GarminClient wired to fakeredis, with the two blocking login paths
+    stubbed so nothing touches the network. ``resume`` is the object the token
+    path returns (None = no usable token, so credentials are needed)."""
+    client = GarminClient(
+        Config(
+            database_url="", redis_url="",
+            garmin_email="user@example.com", garmin_password="secret",
+        ),
+        redis=redis,
+    )
+    client.logins = []
+
+    def _fresh():
+        client.logins.append(1)
+        return _FakeGarmin(dumps_error)
+
+    client._resume_blocking = lambda cached: resume
+    client._fresh_login_blocking = _fresh
+    return client
+
+
+async def test_fourth_login_in_24h_is_not_performed(redis):
+    """Garmin's limit sits on the login, counts per account, and every extra
+    attempt extends the block — so the fourth attempt must not reach the network
+    at all, not merely fail politely."""
+    client = _login_client(redis)
+
+    for _ in range(MAX_LOGINS_PER_DAY):
+        client._garmin = None
+        await client._ensure_login()
+
+    client._garmin = None
+    with pytest.raises(GarminLoginThrottled):
+        await client._ensure_login()
+
+    assert len(client.logins) == MAX_LOGINS_PER_DAY
+
+
+async def test_refusal_sets_a_pause_that_outlives_the_counter(redis):
+    """The pause is the part that matters: without it a counter reset (or a new
+    day rolling over mid-block) would let the retries resume straight into
+    Garmin's block and extend it."""
+    client = _login_client(redis)
+    for _ in range(MAX_LOGINS_PER_DAY):
+        client._garmin = None
+        await client._ensure_login()
+    client._garmin = None
+    with pytest.raises(GarminLoginThrottled):
+        await client._ensure_login()
+
+    assert await redis.get(LOGIN_PAUSE_KEY)
+
+    await redis.delete(LOGIN_ATTEMPTS_KEY)
+    client._garmin = None
+    with pytest.raises(GarminLoginThrottled):
+        await client._ensure_login()
+    assert len(client.logins) == MAX_LOGINS_PER_DAY
+
+
+async def test_resumed_token_session_spends_no_login(redis):
+    """The breaker's budget is tiny on purpose, so a working token must never
+    touch it — routine polling has to stay free."""
+    client = _login_client(redis, resume=_FakeGarmin())
+
+    await client._ensure_login()
+
+    assert client.logins == []
+    assert await redis.get(LOGIN_ATTEMPTS_KEY) is None
+
+
+async def test_session_is_cached_in_redis_after_login(redis):
+    """Regression: the caching used to go through ``garmin.garth``, an attribute
+    the library dropped — and the failure was swallowed, so the cache was quietly
+    dead while everything looked fine."""
+    client = _login_client(redis, resume=_FakeGarmin())
+
+    await client._ensure_login()
+
+    assert await redis.get(REDIS_SESSION_KEY) == TOKEN_JSON
+    assert client.token_warnings == []
+
+
+async def test_token_serialisation_failure_is_recorded_not_swallowed(redis):
+    client = _login_client(redis, resume=_FakeGarmin(dumps_error=AttributeError("garth")))
+
+    await client._ensure_login()  # the sync still runs on the in-memory session
+
+    assert client.token_warnings
+    assert await redis.get(REDIS_SESSION_KEY) is None
+
+
 # ── MFA / auth alert path ─────────────────────────────────────────────────────
 async def test_sync_mfa_raises_warn_alert(db_session):
     from vitals.services import alerts_service
@@ -817,6 +981,21 @@ async def test_sync_mfa_raises_warn_alert(db_session):
     active = await alerts_service.list_active(db_session, domain="garmin")
     assert any(a.alert_key == garmin_service.AUTH_ALERT_KEY for a in active)
     assert all(a.severity == "warn" for a in active)
+
+
+async def test_sync_reports_a_throttled_login_separately_from_bad_credentials(db_session):
+    """"Paused on purpose" and "your password is wrong" call for opposite
+    reactions — the page must not tell you to go re-check credentials that are
+    fine, because re-logging in is exactly what extends a Garmin block."""
+    from vitals.services import alerts_service
+
+    client = FakeGarminClient(raise_exc=GarminLoginThrottled("daily cap spent"))
+    summary = await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await db_session.commit()
+
+    assert summary["error"] == "throttled"
+    active = await alerts_service.list_active(db_session, domain="garmin")
+    assert any(a.alert_key == garmin_service.AUTH_ALERT_KEY for a in active)
 
 
 # ── Recovery advice ───────────────────────────────────────────────────────────

@@ -72,6 +72,9 @@ services:
     volumes:
       - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
       - ./backups:/backups
+      # The Garmin token store, read-only: the database can always be re-synced
+      # from Garmin, but a lost session may be impossible to log back in.
+      - vitals_garmin_session:/garmin_session:ro
     entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh"]
     restart: unless-stopped
 

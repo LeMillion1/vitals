@@ -94,6 +94,8 @@
     <div class="v-alert warn">{{ t("garmin.sync_mfa") }}</div>
     {% elif sync == 'auth' %}
     <div class="v-alert warn">{{ t("garmin.sync_auth") }}</div>
+    {% elif sync == 'throttled' %}
+    <div class="v-alert warn">{{ t("garmin.sync_throttled") }}</div>
     {% endif %}
 
     <!-- Intraday curves for the latest day (hidden when only day-level scalars exist) -->

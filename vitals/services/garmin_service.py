@@ -34,7 +34,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Severity, Source
 from vitals.i18n import t
-from vitals.integrations.garmin_client import GarminAuthError, GarminMFARequired
+from vitals.integrations.garmin_client import (
+    GarminAuthError,
+    GarminLoginThrottled,
+    GarminMFARequired,
+)
 from vitals.models.garmin import (
     DOMAIN,
     SERIES_BODY_BATTERY,
@@ -57,6 +61,7 @@ from vitals.utils.timeutils import now_local, to_local_naive
 logger = logging.getLogger(__name__)
 
 AUTH_ALERT_KEY = "garmin.auth"
+TOKEN_ALERT_KEY = "garmin.token_cache"
 
 SLEEP_SCORE_FLOOR = 60
 BODY_BATTERY_FLOOR = 40
@@ -689,8 +694,8 @@ async def sync(
 ) -> dict:
     """Sync the last ``days`` days of daily metrics + that window's activities.
     Default is 2 (yesterday + today) for routine polling; pass a larger value
-    for backfill. Catches auth/MFA failures and raises a critical ``warn`` alert
-    instead of bubbling them. Does not commit."""
+    for backfill. Catches auth/MFA/throttle failures and raises a critical
+    ``warn`` alert instead of bubbling them. Does not commit."""
     today = on_date or now_local().date()
     start = today - timedelta(days=days - 1)
     summary = {"days": 0, "activities": 0, "error": None}
@@ -707,13 +712,14 @@ async def sync(
         summary["activities"] = await ingest_activities(session, activities)
 
         await alerts_service.resolve_by_key(session, alert_key=AUTH_ALERT_KEY)
-    except (GarminAuthError, GarminMFARequired) as e:
-        is_mfa = isinstance(e, GarminMFARequired)
-        message = (
-            t("alert.garmin_mfa")
-            if is_mfa
-            else t("alert.garmin_auth_fail", error=str(e))
-        )
+    except GarminAuthError as e:  # MFA and throttling are subclasses
+        if isinstance(e, GarminMFARequired):
+            summary["error"], message = "mfa", t("alert.garmin_mfa")
+        elif isinstance(e, GarminLoginThrottled):
+            summary["error"], message = "throttled", t("alert.garmin_login_throttled")
+        else:
+            summary["error"] = "auth"
+            message = t("alert.garmin_auth_fail", error=str(e))
         await alerts_service.raise_alert(
             session,
             domain=DOMAIN,
@@ -721,7 +727,21 @@ async def sync(
             message=message,
             alert_key=AUTH_ALERT_KEY,
         )
-        summary["error"] = "mfa" if is_mfa else "auth"
+
+    # A token store that can't be written is silent until the day it isn't: the
+    # session keeps working in memory, then every poll after the next restart
+    # logs in again. Surface it while it's still only a warning.
+    warnings = list(getattr(client, "token_warnings", None) or ())
+    if warnings:
+        await alerts_service.raise_alert(
+            session,
+            domain=DOMAIN,
+            severity=Severity.WARN.value,
+            message=t("alert.garmin_token_cache", error=warnings[0]),
+            alert_key=TOKEN_ALERT_KEY,
+        )
+    else:
+        await alerts_service.resolve_by_key(session, alert_key=TOKEN_ALERT_KEY)
     return summary
 
 
