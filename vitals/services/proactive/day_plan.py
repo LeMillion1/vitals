@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date as date_type, timedelta
-from typing import Any, Optional
+from typing import Any, Collection, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -159,16 +159,25 @@ def guess_for(template: dict[str, dict], on_date: date_type) -> dict[str, Any]:
 # ── The day's answers (E3/E4) ─────────────────────────────────────────────────
 async def resolve(
     session: AsyncSession, on_date: date_type
-) -> tuple[dict[str, Any], bool]:
-    """``(answers, answered)`` — his answer if there is one, else the guess.
+) -> tuple[dict[str, Any], set[str]]:
+    """``(answers, answered)`` — his answer if there is one, else the guess, plus
+    the set of questions he *actually* answered.
+
+    Answered is per question, not per day (B6). One tap says nothing about the
+    other two questions, and a single flag for the whole day made "иду в зал"
+    look like an answer to "где ты" and "как день" as well — which is how the
+    keyboard used to disappear after the first tap.
+
+    The set is empty when nothing was answered, so a caller that only cares
+    whether *anything* was said can still read it as a boolean.
 
     An existing row with empty ``answers`` is *not* an answer: that is the row the
     evening block writes to park its guess.
 
-    One tap answers one question, so the rest of the day still comes from the
-    guess he was correcting (``planned`` — what the template said *when it asked*,
-    which is what he saw). Falling back to the bare defaults here would let a
-    single "иду в зал" quietly cancel the template's "удалёнка".
+    The unanswered half of the day still comes from the guess he was correcting
+    (``planned`` — what the template said *when it asked*, which is what he saw).
+    Falling back to the bare defaults here would let a single "иду в зал" quietly
+    cancel the template's "удалёнка".
     """
     row = await signals_service.get_day_context(session, on_date)
     guess = (
@@ -176,9 +185,8 @@ async def resolve(
         if row is not None and row.planned
         else guess_for(await get_week_template(session), on_date)
     )
-    if row is not None and row.answers:
-        return {**guess, **row.answers}, True
-    return guess, False
+    answers = dict(row.answers) if row is not None and row.answers else {}
+    return {**guess, **answers}, set(answers)
 
 
 async def record_answer(
@@ -250,16 +258,24 @@ def decode(value: str) -> Any:
     return value
 
 
-def exception_buttons(current: dict, on_date: date_type) -> list[tuple[str, str]]:
+def exception_buttons(
+    current: dict, on_date: date_type, answered: Collection[str] = ()
+) -> list[tuple[str, str]]:
     """One button per *other* answer — corrections, not a questionnaire.
 
     Re-asking what the template already knows would be taps a day for a guess
     that is right most of the time; offering only the exceptions makes the common
     case zero taps. A question with no answer at all (``load``, which no weekday
     predicts) has no "other" to be — so every one of its options is offered.
+
+    ``answered`` drops the questions he has already spoken for (B6). Only those:
+    the keyboard used to vanish whole on the first tap, which left the other two
+    questions with no way to be answered at all.
     """
     buttons: list[tuple[str, str]] = []
     for question in QUESTIONS:
+        if question.key in answered:
+            continue
         value = current.get(question.key)
         for option, label in question.labels.items():
             if option != value:
@@ -279,10 +295,20 @@ def day_block(day: Optional[dict]) -> Optional[compose.Block]:
 
 
 def buttons_from_context(day: Optional[dict], on_date: date_type):
-    """Exception buttons for a brief — none once he has answered that day."""
-    if not day or day.get("source") == Source.MANUAL.value:
+    """Exception buttons for a brief — one per question still unanswered (B6).
+
+    ``answered`` is stored alongside the answers in the brief's ``context_json``
+    precisely so this can be rebuilt later from the stored row, without a second
+    trip to the day-context table.
+    """
+    if not day:
         return None
-    return exception_buttons(day.get("answers") or {}, on_date) or None
+    return (
+        exception_buttons(
+            day.get("answers") or {}, on_date, day.get("answered") or ()
+        )
+        or None
+    )
 
 
 def summary_line(garmin) -> str:
@@ -331,12 +357,24 @@ async def evening_job(session_factory, redis=None) -> None:
         await record_plan(session, tomorrow, planned)
 
         answers, answered = await resolve(session, tomorrow)
+        buttons = exception_buttons(answers, tomorrow, answered) or None
+
+        # U2: the keyboard renders under the *whole* message, so "тяжёлый день"
+        # ends up two lines below "Как день?" and reads as an answer to it — while
+        # it actually writes into tomorrow. The line below names what the buttons
+        # are for, which is what makes them unreadable as an answer about today.
+        # Splitting this into two messages would do the same job, at the price of
+        # a second slot of the four-message daily budget for a wording problem.
+        tomorrow_line = f"Завтра: {describe(answers)}"
+        if buttons:
+            tomorrow_line += "\nНе угадал — поправь кнопками ниже."
+
         blocks = [
             compose.Block(compose.KIND_DAY, summary_line(await garmin_service.get_daily(session, today)), 10),
             compose.Block(
                 compose.KIND_ASK, "Как день? Напиши пару слов — запишу.", 20
             ),
-            compose.Block(compose.KIND_DAY, f"Завтра: {describe(answers)}", 30),
+            compose.Block(compose.KIND_DAY, tomorrow_line, 30),
         ]
 
         await delivery.send(
@@ -345,6 +383,6 @@ async def evening_job(session_factory, redis=None) -> None:
             text=compose.render(blocks),
             category=delivery.CATEGORY_EVENING,
             dedupe_key=dedupe_key(today),
-            buttons=exception_buttons(answers, tomorrow) if not answered else None,
+            buttons=buttons,
         )
         await session.commit()

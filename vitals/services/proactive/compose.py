@@ -72,16 +72,41 @@ def strip_protocol(ctx: dict) -> dict:
 
 
 def is_empty_day(ctx: dict, *, on_date: date_type) -> bool:
-    """No sleep and nothing new → there is no brief worth sending (B7).
+    """Nothing anywhere → there is no brief worth sending (B7).
 
     Silence is more honest than "нет данных" three mornings in a row; the web
     gets a passive ``info`` alert instead so the gap is still visible.
+
+    Garmin is the usual reason a morning is worth writing about, but it is not
+    the only one. Gating the whole brief on a fresh recovery row meant the watch
+    sitting on the charger silenced every morning — while the scale, the food
+    log, the gym and his own signals kept filling. A day is empty only when it is
+    empty everywhere.
     """
     garmin = ctx.get("garmin") or {}
-    row_date = _parse_date(garmin.get("date"))
-    if row_date is None or (on_date - row_date).days > FRESH_DAYS:
-        return True
-    return all(garmin.get(key) is None for key in _RECOVERY_KEYS)
+    if _is_fresh(garmin.get("date"), on_date) and any(
+        garmin.get(key) is not None for key in _RECOVERY_KEYS
+    ):
+        return False
+    # Weight is the one field here that is not already scoped to the day: the rest
+    # of the context is built with ``period_days=1``, but ``latest_kg`` is the
+    # newest weigh-in *ever*. Read bare it would mean the brief could never go
+    # quiet again once he had stood on the scale a single time — the exact silence
+    # this check exists to produce.
+    weight = ctx.get("weight") or {}
+    if weight.get("latest_kg") is not None and _is_fresh(weight.get("latest_date"), on_date):
+        return False
+    return not (
+        (ctx.get("hevy") or {}).get("total_workouts")
+        or ctx.get("nutrition")
+        or ctx.get("signals")
+    )
+
+
+def _is_fresh(value, on_date: date_type) -> bool:
+    """Is this ISO date recent enough to count as "something happened"?"""
+    parsed = _parse_date(value)
+    return parsed is not None and (on_date - parsed).days <= FRESH_DAYS
 
 
 def header_blocks(ctx: dict) -> list[Block]:

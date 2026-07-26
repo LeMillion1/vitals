@@ -49,6 +49,9 @@ PROTEIN_MIN_GAP_G = 25.0
 # Two calendar days without a row means the watch stopped syncing, not that a
 # single poll failed.
 GARMIN_SILENT_DAYS = 2
+# The condition has to look up its own past sends, so the key is a constant
+# rather than a literal repeated in two places that must never drift apart.
+GARMIN_SILENT_KEY = "garmin_silent"
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,14 @@ async def _garmin_silent(session: AsyncSession, ctx: dict) -> bool:
 
     Never fires when there is no Garmin data at all: that's an integration that
     was never set up, not one that broke.
+
+    Once per episode of silence, not once a day (B9). The 24-hour cooldown alone
+    re-sent the same sentence every morning for as long as the watch stayed on
+    the charger, and there is nothing new to say until it syncs again. The
+    episode is identified by the last row's date: a send that landed on or after
+    the first day *this* gap could have fired was about this silence — an older
+    episode's message could not have gone out that late, because by then
+    ``latest_daily`` was already returning this newer row.
     """
     from vitals.services import garmin_service
 
@@ -120,6 +131,9 @@ async def _garmin_silent(session: AsyncSession, ctx: dict) -> bool:
         return False
     gap = (ctx["today"] - row.date).days
     if gap < GARMIN_SILENT_DAYS:
+        return False
+    last = await last_sent_at(session, GARMIN_SILENT_KEY)
+    if last is not None and last.date() >= row.date + timedelta(days=GARMIN_SILENT_DAYS):
         return False
     ctx["garmin_last_date"] = row.date
     ctx["garmin_gap_days"] = gap
@@ -147,7 +161,7 @@ NUDGES: tuple[NudgeSpec, ...] = (
         ),
     ),
     NudgeSpec(
-        key="garmin_silent",
+        key=GARMIN_SILENT_KEY,
         category=CATEGORY_DATA,
         condition=_garmin_silent,
         render=lambda ctx: (

@@ -233,6 +233,36 @@ async def test_empty_day_builds_nothing(db_session, raw, when):
     assert (await db_session.execute(select(WeeklyDigest))).scalars().all() == []
 
 
+async def test_a_day_without_garmin_is_not_an_empty_day(db_session):
+    """B7: the watch on the charger used to silence the brief outright, even with
+    the scale, the food log and his own words all filling normally."""
+    from vitals.services import signals_service
+
+    await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
+    await signals_service.create_signals(
+        db_session,
+        items=[{"kind": "state", "key": "fatigue", "value_num": 4}],
+        on_date=DAY,
+    )
+    await db_session.commit()
+
+    row = await brief.generate_brief(db_session, FakeLLM(), on_date=DAY)
+    await db_session.commit()
+
+    assert row is not None
+    assert "Вес 88 кг" in row.content
+
+
+async def test_a_weight_from_months_ago_does_not_keep_the_brief_talking(db_session):
+    """B7's other edge: ``latest_kg`` is the newest weigh-in *ever*, so counting it
+    without a date would mean one trip to the scale in March buys a brief every
+    morning after — including mornings where nothing at all happened."""
+    await weight_service.log_weight(db_session, on_date=DAY - timedelta(days=90), weight_kg=88.0)
+    await db_session.commit()
+
+    assert await brief.generate_brief(db_session, FakeLLM(), on_date=DAY) is None
+
+
 async def test_job_stays_quiet_on_an_empty_day_and_says_so_in_the_web(
     db_session, session_factory, monkeypatch
 ):

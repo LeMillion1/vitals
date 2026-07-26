@@ -140,6 +140,25 @@ async def test_garmin_silence_fires_after_two_days(db_session):
     assert "Garmin" in notifier.sent[0]
 
 
+async def test_garmin_silence_is_announced_once_per_episode(db_session):
+    """B9: the 24-hour cooldown alone re-sends the same sentence every morning for
+    as long as the watch stays unworn. It is only news once."""
+    await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2))
+    notifier = FakeNotifier()
+
+    assert len(await nudges.run(db_session, notifier, now=AFTERNOON)) == 1
+    await db_session.commit()
+
+    # A day later the cooldown is spent — but it is the same silence.
+    tomorrow = AFTERNOON + timedelta(days=1)
+    assert await nudges.run(db_session, notifier, now=tomorrow) == []
+    assert len(notifier.sent) == 1
+
+    # The watch syncs, then goes quiet again: a new episode, worth saying once.
+    await _seed_steps(db_session, 5000, on_date=tomorrow.date())
+    assert len(await nudges.run(db_session, notifier, now=tomorrow + timedelta(days=2))) == 1
+
+
 # ── The cooldown ──────────────────────────────────────────────────────────────
 async def test_cooldown_holds_the_second_run(db_session):
     """The job runs hourly; without the cooldown the same sentence arrives at

@@ -98,6 +98,10 @@ async def build_context(
     answers, answered = await day_plan.resolve(session, on_date or today_local())
     ctx["day"] = {
         "answers": answers,
+        # Which of them are his words rather than the template's guess. Stored as
+        # a sorted list because this dict is persisted as JSON — and it is what
+        # the brief's buttons read to re-ask only the questions still open (B6).
+        "answered": sorted(answered),
         # His answer or the template's guess — the model is told which, so it can
         # hedge on a guess instead of asserting it.
         "source": Source.MANUAL.value if answered else Source.TEMPLATE.value,

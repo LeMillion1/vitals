@@ -192,6 +192,11 @@ async def assemble_context(
     last_ma = series["trend_ma"][-1] if series["trend_ma"] else None
     ctx["weight"] = {
         "latest_kg": weights[-1].weight_kg if weights else None,
+        # When that measurement was taken. ``latest_kg`` is the newest weight
+        # *ever* logged, with no window on it — printed bare it reads as today's,
+        # and the empty-day check had no way to tell "he weighed in this morning"
+        # from "he last stepped on the scale in March".
+        "latest_date": weights[-1].date.isoformat() if weights else None,
         "ma7_kg": last_ma["weight_kg"] if last_ma else None,
         # Date the MA7 was last calculated. During a noise period ALL measurements
         # inside it are excluded from the MA, so ma7_date will be the last clean

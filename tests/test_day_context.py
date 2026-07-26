@@ -130,6 +130,40 @@ async def test_evening_block_runs_twice_and_sends_once(
     assert len(notifier.sent) == 1
 
 
+async def test_evening_block_keeps_asking_what_is_still_unanswered(
+    db_session, session_factory, monkeypatch
+):
+    """B6: one tap answers one question. Dropping the whole keyboard after it left
+    tomorrow's other two questions with no way of ever being answered."""
+    notifier = FakeNotifier()
+    _patch_evening(monkeypatch, notifier)
+    await day_plan.record_answer(db_session, TOMORROW, "gym", True)
+    await db_session.commit()
+
+    await day_plan.evening_job(session_factory)
+
+    payloads = {payload for _, payload in notifier.sent[0]["buttons"]}
+    assert not [p for p in payloads if ":gym:" in p]
+    assert f"ctx:{TOMORROW.isoformat()}:where:remote" in payloads
+    assert {f"ctx:{TOMORROW.isoformat()}:load:{v}" for v in ("light", "heavy")} <= payloads
+
+
+async def test_the_evening_buttons_say_they_are_about_tomorrow(
+    db_session, session_factory, monkeypatch
+):
+    """U2: the keyboard sits under the whole message, so «тяжёлый день» lands right
+    below «Как день?» and reads as an answer to it — while it writes into tomorrow."""
+    notifier = FakeNotifier()
+    _patch_evening(monkeypatch, notifier)
+
+    await day_plan.evening_job(session_factory)
+
+    text = notifier.sent[0]["text"]
+    assert text.index("Как день?") < text.index("Завтра:")
+    # The last thing above the keyboard names what the keyboard is for.
+    assert text.rstrip().endswith("Не угадал — поправь кнопками ниже.")
+
+
 async def test_evening_block_drops_the_summary_when_garmin_has_nothing(
     db_session, session_factory, monkeypatch
 ):
@@ -280,7 +314,13 @@ async def test_brief_prefers_his_answer_to_the_template(db_session, monkeypatch)
     assert "по шаблону" not in row.content
     # …and the model is told this is his answer, not a guess.
     assert '"source": "manual"' in llm.calls[0]["prompt"]
-    assert day_plan.buttons_from_context(row.context_json["day"], DAY) is None
+
+    # B6: answering one question must not retract the other two. The keyboard
+    # keeps offering "где" and "какой день", and stops offering "зал".
+    payloads = {p for _, p in day_plan.buttons_from_context(row.context_json["day"], DAY)}
+    assert not [p for p in payloads if ":gym:" in p]
+    assert f"ctx:{DAY.isoformat()}:where:office" in payloads
+    assert {f"ctx:{DAY.isoformat()}:load:{v}" for v in ("light", "normal", "heavy")} <= payloads
 
 
 async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
