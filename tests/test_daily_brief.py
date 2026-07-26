@@ -117,6 +117,35 @@ async def test_noisy_weight_never_prints_a_bare_trend(db_session):
         assert "креатином" in text
 
 
+async def test_the_brief_sees_yesterdays_signals(db_session):
+    """"Кофе в 22" is yesterday's row and this morning's HRV is what it explains.
+    A one-day window would cut every exposure away from the number it caused."""
+    from vitals.services import signals_service
+
+    await signals_service.create_signals(
+        db_session,
+        items=[{"kind": "exposure", "key": "caffeine_late", "at_time": "22:00"}],
+        on_date=DAY - timedelta(days=1),
+    )
+    await signals_service.create_signals(
+        db_session,
+        items=[{"kind": "state", "key": "sleepiness", "value_num": 5}],
+        on_date=DAY,
+    )
+    # Two days back is outside the window: the brief is about this morning.
+    await signals_service.create_signals(
+        db_session,
+        items=[{"kind": "symptom", "key": "headache", "value_num": 3}],
+        on_date=DAY - timedelta(days=2),
+    )
+    await db_session.commit()
+
+    ctx = await brief.build_context(db_session, on_date=DAY)
+
+    assert [s["key"] for s in ctx["signals"]] == ["caffeine_late", "sleepiness"]
+    assert ctx["signals"][0]["at_time"] == "22:00"
+
+
 # ── The fallback ──────────────────────────────────────────────────────────────
 async def test_brief_survives_a_dead_model(db_session):
     """B4: no narrative is a missing block, not a missing brief."""

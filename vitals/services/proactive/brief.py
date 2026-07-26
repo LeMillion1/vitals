@@ -61,6 +61,12 @@ Garmin). Базовые понятия объяснять не надо.
 "template", это догадка шаблона недели, а не ответ пользователя: учитывай мягко,
 не утверждай как факт.
 
+Блок `signals` — что пользователь сам писал про себя, за вчера и сегодня. kind:
+state (состояние, 1-5), symptom (симптом, 1-5), exposure (сделал/принял, at_time —
+время). Здесь и лежит объяснение утренних чисел: вчерашний вечерний exposure
+(«кофе в 22») — первое, с чем стоит сверить просевший сон или HRV. Это его слова,
+а не измерение: одна запись — повод связать, а не поставить диагноз.
+
 ОГРАНИЧЕНИЯ (нарушение = баг):
 - Опирайся ТОЛЬКО на JSON. Ничего не выдумывай, новых чисел не вводи.
 - Никаких заголовков, списков и разметки — обычный текст, его читают в мессенджере.
@@ -80,6 +86,15 @@ async def build_context(
     """
     ctx = await digest_service.assemble_context(session, on_date=on_date, period_days=1)
     ctx = compose.strip_protocol(ctx)
+    # One-day window would cut the signals in half: "кофе в 22" is *yesterday's*
+    # row and this morning's HRV is the thing it explains. Widened here rather
+    # than in ``assemble_context`` because nothing else in the brief wants two
+    # days — the header is strictly about today.
+    #
+    # Deliberately after ``strip_protocol``: B2 keeps the *stored* protocol out of
+    # Telegram, and a signal is not stored protocol — it is a sentence he typed
+    # into this very chat. Stripping it here would hide his own words from him.
+    ctx["signals"] = await _signals_since_yesterday(session, on_date or today_local())
     answers, answered = await day_plan.resolve(session, on_date or today_local())
     ctx["day"] = {
         "answers": answers,
@@ -88,6 +103,19 @@ async def build_context(
         "source": Source.MANUAL.value if answered else Source.TEMPLATE.value,
     }
     return ctx
+
+
+async def _signals_since_yesterday(session: AsyncSession, on_date: date_type) -> Optional[list]:
+    """Today's signals plus yesterday's — the evening before is where exposures
+    live, and the metric they explain is this morning's."""
+    from datetime import timedelta
+
+    from vitals.services import signals_service
+
+    rows = await signals_service.list_signals(
+        session, start=on_date - timedelta(days=1), end=on_date
+    )
+    return [digest_service.signal_row(s) for s in reversed(rows)] or None
 
 
 def build_prompt(ctx: dict) -> str:

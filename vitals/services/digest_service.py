@@ -52,6 +52,7 @@ DIGEST_SYSTEM = """\
 - nutrition: avg калории/белок в день, days_with_logs, цели
 - hrt: гормональный протокол — active_compounds (что идёт сейчас), doses за период (дата, соединение, доза, место укола), side_effects (тип, тяжесть 1-5). Самое сильное вмешательство: связывай его со сном/HRV, анализами, кожей и настроением.
 - timeline: ручные аннотации, пересекающие период (болезнь, поездка, смена протокола, событие). Это готовое объяснение для провала или скачка в других доменах — сверяйся с ними, прежде чем списать всё на тренировки или питание.
+- signals: что пользователь сам сказал о своём состоянии, в хронологическом порядке. kind=state (есть всегда, value_num 1-5: «энергии ноль»), symptom (случилось, value_num 1-5: «голова раскалывается»), exposure (сделал/принял, at_time — время суток: «кофе в 22»). note — исходная формулировка. Единственный блок, который объясняет ПОЧЕМУ цифры такие: ищи связи «exposure вечером → метрика Garmin наутро» и «симптом держится N дней подряд → что ещё в эти дни». Это его слова, а не измерение — не считай их точными числами и не строй на одной записи вывод.
 - milestones: активные цели с прогрессом и дедлайнами
 
 ИНВАРИАНТЫ (нарушение = баг):
@@ -103,6 +104,7 @@ Any domain can be null (no data). Don't invent what isn't there.
 - nutrition: avg calories/protein per day, days_with_logs, targets
 - hrt: hormone protocol — active_compounds (what's running now), doses in the period (date, compound, dose, injection site), side_effects (type, severity 1-5). The strongest intervention here: relate it to sleep/HRV, labs, skin and mood.
 - timeline: manual annotations overlapping the period (illness, travel, protocol change, life event). These are the ready-made explanation for a dip or spike in the other domains — check them before blaming training or nutrition.
+- signals: what the user said about how he felt, in chronological order. kind=state (always present, value_num 1-5), symptom (happened, value_num 1-5), exposure (did/took it, at_time = time of day). note is his original wording. The only block that explains WHY the numbers look like they do: look for "exposure in the evening → Garmin metric next morning" and "symptom running N days straight → what else those days had". These are his words, not measurements — don't treat them as exact figures and don't build a conclusion on a single row.
 - milestones: active goals with progress and deadlines
 
 INVARIANTS (breaking = bug):
@@ -436,10 +438,41 @@ async def assemble_context(
         for a in annotations
     ] or None
 
+    # Signals — the day in his own words. Every other block is a measurement; this
+    # is the only one that can say *why* a measurement moved: "кофе в 22" the night
+    # before the HRV dip, a headache running through a week of bad sleep. Read
+    # chronologically, because a narrative reads a period forward. Rows tapped
+    # "не то" are excluded by the service — a misparse is not evidence, even
+    # though it stays on the table as material for the key revision (прогон 7).
+    from vitals.services import signals_service
+
+    signals = await signals_service.list_signals(session, start=since, end=today)
+    ctx["signals"] = [signal_row(s) for s in reversed(signals)] or None
+
     from vitals.services import milestones_service
 
     ctx["milestones"] = await milestones_service.dashboard_cards(session)
     return ctx
+
+
+def signal_row(signal) -> dict:
+    """One signal as the model sees it.
+
+    Shared with the daily brief, which reads the same rows over a wider window —
+    two shapes for the same block would mean two prompt descriptions to keep in
+    step, and the one that drifted would drift silently.
+    """
+    return {
+        "date": signal.date.isoformat(),
+        "kind": signal.kind,
+        "key": signal.key,
+        "value_num": signal.value_num,
+        "unit": signal.unit,
+        # The hour is what makes an exposure correlatable at all: "кофе в 22" and
+        # "кофе в 9" are opposite facts wearing the same key.
+        "at_time": signal.at_time.strftime("%H:%M") if signal.at_time else None,
+        "note": signal.note,
+    }
 
 
 def build_prompt(context: dict, lang: str = "ru") -> str:
