@@ -199,6 +199,20 @@ class SignalKind(StrEnum):
     EXPOSURE = "exposure"
 
 
+class DigestKind(StrEnum):
+    """Which narrative a ``weekly_digests`` row holds.
+
+    All three are the same artifact — text plus the context it was built from — so
+    they share one table and one page instead of growing a second store per
+    cadence. ``WEEKLY`` is the historical default, which is why existing rows
+    backfill to it.
+    """
+
+    WEEKLY = "weekly"
+    DAILY_BRIEF = "daily_brief"
+    EVENING = "evening"
+
+
 class Source(StrEnum):
     """Provenance of a row — where the data came from."""
 

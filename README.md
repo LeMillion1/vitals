@@ -694,6 +694,7 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_OPENROUTER_BASE_URL` | Адрес API OpenRouter | `https://openrouter.ai/api/v1` |
 | `VITALS_LLM_MODEL_DIGEST` | Модель для дайджестов | `anthropic/claude-sonnet-4.6` |
 | `VITALS_LLM_MODEL_PARSER` | Модель для OCR анализов и BIA | `google/gemini-2.5-flash` |
+| `VITALS_LLM_MODEL_BRIEF` | Модель утреннего брифа (пусто → модель дайджеста) | *Опционально* |
 | `VITALS_HEVY_API_KEY` | API-ключ Hevy | *Опционально* |
 | `VITALS_HEVY_BASE_URL` | Адрес API Hevy | `https://api.hevyapp.com` |
 | `VITALS_GARMIN_EMAIL` | Email Garmin Connect | *Опционально* |
@@ -1432,6 +1433,7 @@ Connection-pool and timeout tuning (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFL
 | `VITALS_OPENROUTER_BASE_URL` | OpenRouter API base URL | `https://openrouter.ai/api/v1` |
 | `VITALS_LLM_MODEL_DIGEST` | Digest model | `anthropic/claude-sonnet-4.6` |
 | `VITALS_LLM_MODEL_PARSER` | Lab OCR model | `google/gemini-2.5-flash` |
+| `VITALS_LLM_MODEL_BRIEF` | Morning-brief model (empty → the digest model) | *Optional* |
 | `VITALS_HEVY_API_KEY` | Hevy API key | *Optional* |
 | `VITALS_HEVY_BASE_URL` | Hevy API base URL | `https://api.hevyapp.com` |
 | `VITALS_GARMIN_EMAIL` | Garmin Connect email | *Optional* |

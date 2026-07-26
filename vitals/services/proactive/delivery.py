@@ -40,6 +40,10 @@ CATEGORY_EVENING = "evening"
 CATEGORY_NUDGE = "nudge"
 CATEGORY_REPLY = "reply"
 CATEGORY_ECHO = "echo"
+# A send the owner asked for from the web ("Отправить тестовое"): it exists to
+# catch broken formatting, so it must go out even when today's brief already did,
+# and it is not the bot talking first — hence off-budget and outside quiet hours.
+CATEGORY_TEST = "test"
 
 INITIATIVE_CATEGORIES = frozenset({CATEGORY_BRIEF, CATEGORY_EVENING, CATEGORY_NUDGE})
 

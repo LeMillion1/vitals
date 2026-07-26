@@ -23,6 +23,7 @@ def register_all_jobs() -> None:
     from vitals.services.digest_service import digest_job
     from vitals.services.nutrition_service import day_end_job as nutrition_day_end_job
     from vitals.services.hrt_reminders import reminders_job as hrt_reminders_job
+    from vitals.services.proactive.brief import brief_job
 
     # GLP-1 plateau check — once a day at 06:00 local. Cheap read; raises/clears a
     # passive warn alert so it's fresh even on days the dashboard isn't opened.
@@ -71,6 +72,19 @@ def register_all_jobs() -> None:
         trigger="cron",
         hour="3,11,16,22",
         minute=0,
+    )
+
+    # Morning brief — 11:00 local. Syncs Garmin itself first (last night's sleep is
+    # the point of the message), stays silent on an empty day, and sends nothing at
+    # all until a Telegram channel is configured. Its own lock TTL: the Garmin pull
+    # in front of it makes this the slowest job in the registry.
+    register_job(
+        "daily_brief",
+        brief_job,
+        trigger="cron",
+        hour=11,
+        minute=0,
+        lock_ttl=900,
     )
 
     # Weekly AI digest — Mondays at 08:00 local. No-ops when no OpenRouter key.

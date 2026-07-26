@@ -395,10 +395,13 @@ async def get_active_alerts() -> list[dict]:
 @mcp.tool()
 async def get_weekly_digests(limit: int = 5) -> list[dict]:
     """Retrieves historical Claude-generated weekly summaries for continuity."""
+    from vitals.services import digest_service
+
     session_factory = get_session_factory()
     async with session_factory() as session:
-        stmt = select(WeeklyDigest).order_by(WeeklyDigest.date.desc()).limit(limit)
-        digests = (await session.execute(stmt)).scalars().all()
+        # Through the service, so this stays weekly-only: the same table now also
+        # holds the daily Telegram briefs.
+        digests = await digest_service.list_digests(session, limit=limit)
         return [serialize_row(d) for d in digests]
 
 

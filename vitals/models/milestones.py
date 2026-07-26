@@ -18,7 +18,7 @@ from sqlalchemy import JSON, Date, Float, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from vitals.enums import Domain, MilestoneStatus
+from vitals.enums import DigestKind, Domain, MilestoneStatus
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
 
@@ -47,12 +47,21 @@ class Milestone(Base, TimestampMixin):
 
 
 class WeeklyDigest(Base, InsightsMixin, TimestampMixin):
-    """A generated weekly cross-domain narrative + the context it was built from."""
+    """A generated cross-domain narrative + the context it was built from.
+
+    ``kind`` (weekly | daily_brief | evening) is what lets the daily brief reuse
+    this table and the /reports page instead of a second store: same artifact,
+    different cadence. Readers filter by it, so a brief never surfaces where a
+    weekly digest is expected.
+    """
 
     __tablename__ = "weekly_digests"
     __table_args__ = (insights_index(__tablename__),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=DigestKind.WEEKLY.value
+    )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     context_json: Mapped[Any] = mapped_column(_JSON_TYPE, nullable=True)
     model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

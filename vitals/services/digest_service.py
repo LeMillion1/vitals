@@ -18,7 +18,7 @@ from typing import Any, Optional, Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Source
+from vitals.enums import DigestKind, Source
 from vitals.integrations.llm_client import LLMEmptyResponse
 from vitals.models.milestones import DOMAIN, WeeklyDigest
 from vitals.utils.timeutils import today_local
@@ -492,6 +492,7 @@ async def generate_digest(
         date=on_date or today_local(),
         domain=DOMAIN,
         source=source,
+        kind=DigestKind.WEEKLY.value,
         content=content,
         context_json=context,
         model=getattr(llm, "digest_model", None),
@@ -501,16 +502,28 @@ async def generate_digest(
     return row
 
 
-async def latest_digest(session: AsyncSession) -> Optional[WeeklyDigest]:
+async def latest_digest(
+    session: AsyncSession, *, kind: str = DigestKind.WEEKLY.value
+) -> Optional[WeeklyDigest]:
+    """The most recent narrative of one kind. Defaults to the weekly digest, so a
+    daily brief can never show up where a weekly one is expected."""
     result = await session.execute(
-        select(WeeklyDigest).order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc()).limit(1)
+        select(WeeklyDigest)
+        .where(WeeklyDigest.kind == kind)
+        .order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc())
+        .limit(1)
     )
     return result.scalars().first()
 
 
-async def list_digests(session: AsyncSession, *, limit: int = 20) -> Sequence[WeeklyDigest]:
+async def list_digests(
+    session: AsyncSession, *, limit: int = 20, kind: str = DigestKind.WEEKLY.value
+) -> Sequence[WeeklyDigest]:
     result = await session.execute(
-        select(WeeklyDigest).order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc()).limit(limit)
+        select(WeeklyDigest)
+        .where(WeeklyDigest.kind == kind)
+        .order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc())
+        .limit(limit)
     )
     return result.scalars().all()
 
