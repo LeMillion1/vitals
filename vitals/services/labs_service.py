@@ -624,6 +624,42 @@ async def ingest_extracted(
     return summary
 
 
+async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
+    """Re-run extraction ingest against a lab payload already on disk — no new
+    upload. Covers uploads the owner never confirmed (extracted but abandoned
+    at the preview step), so those markers aren't lost. Reuses
+    :func:`ingest_extracted` (dedupes by date+marker+value, so this is safe even
+    if some rows were confirmed by hand before the sweep got to it). Preserves
+    ``fetched_at``: this is a reparse, not a new upload. Used by
+    :func:`reparse_pending` (the nightly sweep — raw_payload_service.
+    sweep_pending_job)."""
+    extracted = raw_row.payload if isinstance(raw_row.payload, dict) else {}
+    original_fetched_at = raw_row.fetched_at
+    await ingest_extracted(session, extracted, file_key=raw_row.external_id)
+    raw_row.fetched_at = original_fetched_at
+
+
+async def reparse_pending(
+    session: AsyncSession,
+    *,
+    limit: int = raw_payload_service.REPARSE_BATCH,
+    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+) -> int:
+    """Sweep lab raw payloads (extractions never confirmed by the owner) still
+    pending a normalized row. Does not commit."""
+    has_normalized = (
+        select(LabResult.id).where(LabResult.raw_payload_id == RawPayload.id).exists()
+    )
+    return await raw_payload_service.sweep_domain(
+        session,
+        domain=DOMAIN,
+        reparse=reparse_from_raw,
+        has_normalized=has_normalized,
+        limit=limit,
+        since_days=since_days,
+    )
+
+
 async def _result_exists(
     session: AsyncSession, on_date: date_type, marker: str, value: float
 ) -> bool:

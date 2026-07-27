@@ -29,7 +29,7 @@ import logging
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Severity, Source
@@ -603,6 +603,42 @@ async def reparse_activity_from_raw(session: AsyncSession, raw_row: RawPayload) 
     original_fetched_at = raw_row.fetched_at
     await ingest_activities(session, [raw_row.payload])
     raw_row.fetched_at = original_fetched_at
+
+
+async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
+    """Dispatch a pending garmin raw payload back through its normal ingest path
+    by the ``daily:``/``activity:`` prefix ``ingest_daily``/``ingest_activities``
+    already stamp onto ``external_id``. Used by :func:`reparse_pending` (the
+    nightly sweep — raw_payload_service.sweep_pending_job)."""
+    external_id = raw_row.external_id or ""
+    if external_id.startswith("daily:"):
+        await reparse_daily_from_raw(session, raw_row)
+    elif external_id.startswith("activity:"):
+        await reparse_activity_from_raw(session, raw_row)
+    else:
+        raise ValueError(f"unrecognized garmin raw_payload external_id: {external_id!r}")
+
+
+async def reparse_pending(
+    session: AsyncSession,
+    *,
+    limit: int = raw_payload_service.REPARSE_BATCH,
+    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+) -> int:
+    """Sweep garmin raw payloads (daily metrics + activities both live under
+    this one domain) still pending a normalized row. Does not commit."""
+    has_normalized = or_(
+        select(GarminDaily.id).where(GarminDaily.raw_payload_id == RawPayload.id).exists(),
+        select(GarminActivity.id).where(GarminActivity.raw_payload_id == RawPayload.id).exists(),
+    )
+    return await raw_payload_service.sweep_domain(
+        session,
+        domain=DOMAIN,
+        reparse=reparse_from_raw,
+        has_normalized=has_normalized,
+        limit=limit,
+        since_days=since_days,
+    )
 
 
 def _normalize_hr_zones(raw: dict) -> Optional[list]:

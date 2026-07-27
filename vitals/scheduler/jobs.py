@@ -38,6 +38,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.proactive.brief import brief_job
     from vitals.services.proactive.day_plan import evening_job
     from vitals.services.proactive.nudges import nudges_job
+    from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
 
     # GLP-1 plateau check — once a day at 06:00 local. Cheap read; raises/clears a
     # passive warn alert so it's fresh even on days the dashboard isn't opened.
@@ -68,6 +69,20 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         trigger="cron",
         hour=23,
         minute=0,
+    )
+
+    # Raw-payload sweep (garmin/hevy/labs/body_comp) — nightly at 03:30 local, a
+    # quiet hour clear of every other registered job. Re-derives normalized rows
+    # for anything upsert_raw_payload left at processed_at IS NULL: a refreshed
+    # Garmin/Hevy row, or a labs/body-comp upload the owner extracted but never
+    # confirmed. See raw_payload_service.sweep_pending_job for why this is one
+    # shared job rather than four.
+    register_job(
+        "raw_payload_sweep",
+        raw_payload_sweep_job,
+        trigger="cron",
+        hour=3,
+        minute=30,
     )
 
     # Hevy sync — every 6h. No-ops when Hevy isn't configured.
