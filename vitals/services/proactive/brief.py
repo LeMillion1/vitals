@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date as date_type
+from datetime import date as date_type, timedelta
 from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,9 +57,15 @@ Garmin). Базовые понятия объяснять не надо.
 Числа пользователь уже видит в шапке сообщения — не пересказывай их, объясняй.
 Если данных мало — скажи это одним предложением и не тяни.
 
-Блок `day` — что за день сегодня (удалёнка, зал, нагрузка). Если его `source` =
-"template", это догадка шаблона недели, а не ответ пользователя: учитывай мягко,
-не утверждай как факт.
+Блок `day` — что за день сегодня (удалёнка, зал). Если его `source` = "template",
+это догадка шаблона недели, а не ответ пользователя: учитывай мягко, не утверждай
+как факт.
+
+`day.yesterday` — каким вчерашний день оказался по факту, включая нагрузку
+(лёгкий/обычный/тяжёлый). Это уже не догадка, а его ответ, и это первое
+объяснение сегодняшних цифр: тяжёлый вчера и просевший HRV сегодня — связка,
+а не совпадение. Про сегодняшнюю нагрузку данных нет и быть не может — не
+выдумывай её.
 
 Блок `signals` — что пользователь сам писал про себя, за вчера и сегодня. kind:
 state (состояние, 1-5), symptom (симптом, 1-5), exposure (сделал/принял, at_time —
@@ -95,7 +101,16 @@ async def build_context(
     # Telegram, and a signal is not stored protocol — it is a sentence he typed
     # into this very chat. Stripping it here would hide his own words from him.
     ctx["signals"] = await _signals_since_yesterday(session, on_date or today_local())
-    answers, answered = await day_plan.resolve(session, on_date or today_local())
+    today = on_date or today_local()
+    answers, answered = await day_plan.resolve(session, today)
+    # Yesterday's answers, and only the ones he actually gave. How heavy a day was
+    # is answered in the evening about the day just spent, so at 11:00 the newest
+    # real load in the lake is yesterday's — and it is the first thing this
+    # morning's HRV should be read against. The template's guess is filtered out:
+    # a guess about a day that is already over explains nothing.
+    yesterday_answers, yesterday_answered = await day_plan.resolve(
+        session, today - timedelta(days=1)
+    )
     ctx["day"] = {
         "answers": answers,
         # Which of them are his words rather than the template's guess. Stored as
@@ -105,6 +120,7 @@ async def build_context(
         # His answer or the template's guess — the model is told which, so it can
         # hedge on a guess instead of asserting it.
         "source": Source.MANUAL.value if answered else Source.TEMPLATE.value,
+        "yesterday": {k: yesterday_answers[k] for k in sorted(yesterday_answered)} or None,
     }
     return ctx
 
@@ -112,8 +128,6 @@ async def build_context(
 async def _signals_since_yesterday(session: AsyncSession, on_date: date_type) -> Optional[list]:
     """Today's signals plus yesterday's — the evening before is where exposures
     live, and the metric they explain is this morning's."""
-    from datetime import timedelta
-
     from vitals.services import signals_service
 
     rows = await signals_service.list_signals(

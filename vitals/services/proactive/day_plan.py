@@ -59,6 +59,10 @@ class Question:
     default: Any
     labels: dict  # value → the word used both in the line and on the button
     in_template: bool = True  # can a weekday predict this in advance?
+    # Answered about the day that just *ended*, not the one about to start. The
+    # two are different questions wearing the same shape, and asking a
+    # retrospective one in advance produces a guess dressed as an answer.
+    retrospective: bool = False
 
 
 # Order here is the order the summary line reads and the buttons render.
@@ -69,20 +73,35 @@ QUESTIONS: tuple[Question, ...] = (
         {"office": "в офисе", "remote": "удалёнка", "off": "выходной"},
     ),
     Question("gym", False, {True: "зал", False: "без зала"}),
-    # Asked, never scheduled: how heavy a day turns out is not a property of its
-    # weekday, so there is nothing here for the template to guess. Pre-setting it
-    # in Settings would only bake in a value the brief then reads out as fact —
-    # this one is answered in the evening block, or stays unsaid.
+    # Not a plan — an outcome. Where he'll be and whether he'll train are known in
+    # advance; how heavy the day turned out is knowable only once it has. Asking
+    # it in the morning ("каким будет сегодня?") or the night before ("каким будет
+    # завтра?") is asking him to predict the one thing nobody predicts, so it is
+    # asked in the evening about the day just spent — which is also where «Как
+    # день?» already asks it in words.
     Question(
         "load",
         "normal",
         {"light": "лёгкий день", "normal": "обычный день", "heavy": "тяжёлый день"},
         in_template=False,
+        retrospective=True,
     ),
 )
 
 QUESTIONS_BY_KEY = {q.key: q for q in QUESTIONS}
 TEMPLATE_QUESTIONS: tuple[Question, ...] = tuple(q for q in QUESTIONS if q.in_template)
+# The two halves of the day, split by when they can honestly be answered. Every
+# keyboard is built from one of them: Telegram attaches buttons to a *message*,
+# not to a line, so a message that mixes both makes «тяжёлый день» and «удалёнка»
+# look like answers to the same question.
+PLAN_QUESTIONS: tuple[Question, ...] = tuple(q for q in QUESTIONS if not q.retrospective)
+RECAP_QUESTIONS: tuple[Question, ...] = tuple(q for q in QUESTIONS if q.retrospective)
+
+
+def questions_for(key: str) -> tuple[Question, ...]:
+    """The keyboard a tap on ``key`` came from — so a redraw rebuilds that one."""
+    question = QUESTIONS_BY_KEY.get(key)
+    return RECAP_QUESTIONS if question is not None and question.retrospective else PLAN_QUESTIONS
 
 WEEKEND: tuple[str, ...] = ("sat", "sun")
 
@@ -228,11 +247,14 @@ LINE_TOMORROW = "Завтра: "
 LINE_TODAY = "Сегодня: "
 LINE_TODAY_PLANNED = "Сегодня по шаблону: "
 # Says what the keyboard is, because Telegram renders it under the *whole*
-# message with nothing tying it to the line it belongs to. "Не угадал — поправь"
-# only described half of it: `load` was never guessed, so those three buttons are
-# a question that is asked nowhere in words, and a bare «тяжёлый день» under a
-# brief reads as belonging to whatever sentence happens to sit above it.
-HINT_FIX = "Кнопки ниже — про этот день: тапни то, что верно."
+# message with nothing tying it to the line it belongs to. Only ever printed над
+# a plan keyboard: those buttons really are corrections to the line above them.
+# The recap keyboard needs no hint — «Как день?» sits directly on top of it.
+HINT_FIX = "Не так? Поправь кнопками ниже."
+
+# The evening's open question. A constant because the recap keyboard is glued to
+# it: the buttons are the one-tap version of this exact sentence.
+ASK_DAY = "Как день? Напиши пару слов — запишу."
 
 # «по шаблону» is what the line says while the day is still a guess. A tap is the
 # owner speaking, so the redrawn line stops calling his answer a template's.
@@ -281,7 +303,10 @@ def decode(value: str) -> Any:
 
 
 def exception_buttons(
-    current: dict, on_date: date_type, answered: Collection[str] = ()
+    current: dict,
+    on_date: date_type,
+    answered: Collection[str] = (),
+    questions: tuple[Question, ...] = PLAN_QUESTIONS,
 ) -> list[tuple[str, str]]:
     """One button per *other* answer — corrections, not a questionnaire.
 
@@ -293,9 +318,13 @@ def exception_buttons(
     ``answered`` drops the questions he has already spoken for (B6). Only those:
     the keyboard used to vanish whole on the first tap, which left the other two
     questions with no way to be answered at all.
+
+    ``questions`` is which half of the day this keyboard is about — the plan for a
+    day ahead, or the recap of one just finished. It defaults to the plan because
+    that is every caller but the evening recap.
     """
     buttons: list[tuple[str, str]] = []
-    for question in QUESTIONS:
+    for question in questions:
         if question.key in answered:
             continue
         value = current.get(question.key)
@@ -317,11 +346,15 @@ def day_block(day: Optional[dict]) -> Optional[compose.Block]:
 
 
 def buttons_from_context(day: Optional[dict], on_date: date_type):
-    """Exception buttons for a brief — one per question still unanswered (B6).
+    """Exception buttons for a brief — one per plan question still unanswered (B6).
 
     ``answered`` is stored alongside the answers in the brief's ``context_json``
     precisely so this can be rebuilt later from the stored row, without a second
     trip to the day-context table.
+
+    Plan questions only, by way of ``exception_buttons``' default. The morning is
+    the wrong moment to ask how heavy the day will be — that is the evening's
+    question about the day it can actually see.
     """
     if not day:
         return None
@@ -379,13 +412,27 @@ def dedupe_key(on_date: date_type) -> str:
     return f"evening:{on_date.isoformat()}"
 
 
+def plan_dedupe_key(on_date: date_type) -> str:
+    """The second evening message keys off the same date, separately — so a
+    replayed job re-sends neither, and a budget that stopped the first one does
+    not make the second look like it was already sent."""
+    return f"evening-plan:{on_date.isoformat()}"
+
+
 # ── The 23:45 job (E2) ────────────────────────────────────────────────────────
 async def evening_job(session_factory, redis=None) -> None:
-    """Close today, ask about tomorrow.
+    """Close today, then ask about tomorrow — in that order, as two messages.
+
+    Two, not one, because the two halves ask about different days and Telegram
+    attaches a keyboard to a *message*, not to a line. Merged, «тяжёлый день» and
+    «удалёнка» sit in one flat list and nothing can say which question either
+    answers — the wording fix U2 shipped papered over exactly this. The price is
+    one more slot of the daily budget; the budget is a knob in Settings, and a
+    message nobody can answer is worth less than the slot it costs.
 
     No Garmin pull in front of this one (unlike the brief): the 22:00 poll is
     recent enough for a day summary, and every extra pull is a login the account
-    doesn't need to spend. No model call either — the whole message is code.
+    doesn't need to spend. No model call either — both messages are code.
     """
     from vitals.services import garmin_service
     from vitals.services.proactive import channels, delivery
@@ -395,36 +442,47 @@ async def evening_job(session_factory, redis=None) -> None:
         today = today_local()
         tomorrow = today + timedelta(days=1)
 
+        # ── Today, in hindsight ───────────────────────────────────────────────
+        # The recap keyboard is the one-tap version of «Как день?» directly above
+        # it, about the day that just ended — the only moment that question can
+        # be answered rather than guessed.
+        recap_answers, recap_answered = await resolve(session, today)
+        recap_blocks = [
+            compose.Block(
+                compose.KIND_DAY,
+                summary_line(await garmin_service.get_daily(session, today)),
+                10,
+            ),
+            compose.Block(compose.KIND_ASK, ASK_DAY, 20),
+        ]
+        await delivery.send(
+            session,
+            notifier,
+            text=compose.render(recap_blocks),
+            category=delivery.CATEGORY_EVENING,
+            dedupe_key=dedupe_key(today),
+            buttons=exception_buttons(
+                recap_answers, today, recap_answered, RECAP_QUESTIONS
+            )
+            or None,
+        )
+
+        # ── Tomorrow, as planned ──────────────────────────────────────────────
         planned = guess_for(await get_week_template(session), tomorrow)
         await record_plan(session, tomorrow, planned)
 
         answers, answered = await resolve(session, tomorrow)
         buttons = exception_buttons(answers, tomorrow, answered) or None
-
-        # U2: the keyboard renders under the *whole* message, so "тяжёлый день"
-        # ends up two lines below "Как день?" and reads as an answer to it — while
-        # it actually writes into tomorrow. The line below names what the buttons
-        # are for, which is what makes them unreadable as an answer about today.
-        # Splitting this into two messages would do the same job, at the price of
-        # a second slot of the four-message daily budget for a wording problem.
         tomorrow_line = f"{LINE_TOMORROW}{describe(answers)}"
         if buttons:
             tomorrow_line += f"\n{HINT_FIX}"
 
-        blocks = [
-            compose.Block(compose.KIND_DAY, summary_line(await garmin_service.get_daily(session, today)), 10),
-            compose.Block(
-                compose.KIND_ASK, "Как день? Напиши пару слов — запишу.", 20
-            ),
-            compose.Block(compose.KIND_DAY, tomorrow_line, 30),
-        ]
-
         await delivery.send(
             session,
             notifier,
-            text=compose.render(blocks),
+            text=tomorrow_line,
             category=delivery.CATEGORY_EVENING,
-            dedupe_key=dedupe_key(today),
+            dedupe_key=plan_dedupe_key(today),
             buttons=buttons,
         )
         await session.commit()

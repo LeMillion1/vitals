@@ -248,7 +248,7 @@ async def _handle_callback(
         )
 
     toast = ""
-    answered_date: Optional[date_type] = None
+    answered: Optional[tuple[date_type, str]] = None
     if data.startswith(CB_MISPARSE):
         batch_id = data[len(CB_MISPARSE):]
         changed = await signals_service.mark_misparse(session, batch_id)
@@ -256,8 +256,8 @@ async def _handle_callback(
         # registry from — real mistakes, not remembered ones.
         toast = "Убрал из графиков" if changed else "Уже убрано"
     elif data.startswith(CB_CONTEXT):
-        answered_date = await _apply_context(session, data)
-        toast = "Записал" if answered_date is not None else ""
+        answered = await _apply_context(session, data)
+        toast = "Записал" if answered is not None else ""
 
     if notifier is not None and callback_id:
         # Acknowledged first: Telegram spins on the button until this lands, and
@@ -267,14 +267,15 @@ async def _handle_callback(
         except Exception:
             logger.warning("could not acknowledge tap %s", callback_id, exc_info=True)
 
-    if notifier is not None and answered_date is not None:
-        await _redraw(session, callback, answered_date, notifier=notifier)
+    if notifier is not None and answered is not None:
+        await _redraw(session, callback, *answered, notifier=notifier)
 
 
 async def _redraw(
     session: AsyncSession,
     callback: dict,
     on_date: date_type,
+    key: str,
     *,
     notifier: Notifier,
 ) -> None:
@@ -292,7 +293,9 @@ async def _redraw(
         return
 
     answers, answered = await day_plan.resolve(session, on_date)
-    buttons = day_plan.exception_buttons(answers, on_date, answered)
+    buttons = day_plan.exception_buttons(
+        answers, on_date, answered, day_plan.questions_for(key)
+    )
     try:
         await notifier.edit(
             str(message_id),
@@ -306,11 +309,16 @@ async def _redraw(
         logger.warning("could not redraw message %s", message_id, exc_info=True)
 
 
-async def _apply_context(session: AsyncSession, data: str) -> Optional[date_type]:
+async def _apply_context(
+    session: AsyncSession, data: str
+) -> Optional[tuple[date_type, str]]:
     """``ctx:<iso date>:<key>:<value>`` → merge one answer into that day's context.
 
-    Returns the day answered (``None`` if the payload was rejected), which is also
-    the day the redraw has to rebuild.
+    Returns the day answered and the question answered (``None`` if the payload
+    was rejected). The redraw needs both: the day to rebuild the answers from,
+    and the question to know which of the two keyboards this tap came off —
+    the evening sends a recap one and a plan one, and rebuilding the wrong set
+    would hang tomorrow's buttons under today's question.
 
     The date rides in the payload rather than being "today": the evening block
     asks about *tomorrow*, and a tap that lands after midnight must still answer
@@ -335,7 +343,7 @@ async def _apply_context(session: AsyncSession, data: str) -> Optional[date_type
         return None
 
     await day_plan.record_answer(session, on_date, key, answer)
-    return on_date
+    return on_date, key
 
 
 # ── Text ──────────────────────────────────────────────────────────────────────

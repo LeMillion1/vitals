@@ -505,12 +505,10 @@ async def test_a_tap_outside_the_question_registry_is_dropped(bot_client, db_ses
 
 # 2026-07-27 is a Monday: the default template calls it "в офисе · без зала".
 MONDAY = date(2026, 7, 27)
-EVENING_MESSAGE = (
-    "Итог дня: 8000 шагов\n\n"
-    "Как день? Напиши пару слов — запишу.\n\n"
-    "Завтра: в офисе · без зала\n"
-    f"{day_plan.HINT_FIX}"
-)
+# The evening goes out as two messages: the day just spent, then the one ahead.
+# A keyboard belongs to a message, so each carries only the questions it can ask.
+EVENING_RECAP = f"Итог дня: 8000 шагов\n\n{day_plan.ASK_DAY}"
+EVENING_PLAN = f"Завтра: в офисе · без зала\n{day_plan.HINT_FIX}"
 
 
 async def test_a_tap_redraws_the_message_it_came_from(bot_client, db_session):
@@ -521,31 +519,48 @@ async def test_a_tap_redraws_the_message_it_came_from(bot_client, db_session):
 
     await c.post(f"/tg/{WEBHOOK_PATH}",
                  json=_tap_update(1, f"{inbound.CB_CONTEXT}{MONDAY.isoformat()}:where:remote",
-                                  text=EVENING_MESSAGE),
+                                  text=EVENING_PLAN),
                  headers=HEADERS)
 
     assert len(fake.edits) == 1
     edit = fake.edits[0]
     assert edit["message_id"] == "9"
-    # The day line says what he answered; the rest of the message is his own
-    # evening, not something a tap has any business rewriting.
     assert "Завтра: удалёнка · без зала" in edit["text"]
-    assert "Итог дня: 8000 шагов" in edit["text"]
-    assert "Как день? Напиши пару слов — запишу." in edit["text"]
-    # …and the question he just answered is gone from the keyboard, while the
-    # two he hasn't stay tappable.
+    # …and the question he just answered is gone from the keyboard, while the one
+    # he hasn't stays tappable.
     payloads = [data for _, data in edit["buttons"]]
     assert not any(":where:" in data for data in payloads)
     assert any(":gym:" in data for data in payloads)
-    assert any(":load:" in data for data in payloads)
+    # The recap question is not this keyboard's to ask: rebuilding it here would
+    # hang «тяжёлый день» under a message about tomorrow.
+    assert not any(":load:" in data for data in payloads)
+
+
+async def test_a_tap_on_the_recap_rebuilds_the_recap_keyboard(bot_client, db_session):
+    """The evening sends two keyboards. A tap carries only its key, so the redraw
+    infers which one it came off — get that wrong and answering «тяжёлый день»
+    replaces it with tomorrow's «удалёнка»."""
+    c, fake = bot_client
+
+    await c.post(f"/tg/{WEBHOOK_PATH}",
+                 json=_tap_update(1, f"{inbound.CB_CONTEXT}{MONDAY.isoformat()}:load:heavy",
+                                  text=EVENING_RECAP),
+                 headers=HEADERS)
+
+    edit = fake.edits[0]
+    # Nothing else to recap, so the keyboard goes — and «Как день?» stays, because
+    # a tap answered the one-tap half, not the invitation to write.
+    assert edit["buttons"] is None
+    assert day_plan.ASK_DAY in edit["text"]
+    assert "Завтра" not in edit["text"]
 
 
 async def test_the_last_answer_takes_the_keyboard_and_the_hint_with_it(bot_client, db_session):
     """Nothing left to correct: a hint about a keyboard, with the keyboard gone,
     is the message pointing at buttons that aren't there."""
     c, fake = bot_client
-    text = EVENING_MESSAGE
-    for i, (key, value) in enumerate((("where", "remote"), ("gym", "1"), ("load", "heavy"))):
+    text = EVENING_PLAN
+    for i, (key, value) in enumerate((("where", "remote"), ("gym", "1"))):
         await c.post(f"/tg/{WEBHOOK_PATH}",
                      json=_tap_update(i + 1, f"{inbound.CB_CONTEXT}{MONDAY.isoformat()}:{key}:{value}",
                                       callback_id=f"cb-{i}", text=text),
@@ -554,7 +569,7 @@ async def test_the_last_answer_takes_the_keyboard_and_the_hint_with_it(bot_clien
 
     assert fake.edits[-1]["buttons"] is None
     assert day_plan.HINT_FIX not in text
-    assert "Завтра: удалёнка · зал · тяжёлый день" in text
+    assert "Завтра: удалёнка · зал" in text
 
 
 async def test_a_tap_on_the_brief_stops_calling_the_answer_a_template(bot_client, db_session):
@@ -584,7 +599,7 @@ async def test_a_redraw_the_channel_refuses_does_not_lose_the_answer(bot_client,
 
     r = await c.post(f"/tg/{WEBHOOK_PATH}",
                      json=_tap_update(1, f"{inbound.CB_CONTEXT}{MONDAY.isoformat()}:where:remote",
-                                      text=EVENING_MESSAGE),
+                                      text=EVENING_PLAN),
                      headers=HEADERS)
 
     assert r.status_code == 200

@@ -80,8 +80,9 @@ def _patch_evening(monkeypatch, notifier):
 async def test_evening_block_asks_about_calendar_tomorrow(
     db_session, session_factory, monkeypatch
 ):
-    """Every button carries tomorrow's date, so a tap after midnight still lands
-    on the day that was asked about."""
+    """Every plan button carries tomorrow's date, so a tap after midnight still
+    lands on the day that was asked about — and the recap buttons carry today's,
+    because they answer the day that just ended."""
     notifier = FakeNotifier()
     _patch_evening(monkeypatch, notifier)
     await garmin_service.ingest_daily(db_session, DAY, GARMIN_RAW)
@@ -89,18 +90,26 @@ async def test_evening_block_asks_about_calendar_tomorrow(
 
     await day_plan.evening_job(session_factory)
 
-    message = notifier.sent[0]
-    assert "8412 шагов" in message["text"]
-    assert "520 ккал" in message["text"]
-    assert "45 мин интенсивности" in message["text"]
-    assert "Завтра:" in message["text"]
-    assert message["buttons"], "an evening block with no buttons asks nothing"
-    for _, payload in message["buttons"]:
-        assert payload.startswith(f"{inbound.CB_CONTEXT}{TOMORROW.isoformat()}:")
+    recap, plan = notifier.sent
+    assert "8412 шагов" in recap["text"]
+    assert "520 ккал" in recap["text"]
+    assert "45 мин интенсивности" in recap["text"]
+    assert "Как день?" in recap["text"]
+    for _, payload in recap["buttons"]:
+        assert payload.startswith(f"{inbound.CB_CONTEXT}{DAY.isoformat()}:load:")
 
-    journal = (await db_session.execute(select(Notification))).scalars().one()
-    assert journal.category == delivery.CATEGORY_EVENING
-    assert journal.dedupe_key == day_plan.dedupe_key(DAY)
+    assert "Завтра:" in plan["text"]
+    assert plan["buttons"], "an evening block with no buttons asks nothing"
+    for _, payload in plan["buttons"]:
+        assert payload.startswith(f"{inbound.CB_CONTEXT}{TOMORROW.isoformat()}:")
+        assert ":load:" not in payload, "how heavy tomorrow is cannot be answered tonight"
+
+    journal = (await db_session.execute(select(Notification))).scalars().all()
+    assert [n.category for n in journal] == [delivery.CATEGORY_EVENING] * 2
+    assert [n.dedupe_key for n in journal] == [
+        day_plan.dedupe_key(DAY),
+        day_plan.plan_dedupe_key(DAY),
+    ]
 
 
 async def test_evening_block_parks_the_guess_even_if_nothing_is_tapped(
@@ -127,7 +136,8 @@ async def test_evening_block_runs_twice_and_sends_once(
     await day_plan.evening_job(session_factory)
     await day_plan.evening_job(session_factory)
 
-    assert len(notifier.sent) == 1
+    # Two messages — the recap and the plan — and a replay adds neither.
+    assert len(notifier.sent) == 2
 
 
 async def test_evening_block_keeps_asking_what_is_still_unanswered(
@@ -142,26 +152,32 @@ async def test_evening_block_keeps_asking_what_is_still_unanswered(
 
     await day_plan.evening_job(session_factory)
 
-    payloads = {payload for _, payload in notifier.sent[0]["buttons"]}
+    payloads = {payload for _, payload in notifier.sent[1]["buttons"]}
     assert not [p for p in payloads if ":gym:" in p]
     assert f"ctx:{TOMORROW.isoformat()}:where:remote" in payloads
-    assert {f"ctx:{TOMORROW.isoformat()}:load:{v}" for v in ("light", "heavy")} <= payloads
 
 
 async def test_the_evening_buttons_say_they_are_about_tomorrow(
     db_session, session_factory, monkeypatch
 ):
-    """U2: the keyboard sits under the whole message, so «тяжёлый день» lands right
-    below «Как день?» and reads as an answer to it — while it writes into tomorrow."""
+    """U2: a keyboard belongs to a message, not to a line. Merged, «тяжёлый день»
+    sat two lines under «Как день?» and read as the answer to it while writing into
+    tomorrow. Split, each question owns the buttons directly beneath it."""
     notifier = FakeNotifier()
     _patch_evening(monkeypatch, notifier)
 
     await day_plan.evening_job(session_factory)
 
-    text = notifier.sent[0]["text"]
-    assert text.index("Как день?") < text.index("Завтра:")
-    # The last thing above the keyboard names what the keyboard is for.
-    assert text.rstrip().endswith(day_plan.HINT_FIX)
+    recap, plan = notifier.sent
+    # The recap needs no hint: «Как день?» is the last line above its keyboard.
+    assert recap["text"].rstrip().endswith(day_plan.ASK_DAY)
+    assert {label for label, _ in recap["buttons"]} == {
+        "лёгкий день", "обычный день", "тяжёлый день"
+    }
+    assert "Завтра:" not in recap["text"]
+
+    assert "Как день?" not in plan["text"]
+    assert plan["text"].rstrip().endswith(day_plan.HINT_FIX)
 
 
 async def test_evening_block_drops_the_summary_when_garmin_has_nothing(
@@ -177,6 +193,7 @@ async def test_evening_block_drops_the_summary_when_garmin_has_nothing(
     text = notifier.sent[0]["text"]
     assert "Итог дня" not in text
     assert "Как день?" in text
+    assert "Завтра:" in notifier.sent[1]["text"]
 
 
 # ── Taps (E3) ─────────────────────────────────────────────────────────────────
@@ -212,19 +229,22 @@ async def test_exception_buttons_offer_every_other_answer(db_session):
     assert f"ctx:{DAY.isoformat()}:where:remote" in payloads
     assert f"ctx:{DAY.isoformat()}:where:off" in payloads
     assert f"ctx:{DAY.isoformat()}:gym:1" in payloads
-    assert f"ctx:{DAY.isoformat()}:load:heavy" in payloads
     # Never a button for what he is already down as doing.
-    assert f"ctx:{DAY.isoformat()}:load:normal" not in payloads
     assert f"ctx:{DAY.isoformat()}:where:office" not in payloads
+    # And never the recap question: a plan keyboard is about a day ahead, and how
+    # heavy that day turns out is not something he can answer in advance.
+    assert not [p for p in payloads if ":load:" in p]
 
 
 async def test_an_unanswered_day_type_offers_all_three_options(db_session):
     """No weekday predicts how heavy a day is, so there is no "other" to offer —
     every option has to be a button or the question can never be answered."""
-    buttons = day_plan.exception_buttons({"where": "office", "gym": False}, DAY)
+    buttons = day_plan.exception_buttons(
+        {"where": "office", "gym": False}, DAY, (), day_plan.RECAP_QUESTIONS
+    )
     payloads = {payload for _, payload in buttons}
 
-    assert {f"ctx:{DAY.isoformat()}:load:{v}" for v in ("light", "normal", "heavy")} <= payloads
+    assert payloads == {f"ctx:{DAY.isoformat()}:load:{v}" for v in ("light", "normal", "heavy")}
 
 
 def test_an_unanswered_question_is_left_unsaid():
@@ -315,12 +335,13 @@ async def test_brief_prefers_his_answer_to_the_template(db_session, monkeypatch)
     # …and the model is told this is his answer, not a guess.
     assert '"source": "manual"' in llm.calls[0]["prompt"]
 
-    # B6: answering one question must not retract the other two. The keyboard
-    # keeps offering "где" and "какой день", and stops offering "зал".
+    # B6: answering one question must not retract the other. The keyboard keeps
+    # offering "где" and stops offering "зал" — and never asks how heavy today
+    # will be, which is the evening's question about the day it can already see.
     payloads = {p for _, p in day_plan.buttons_from_context(row.context_json["day"], DAY)}
     assert not [p for p in payloads if ":gym:" in p]
     assert f"ctx:{DAY.isoformat()}:where:office" in payloads
-    assert {f"ctx:{DAY.isoformat()}:load:{v}" for v in ("light", "normal", "heavy")} <= payloads
+    assert not [p for p in payloads if ":load:" in p]
 
 
 async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
