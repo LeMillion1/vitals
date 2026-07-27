@@ -1362,10 +1362,34 @@ a.v-seg-btn {
    fault rather than as "there is more below". Fading the last ~28px turns the
    cut into a signal. Covers every capped list at once (injection history,
    exercise catalog, marker catalog, phases, side effects) — they all use the
-   same overflow utility inside a card. */
-.v-card .overflow-y-auto {
-    -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 28px), transparent);
-    mask-image: linear-gradient(180deg, #000 calc(100% - 28px), transparent);
+   same overflow utility inside a card.
+
+   The fade only means "there is more below", so it must not show when there
+   isn't: applied unconditionally it smudged the bottom edge of short and empty
+   lists (an empty meals table looked like a rendering fault). scroll(self) is
+   an inactive timeline on an element that doesn't overflow, and an animation on
+   an inactive timeline applies nothing — so the mask appears only when the list
+   actually scrolls, and lifts again once you reach the end of it. Browsers
+   without scroll-driven animations just get no fade. */
+@supports (animation-timeline: scroll()) {
+    .v-card .overflow-y-auto {
+        animation-name: v-list-fade;
+        animation-duration: auto;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-timeline: scroll(self);
+    }
+}
+
+@keyframes v-list-fade {
+    from, 85% {
+        -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 28px), transparent);
+        mask-image: linear-gradient(180deg, #000 calc(100% - 28px), transparent);
+    }
+    to {
+        -webkit-mask-image: linear-gradient(180deg, #000 100%, transparent);
+        mask-image: linear-gradient(180deg, #000 100%, transparent);
+    }
 }
 
 /* ── Modals ────────────────────────────────────────────────────────────── */
