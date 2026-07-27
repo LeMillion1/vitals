@@ -234,15 +234,21 @@ async def brief_job(session_factory, redis=None) -> None:
             await session.commit()
             return
 
+        # Nothing answered for today → the header shows the template's guess and
+        # the buttons are how it gets corrected in one tap (E4).
+        buttons = day_plan.buttons_from_context((row.context_json or {}).get("day"), today)
+        # The hint rides on the *sent* message, not on the stored brief: /reports
+        # shows the same content with no keyboard under it, and a line pointing at
+        # buttons that aren't there is worse than no line at all.
+        text = f"{row.content}\n\n{day_plan.HINT_FIX}" if buttons else row.content
+
         await delivery.send(
             session,
             notifier,
-            text=row.content,
+            text=text,
             category=delivery.CATEGORY_BRIEF,
             dedupe_key=dedupe_key(today),
-            # Nothing answered for today → the header shows the template's guess
-            # and the buttons are how it gets corrected in one tap (E4).
-            buttons=day_plan.buttons_from_context((row.context_json or {}).get("day"), today),
+            buttons=buttons,
         )
         await alerts_service.resolve_by_key(session, alert_key=EMPTY_DAY_ALERT_KEY)
         await session.commit()

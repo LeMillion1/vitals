@@ -227,7 +227,12 @@ async def record_plan(
 LINE_TOMORROW = "Завтра: "
 LINE_TODAY = "Сегодня: "
 LINE_TODAY_PLANNED = "Сегодня по шаблону: "
-HINT_FIX = "Не угадал — поправь кнопками ниже."
+# Says what the keyboard is, because Telegram renders it under the *whole*
+# message with nothing tying it to the line it belongs to. "Не угадал — поправь"
+# only described half of it: `load` was never guessed, so those three buttons are
+# a question that is asked nowhere in words, and a bare «тяжёлый день» under a
+# brief reads as belonging to whatever sentence happens to sit above it.
+HINT_FIX = "Кнопки ниже — про этот день: тапни то, что верно."
 
 # «по шаблону» is what the line says while the day is still a guess. A tap is the
 # owner speaking, so the redrawn line stops calling his answer a template's.

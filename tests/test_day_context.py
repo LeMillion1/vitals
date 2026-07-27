@@ -161,7 +161,7 @@ async def test_the_evening_buttons_say_they_are_about_tomorrow(
     text = notifier.sent[0]["text"]
     assert text.index("Как день?") < text.index("Завтра:")
     # The last thing above the keyboard names what the keyboard is for.
-    assert text.rstrip().endswith("Не угадал — поправь кнопками ниже.")
+    assert text.rstrip().endswith(day_plan.HINT_FIX)
 
 
 async def test_evening_block_drops_the_summary_when_garmin_has_nothing(

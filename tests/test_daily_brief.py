@@ -16,7 +16,7 @@ from vitals.models.milestones import WeeklyDigest
 from vitals.models.proactive import Notification
 from vitals.models.system_alert import SystemAlert
 from vitals.services import digest_service, garmin_service, weight_service
-from vitals.services.proactive import brief, compose, delivery
+from vitals.services.proactive import brief, compose, day_plan, delivery
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
 # owner flips in Settings, and it defaults off.
@@ -310,6 +310,48 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     assert journal[0].dedupe_key == brief.dedupe_key(DAY)
     alert = (await db_session.execute(select(SystemAlert))).scalars().one()
     assert alert.resolved_at is not None
+
+
+async def test_the_brief_says_what_its_buttons_are_for(
+    db_session, session_factory, monkeypatch
+):
+    """Telegram renders the keyboard under the *whole* message, so four unlabelled
+    taps ("зал", "лёгкий/обычный/тяжёлый день") arrive attached to nothing — and
+    «тяжёлый день» is a question asked nowhere in the text at all. The stored
+    brief keeps no hint: /reports shows it with no buttons underneath."""
+    notifier = FakeNotifier()
+    _patch_job(monkeypatch, notifier, FakeLLM())
+    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    await _seed_day(db_session)
+
+    await brief.brief_job(session_factory)
+
+    sent = notifier.sent[0]
+    assert sent["buttons"]
+    assert sent["text"].endswith(day_plan.HINT_FIX)
+    stored = (await db_session.execute(select(WeeklyDigest))).scalars().one()
+    assert day_plan.HINT_FIX not in stored.content
+
+
+async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(
+    db_session, session_factory, monkeypatch
+):
+    """The hint leaves with the last button — a line pointing at a keyboard that
+    isn't there is worse than no line."""
+    notifier = FakeNotifier()
+    _patch_job(monkeypatch, notifier, FakeLLM())
+    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    await _seed_day(db_session)
+    for question in day_plan.QUESTIONS:
+        await day_plan.record_answer(
+            db_session, DAY, question.key, next(iter(question.labels))
+        )
+    await db_session.commit()
+
+    await brief.brief_job(session_factory)
+
+    assert notifier.sent[0]["buttons"] is None
+    assert day_plan.HINT_FIX not in notifier.sent[0]["text"]
 
 
 async def test_job_sends_the_brief_even_when_garmin_sync_explodes(

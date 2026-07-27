@@ -15,7 +15,7 @@ from vitals.models.proactive import Notification
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import Signal
 from vitals.services import signals_service
-from vitals.services.proactive import delivery, inbound
+from vitals.services.proactive import day_plan, delivery, inbound
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
 # owner flips in Settings, and it defaults off.
@@ -509,7 +509,7 @@ EVENING_MESSAGE = (
     "Итог дня: 8000 шагов\n\n"
     "Как день? Напиши пару слов — запишу.\n\n"
     "Завтра: в офисе · без зала\n"
-    "Не угадал — поправь кнопками ниже."
+    f"{day_plan.HINT_FIX}"
 )
 
 
@@ -541,7 +541,7 @@ async def test_a_tap_redraws_the_message_it_came_from(bot_client, db_session):
 
 
 async def test_the_last_answer_takes_the_keyboard_and_the_hint_with_it(bot_client, db_session):
-    """Nothing left to correct: an empty keyboard under «поправь кнопками ниже»
+    """Nothing left to correct: a hint about a keyboard, with the keyboard gone,
     is the message pointing at buttons that aren't there."""
     c, fake = bot_client
     text = EVENING_MESSAGE
@@ -553,7 +553,7 @@ async def test_the_last_answer_takes_the_keyboard_and_the_hint_with_it(bot_clien
         text = fake.edits[-1]["text"]  # the next tap sees the redrawn message
 
     assert fake.edits[-1]["buttons"] is None
-    assert "Не угадал" not in text
+    assert day_plan.HINT_FIX not in text
     assert "Завтра: удалёнка · зал · тяжёлый день" in text
 
 
