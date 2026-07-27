@@ -57,8 +57,11 @@ async def import_vcf(
     """Parse an uploaded ``.vcf`` and upsert the **curated** variants (those in
     ``INTERPRETATIONS``), keyed by rsID. A full consumer genome is ~600k lines;
     upserting every raw variant would hang the request (Cloudflare 524), and raw
-    unknown rows aren't useful here — so we keep only the rsIDs we interpret
-    (~dozens). ``only_interpreted`` narrows further to marker-bearing variants.
+    unknown rows aren't useful as catalog entries — so we keep only the rsIDs we
+    interpret (~dozens) as ``GeneticVariant`` rows, while every parsed row is kept
+    in ``raw_payloads`` for a future re-parse (see
+    ``genetics_service.store_raw_vcf``). ``only_interpreted`` narrows the catalog
+    further to marker-bearing variants.
 
     Lines are membership-checked before any DB work, so even a large file does at
     most a few dozen upserts; the streaming read bounds memory to one chunk at a
@@ -67,10 +70,20 @@ async def import_vcf(
 
     imported = 0
     markers = 0
+    raw_variants: list[list[str]] = []
+    truncated = False
     async for line in iter_lines_capped(file, max_bytes=VCF_MAX_BYTES):
         # Cheap rsID gate before the (relatively costly) full parse + DB upsert.
         variant = parse_vcf_line(line)
-        if variant is None or variant.rsid not in INTERPRETATIONS:
+        if variant is None:
+            continue
+        # Every parsed row (not just the curated ones) goes to the data lake, so a
+        # later INTERPRETATIONS expansion can re-derive variants from here.
+        if len(raw_variants) < genetics_service.MAX_RAW_VARIANTS:
+            raw_variants.append([variant.rsid, variant.ref, variant.alt, variant.genotype])
+        else:
+            truncated = True
+        if variant.rsid not in INTERPRETATIONS:
             continue
         fields = interpret(variant)
         if only_interpreted and not fields.get("marker"):
@@ -79,6 +92,10 @@ async def import_vcf(
         imported += 1
         if fields.get("marker"):
             markers += 1
+    if raw_variants:
+        await genetics_service.store_raw_vcf(
+            db, filename=file.filename, variants=raw_variants, truncated=truncated
+        )
     await db.commit()
 
     return RedirectResponse(
