@@ -33,6 +33,7 @@ from vitals.models import (
     Annotation,
     BodyMeasurement,
     BodyScan,
+    DayContext,
     DosePhase,
     GarminActivity,
     GarminDaily,
@@ -2038,6 +2039,101 @@ async def get_trend(
                 "date": crossing.isoformat() if crossing else None,
             }
         return result
+
+
+# ── Signals tools (free-text capture — optional module) ───────────────────────
+@mcp.tool()
+async def get_signals(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    kind: Optional[str] = None,
+    key: Optional[str] = None,
+    limit: int = 200,
+) -> list[dict]:
+    """Retrieves signals — the owner's own words about how a day felt, parsed into
+    rows: states ("энергии ноль"), symptoms ("голова раскалывается"), exposures
+    ("кофе в 22"). This is the domain that *explains* the Garmin numbers. Filter by
+    ``kind`` (state/symptom/exposure) and/or ``key`` (matches every stored spelling
+    that folds to it, e.g. ``sleepiness`` also finds ``sleepy_af``). Rows the owner
+    flagged as misparsed are excluded. Newest first, most recent 200 by default."""
+    from vitals.services import signals_service
+
+    session_factory = get_session_factory()
+    start = date_type.fromisoformat(start_date) if start_date else None
+    end = date_type.fromisoformat(end_date) if end_date else None
+
+    async with session_factory() as session:
+        rows = await signals_service.list_signals(
+            session, key=key, kind=kind, start=start, end=end, limit=limit
+        )
+        return [serialize_row(r) for r in rows]
+
+
+@mcp.tool()
+async def log_signal(
+    key: str,
+    kind: str,
+    value_num: Optional[float] = None,
+    unit: Optional[str] = None,
+    note: Optional[str] = None,
+    at_time: Optional[str] = None,
+    on_date: Optional[str] = None,
+) -> dict:
+    """Records one signal — a state, symptom or exposure the owner mentioned in
+    conversation. ``kind`` must be state, symptom or exposure; ``key`` is a short
+    slug (``headache``, ``caffeine_late``); ``value_num`` is intensity 1-5 for
+    state/symptom or an amount for exposure; ``at_time`` is HH:MM (matters for
+    exposures — "кофе в 22" only means something with the hour attached).
+    WRITE tool — saved immediately."""
+    from vitals.services import signals_service
+    from vitals.utils.timeutils import today_local
+
+    session_factory = get_session_factory()
+    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+
+    async with session_factory() as session:
+        if not await _module_enabled(session, "signals"):
+            return {"error": "module 'signals' is disabled"}
+        rows = await signals_service.create_signals(
+            session,
+            items=[{
+                "kind": kind, "key": key, "value_num": value_num,
+                "unit": unit, "note": note, "at_time": at_time,
+            }],
+            on_date=parsed_date,
+            source=Source.MANUAL.value,
+        )
+        # create_signals drops unusable rows silently (it batch-parses LLM output,
+        # where one bad fact must not cost the message). A single-row tool call has
+        # no such batch to protect — an empty result means this call was rejected.
+        if not rows:
+            return {"error": "kind must be state, symptom or exposure, and key must be non-empty"}
+        await session.commit()
+        return await serialize_written(session, rows[0])
+
+
+@mcp.tool()
+async def get_day_context(
+    start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
+) -> list[dict]:
+    """Retrieves per-day context — what kind of day it was (remote/office, gym or
+    not, workload), as answered by the owner or guessed by the week template
+    (``planned``). One row per date, newest first. Read this before explaining a
+    day's Garmin numbers: a heavy office day and a rest day at home look the same
+    in the metrics and mean opposite things."""
+    session_factory = get_session_factory()
+    start = date_type.fromisoformat(start_date) if start_date else None
+    end = date_type.fromisoformat(end_date) if end_date else None
+
+    async with session_factory() as session:
+        stmt = select(DayContext)
+        if start:
+            stmt = stmt.where(DayContext.date >= start)
+        if end:
+            stmt = stmt.where(DayContext.date <= end)
+        stmt = stmt.order_by(DayContext.date.desc()).limit(limit)
+        rows = (await session.execute(stmt)).scalars().all()
+        return [serialize_row(r) for r in rows]
 
 
 # ── Resources & prompts ───────────────────────────────────────────────────────
