@@ -75,6 +75,7 @@ _LABELED_TABLES = (
     "glp1_side_effects", "meal_logs", "supplements", "genetic_variants",
     "skincare_logs", "weekly_digests", "annotations",
     "hrt_doses", "hrt_cycles", "hrt_side_effects",
+    "signals", "day_context", "body_scans", "milestones", "noise_markers",
 )
 
 

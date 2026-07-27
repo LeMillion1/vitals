@@ -115,7 +115,7 @@ Vitals написан с Claude в качестве основного инст�
 ### 📖 Содержание
 
 - [Философия и ключевые принципы](#-философия-и-ключевые-принципы)
-- [Домены данных (14 модулей)](#-домены-данных)
+- [Домены данных (15 модулей)](#-домены-данных)
 - [Архитектура системы](#-архитектура-системы)
 - [MCP-интеграция с Claude.ai (69 инструментов)](#-mcp-интеграция-с-claudeai)
 - [Быстрый старт (Docker Compose)](#-быстрый-старт)
@@ -282,6 +282,19 @@ Vitals написан с Claude в качестве основного инст�
 - **Модели**: `Milestone`
 - Интерактивные карточки с целевыми значениями и дедлайнами
 - Динамический расчёт % выполнения и прогноз оставшегося времени до цели
+</details>
+
+<details>
+<summary><strong>💬 15. Сигналы и проактивный канал (Telegram)</strong></summary>
+
+- **Модели**: `Signal`, `DayContext`
+- Домен, который **объясняет** цифры остальных четырнадцати: всё, что случилось «в моменте» и не имеет формы — «спать хочу», «голова болит», «кофе в 22». Свободный текст в Telegram → сырое сообщение в `raw_payloads` → разбор в строки `Signal` трёх видов (`state` / `symptom` / `exposure`) с эхо-подтверждением и кнопкой «не то» для отката всей пачки
+- `DayContext` — одна строка на день: удалёнка/офис, зал, нагрузка. Вечерний блок в 23:45 спрашивает про завтра, шаблон недели заранее заполняет то, что предсказуемо по дню недели; каждая кнопка несёт свою дату, так что ответ после полуночи попадает в нужный день
+- **Утренний бриф**: детерминированные блоки собирает код из того же кросс-доменного контекста, что и недельный дайджест, модель добавляет ровно один абзац интерпретации — упала модель, бриф всё равно придёт. Хранится в `weekly_digests` (`kind='daily_brief'`), виден в `/reports`
+- **Нуджи** (подсказки в течение дня) — список спецификаций (условие, текст, кулдаун, категория-переключатель), один движок обходит реестр; добавить подсказку = одна запись
+- Единые ворота отправки: выключенный модуль, дедуп, тихие часы (только для нудджей) и дневной бюджет сообщений; ответы на вопросы владельца из бюджета исключены
+- Канал — за протоколом `Notifier`, выше него никто не знает про Telegram. Модуль `signals` по умолчанию **выключен**; настройки (время брифа, тихие часы, бюджет, категории) — на карточке в `/settings`
+- Настройка: `VITALS_TELEGRAM_BOT_TOKEN`, `VITALS_TELEGRAM_CHAT_ID`, `VITALS_TELEGRAM_WEBHOOK_PATH`, `VITALS_TELEGRAM_WEBHOOK_SECRET` (см. `.env.example`) — слушается **единственный** chat id, вебхук проверяется по секретному заголовку
 </details>
 
 ---
@@ -852,7 +865,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 ### 📖 Table of Contents
 
 - [Core Philosophy](#-core-philosophy)
-- [Supported Domains (14 modules)](#-supported-domains)
+- [Supported Domains (15 modules)](#-supported-domains)
 - [Technical Architecture](#-technical-architecture)
 - [MCP Integration with Claude.ai (69 tools)](#-mcp-integration-with-claudeai-1)
 - [Quick Start (Docker Compose)](#-quick-start)
@@ -1019,6 +1032,19 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 - **Models**: `Milestone`
 - Interactive goal cards with numeric targets and deadlines
 - Real-time progress % based on active weight metrics
+</details>
+
+<details>
+<summary><strong>💬 15. Signals & Proactive Channel (Telegram)</strong></summary>
+
+- **Models**: `Signal`, `DayContext`
+- The domain that **explains** the numbers in the other fourteen: everything that happens "in the moment" and has no shape — "can't keep my eyes open", "headache", "coffee at 22:00". Free text in Telegram → the raw message into `raw_payloads` → parsed into `Signal` rows of three kinds (`state` / `symptom` / `exposure`), echoed back with a "wrong" button that undoes the whole batch
+- `DayContext` — one row per day: remote/office, gym, workload. The evening block asks about tomorrow at 23:45; the week template pre-fills what a weekday can actually predict. Every button carries its own date, so a tap after midnight still answers the right day
+- **Morning brief**: the deterministic blocks are built by code from the same cross-domain context the weekly digest assembles, and the model contributes exactly one interpretation paragraph — if it fails, the brief still arrives. Stored in `weekly_digests` (`kind='daily_brief'`), visible in `/reports`
+- **Nudges** — a list of specs (condition, text, cooldown, category toggle) walked by one engine; adding a nudge is a single entry
+- One gate for everything outgoing: module off, dedupe, quiet hours (nudges only) and a daily message budget; replies to the owner are deliberately exempt from the budget
+- The channel sits behind a `Notifier` protocol — nothing above it knows about Telegram. The `signals` module is **off by default**; brief time, quiet hours, budget and nudge categories live on a card in `/settings`
+- Setup: `VITALS_TELEGRAM_BOT_TOKEN`, `VITALS_TELEGRAM_CHAT_ID`, `VITALS_TELEGRAM_WEBHOOK_PATH`, `VITALS_TELEGRAM_WEBHOOK_SECRET` (see `.env.example`) — exactly **one** chat id is listened to, and the webhook is verified by a secret header
 </details>
 
 ---

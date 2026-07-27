@@ -581,3 +581,19 @@ async def test_full_backup_round_trips_hrt(db_session):
     assert item.start_offset_days == 28 and item.schedule[0]["dose"] == 30
     assert (await db_session.execute(select(func.count(HrtCycle.id)))).scalar() == 1
     assert (await db_session.execute(select(func.count(HrtCycleTemplate.id)))).scalar() == 1
+
+
+def test_import_summary_labels_signals_and_friends():
+    """The newer domains must be named in the summary, not swallowed by the
+    anonymous "and N more" tail."""
+    from vitals.i18n import t
+    from vitals.services.data_portability_service import ImportStats
+
+    stats = ImportStats(counts={
+        "signals": 3, "day_context": 2, "body_scans": 1,
+        "milestones": 4, "noise_markers": 5,
+    })
+    summary = stats.summary()
+    for table in ("signals", "day_context", "body_scans", "milestones", "noise_markers"):
+        assert t("import.label." + table) in summary
+    assert t("import.summary_extra", n=15) not in summary
