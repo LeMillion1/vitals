@@ -2238,6 +2238,22 @@ async def weekly_review() -> str:
     )
 
 
+def _www_authenticate(scope) -> bytes:
+    """The 401 challenge, pointing at this resource's metadata (RFC 9728 §5.1).
+
+    A bare ``Bearer`` leaves a fresh client guessing where tokens come from; the
+    ``resource_metadata`` link is how it finds the authorization server. Built from
+    the request's own host so it stays right behind the reverse proxy (uvicorn runs
+    with --forwarded-allow-ips, so the scheme is the external one)."""
+    from web.routers.oauth import PROTECTED_RESOURCE_PATH
+
+    host = dict(scope.get("headers", [])).get(b"host", b"").decode("utf-8", "ignore")
+    if not host:
+        return b"Bearer"
+    url = f"{scope.get('scheme', 'https')}://{host}{PROTECTED_RESOURCE_PATH}"
+    return f'Bearer resource_metadata="{url}"'.encode("utf-8")
+
+
 class MCPAuthMiddleware:
     """ASGI middleware that intercepts all requests to the MCP application
 
@@ -2309,7 +2325,7 @@ class MCPAuthMiddleware:
                 "headers": [
                     (b"content-type", b"application/json"),
                     (b"content-length", str(len(response_body)).encode("utf-8")),
-                    (b"www-authenticate", b"Bearer"),
+                    (b"www-authenticate", _www_authenticate(scope)),
                 ]
             })
             await send({

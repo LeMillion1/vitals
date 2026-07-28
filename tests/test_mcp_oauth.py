@@ -13,6 +13,10 @@ from vitals.models import WeightLog, GarminDaily, GarminActivity, HevyWorkout, L
 from web.auth import create_session, read_session, _get_mcp_serializer, _get_serializer
 from web.config import SESSION_COOKIE, get_web_config
 
+# PKCE pair used across the flow tests: CODE_CHALLENGE is the S256 of CODE_VERIFIER.
+CODE_VERIFIER = "some_challenge"
+CODE_CHALLENGE = "bhmDDzo_BXLob8jrOdLgvkzIe7gymOatjCthDDsvQIE"
+
 
 
 async def test_oauth_metadata_discovery(client):
@@ -29,7 +33,9 @@ async def test_oauth_metadata_discovery(client):
 async def test_oauth_authorize_unauthenticated_redirects(client):
     """GET /oauth/authorize redirects to /login if the browser session is unauthenticated."""
     response = await client.get(
-        "/oauth/authorize?response_type=code&client_id=vitals-claude-connector&redirect_uri=https://claude.ai/callback"
+        "/oauth/authorize?response_type=code&client_id=vitals-claude-connector"
+        "&redirect_uri=https://claude.ai/callback"
+        f"&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
     )
     assert response.status_code == 302
     parsed = urlsplit(response.headers["location"])
@@ -90,6 +96,7 @@ async def test_oauth_authorize_authenticated_renders(auth_client):
     """GET /oauth/authorize renders the consent template if authenticated."""
     response = await auth_client.get(
         "/oauth/authorize?response_type=code&client_id=vitals-claude-connector&redirect_uri=https://claude.ai/callback"
+        f"&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
     )
     assert response.status_code == 200
     assert "Разрешение доступа" in response.text
@@ -132,6 +139,7 @@ async def test_oauth_authorize_shows_redirect_target(auth_client):
     """The consent screen displays the real destination domain."""
     response = await auth_client.get(
         "/oauth/authorize?response_type=code&client_id=vitals-claude-connector&redirect_uri=https://claude.ai/callback"
+        f"&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
     )
     assert response.status_code == 200
     assert "Вы будете перенаправлены на" in response.text
@@ -147,6 +155,8 @@ async def test_oauth_approve_invalid_redirect_uri(auth_client):
             "client_id": "vitals-claude-connector",
             "redirect_uri": "https://evil.com/callback",
             "state": "x",
+            "code_challenge": CODE_CHALLENGE,
+            "code_challenge_method": "S256",
         },
     )
     assert response.status_code == 400
@@ -220,7 +230,8 @@ async def test_oauth_token_missing_client_secret_rejected(auth_client, redis, mo
 
     response = await auth_client.post(
         "/oauth/authorize/approve",
-        data={"client_id": "vitals-claude-connector", "redirect_uri": "https://claude.ai/callback"},
+        data={"client_id": "vitals-claude-connector", "redirect_uri": "https://claude.ai/callback",
+              "code_challenge": CODE_CHALLENGE, "code_challenge_method": "S256"},
     )
     code = response.headers["location"].split("code=")[1].split("&")[0]
 
@@ -241,7 +252,8 @@ async def test_oauth_token_wrong_client_secret_rejected(auth_client, redis):
     """A client_secret that doesn't match the configured one is rejected."""
     response = await auth_client.post(
         "/oauth/authorize/approve",
-        data={"client_id": "vitals-claude-connector", "redirect_uri": "https://claude.ai/callback"},
+        data={"client_id": "vitals-claude-connector", "redirect_uri": "https://claude.ai/callback",
+              "code_challenge": CODE_CHALLENGE, "code_challenge_method": "S256"},
     )
     code = response.headers["location"].split("code=")[1].split("&")[0]
 
@@ -527,7 +539,8 @@ async def test_oauth_code_single_use_rejects_reuse(auth_client, redis):
     approve = await auth_client.post(
         "/oauth/authorize/approve",
         data={"client_id": "vitals-claude-connector",
-              "redirect_uri": "https://claude.ai/callback"},
+              "redirect_uri": "https://claude.ai/callback",
+              "code_challenge": CODE_CHALLENGE, "code_challenge_method": "S256"},
     )
     code = approve.headers["location"].split("code=")[1].split("&")[0]
 
@@ -537,6 +550,7 @@ async def test_oauth_code_single_use_rejects_reuse(auth_client, redis):
         "redirect_uri": "https://claude.ai/callback",
         "client_id": "vitals-claude-connector",
         "client_secret": "test-mcp-secret",
+        "code_verifier": CODE_VERIFIER,
     }
     first = await auth_client.post("/oauth/token", data=body)
     assert first.status_code == 200
@@ -558,6 +572,135 @@ async def test_mcp_query_string_token_rejected(client):
     assert (await client.get(f"/mcp/?access_token={token}")).status_code == 401
 
 
+# ── PKCE is mandatory, not opportunistic ──────────────────────────────────────
+async def test_authorize_without_pkce_is_refused(auth_client):
+    """No challenge on the consent page means the token exchange would have nothing
+    to verify — refuse before a code is ever minted."""
+    response = await auth_client.get(
+        "/oauth/authorize?response_type=code&client_id=vitals-claude-connector"
+        "&redirect_uri=https://claude.ai/callback"
+    )
+    assert response.status_code == 200
+    assert "PKCE" in response.text
+
+
+async def test_authorize_with_plain_challenge_is_refused(auth_client):
+    """The metadata advertises S256 only; ``plain`` protects nothing."""
+    response = await auth_client.get(
+        "/oauth/authorize?response_type=code&client_id=vitals-claude-connector"
+        "&redirect_uri=https://claude.ai/callback"
+        f"&code_challenge={CODE_CHALLENGE}&code_challenge_method=plain"
+    )
+    assert response.status_code == 200
+    assert "PKCE" in response.text
+
+
+async def test_approve_without_pkce_is_refused(auth_client):
+    """The approve endpoint is reachable on its own — a code minted there without a
+    challenge would be exchangeable without a verifier."""
+    response = await auth_client.post(
+        "/oauth/authorize/approve",
+        data={"client_id": "vitals-claude-connector",
+              "redirect_uri": "https://claude.ai/callback"},
+    )
+    assert response.status_code == 400
+
+
+async def test_token_exchange_rejects_wrong_code_verifier(auth_client):
+    """The whole point of PKCE: holding the code is not enough."""
+    approve = await auth_client.post(
+        "/oauth/authorize/approve",
+        data={"client_id": "vitals-claude-connector",
+              "redirect_uri": "https://claude.ai/callback",
+              "code_challenge": CODE_CHALLENGE, "code_challenge_method": "S256"},
+    )
+    code = approve.headers["location"].split("code=")[1].split("&")[0]
+
+    token_response = await auth_client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/callback",
+            "client_id": "vitals-claude-connector",
+            "client_secret": "test-mcp-secret",
+            "code_verifier": "not-the-verifier",
+        },
+    )
+    assert token_response.status_code == 400
+    assert token_response.json()["error"] == "invalid_grant"
+
+
+async def test_token_exchange_rejects_missing_code_verifier(auth_client):
+    approve = await auth_client.post(
+        "/oauth/authorize/approve",
+        data={"client_id": "vitals-claude-connector",
+              "redirect_uri": "https://claude.ai/callback",
+              "code_challenge": CODE_CHALLENGE, "code_challenge_method": "S256"},
+    )
+    code = approve.headers["location"].split("code=")[1].split("&")[0]
+
+    token_response = await auth_client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/callback",
+            "client_id": "vitals-claude-connector",
+            "client_secret": "test-mcp-secret",
+        },
+    )
+    assert token_response.status_code == 400
+    assert token_response.json()["error"] == "invalid_grant"
+
+
+async def test_token_exchange_rejects_code_stored_without_challenge(auth_client, redis):
+    """A code that somehow reached Redis without a challenge must not fall through
+    to "PKCE wasn't requested, issue the token anyway"."""
+    import json as _json
+
+    code = "code_legacy_no_pkce"
+    await redis.setex(f"oauth_code:{code}", 300, _json.dumps({
+        "client_id": "vitals-claude-connector",
+        "redirect_uri": "https://claude.ai/callback",
+        "code_challenge": None,
+        "code_challenge_method": None,
+        "username": "tester",
+    }))
+
+    token_response = await auth_client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/callback",
+            "client_id": "vitals-claude-connector",
+            "client_secret": "test-mcp-secret",
+        },
+    )
+    assert token_response.status_code == 400
+    assert token_response.json()["error"] == "invalid_grant"
+
+
+# ── Protected-resource discovery (RFC 9728) ───────────────────────────────────
+async def test_protected_resource_metadata(client):
+    response = await client.get("/.well-known/oauth-protected-resource")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["resource"] == "http://test/mcp"
+    assert data["authorization_servers"] == ["http://test"]
+    assert data["bearer_methods_supported"] == ["header"]
+
+
+async def test_401_points_at_the_resource_metadata(client):
+    """A bare ``Bearer`` leaves a fresh client guessing where tokens come from."""
+    response = await client.get("/mcp/")
+    assert response.status_code == 401
+    challenge = response.headers["www-authenticate"]
+    assert challenge.startswith("Bearer ")
+    assert 'resource_metadata="http://test/.well-known/oauth-protected-resource"' in challenge
+
+
 async def test_oauth_state_is_url_encoded(auth_client):
     """A state value carrying reserved characters is percent-encoded in the redirect
     so it can't break out and inject extra query parameters."""
@@ -565,7 +708,8 @@ async def test_oauth_state_is_url_encoded(auth_client):
         "/oauth/authorize/approve",
         data={"client_id": "vitals-claude-connector",
               "redirect_uri": "https://claude.ai/callback",
-              "state": "a b&evil=1"},
+              "state": "a b&evil=1",
+              "code_challenge": CODE_CHALLENGE, "code_challenge_method": "S256"},
     )
     loc = r.headers["location"]
     assert "state=a b&evil=1" not in loc          # raw reserved chars must not leak

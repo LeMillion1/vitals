@@ -1007,6 +1007,7 @@ _EN: dict[str, str] = {
     "oauth.error.invalid_client": "Invalid client_id",
     "oauth.error.unsupported_response": "Unsupported response_type",
     "oauth.error.invalid_redirect": "Invalid redirect_uri",
+    "oauth.error.pkce_required": "This client must use PKCE (code_challenge with S256)",
     "oauth.redirect_target": "You'll be redirected to: <strong>{domain}</strong>",
 
     # ── Data portability errors ───────────────────────────────────────────
@@ -2240,6 +2241,7 @@ _RU: dict[str, str] = {
     "oauth.error.invalid_client": "Неверный client_id",
     "oauth.error.unsupported_response": "Неподдерживаемый response_type",
     "oauth.error.invalid_redirect": "Недопустимый redirect_uri",
+    "oauth.error.pkce_required": "Клиент обязан использовать PKCE (code_challenge с S256)",
     "oauth.redirect_target": "Вы будете перенаправлены на: <strong>{domain}</strong>",
 
     # ── Data portability errors ───────────────────────────────────────────
