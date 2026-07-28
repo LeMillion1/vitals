@@ -277,7 +277,7 @@ async def test_mcp_token_rejected_as_session_cookie(client):
 async def test_session_token_rejected_as_mcp_bearer(client):
     """A session cookie token must not authenticate as an MCP Bearer token."""
     session_token = create_session("tester")
-    response = await client.get("/mcp/sse", headers={"Authorization": f"Bearer {session_token}"})
+    response = await client.get("/mcp/", headers={"Authorization": f"Bearer {session_token}"})
     assert response.status_code == 401
 
 
@@ -298,7 +298,7 @@ async def test_mcp_middleware_typeerror_returns_500_not_hang():
     scope = {
         "type": "http",
         "method": "POST",
-        "path": "/mcp/messages",
+        "path": "/mcp/",
         "headers": [(b"authorization", f"Bearer {token}".encode("utf-8"))],
     }
     sent: list[dict] = []
@@ -318,19 +318,19 @@ async def test_mcp_middleware_typeerror_returns_500_not_hang():
 
 
 async def test_mcp_middleware_drops_second_response_start():
-    """fastmcp's SSE endpoint emits a second ``http.response.start`` once the client
+    """A streaming endpoint can emit a second ``http.response.start`` after the client
     hangs up. Passing it through trips an assertion in the BaseHTTPMiddleware stack
     from web/csrf.py and logs a traceback on every reconnect — swallow it."""
     from web.routers.mcp import MCPAuthMiddleware
 
-    async def _sse_like_app(scope, receive, send):
+    async def _streaming_app(scope, receive, send):
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"data: hi\n\n", "more_body": True})
         # Client disconnected; the endpoint returns an empty Response().
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
-    middleware = MCPAuthMiddleware(_sse_like_app, client_id="vitals-claude-connector")
+    middleware = MCPAuthMiddleware(_streaming_app, client_id="vitals-claude-connector")
     token = _get_mcp_serializer().dumps({
         "username": "tester",
         "client_id": "vitals-claude-connector",
@@ -339,7 +339,7 @@ async def test_mcp_middleware_drops_second_response_start():
     scope = {
         "type": "http",
         "method": "GET",
-        "path": "/mcp/sse",
+        "path": "/mcp/",
         "headers": [(b"authorization", f"Bearer {token}".encode("utf-8"))],
     }
     sent: list[dict] = []
@@ -357,31 +357,59 @@ async def test_mcp_middleware_drops_second_response_start():
 
 async def test_mcp_auth_middleware(client, redis):
     """Test that MCP endpoints require a valid Bearer token and reject invalid/missing tokens."""
-    # GET /mcp/sse without auth should return 401
-    r_unauth = await client.get("/mcp/sse")
+    # GET /mcp/ without auth should return 401
+    r_unauth = await client.get("/mcp/")
     assert r_unauth.status_code == 401
 
-    # POST /mcp/messages without auth should return 401
-    r_unauth_post = await client.post("/mcp/messages", json={})
+    # POST /mcp/ without auth should return 401
+    r_unauth_post = await client.post("/mcp/", json={})
     assert r_unauth_post.status_code == 401
 
-    # Generate a valid token
-    serializer = _get_mcp_serializer()
-    valid_token = serializer.dumps({
+    # Test OPTIONS request passes without auth (CORS/Preflight support)
+    r_options = await client.options("/mcp/")
+    assert r_options.status_code == 200
+    # The happy path (valid token reaching the MCP app) needs a live session manager
+    # → test_mcp_initialize_over_streamable_http.
+
+
+async def test_mcp_initialize_over_streamable_http(client):
+    """The streamable-HTTP session manager only exists while the mounted app's own
+    lifespan is running, and app.mount() never runs it — web/main.py has to forward it
+    via app.state.mcp_lifespan. Drop that forwarding and the server still boots, so
+    this is the only test that catches it: a real ``initialize`` over /mcp/."""
+    from web.main import app
+
+    mcp_lifespan = app.state.mcp_lifespan  # set by main.py at mount time
+
+    token = _get_mcp_serializer().dumps({
         "username": "tester",
         "client_id": "vitals-claude-connector",
         "type": "mcp_access_token",
     })
 
-    # Test OPTIONS request passes without auth (CORS/Preflight support)
-    r_options = await client.options("/mcp/sse")
-    assert r_options.status_code == 200
+    # The `client` fixture uses ASGITransport, which does not run lifespans — enter
+    # the MCP one by hand.
+    async with mcp_lifespan(app):
+        r = await client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "pytest", "version": "0"},
+                },
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
 
-    # Test POST /mcp/messages with valid Bearer token (should bypass auth check and connect to starlette app)
-    # Since we send empty body, FastMCP will parse it and return a JSON-RPC error response,
-    # but the key is it must not return 401 Unauthorized.
-    r_auth = await client.post("/mcp/messages", json={}, headers={"Authorization": f"Bearer {valid_token}"})
-    assert r_auth.status_code != 401
+    assert r.status_code == 200
+    assert "protocolVersion" in r.text
 
 
 async def test_mcp_read_only_tools_execution(db_session, session_factory):
@@ -526,8 +554,8 @@ async def test_mcp_query_string_token_rejected(client):
         "client_id": "vitals-claude-connector",
         "type": "mcp_access_token",
     })
-    assert (await client.get(f"/mcp/sse?token={token}")).status_code == 401
-    assert (await client.get(f"/mcp/sse?access_token={token}")).status_code == 401
+    assert (await client.get(f"/mcp/?token={token}")).status_code == 401
+    assert (await client.get(f"/mcp/?access_token={token}")).status_code == 401
 
 
 async def test_oauth_state_is_url_encoded(auth_client):

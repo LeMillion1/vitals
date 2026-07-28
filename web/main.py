@@ -6,7 +6,7 @@ Redis cache connection, and background APScheduler thread.
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Request, status
@@ -77,7 +77,14 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     app.state.scheduler = scheduler
 
-    yield
+    async with AsyncExitStack() as stack:
+        # The mounted MCP app builds its streamable-HTTP session manager in its own
+        # lifespan, which app.mount() never runs — without this every /mcp/ request
+        # fails with "manager not initialized".
+        mcp_lifespan = getattr(app.state, "mcp_lifespan", None)
+        if mcp_lifespan is not None:
+            await stack.enter_async_context(mcp_lifespan(app))
+        yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
     scheduler.shutdown()
@@ -330,7 +337,9 @@ try:
     from web.routers.mcp import get_mcp_app  # noqa: E402
 
     app.include_router(oauth_router)
-    app.mount("/mcp", get_mcp_app())
+    mcp_app, mcp_lifespan = get_mcp_app()
+    app.mount("/mcp", mcp_app)
+    app.state.mcp_lifespan = mcp_lifespan
 except ImportError:
     import logging
     logging.getLogger(__name__).warning("MCP/OAuth disabled (fastmcp not available)")

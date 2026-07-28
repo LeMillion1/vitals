@@ -336,7 +336,7 @@ graph TD
 
 ### 🔗 MCP-интеграция с Claude.ai
 
-Встроенный сервер [FastMCP](https://github.com/jlowin/fastmcp) server доступен на `/mcp` (SSE-транспорт). Авторизация: OAuth 2.0 + PKCE с верификацией Bearer-токенов. Настраивается в веб-интерфейсе (раздел настроек).
+Встроенный сервер [FastMCP](https://github.com/jlowin/fastmcp) server доступен на `/mcp/` (транспорт streamable HTTP). Авторизация: OAuth 2.0 + PKCE с верификацией Bearer-токенов. Настраивается в веб-интерфейсе (раздел настроек).
 
 **69 инструментов** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурсы (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`.
 
@@ -1086,7 +1086,7 @@ graph TD
 
 ### 🔗 MCP Integration with Claude.ai
 
-Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp` (SSE transport). Authorization: OAuth 2.0 + PKCE with signed Bearer token verification. Configured in the web dashboard settings.
+Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streamable HTTP transport). Authorization: OAuth 2.0 + PKCE with signed Bearer token verification. Configured in the web dashboard settings.
 
 **69 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt.
 

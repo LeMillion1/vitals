@@ -2194,7 +2194,7 @@ class MCPAuthMiddleware:
                 "type": "http.response.start",
                 "status": 200,
                 "headers": [
-                    (b"access-control-allow-methods", b"GET, POST, OPTIONS"),
+                    (b"access-control-allow-methods", b"GET, POST, DELETE, OPTIONS"),
                     (b"access-control-allow-headers", b"Authorization, Content-Type"),
                     (b"content-length", b"0"),
                 ]
@@ -2264,9 +2264,9 @@ class MCPAuthMiddleware:
                 return
             if message["type"] == "http.response.start":
                 if response_started:
-                    # fastmcp's SSE endpoint returns an empty Response() once the
-                    # client hangs up, i.e. a second response start after the
-                    # stream is over. Forwarding it trips an assertion inside the
+                    # A streaming endpoint can emit a second response start after
+                    # the stream is over (e.g. an empty Response() once the client
+                    # hangs up). Forwarding it trips an assertion inside the
                     # BaseHTTPMiddleware wrappers from web/csrf.py and logs a
                     # traceback on every connector reconnect. Drop it and anything
                     # after it — the response is finished either way.
@@ -2296,13 +2296,19 @@ class MCPAuthMiddleware:
                 })
 
 
-def get_mcp_app() -> object:
-    """Wraps the FastMCP Starlette app with Bearer authorization middleware."""
+def get_mcp_app() -> tuple[object, object]:
+    """Wraps the FastMCP Starlette app with Bearer authorization middleware.
+
+    Returns ``(app, lifespan)``. Streamable HTTP builds its session manager inside
+    the lifespan, and ``app.mount()`` does not run a sub-app's lifespan — so the
+    caller must enter it explicitly or every request fails with "manager not
+    initialized". See web/main.py.
+    """
     from web.config import get_web_config
     cfg = get_web_config()
-    # SSE transport: the path Claude.ai's connector is already registered against.
-    # fastmcp 3.x dropped sse_app() in favour of http_app(transport=...); the routes
-    # (/sse + /messages) and the mount point (/mcp) are unchanged.
-    raw_app = mcp.http_app(transport="sse")
-    return MCPAuthMiddleware(raw_app, client_id=cfg.mcp_client_id)
+    # Streamable HTTP (the SSE transport is deprecated in the MCP spec since
+    # 2025-03). path="/" so that mounting on /mcp lands the endpoint on /mcp/
+    # rather than /mcp/mcp — the library's own default path would be appended.
+    raw_app = mcp.http_app(transport="http", path="/")
+    return MCPAuthMiddleware(raw_app, client_id=cfg.mcp_client_id), raw_app.router.lifespan_context
 
