@@ -143,8 +143,14 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch):
 
 
 # ── Digest context ────────────────────────────────────────────────────────────
-async def test_assemble_context_is_robust_when_empty(db_session):
+async def test_assemble_context_is_robust_when_empty(db_session, monkeypatch):
     """Context assembles even with no data in any domain."""
+    # The profile block comes from env (load_dotenv picks up a real .env), so pin it —
+    # otherwise this passes on a bare checkout and fails inside the deploy image, where
+    # the production .env carries the owner's actual age/height.
+    monkeypatch.setenv("VITALS_USER_AGE", "18")
+    monkeypatch.setenv("VITALS_SEX", "male")
+    monkeypatch.setenv("VITALS_HEIGHT_CM", "190")
     ctx = await digest_service.assemble_context(db_session, on_date=DAY)
     assert ctx["date"] == "2026-06-10"
     assert ctx["report_meta"]["report_date"] == "2026-06-10"
