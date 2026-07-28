@@ -41,12 +41,16 @@ from vitals.models import (
     GeneticVariant,
     HevyExercise,
     HevyWorkout,
+    HrtCycle,
+    HrtDose,
+    HrtSideEffect,
     Injection,
     LabResult,
     MealLog,
     Milestone,
     NoiseMarker,
     SideEffect,
+    Signal,
     SkincareLog,
     SkincareObservation,
     Supplement,
@@ -106,6 +110,48 @@ def _conflict_payload(exc: ConflictBlocked) -> dict:
     }
 
 
+def _parse_date(value: Optional[str], default=None, *, field: str):
+    """Parse a ``YYYY-MM-DD`` tool argument, falling back to ``default`` when omitted.
+
+    A model writes dates the way a person says them ("вчера", "01.07.2026"), and
+    the stdlib answers with "Invalid isoformat string: ..." — which names neither
+    the argument nor the shape expected, so the model can't fix its own call.
+    """
+    if value is None:
+        return default
+    try:
+        return date_type.fromisoformat(value)
+    except (ValueError, TypeError):
+        raise ValueError(f"{field} must be a YYYY-MM-DD date, got {value!r}") from None
+
+
+def _parse_time(value: Optional[str], *, field: str):
+    """Same as ``_parse_date`` for an ``HH:MM`` argument."""
+    from datetime import time as time_type
+
+    if value is None:
+        return None
+    try:
+        return time_type.fromisoformat(value)
+    except (ValueError, TypeError):
+        raise ValueError(f"{field} must be an HH:MM time, got {value!r}") from None
+
+
+async def _merged(session, model, record_id: int, **fields) -> Optional[dict]:
+    """Fill a partial tool edit in from the stored row: a field left ``None`` keeps
+    its current value. Keys are column names on ``model``; ``None`` if the row is gone.
+
+    The update services replace every field they are handed, because the web forms
+    post the whole form and clearing an input there has to clear the column. A tool
+    call carries only what the conversation mentioned, so the same call would blank
+    everything the model didn't repeat — a rename would cost the meal its calories.
+    """
+    row = await session.get(model, record_id)
+    if row is None:
+        return None
+    return {k: (getattr(row, k) if v is None else v) for k, v in fields.items()}
+
+
 # ── Tool Definitions ─────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -131,8 +177,8 @@ async def get_weight_logs(
     from vitals.services import weight_service
 
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         # Weight logs — the "active weight" invariant (superseded filter, source
@@ -169,8 +215,8 @@ async def get_glp1_logs(
     """Retrieves GLP-1 injection logs, active dosage phases, and recorded side
     effects. Injections/side effects default to the most recent 100."""
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         # Injections
@@ -240,8 +286,8 @@ async def get_garmin_metrics(
     ``intraday_truncated`` to true when the window held more than that.
     """
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         # Daily metrics
@@ -297,8 +343,8 @@ async def get_hevy_workouts(
     """Retrieves Hevy strength training workouts, including exercises, sets,
     weights, and reps. Defaults to the most recent 100 workouts."""
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         stmt = select(HevyWorkout)
@@ -339,8 +385,8 @@ async def get_skincare_logs(
     """Retrieves skincare routine application logs and skin status observations.
     Each series defaults to the most recent 100 rows."""
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         # Routine logs
@@ -494,8 +540,8 @@ async def log_meal(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
-    parsed_time = time_type.fromisoformat(eaten_at) if eaten_at else None
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
+    parsed_time = _parse_time(eaten_at, field="eaten_at")
 
     async with session_factory() as session:
         try:
@@ -531,8 +577,8 @@ async def get_nutrition_summary(
     session_factory = get_session_factory()
     today = today_local()
 
-    start = date_type.fromisoformat(start_date) if start_date else today
-    end = date_type.fromisoformat(end_date) if end_date else today
+    start = _parse_date(start_date, today, field="start_date")
+    end = _parse_date(end_date, today, field="end_date")
 
     if start == end:
         async with session_factory() as session:
@@ -547,7 +593,7 @@ async def get_nutrition_summary(
 @mcp.tool()
 async def update_meal(
     meal_id: int,
-    name: str,
+    name: Optional[str] = None,
     calories: Optional[float] = None,
     protein_g: Optional[float] = None,
     fat_g: Optional[float] = None,
@@ -558,21 +604,22 @@ async def update_meal(
 ) -> dict:
     """Updates an existing meal by ID. Returns the updated meal or an error.
 
-    WRITE tool — changes are saved immediately.
+    Only the fields you pass are changed — anything left out keeps its stored
+    value, including ``on_date``, which stays the meal's own date rather than
+    moving the meal to today. WRITE tool — changes are saved immediately.
     """
-    from datetime import time as time_type
     from vitals.services import nutrition_service
-    from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
-    parsed_time = time_type.fromisoformat(eaten_at) if eaten_at else None
+    parsed_date = _parse_date(on_date, field="on_date")
+    parsed_time = _parse_time(eaten_at, field="eaten_at")
 
     async with session_factory() as session:
-        row = await nutrition_service.update_meal(
+        merged = await _merged(
             session,
+            MealLog,
             meal_id,
-            on_date=parsed_date,
+            date=parsed_date,
             name=name,
             eaten_at=parsed_time,
             calories=calories,
@@ -581,8 +628,11 @@ async def update_meal(
             carbs_g=carbs_g,
             note=note,
         )
-        if row is None:
+        if merged is None:
             return {"error": f"Meal {meal_id} not found"}
+        row = await nutrition_service.update_meal(
+            session, meal_id, on_date=merged.pop("date"), **merged
+        )
         await session.commit()
         return await serialize_written(session, row)
 
@@ -609,8 +659,8 @@ async def search_meals(
     """Searches meals by name substring and/or date range. Returns matching meals
     ordered by date descending."""
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         stmt = select(MealLog)
@@ -643,7 +693,7 @@ async def log_weight(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
         try:
@@ -691,7 +741,7 @@ async def log_glp1(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
         try:
@@ -722,8 +772,8 @@ async def get_hrt_logs(
     from vitals.services import hrt_cycle_service
 
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         d_stmt = select(HrtDose)
@@ -775,7 +825,7 @@ async def log_hrt_dose(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
         try:
@@ -807,8 +857,8 @@ async def add_hrt_cycle(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else today_local()
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, today_local(), field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         try:
@@ -903,7 +953,7 @@ async def log_skincare(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
         try:
@@ -938,7 +988,7 @@ async def log_measurement(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
         try:
@@ -963,8 +1013,8 @@ async def get_measurements(
     """Retrieves body measurements (neck, waist, hips, body-fat %, LBM) for a date
     range. Defaults to the most recent 100 rows."""
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         stmt = select(BodyMeasurement)
@@ -1032,8 +1082,8 @@ async def get_notes(
 
     targets = {domain: _NOTE_MODELS[domain]} if domain else _NOTE_MODELS
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     results = []
     async with session_factory() as session:
@@ -1078,8 +1128,8 @@ async def get_body_scans(
     (skeletal muscle, body water, visceral fat, segmental analysis, phase angle…).
     Defaults to the most recent 100 scans."""
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         stmt = select(BodyScan).options(selectinload(BodyScan.metrics))
@@ -1117,8 +1167,8 @@ async def get_body_metric_history(
     from vitals.services import body_scan_service
 
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
     async with session_factory() as session:
         return await body_scan_service.metric_history(
             session, metric_key, segment=segment, start=start, end=end
@@ -1145,7 +1195,7 @@ async def log_body_scan(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
         if not await _module_enabled(session, "body_comp"):
@@ -1198,8 +1248,8 @@ async def get_lab_results(
     from vitals.services import labs_service
 
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         stmt = select(LabResult)
@@ -1233,7 +1283,7 @@ async def log_lab_result(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
         try:
@@ -1273,7 +1323,7 @@ async def log_lab_results(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
         extracted = {
@@ -1319,8 +1369,8 @@ async def get_timeline(
     from vitals.services import timeline_service
 
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
     domains = [domain] if domain else None
 
     async with session_factory() as session:
@@ -1350,8 +1400,8 @@ async def log_event(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
-    parsed_end = date_type.fromisoformat(end_date) if end_date else None
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
+    parsed_end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         if not await _module_enabled(session, "timeline"):
@@ -1384,7 +1434,7 @@ async def get_full_snapshot(
     from vitals.services import digest_service
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else None
+    parsed_date = _parse_date(on_date, field="on_date")
     async with session_factory() as session:
         return await digest_service.assemble_context(
             session, on_date=parsed_date, period_days=period_days
@@ -1429,6 +1479,11 @@ async def get_data_overview() -> dict:
         ("weekly_digests", WeeklyDigest, WeeklyDigest.date),
         ("timeline", Annotation, Annotation.date),
         ("noise_markers", NoiseMarker, NoiseMarker.start_date),
+        ("signals", Signal, Signal.date),
+        ("day_context", DayContext, DayContext.date),
+        ("hrt_doses", HrtDose, HrtDose.date),
+        ("hrt_side_effects", HrtSideEffect, HrtSideEffect.date),
+        ("hrt_cycles", HrtCycle, HrtCycle.start_date),
     ]
     # Config/catalog tables have no per-day date — report count only.
     count_only = [
@@ -1495,7 +1550,7 @@ async def create_milestone(
     from vitals.services import milestones_service
 
     session_factory = get_session_factory()
-    parsed_deadline = date_type.fromisoformat(deadline) if deadline else None
+    parsed_deadline = _parse_date(deadline, field="deadline")
     async with session_factory() as session:
         row = await milestones_service.create_milestone(
             session, name=name, domain=domain, target_value=target_value,
@@ -1535,7 +1590,7 @@ async def update_milestone(
         if target_unit is not None:
             kwargs["target_unit"] = target_unit
         if deadline is not None:
-            kwargs["deadline"] = date_type.fromisoformat(deadline)
+            kwargs["deadline"] = _parse_date(deadline, field="deadline")
         if status is not None:
             kwargs["status"] = status
         if note is not None:
@@ -1563,33 +1618,37 @@ async def delete_milestone(milestone_id: int) -> dict:
 @mcp.tool()
 async def update_glp1(
     injection_id: int,
-    drug: str,
-    dose_mg: float,
+    drug: Optional[str] = None,
+    dose_mg: Optional[float] = None,
     on_date: Optional[str] = None,
     site: Optional[str] = None,
     note: Optional[str] = None,
     override: bool = False,
 ) -> dict:
-    """Edits an existing GLP-1 injection by ID. Runs the same conflict gate as a
-    fresh log — on a hard block returns ``{"blocked": true, ...}``; retry with
-    ``override=True``. WRITE tool."""
+    """Edits an existing GLP-1 injection by ID. Only the fields you pass are
+    changed; ``on_date`` left out keeps the injection's own date. Runs the same
+    conflict gate as a fresh log — on a hard block returns ``{"blocked": true,
+    ...}``; retry with ``override=True``. WRITE tool."""
     from vitals.services import glp1_service
-    from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, field="on_date")
     async with session_factory() as session:
+        merged = await _merged(
+            session, Injection, injection_id,
+            date=parsed_date, drug=drug, dose_mg=dose_mg, site=site, note=note,
+        )
+        if merged is None:
+            return {"error": f"Injection {injection_id} not found"}
         try:
             row = await glp1_service.update_injection(
-                session, injection_id, on_date=parsed_date, drug=drug,
-                dose_mg=dose_mg, site=site, note=note, override=override,
+                session, injection_id, on_date=merged.pop("date"),
+                override=override, **merged,
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
         except ValueError as e:
             return {"error": str(e)}
-        if row is None:
-            return {"error": f"Injection {injection_id} not found"}
         await session.commit()
         return await serialize_written(session, row)
 
@@ -1619,7 +1678,7 @@ async def log_side_effect(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
     async with session_factory() as session:
         row = await glp1_service.log_side_effect(
             session, on_date=parsed_date, effect_type=effect_type,
@@ -1655,8 +1714,8 @@ async def add_dose_phase(
     from vitals.services import glp1_service
 
     session_factory = get_session_factory()
-    parsed_start = date_type.fromisoformat(start_date)
-    parsed_end = date_type.fromisoformat(end_date) if end_date else None
+    parsed_start = _parse_date(start_date, field="start_date")
+    parsed_end = _parse_date(end_date, field="end_date")
     async with session_factory() as session:
         row = await glp1_service.add_dose_phase(
             session, start_date=parsed_start, drug=drug, dose_mg=dose_mg,
@@ -1694,7 +1753,7 @@ async def log_skincare_observation(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
     async with session_factory() as session:
         row = await skincare_service.add_observation(
             session, on_date=parsed_date, inflammation=inflammation,
@@ -1752,33 +1811,40 @@ async def add_supplement(
 @mcp.tool()
 async def update_supplement(
     supplement_id: int,
-    name: str,
+    name: Optional[str] = None,
     key: Optional[str] = None,
     dose: Optional[str] = None,
     timing: Optional[str] = None,
     evidence: Optional[str] = None,
-    active: bool = True,
+    active: Optional[bool] = None,
     contraindications: Optional[str] = None,
     note: Optional[str] = None,
     override: bool = False,
 ) -> dict:
-    """Updates a catalog supplement by ID (full replace of its fields). Same
-    conflict gate as add — a hard block returns ``{"blocked": true, ...}``; retry
-    with ``override=True``. WRITE tool."""
+    """Updates a catalog supplement by ID. Only the fields you pass are changed —
+    a rename does not clear the dose or switch a paused supplement back on; use
+    ``set_supplement_active`` (or pass ``active``) for that. Same conflict gate as
+    add — a hard block returns ``{"blocked": true, ...}``; retry with
+    ``override=True``. WRITE tool."""
     from vitals.services import supplements_service
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        merged = await _merged(
+            session, Supplement, supplement_id,
+            name=name, dose=dose, timing=timing, evidence=evidence,
+            active=active, contraindications=contraindications, note=note,
+        )
+        if merged is None:
+            return {"error": f"Supplement {supplement_id} not found"}
         try:
+            # ``key`` stays as passed: left out, the service re-derives the
+            # conflict-matching slug from the (possibly new) name, same as add.
             row = await supplements_service.update_supplement(
-                session, supplement_id, name=name, key=key, dose=dose,
-                timing=timing, evidence=evidence, active=active,
-                contraindications=contraindications, note=note, override=override,
+                session, supplement_id, key=key, override=override, **merged,
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
-        if row is None:
-            return {"error": f"Supplement {supplement_id} not found"}
         await session.commit()
         return await serialize_written(session, row)
 
@@ -1834,7 +1900,7 @@ async def update_measurement(
     from vitals.services import weight_service
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date)
+    parsed_date = _parse_date(on_date, field="on_date")
     async with session_factory() as session:
         try:
             row = await weight_service.update_body_measurement(
@@ -1877,8 +1943,8 @@ async def add_noise_marker(
     from vitals.services import weight_service
 
     session_factory = get_session_factory()
-    parsed_start = date_type.fromisoformat(start_date)
-    parsed_end = date_type.fromisoformat(end_date) if end_date else None
+    parsed_start = _parse_date(start_date, field="start_date")
+    parsed_end = _parse_date(end_date, field="end_date")
     async with session_factory() as session:
         row = await weight_service.add_noise_marker(
             session, start_date=parsed_start, end_date=parsed_end,
@@ -2058,8 +2124,8 @@ async def get_signals(
     from vitals.services import signals_service
 
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         rows = await signals_service.list_signals(
@@ -2088,7 +2154,7 @@ async def log_signal(
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
-    parsed_date = date_type.fromisoformat(on_date) if on_date else today_local()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
         if not await _module_enabled(session, "signals"):
@@ -2121,8 +2187,8 @@ async def get_day_context(
     day's Garmin numbers: a heavy office day and a rest day at home look the same
     in the metrics and mean opposite things."""
     session_factory = get_session_factory()
-    start = date_type.fromisoformat(start_date) if start_date else None
-    end = date_type.fromisoformat(end_date) if end_date else None
+    start = _parse_date(start_date, field="start_date")
+    end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
         stmt = select(DayContext)
