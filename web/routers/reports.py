@@ -169,7 +169,8 @@ async def send_test_brief(
             await db.commit()
             return _redirect(request, "?brief=empty")
         sent = await delivery.send(
-            db, notifier, text=row.content, category=delivery.CATEGORY_TEST
+            db, notifier, text=row.content, category=delivery.CATEGORY_TEST,
+            dedupe_key=f"brief_test:{today_local().isoformat()}",
         )
         await db.commit()
     except Exception as e:  # noqa: BLE001

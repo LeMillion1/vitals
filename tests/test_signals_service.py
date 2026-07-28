@@ -13,7 +13,7 @@ from sqlalchemy import select
 from vitals.enums import Domain, SignalKind, Source
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import DayContext, Signal
-from vitals.services import signals_service as svc
+from vitals.services import alerts_service, signals_service as svc
 
 D1 = date(2026, 7, 20)
 D2 = date(2026, 7, 21)
@@ -295,6 +295,41 @@ async def test_a_parsed_message_is_marked_done_a_failed_one_stays_pending(db_ses
         select(RawPayload).where(RawPayload.external_id == "tg:2")
     )).scalars().one()
     assert done.processed_at is not None
+
+
+# ── B1: the parser-outage alert raises and clears (mirrors weight_service's
+# noise-alert raise/resolve — an alert that never clears itself just trains the
+# owner to ignore it) ───────────────────────────────────────────────────────────
+async def test_parser_failure_alert_raises_and_clears_on_recovery(db_session):
+    await svc.ingest_text(db_session, text="спать хочу", parse=_explode, on_date=D1)
+    await db_session.commit()
+    active = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
+    assert any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active)
+
+    # Parser back up → the very next successful parse clears it.
+    await svc.ingest_text(
+        db_session,
+        text="голова болит",
+        parse=_parse_fixed([{"kind": "symptom", "key": "headache"}]),
+        on_date=D1,
+    )
+    await db_session.commit()
+    active2 = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
+    assert not any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active2)
+
+
+async def test_reparse_success_also_clears_the_parser_failure_alert(db_session):
+    """The sweep is the other way back to a working parser — same contract."""
+    await _unparsed_message(db_session)
+    active = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
+    assert any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active)
+
+    await svc.reparse_unparsed(
+        db_session, parse=_parse_fixed([{"kind": "state", "key": "sleepiness"}])
+    )
+    await db_session.commit()
+    active2 = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
+    assert not any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active2)
 
 
 async def test_reparse_recovers_a_message_the_model_choked_on(db_session):

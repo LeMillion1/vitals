@@ -18,6 +18,7 @@
     <p class="v-settings-intro v-text-body max-w-2xl">{{ t("settings.description") }}</p>
 
     <!-- Saved / Error banners -->
+    <div id="saved-banner">
     {% if saved == 'profile' %}
     <div class="v-alert info">{{ t("settings.saved.profile") }}</div>
     {% elif saved == 'ai' %}
@@ -36,7 +37,25 @@
     <div class="v-alert info">{{ t("settings.saved.language") }}</div>
     {% elif saved == 'proactive' %}
     <div class="v-alert info">{{ t("settings.saved.proactive") }}</div>
-
+    {% endif %}
+    {% if saved == 'proactive' and adjusted %}
+    <div class="v-alert warn">{{ t("settings.proactive_adjusted") }}</div>
+    {% endif %}
+    </div>
+    {% if saved %}
+    <script>
+    (function () {
+        // U9: base.html holds scroll position across an htmx-boosted save, so a
+        // banner saved further down the page never scrolls into view. Read the
+        // (already-rendered, already-translated) banner text back out and toast
+        // it too — same message, guaranteed visible. Runs again on every boosted
+        // swap of this block (hence var, not top-level const/let — see the IIFE
+        // note on window.vitalsToast in base.html for why that matters here).
+        var banner = document.getElementById('saved-banner');
+        var text = banner ? banner.textContent.replace(/\s+/g, ' ').trim() : '';
+        if (text && window.vitalsToast) window.vitalsToast(text, 'success');
+    })();
+    </script>
     {% endif %}
 
     {% if error == 'wrong_password' %}
@@ -182,7 +201,7 @@
                 <p class="v-text-micro mt-1">{{ t("settings.keep_hint") }}</p>
                 {% endif %}
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div class="space-y-1.5">
                     <label for="s-digest-model" class="v-label">{{ t("settings.digest_model") }}</label>
                     <input id="s-digest-model" name="llm_model_digest" type="text"

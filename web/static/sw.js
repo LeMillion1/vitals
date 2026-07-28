@@ -1,6 +1,7 @@
-// v7 — bumped so `activate` drops the v6 cache, which may already hold
-// /static/uploads/* entries from before the exclusion below.
-const CACHE_NAME = 'vitals-os-v7';
+// v8 — bumped so `activate` drops the v7 cache after this review batch's
+// vitals.css/base.html edits, so clients get the new assets on next load
+// instead of one stale-while-revalidate paint.
+const CACHE_NAME = 'vitals-os-v8';
 
 const OFFLINE_PAGE = '/static/offline.html';
 

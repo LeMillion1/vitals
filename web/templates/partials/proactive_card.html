@@ -9,15 +9,17 @@
     <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
         <span class="v-bar v-bar-sm"></span>
         <span class="v-text-card">{{ t("settings.proactive_title") }}</span>
-        {% if not enabled_modules.get('signals') %}
-        <span class="v-chip v-chip-sm ml-1.5">{{ t("settings.proactive_off_chip") }}</span>
-        {% endif %}
+        {# U10: always-present id so the toggle_module OOB fragment (modules_oob.html)
+           has something to swap into — an OOB target that doesn't already exist in the
+           DOM is silently dropped by htmx, so the conditional lives inside the span,
+           not around it. #}
+        <span id="proactive-off-chip">{% if not enabled_modules.get('signals') %}<span class="v-chip v-chip-sm ml-1.5">{{ t("settings.proactive_off_chip") }}</span>{% endif %}</span>
     </div>
     <p class="v-text-body" style="color: var(--muted)">
         {{ t("settings.proactive_description") }}
     </p>
 
-    <form action="/settings/proactive" method="POST" class="space-y-5">
+    <form action="/settings/proactive" method="POST" class="space-y-5" hx-disabled-elt="find button[type='submit']">
         <!-- ── When it talks ───────────────────────────────────────────── -->
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div class="space-y-1.5">
@@ -78,10 +80,10 @@
             <div class="space-y-3">
                 {% for day in weekdays %}
                 <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
-                    <span class="v-text-body" style="color: var(--fg-2)">{{ t("skincare.day." + day) }}</span>
+                    <span class="v-text-body" style="color: var(--fg-2)">{{ t("proactive.day." + day) }}</span>
                     {% for question in day_questions %}
                     <select name="tpl_{{ day }}_{{ question.key }}" class="v-select"
-                            aria-label="{{ t('skincare.day.' + day) }} — {{ t('settings.question.' + question.key) }}">
+                            aria-label="{{ t('proactive.day.' + day) }} — {{ t('settings.question.' + question.key) }}">
                         {# encode(): "1"/"0" for the yes/no questions — bool("False") is True,
                            and that mistake silently inverts an answer. #}
                         {% for value, label in question.labels.items() %}

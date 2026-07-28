@@ -231,6 +231,8 @@ async def ingest_text(
     """
     raw = await store_raw_text(session, text=text, external_id=external_id, source=source)
 
+    from vitals.services import alerts_service
+
     try:
         parsed = parse(text)
         if inspect.isawaitable(parsed):
@@ -242,8 +244,6 @@ async def ingest_text(
         # model, no key, no balance" is indistinguishable from a week of messages
         # that simply held no facts.
         logger.warning("signal parser failed; message kept raw", exc_info=True)
-        from vitals.services import alerts_service
-
         await alerts_service.raise_alert(
             session,
             domain=DOMAIN,
@@ -252,6 +252,9 @@ async def ingest_text(
             alert_key=PARSER_FAILED_ALERT_KEY,
         )
         return []
+
+    # The model answered — whatever it returned, the parser itself is back up.
+    await alerts_service.resolve_by_key(session, alert_key=PARSER_FAILED_ALERT_KEY)
 
     rows = await create_signals(
         session,
@@ -294,6 +297,8 @@ async def reparse_unparsed(
     is not the message's fault — and the window is what stops that from being
     forever.
     """
+    from vitals.services import alerts_service
+
     cutoff = now_local() - timedelta(days=since_days)
     has_signals = select(Signal.id).where(Signal.raw_id == RawPayload.id).exists()
     stmt = (
@@ -321,6 +326,8 @@ async def reparse_unparsed(
         except Exception:
             logger.warning("re-parse failed for raw %s", raw.id, exc_info=True)
             continue
+        # Same as ingest_text: the model answered, so the outage alert clears.
+        await alerts_service.resolve_by_key(session, alert_key=PARSER_FAILED_ALERT_KEY)
         rows = await create_signals(
             session,
             items=parsed or [],

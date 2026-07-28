@@ -440,6 +440,31 @@ async def test_test_send_goes_out_off_budget(auth_client, db_session, monkeypatc
     assert notifier.sent[0]["text"].startswith("Сон 80")
 
 
+async def test_test_send_is_not_duplicated_by_a_second_tap(auth_client, db_session, monkeypatch):
+    """B2a: the test-send endpoint had no dedupe_key at all — the only delivery
+    category with no dupe protection. A repeat call within the same day (a
+    double-tap, or a retried request) must not fire a second Telegram message
+    or pay for a second LLM call."""
+    from web.main import app
+    from web.routers import reports as reports_router
+    from web.routers.telegram import get_notifier
+
+    notifier = FakeNotifier()
+    app.dependency_overrides[get_notifier] = lambda: notifier
+    monkeypatch.setattr(reports_router, "LLMClient", lambda *a, **kw: FakeLLM())
+    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    await _seed_day(db_session)
+
+    r1 = await auth_client.post("/reports/brief/test")
+    r2 = await auth_client.post("/reports/brief/test")
+
+    assert r1.headers["location"] == "/reports?brief=sent"
+    assert r2.headers["location"] == "/reports?brief=error"  # deduped, not a real error
+    assert len(notifier.sent) == 1
+    journal = (await db_session.execute(select(Notification))).scalars().all()
+    assert [n.category for n in journal] == [delivery.CATEGORY_TEST]
+
+
 async def test_test_send_without_a_channel_says_so(auth_client, db_session, monkeypatch):
     from web.main import app
     from web.routers.telegram import get_notifier

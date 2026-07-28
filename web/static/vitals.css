@@ -59,8 +59,8 @@
     --cool: #6FB6C9;
     /* day / info */
     --cool-soft: rgba(111, 182, 201, 0.13);
-    --violet: #B093D6;
-    /* evening / night */
+    --violet: #BCA4DC;
+    /* evening / night — lightened from #B093D6 for AA text contrast (U2) */
     --violet-soft: rgba(176, 147, 214, 0.13);
 
     --radius: 14px;
@@ -652,6 +652,18 @@ a.v-card:hover {
     transform: translateY(1px);
 }
 
+/* ── Tap-delay removal (U8) ─────────────────────────────────────────────
+   These are single-purpose tap targets, not double-tap-to-zoom candidates —
+   telling the browser that up front skips the ~300ms delay before click. */
+.v-btn,
+.v-btn-ghost,
+.v-icon-btn,
+.v-pill,
+.v-seg-btn,
+.v-bnav-link {
+    touch-action: manipulation;
+}
+
 .v-icon-btn:active {
     opacity: 1;
 }
@@ -1046,7 +1058,8 @@ a.v-seg-btn {
 
 .v-chip.bad {
     background: var(--bad-soft);
-    color: var(--bad);
+    /* --bad-strong, not --bad — plain --bad on --bad-soft is 3.58:1 (U1b) */
+    color: var(--bad-strong);
     border-color: rgba(232, 112, 86, .3);
 }
 

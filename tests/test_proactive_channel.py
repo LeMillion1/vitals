@@ -291,11 +291,12 @@ async def test_a_tap_while_the_module_is_off_is_ignored(bot_client, db_session):
     assert fake.acks == []
 
 
-async def test_a_dead_parser_raises_an_alert_instead_of_going_quiet(
+async def test_a_dead_parser_raises_an_alert_that_clears_on_recovery(
     bot_client, db_session, monkeypatch
 ):
     """No key, no balance, upstream down — swallowed whole, a week of that is
-    indistinguishable from a week of messages that held no facts."""
+    indistinguishable from a week of messages that held no facts. And once the
+    parser is back, the alert must clear itself instead of lying there stale."""
     from vitals.models.system_alert import SystemAlert
     from vitals.services import signals_service
 
@@ -320,6 +321,21 @@ async def test_a_dead_parser_raises_an_alert_instead_of_going_quiet(
     assert (await db_session.execute(
         select(RawPayload).where(RawPayload.external_id == "tg:1")
     )).scalars().first() is not None
+
+    # The parser recovers → the alert must not linger as a stale warning forever.
+    def _recovered(known=None):
+        async def _parse(_text):
+            return [{"kind": "state", "key": "sleepiness", "value_num": 5}]
+
+        return _parse
+
+    monkeypatch.setattr(inbound, "make_signal_parser", _recovered)
+    await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(3, "спать хочу"), headers=HEADERS)
+
+    active = (await db_session.execute(
+        select(SystemAlert).where(SystemAlert.resolved_at.is_(None))
+    )).scalars().all()
+    assert not any(a.alert_key == signals_service.PARSER_FAILED_ALERT_KEY for a in active)
 
 
 async def test_repeated_update_id_is_not_processed_twice(bot_client, parses_to, db_session):

@@ -77,6 +77,7 @@ async def _page(
     redis: Optional[Redis] = None,
     saved: Optional[str] = None,
     error: Optional[str] = None,
+    adjusted: Optional[str] = None,
 ) -> HTMLResponse:
     """Build the template context and render settings.html."""
     proactive = await prefs.get_prefs(db)
@@ -84,6 +85,7 @@ async def _page(
         "username": username,
         "saved": saved,
         "error": error,
+        "adjusted": adjusted,
         # Profile
         "height_cm": read_key("VITALS_HEIGHT_CM") or "190",
         "sex": read_key("VITALS_SEX") or "male",
@@ -144,8 +146,9 @@ async def settings_page(
     redis: Redis = Depends(get_redis),
     saved: Optional[str] = None,
     error: Optional[str] = None,
+    adjusted: Optional[str] = None,
 ):
-    return await _page(request, username, db=db, redis=redis, saved=saved, error=error)
+    return await _page(request, username, db=db, redis=redis, saved=saved, error=error, adjusted=adjusted)
 
 
 @router.post("/profile")
@@ -342,27 +345,30 @@ async def save_proactive(
         for day in day_plan.WEEKDAYS
     }
 
-    settings = await prefs.set_prefs(
-        db,
-        {
-            "brief_time": brief_time,
-            "evening_time": evening_time,
-            "quiet_start": quiet_start,
-            "quiet_end": quiet_end,
-            "daily_budget": daily_budget,
-            "garmin_sync_hours": garmin_sync_hours,
-            "pulse_seconds": pulse_seconds,
-            "pulse_start_hour": pulse_start_hour,
-            "pulse_end_hour": pulse_end_hour,
-            # Unchecked boxes don't post, so the checked list *is* the answer.
-            "nudges": {c: c in nudges for c in prefs.NUDGE_CATEGORIES},
-        },
-    )
+    raw_prefs = {
+        "brief_time": brief_time,
+        "evening_time": evening_time,
+        "quiet_start": quiet_start,
+        "quiet_end": quiet_end,
+        "daily_budget": daily_budget,
+        "garmin_sync_hours": garmin_sync_hours,
+        "pulse_seconds": pulse_seconds,
+        "pulse_start_hour": pulse_start_hour,
+        "pulse_end_hour": pulse_end_hour,
+        # Unchecked boxes don't post, so the checked list *is* the answer.
+        "nudges": {c: c in nudges for c in prefs.NUDGE_CATEGORIES},
+    }
+    settings = await prefs.set_prefs(db, raw_prefs)
     await day_plan.set_week_template(db, template)
     await db.commit()
 
     apply_schedule(request.app, settings)
-    return _redirect("?saved=proactive")
+    # prefs.sanitize() (called inside set_prefs) silently clamps out-of-range
+    # input — compare what was submitted to what actually got stored so the
+    # user can be told, instead of seeing a plain "saved" while their number
+    # was quietly changed underneath them (U11).
+    adjusted = raw_prefs != settings
+    return _redirect("?saved=proactive&adjusted=1" if adjusted else "?saved=proactive")
 
 
 def apply_schedule(app, settings: dict) -> None:
