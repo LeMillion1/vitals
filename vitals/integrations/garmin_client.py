@@ -171,8 +171,10 @@ class GarminClient:
         ``Garmin.login(store)`` silently escalates to a full credential login when
         the store doesn't parse, so calling it blind would spend the expensive
         path without the breaker ever seeing it. Loading the tokens ourselves
-        first is a local read with no network — and once they load, ``login()`` is
-        guaranteed to stay on the token path."""
+        first is a local read with no network — and once they load, ``login()``
+        stays on the token path: 0.3.7 added one more escalation (a cached token
+        the API rejects triggers a fresh credential login), and it is skipped
+        precisely because we pass ``return_on_mfa=True``."""
         from garminconnect import Garmin  # lazy
 
         sources = (("Redis", cached_token), ("disk", self._config.garmin_token_dir))

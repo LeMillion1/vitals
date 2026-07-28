@@ -31,8 +31,8 @@ openai>=1.40,<2.0
 # PINNED, and it must stay pinned: the Dockerfile resolves requirements on every
 # rebuild, so an open range means an unattended `deploy.sh` can swap the login
 # machinery underneath a working token. 0.3.x already dropped garth and changed
-# the token format once — the client code below is written against 0.3.2.
-garminconnect==0.3.2
+# the token format once — the client code below is written against 0.3.7.
+garminconnect==0.3.7
 
 # Labs: render a PDF page to an image for the vision LLM (no system deps,
 # lazy-imported in labs_service).
