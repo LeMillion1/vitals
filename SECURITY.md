@@ -41,6 +41,34 @@ Key security controls already in place:
 - **Loopback-only port binding** in `docker-compose.yml` (`127.0.0.1:8000`)
 - **MCP OAuth 2.0 + PKCE** for Claude.ai integration
 
+## The Telegram Webhook
+
+The proactive layer adds the only endpoint that is reachable without a session:
+`POST /tg/<path>`. It is guarded in layers, and it is **off unless you configure
+it** — with no `VITALS_TELEGRAM_WEBHOOK_SECRET` the route fails closed with 401,
+it is never open.
+
+- The path segment itself is a random secret (`VITALS_TELEGRAM_WEBHOOK_PATH`), so
+  the endpoint is not discoverable by crawling.
+- Telegram's `X-Telegram-Bot-Api-Secret-Token` header must match
+  `VITALS_TELEGRAM_WEBHOOK_SECRET`. Both comparisons use `compare_digest` — a
+  plain `==` on a secret leaks its prefix through timing.
+- A rate limit sits in front of the route (fail-open on Redis, as everywhere else).
+- An update that clears all of the above but comes from **another chat id** gets a
+  plain `200` and is discarded. Not a 403: a distinguishable answer tells a prober
+  they found something, and Telegram would retry a non-200 for hours.
+- Updates are idempotent by `update_id`, so a Telegram retry cannot double-write.
+
+Optionally narrow the path to Telegram's own subnets at your reverse proxy — that
+is infrastructure, not application code.
+
+**Revoking bot access:** clear the webhook at Telegram
+(`curl -X POST "https://api.telegram.org/bot<TOKEN>/deleteWebhook"`), then rotate
+or blank `VITALS_TELEGRAM_BOT_TOKEN` and `VITALS_TELEGRAM_WEBHOOK_SECRET` in
+`.env` and restart. Switching the **Signals** module off in Settings silences all
+outgoing messages immediately, without a deploy — it is the emergency switch, not
+a revocation.
+
 ## Revoking Claude.ai Access
 
 MCP access tokens are stateless (signed, not stored), so there is no per-token

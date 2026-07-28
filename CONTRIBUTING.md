@@ -23,6 +23,18 @@ Open an issue using the **Feature Request** template. Describe the use case, not
 4. **Follow the existing style** — the project uses `ruff` for linting. Run `ruff check .` before submitting.
 5. Open the PR against `master` with a clear description of *what* changed and *why*.
 
+> [!NOTE]
+> **Touching a template or `tailwind.config.js`?** `web/static/tailwind.css` is a
+> committed build artifact, not generated at runtime — rebuild it (`npm run build:css`
+> from `web/`) and include it in the PR. See [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md).
+>
+> **Bumping a dependency?** `docs/known-good-deps.txt` is a snapshot of what the
+> author's production container actually runs — a reference point to diff against
+> when something looks off after an upgrade. `garminconnect` and `fastmcp` are
+> pinned exactly, and must stay pinned: the Docker image resolves requirements on
+> every rebuild, so an open range lets an unattended deploy swap the login or MCP
+> machinery underneath a working install.
+
 ## Development Setup
 
 ```bash
