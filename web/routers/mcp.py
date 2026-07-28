@@ -60,7 +60,6 @@ from web.deps import get_session_factory
 
 logger = logging.getLogger(__name__)
 
-# Initialize FastMCP in stateless mode for cloud/OAuth deployment compatibility
 mcp = FastMCP("Vitals")
 
 
@@ -2257,10 +2256,22 @@ class MCPAuthMiddleware:
         # Track whether the downstream app already began the response, so on a
         # mid-stream failure we don't try to start a second one (that would raise).
         response_started = False
+        response_done = False
 
         async def _send(message):
-            nonlocal response_started
+            nonlocal response_started, response_done
+            if response_done:
+                return
             if message["type"] == "http.response.start":
+                if response_started:
+                    # fastmcp's SSE endpoint returns an empty Response() once the
+                    # client hangs up, i.e. a second response start after the
+                    # stream is over. Forwarding it trips an assertion inside the
+                    # BaseHTTPMiddleware wrappers from web/csrf.py and logs a
+                    # traceback on every connector reconnect. Drop it and anything
+                    # after it — the response is finished either way.
+                    response_done = True
+                    return
                 response_started = True
             await send(message)
 
@@ -2289,6 +2300,9 @@ def get_mcp_app() -> object:
     """Wraps the FastMCP Starlette app with Bearer authorization middleware."""
     from web.config import get_web_config
     cfg = get_web_config()
-    raw_app = mcp.sse_app()
+    # SSE transport: the path Claude.ai's connector is already registered against.
+    # fastmcp 3.x dropped sse_app() in favour of http_app(transport=...); the routes
+    # (/sse + /messages) and the mount point (/mcp) are unchanged.
+    raw_app = mcp.http_app(transport="sse")
     return MCPAuthMiddleware(raw_app, client_id=cfg.mcp_client_id)
 

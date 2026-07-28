@@ -317,6 +317,44 @@ async def test_mcp_middleware_typeerror_returns_500_not_hang():
     assert b"Internal server error" in body["body"]
 
 
+async def test_mcp_middleware_drops_second_response_start():
+    """fastmcp's SSE endpoint emits a second ``http.response.start`` once the client
+    hangs up. Passing it through trips an assertion in the BaseHTTPMiddleware stack
+    from web/csrf.py and logs a traceback on every reconnect — swallow it."""
+    from web.routers.mcp import MCPAuthMiddleware
+
+    async def _sse_like_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"data: hi\n\n", "more_body": True})
+        # Client disconnected; the endpoint returns an empty Response().
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    middleware = MCPAuthMiddleware(_sse_like_app, client_id="vitals-claude-connector")
+    token = _get_mcp_serializer().dumps({
+        "username": "tester",
+        "client_id": "vitals-claude-connector",
+        "type": "mcp_access_token",
+    })
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/mcp/sse",
+        "headers": [(b"authorization", f"Bearer {token}".encode("utf-8"))],
+    }
+    sent: list[dict] = []
+
+    async def _receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def _send(message):
+        sent.append(message)
+
+    await middleware(scope, _receive, _send)
+
+    assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]
+
+
 async def test_mcp_auth_middleware(client, redis):
     """Test that MCP endpoints require a valid Bearer token and reject invalid/missing tokens."""
     # GET /mcp/sse without auth should return 401
