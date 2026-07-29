@@ -235,6 +235,32 @@ async def test_chart_series_excludes_noise_from_trend(db_session):
     assert any(p["date"] == "2026-06-06" and p["weight_kg"] == 120.0 for p in series["raw"])
 
 
+async def test_chart_series_weekly_delta_is_last_7_days_not_lifetime_slope(db_session):
+    """The dashboard's "change over the week" card must show the LAST week, not the
+    average weekly rate over the whole log. Steep loss early then a two-week
+    plateau: the regression slope stays strongly negative while the real weekly
+    movement is zero — the exact case where the old (slope-based) card lied."""
+    from datetime import timedelta
+
+    base = date(2026, 6, 1)
+    for i in range(10):                       # 06-01..06-10: 100 → 91
+        await weight_service.log_weight(
+            db_session, on_date=base + timedelta(days=i), weight_kg=100.0 - i
+        )
+    for i in range(10, 24):                   # 06-11..06-24: flat at 90
+        await weight_service.log_weight(
+            db_session, on_date=base + timedelta(days=i), weight_kg=90.0
+        )
+    await db_session.commit()
+
+    series = await weight_service.chart_series(db_session)
+
+    # MA7 on 06-24 and on 06-17 both sit fully inside the plateau → no movement.
+    assert series["weekly_delta"] == pytest.approx(0.0, abs=0.01)
+    # …while the lifetime slope still reads as a big weekly loss.
+    assert series["trend"]["slope_per_week"] < -1.0
+
+
 async def test_weight_check_constraint_rejects_nonpositive(db_session):
     """The DB-level CHECK (weight_kg > 0) rejects junk values — a buggy importer
     or bad input can't persist a non-physical weight.
