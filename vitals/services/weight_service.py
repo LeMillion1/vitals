@@ -19,7 +19,7 @@ with later modules.
 from __future__ import annotations
 
 import math
-from datetime import date as date_type
+from datetime import date as date_type, timedelta
 from typing import Optional, Sequence
 
 from sqlalchemy import select
@@ -379,7 +379,11 @@ async def chart_series(
       * ``lbm``        — [{date, lbm_kg}] from Navy measurements
       * ``noise``      — [{start, end}] ranges (for the chart annotation overlay)
       * ``projection`` — {target_kg, date} or None
-      * ``trend``      — {slope_per_week} or None
+      * ``trend``      — {slope_per_week} or None — the least-squares slope over
+                         the WHOLE history, i.e. an average weekly rate, not the
+                         last week's movement (see ``weekly_delta`` for that)
+      * ``weekly_delta`` — kg moved over the last 7 days: the 7-day MA now minus
+                         the 7-day MA a week ago, or None with under a week of data
       * ``bia``        — {bf:[{date,value}], lbm:[{date,value}]} from BIA scans,
                          only when ``include_bia`` (the body_comp module is on).
                          Coexists with the Navy ``lbm`` series — both are shown.
@@ -403,6 +407,18 @@ async def chart_series(
         for m in measurements
         if m.lbm_kg is not None
     ]
+
+    # Actual movement over the last 7 days, measured on the noise-excluded MA (so
+    # a single water-weight day can't fake a kilo). Deliberately NOT the regression
+    # slope: that's the average weekly rate across the entire history, which on a
+    # long log reads as a wildly overstated "last week" number.
+    weekly_delta = None
+    if ma:
+        last_date, last_ma = ma[-1]
+        cutoff = last_date - timedelta(days=7)
+        prior = [v for (d, v) in ma if d <= cutoff]
+        if prior:
+            weekly_delta = round(last_ma - prior[-1], 2)
 
     trend = fit_trend(raw_points, exclude=ranges)
     projection = None
@@ -443,6 +459,7 @@ async def chart_series(
         "trend": (
             {"slope_per_week": round(trend.slope_per_week, 3)} if trend else None
         ),
+        "weekly_delta": weekly_delta,
         "bia": bia,
         "annotations": annotations,
     }

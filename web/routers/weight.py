@@ -122,17 +122,17 @@ async def weight_dashboard(
     # Sort unified measurements (newest first)
     sorted_measurements = sorted(unified_measures, key=lambda x: x["date"], reverse=True)
 
-    # Top "body fat %" card must reflect the most recent measurement that
-    # actually carries a body-fat value (either Navy or InBody), not just
-    # the newest measurement row — which may only hold a partial entry.
-    latest_bf = next(
-        (m["body_fat_pct"] for m in sorted_measurements if m["body_fat_pct"] is not None),
-        None,
+    # Top "body fat %" card: a BIA scan is a direct measurement, Navy is a
+    # tape-measure estimate — so whenever a scan exists it wins, even if a Navy
+    # row happens to be newer. Within a source, newest row that actually carries
+    # a body-fat value (rows can be partial). The card labels its own source.
+    with_bf = [m for m in sorted_measurements if m["body_fat_pct"] is not None]
+    latest_bf_row = next(
+        (m for m in with_bf if m["source"] == "scan"),
+        next(iter(with_bf), None),
     )
-    latest_lbm = next(
-        (m["lbm_kg"] for m in sorted_measurements if m["lbm_kg"] is not None),
-        None,
-    )
+    latest_bf = latest_bf_row["body_fat_pct"] if latest_bf_row else None
+    latest_bf_source = latest_bf_row["source_label"] if latest_bf_row else None
 
     # Default today's date for forms
     from vitals.utils.timeutils import today_local
@@ -146,7 +146,7 @@ async def weight_dashboard(
             "weights": sorted_weights,
             "measurements": sorted_measurements,
             "latest_bf": latest_bf,
-            "latest_lbm": latest_lbm,
+            "latest_bf_source": latest_bf_source,
             "noise_markers": noise_markers,
             "photos": photos,
             "alerts": alerts,
