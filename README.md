@@ -373,11 +373,11 @@ graph TD
 
 ### 🔗 MCP-интеграция с Claude.ai
 
-Встроенный сервер [FastMCP](https://github.com/jlowin/fastmcp) server доступен на `/mcp/` (транспорт streamable HTTP). Авторизация: OAuth 2.0 + PKCE с верификацией Bearer-токенов. Настраивается в веб-интерфейсе (раздел настроек).
+Встроенный сервер [FastMCP](https://github.com/jlowin/fastmcp) server доступен на `/mcp/` (транспорт streamable HTTP). Авторизация: OAuth 2.0 с верификацией Bearer-токенов. PKCE (`S256`) **обязателен** — запрос на `/oauth/authorize` без `code_challenge` отклоняется, а не проходит мимо проверки. Метаданные защищённого ресурса отдаются на `/.well-known/oauth-protected-resource` (RFC 9728), и ответ `401` указывает на них через `WWW-Authenticate: Bearer resource_metadata="..."`, чтобы клиент сам нашёл, где авторизоваться. Настраивается в веб-интерфейсе (раздел настроек).
 
 **73 инструмента** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурса (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`.
 
-#### Чтение (32 инструмента)
+#### Чтение (33 инструмента)
 
 | Инструмент | Описание |
 | :--- | :--- |
@@ -390,7 +390,7 @@ graph TD
 | `get_hevy_workouts` | Силовые тренировки с подходами и весами |
 | `get_supplements_catalog` | Каталог добавок с дозировками и уровнями доказательности |
 | `get_skincare_logs` | Рутина ухода и наблюдения за состоянием кожи |
-| `get_genetics_snps` | Генетические варианты (rsid, гены) |
+| `get_genetics_snps` | Генетические варианты с фильтром по гену и/или rsid («покажи мой rs1801133») |
 | `get_active_alerts` | Нерешённые предупреждения и уведомления о конфликтах |
 | `get_weekly_digests` | Архив AI-дайджестов |
 | `check_supplement_conflicts` | Проверка добавки (по названию, RU/EN) на конфликты с генетикой, анализами, другими добавками и уходом за кожей |
@@ -413,8 +413,9 @@ graph TD
 | `get_trend` | Тренд метрики: наклон (день/неделя), скользящее среднее, прогноз даты до цели |
 | `get_signals` | Сигналы из бота: состояния, симптомы, воздействия (фильтры по виду, ключу, датам) |
 | `get_day_context` | Какой это был день: удалёнка/офис, зал, нагрузка |
+| `get_proactive_state` | Состояние проактивного слоя: включён ли, расписание, шаблон недели, недавние отправки (только чтение — перенастройка бота остаётся за владельцем) |
 
-#### Запись (29 инструментов)
+#### Запись (40 инструментов)
 
 | Инструмент | Описание |
 | :--- | :--- |
@@ -425,13 +426,18 @@ graph TD
 | `log_hrt_dose` | Запись приема дозы ГЗТ (расчет мл -> мг; бренд/лаборатория/партия; конфликт-гейт) |
 | `add_hrt_cycle` | Начать новый курс ГЗТ (тип, дата начала, название; закрывает прошлый открытый) |
 | `add_hrt_cycle_item` | Добавить препарат и план его приема в курс ГЗТ (разовые дозы, интервал, неделя старта) |
+| `update_hrt_dose` | Редактировать дозу ГЗТ (непереданные поля сохраняются; конфликт-гейт) |
+| `log_hrt_side_effect` | Записать побочный эффект ГЗТ (тип, тяжесть 1–5) |
+| `close_hrt_cycle` | Закрыть курс ГЗТ датой окончания (по умолчанию — сегодня) |
 | `log_skincare` | Запись/обновление дневного чек-листа ухода (upsert) |
 | `log_measurement` | Запись замеров тела (авто-расчёт Navy % жира) |
 | `log_note` | Добавление заметки к записи любого домена (включая анализы) |
 | `log_body_scan` | Запись замера состава тела из метрик (мост в домен веса) |
 | `log_lab_result` | Запись одного биомаркера (авто-расчёт флага отклонения) |
 | `log_lab_results` | Запись всей панели анализов за раз (список маркеров → результаты + дедупликация) |
+| `update_lab_result` | Редактировать результат анализа (пересчёт флага отклонения, обновление алертов) |
 | `log_event` | Ручная аннотация хронологии (поездка, болезнь, смена протокола) |
+| `update_event` | Редактировать событие хронологии (непереданные поля сохраняются) |
 | `create_milestone` | Создать карточку цели (целевое значение, дедлайн) |
 | `update_milestone` | Обновить цель (в т.ч. статус: достигнута/пропущена/пауза) |
 | `update_glp1` | Редактировать инъекцию GLP-1 (с конфликт-гейтом) |
@@ -443,13 +449,26 @@ graph TD
 | `set_supplement_active` | Включить/выключить добавку (конфликт-гейт при включении) |
 | `update_measurement` | Редактировать замер тела (пересчёт Navy % жира / LBM) |
 | `add_noise_marker` | Отметить период как шумовой (исключается из тренда веса) |
+| `upsert_genetic_variant` | Добавить или обновить генетический вариант (по паре ген + rsid) |
 | `set_module` | Включить/выключить опциональный модуль |
 | `log_signal` | Записать сигнал (состояние / симптом / воздействие) — через тот же сервис, что и бот |
+| `mark_signal_misparse` | Пометить разбор сообщения как ошибочный — то же, что кнопка «не то» в боте (по `batch_id`) |
+| `log_day_context` | Записать, какой это был день — те же ответы, что владелец нажимает в вечернем блоке (догадка шаблона сохраняется рядом с ответом) |
+| `set_week_template` | Задать шаблон недели: чем считается каждый будний день, пока владелец не сказал иначе |
+| `resolve_alert` | Закрыть предупреждение — оно исчезает из `get_active_alerts` |
+| `override_alert` | Отметить блокирующее предупреждение как «принято, делаю всё равно» |
 | `generate_digest_now` | Сгенерировать свежий еженедельный AI-дайджест сейчас |
 | `delete_record` | Удалить одну запись любого домена по ID (`domain` + `record_id`) — вес, замер, шумовой период, анализ, цель, еда, GLP-1 (инъекция / побочка / фаза), ГЗТ (доза / курс / препарат курса), состав тела, событие хронологии, наблюдение за кожей, добавка, генетический вариант, сигнал |
 
 > [!TIP]
 > **Override-флоу.** Все записывающие инструменты, проходящие движок конфликтов (вес, GLP-1, ГЗТ, добавки, кожа, замеры, состав тела), принимают `override=true`. При жёстком блоке инструмент возвращает `{"blocked": true, "violations": [...]}` вместо сохранения — повтор вызова с `override=true` сохраняет (аналог кнопки «Записать всё равно» в UI).
+
+> [!IMPORTANT]
+> **Правки частичные.** Все `update_*` меняют только те поля, которые переданы в вызове; остальные берутся из существующей строки, а не обнуляются. Дата не передана — остаётся дата самой записи, а не «сегодня». Веб-формы работают иначе (шлют всё, очистка поля действительно очищает колонку) — расхождение намеренное и живёт на границе MCP.
+>
+> **Периметр записи.** Запись в выключенный опциональный модуль отклоняется на общей точке входа, а не в каждом инструменте по отдельности: новый инструмент наследует проверку, а не «не забудь дописать».
+>
+> **Провенанс.** Записи через коннектор помечаются источником `mcp`. В приоритете источников веса `mcp` равен ручному вводу — то есть перекрывает Garmin и не перекрывается им; между собой решает свежесть. Старые записи задним числом не перекрашиваются.
 
 #### Пример диалога с Claude
 
@@ -1171,11 +1190,11 @@ Brief time, evening time and the Garmin poll rate live in the database (the `/se
 
 ### 🔗 MCP Integration with Claude.ai
 
-Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streamable HTTP transport). Authorization: OAuth 2.0 + PKCE with signed Bearer token verification. Configured in the web dashboard settings.
+Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streamable HTTP transport). Authorization: OAuth 2.0 with signed Bearer token verification. PKCE (`S256`) is **mandatory** — an `/oauth/authorize` request without a `code_challenge` is rejected rather than skipping the check. Protected-resource metadata is served at `/.well-known/oauth-protected-resource` (RFC 9728), and a `401` points at it via `WWW-Authenticate: Bearer resource_metadata="..."` so the client can discover where to authorize. Configured in the web dashboard settings.
 
 **73 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt.
 
-#### Read (32 tools)
+#### Read (33 tools)
 
 | Tool | Description |
 | :--- | :--- |
@@ -1188,7 +1207,7 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `get_hevy_workouts` | Strength workouts with sets, reps, weights |
 | `get_supplements_catalog` | Supplements with dosages and evidence tiers |
 | `get_skincare_logs` | Skincare routine logs and skin observations |
-| `get_genetics_snps` | Genetic SNPs (rsid, genes) |
+| `get_genetics_snps` | Genetic SNPs filtered by gene and/or rsid ("show me my rs1801133") |
 | `get_active_alerts` | Unresolved warnings and conflict notifications |
 | `get_weekly_digests` | Historical AI digest archive |
 | `check_supplement_conflicts` | Check a supplement (by name, RU/EN) against genetics, labs, other supplements, and skincare |
@@ -1211,8 +1230,9 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `get_trend` | Metric trend: slope (day/week), latest rolling mean, projected date-to-target |
 | `get_signals` | Signals captured by the bot: states, symptoms, exposures (filter by kind, key, dates) |
 | `get_day_context` | What kind of day it was: remote/office, gym, workload |
+| `get_proactive_state` | State of the proactive layer: on/off, schedule, week template, recent sends (read-only — retiming or muting the bot stays with the owner) |
 
-#### Write (29 tools)
+#### Write (40 tools)
 
 | Tool | Description |
 | :--- | :--- |
@@ -1223,13 +1243,18 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `log_hrt_dose` | Record an HRT dose (ml × concentration → mg; brand/lab/batch; conflict-gated) |
 | `add_hrt_cycle` | Start an HRT cycle (kind; closes the previous open one) |
 | `add_hrt_cycle_item` | Add a compound to a cycle (schedule: segments/ramp, or dose + interval) |
+| `update_hrt_dose` | Edit an HRT dose (fields left out are preserved; conflict-gated) |
+| `log_hrt_side_effect` | Record an HRT side effect (type, severity 1–5) |
+| `close_hrt_cycle` | Close an HRT cycle with an end date (defaults to today) |
 | `log_skincare` | Record/update daily skincare checklist (upsert) |
 | `log_measurement` | Record body measurements (auto-computes Navy body-fat %) |
 | `log_note` | Add a note to any domain record (including lab results) |
 | `log_body_scan` | Record a body-composition scan from metrics (bridges into weight) |
 | `log_lab_result` | Record a single biomarker (auto-computes the out-of-range flag) |
 | `log_lab_results` | Record a whole lab panel at once (a list of markers → results + dedup) |
+| `update_lab_result` | Edit a lab result (recomputes the out-of-range flag, refreshes alerts) |
 | `log_event` | Manual timeline annotation (trip, illness, protocol change) |
+| `update_event` | Edit a timeline event (fields left out are preserved) |
 | `create_milestone` | Create a goal card (target value, deadline) |
 | `update_milestone` | Update a goal (incl. status: achieved/missed/paused) |
 | `update_glp1` | Edit a GLP-1 injection (conflict-gated) |
@@ -1241,13 +1266,26 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `set_supplement_active` | Toggle a supplement active (conflict-gated on enable) |
 | `update_measurement` | Edit a body measurement (recomputes Navy body-fat % / LBM) |
 | `add_noise_marker` | Mark a range as noise (excluded from the weight trend) |
+| `upsert_genetic_variant` | Add or update a genetic variant (keyed on gene + rsid) |
 | `set_module` | Enable/disable an optional module |
 | `log_signal` | Record a signal (state / symptom / exposure) — through the same service the bot uses |
+| `mark_signal_misparse` | Flag one message's parse as wrong — the bot's "не то" button, by `batch_id` |
+| `log_day_context` | Record what kind of day it was — the same answers the owner taps in the evening block (the template's guess is kept next to the answer) |
+| `set_week_template` | Set the week template: what each weekday is assumed to be until the owner says otherwise |
+| `resolve_alert` | Resolve an alert — it disappears from `get_active_alerts` |
+| `override_alert` | Mark a blocking alert overridden — "noted, doing it anyway" |
 | `generate_digest_now` | Generate a fresh weekly AI digest now |
 | `delete_record` | Delete one record from any domain by ID (`domain` + `record_id`) — weight, measurement, noise marker, lab result, goal, meal, GLP-1 (injection / side effect / dose phase), HRT (dose / cycle / cycle item), body scan, timeline event, skin observation, supplement, genetic variant, signal |
 
 > [!TIP]
 > **Override flow.** Every write tool that runs the conflict engine (weight, GLP-1, HRT, supplements, skincare, measurements, body composition) accepts `override=true`. On a hard block the tool returns `{"blocked": true, "violations": [...]}` instead of saving — retry the same call with `override=true` to save anyway (the equivalent of the UI's "Save anyway" button).
+
+> [!IMPORTANT]
+> **Edits are partial.** Every `update_*` tool changes only the fields the call actually passes; the rest are carried over from the existing row instead of being nulled. Omit the date and the record keeps its own date rather than jumping to today. The web forms behave differently on purpose (they submit everything, and clearing a field there really does clear the column) — the divergence is resolved at the MCP boundary.
+>
+> **Write perimeter.** Writing into a disabled optional module is refused at one shared entry point rather than tool by tool: a new tool inherits the check instead of having to remember it.
+>
+> **Provenance.** Records written through the connector are stamped `source = "mcp"`. In the weight source priority `mcp` ranks equal to manual entry — it overrides a Garmin import and is not overridden by one; between equals, recency decides. Existing rows are not relabelled retroactively.
 
 #### Example interaction
 
