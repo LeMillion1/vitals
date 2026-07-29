@@ -473,6 +473,39 @@ async def get_active_alerts() -> list[dict]:
 
 
 @mcp.tool()
+async def resolve_alert(alert_id: int) -> dict:
+    """Marks one alert resolved — it disappears from ``get_active_alerts`` and
+    from the dashboard. Use it once the thing the alert is about has actually been
+    dealt with in the conversation, so the discussion and the closing are the same
+    step instead of leaving the owner a button to press afterwards. WRITE tool."""
+    from vitals.services import alerts_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row = await alerts_service.resolve_alert(session, alert_id)
+        if row is None:
+            return {"error": f"Alert {alert_id} not found"}
+        await session.commit()
+        return await serialize_written(session, row)
+
+
+@mcp.tool()
+async def override_alert(alert_id: int) -> dict:
+    """Marks a blocking alert overridden — "noted, doing it anyway". The alert
+    stays active and visible; only the block it represents stops being treated as
+    unanswered. For resolving it instead, use ``resolve_alert``. WRITE tool."""
+    from vitals.services import alerts_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row = await alerts_service.override_alert(session, alert_id)
+        if row is None:
+            return {"error": f"Alert {alert_id} not found"}
+        await session.commit()
+        return await serialize_written(session, row)
+
+
+@mcp.tool()
 async def get_weekly_digests(limit: int = 5) -> list[dict]:
     """Retrieves historical Claude-generated weekly summaries for continuity."""
     from vitals.services import digest_service
@@ -1508,6 +1541,61 @@ async def log_event(
         return await serialize_written(session, row)
 
 
+@mcp.tool()
+@gated("timeline")
+async def update_event(
+    event_id: int,
+    title: Optional[str] = None,
+    on_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    kind: Optional[str] = None,
+    domain: Optional[str] = None,
+    note: Optional[str] = None,
+) -> dict:
+    """Updates a manual Timeline annotation by ID — the ``id`` of a row from
+    ``get_timeline`` whose source is manual (derived events are computed and
+    cannot be edited). Only the fields you pass are changed; everything left out
+    keeps its stored value, including the event's own date. WRITE tool."""
+    from vitals.services import timeline_service
+
+    session_factory = get_session_factory()
+    parsed_date = _parse_date(on_date, field="on_date")
+    parsed_end = _parse_date(end_date, field="end_date")
+
+    async with session_factory() as session:
+        merged = await _merged(
+            session,
+            Annotation,
+            event_id,
+            title=title,
+            date=parsed_date,
+            end_date=parsed_end,
+            kind=kind,
+            domain=domain,
+            note=note,
+        )
+        if merged is None:
+            return {"error": f"Event {event_id} not found"}
+        row = await timeline_service.update_annotation(
+            session, event_id, on_date=merged.pop("date"), **merged
+        )
+        await session.commit()
+        return await serialize_written(session, row)
+
+
+@mcp.tool()
+@gated("timeline")
+async def delete_event(event_id: int) -> dict:
+    """Deletes a manual Timeline annotation by ID. WRITE tool — immediate."""
+    from vitals.services import timeline_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        ok = await timeline_service.delete_annotation(session, event_id)
+        await session.commit()
+        return {"deleted": ok, "event_id": event_id}
+
+
 # ── Cross-domain + whole-lake tools ──────────────────────────────────────────
 @mcp.tool()
 async def get_full_snapshot(
@@ -2278,6 +2366,38 @@ async def log_signal(
 
 
 @mcp.tool()
+@gated("signals")
+async def delete_signal(signal_id: int) -> dict:
+    """Deletes one signal row that is simply wrong — a misread number, a symptom
+    that was never mentioned. The raw message stays in the lake either way, so
+    nothing the owner actually said is lost. For a whole batch parsed wrongly out
+    of one message, use ``mark_signal_misparse``. WRITE tool — immediate."""
+    from vitals.services import signals_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        ok = await signals_service.delete_signal(session, signal_id)
+        await session.commit()
+        return {"deleted": ok, "signal_id": signal_id}
+
+
+@mcp.tool()
+@gated("signals")
+async def mark_signal_misparse(batch_id: str) -> dict:
+    """Flags every signal parsed out of one message as misparsed — the "не то"
+    button. The rows and the raw text stay, they just drop out of ``get_signals``
+    and out of the charts. ``batch_id`` is the field shared by all rows from the
+    same message. WRITE tool — immediate."""
+    from vitals.services import signals_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        marked = await signals_service.mark_misparse(session, batch_id)
+        await session.commit()
+        return {"marked": marked, "batch_id": batch_id}
+
+
+@mcp.tool()
 async def get_day_context(
     start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
 ) -> list[dict]:
@@ -2299,6 +2419,38 @@ async def get_day_context(
         stmt = stmt.order_by(DayContext.date.desc()).limit(limit)
         rows = (await session.execute(stmt)).scalars().all()
         return [serialize_row(r) for r in rows]
+
+
+@mcp.tool()
+@gated("signals")
+async def log_day_context(answers: dict, on_date: Optional[str] = None) -> dict:
+    """Records what kind of day it was — the same answers the owner taps in
+    Telegram, when he says them here instead ("сегодня удалёнка, зала не будет").
+    Keys: ``where`` (office/remote/off), ``gym`` (true/false), ``load``
+    (light/normal/heavy — about a day already spent, not a plan). Only the keys
+    you pass are changed, and the week template's own guess is kept beside the
+    answer rather than overwritten. ``on_date`` defaults to today. WRITE tool."""
+    from vitals.services.proactive import day_plan
+    from vitals.utils.timeutils import today_local
+
+    session_factory = get_session_factory()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
+
+    legal = "; ".join(f"{q.key}: {list(q.labels)}" for q in day_plan.QUESTIONS)
+    if not answers:
+        return {"error": f"answers must contain at least one of — {legal}"}
+    for key, value in answers.items():
+        question = day_plan.QUESTIONS_BY_KEY.get(key)
+        # Validated before anything is written: half-applied answers would leave
+        # the day in a state neither the owner nor the template ever produced.
+        if question is None or value not in question.labels:
+            return {"error": f"{key}={value!r} is not a day-context answer — {legal}"}
+
+    async with session_factory() as session:
+        for key, value in answers.items():
+            row = await day_plan.record_answer(session, parsed_date, key, value)
+        await session.commit()
+        return await serialize_written(session, row)
 
 
 # ── Resources & prompts ───────────────────────────────────────────────────────

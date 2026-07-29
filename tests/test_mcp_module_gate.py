@@ -47,7 +47,14 @@ GATED_WRITE_TOOLS: dict[str, str] = {
     "log_body_scan": "body_comp",
     "delete_body_scan": "body_comp",
     "log_event": "timeline",
+    "update_event": "timeline",
+    "delete_event": "timeline",
     "log_signal": "signals",
+    "delete_signal": "signals",
+    "mark_signal_misparse": "signals",
+    # Day context lives in the signals domain, which is also the master switch for
+    # the whole proactive layer — off means the day is not being tracked at all.
+    "log_day_context": "signals",
 }
 
 # Write tools that deliberately have no module gate, each with the reason.
@@ -67,6 +74,8 @@ UNGATED_WRITE_TOOLS: dict[str, str] = {
     "create_milestone": "goals are core",
     "update_milestone": "goals are core",
     "delete_milestone": "goals are core",
+    "resolve_alert": "alerts are raised by every domain, core ones included",
+    "override_alert": "same — an alert is not owned by an optional module",
     "set_module": "this is the toggle itself",
     "generate_digest_now": "reports is core",
 }
