@@ -17,6 +17,19 @@ from vitals.services import conflict_registrations, supplements_service, weight_
 mcp_router = pytest.importorskip("web.routers.mcp")
 
 
+@pytest.fixture(autouse=True)
+async def _optional_modules_on(session_factory):
+    """Optional modules default to off, and the MCP write tools honour that
+    (web/routers/mcp.gated). These tests write to optional domains — switch them on."""
+    from vitals.services import modules_service
+
+    async with session_factory() as session:
+        for key in sorted(modules_service.OPTIONAL_KEYS):
+            await modules_service.set_module_enabled(session, key=key, enabled=True)
+        await session.commit()
+
+
+
 async def _seed_meal_block(db_session):
     """A hard block that fires on a meal named 'steak' while iron is in the stack.
     Cross-domain (supplements ↔ nutrition) so the block is reachable through the

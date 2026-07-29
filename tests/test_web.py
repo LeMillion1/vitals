@@ -978,6 +978,25 @@ async def test_labs_manual_add_and_flag(auth_client, db_session):
     assert row.marker == "TSH" and row.flag == "high"
 
 
+async def test_labs_manual_add_with_a_cyrillic_marker_over_fetch(auth_client, db_session):
+    """The form now posts through the shared conflict-aware controller, which sends
+    ``hx-request`` — and that turns the redirect into an ``HX-Redirect`` *header*.
+    Headers are latin-1, so a raw "Ферритин" in the URL is a 500, not a bad link."""
+    from vitals.models.labs import LabResult
+
+    r = await auth_client.post(
+        "/labs/result",
+        data={"date": "2026-06-10", "marker": "Ферритин", "value": 120,
+              "ref_low": 30, "ref_high": 400},
+        headers={"hx-request": "true"},
+    )
+    assert r.status_code == 303
+    assert "%D0%A4" in r.headers["HX-Redirect"]
+
+    row = (await db_session.execute(select(LabResult))).scalar_one()
+    assert row.marker == "Ферритин"
+
+
 async def test_labs_unit_html_is_escaped_in_render(auth_client):
     """S3: a unit value containing HTML must render escaped, never as live markup —
     labs.unit can come from a mis-parsed photo import, so it isn't trusted input."""

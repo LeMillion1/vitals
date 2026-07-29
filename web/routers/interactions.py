@@ -29,8 +29,7 @@ _CATEGORY_ORDER = (
 
 async def _firing_rule_ids(db: AsyncSession) -> set[int]:
     """Rule ids with an active (unresolved) alert right now — the conflict engine
-    stamps ``alert_key = f"conflict:{rule_id}"`` (see conflict_engine.enforce /
-    labs_service._raise_conflict_alerts)."""
+    stamps ``alert_key = f"conflict:{rule_id}"`` (see conflict_engine.enforce)."""
     result = await db.execute(
         select(SystemAlert.alert_key).where(
             SystemAlert.resolved_at.is_(None),

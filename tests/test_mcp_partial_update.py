@@ -22,6 +22,18 @@ def _use_test_factory(session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
 
+@pytest.fixture(autouse=True)
+async def _optional_modules_on(session_factory):
+    """Optional modules default to off, and the MCP write tools honour that
+    (web/routers/mcp.gated). These tests write to optional domains — switch them on."""
+    from vitals.services import modules_service
+
+    async with session_factory() as session:
+        for key in sorted(modules_service.OPTIONAL_KEYS):
+            await modules_service.set_module_enabled(session, key=key, enabled=True)
+        await session.commit()
+
+
 # ── B1 partial updates ────────────────────────────────────────────────────────
 async def test_meal_rename_keeps_date_macros_and_note():
     created = await mcp_router.log_meal(

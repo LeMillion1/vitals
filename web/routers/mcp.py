@@ -15,9 +15,12 @@ Response conventions (a stable contract the model can rely on):
     [...], "message": ..., "hint": ...}`` (see ``_conflict_payload``); the model
     can retry the same call with ``override=True``.
   * A delete — ``{"deleted": <bool>, "<entity>_id": <id>}``.
+  * A write to a switched-off optional domain — ``{"error": "module '<key>' is
+    disabled"}``; ``get_modules`` says which are on.
 """
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from datetime import date as date_type
@@ -150,6 +153,37 @@ async def _merged(session, model, record_id: int, **fields) -> Optional[dict]:
     if row is None:
         return None
     return {k: (getattr(row, k) if v is None else v) for k, v in fields.items()}
+
+
+async def _module_enabled(session, key: str) -> bool:
+    """True when an optional module is on (write tools honour the toggle)."""
+    from vitals.services import modules_service
+
+    state = await modules_service.get_enabled_modules(session)
+    return bool(state.get(key))
+
+
+def gated(module_key: str):
+    """Refuse a write when its optional module is switched off.
+
+    Turning a module off in settings is the owner saying "I don't track this" —
+    the web routes honour it (``require_module``), and until now the tool surface
+    honoured it on three writes out of forty, so a conversation could refill a
+    domain the owner had just emptied out of the UI. One decorator per write tool
+    of an optional domain; ``tests/test_mcp_module_gate.py`` holds the full list,
+    so a new tool has to be classified rather than quietly ungated."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                if not await _module_enabled(session, module_key):
+                    return {"error": f"module '{module_key}' is disabled"}
+            return await fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 # ── Tool Definitions ─────────────────────────────────────────────────────────
@@ -517,6 +551,7 @@ async def check_conflicts(domain: str, payload: dict) -> list[dict]:
 # ── Nutrition tools ──────────────────────────────────────────────────────────
 
 @mcp.tool()
+@gated("nutrition")
 async def log_meal(
     name: str,
     calories: Optional[float] = None,
@@ -591,6 +626,7 @@ async def get_nutrition_summary(
 # ── Meal CRUD tools ─────────────────────────────────────────────────────────
 
 @mcp.tool()
+@gated("nutrition")
 async def update_meal(
     meal_id: int,
     name: Optional[str] = None,
@@ -638,6 +674,7 @@ async def update_meal(
 
 
 @mcp.tool()
+@gated("nutrition")
 async def delete_meal(meal_id: int) -> dict:
     """Deletes a meal by ID. WRITE tool — deletion is immediate."""
     from vitals.services import nutrition_service
@@ -725,6 +762,7 @@ async def delete_weight(weight_id: int) -> dict:
 # ── GLP-1 tools ─────────────────────────────────────────────────────────────
 
 @mcp.tool()
+@gated("glp1")
 async def log_glp1(
     drug: str,
     dose_mg: float,
@@ -801,6 +839,7 @@ async def get_hrt_logs(
 
 
 @mcp.tool()
+@gated("hrt")
 async def log_hrt_dose(
     compound_key: str,
     dose: Optional[float] = None,
@@ -843,6 +882,7 @@ async def log_hrt_dose(
 
 
 @mcp.tool()
+@gated("hrt")
 async def add_hrt_cycle(
     kind: str,
     start_date: Optional[str] = None,
@@ -872,6 +912,7 @@ async def add_hrt_cycle(
 
 
 @mcp.tool()
+@gated("hrt")
 async def add_hrt_cycle_item(
     cycle_id: int,
     compound_key: str,
@@ -933,6 +974,7 @@ async def get_hrt_cycles() -> dict:
 # ── Skincare tools ──────────────────────────────────────────────────────────
 
 @mcp.tool()
+@gated("skincare")
 async def log_skincare(
     on_date: Optional[str] = None,
     retinoid: bool = False,
@@ -1112,14 +1154,6 @@ def _serialize_scan(scan: BodyScan) -> dict:
     return d
 
 
-async def _module_enabled(session, key: str) -> bool:
-    """True when an optional module is on (write tools honour the toggle)."""
-    from vitals.services import modules_service
-
-    state = await modules_service.get_enabled_modules(session)
-    return bool(state.get(key))
-
-
 @mcp.tool()
 async def get_body_scans(
     start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
@@ -1176,6 +1210,7 @@ async def get_body_metric_history(
 
 
 @mcp.tool()
+@gated("body_comp")
 async def log_body_scan(
     metrics: list[dict],
     on_date: Optional[str] = None,
@@ -1198,8 +1233,6 @@ async def log_body_scan(
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
-        if not await _module_enabled(session, "body_comp"):
-            return {"error": "module 'body_comp' is disabled"}
         try:
             scan = await body_scan_service.save_scan(
                 session,
@@ -1220,6 +1253,7 @@ async def log_body_scan(
 
 
 @mcp.tool()
+@gated("body_comp")
 async def delete_body_scan(scan_id: int) -> dict:
     """Deletes a body-composition scan and its metrics. WRITE tool. No-op with an
     error if the body_comp module is disabled."""
@@ -1227,8 +1261,6 @@ async def delete_body_scan(scan_id: int) -> dict:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        if not await _module_enabled(session, "body_comp"):
-            return {"error": "module 'body_comp' is disabled"}
         ok = await body_scan_service.delete_scan(session, scan_id)
         await session.commit()
         return {"deleted": ok, "scan_id": scan_id}
@@ -1274,11 +1306,14 @@ async def log_lab_result(
     ref_high: Optional[float] = None,
     lab_name: Optional[str] = None,
     note: Optional[str] = None,
+    override: bool = False,
 ) -> dict:
     """Records a single lab marker value (one biomarker from a blood/urine test).
     The out-of-range flag is computed automatically; a range left out here falls
     back to the marker's catalog range if one is already on file. WRITE tool —
-    saved immediately. Defaults: on_date = today."""
+    saved immediately. Defaults: on_date = today. A hard conflict rule (e.g. a
+    hyperkalemic potassium result while a potassium supplement is active) returns
+    ``{"blocked": true, ...}``; retry with ``override=True`` to save anyway."""
     from vitals.services import labs_service
     from vitals.utils.timeutils import today_local
 
@@ -1297,9 +1332,56 @@ async def log_lab_result(
                 ref_high=ref_high,
                 lab_name=lab_name,
                 note=note,
+                source=Source.MANUAL.value,
+                override=override,
+            )
+        except ConflictBlocked as e:
+            return _conflict_payload(e)
+        except ValueError as e:
+            return {"error": str(e)}
+        await session.commit()
+        return await serialize_written(session, row)
+
+
+@mcp.tool()
+async def update_lab_result(
+    result_id: int,
+    value: Optional[float] = None,
+    marker: Optional[str] = None,
+    on_date: Optional[str] = None,
+    unit: Optional[str] = None,
+    ref_low: Optional[float] = None,
+    ref_high: Optional[float] = None,
+    lab_name: Optional[str] = None,
+    note: Optional[str] = None,
+) -> dict:
+    """Corrects an existing lab result by ID — a mistyped value, a range read off
+    the wrong column. Only the fields you pass are changed; the out-of-range flag
+    is recomputed and the alerts derived from it refreshed. Use this instead of
+    delete + re-add: a measurement is never thrown away here. WRITE tool."""
+    from vitals.services import labs_service
+
+    session_factory = get_session_factory()
+    parsed_date = _parse_date(on_date, field="on_date")
+
+    async with session_factory() as session:
+        try:
+            row = await labs_service.update_result(
+                session,
+                result_id,
+                on_date=parsed_date,
+                marker=marker,
+                value=value,
+                unit=unit,
+                ref_low=ref_low,
+                ref_high=ref_high,
+                lab_name=lab_name,
+                note=note,
             )
         except ValueError as e:
             return {"error": str(e)}
+        if row is None:
+            return {"error": f"Lab result {result_id} not found"}
         await session.commit()
         return await serialize_written(session, row)
 
@@ -1309,6 +1391,7 @@ async def log_lab_results(
     results: list[dict],
     on_date: Optional[str] = None,
     lab_name: Optional[str] = None,
+    override: bool = False,
 ) -> dict:
     """Records every marker from one lab report at once (e.g. a full blood panel
     read from a photo/PDF shared in the conversation) — the natural way to push a
@@ -1318,7 +1401,9 @@ async def log_lab_results(
     "ref_low": number?, "ref_high": number?}``. Identical (date, marker, value)
     rows are deduped, so retrying a call is safe. The verbatim payload is kept in
     raw_payloads, same as a document uploaded through the web UI. WRITE tool —
-    saved immediately. Defaults: on_date = today."""
+    saved immediately. Defaults: on_date = today. A hard conflict rule on any
+    marker in the panel returns ``{"blocked": true, ...}`` and saves nothing;
+    retry with ``override=True`` to save the whole panel anyway."""
     from vitals.services import labs_service
     from vitals.utils.timeutils import today_local
 
@@ -1331,7 +1416,12 @@ async def log_lab_results(
             "lab_name": lab_name,
             "results": results,
         }
-        summary = await labs_service.ingest_extracted(session, extracted)
+        try:
+            summary = await labs_service.ingest_extracted(
+                session, extracted, override=override
+            )
+        except ConflictBlocked as e:
+            return _conflict_payload(e)
         await session.commit()
         return {
             "created": summary["created"],
@@ -1381,6 +1471,7 @@ async def get_timeline(
 
 
 @mcp.tool()
+@gated("timeline")
 async def log_event(
     title: str,
     on_date: Optional[str] = None,
@@ -1404,8 +1495,6 @@ async def log_event(
     parsed_end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        if not await _module_enabled(session, "timeline"):
-            return {"error": "module 'timeline' is disabled"}
         row = await timeline_service.create_annotation(
             session,
             title=title,
@@ -1616,6 +1705,7 @@ async def delete_milestone(milestone_id: int) -> dict:
 
 # ── GLP-1 write completeness (edit/delete injection, side effects, phases) ────
 @mcp.tool()
+@gated("glp1")
 async def update_glp1(
     injection_id: int,
     drug: Optional[str] = None,
@@ -1654,6 +1744,7 @@ async def update_glp1(
 
 
 @mcp.tool()
+@gated("glp1")
 async def delete_glp1(injection_id: int) -> dict:
     """Deletes a GLP-1 injection by ID. WRITE tool — deletion is immediate."""
     from vitals.services import glp1_service
@@ -1666,6 +1757,7 @@ async def delete_glp1(injection_id: int) -> dict:
 
 
 @mcp.tool()
+@gated("glp1")
 async def log_side_effect(
     effect_type: str,
     severity: int,
@@ -1689,6 +1781,7 @@ async def log_side_effect(
 
 
 @mcp.tool()
+@gated("glp1")
 async def delete_side_effect(effect_id: int) -> dict:
     """Deletes a GLP-1 side-effect entry by ID. WRITE tool."""
     from vitals.services import glp1_service
@@ -1701,6 +1794,7 @@ async def delete_side_effect(effect_id: int) -> dict:
 
 
 @mcp.tool()
+@gated("glp1")
 async def add_dose_phase(
     start_date: str,
     drug: str,
@@ -1726,6 +1820,7 @@ async def add_dose_phase(
 
 
 @mcp.tool()
+@gated("glp1")
 async def delete_dose_phase(phase_id: int) -> dict:
     """Deletes a GLP-1 dose phase by ID. WRITE tool."""
     from vitals.services import glp1_service
@@ -1739,6 +1834,7 @@ async def delete_dose_phase(phase_id: int) -> dict:
 
 # ── Skincare observations ─────────────────────────────────────────────────────
 @mcp.tool()
+@gated("skincare")
 async def log_skincare_observation(
     on_date: Optional[str] = None,
     inflammation: Optional[int] = None,
@@ -1764,6 +1860,7 @@ async def log_skincare_observation(
 
 
 @mcp.tool()
+@gated("skincare")
 async def delete_skincare_observation(observation_id: int) -> dict:
     """Deletes a skin-status observation by ID. WRITE tool."""
     from vitals.services import skincare_service
@@ -1777,6 +1874,7 @@ async def delete_skincare_observation(observation_id: int) -> dict:
 
 # ── Supplements catalog CRUD ──────────────────────────────────────────────────
 @mcp.tool()
+@gated("supplements")
 async def add_supplement(
     name: str,
     key: Optional[str] = None,
@@ -1809,6 +1907,7 @@ async def add_supplement(
 
 
 @mcp.tool()
+@gated("supplements")
 async def update_supplement(
     supplement_id: int,
     name: Optional[str] = None,
@@ -1850,6 +1949,7 @@ async def update_supplement(
 
 
 @mcp.tool()
+@gated("supplements")
 async def set_supplement_active(
     supplement_id: int, active: bool, override: bool = False
 ) -> dict:
@@ -1872,6 +1972,7 @@ async def set_supplement_active(
 
 
 @mcp.tool()
+@gated("supplements")
 async def delete_supplement(supplement_id: int) -> dict:
     """Deletes a supplement from the catalog by ID. WRITE tool."""
     from vitals.services import supplements_service
@@ -2135,6 +2236,7 @@ async def get_signals(
 
 
 @mcp.tool()
+@gated("signals")
 async def log_signal(
     key: str,
     kind: str,
@@ -2157,8 +2259,6 @@ async def log_signal(
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
-        if not await _module_enabled(session, "signals"):
-            return {"error": "module 'signals' is disabled"}
         rows = await signals_service.create_signals(
             session,
             items=[{

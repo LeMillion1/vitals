@@ -179,6 +179,19 @@ async def test_no_conflict_when_labs_normal(db_session):
 mcp_router = pytest.importorskip("web.routers.mcp")
 
 
+@pytest.fixture(autouse=True)
+async def _optional_modules_on(session_factory):
+    """Optional modules default to off, and the MCP write tools honour that
+    (web/routers/mcp.gated). These tests write to optional domains — switch them on."""
+    from vitals.services import modules_service
+
+    async with session_factory() as session:
+        for key in sorted(modules_service.OPTIONAL_KEYS):
+            await modules_service.set_module_enabled(session, key=key, enabled=True)
+        await session.commit()
+
+
+
 async def test_mcp_log_and_get_hrt_dose(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     await hrt_catalog.sync_catalog(db_session)

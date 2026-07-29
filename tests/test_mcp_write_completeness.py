@@ -20,6 +20,18 @@ def _use_test_factory(session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
 
+@pytest.fixture(autouse=True)
+async def _optional_modules_on(session_factory):
+    """Optional modules default to off, and the MCP write tools honour that
+    (web/routers/mcp.gated). These tests write to optional domains — switch them on."""
+    from vitals.services import modules_service
+
+    async with session_factory() as session:
+        for key in sorted(modules_service.OPTIONAL_KEYS):
+            await modules_service.set_module_enabled(session, key=key, enabled=True)
+        await session.commit()
+
+
 # ── A5 GLP-1 ──────────────────────────────────────────────────────────────────
 async def test_glp1_injection_update_and_delete():
     created = await mcp_router.log_glp1(drug="semaglutide", dose_mg=1.0, on_date="2026-07-01")
@@ -103,8 +115,12 @@ async def test_modules_get_and_toggle():
     state = await mcp_router.get_modules()
     assert "weight" in state["core"]
     assert state["enabled"]["weight"] is True
-    assert state["enabled"]["body_comp"] is False  # optional default off
 
+    # An optional module toggles both ways. (That optional modules *default* to
+    # off is pinned in test_mcp_module_gate, which needs that default intact —
+    # this file's fixture switches them on so its write tools can run.)
+    off = await mcp_router.set_module(key="body_comp", enabled=False)
+    assert off["enabled"]["body_comp"] is False
     toggled = await mcp_router.set_module(key="body_comp", enabled=True)
     assert toggled["enabled"]["body_comp"] is True
 
