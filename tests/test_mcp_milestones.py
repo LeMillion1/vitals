@@ -36,8 +36,8 @@ async def test_create_get_update_delete_milestone(db_session, session_factory, m
     assert await mcp_router.get_milestones(status="active") == []
     assert len(await mcp_router.get_milestones(status="achieved")) == 1
 
-    deleted = await mcp_router.delete_milestone(mid)
-    assert deleted == {"deleted": True, "milestone_id": mid}
+    deleted = await mcp_router.delete_record("milestones", mid)
+    assert deleted == {"deleted": True, "domain": "milestones", "record_id": mid}
     assert await mcp_router.get_milestones() == []
 
 

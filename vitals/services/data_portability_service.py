@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -332,8 +333,39 @@ def _row_dump(obj: Any) -> dict[str, Any]:
     )
 
 
-async def export_llm(session: AsyncSession) -> dict[str, Any]:
-    """Curated, flat, secret-free digest grouped by domain — paste-into-chat ready."""
+def _row_within(row: dict[str, Any], since_iso: str) -> bool:
+    """Keep a row that is not entirely older than ``since``.
+
+    Three shapes go through here. A point in time (``date``) is compared directly.
+    A period (``start_date``) survives on its ``end_date``, and an *open* period —
+    a dose phase or cycle that started years ago and is running today — has no
+    ``end_date`` at all, so it stays whatever its start says. Catalog rows
+    (supplements, genetics, cycle templates) carry no date and always stay: a stack
+    list is current state, not history.
+    """
+    end = row.get("end_date")
+    if "start_date" in row:
+        return end is None or end >= since_iso
+    day = row.get("date")
+    if day is None:
+        return True
+    return (end or day) >= since_iso
+
+
+async def export_llm(
+    session: AsyncSession,
+    *,
+    domains: Sequence[str] | None = None,
+    since: date | None = None,
+) -> dict[str, Any]:
+    """Curated, flat, secret-free digest grouped by domain — paste-into-chat ready.
+
+    Both filters default to off, so the web download stays the whole history. The
+    MCP tool narrows instead: a chat asking about this month should not be handed
+    years of daily Garmin rows. ``domains`` names top-level blocks of the result
+    (``weight_history``, ``biomarkers``, …); ``since`` drops rows that ended before
+    that date.
+    """
     out: dict[str, Any] = {"profile": _llm_profile()}
 
     # Weight — active rows only (superseded duplicates are noise for analysis).
@@ -727,6 +759,23 @@ async def export_llm(session: AsyncSession) -> dict[str, Any]:
         _compact({"date": c.date.isoformat(), "answers": c.answers, "source": c.source})
         for c in contexts
     ]
+
+    # Narrowing happens on the assembled digest rather than in each of the twenty
+    # queries above: the rows are already flat dicts with their dates, so one pass
+    # here filters every block — including ones added later, which a per-query
+    # ``where`` would have missed.
+    if domains is not None:
+        unknown = [d for d in domains if d not in out]
+        if unknown:
+            blocks = ", ".join(k for k in out if k != "profile")
+            raise ValueError(f"unknown domains {unknown}; available: {blocks}")
+        out = {k: v for k, v in out.items() if k == "profile" or k in domains}
+    if since is not None:
+        since_iso = since.isoformat()
+        out = {
+            k: [r for r in v if _row_within(r, since_iso)] if isinstance(v, list) else v
+            for k, v in out.items()
+        }
 
     return out
 

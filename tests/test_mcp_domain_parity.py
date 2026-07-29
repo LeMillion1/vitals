@@ -62,9 +62,10 @@ async def test_upsert_variant_edits_instead_of_duplicating_and_keeps_the_genotyp
 
 async def test_delete_genetic_variant():
     row = await mcp_router.upsert_genetic_variant(gene="COMT", rsid="rs4680", genotype="AA")
-    assert await mcp_router.delete_genetic_variant(row["id"]) == {
+    assert await mcp_router.delete_record("genetics", row["id"]) == {
         "deleted": True,
-        "variant_id": row["id"],
+        "domain": "genetics",
+        "record_id": row["id"],
     }
     assert await mcp_router.get_genetics_snps() == []
 
@@ -104,9 +105,10 @@ async def test_delete_hrt_dose():
     created = await mcp_router.log_hrt_dose(
         compound_key="testosterone_enanthate", dose=250.0, on_date="2026-07-01"
     )
-    assert await mcp_router.delete_hrt_dose(created["id"]) == {
+    assert await mcp_router.delete_record("hrt_dose", created["id"]) == {
         "deleted": True,
-        "dose_id": created["id"],
+        "domain": "hrt_dose",
+        "record_id": created["id"],
     }
     assert (await mcp_router.get_hrt_logs())["doses"] == []
 
@@ -140,12 +142,14 @@ async def test_close_and_delete_hrt_cycle():
     assert "error" in await mcp_router.close_hrt_cycle(cycle["id"], end_date="2026-05-01")
     assert "error" in await mcp_router.close_hrt_cycle(9999)
 
-    assert await mcp_router.delete_hrt_cycle_item(item["id"]) == {
+    assert await mcp_router.delete_record("hrt_cycle_item", item["id"]) == {
         "deleted": True,
-        "item_id": item["id"],
+        "domain": "hrt_cycle_item",
+        "record_id": item["id"],
     }
-    assert await mcp_router.delete_hrt_cycle(cycle["id"]) == {
+    assert await mcp_router.delete_record("hrt_cycle", cycle["id"]) == {
         "deleted": True,
-        "cycle_id": cycle["id"],
+        "domain": "hrt_cycle",
+        "record_id": cycle["id"],
     }
     assert (await mcp_router.get_hrt_cycles())["cycles"] == []

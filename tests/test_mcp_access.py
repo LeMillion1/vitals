@@ -94,15 +94,66 @@ async def test_get_full_snapshot_returns_cross_domain_context(db_session, sessio
 # ── A2 export_everything ──────────────────────────────────────────────────────
 async def test_export_everything_includes_history(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
-    from datetime import date
+    from datetime import timedelta
 
-    await weight_service.log_weight(db_session, on_date=date(2026, 7, 2), weight_kg=88.5)
+    from vitals.utils.timeutils import today_local
+
+    await weight_service.log_weight(
+        db_session, on_date=today_local() - timedelta(days=3), weight_kg=88.5
+    )
     await db_session.commit()
 
     export = await mcp_router.export_everything()
     assert "profile" in export
     assert "weight_history" in export
     assert any(row.get("weight_kg") == 88.5 for row in export["weight_history"])
+
+
+async def test_export_everything_defaults_to_the_last_90_days(
+    db_session, session_factory, monkeypatch
+):
+    """Without a window the export is years of daily rows — it fills the conversation
+    before the question gets asked. The default is a window; the full history is a
+    deliberate ask."""
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+    from datetime import timedelta
+
+    from vitals.utils.timeutils import today_local
+
+    recent = today_local() - timedelta(days=10)
+    ancient = today_local() - timedelta(days=400)
+    await weight_service.log_weight(db_session, on_date=recent, weight_kg=88.5)
+    await weight_service.log_weight(db_session, on_date=ancient, weight_kg=110.0)
+    await db_session.commit()
+
+    default = await mcp_router.export_everything()
+    assert [r["weight_kg"] for r in default["weight_history"]] == [88.5]
+
+    # The whole history is one explicit argument away.
+    full = await mcp_router.export_everything(since="2000-01-01")
+    assert sorted(r["weight_kg"] for r in full["weight_history"]) == [88.5, 110.0]
+
+
+async def test_export_everything_narrows_to_named_domains(
+    db_session, session_factory, monkeypatch
+):
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+    from datetime import timedelta
+
+    from vitals.utils.timeutils import today_local
+
+    await weight_service.log_weight(
+        db_session, on_date=today_local() - timedelta(days=1), weight_kg=88.5
+    )
+    await db_session.commit()
+
+    only_weight = await mcp_router.export_everything(domains=["weight_history"])
+    assert set(only_weight) == {"profile", "weight_history"}
+    assert only_weight["weight_history"]
+
+    err = await mcp_router.export_everything(domains=["weight_history", "нет_такого"])
+    assert "нет_такого" in err["error"]
+    assert "biomarkers" in err["error"]  # the valid names come back with the refusal
 
 
 # ── A4 get_data_overview ──────────────────────────────────────────────────────

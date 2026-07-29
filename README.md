@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <strong>Self-hosted personal health data lake & dashboard with 72 MCP tools for Claude.ai</strong><br>
+  <strong>Self-hosted personal health data lake & dashboard with 73 MCP tools for Claude.ai</strong><br>
   <sub>Masthead UI · EN/RU interface · 15 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · Signals & Telegram · AI Digests</sub>
 </p>
 
@@ -80,7 +80,7 @@ Vitals написан с Claude в качестве основного инст�
 **🤖 AI и интеграции**
 - Еженедельные AI-дайджесты (Claude / GPT)
 - Проактивный канал в Telegram: утренний бриф, вечерний блок, подсказки по условию
-- 72 MCP-инструмента для Claude.ai (чтение + запись + override)
+- 73 MCP-инструмента для Claude.ai (чтение + запись + override)
 - OAuth 2.0 + PKCE авторизация MCP
 - Полный экспорт данных для LLM (copy-paste ready)
 - Атомарный бэкап и восстановление БД
@@ -120,7 +120,7 @@ Vitals написан с Claude в качестве основного инст�
 - [Философия и ключевые принципы](#-философия-и-ключевые-принципы)
 - [Домены данных (15 модулей)](#-домены-данных)
 - [Архитектура системы](#-архитектура-системы)
-- [MCP-интеграция с Claude.ai (72 инструмента)](#-mcp-интеграция-с-claudeai)
+- [MCP-интеграция с Claude.ai (73 инструмента)](#-mcp-интеграция-с-claudeai)
 - [Быстрый старт (Docker Compose)](#-быстрый-старт)
 - [Безопасный деплой (Сетап автора)](#-безопасный-деплой-сетап-автора)
 - [Параметры конфигурации (.env)](#-параметры-конфигурации)
@@ -302,7 +302,7 @@ Vitals написан с Claude в качестве основного инст�
 - **Утренний бриф**: детерминированные блоки собирает код из того же кросс-доменного контекста, что и недельный дайджест, модель добавляет ровно один абзац интерпретации — упала модель, бриф всё равно придёт; пустой день = молчание, а не пустой бриф. Хранится в `weekly_digests` (`kind='daily_brief'`), виден в `/reports` (там же кнопки «Собрать бриф» и «Отправить тестовое»)
 - **Нуджи** (подсказки в течение дня) — список спецификаций (условие, текст, кулдаун, категория-переключатель), один движок обходит реестр; добавить подсказку = одна запись. Сейчас три категории: активность, питание, свежесть данных
 - Единые ворота отправки: выключенный модуль, дедуп, тихие часы (только для нудджей) и дневной бюджет сообщений; ответы на вопросы владельца из бюджета исключены
-- Ответы на вопросы: реплай на сообщение бота или просто «почему hrv просел?» — модель видит то сообщение, на которое отвечают, и контекст последнего брифа, и ничего больше. Глубокие разборы — в Claude.ai через MCP, там 72 инструмента и модель получше
+- Ответы на вопросы: реплай на сообщение бота или просто «почему hrv просел?» — модель видит то сообщение, на которое отвечают, и контекст последнего брифа, и ничего больше. Глубокие разборы — в Claude.ai через MCP, там 73 инструмента и модель получше
 - Сигналы и `day_context` попадают в контекст и недельного дайджеста, и брифа — с временем суток, потому что «кофе в 22» и «кофе в 9» это разные факты с одним ключом
 - Канал — за протоколом `Notifier`, выше него никто не знает про Telegram. Модуль `signals` по умолчанию **выключен** и работает как рубильник всего проактивного слоя: выключен — бот молчит совсем. Настройки (время брифа и вечернего блока, тихие часы, бюджет, категории нуджей, частота опроса Garmin, шаблон недели) — на карточке в `/settings`, сохранение перевешивает задачи на живом планировщике **без перезапуска**
 - MCP: `get_signals`, `log_signal`, `get_day_context` — Клод видит то, что владелец сказал боту
@@ -375,7 +375,7 @@ graph TD
 
 Встроенный сервер [FastMCP](https://github.com/jlowin/fastmcp) server доступен на `/mcp/` (транспорт streamable HTTP). Авторизация: OAuth 2.0 + PKCE с верификацией Bearer-токенов. Настраивается в веб-интерфейсе (раздел настроек).
 
-**72 инструмента** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурса (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`.
+**73 инструмента** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурса (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`.
 
 #### Чтение (32 инструмента)
 
@@ -406,7 +406,7 @@ graph TD
 | `get_lab_results` | Результаты анализов (биомаркер, значение, референс, флаг отклонения) |
 | `get_timeline` | Кросс-доменная лента событий (ручные аннотации + авто-события) |
 | `get_full_snapshot` | Кросс-доменный срез за период одним вызовом |
-| `export_everything` | Полный экспорт всей истории по всем доменам за один вызов |
+| `export_everything` | Экспорт истории по всем доменам за один вызов (по умолчанию — последние 90 дней; вся история и отдельные домены — явными аргументами) |
 | `get_data_overview` | Карта данных: по каждому домену число строк, диапазон дат, дата обновления |
 | `get_milestones` | Карточки целей с расчётом прогресса |
 | `get_modules` | Какие опциональные модули включены |
@@ -414,15 +414,13 @@ graph TD
 | `get_signals` | Сигналы из бота: состояния, симптомы, воздействия (фильтры по виду, ключу, датам) |
 | `get_day_context` | Какой это был день: удалёнка/офис, зал, нагрузка |
 
-#### Запись (40 инструментов)
+#### Запись (29 инструментов)
 
 | Инструмент | Описание |
 | :--- | :--- |
 | `log_meal` | Запись приёма пищи с калориями и макро (Б/Ж/У) |
 | `update_meal` | Обновление существующей записи о еде |
-| `delete_meal` | Удаление записи о еде |
 | `log_weight` | Запись веса (перекрывает Garmin за ту же дату) |
-| `delete_weight` | Удаление записи веса (реактивация следующей по приоритету) |
 | `log_glp1` | Запись инъекции GLP-1 (препарат, доза, место) |
 | `log_hrt_dose` | Запись приема дозы ГЗТ (расчет мл -> мг; бренд/лаборатория/партия; конфликт-гейт) |
 | `add_hrt_cycle` | Начать новый курс ГЗТ (тип, дата начала, название; закрывает прошлый открытый) |
@@ -431,33 +429,24 @@ graph TD
 | `log_measurement` | Запись замеров тела (авто-расчёт Navy % жира) |
 | `log_note` | Добавление заметки к записи любого домена (включая анализы) |
 | `log_body_scan` | Запись замера состава тела из метрик (мост в домен веса) |
-| `delete_body_scan` | Удаление замера состава тела (с метриками) |
 | `log_lab_result` | Запись одного биомаркера (авто-расчёт флага отклонения) |
 | `log_lab_results` | Запись всей панели анализов за раз (список маркеров → результаты + дедупликация) |
-| `delete_lab_result` | Удаление результата анализа |
 | `log_event` | Ручная аннотация хронологии (поездка, болезнь, смена протокола) |
 | `create_milestone` | Создать карточку цели (целевое значение, дедлайн) |
 | `update_milestone` | Обновить цель (в т.ч. статус: достигнута/пропущена/пауза) |
-| `delete_milestone` | Удалить цель |
 | `update_glp1` | Редактировать инъекцию GLP-1 (с конфликт-гейтом) |
-| `delete_glp1` | Удалить инъекцию GLP-1 |
 | `log_side_effect` | Записать побочный эффект GLP-1 (тип, тяжесть 1–5) |
-| `delete_side_effect` | Удалить побочный эффект |
 | `add_dose_phase` | Добавить фазу дозировки GLP-1 |
-| `delete_dose_phase` | Удалить фазу дозировки |
 | `log_skincare_observation` | Записать наблюдение за кожей (воспаление, ПВГ, зона) |
-| `delete_skincare_observation` | Удалить наблюдение за кожей |
 | `add_supplement` | Добавить добавку в каталог (конфликт-гейт) |
 | `update_supplement` | Обновить добавку в каталоге |
 | `set_supplement_active` | Включить/выключить добавку (конфликт-гейт при включении) |
-| `delete_supplement` | Удалить добавку из каталога |
 | `update_measurement` | Редактировать замер тела (пересчёт Navy % жира / LBM) |
-| `delete_measurement` | Удалить замер тела |
 | `add_noise_marker` | Отметить период как шумовой (исключается из тренда веса) |
-| `delete_noise_marker` | Удалить шумовой период (диапазон возвращается в тренд) |
 | `set_module` | Включить/выключить опциональный модуль |
 | `log_signal` | Записать сигнал (состояние / симптом / воздействие) — через тот же сервис, что и бот |
 | `generate_digest_now` | Сгенерировать свежий еженедельный AI-дайджест сейчас |
+| `delete_record` | Удалить одну запись любого домена по ID (`domain` + `record_id`) — вес, замер, шумовой период, анализ, цель, еда, GLP-1 (инъекция / побочка / фаза), ГЗТ (доза / курс / препарат курса), состав тела, событие хронологии, наблюдение за кожей, добавка, генетический вариант, сигнал |
 
 > [!TIP]
 > **Override-флоу.** Все записывающие инструменты, проходящие движок конфликтов (вес, GLP-1, ГЗТ, добавки, кожа, замеры, состав тела), принимают `override=true`. При жёстком блоке инструмент возвращает `{"blocked": true, "violations": [...]}` вместо сохранения — повтор вызова с `override=true` сохраняет (аналог кнопки «Записать всё равно» в UI).
@@ -889,7 +878,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 **🤖 AI & Integrations**
 - Weekly AI digests (Claude / GPT via OpenRouter)
 - Proactive Telegram channel: morning brief, evening block, condition-driven nudges
-- 72 MCP tools for Claude.ai (read + write + override)
+- 73 MCP tools for Claude.ai (read + write + override)
 - OAuth 2.0 + PKCE authorization for MCP
 - Full data export for LLM (copy-paste ready)
 - Atomic database backup & restore
@@ -929,7 +918,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 - [Core Philosophy](#-core-philosophy)
 - [Supported Domains (15 modules)](#-supported-domains)
 - [Technical Architecture](#-technical-architecture)
-- [MCP Integration with Claude.ai (72 tools)](#-mcp-integration-with-claudeai-1)
+- [MCP Integration with Claude.ai (73 tools)](#-mcp-integration-with-claudeai-1)
 - [Quick Start (Docker Compose)](#-quick-start)
 - [Secure Deployment (Creator's Setup)](#-secure-deployment-creators-setup)
 - [Configuration (.env)](#-configuration)
@@ -1111,7 +1100,7 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 - **Morning brief**: the deterministic blocks are built by code from the same cross-domain context the weekly digest assembles, and the model contributes exactly one interpretation paragraph — if it fails, the brief still arrives; an empty day is silence, not an empty brief. Stored in `weekly_digests` (`kind='daily_brief'`), visible in `/reports` along with "Build brief" and "Send a test message" buttons
 - **Nudges** — a list of specs (condition, text, cooldown, category toggle) walked by one engine; adding a nudge is a single entry. Three categories today: activity, nutrition, data freshness
 - One gate for everything outgoing: module off, dedupe, quiet hours (nudges only) and a daily message budget; replies to the owner are deliberately exempt from the budget
-- Answering questions: a reply to one of the bot's messages, or just "why is my hrv down?" — the model sees the message being replied to plus the context the last brief was built on, and nothing else. Deep analysis belongs in Claude.ai over MCP, which has 72 tools and a better model
+- Answering questions: a reply to one of the bot's messages, or just "why is my hrv down?" — the model sees the message being replied to plus the context the last brief was built on, and nothing else. Deep analysis belongs in Claude.ai over MCP, which has 73 tools and a better model
 - Signals and `day_context` reach both the weekly digest and the brief, with the hour attached — "coffee at 22:00" and "coffee at 09:00" are opposite facts wearing the same key
 - The channel sits behind a `Notifier` protocol — nothing above it knows about Telegram. The `signals` module is **off by default** and doubles as the master switch for the whole proactive layer: off means the bot says nothing at all. Brief and evening times, quiet hours, budget, nudge categories, the Garmin poll rate and the week template live on a card in `/settings`, and saving re-registers the jobs on the running scheduler **without a restart**
 - MCP: `get_signals`, `log_signal`, `get_day_context` — Claude can see what the owner told the bot
@@ -1184,7 +1173,7 @@ Brief time, evening time and the Garmin poll rate live in the database (the `/se
 
 Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streamable HTTP transport). Authorization: OAuth 2.0 + PKCE with signed Bearer token verification. Configured in the web dashboard settings.
 
-**72 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt.
+**73 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt.
 
 #### Read (32 tools)
 
@@ -1223,15 +1212,13 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `get_signals` | Signals captured by the bot: states, symptoms, exposures (filter by kind, key, dates) |
 | `get_day_context` | What kind of day it was: remote/office, gym, workload |
 
-#### Write (40 tools)
+#### Write (29 tools)
 
 | Tool | Description |
 | :--- | :--- |
 | `log_meal` | Record a meal with calories and macros |
 | `update_meal` | Update an existing meal entry |
-| `delete_meal` | Delete a meal entry |
 | `log_weight` | Record weight (overrides Garmin for the same date) |
-| `delete_weight` | Delete a weight entry (reactivates next priority) |
 | `log_glp1` | Record a GLP-1 injection (drug, dose, site) |
 | `log_hrt_dose` | Record an HRT dose (ml × concentration → mg; brand/lab/batch; conflict-gated) |
 | `add_hrt_cycle` | Start an HRT cycle (kind; closes the previous open one) |
@@ -1240,33 +1227,24 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `log_measurement` | Record body measurements (auto-computes Navy body-fat %) |
 | `log_note` | Add a note to any domain record (including lab results) |
 | `log_body_scan` | Record a body-composition scan from metrics (bridges into weight) |
-| `delete_body_scan` | Delete a body-composition scan (and its metrics) |
 | `log_lab_result` | Record a single biomarker (auto-computes the out-of-range flag) |
 | `log_lab_results` | Record a whole lab panel at once (a list of markers → results + dedup) |
-| `delete_lab_result` | Delete a lab result |
 | `log_event` | Manual timeline annotation (trip, illness, protocol change) |
 | `create_milestone` | Create a goal card (target value, deadline) |
 | `update_milestone` | Update a goal (incl. status: achieved/missed/paused) |
-| `delete_milestone` | Delete a goal |
 | `update_glp1` | Edit a GLP-1 injection (conflict-gated) |
-| `delete_glp1` | Delete a GLP-1 injection |
 | `log_side_effect` | Record a GLP-1 side effect (type, severity 1–5) |
-| `delete_side_effect` | Delete a side effect |
 | `add_dose_phase` | Add a GLP-1 dose phase (overlaid on the weight chart) |
-| `delete_dose_phase` | Delete a dose phase |
 | `log_skincare_observation` | Record a skin observation (inflammation, PIH, zone) |
-| `delete_skincare_observation` | Delete a skin observation |
 | `add_supplement` | Add a supplement to the catalog (conflict-gated) |
 | `update_supplement` | Update a catalog supplement |
 | `set_supplement_active` | Toggle a supplement active (conflict-gated on enable) |
-| `delete_supplement` | Delete a supplement from the catalog |
 | `update_measurement` | Edit a body measurement (recomputes Navy body-fat % / LBM) |
-| `delete_measurement` | Delete a body measurement |
 | `add_noise_marker` | Mark a range as noise (excluded from the weight trend) |
-| `delete_noise_marker` | Delete a noise marker (range re-enters the trend) |
 | `set_module` | Enable/disable an optional module |
 | `log_signal` | Record a signal (state / symptom / exposure) — through the same service the bot uses |
 | `generate_digest_now` | Generate a fresh weekly AI digest now |
+| `delete_record` | Delete one record from any domain by ID (`domain` + `record_id`) — weight, measurement, noise marker, lab result, goal, meal, GLP-1 (injection / side effect / dose phase), HRT (dose / cycle / cycle item), body scan, timeline event, skin observation, supplement, genetic variant, signal |
 
 > [!TIP]
 > **Override flow.** Every write tool that runs the conflict engine (weight, GLP-1, HRT, supplements, skincare, measurements, body composition) accepts `override=true`. On a hard block the tool returns `{"blocked": true, "violations": [...]}` instead of saving — retry the same call with `override=true` to save anyway (the equivalent of the UI's "Save anyway" button).

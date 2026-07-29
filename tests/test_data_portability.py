@@ -323,6 +323,31 @@ async def test_llm_export_includes_body_scans(db_session):
     assert metrics == {"body_fat_pct": 18.5, "skeletal_muscle_mass": 42.0}
 
 
+async def test_llm_export_since_keeps_open_periods_and_catalogs(db_session):
+    """``since`` narrows the digest for the MCP tool. Two things must survive the cut
+    regardless of when they started: a period still running today (an open dose
+    phase), and the catalogs, which are current state rather than history."""
+    from vitals.services import glp1_service, supplements_service
+
+    await glp1_service.add_dose_phase(
+        db_session, start_date=date(2020, 1, 1), drug="semaglutide", dose_mg=1.0
+    )
+    await glp1_service.add_dose_phase(
+        db_session, start_date=date(2019, 1, 1), end_date=date(2019, 6, 1),
+        drug="semaglutide", dose_mg=0.5,
+    )
+    await supplements_service.add_supplement(db_session, name="Creatine")
+    await db_session.commit()
+
+    out = await export_llm(db_session, since=date(2026, 1, 1))
+    assert [p["dose_mg"] for p in out["glp1_dose_phases"]] == [1.0]  # open phase kept
+    assert [s["name"] for s in out["supplements"]] == ["Creatine"]
+
+    # And with no arguments the export is still the whole history (the web download).
+    full = await export_llm(db_session)
+    assert len(full["glp1_dose_phases"]) == 2
+
+
 # ── Every domain reaches the LLM export ────────────────────────────────────────
 #
 # ``export_llm`` is a long hand-written function, and its real failure mode isn't

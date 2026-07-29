@@ -26,39 +26,26 @@ def _use_test_factory(session_factory, monkeypatch):
 GATED_WRITE_TOOLS: dict[str, str] = {
     "log_meal": "nutrition",
     "update_meal": "nutrition",
-    "delete_meal": "nutrition",
     "log_glp1": "glp1",
     "update_glp1": "glp1",
-    "delete_glp1": "glp1",
     "log_side_effect": "glp1",
-    "delete_side_effect": "glp1",
     "add_dose_phase": "glp1",
-    "delete_dose_phase": "glp1",
     "log_hrt_dose": "hrt",
     "update_hrt_dose": "hrt",
-    "delete_hrt_dose": "hrt",
     "log_hrt_side_effect": "hrt",
     "add_hrt_cycle": "hrt",
     "add_hrt_cycle_item": "hrt",
     "close_hrt_cycle": "hrt",
-    "delete_hrt_cycle": "hrt",
-    "delete_hrt_cycle_item": "hrt",
     "upsert_genetic_variant": "genetics",
-    "delete_genetic_variant": "genetics",
     "log_skincare": "skincare",
     "log_skincare_observation": "skincare",
-    "delete_skincare_observation": "skincare",
     "add_supplement": "supplements",
     "update_supplement": "supplements",
     "set_supplement_active": "supplements",
-    "delete_supplement": "supplements",
     "log_body_scan": "body_comp",
-    "delete_body_scan": "body_comp",
     "log_event": "timeline",
     "update_event": "timeline",
-    "delete_event": "timeline",
     "log_signal": "signals",
-    "delete_signal": "signals",
     "mark_signal_misparse": "signals",
     # Day context lives in the signals domain, which is also the master switch for
     # the whole proactive layer — off means the day is not being tracked at all.
@@ -69,20 +56,16 @@ GATED_WRITE_TOOLS: dict[str, str] = {
 # Write tools that deliberately have no module gate, each with the reason.
 UNGATED_WRITE_TOOLS: dict[str, str] = {
     "log_weight": "weight is a core module — always on",
-    "delete_weight": "weight is core",
     "log_measurement": "weight is core",
     "update_measurement": "weight is core",
-    "delete_measurement": "weight is core",
     "add_noise_marker": "weight is core",
-    "delete_noise_marker": "weight is core",
     "log_lab_result": "labs is core",
     "log_lab_results": "labs is core",
     "update_lab_result": "labs is core",
-    "delete_lab_result": "labs is core",
     "log_note": "writes the note column of an already-existing row in any domain",
     "create_milestone": "goals are core",
     "update_milestone": "goals are core",
-    "delete_milestone": "goals are core",
+    "delete_record": "gated per domain inside, from _DELETE_TARGETS — see below",
     "resolve_alert": "alerts are raised by every domain, core ones included",
     "override_alert": "same — an alert is not owned by an optional module",
     "set_module": "this is the toggle itself",
@@ -120,6 +103,45 @@ async def test_gated_write_tool_refuses_when_module_is_off(tool_name, module_key
             if p.default is inspect.Parameter.empty]
     result = await tool(*args)
     assert result == {"error": f"module '{module_key}' is disabled"}
+
+
+@pytest.mark.parametrize(
+    "domain,module_key",
+    sorted(
+        (domain, key)
+        for domain, (key, _, _) in mcp_router._DELETE_TARGETS.items()
+        if key is not None
+    ),
+)
+async def test_delete_record_refuses_a_disabled_domain(domain, module_key):
+    """``delete_record`` carries the gate for eighteen former tools, so it is checked
+    per domain: the map is the only place a domain can lose its module key."""
+    assert await mcp_router.delete_record(domain, 1) == {
+        "error": f"module '{module_key}' is disabled"
+    }
+
+
+async def test_delete_record_unknown_domain_lists_the_valid_ones():
+    result = await mcp_router.delete_record("meals", 1)
+    assert "Unknown domain 'meals'" in result["error"]
+    assert "nutrition" in result["error"]
+
+
+async def test_delete_record_deletes_a_core_domain_row(db_session):
+    """Core domains have no gate — and a missing id is a clean ``deleted: false``."""
+    from datetime import date
+
+    from vitals.services import weight_service
+
+    row = await weight_service.log_weight(db_session, on_date=date(2026, 7, 1), weight_kg=90.0)
+    await db_session.commit()
+
+    assert await mcp_router.delete_record("weight", row.id) == {
+        "deleted": True, "domain": "weight", "record_id": row.id,
+    }
+    assert await mcp_router.delete_record("weight", row.id) == {
+        "deleted": False, "domain": "weight", "record_id": row.id,
+    }
 
 
 async def test_gated_write_tool_works_once_the_module_is_on():

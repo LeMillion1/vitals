@@ -14,16 +14,18 @@ Response conventions (a stable contract the model can rely on):
   * A hard conflict block on a write — a dict ``{"blocked": true, "violations":
     [...], "message": ..., "hint": ...}`` (see ``_conflict_payload``); the model
     can retry the same call with ``override=True``.
-  * A delete — ``{"deleted": <bool>, "<entity>_id": <id>}``.
+  * A delete — ``{"deleted": <bool>, "domain": <str>, "record_id": <id>}``
+    (one ``delete_record`` tool serves every domain; see ``_DELETE_TARGETS``).
   * A write to a switched-off optional domain — ``{"error": "module '<key>' is
     disabled"}``; ``get_modules`` says which are on.
 """
 from __future__ import annotations
 
 import functools
+import importlib
 import logging
 import os
-from datetime import date as date_type
+from datetime import date as date_type, timedelta
 from typing import Optional
 
 from fastmcp import FastMCP
@@ -515,19 +517,6 @@ async def upsert_genetic_variant(
 
 
 @mcp.tool()
-@gated("genetics")
-async def delete_genetic_variant(variant_id: int) -> dict:
-    """Deletes a genetic variant by ID. WRITE tool — immediate."""
-    from vitals.services import genetics_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await genetics_service.delete_variant(session, variant_id)
-        await session.commit()
-        return {"deleted": ok, "variant_id": variant_id}
-
-
-@mcp.tool()
 async def get_active_alerts() -> list[dict]:
     """Returns currently active warning alerts and conflict notifications."""
     session_factory = get_session_factory()
@@ -772,19 +761,6 @@ async def update_meal(
 
 
 @mcp.tool()
-@gated("nutrition")
-async def delete_meal(meal_id: int) -> dict:
-    """Deletes a meal by ID. WRITE tool — deletion is immediate."""
-    from vitals.services import nutrition_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await nutrition_service.delete_meal(session, meal_id)
-        await session.commit()
-        return {"deleted": ok, "meal_id": meal_id}
-
-
-@mcp.tool()
 async def search_meals(
     query: Optional[str] = None,
     start_date: Optional[str] = None,
@@ -842,19 +818,6 @@ async def log_weight(
             return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, row)
-
-
-@mcp.tool()
-async def delete_weight(weight_id: int) -> dict:
-    """Deletes a weight log by ID. If it was the active entry, the next highest
-    priority log for that date is reactivated. WRITE tool."""
-    from vitals.services import weight_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await weight_service.delete_weight_log(session, weight_id)
-        await session.commit()
-        return {"deleted": ok, "weight_id": weight_id}
 
 
 # ── GLP-1 tools ─────────────────────────────────────────────────────────────
@@ -1118,19 +1081,6 @@ async def update_hrt_dose(
 
 @mcp.tool()
 @gated("hrt")
-async def delete_hrt_dose(dose_id: int) -> dict:
-    """Deletes a recorded HRT/TRT administration by ID. WRITE tool — immediate."""
-    from vitals.services import hrt_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await hrt_service.delete_dose(session, dose_id)
-        await session.commit()
-        return {"deleted": ok, "dose_id": dose_id}
-
-
-@mcp.tool()
-@gated("hrt")
 async def log_hrt_side_effect(
     effect_type: str,
     severity: int,
@@ -1177,33 +1127,6 @@ async def close_hrt_cycle(cycle_id: int, end_date: Optional[str] = None) -> dict
             return {"error": f"cycle {cycle_id} not found"}
         await session.commit()
         return await serialize_written(session, cycle)
-
-
-@mcp.tool()
-@gated("hrt")
-async def delete_hrt_cycle(cycle_id: int) -> dict:
-    """Deletes an HRT cycle and its compound plans. WRITE tool — immediate."""
-    from vitals.services import hrt_cycle_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await hrt_cycle_service.delete_cycle(session, cycle_id)
-        await session.commit()
-        return {"deleted": ok, "cycle_id": cycle_id}
-
-
-@mcp.tool()
-@gated("hrt")
-async def delete_hrt_cycle_item(item_id: int) -> dict:
-    """Removes one compound plan from an HRT cycle, leaving the cycle itself.
-    WRITE tool — immediate."""
-    from vitals.services import hrt_cycle_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await hrt_cycle_service.delete_cycle_item(session, item_id)
-        await session.commit()
-        return {"deleted": ok, "item_id": item_id}
 
 
 @mcp.tool()
@@ -1397,6 +1320,66 @@ async def get_notes(
     return results[:limit]
 
 
+# ── Deletion (one tool, every domain) ─────────────────────────────────────────
+
+# domain → (module key gating the write, service module, delete function).
+# Every delete service happens to share one signature — ``(session, id) -> bool`` —
+# which is what lets a single tool stand in for the eighteen near-identical ones
+# that used to live here, each differing only in the noun it echoed back. The tool
+# list is re-read at the top of every conversation, so a fifth of it was spent
+# spelling out delete_meal / delete_glp1 / delete_hrt_cycle_item.
+_DELETE_TARGETS: dict[str, tuple[Optional[str], str, str]] = {
+    "weight": (None, "weight_service", "delete_weight_log"),
+    "measurement": (None, "weight_service", "delete_body_measurement"),
+    "noise_marker": (None, "weight_service", "delete_noise_marker"),
+    "labs": (None, "labs_service", "delete_result"),
+    "milestones": (None, "milestones_service", "delete_milestone"),
+    "nutrition": ("nutrition", "nutrition_service", "delete_meal"),
+    "glp1": ("glp1", "glp1_service", "delete_injection"),
+    "glp1_side_effect": ("glp1", "glp1_service", "delete_side_effect"),
+    "glp1_dose_phase": ("glp1", "glp1_service", "delete_dose_phase"),
+    "hrt_dose": ("hrt", "hrt_service", "delete_dose"),
+    "hrt_cycle": ("hrt", "hrt_cycle_service", "delete_cycle"),
+    "hrt_cycle_item": ("hrt", "hrt_cycle_service", "delete_cycle_item"),
+    "body_comp": ("body_comp", "body_scan_service", "delete_scan"),
+    "timeline": ("timeline", "timeline_service", "delete_annotation"),
+    "skincare_observation": ("skincare", "skincare_service", "delete_observation"),
+    "supplements": ("supplements", "supplements_service", "delete_supplement"),
+    "genetics": ("genetics", "genetics_service", "delete_variant"),
+    "signals": ("signals", "signals_service", "delete_signal"),
+}
+
+
+@mcp.tool()
+async def delete_record(domain: str, record_id: int) -> dict:
+    """Deletes one record from any domain by its ID. WRITE tool — immediate.
+
+    ``domain`` is one of: weight, measurement (body tape), noise_marker, labs (one
+    result), milestones (a goal card), nutrition (a meal), glp1 (an injection),
+    glp1_side_effect, glp1_dose_phase, hrt_dose, hrt_cycle (with its compound
+    plans), hrt_cycle_item (one plan, cycle kept), body_comp (a scan with its
+    metrics), timeline (a manual event), skincare_observation, supplements (a
+    catalog entry), genetics (a variant), signals (one parsed signal — the raw
+    message stays in the lake; for a whole batch parsed wrongly out of one message
+    use ``mark_signal_misparse`` instead).
+
+    Deleting a weight log reactivates the next-highest-priority log for that date.
+    Returns ``{"deleted": false, ...}`` when nothing has that id."""
+    target = _DELETE_TARGETS.get(domain)
+    if target is None:
+        return {"error": f"Unknown domain '{domain}'. Use: {', '.join(_DELETE_TARGETS)}"}
+    module_key, service_name, fn_name = target
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        if module_key and not await _module_enabled(session, module_key):
+            return {"error": f"module '{module_key}' is disabled"}
+        service = importlib.import_module(f"vitals.services.{service_name}")
+        ok = await getattr(service, fn_name)(session, record_id)
+        await session.commit()
+        return {"deleted": ok, "domain": domain, "record_id": record_id}
+
+
 # ── Body composition tools (InBody / МедАсс — optional module) ────────────────
 def _serialize_scan(scan: BodyScan) -> dict:
     """A scan plus its metrics nested (relationship must be loaded already)."""
@@ -1501,20 +1484,6 @@ async def log_body_scan(
         await session.commit()
         full = await body_scan_service.get_scan(session, scan.id)
         return _serialize_scan(full) if full else {"scan_id": scan.id}
-
-
-@mcp.tool()
-@gated("body_comp")
-async def delete_body_scan(scan_id: int) -> dict:
-    """Deletes a body-composition scan and its metrics. WRITE tool. No-op with an
-    error if the body_comp module is disabled."""
-    from vitals.services import body_scan_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await body_scan_service.delete_scan(session, scan_id)
-        await session.commit()
-        return {"deleted": ok, "scan_id": scan_id}
 
 
 # ── Labs tools ──────────────────────────────────────────────────────────────
@@ -1681,18 +1650,6 @@ async def log_lab_results(
         }
 
 
-@mcp.tool()
-async def delete_lab_result(result_id: int) -> dict:
-    """Deletes a lab result by ID. WRITE tool — deletion is immediate."""
-    from vitals.services import labs_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await labs_service.delete_result(session, result_id)
-        await session.commit()
-        return {"deleted": ok, "result_id": result_id}
-
-
 # ── Timeline tools ───────────────────────────────────────────────────────────
 @mcp.tool()
 async def get_timeline(
@@ -1801,19 +1758,6 @@ async def update_event(
         return await serialize_written(session, row)
 
 
-@mcp.tool()
-@gated("timeline")
-async def delete_event(event_id: int) -> dict:
-    """Deletes a manual Timeline annotation by ID. WRITE tool — immediate."""
-    from vitals.services import timeline_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await timeline_service.delete_annotation(session, event_id)
-        await session.commit()
-        return {"deleted": ok, "event_id": event_id}
-
-
 # ── Cross-domain + whole-lake tools ──────────────────────────────────────────
 @mcp.tool()
 async def get_full_snapshot(
@@ -1836,18 +1780,39 @@ async def get_full_snapshot(
         )
 
 
+EXPORT_DEFAULT_DAYS = 90
+
+
 @mcp.tool()
-async def export_everything() -> dict:
-    """Returns the entire health history as one compact, secret-free, LLM-ready
-    export grouped by domain (weight, measurements, body scans, GLP-1, labs,
-    Garmin, workouts, nutrition, skincare, supplements, genetics, milestones,
-    timeline). This is the way to read the full long-term history in a single
-    call rather than paging each domain's newest-100 read tool. Read-only."""
+async def export_everything(
+    domains: Optional[list[str]] = None, since: Optional[str] = None
+) -> dict:
+    """Returns the health history as one compact, secret-free, LLM-ready export
+    grouped by domain (weight, measurements, body scans, GLP-1, HRT, labs, Garmin,
+    workouts, nutrition, skincare, supplements, genetics, signals, day context,
+    milestones, timeline). This is the way to read long-term history in a single
+    call rather than paging each domain's newest-100 read tool. Read-only.
+
+    Defaults to the **last 90 days**: the whole lake is years of daily Garmin rows
+    with per-minute sleep and would fill the conversation before the question is
+    asked. Widen deliberately — ``since="2020-01-01"`` (any early date) for the
+    entire history, and/or ``domains=["biomarkers", "weight_history"]`` to pull a
+    couple of areas in full instead of everything. Unknown domain names are
+    rejected with the list of valid ones."""
     from vitals.services import data_portability_service
+    from vitals.utils.timeutils import today_local
+
+    default_since = today_local() - timedelta(days=EXPORT_DEFAULT_DAYS)
+    cutoff = _parse_date(since, default_since, field="since")
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        return await data_portability_service.export_llm(session)
+        try:
+            return await data_portability_service.export_llm(
+                session, domains=domains, since=cutoff
+            )
+        except ValueError as e:
+            return {"error": str(e)}
 
 
 @mcp.tool()
@@ -1997,18 +1962,6 @@ async def update_milestone(
         return await serialize_written(session, row)
 
 
-@mcp.tool()
-async def delete_milestone(milestone_id: int) -> dict:
-    """Deletes a goal card by ID. WRITE tool — deletion is immediate."""
-    from vitals.services import milestones_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await milestones_service.delete_milestone(session, milestone_id)
-        await session.commit()
-        return {"deleted": ok, "milestone_id": milestone_id}
-
-
 # ── GLP-1 write completeness (edit/delete injection, side effects, phases) ────
 @mcp.tool()
 @gated("glp1")
@@ -2051,19 +2004,6 @@ async def update_glp1(
 
 @mcp.tool()
 @gated("glp1")
-async def delete_glp1(injection_id: int) -> dict:
-    """Deletes a GLP-1 injection by ID. WRITE tool — deletion is immediate."""
-    from vitals.services import glp1_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await glp1_service.delete_injection(session, injection_id)
-        await session.commit()
-        return {"deleted": ok, "injection_id": injection_id}
-
-
-@mcp.tool()
-@gated("glp1")
 async def log_side_effect(
     effect_type: str,
     severity: int,
@@ -2084,19 +2024,6 @@ async def log_side_effect(
         )
         await session.commit()
         return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("glp1")
-async def delete_side_effect(effect_id: int) -> dict:
-    """Deletes a GLP-1 side-effect entry by ID. WRITE tool."""
-    from vitals.services import glp1_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await glp1_service.delete_side_effect(session, effect_id)
-        await session.commit()
-        return {"deleted": ok, "effect_id": effect_id}
 
 
 @mcp.tool()
@@ -2125,19 +2052,6 @@ async def add_dose_phase(
         return await serialize_written(session, row)
 
 
-@mcp.tool()
-@gated("glp1")
-async def delete_dose_phase(phase_id: int) -> dict:
-    """Deletes a GLP-1 dose phase by ID. WRITE tool."""
-    from vitals.services import glp1_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await glp1_service.delete_dose_phase(session, phase_id)
-        await session.commit()
-        return {"deleted": ok, "phase_id": phase_id}
-
-
 # ── Skincare observations ─────────────────────────────────────────────────────
 @mcp.tool()
 @gated("skincare")
@@ -2163,19 +2077,6 @@ async def log_skincare_observation(
         )
         await session.commit()
         return await serialize_written(session, row)
-
-
-@mcp.tool()
-@gated("skincare")
-async def delete_skincare_observation(observation_id: int) -> dict:
-    """Deletes a skin-status observation by ID. WRITE tool."""
-    from vitals.services import skincare_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await skincare_service.delete_observation(session, observation_id)
-        await session.commit()
-        return {"deleted": ok, "observation_id": observation_id}
 
 
 # ── Supplements catalog CRUD ──────────────────────────────────────────────────
@@ -2277,19 +2178,6 @@ async def set_supplement_active(
         return await serialize_written(session, row)
 
 
-@mcp.tool()
-@gated("supplements")
-async def delete_supplement(supplement_id: int) -> dict:
-    """Deletes a supplement from the catalog by ID. WRITE tool."""
-    from vitals.services import supplements_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await supplements_service.delete_supplement(session, supplement_id)
-        await session.commit()
-        return {"deleted": ok, "supplement_id": supplement_id}
-
-
 # ── Body measurement edit/delete + noise markers ──────────────────────────────
 @mcp.tool()
 async def update_measurement(
@@ -2325,18 +2213,6 @@ async def update_measurement(
 
 
 @mcp.tool()
-async def delete_measurement(measurement_id: int) -> dict:
-    """Deletes a body-measurement row by ID. WRITE tool."""
-    from vitals.services import weight_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await weight_service.delete_body_measurement(session, measurement_id)
-        await session.commit()
-        return {"deleted": ok, "measurement_id": measurement_id}
-
-
-@mcp.tool()
 async def add_noise_marker(
     start_date: str,
     reason: str,
@@ -2359,19 +2235,6 @@ async def add_noise_marker(
         )
         await session.commit()
         return await serialize_written(session, row)
-
-
-@mcp.tool()
-async def delete_noise_marker(marker_id: int) -> dict:
-    """Deletes a noise marker by ID — its date range re-enters the weight trend.
-    WRITE tool."""
-    from vitals.services import weight_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await weight_service.delete_noise_marker(session, marker_id)
-        await session.commit()
-        return {"deleted": ok, "marker_id": marker_id}
 
 
 # ── Modules (optional-domain toggles) ─────────────────────────────────────────
@@ -2581,22 +2444,6 @@ async def log_signal(
             return {"error": "kind must be state, symptom or exposure, and key must be non-empty"}
         await session.commit()
         return await serialize_written(session, rows[0])
-
-
-@mcp.tool()
-@gated("signals")
-async def delete_signal(signal_id: int) -> dict:
-    """Deletes one signal row that is simply wrong — a misread number, a symptom
-    that was never mentioned. The raw message stays in the lake either way, so
-    nothing the owner actually said is lost. For a whole batch parsed wrongly out
-    of one message, use ``mark_signal_misparse``. WRITE tool — immediate."""
-    from vitals.services import signals_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ok = await signals_service.delete_signal(session, signal_id)
-        await session.commit()
-        return {"deleted": ok, "signal_id": signal_id}
 
 
 @mcp.tool()

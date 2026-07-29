@@ -76,7 +76,9 @@ async def test_delete_signal(db_session, session_factory, signals_module_on, mon
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
     row = await mcp_router.log_signal(key="headache", kind="symptom", value_num=4)
-    assert await mcp_router.delete_signal(row["id"]) == {"deleted": True, "signal_id": row["id"]}
+    assert await mcp_router.delete_record("signals", row["id"]) == {
+        "deleted": True, "domain": "signals", "record_id": row["id"],
+    }
     assert await mcp_router.get_signals() == []
 
 

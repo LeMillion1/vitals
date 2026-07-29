@@ -44,20 +44,26 @@ async def test_glp1_injection_update_and_delete():
         "error": "Injection 9999 not found"
     }
 
-    assert await mcp_router.delete_glp1(iid) == {"deleted": True, "injection_id": iid}
+    assert await mcp_router.delete_record("glp1", iid) == {
+        "deleted": True, "domain": "glp1", "record_id": iid
+    }
 
 
 async def test_side_effect_log_and_delete():
     row = await mcp_router.log_side_effect(effect_type="nausea", severity=3, on_date="2026-07-02")
     assert row["effect_type"] == "nausea"
     assert row["severity"] == 3
-    assert await mcp_router.delete_side_effect(row["id"]) == {"deleted": True, "effect_id": row["id"]}
+    assert await mcp_router.delete_record("glp1_side_effect", row["id"]) == {
+        "deleted": True, "domain": "glp1_side_effect", "record_id": row["id"]
+    }
 
 
 async def test_dose_phase_add_and_delete():
     row = await mcp_router.add_dose_phase(start_date="2026-06-01", drug="tirzepatide", dose_mg=5.0)
     assert row["dose_mg"] == 5.0
-    assert await mcp_router.delete_dose_phase(row["id"]) == {"deleted": True, "phase_id": row["id"]}
+    assert await mcp_router.delete_record("glp1_dose_phase", row["id"]) == {
+        "deleted": True, "domain": "glp1_dose_phase", "record_id": row["id"]
+    }
 
 
 # ── A6 skincare observation ───────────────────────────────────────────────────
@@ -65,8 +71,8 @@ async def test_skincare_observation_log_and_delete():
     row = await mcp_router.log_skincare_observation(on_date="2026-07-03", inflammation=2, pih=1, zone="cheeks")
     assert row["inflammation"] == 2
     assert row["zone"] == "cheeks"
-    assert await mcp_router.delete_skincare_observation(row["id"]) == {
-        "deleted": True, "observation_id": row["id"]
+    assert await mcp_router.delete_record("skincare_observation", row["id"]) == {
+        "deleted": True, "domain": "skincare_observation", "record_id": row["id"]
     }
 
 
@@ -84,7 +90,9 @@ async def test_supplement_crud():
     assert updated["name"] == "Creatine Monohydrate"
 
     assert "error" in await mcp_router.update_supplement(9999, name="x")
-    assert await mcp_router.delete_supplement(sid) == {"deleted": True, "supplement_id": sid}
+    assert await mcp_router.delete_record("supplements", sid) == {
+        "deleted": True, "domain": "supplements", "record_id": sid
+    }
 
 
 # ── A8 measurement edit/delete ────────────────────────────────────────────────
@@ -96,7 +104,9 @@ async def test_measurement_update_and_delete():
     assert updated["waist_cm"] == 84.0
 
     assert "error" in await mcp_router.update_measurement(9999, on_date="2026-07-04", waist_cm=80.0)
-    assert await mcp_router.delete_measurement(mid) == {"deleted": True, "measurement_id": mid}
+    assert await mcp_router.delete_record("measurement", mid) == {
+        "deleted": True, "domain": "measurement", "record_id": mid
+    }
 
 
 # ── A9 noise markers ──────────────────────────────────────────────────────────
@@ -107,7 +117,9 @@ async def test_noise_marker_add_and_delete():
     logs = await mcp_router.get_weight_logs()
     assert any(m["id"] == mid for m in logs["noise_markers"])
 
-    assert await mcp_router.delete_noise_marker(mid) == {"deleted": True, "marker_id": mid}
+    assert await mcp_router.delete_record("noise_marker", mid) == {
+        "deleted": True, "domain": "noise_marker", "record_id": mid
+    }
 
 
 # ── A10 modules ───────────────────────────────────────────────────────────────
