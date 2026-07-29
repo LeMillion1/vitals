@@ -35,8 +35,16 @@ GATED_WRITE_TOOLS: dict[str, str] = {
     "add_dose_phase": "glp1",
     "delete_dose_phase": "glp1",
     "log_hrt_dose": "hrt",
+    "update_hrt_dose": "hrt",
+    "delete_hrt_dose": "hrt",
+    "log_hrt_side_effect": "hrt",
     "add_hrt_cycle": "hrt",
     "add_hrt_cycle_item": "hrt",
+    "close_hrt_cycle": "hrt",
+    "delete_hrt_cycle": "hrt",
+    "delete_hrt_cycle_item": "hrt",
+    "upsert_genetic_variant": "genetics",
+    "delete_genetic_variant": "genetics",
     "log_skincare": "skincare",
     "log_skincare_observation": "skincare",
     "delete_skincare_observation": "skincare",
@@ -55,6 +63,7 @@ GATED_WRITE_TOOLS: dict[str, str] = {
     # Day context lives in the signals domain, which is also the master switch for
     # the whole proactive layer — off means the day is not being tracked at all.
     "log_day_context": "signals",
+    "set_week_template": "signals",
 }
 
 # Write tools that deliberately have no module gate, each with the reason.
@@ -80,8 +89,8 @@ UNGATED_WRITE_TOOLS: dict[str, str] = {
     "generate_digest_now": "reports is core",
 }
 
-_WRITE_PREFIXES = ("log_", "add_", "create_", "update_", "delete_", "set_", "mark_",
-                   "close_", "resolve_", "override_", "generate_")
+_WRITE_PREFIXES = ("log_", "add_", "create_", "update_", "upsert_", "delete_", "set_",
+                   "mark_", "close_", "resolve_", "override_", "generate_")
 
 
 def _write_tool_names() -> set[str]:

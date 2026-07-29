@@ -120,3 +120,63 @@ async def test_log_day_context_rejects_an_unknown_answer(
     assert "error" in await mcp_router.log_day_context({})
     # Nothing half-applied.
     assert await mcp_router.get_day_context() == []
+
+
+async def test_get_proactive_state(db_session, session_factory, signals_module_on, monkeypatch):
+    """What the bot is set to do, and what it actually said — the half of the
+    proactive layer Claude could only guess at."""
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+
+    from vitals.models.proactive import Notification
+    from vitals.services.proactive import day_plan
+    from vitals.utils.timeutils import now_local
+
+    db_session.add(
+        Notification(
+            sent_at=now_local(),
+            category="brief",
+            dedupe_key="brief:2026-07-20",
+            channel="telegram",
+            payload={"text": "Доброе утро"},
+        )
+    )
+    await db_session.commit()
+
+    state = await mcp_router.get_proactive_state()
+    assert state["enabled"] is True
+    assert state["prefs"]["daily_budget"] == 4
+    assert set(state["week_template"]) == set(day_plan.WEEKDAYS)
+    assert state["week_template"]["sat"]["where"] == "off"
+    assert [n["dedupe_key"] for n in state["recent_notifications"]] == ["brief:2026-07-20"]
+
+
+async def test_set_week_template_only_touches_the_days_it_names(
+    db_session, session_factory, signals_module_on, monkeypatch
+):
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+
+    await mcp_router.set_week_template({"mon": {"where": "remote", "gym": True}})
+    # Naming Tuesday must not reset Monday back to the neutral default, and giving
+    # only ``gym`` must not reset that day's ``where``.
+    stored = await mcp_router.set_week_template({"tue": {"gym": True}})
+
+    assert stored["mon"] == {"where": "remote", "gym": True}
+    assert stored["tue"]["gym"] is True
+    assert stored["tue"]["where"] == "office"
+    assert stored["sat"]["where"] == "off"  # untouched default
+
+    state = await mcp_router.get_proactive_state()
+    assert state["week_template"]["mon"]["where"] == "remote"
+
+
+async def test_set_week_template_rejects_junk(
+    db_session, session_factory, signals_module_on, monkeypatch
+):
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+
+    assert "error" in await mcp_router.set_week_template({})
+    assert "error" in await mcp_router.set_week_template({"monday": {"gym": True}})
+    assert "error" in await mcp_router.set_week_template({"mon": "remote"})
+    # Nothing half-applied: the stored template is still the neutral default.
+    state = await mcp_router.get_proactive_state()
+    assert state["week_template"]["mon"]["where"] == "office"

@@ -448,18 +448,83 @@ async def get_skincare_logs(
 
 
 @mcp.tool()
-async def get_genetics_snps(limit: int = 100) -> list[dict]:
+async def get_genetics_snps(
+    gene: Optional[str] = None, rsid: Optional[str] = None, limit: int = 100
+) -> list[dict]:
     """Retrieves digitized SNPs (genetic variants) with a description of their effect.
-    Defaults to the first 100 variants (gene, rsid order)."""
+    Filter by ``gene`` ("MTHFR") or ``rsid`` ("rs1801133") — both match regardless of
+    case. Unfiltered it returns the first ``limit`` variants in (gene, rsid) order;
+    a whole-genome import is far larger than that, so ask for the marker you mean.
+    READ tool."""
     session_factory = get_session_factory()
     async with session_factory() as session:
-        stmt = (
-            select(GeneticVariant)
-            .order_by(GeneticVariant.gene, GeneticVariant.rsid)
-            .limit(limit)
-        )
+        stmt = select(GeneticVariant)
+        if gene:
+            stmt = stmt.where(func.lower(GeneticVariant.gene) == gene.strip().lower())
+        if rsid:
+            stmt = stmt.where(func.lower(GeneticVariant.rsid) == rsid.strip().lower())
+        stmt = stmt.order_by(GeneticVariant.gene, GeneticVariant.rsid).limit(limit)
         variants = (await session.execute(stmt)).scalars().all()
         return [serialize_row(v) for v in variants]
+
+
+@mcp.tool()
+@gated("genetics")
+async def upsert_genetic_variant(
+    gene: str,
+    rsid: str,
+    genotype: Optional[str] = None,
+    marker: Optional[str] = None,
+    impact: Optional[str] = None,
+    impact_domain: Optional[str] = None,
+    interpretation: Optional[str] = None,
+    action_notes: Optional[str] = None,
+) -> dict:
+    """Adds or updates one genetic variant, keyed by ``rsid`` — restating a known
+    rsid edits that row instead of duplicating it. ``marker`` is the slug the
+    conflict rules match on (e.g. "mthfr_c677t_tt"); without one the variant is
+    reference-only. Fields left out keep their stored value. WRITE tool."""
+    from vitals.services import genetics_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        # upsert_by_rsid replaces the genotype unconditionally — the VCF importer
+        # always has one. A conversation adding just an interpretation does not,
+        # and must not blank the genotype the import wrote.
+        if genotype is None:
+            existing = (
+                await session.execute(
+                    select(GeneticVariant).where(GeneticVariant.rsid == rsid)
+                )
+            ).scalar_one_or_none()
+            genotype = existing.genotype if existing is not None else None
+        row = await genetics_service.upsert_by_rsid(
+            session,
+            gene=gene,
+            rsid=rsid,
+            genotype=genotype,
+            marker=marker,
+            impact=impact,
+            impact_domain=impact_domain,
+            interpretation=interpretation,
+            action_notes=action_notes,
+            source=Source.MANUAL.value,
+        )
+        await session.commit()
+        return await serialize_written(session, row)
+
+
+@mcp.tool()
+@gated("genetics")
+async def delete_genetic_variant(variant_id: int) -> dict:
+    """Deletes a genetic variant by ID. WRITE tool — immediate."""
+    from vitals.services import genetics_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        ok = await genetics_service.delete_variant(session, variant_id)
+        await session.commit()
+        return {"deleted": ok, "variant_id": variant_id}
 
 
 @mcp.tool()
@@ -986,6 +1051,159 @@ async def add_hrt_cycle_item(
             return {"error": f"cycle {cycle_id} not found"}
         await session.commit()
         return await serialize_written(session, item)
+
+
+@mcp.tool()
+@gated("hrt")
+async def update_hrt_dose(
+    dose_id: int,
+    compound_key: Optional[str] = None,
+    dose: Optional[float] = None,
+    unit: Optional[str] = None,
+    volume_ml: Optional[float] = None,
+    concentration_mg_ml: Optional[float] = None,
+    on_date: Optional[str] = None,
+    brand: Optional[str] = None,
+    lab: Optional[str] = None,
+    batch: Optional[str] = None,
+    site: Optional[str] = None,
+    note: Optional[str] = None,
+    override: bool = False,
+) -> dict:
+    """Updates a recorded HRT/TRT administration by ID. Only the fields you pass are
+    changed; everything left out keeps its stored value, including the dose's own
+    date. A new ``volume_ml`` or ``concentration_mg_ml`` without a ``dose`` recomputes
+    the mg. WRITE tool — on a hard block returns ``{"blocked": true, ...}``; retry
+    with ``override=True``."""
+    from vitals.services import hrt_service
+
+    session_factory = get_session_factory()
+    parsed_date = _parse_date(on_date, field="on_date")
+
+    async with session_factory() as session:
+        merged = await _merged(
+            session,
+            HrtDose,
+            dose_id,
+            compound_key=compound_key,
+            date=parsed_date,
+            dose=dose,
+            unit=unit,
+            volume_ml=volume_ml,
+            concentration_mg_ml=concentration_mg_ml,
+            brand=brand,
+            lab=lab,
+            batch=batch,
+            site=site,
+            note=note,
+        )
+        if merged is None:
+            return {"error": f"HRT dose {dose_id} not found"}
+        # A new volume or concentration is a request to recompute the mg, and an
+        # explicit dose wins over both — so carrying the stored one forward here
+        # would silently ignore what the call actually changed.
+        if dose is None and (volume_ml is not None or concentration_mg_ml is not None):
+            merged["dose"] = None
+        try:
+            row = await hrt_service.update_dose(
+                session, dose_id, on_date=merged.pop("date"), override=override, **merged
+            )
+        except ConflictBlocked as e:
+            return _conflict_payload(e)
+        except ValueError as e:
+            return {"error": str(e)}
+        await session.commit()
+        return await serialize_written(session, row)
+
+
+@mcp.tool()
+@gated("hrt")
+async def delete_hrt_dose(dose_id: int) -> dict:
+    """Deletes a recorded HRT/TRT administration by ID. WRITE tool — immediate."""
+    from vitals.services import hrt_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        ok = await hrt_service.delete_dose(session, dose_id)
+        await session.commit()
+        return {"deleted": ok, "dose_id": dose_id}
+
+
+@mcp.tool()
+@gated("hrt")
+async def log_hrt_side_effect(
+    effect_type: str,
+    severity: int,
+    on_date: Optional[str] = None,
+    note: Optional[str] = None,
+) -> dict:
+    """Records an HRT/TRT side effect (e.g. "акне", "отёки") with a severity 1–5 for
+    a date (default today). Distinct from ``log_side_effect``, which belongs to
+    GLP-1. WRITE tool — saved immediately."""
+    from vitals.services import hrt_service
+    from vitals.utils.timeutils import today_local
+
+    session_factory = get_session_factory()
+    parsed_date = _parse_date(on_date, today_local(), field="on_date")
+
+    async with session_factory() as session:
+        try:
+            row = await hrt_service.log_side_effect(
+                session, on_date=parsed_date, effect_type=effect_type,
+                severity=severity, note=note,
+            )
+        except ValueError as e:
+            return {"error": str(e)}
+        await session.commit()
+        return await serialize_written(session, row)
+
+
+@mcp.tool()
+@gated("hrt")
+async def close_hrt_cycle(cycle_id: int, end_date: Optional[str] = None) -> dict:
+    """Closes an HRT cycle by giving it an end date (default today). WRITE tool."""
+    from vitals.services import hrt_cycle_service
+    from vitals.utils.timeutils import today_local
+
+    session_factory = get_session_factory()
+    end = _parse_date(end_date, today_local(), field="end_date")
+
+    async with session_factory() as session:
+        try:
+            cycle = await hrt_cycle_service.close_cycle(session, cycle_id, end_date=end)
+        except ValueError as e:
+            return {"error": str(e)}
+        if cycle is None:
+            return {"error": f"cycle {cycle_id} not found"}
+        await session.commit()
+        return await serialize_written(session, cycle)
+
+
+@mcp.tool()
+@gated("hrt")
+async def delete_hrt_cycle(cycle_id: int) -> dict:
+    """Deletes an HRT cycle and its compound plans. WRITE tool — immediate."""
+    from vitals.services import hrt_cycle_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        ok = await hrt_cycle_service.delete_cycle(session, cycle_id)
+        await session.commit()
+        return {"deleted": ok, "cycle_id": cycle_id}
+
+
+@mcp.tool()
+@gated("hrt")
+async def delete_hrt_cycle_item(item_id: int) -> dict:
+    """Removes one compound plan from an HRT cycle, leaving the cycle itself.
+    WRITE tool — immediate."""
+    from vitals.services import hrt_cycle_service
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        ok = await hrt_cycle_service.delete_cycle_item(session, item_id)
+        await session.commit()
+        return {"deleted": ok, "item_id": item_id}
 
 
 @mcp.tool()
@@ -2451,6 +2669,62 @@ async def log_day_context(answers: dict, on_date: Optional[str] = None) -> dict:
             row = await day_plan.record_answer(session, parsed_date, key, value)
         await session.commit()
         return await serialize_written(session, row)
+
+
+@mcp.tool()
+async def get_proactive_state(limit: int = 10) -> dict:
+    """Retrieves the state of the proactive Telegram layer: whether it is on, its
+    settings (message times, daily budget, which nudge categories are allowed), the
+    week template (what each weekday is assumed to be until the owner says
+    otherwise), and the last messages the bot actually sent. Read this before
+    explaining why the bot did or didn't say something. READ tool — the settings are
+    read-only here; retiming or muting the bot is done in Settings, by the owner."""
+    from vitals.models.proactive import Notification
+    from vitals.services.proactive import day_plan, prefs
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = select(Notification).order_by(Notification.sent_at.desc()).limit(limit)
+        sent = (await session.execute(stmt)).scalars().all()
+        return {
+            "enabled": await prefs.bot_enabled(session),
+            "prefs": await prefs.get_prefs(session),
+            "week_template": await day_plan.get_week_template(session),
+            "recent_notifications": [serialize_row(n) for n in sent],
+        }
+
+
+@mcp.tool()
+@gated("signals")
+async def set_week_template(template: dict) -> dict:
+    """Stores the week template — what each weekday is assumed to be until the owner
+    answers otherwise ("по вторникам я всегда на удалёнке"). Keys are "mon".."sun",
+    each a dict of ``where`` (office/remote/off) and ``gym`` (true/false). Only the
+    weekdays and keys you pass are changed; the rest keep their stored values. How
+    heavy a day is can't be predicted from a weekday, so it isn't part of the
+    template. WRITE tool — returns the full stored template."""
+    from vitals.services.proactive import day_plan
+
+    legal = "/".join(day_plan.WEEKDAYS)
+    if not isinstance(template, dict) or not template:
+        return {"error": f"template must be a dict of weekday → answers ({legal})"}
+    unknown = sorted(k for k in template if k not in day_plan.WEEKDAYS)
+    if unknown:
+        return {"error": f"unknown weekday(s) {unknown} — use {legal}"}
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        # Merged onto the stored template, per day: the sanitizer fills an absent
+        # weekday (and an absent key within one) from the neutral default, so a call
+        # naming only Tuesday would otherwise reset the other six.
+        merged = await day_plan.get_week_template(session)
+        for day, values in template.items():
+            if not isinstance(values, dict):
+                return {"error": f"{day} must be a dict of answers, got {values!r}"}
+            merged[day] = {**merged[day], **values}
+        clean = await day_plan.set_week_template(session, merged)
+        await session.commit()
+        return clean
 
 
 # ── Resources & prompts ───────────────────────────────────────────────────────
