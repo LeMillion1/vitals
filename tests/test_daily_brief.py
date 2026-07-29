@@ -117,6 +117,42 @@ async def test_noisy_weight_never_prints_a_bare_trend(db_session):
         assert "креатином" in text
 
 
+async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_session):
+    """A single day of absolutes is the same line every morning, and whether 78 is
+    good is a comparison. Printed by code from his own fortnight — and printed
+    only when it says something, so the parenthesis stays worth reading."""
+    for i in range(1, 11):  # ten days of a steady sleep score of 85, RHR 52
+        day = DAY - timedelta(days=i)
+        await garmin_service.ingest_daily(db_session, day, {
+            "summary": {"restingHeartRate": 52, "bodyBatteryHighestValue": 84},
+            "sleep": {"dailySleepDTO": {"sleepScores": {"overall": {"value": 85}}}},
+            "hrv": {"hrvSummary": {"lastNightAvg": 61}},
+        })
+    await _seed_day(db_session)  # today: sleep 80, RHR 52 — same as every other day
+
+    ctx = await brief.build_context(db_session, on_date=DAY)
+    assert ctx["garmin"]["baseline"]["sleep_score"] == 85
+    # Today's own row must not be averaged into the yardstick it is judged by.
+    assert ctx["garmin"]["baseline"]["resting_hr"] == 52
+
+    text = compose.render(compose.header_blocks(ctx))
+    assert "Сон 80 (норма 85)" in text          # ~6% off — worth saying
+    assert "Пульс покоя 52 ·" in text or text.rstrip().endswith("Пульс покоя 52")
+    assert "Пульс покоя 52 (" not in text       # on the norm — say nothing
+
+
+async def test_no_norm_until_there_is_enough_history(db_session):
+    """Two nights is not a baseline. Left unguarded the model gets a "norm" made
+    of noise and calls a просадка against it — the invented comparison this whole
+    block exists to stop."""
+    await garmin_service.ingest_daily(db_session, DAY - timedelta(days=1), GARMIN_RAW)
+    await _seed_day(db_session)
+
+    ctx = await brief.build_context(db_session, on_date=DAY)
+    assert ctx["garmin"]["baseline"] is None
+    assert "норма" not in compose.render(compose.header_blocks(ctx))
+
+
 async def test_the_brief_sees_yesterdays_signals(db_session):
     """"Кофе в 22" is yesterday's row and this morning's HRV is what it explains.
     A one-day window would cut every exposure away from the number it caused."""

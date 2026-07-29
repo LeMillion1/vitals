@@ -202,12 +202,11 @@ async def test_text_becomes_signals_plus_an_echo_with_an_undo_button(
 
     assert len(fake.sent) == 1
     echo = fake.sent[0]
-    # His own words next to the value they became. The canonical slug is not in
-    # the message — it reads like the bot answering in a language he didn't use,
-    # and it stays visible on /signals where the key registry is actually read.
-    assert "голова раскалывается → 4/5" in echo["text"]
-    assert "кофе в 22 → в 22:00" in echo["text"]
-    assert "headache" not in echo["text"] and "caffeine_late" not in echo["text"]
+    # His own words, the key the row was filed under, and the value. Without the
+    # key the echo cannot be checked: the number alone reads the same whether the
+    # fact landed on the existing key or opened a fresh synonym for it.
+    assert "голова раскалывается → headache 4/5" in echo["text"]
+    assert "кофе в 22 → caffeine_late в 22:00" in echo["text"]
     label, payload = echo["buttons"][0]
     assert label == "не то"
     assert payload == f"{inbound.CB_MISPARSE}{rows[0].batch_id}"

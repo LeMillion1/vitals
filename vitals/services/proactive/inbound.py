@@ -81,7 +81,17 @@ _PARSER_SYSTEM = """\
     exposure — то, что человек принял или сделал разово («кофе в 22», «выпил два бокала»)
 - key: короткий английский слаг (sleepiness, headache, caffeine_late, alcohol,
   sedentary, on_feet, long_work_day, workload_high, stress)
-- value_num: 1-5 для state/symptom (5 — максимум), либо количество для exposure
+- value_num: для exposure — количество; для state/symptom — сила по шкале ниже.
+  Шкалу выводи ИЗ САМИХ СЛОВ, а не из темы. 3 — это «мешает», а не «я не знаю»:
+    1 — вскользь, почти незаметно («чуть-чуть клонит в сон»)
+    2 — заметно, но не мешает; смягчение («устал немного», «че-то хочу спать»,
+        «какая-то апатия» — «какой-то», «немного», «слегка», «чуть» = 2)
+    3 — голая констатация без усилителя и без смягчения («болит голова»,
+        «поругались», «устал»)
+    4 — усилитель («очень», «сильно», «весь день», «еле», «жутко»)
+    5 — предел: мат, гипербола, «не могу», «чуть не» («пиздец устал»,
+        «раскалывается», «чуть не расплакался», «вырубает»)
+  Несколько усилителей подряд не поднимают выше 5 и не опускают ниже 1.
 - unit: единица для exposure ("mg", "ml", "min"), иначе null
 - at_time: "HH:MM", если время названо или однозначно следует из фразы, иначе null
 - note: кусок исходной фразы, из которого взят этот факт
@@ -487,16 +497,20 @@ def _fmt_num(value: float) -> str:
 
 
 def render_echo(rows) -> str:
-    """What was understood, in his own words and with the value attached.
+    """What was understood: his own words, the key it was filed under, the value.
 
-    The canonical slug is deliberately *not* here: `голова раскалывается →
-    headache 4/5` reads like the bot answering in a language he did not use, and
-    the half he can actually check is the number. The slug stays visible on
-    ``/signals``, which is where the прогон-7 consolidation reads keys anyway.
+    The key used to be left out on purpose — `голова раскалывается → headache 4/5`
+    reads like the bot answering in a language he did not use. In practice the
+    reverse was worse. The number alone is not checkable: «спать хочу → 3/5» and
+    «спать хочу → 3/5» look identical whether the second one went under
+    ``sleepiness`` or quietly opened a 61st synonym for it, and the key registry
+    the open-vocabulary parser is supposed to converge on drifts unwatched until
+    ``/signals`` is opened on purpose. The key is the half that says *where* the
+    row landed, which is exactly what an echo is for.
     """
     lines = []
     for row in rows:
-        bits = []
+        bits = [signals_service.normalize_key(row.key)]
         if row.value_num is not None:
             number = _fmt_num(row.value_num)
             if row.unit:
@@ -508,10 +522,9 @@ def render_echo(rows) -> str:
         if row.at_time is not None:
             bits.append(f"в {row.at_time.strftime('%H:%M')}")
         parsed = " ".join(bits)
-        # No note (the parser found a fact but quoted nothing) leaves the key as
-        # the only thing left to name the row by — better than a bare «→ 4/5».
-        label = row.note or signals_service.normalize_key(row.key)
-        lines.append(f"• {label} → {parsed}" if parsed else f"• {label}")
+        # No note (the parser found a fact but quoted nothing) leaves the key to
+        # name the row on its own — no «→» with nothing on its left.
+        lines.append(f"• {row.note} → {parsed}" if row.note else f"• {parsed}")
     return "Записал:\n" + "\n".join(lines)
 
 

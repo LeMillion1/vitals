@@ -45,6 +45,12 @@ EMPTY_DAY_ALERT_KEY = "brief_empty_day"
 # don't eat the visible answer (the bug that truncated the weekly digest in prod).
 _BRIEF_MAX_TOKENS = 2000
 
+# The window his personal norm is averaged over, and the fewest days in it that
+# still make an average. Two weeks is long enough to absorb one bad night and
+# short enough to follow a cut that is actually moving his resting HR.
+_BASELINE_DAYS = 14
+_BASELINE_MIN_DAYS = 4
+
 BRIEF_SYSTEM = """\
 Ты пишешь короткий утренний разбор для владельца дашборда здоровья Vitals.
 
@@ -54,8 +60,18 @@ Garmin). Базовые понятия объяснять не надо.
 РОЛЬ: напарник, который шарит. Не врач, не коуч. Прямо, без воды, без паники.
 
 ЗАДАЧА: 2-3 предложения. Что сегодня с организмом и что с этим делать сегодня.
-Числа пользователь уже видит в шапке сообщения — не пересказывай их, объясняй.
+Шапка сообщения уже напечатала и числа, и что сегодня за день (`day`) — пересказ
+любого из них тратит одно из трёх предложений на то, что он прочитал строкой выше.
+Не «сегодня тренировочный день», а что это значит при сегодняшних числах.
 Если данных мало — скажи это одним предложением и не тяни.
+
+`garmin.baseline` — его собственные средние за 14 дней по тем же метрикам.
+Это ЕДИНСТВЕННОЕ, с чем можно сравнивать сегодняшние числа. «Просел», «повышен»,
+«упал», «пробило восстановление» — только про метрику, у которой baseline есть и
+от которой сегодня реально отличается. Метрику без baseline не сравнивай ни с
+чем: у неё нет нормы, и «просадка» по ней — выдуманный факт, а не оценка.
+Если сегодня всё близко к норме — скажи это прямо одним предложением. Ровный
+день — это результат, а не повод сочинить динамику.
 
 Блок `day` — что за день сегодня (удалёнка, зал). Если его `source` = "template",
 это догадка шаблона недели, а не ответ пользователя: учитывай мягко, не утверждай
@@ -102,6 +118,13 @@ async def build_context(
     # into this very chat. Stripping it here would hide his own words from him.
     ctx["signals"] = await _signals_since_yesterday(session, on_date or today_local())
     today = on_date or today_local()
+    # The one thing the brief could never do: compare. Handed a single day of
+    # absolute numbers and asked what they mean, the model supplied the missing
+    # half itself — "просадка SpO2 и повышенный пульс покоя" on a resting HR that
+    # had not moved a beat. His own fortnight is what those words have to be true
+    # against, so it goes in beside the numbers rather than being left implied.
+    if ctx.get("garmin"):
+        ctx["garmin"]["baseline"] = await _baseline(session, today)
     answers, answered = await day_plan.resolve(session, today)
     # Yesterday's answers, and only the ones he actually gave. How heavy a day was
     # is answered in the evening about the day just spent, so at 11:00 the newest
@@ -123,6 +146,29 @@ async def build_context(
         "yesterday": {k: yesterday_answers[k] for k in sorted(yesterday_answered)} or None,
     }
     return ctx
+
+
+async def _baseline(session: AsyncSession, on_date: date_type) -> Optional[dict]:
+    """His own mean per metric over the days *before* today.
+
+    Strictly before: today's number is the thing being judged, and folding it into
+    the yardstick pulls the yardstick toward it — worst exactly on the outlier
+    mornings the comparison exists for. ``None`` until there is enough history for
+    a mean to mean anything; a "norm" off two nights is noise wearing the word.
+    """
+    from vitals.services import garmin_service
+
+    rows = [
+        row
+        for row in await garmin_service.list_daily(session, limit=_BASELINE_DAYS + 1)
+        if 0 < (on_date - row.date).days <= _BASELINE_DAYS
+    ]
+    baseline = {}
+    for key in compose.BASELINE_KEYS:
+        values = [v for v in (getattr(row, key, None) for row in rows) if v is not None]
+        if len(values) >= _BASELINE_MIN_DAYS:
+            baseline[key] = round(sum(values) / len(values), 1)
+    return baseline or None
 
 
 async def _signals_since_yesterday(session: AsyncSession, on_date: date_type) -> Optional[list]:

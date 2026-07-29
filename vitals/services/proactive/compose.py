@@ -50,6 +50,18 @@ _RECOVERY_KEYS = (
     "body_battery_high",
 )
 
+# What a personal norm is computed for. The recovery four plus SpO2 — the header
+# doesn't print SpO2, but the model is handed it and was caught calling a
+# "просадка" on it with nothing to call it against.
+BASELINE_KEYS = _RECOVERY_KEYS + ("spo2_lowest",)
+
+# Below this the day-to-day wobble of these metrics swamps the difference, and a
+# "(норма 82)" printed next to 81 teaches him to skip the parenthesis — which is
+# the one place the header says anything he can't already read off the watch.
+# Relative rather than per-metric: 5% is ~3 bpm of resting HR and ~4 points of
+# sleep score, which is the same size of "actually different" on both.
+_BASELINE_NOTABLE = 0.05
+
 
 @dataclass(frozen=True)
 class Block:
@@ -110,12 +122,19 @@ def _is_fresh(value, on_date: date_type) -> bool:
 
 
 def header_blocks(ctx: dict) -> list[Block]:
-    """The deterministic header (B2): recovery numbers, then weight and its trend."""
+    """The deterministic header (B2): recovery numbers, then weight and its trend.
+
+    Each number carries his own norm when today is far enough off it to matter.
+    Four bare absolutes are the same line every morning — whether they are good or
+    bad is a comparison, and printing it here is what stops that comparison from
+    being left to prose that has no baseline to make it from.
+    """
     blocks: list[Block] = []
 
     garmin = ctx.get("garmin") or {}
+    baseline = garmin.get("baseline") or {}
     parts = [
-        label + " " + _num(garmin[key])
+        label + " " + _num(garmin[key]) + _vs_baseline(garmin[key], baseline.get(key))
         for key, label in (
             ("sleep_score", "Сон"),
             ("hrv_avg", "HRV"),
@@ -146,6 +165,17 @@ def header_blocks(ctx: dict) -> list[Block]:
         blocks.append(Block(KIND_WEIGHT, line, 20))
 
     return blocks
+
+
+def _vs_baseline(value, mean) -> str:
+    """`` (норма 85)`` — or "" when there is no norm yet, or today sits on it."""
+    try:
+        value, mean = float(value), float(mean)
+    except (TypeError, ValueError):
+        return ""
+    if not mean or abs(value - mean) / abs(mean) < _BASELINE_NOTABLE:
+        return ""
+    return f" (норма {_num(mean)})"
 
 
 def _num(value) -> str:
