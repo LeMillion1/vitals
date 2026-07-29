@@ -217,6 +217,10 @@ class Source(StrEnum):
     """Provenance of a row — where the data came from."""
 
     MANUAL = "manual"
+    # Written through the MCP connector (a conversation with Claude). Still the
+    # owner talking, so it ranks with MANUAL wherever provenance decides who wins
+    # — it only says which surface he used.
+    MCP = "mcp"
     GARMIN_API = "garmin_api"
     HEALTH_AUTO_EXPORT = "health_auto_export"  # Garmin backup channel (uploaded JSON)
     HEVY_API = "hevy_api"

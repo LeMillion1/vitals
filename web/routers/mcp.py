@@ -510,7 +510,7 @@ async def upsert_genetic_variant(
             impact_domain=impact_domain,
             interpretation=interpretation,
             action_notes=action_notes,
-            source=Source.MANUAL.value,
+            source=Source.MCP.value,
         )
         await session.commit()
         return await serialize_written(session, row)
@@ -677,6 +677,7 @@ async def log_meal(
                 fat_g=fat_g,
                 carbs_g=carbs_g,
                 note=note,
+                source=Source.MCP.value,
                 override=override,
             )
         except ConflictBlocked as e:
@@ -810,7 +811,7 @@ async def log_weight(
         try:
             row = await weight_service.log_weight(
                 session, on_date=parsed_date, weight_kg=weight_kg, note=note,
-                override=override,
+                source=Source.MCP.value, override=override,
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
@@ -1552,7 +1553,7 @@ async def log_lab_result(
                 ref_high=ref_high,
                 lab_name=lab_name,
                 note=note,
-                source=Source.MANUAL.value,
+                source=Source.MCP.value,
                 override=override,
             )
         except ConflictBlocked as e:
@@ -2435,7 +2436,7 @@ async def log_signal(
                 "unit": unit, "note": note, "at_time": at_time,
             }],
             on_date=parsed_date,
-            source=Source.MANUAL.value,
+            source=Source.MCP.value,
         )
         # create_signals drops unusable rows silently (it batch-parses LLM output,
         # where one bad fact must not cost the message). A single-row tool call has
