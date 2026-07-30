@@ -818,26 +818,33 @@ async def test_garmin_health_auto_export_upload(auth_client, db_session):
 
 
 async def test_garmin_dashboard_day_strip_renders_in_masthead(auth_client, db_session):
-    """The day-strip (steps/stress/readiness/training status/active calories)
+    """The day-strip (steps/stress/sleep score/intensity minutes/active calories)
     used to live only in a classic-only grid, so masthead lost 5 of 9 daily
     metrics. It's now a shared card — regression-check it actually shows up
-    once the session is switched to masthead."""
+    once the session is switched to masthead.
+
+    Readiness and training status were dropped from the strip: they only exist on
+    watches with trainingReadinessCapable / trainingStatusCapable, so on a
+    vívoactive-class device they rendered "—" forever."""
     from datetime import date
 
     from vitals.models.garmin import GarminDaily
 
     db_session.add(GarminDaily(
         date=date(2026, 6, 15), domain="garmin", source="garmin_api",
-        steps=12345, avg_stress=33, training_readiness=71,
-        training_status="productive", load_ratio=95.4, active_calories=612,
+        steps=12345, avg_stress=33, sleep_score=86, active_calories=612,
+        intensity_minutes_moderate=36, intensity_minutes_vigorous=22,
     ))
     await db_session.commit()
 
     response = await auth_client.get("/garmin", headers={"Accept": "text/html"})
     assert response.status_code == 200
     assert "12 345" in response.text
-    assert "Продуктивно" in response.text
-    assert "ACWR 95%" in response.text
+    assert "Оценка сна" in response.text and "86" in response.text
+    # Garmin weights a vigorous minute double: 36 + 2×22 = 80.
+    assert "80" in response.text
+    assert "умер. 36 · интенс. 22" in response.text
+    assert "Тренировочный статус" not in response.text
 
 
 async def test_garmin_dashboard_no_longer_lists_activities(auth_client, db_session):

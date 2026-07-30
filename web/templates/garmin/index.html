@@ -23,9 +23,10 @@
     {{ garmin_tabs('overview') }}
 
 
-    <!-- Day strip: steps, stress, readiness, training status, active calories —
-         shared by both shells (classic used to bury these in a classic-only
-         grid, which is exactly how masthead lost them; see the plan). -->
+    <!-- Day strip: steps, stress, sleep score, intensity minutes, active calories.
+         Readiness / training status used to sit here, but both need a watch with
+         trainingReadinessCapable / trainingStatusCapable — a vívoactive-class
+         device never sends them, so the cards were permanently empty. -->
     <div class="v-card v-garmin-summary p-6 space-y-3">
         <div class="flex items-center gap-2">
             <span class="v-bar v-bar-sm"></span>
@@ -45,29 +46,20 @@
                 </div>
             </div>
             <div class="v-card-inset p-3 space-y-1">
-                <span class="v-metric-label">{{ t("garmin.readiness") }}</span>
+                <span class="v-metric-label">{{ t("garmin.sleep_score") }}</span>
                 <div class="flex items-baseline">
-                    {% if latest and latest.training_readiness is not none %}
-                    <span class="v-metric-value">{{ latest.training_readiness }}</span>
-                    {% else %}
-                    <span class="v-metric-value" style="color: var(--muted)">—</span>
-                    {% endif %}
+                    <span class="v-metric-value">{% if latest and latest.sleep_score %}{{ latest.sleep_score }}{% else %}—{% endif %}</span>
                 </div>
-                {% if not latest or latest.training_readiness is none %}<span class="v-text-micro">{{ t("garmin.no_readiness") }}</span>{% endif %}
             </div>
             <div class="v-card-inset p-3 space-y-1">
-                <span class="v-metric-label">{{ t("garmin.training_status") }}</span>
+                <span class="v-metric-label">{{ t("garmin.intensity_minutes") }}</span>
                 <div class="flex items-baseline">
-                    {% if latest and latest.training_status %}
-                    <span class="v-metric-value-text">{{ t("garmin.training_status." + latest.training_status.lower()) }}</span>
-                    {% else %}
-                    <span class="v-metric-value" style="color: var(--muted)">—</span>
-                    {% endif %}
+                    {# Garmin counts a vigorous minute as two toward the weekly goal,
+                       so the weighted sum is what the watch itself displays. #}
+                    <span class="v-metric-value">{% if latest and (latest.intensity_minutes_moderate is not none or latest.intensity_minutes_vigorous is not none) %}{{ (latest.intensity_minutes_moderate or 0) + 2 * (latest.intensity_minutes_vigorous or 0) }}{% else %}—{% endif %}</span>
                 </div>
-                {% if latest and latest.load_ratio is not none %}
-                <span class="v-text-micro">ACWR {{ latest.load_ratio | round(0) | int }}%</span>
-                {% elif not latest or not latest.training_status %}
-                <span class="v-text-micro">{{ t("garmin.no_training_status") }}</span>
+                {% if latest and latest.intensity_minutes_vigorous %}
+                <span class="v-text-micro">{{ t("garmin.intensity_breakdown", mod=latest.intensity_minutes_moderate or 0, vig=latest.intensity_minutes_vigorous) }}</span>
                 {% endif %}
             </div>
             <div class="v-card-inset p-3 space-y-1">
