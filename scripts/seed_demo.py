@@ -40,6 +40,8 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.garmin import (
     SERIES_BODY_BATTERY,
     SERIES_HEART_RATE,
+    SERIES_SLEEP_HR,
+    SERIES_SLEEP_HRV,
     SERIES_STRESS,
     GarminDaily,
     GarminIntraday,
@@ -281,13 +283,55 @@ def _seed_intraday_day(session, d):
             ))
 
 
+_NIGHT_STAGES = (
+    ("light", 40), ("deep", 70), ("light", 50), ("rem", 45),
+    ("light", 60), ("awake", 10), ("rem", 45), ("light", 100),
+)
+
+
+def _seed_night(session, d):
+    """One night's curves for the sleep page, filed under ``d`` although the night
+    starts the evening before — the same way the parser dates a night to the
+    morning of waking. Heart rate lands every minute and HRV every five, as they
+    do in the real payload: the chart's hover has to reconcile the two cadences,
+    and a demo with everything on one grid would never show it failing."""
+    start = datetime.combine(d, time(0, 0)) - timedelta(hours=1, minutes=30)
+    total_minutes = sum(mins for _, mins in _NIGHT_STAGES)
+    hr, hrv = 58.0, 55.0
+    for m in range(total_minutes):
+        ts = start + timedelta(minutes=m)
+        hr = max(46.0, min(72.0, hr + random.uniform(-1.2, 1.2)))
+        session.add(GarminIntraday(
+            date=d, series_type=SERIES_SLEEP_HR, ts=ts, value=round(hr, 1),
+            domain=Domain.GARMIN, source=Source.GARMIN_API,
+        ))
+        if m % 5 == 0:
+            hrv = max(28.0, min(85.0, hrv + random.uniform(-4, 4)))
+            session.add(GarminIntraday(
+                date=d, series_type=SERIES_SLEEP_HRV, ts=ts, value=round(hrv, 1),
+                domain=Domain.GARMIN, source=Source.GARMIN_API,
+            ))
+
+    stages, cursor = [], start
+    for stage, mins in _NIGHT_STAGES:
+        stages.append({
+            "start": cursor.isoformat(),
+            "end": (cursor + timedelta(minutes=mins)).isoformat(),
+            "stage": stage,
+        })
+        cursor += timedelta(minutes=mins)
+    return stages
+
+
 async def seed_garmin(session):
     await session.execute(delete(GarminIntraday))
     await session.execute(delete(GarminDaily))
     # Intraday curves only for the two most recent days: at ~576 rows a day they
     # are the densest thing in the lake, and the dashboard only charts the latest.
+    nights = {}
     for i in (2, 1):
         _seed_intraday_day(session, _d(i))
+        nights[_d(i)] = _seed_night(session, _d(i))
     for i in range(14, 0, -1):
         d = _d(i)
         sleep_h = random.uniform(6.5, 8.5)
@@ -309,6 +353,7 @@ async def seed_garmin(session):
             active_calories=random.randint(300, 700),
             training_readiness=random.randint(45, 85),
             vo2max=round(random.uniform(42, 48), 1),
+            sleep_stages=nights.get(d),
             domain=Domain.GARMIN, source=Source.GARMIN_API,
         ))
 

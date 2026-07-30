@@ -24,42 +24,9 @@
  * stress spike drain the battery. Heart rate is bpm, so it gets its own
  * right-hand axis rather than being squashed into 0–100.
  */
-/**
- * Hover mode: the point nearest the cursor's x, one per series.
- *
- * None of Chart.js's built-ins can pair curves sampled on different clocks.
- * 'index' matches by position in the array, so it reads stress[200] (16:40)
- * against heart_rate[200] (06:40); 'x' returns only the points the cursor
- * physically overlaps, which at ~1 px spacing is two heart-rate samples and no
- * stress at all. Registered once on the global Chart, idempotently, because this
- * file is loaded from <head> and re-runs its init on every boosted swap.
- */
-function registerNearestByTimeMode() {
-    if (!window.Chart || Chart.Interaction.modes.nearestByTime) return;
-    Chart.Interaction.modes.nearestByTime = (chart, e, options, useFinalPosition) => {
-        const position = Chart.helpers.getRelativePosition(e, chart);
-        const items = [];
-        chart.getSortedVisibleDatasetMetas().forEach(meta => {
-            let best = null;
-            let bestDistance = Infinity;
-            meta.data.forEach((element, index) => {
-                if (element.skip) return;
-                const distance = Math.abs(element.getProps(['x'], useFinalPosition).x - position.x);
-                if (distance < bestDistance) {
-                    bestDistance = distance;
-                    best = { element, datasetIndex: meta.index, index };
-                }
-            });
-            if (best) items.push(best);
-        });
-        return items;
-    };
-}
-
 function initGarminIntradayChart() {
     const canvas = document.getElementById('garminIntradayChart');
     if (!canvas) return;
-    registerNearestByTimeMode();
 
     const data = window.vitalsGarminIntraday || {};
     const C = (window.vitalsChartTheme && window.vitalsChartTheme()) || {};
@@ -126,6 +93,8 @@ function initGarminIntradayChart() {
             responsive: true,
             maintainAspectRatio: false,
             devicePixelRatio: window.devicePixelRatio || 2,
+            // Registered by charts.js — 'index' would pair the series by array
+            // position, which is a different minute in each of them.
             interaction: { mode: 'nearestByTime', intersect: false },
             plugins: {
                 legend: { position: 'bottom', labels: { color: C.muted, font: { family: 'Inter', size: 10 }, boxWidth: 12 } },
