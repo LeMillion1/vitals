@@ -269,11 +269,16 @@ def _seed_intraday_day(session, d):
             domain=Domain.GARMIN, source=Source.GARMIN_API,
         ))
         # Pulse rides the same arousal as stress, on a bpm scale (its own axis).
-        session.add(GarminIntraday(
-            date=d, series_type=SERIES_HEART_RATE, ts=ts,
-            value=float(round((48 if asleep else 62) + stress * 0.4 + random.uniform(-3, 3))),
-            domain=Domain.GARMIN, source=Source.GARMIN_API,
-        ))
+        # Sampled on its own clock (every 2 min, off the 5-minute grid) because
+        # that's what the watch does — the two payloads are separate calls — and a
+        # chart that assumed shared timestamps would look fine here and break on
+        # the real data.
+        for offset in (0, 2, 4):
+            session.add(GarminIntraday(
+                date=d, series_type=SERIES_HEART_RATE, ts=ts + timedelta(minutes=offset),
+                value=float(round((48 if asleep else 62) + stress * 0.4 + random.uniform(-3, 3))),
+                domain=Domain.GARMIN, source=Source.GARMIN_API,
+            ))
 
 
 async def seed_garmin(session):

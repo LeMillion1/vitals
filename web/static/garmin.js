@@ -1,21 +1,65 @@
 /**
- * Garmin dashboard — the latest day's intraday curves (stress + Body Battery).
+ * Garmin dashboard — the latest day's intraday curves (stress, Body Battery,
+ * heart rate).
  *
  * window.vitalsGarminIntraday = { "<series_type>": [{ ts, value }, ...], ... }
  * (ts is a local wall-clock ISO string; the server already converted from
  * Garmin's UTC epoch ms).
  *
  * Unlike the custom-chart builder in charts.js, this is a *within-day* view: the
- * x-axis is time of day, not dates, and the series never land in the chart
- * registry (which groups by date). Stress and Body Battery are both 0–100 scores,
- * so they share the left axis and stay directly comparable — the whole point of
- * drawing them together is seeing a stress spike drain the battery. Heart rate is
- * bpm, so it gets its own right-hand axis rather than being squashed into 0–100
+ * x-axis is minutes since midnight, not dates, and the series never land in the
+ * chart registry (which groups by date).
+ *
+ * A *linear minute* axis, deliberately, not a category axis over the union of
+ * every series' timestamps: the curves are sampled on their own clocks (stress
+ * and Body Battery every ~3 min out of one payload, heart rate every ~2 min out
+ * of another), so a shared label list leaves each series null at most positions.
+ * With spanGaps off — and it must stay off, a gap means the watch measured
+ * nothing — that draws them as isolated points, i.e. invisible at pointRadius 0.
+ * Minutes also make time proportional, so a gap reads as the hour it really was
  * (same call as the night chart in garmin_sleep.js).
+ *
+ * Stress and Body Battery are both 0–100 scores, so they share the left axis and
+ * stay directly comparable — the whole point of drawing them together is seeing a
+ * stress spike drain the battery. Heart rate is bpm, so it gets its own
+ * right-hand axis rather than being squashed into 0–100.
  */
+/**
+ * Hover mode: the point nearest the cursor's x, one per series.
+ *
+ * None of Chart.js's built-ins can pair curves sampled on different clocks.
+ * 'index' matches by position in the array, so it reads stress[200] (16:40)
+ * against heart_rate[200] (06:40); 'x' returns only the points the cursor
+ * physically overlaps, which at ~1 px spacing is two heart-rate samples and no
+ * stress at all. Registered once on the global Chart, idempotently, because this
+ * file is loaded from <head> and re-runs its init on every boosted swap.
+ */
+function registerNearestByTimeMode() {
+    if (!window.Chart || Chart.Interaction.modes.nearestByTime) return;
+    Chart.Interaction.modes.nearestByTime = (chart, e, options, useFinalPosition) => {
+        const position = Chart.helpers.getRelativePosition(e, chart);
+        const items = [];
+        chart.getSortedVisibleDatasetMetas().forEach(meta => {
+            let best = null;
+            let bestDistance = Infinity;
+            meta.data.forEach((element, index) => {
+                if (element.skip) return;
+                const distance = Math.abs(element.getProps(['x'], useFinalPosition).x - position.x);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    best = { element, datasetIndex: meta.index, index };
+                }
+            });
+            if (best) items.push(best);
+        });
+        return items;
+    };
+}
+
 function initGarminIntradayChart() {
     const canvas = document.getElementById('garminIntradayChart');
     if (!canvas) return;
+    registerNearestByTimeMode();
 
     const data = window.vitalsGarminIntraday || {};
     const C = (window.vitalsChartTheme && window.vitalsChartTheme()) || {};
@@ -26,18 +70,33 @@ function initGarminIntradayChart() {
         { key: 'heart_rate', labelKey: 'garmin.series.heart_rate', color: C.violet, fallback: 'Heart rate', axis: 'y1' },
     ];
 
-    // One shared time axis: union of every series' timestamps, in order.
-    const allTs = new Set();
-    SERIES.forEach(s => (data[s.key] || []).forEach(p => allTs.add(p.ts)));
-    const labels = Array.from(allTs).sort();
-    if (!labels.length) return;
+    // "2026-07-30T08:33:00" → 513. Read off the string rather than through Date:
+    // the value is already local wall clock, and parsing it would re-read it in
+    // the browser's own zone.
+    const minuteOfDay = ts => {
+        const hh = Number((ts || '').slice(11, 13));
+        const mm = Number((ts || '').slice(14, 16));
+        return Number.isFinite(hh) && Number.isFinite(mm) ? hh * 60 + mm : null;
+    };
+    // Round to the whole minute *first*: a tick can land on 179.6, and formatting
+    // the parts separately would render that as "02:60".
+    const clock = m => {
+        const total = Math.round(m);
+        return ('0' + Math.floor(total / 60)).slice(-2) + ':' + ('0' + (total % 60)).slice(-2);
+    };
 
     const present = SERIES.filter(s => (data[s.key] || []).length);
+    if (!present.length) return;
+
+    let lastMinute = 0;
     const datasets = present.map(s => {
-        const byTs = new Map((data[s.key] || []).map(p => [p.ts, p.value]));
+        const points = (data[s.key] || [])
+            .map(p => ({ x: minuteOfDay(p.ts), y: p.value }))
+            .filter(p => p.x !== null);
+        points.forEach(p => { if (p.x > lastMinute) lastMinute = p.x; });
         return {
             label: (window.t ? window.t(s.labelKey) : s.fallback),
-            data: labels.map(ts => (byTs.has(ts) ? byTs.get(ts) : null)),
+            data: points,
             borderColor: s.color,
             backgroundColor: 'transparent',
             borderWidth: 1.5,
@@ -52,30 +111,46 @@ function initGarminIntradayChart() {
         };
     });
 
-    const hhmm = ts => (ts || '').slice(11, 16);
+    // Whole hours, ~8 ticks across whatever the day has so far, so the labels read
+    // 00:00 / 03:00 / … instead of the linear scale's own 01:57 / 04:42. The axis
+    // ends on a whole step too: against a ragged max (23:59) Chart.js lays the
+    // ticks out backwards from it and every label after the middle drifts a minute.
+    const tickStep = Math.max(30, Math.ceil(lastMinute / 8 / 60) * 60);
+    const axisEnd = Math.ceil(lastMinute / tickStep) * tickStep;
 
     if (canvas._vitalsChart) canvas._vitalsChart.destroy();
     canvas._vitalsChart = new Chart(canvas, {
         type: 'line',
-        data: { labels: labels.map(hhmm), datasets },
+        data: { datasets },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             devicePixelRatio: window.devicePixelRatio || 2,
-            interaction: { mode: 'index', intersect: false },
+            interaction: { mode: 'nearestByTime', intersect: false },
             plugins: {
                 legend: { position: 'bottom', labels: { color: C.muted, font: { family: 'Inter', size: 10 }, boxWidth: 12 } },
                 tooltip: {
                     backgroundColor: C.surface, borderColor: C.line2, borderWidth: 1,
                     titleColor: C.accent2, titleFont: { family: 'Inter', size: 11 },
                     bodyColor: C.fg, bodyFont: { family: 'Inter', size: 10 }, padding: 8,
+                    callbacks: {
+                        // The raw x is a minute offset — nobody wants to read "513".
+                        title: items => (items.length ? clock(items[0].parsed.x) : ''),
+                    },
                 },
             },
             scales: {
                 x: {
+                    type: 'linear',
+                    min: 0,
+                    max: axisEnd,
                     grid: { color: C.grid, drawTicks: false },
                     border: { color: C.axisLine },
-                    ticks: { color: C.muted, maxRotation: 0, autoSkip: true, maxTicksLimit: 8, font: { family: 'Inter', size: 9 } },
+                    ticks: {
+                        color: C.muted, maxRotation: 0, stepSize: tickStep,
+                        font: { family: 'Inter', size: 9 },
+                        callback: value => clock(value),
+                    },
                 },
                 y: {
                     min: 0,
