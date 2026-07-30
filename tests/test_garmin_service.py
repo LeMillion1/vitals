@@ -21,6 +21,7 @@ from vitals.integrations.garmin_client import (
 )
 from vitals.models.garmin import (
     SERIES_BODY_BATTERY,
+    SERIES_HEART_RATE,
     SERIES_SLEEP_BB,
     SERIES_SLEEP_HR,
     SERIES_SLEEP_HRV,
@@ -218,6 +219,20 @@ RAW_DAY = {
             [_ms(0, 3), "MEASURED", 27, 3],
             [_ms(0, 6), "MEASURED", 30, 3],
             [_ms(0, 9), "MEASURED", 34, 3],
+        ],
+    },
+    # get_heart_rates(ds) — [timestamp, bpm], with a null for every stretch the
+    # watch wasn't measuring (off the wrist, charging).
+    "heart_rate": {
+        "calendarDate": "2026-06-10",
+        "heartRateValueDescriptors": [
+            {"index": 0, "key": "timestamp"},
+            {"index": 1, "key": "heartrate"},
+        ],
+        "heartRateValues": [
+            [_ms(0, 0), None],
+            [_ms(0, 2), 58],
+            [_ms(0, 4), 61],
         ],
     },
     # get_body_battery(ds, ds) — the same series, but inflection points only and a
@@ -420,10 +435,18 @@ def test_intraday_reads_value_position_without_descriptors():
     assert [v for _, v in bb] == [40.0]
 
 
+def test_intraday_heart_rate_drops_unmeasured_minutes():
+    hr = garmin_service._intraday_series(RAW_DAY)[SERIES_HEART_RATE]
+    # The ``[ts, null]`` row is "the watch wasn't measuring", not a heart rate of 0.
+    assert [v for _, v in hr] == [58.0, 61.0]
+    assert hr[0][0] == to_local_naive(datetime(2026, 6, 10, 0, 2, tzinfo=timezone.utc))
+
+
 def test_intraday_series_absent_is_empty():
     series = garmin_service._intraday_series({"summary": {}})
     assert series[SERIES_STRESS] == []
     assert series[SERIES_BODY_BATTERY] == []
+    assert series[SERIES_HEART_RATE] == []
 
 
 # ── Nightly sleep series parsing (run 5) ──────────────────────────────────────

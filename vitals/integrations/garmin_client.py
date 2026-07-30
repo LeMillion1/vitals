@@ -66,6 +66,7 @@ _DAILY_METHODS = (
     ("rhr", "get_rhr_day"),
     ("hrv", "get_hrv_data"),
     ("stress", "get_stress_data"),
+    ("heart_rate", "get_heart_rates"),
     ("training_readiness", "get_training_readiness"),
     ("max_metrics", "get_max_metrics"),
     ("training_status", "get_training_status"),

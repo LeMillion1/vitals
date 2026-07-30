@@ -7,9 +7,11 @@
  *
  * Unlike the custom-chart builder in charts.js, this is a *within-day* view: the
  * x-axis is time of day, not dates, and the series never land in the chart
- * registry (which groups by date). Both series are 0–100 scores, so they share
- * one axis and stay directly comparable — the whole point of drawing them
- * together is seeing a stress spike drain the battery.
+ * registry (which groups by date). Stress and Body Battery are both 0–100 scores,
+ * so they share the left axis and stay directly comparable — the whole point of
+ * drawing them together is seeing a stress spike drain the battery. Heart rate is
+ * bpm, so it gets its own right-hand axis rather than being squashed into 0–100
+ * (same call as the night chart in garmin_sleep.js).
  */
 function initGarminIntradayChart() {
     const canvas = document.getElementById('garminIntradayChart');
@@ -19,8 +21,9 @@ function initGarminIntradayChart() {
     const C = (window.vitalsChartTheme && window.vitalsChartTheme()) || {};
 
     const SERIES = [
-        { key: 'stress', labelKey: 'garmin.series.stress', color: C.bad, fallback: 'Stress' },
-        { key: 'body_battery', labelKey: 'garmin.series.body_battery', color: C.good, fallback: 'Body Battery' },
+        { key: 'stress', labelKey: 'garmin.series.stress', color: C.bad, fallback: 'Stress', axis: 'y' },
+        { key: 'body_battery', labelKey: 'garmin.series.body_battery', color: C.good, fallback: 'Body Battery', axis: 'y' },
+        { key: 'heart_rate', labelKey: 'garmin.series.heart_rate', color: C.violet, fallback: 'Heart rate', axis: 'y1' },
     ];
 
     // One shared time axis: union of every series' timestamps, in order.
@@ -29,7 +32,8 @@ function initGarminIntradayChart() {
     const labels = Array.from(allTs).sort();
     if (!labels.length) return;
 
-    const datasets = SERIES.filter(s => (data[s.key] || []).length).map(s => {
+    const present = SERIES.filter(s => (data[s.key] || []).length);
+    const datasets = present.map(s => {
         const byTs = new Map((data[s.key] || []).map(p => [p.ts, p.value]));
         return {
             label: (window.t ? window.t(s.labelKey) : s.fallback),
@@ -40,6 +44,7 @@ function initGarminIntradayChart() {
             pointRadius: 0,
             pointHoverRadius: 3,
             tension: 0.25,
+            yAxisID: s.axis,
             // false, not true: a gap here means the watch recorded nothing (taken
             // off, or a sentinel reading the parser dropped). Bridging it would
             // draw a straight line through hours that were never measured.
@@ -78,6 +83,15 @@ function initGarminIntradayChart() {
                     grid: { color: C.grid, drawTicks: false },
                     border: { color: C.axisLine },
                     ticks: { color: C.muted, stepSize: 25, font: { family: 'Inter', size: 9 } },
+                },
+                y1: {
+                    // Hidden when the day has no heart-rate curve (an old sync, or
+                    // the watch was off) — an empty right axis is just clutter.
+                    display: present.some(s => s.axis === 'y1'),
+                    position: 'right',
+                    grid: { drawOnChartArea: false },
+                    border: { color: C.axisLine },
+                    ticks: { color: C.muted, font: { family: 'Inter', size: 9 } },
                 },
             },
         },

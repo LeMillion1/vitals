@@ -311,7 +311,7 @@ _EN: dict[str, str] = {
     "garmin.sync_mfa": "Garmin requested MFA code. Refresh session manually (token store).",
     "garmin.sync_auth": "Failed to log into Garmin. Check your credentials.",
     "garmin.sync_throttled": "Garmin login is paused — the daily login allowance is spent. Try again later.",
-    "garmin.intraday_title": "Stress & Body Battery during the day",
+    "garmin.intraday_title": "Stress, Body Battery & heart rate during the day",
     "garmin.history_title": "Metrics history ({count} d.)",
     "garmin.no_history": "No data. Synchronize Garmin.",
     "garmin.activities": "Activities",
@@ -959,6 +959,7 @@ _EN: dict[str, str] = {
     "js.chart.value": "Value",
     "js.garmin.series.stress": "Stress",
     "js.garmin.series.body_battery": "Body Battery",
+    "js.garmin.series.heart_rate": "Heart rate",
     # Chart labels for the per-night sleep page (the hypnogram's stage axis reads
     # these too, so they duplicate the template-namespace garmin.stage.* keys).
     "js.garmin.series.sleep_hr": "Heart rate",
@@ -1544,7 +1545,7 @@ _RU: dict[str, str] = {
     "garmin.sync_mfa": "Garmin запросил MFA-код. Обновите сессию вручную (токен-стор).",
     "garmin.sync_auth": "Не удалось войти в Garmin. Проверьте данные.",
     "garmin.sync_throttled": "Вход в Garmin на паузе — суточный лимит попыток израсходован. Попробуйте позже.",
-    "garmin.intraday_title": "Стресс и Body Battery в течение дня",
+    "garmin.intraday_title": "Стресс, Body Battery и пульс в течение дня",
     "garmin.history_title": "История метрик ({count} дн.)",
     "garmin.no_history": "Нет данных. Синхронизируйте Garmin.",
     "garmin.activities": "Активности",
@@ -2193,6 +2194,7 @@ _RU: dict[str, str] = {
     "js.chart.value": "Значение",
     "js.garmin.series.stress": "Стресс",
     "js.garmin.series.body_battery": "Body Battery",
+    "js.garmin.series.heart_rate": "Пульс",
     # Подписи графиков на странице ночи (ось фаз гипнограммы читает их же, поэтому
     # они дублируют шаблонные ключи garmin.stage.*).
     "js.garmin.series.sleep_hr": "Пульс",

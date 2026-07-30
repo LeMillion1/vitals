@@ -303,8 +303,8 @@ async def get_garmin_metrics(
     Set ``intraday=True`` to also get the curves behind the daily summaries, as
     ``intraday: {series_type: [{ts, value}]}``. Two families of series:
 
-      * the whole day — ``stress``, ``body_battery`` (a sample every ~3 minutes,
-        so ~480 points per series per day);
+      * the whole day — ``stress``, ``body_battery``, ``heart_rate`` (a sample
+        every ~2–3 minutes, so ~480 points per series per day);
       * the night — ``sleep_hr``, ``sleep_spo2``, ``sleep_respiration``,
         ``sleep_stress``, ``sleep_bb``, ``sleep_hrv``, ``sleep_movement``
         (~2000 points across the seven).

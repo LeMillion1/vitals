@@ -46,10 +46,12 @@ DOMAIN = Domain.GARMIN.value
 # the night's interval series.
 _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 
-# ``garmin_intraday.series_type`` values. Both come out of the one
-# ``get_stress_data`` payload the daily sync already downloads.
+# ``garmin_intraday.series_type`` values. Stress and Body Battery both come out of
+# the one ``get_stress_data`` payload the daily sync downloads; heart rate is its
+# own ``get_heart_rates`` call in the same bundle (~2-minute cadence).
 SERIES_STRESS = "stress"
 SERIES_BODY_BATTERY = "body_battery"
+SERIES_HEART_RATE = "heart_rate"
 
 # The night's series (run 5) — all seven ride in the one ``get_sleep_data``
 # payload the daily sync already downloads. Deliberately distinct from the

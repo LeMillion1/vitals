@@ -42,6 +42,7 @@ from vitals.integrations.garmin_client import (
 from vitals.models.garmin import (
     DOMAIN,
     SERIES_BODY_BATTERY,
+    SERIES_HEART_RATE,
     SERIES_SLEEP_BB,
     SERIES_SLEEP_HR,
     SERIES_SLEEP_HRV,
@@ -198,8 +199,9 @@ def _intraday_series(raw: dict) -> dict[str, list[tuple[datetime, float]]]:
     The whole-day stress and Body Battery curves ride in the one
     ``get_stress_data`` payload at full ~3-minute resolution; the separate
     ``get_body_battery`` payload only carries inflection points, so it's a
-    fallback for when the stress payload came back without the array. The night's
-    seven series come from ``get_sleep_data`` and join them here, so ``ingest_daily``
+    fallback for when the stress payload came back without the array. The
+    whole-day heart rate comes from ``get_heart_rates`` and the night's seven
+    series from ``get_sleep_data``; all of them join here, so ``ingest_daily``
     stores every curve through one loop."""
     stress_payload = raw.get("stress") or {}
 
@@ -221,9 +223,16 @@ def _intraday_series(raw: dict) -> dict[str, list[tuple[datetime, float]]]:
             )
     bb_index = _descriptor_index(bb_descriptors, "bodyBatteryLevel")
 
+    hr_payload = raw.get("heart_rate") or {}
+    hr_rows = hr_payload.get("heartRateValues")
+    # Garmin ships ``[ts, null]`` for the minutes the watch wasn't measuring;
+    # _parse_intraday_points drops those alongside the negative sentinels.
+    hr_index = _descriptor_index(hr_payload.get("heartRateValueDescriptors"), "heartrate")
+
     return {
         SERIES_STRESS: _parse_intraday_points(stress_rows, value_index=stress_index),
         SERIES_BODY_BATTERY: _parse_intraday_points(bb_rows, value_index=bb_index),
+        SERIES_HEART_RATE: _parse_intraday_points(hr_rows, value_index=hr_index),
         **_sleep_intraday_series(raw),
     }
 

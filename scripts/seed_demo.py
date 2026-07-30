@@ -39,6 +39,7 @@ from vitals.models.app_settings import AppSetting
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.garmin import (
     SERIES_BODY_BATTERY,
+    SERIES_HEART_RATE,
     SERIES_STRESS,
     GarminDaily,
     GarminIntraday,
@@ -247,8 +248,8 @@ async def seed_measurements(session):
 
 
 def _seed_intraday_day(session, d):
-    """One day's stress / Body Battery curves at a 5-minute cadence (the real
-    device samples every ~3 min; coarser here just to keep the demo DB small).
+    """One day's stress / Body Battery / heart-rate curves at a 5-minute cadence
+    (the real device samples every ~2–3 min; coarser here to keep the demo DB small).
     Shaped like a real day — battery charges through the night and drains once
     stress picks up — so the dashboard chart shows the relationship it exists for."""
     battery = random.randint(20, 35)
@@ -265,6 +266,12 @@ def _seed_intraday_day(session, d):
         ))
         session.add(GarminIntraday(
             date=d, series_type=SERIES_BODY_BATTERY, ts=ts, value=round(battery, 1),
+            domain=Domain.GARMIN, source=Source.GARMIN_API,
+        ))
+        # Pulse rides the same arousal as stress, on a bpm scale (its own axis).
+        session.add(GarminIntraday(
+            date=d, series_type=SERIES_HEART_RATE, ts=ts,
+            value=float(round((48 if asleep else 62) + stress * 0.4 + random.uniform(-3, 3))),
             domain=Domain.GARMIN, source=Source.GARMIN_API,
         ))
 
