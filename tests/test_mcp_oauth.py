@@ -11,7 +11,7 @@ from sqlalchemy import select
 from vitals.enums import Source
 from vitals.models import WeightLog, GarminDaily, GarminActivity, HevyWorkout, LabResult
 from web.auth import create_session, read_session, _get_mcp_serializer, _get_serializer
-from web.config import SESSION_COOKIE, get_web_config
+from web.config import SESSION_COOKIE
 
 # PKCE pair used across the flow tests: CODE_CHALLENGE is the S256 of CODE_VERIFIER.
 CODE_VERIFIER = "some_challenge"
@@ -135,6 +135,17 @@ async def test_oauth_authorize_invalid_redirect_uri_unauthenticated(client):
     assert "Недопустимый redirect_uri" in response.text
 
 
+async def test_oauth_error_page_has_no_approve_form(auth_client):
+    """A refused request shows only "Close": pressing Allow on an error screen
+    used to post the same bad request again and answer with raw JSON."""
+    response = await auth_client.get(
+        "/oauth/authorize?response_type=code&client_id=vitals-claude-connector&redirect_uri=https://evil.com/callback"
+    )
+    assert response.status_code == 200
+    assert "/oauth/authorize/approve" not in response.text
+    assert "Закрыть" in response.text
+
+
 async def test_oauth_authorize_shows_redirect_target(auth_client):
     """The consent screen displays the real destination domain."""
     response = await auth_client.get(
@@ -207,17 +218,16 @@ async def test_oauth_approve_rejects_lookalike_callbacks(auth_client, redirect_u
     assert response.status_code == 400
 
 
-async def test_csp_form_action_covers_every_callback_host(client):
-    """The allowlist has to be honoured twice: once by the server, once by the CSP.
-    Chrome applies form-action across the approval redirect, so a host the server
-    accepts but the header omits swallows the "Approve" click with a console
-    message that names the same-origin form action and hides the real cause."""
+async def test_csp_form_action_allows_any_https_callback(client):
+    """Chrome enforces form-action across the whole approval redirect chain,
+    including hops inside the connector's own product that no allowlist here can
+    predict. A host-pinned form-action swallows the "Approve" click silently, so
+    the header must not pin one — redirect_allowed() is what gates the target."""
     response = await client.get("/login", headers={"Accept": "text/html"})
     csp = response.headers["Content-Security-Policy"]
     form_action = csp.split("form-action ", 1)[1].split(";", 1)[0]
 
-    for host in get_web_config().mcp_redirect_hosts:
-        assert f"https://{host}" in form_action, f"{host} accepted by the server but blocked by CSP"
+    assert "https:" in form_action.split()
 
 
 async def test_oauth_full_flow_and_token_exchange(auth_client, redis):

@@ -356,7 +356,12 @@
 
         {% if error %}
         <div class="error-box">{{ error }}</div>
-        {% endif %}
+        <!-- No approve button on an error: the request is already refused, and
+             submitting it only returns raw JSON to the user. -->
+        <div class="actions">
+            <a href="/" class="btn btn-cancel">{{ t("oauth.close") }}</a>
+        </div>
+        {% else %}
 
         <!-- Form: plain HTML, no HTMX, no Alpine -->
         <form action="/oauth/authorize/approve" method="POST">
@@ -371,6 +376,7 @@
                 <button type="submit" class="btn btn-approve">{{ t("oauth.approve") }}</button>
             </div>
         </form>
+        {% endif %}
     </div>
 </body>
 </html>

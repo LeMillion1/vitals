@@ -48,14 +48,16 @@ def add_csrf_origin_check(app: FastAPI) -> None:
 # (Inter / Outfit / Bricolage Grotesque — no monospace, per the design system)
 # are self-hosted woff2 under web/static/fonts/, so font-src/style-src stay 'self'.
 #
-# form-action has to name every OAuth callback host, not merely 'self': the consent
-# form posts to /oauth/authorize/approve and that response 302s onward to the
-# client's callback, and Chrome applies form-action across the whole redirect
-# chain. A host missing here swallows the "Approve" click with a console message
-# naming the *form action* rather than the redirect target — which reads like a
-# same-origin violation and sends you looking in the wrong place entirely. Built
-# from the same allowlist /oauth/authorize checks so the two cannot drift apart.
-_CSP_TEMPLATE = (
+# form-action allows any https target, not just 'self': the consent form posts to
+# /oauth/authorize/approve, that response 302s to the connector's callback, and the
+# connector bounces on through hosts of its own — Chrome enforces form-action across
+# the entire redirect chain, and a chain inside somebody else's product can't be
+# enumerated here. Failure mode when it is too narrow: the "Approve" click does
+# nothing, and the console names the *form action* instead of the blocked hop, which
+# reads like a same-origin violation and sends you looking in the wrong place. The
+# real gate on where an approval may land is redirect_allowed() in the OAuth router;
+# with 'unsafe-inline' scripts permitted above, a stricter form-action buys nothing.
+_CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com; "
     "style-src 'self' 'unsafe-inline'; "
@@ -64,37 +66,19 @@ _CSP_TEMPLATE = (
     "connect-src 'self' https://cloudflareinsights.com; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
-    "form-action 'self' {callbacks}"
+    "form-action 'self' https:"
 )
-_headers_cache: dict[str, str] | None = None
-
-
-def security_headers() -> dict[str, str]:
-    """The static security headers, assembled on first use rather than at import —
-    ``get_web_config()`` raises without a session secret, and importing this module
-    must not require a live environment.
-
-    ponytail: cached for the process lifetime, so a changed callback allowlist needs
-    a restart. Same as every other env-driven knob here; drop the cache if the hosts
-    ever become editable at runtime.
-    """
-    global _headers_cache
-    if _headers_cache is None:
-        from web.config import get_web_config
-
-        callbacks = " ".join(f"https://{h}" for h in get_web_config().mcp_redirect_hosts)
-        _headers_cache = {
-            "X-Frame-Options": "DENY",
-            "Content-Security-Policy": _CSP_TEMPLATE.format(callbacks=callbacks),
-            "X-Content-Type-Options": "nosniff",
-            "Referrer-Policy": "strict-origin-when-cross-origin",
-        }
-    return _headers_cache
+_SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": _CSP,
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+}
 
 
 async def _security_headers(request: Request, call_next):
     response = await call_next(request)
-    for name, value in security_headers().items():
+    for name, value in _SECURITY_HEADERS.items():
         response.headers.setdefault(name, value)
 
     content_type = response.headers.get("content-type", "").lower()
