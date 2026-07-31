@@ -64,6 +64,7 @@ def _body_config() -> tuple[float, str]:
 # "Garmin overrides nothing").
 _SOURCE_PRIORITY: dict[str, int] = {
     Source.MANUAL.value: 2,
+    Source.MCP.value: 2,  # a weight he told Claude is a weight he entered
     Source.BODY_SCAN.value: 2,
 }
 

@@ -11,11 +11,13 @@ silent-loss class this suite guards against. Two mechanisms cover it:
 """
 from __future__ import annotations
 
+import asyncio
 import time
 
 
 from vitals.enums import Domain
 from vitals.scheduler import scheduler as scheduler_mod
+from vitals.scheduler.scheduler_lock import scheduler_heartbeat_age
 from vitals.services import alerts_service
 
 
@@ -72,6 +74,29 @@ async def test_successful_run_clears_the_alert(session_factory, db_session):
         a for a in await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value)
         if a.alert_key == "scheduler.job_failed:hevy_sync"
     ]
+
+
+# ── The keepalive itself ─────────────────────────────────────────────────────
+async def test_keepalive_job_actually_records_its_heartbeat(redis):
+    """The one always-on liveness signal has to run — and to *do* something.
+
+    It was registered as ``lambda: _keepalive(redis)``. A lambda that returns a
+    coroutine is not a coroutine function, so APScheduler's executor ran it
+    synchronously and discarded the coroutine: the stamp was never written, and
+    /health called the scheduler dead two minutes after every boot, forever. The
+    tests below all set ``scheduler:last_run:keepalive`` by hand, which is exactly
+    why none of them noticed — so this one runs the job APScheduler was handed.
+    """
+    scheduler = scheduler_mod.setup_scheduler(lambda: None, redis)
+    job = scheduler.get_job(scheduler_mod.KEEPALIVE_JOB_ID)
+
+    assert asyncio.iscoroutinefunction(job.func), (
+        "the keepalive must be a coroutine function — anything else is called "
+        "synchronously and its coroutine thrown away"
+    )
+
+    await job.func()
+    assert await scheduler_heartbeat_age(redis, scheduler_mod.KEEPALIVE_JOB_ID) is not None
 
 
 # ── Per-job heartbeat budgets ────────────────────────────────────────────────

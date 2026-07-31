@@ -66,6 +66,7 @@ _DAILY_METHODS = (
     ("rhr", "get_rhr_day"),
     ("hrv", "get_hrv_data"),
     ("stress", "get_stress_data"),
+    ("heart_rate", "get_heart_rates"),
     ("training_readiness", "get_training_readiness"),
     ("max_metrics", "get_max_metrics"),
     ("training_status", "get_training_status"),
@@ -90,6 +91,25 @@ class GarminLoginThrottled(GarminAuthError):
     """The breaker refused a credential login — the daily allowance is spent or a
     pause is in force. Never a reason to retry sooner: retries are what turn a
     Garmin rate-limit into a multi-day account block."""
+
+
+async def login_breaker_state(redis: Any) -> dict:
+    """What the credential-login breaker has spent — read-only, for the settings
+    card (U4). Without it the poll-frequency fields would be set blind: the whole
+    reason a higher frequency is safe is that logins stay rationed.
+
+    Unreadable state reports as ``paused=None`` rather than as "fine": a breaker
+    nobody can see is exactly what the owner needs told.
+    """
+    if redis is None:
+        return {"used": 0, "max": MAX_LOGINS_PER_DAY, "paused": None}
+    try:
+        used = int(await redis.get(LOGIN_ATTEMPTS_KEY) or 0)
+        paused = bool(await redis.get(LOGIN_PAUSE_KEY))
+    except Exception:  # noqa: BLE001
+        logger.warning("Garmin breaker state unreadable", exc_info=True)
+        return {"used": 0, "max": MAX_LOGINS_PER_DAY, "paused": None}
+    return {"used": used, "max": MAX_LOGINS_PER_DAY, "paused": paused}
 
 
 class GarminClient:
@@ -152,8 +172,10 @@ class GarminClient:
         ``Garmin.login(store)`` silently escalates to a full credential login when
         the store doesn't parse, so calling it blind would spend the expensive
         path without the breaker ever seeing it. Loading the tokens ourselves
-        first is a local read with no network — and once they load, ``login()`` is
-        guaranteed to stay on the token path."""
+        first is a local read with no network — and once they load, ``login()``
+        stays on the token path: 0.3.7 added one more escalation (a cached token
+        the API rejects triggers a fresh credential login), and it is skipped
+        precisely because we pass ``return_on_mfa=True``."""
         from garminconnect import Garmin  # lazy
 
         sources = (("Redis", cached_token), ("disk", self._config.garmin_token_dir))
@@ -277,6 +299,25 @@ class GarminClient:
                     logger.warning("Garmin %s(%s) failed: %s", method_name, ds, e)
                     out[key] = None
             return out
+
+        return await asyncio.to_thread(_blocking)
+
+    async def fetch_summary(self, on_date: date_type) -> dict:
+        """The day summary alone — **one** upstream call (N3).
+
+        The light pulse: steps, calories and intensity minutes move all day, the
+        rest of the bundle (sleep, HRV, readiness) is settled by morning. Polling
+        this every quarter hour costs one request and no login — the full
+        :meth:`fetch_daily` would cost ten for numbers that haven't changed."""
+        garmin = await self._ensure_login()
+        ds = on_date.isoformat()
+
+        def _blocking() -> dict:
+            try:
+                return garmin.get_user_summary(ds) or {}
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Garmin get_user_summary(%s) failed: %s", ds, e)
+                return {}
 
         return await asyncio.to_thread(_blocking)
 

@@ -12,6 +12,41 @@
  * own first value (100 = start) and shares one axis instead — a more honest
  * comparison than stacking independently-scaled axes.
  */
+/**
+ * Extra Chart.js hover mode: the point nearest the cursor's x, one per series.
+ *
+ * None of the built-ins can pair curves sampled on different clocks. 'index'
+ * matches datasets by position in the array, so on the Garmin day chart it reads
+ * stress[200] (16:40) against heart_rate[200] (06:40); 'x' returns only the points
+ * the cursor physically overlaps, which at ~1 px spacing is two heart-rate samples
+ * and no stress at all. Either way the tooltip lies.
+ *
+ * It lives here rather than next to one chart because both garmin.js and
+ * garmin_sleep.js need it, and charts.js is already the file the others load
+ * after (see the script order in base.html). Registered once on the global Chart
+ * and guarded, since a boosted navigation re-runs inits but not this file.
+ */
+if (window.Chart && !Chart.Interaction.modes.nearestByTime) {
+    Chart.Interaction.modes.nearestByTime = (chart, e, options, useFinalPosition) => {
+        const position = Chart.helpers.getRelativePosition(e, chart);
+        const items = [];
+        chart.getSortedVisibleDatasetMetas().forEach(meta => {
+            let best = null;
+            let bestDistance = Infinity;
+            meta.data.forEach((element, index) => {
+                if (element.skip) return;
+                const distance = Math.abs(element.getProps(['x'], useFinalPosition).x - position.x);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    best = { element, datasetIndex: meta.index, index };
+                }
+            });
+            if (best) items.push(best);
+        });
+        return items;
+    };
+}
+
 function vitalsFormatDateStr(dateStr) {
     if (!dateStr) return '';
     const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);

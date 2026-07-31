@@ -14,6 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Source
 from vitals.models.genetics import DOMAIN, GeneticVariant
 
+# How many parsed VCF rows one import keeps in the data lake.
+# ponytail: a consumer genome is ~600k rsID rows; storing all of them would put a
+# ~20 MB JSON blob in one raw_payloads row (and hold it in RAM while parsing), so
+# the import keeps the first 50k. If a re-parse ever needs the whole genome,
+# store the gzipped file on disk and keep only its path here.
+MAX_RAW_VARIANTS = 50_000
+
 
 async def list_variants(session: AsyncSession) -> Sequence[GeneticVariant]:
     result = await session.execute(
@@ -99,6 +106,33 @@ async def upsert_by_rsid(
     row.source = source
     await session.flush()
     return row
+
+
+async def store_raw_vcf(
+    session: AsyncSession,
+    *,
+    filename: Optional[str],
+    variants: Sequence[Sequence[str]],
+    truncated: bool = False,
+) -> None:
+    """Keep the parsed rows of an imported VCF in ``raw_payloads``.
+
+    The importer writes only the rsIDs it can interpret today
+    (``genetics_vcf.INTERPRETATIONS``); everything else used to be dropped on the
+    floor, so expanding that table meant asking the owner to find and re-upload
+    the file. Each variant is stored as ``[rsid, ref, alt, genotype]`` — the
+    ParsedVariant fields, which is all ``interpret()`` needs to re-derive rows
+    later — rather than the original VCF text.
+    """
+    from vitals.services import raw_payload_service
+
+    await raw_payload_service.upsert_raw_payload(
+        session,
+        domain=DOMAIN,
+        source=Source.VCF_IMPORT.value,
+        external_id=(filename or "vcf")[:128],
+        payload={"filename": filename, "truncated": truncated, "variants": list(variants)},
+    )
 
 
 async def delete_variant(session: AsyncSession, variant_id: int) -> bool:

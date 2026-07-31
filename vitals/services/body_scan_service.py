@@ -227,6 +227,43 @@ async def ingest_extracted(
     )
 
 
+async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
+    """Re-run extraction ingest against a scan payload already on disk — no new
+    upload. Covers uploads the owner never confirmed (extracted but abandoned at
+    the preview step). Reuses :func:`ingest_extracted`, which calls
+    :func:`save_scan` with ``override=False`` — a still-active hard-block
+    conflict rule raises ``ConflictBlocked``, which the sweep's generic
+    try/except logs and skips, leaving the row pending for the next pass rather
+    than forcing it through. Preserves ``fetched_at``: this is a reparse, not a
+    new upload. Used by :func:`reparse_pending` (the nightly sweep —
+    raw_payload_service.sweep_pending_job)."""
+    extracted = raw_row.payload if isinstance(raw_row.payload, dict) else {}
+    original_fetched_at = raw_row.fetched_at
+    await ingest_extracted(session, extracted, file_key=raw_row.external_id)
+    raw_row.fetched_at = original_fetched_at
+
+
+async def reparse_pending(
+    session: AsyncSession,
+    *,
+    limit: int = raw_payload_service.REPARSE_BATCH,
+    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+) -> int:
+    """Sweep body-comp raw payloads (extractions never confirmed by the owner)
+    still pending a normalized row. Does not commit."""
+    has_normalized = (
+        select(BodyScan.id).where(BodyScan.raw_payload_id == RawPayload.id).exists()
+    )
+    return await raw_payload_service.sweep_domain(
+        session,
+        domain=DOMAIN,
+        reparse=reparse_from_raw,
+        has_normalized=has_normalized,
+        limit=limit,
+        since_days=since_days,
+    )
+
+
 # ── Reads ─────────────────────────────────────────────────────────────────────
 async def list_scans(
     session: AsyncSession,

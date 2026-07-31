@@ -29,7 +29,7 @@ import logging
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Severity, Source
@@ -42,6 +42,7 @@ from vitals.integrations.garmin_client import (
 from vitals.models.garmin import (
     DOMAIN,
     SERIES_BODY_BATTERY,
+    SERIES_HEART_RATE,
     SERIES_SLEEP_BB,
     SERIES_SLEEP_HR,
     SERIES_SLEEP_HRV,
@@ -198,8 +199,9 @@ def _intraday_series(raw: dict) -> dict[str, list[tuple[datetime, float]]]:
     The whole-day stress and Body Battery curves ride in the one
     ``get_stress_data`` payload at full ~3-minute resolution; the separate
     ``get_body_battery`` payload only carries inflection points, so it's a
-    fallback for when the stress payload came back without the array. The night's
-    seven series come from ``get_sleep_data`` and join them here, so ``ingest_daily``
+    fallback for when the stress payload came back without the array. The
+    whole-day heart rate comes from ``get_heart_rates`` and the night's seven
+    series from ``get_sleep_data``; all of them join here, so ``ingest_daily``
     stores every curve through one loop."""
     stress_payload = raw.get("stress") or {}
 
@@ -221,9 +223,16 @@ def _intraday_series(raw: dict) -> dict[str, list[tuple[datetime, float]]]:
             )
     bb_index = _descriptor_index(bb_descriptors, "bodyBatteryLevel")
 
+    hr_payload = raw.get("heart_rate") or {}
+    hr_rows = hr_payload.get("heartRateValues")
+    # Garmin ships ``[ts, null]`` for the minutes the watch wasn't measuring;
+    # _parse_intraday_points drops those alongside the negative sentinels.
+    hr_index = _descriptor_index(hr_payload.get("heartRateValueDescriptors"), "heartrate")
+
     return {
         SERIES_STRESS: _parse_intraday_points(stress_rows, value_index=stress_index),
         SERIES_BODY_BATTERY: _parse_intraday_points(bb_rows, value_index=bb_index),
+        SERIES_HEART_RATE: _parse_intraday_points(hr_rows, value_index=hr_index),
         **_sleep_intraday_series(raw),
     }
 
@@ -605,6 +614,42 @@ async def reparse_activity_from_raw(session: AsyncSession, raw_row: RawPayload) 
     raw_row.fetched_at = original_fetched_at
 
 
+async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
+    """Dispatch a pending garmin raw payload back through its normal ingest path
+    by the ``daily:``/``activity:`` prefix ``ingest_daily``/``ingest_activities``
+    already stamp onto ``external_id``. Used by :func:`reparse_pending` (the
+    nightly sweep — raw_payload_service.sweep_pending_job)."""
+    external_id = raw_row.external_id or ""
+    if external_id.startswith("daily:"):
+        await reparse_daily_from_raw(session, raw_row)
+    elif external_id.startswith("activity:"):
+        await reparse_activity_from_raw(session, raw_row)
+    else:
+        raise ValueError(f"unrecognized garmin raw_payload external_id: {external_id!r}")
+
+
+async def reparse_pending(
+    session: AsyncSession,
+    *,
+    limit: int = raw_payload_service.REPARSE_BATCH,
+    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+) -> int:
+    """Sweep garmin raw payloads (daily metrics + activities both live under
+    this one domain) still pending a normalized row. Does not commit."""
+    has_normalized = or_(
+        select(GarminDaily.id).where(GarminDaily.raw_payload_id == RawPayload.id).exists(),
+        select(GarminActivity.id).where(GarminActivity.raw_payload_id == RawPayload.id).exists(),
+    )
+    return await raw_payload_service.sweep_domain(
+        session,
+        domain=DOMAIN,
+        reparse=reparse_from_raw,
+        has_normalized=has_normalized,
+        limit=limit,
+        since_days=since_days,
+    )
+
+
 def _normalize_hr_zones(raw: dict) -> Optional[list]:
     """Seconds-in-HR-zone as a compact array. Prefers the per-activity
     ``get_activity_hr_zones`` detail (carries each zone's low HR boundary); falls
@@ -743,6 +788,79 @@ async def sync(
     else:
         await alerts_service.resolve_by_key(session, alert_key=TOKEN_ALERT_KEY)
     return summary
+
+
+# ── Light pulse (N3) ──────────────────────────────────────────────────────────
+# Outside the active hours on the settings card the pulse doesn't run: nothing it
+# reads (steps, active calories, intensity minutes) moves while he's asleep, and
+# every skipped poll is one fewer chance to spend a login on a night nobody reads.
+
+
+async def pulse(
+    session: AsyncSession, client: Any, *, on_date: Optional[date_type] = None
+) -> dict:
+    """Today's summary only — one upstream call, merged into the day's bundle.
+
+    The merge is the whole trick: the fresh summary replaces exactly that key of
+    the stored raw payload and the *whole* bundle is re-ingested, so last night's
+    sleep and HRV survive a mid-day poll. Normalising a bare ``{"summary": …}``
+    over an existing day would blank every column the summary doesn't carry.
+
+    An empty response is treated as no data rather than as "the day has no
+    summary" — same reason. Auth failures are caught and logged, never alerted:
+    the 4×/day sync owns that alert, and a job running every quarter hour would
+    flap it. Does not commit.
+    """
+    day = on_date or now_local().date()
+    out: dict = {"steps": None, "error": None}
+    try:
+        fresh = await client.fetch_summary(day)
+    except GarminAuthError as e:
+        logger.warning("Garmin pulse skipped: %s", e)
+        out["error"] = "throttled" if isinstance(e, GarminLoginThrottled) else "auth"
+        return out
+    if not fresh:
+        out["error"] = "empty"
+        return out
+
+    raw: dict = {}
+    existing = await get_daily(session, day)
+    if existing is not None and existing.raw_payload_id is not None:
+        stored = await session.get(RawPayload, existing.raw_payload_id)
+        if stored is not None and isinstance(stored.payload, dict):
+            raw = dict(stored.payload)
+    raw["summary"] = fresh
+
+    row = await ingest_daily(session, day, raw)
+    out["steps"] = row.steps
+    return out
+
+
+async def pulse_job(session_factory, redis=None) -> None:
+    """The light pulse on its own interval (both from the settings card).
+
+    Cheap by construction, but it still opens a Garmin session — which is safe
+    only because the credential-login breaker rations logins. No-ops when Garmin
+    isn't configured, when the pulse is switched off, or outside active hours.
+
+    The active-hours check is here rather than in the trigger because APScheduler
+    intervals have no concept of a window, and because a saved setting must apply
+    to the *next* tick without touching the job."""
+    from vitals.integrations.garmin_client import GarminClient
+    from vitals.services.proactive import prefs
+
+    async with session_factory() as session:
+        settings = await prefs.get_prefs(session)
+        if not settings["pulse_seconds"]:
+            return
+        if not settings["pulse_start_hour"] <= now_local().hour < settings["pulse_end_hour"]:
+            return
+
+        client = GarminClient.from_config(redis=redis)
+        if not client.is_configured:
+            return
+        await pulse(session, client)
+        await session.commit()
 
 
 # ── Health Auto Export (backup channel) ───────────────────────────────────────

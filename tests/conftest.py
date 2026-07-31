@@ -165,6 +165,21 @@ async def session_factory(db_session):
 
 
 @pytest_asyncio.fixture
+async def signals_module_on(db_session):
+    """Switch the ``signals`` module on for a bare ``db_session`` test.
+
+    The proactive layer is gated on that module (it is the emergency switch, and
+    it defaults **off**), so a service-level test that doesn't go through the
+    ``client`` fixture has to set the same thing up the owner does in Settings —
+    otherwise ``delivery.send`` correctly refuses to send anything.
+    """
+    from vitals.services import modules_service
+
+    await modules_service.set_module_enabled(db_session, key="signals", enabled=True)
+    await db_session.commit()
+
+
+@pytest_asyncio.fixture
 async def redis():
     """In-memory fakeredis client (async)."""
     import fakeredis.aioredis
@@ -187,8 +202,10 @@ async def client(db_session, redis):
     from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY
     from vitals.services.language_service import SETTINGS_KEY as LANG_SETTINGS_KEY
 
-    db_session.add(AppSetting(key=SETTINGS_KEY, value={k: True for k in MODULE_REGISTRY}))
-    db_session.add(AppSetting(key=LANG_SETTINGS_KEY, value="ru"))
+    # merge(), not add(): another fixture may already have written these rows
+    # (``signals_module_on`` does), and a blind insert would collide on the PK.
+    await db_session.merge(AppSetting(key=SETTINGS_KEY, value={k: True for k in MODULE_REGISTRY}))
+    await db_session.merge(AppSetting(key=LANG_SETTINGS_KEY, value="ru"))
     await db_session.commit()
 
     async def _get_session():

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from typing import Any, Awaitable, Callable, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -199,14 +200,19 @@ async def _keepalive(redis: Optional[Redis]) -> None:
         await record_scheduler_heartbeat(redis, KEEPALIVE_JOB_ID)
 
 
-def setup_scheduler(
+def apply_registry(
+    scheduler: AsyncIOScheduler,
     session_factory: async_sessionmaker[AsyncSession],
     redis: Optional[Redis] = None,
-    *,
-    timezone: str = "Europe/Chisinau",
-) -> AsyncIOScheduler:
-    scheduler = AsyncIOScheduler(timezone=timezone)
+) -> None:
+    """(Re)attach the registry to a scheduler — including a *running* one.
 
+    This is what makes a settings save take effect without a restart (U5):
+    ``register_all_jobs`` rebuilds the registry from the new settings and this
+    replaces the live jobs with it. Removing what is no longer registered matters
+    just as much as adding — switch the Garmin pulse off and the old interval job
+    would otherwise keep firing until the next deploy.
+    """
     for spec in _registry.values():
         scheduler.add_job(
             _make_runner(spec, session_factory, redis),
@@ -216,10 +222,32 @@ def setup_scheduler(
             **spec.trigger_kwargs,
         )
 
+    keep = set(_registry) | {KEEPALIVE_JOB_ID}
+    for job in scheduler.get_jobs():
+        if job.id not in keep:
+            scheduler.remove_job(job.id)
+
+
+def setup_scheduler(
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: Optional[Redis] = None,
+    *,
+    timezone: str = "Europe/Chisinau",
+) -> AsyncIOScheduler:
+    scheduler = AsyncIOScheduler(timezone=timezone)
+
+    apply_registry(scheduler, session_factory, redis)
+
     # Always-on heartbeat so a dead scheduler is detectable even before any module
     # job is registered.
+    #
+    # ``partial``, not ``lambda: _keepalive(redis)``: a lambda that *returns* a
+    # coroutine is not a coroutine function, so APScheduler's executor called it
+    # synchronously and threw the coroutine away — the heartbeat was never
+    # recorded, and /health reported the scheduler dead from two minutes after
+    # boot forever. ``partial`` keeps ``iscoroutinefunction`` true.
     scheduler.add_job(
-        lambda: _keepalive(redis),
+        partial(_keepalive, redis),
         trigger="interval",
         minutes=1,
         id=KEEPALIVE_JOB_ID,

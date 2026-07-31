@@ -65,7 +65,14 @@
                 <span class="v-bar v-bar-sm"></span>
                 <span class="v-text-card">{{ t("labs.manual_title") }}</span>
             </div>
-            <form action="/labs/result" method="POST" class="space-y-4" hx-disabled-elt="find button[type='submit']">
+            {# protocolForm(): the shared 409 → "save anyway" flow (see static/protocol.js).
+               A lab result now runs the conflict gate like every other write, so a hard
+               rule must be shown and overridable here instead of arriving as raw JSON. #}
+            <div x-data="protocolForm()">
+            {% include "partials/conflict_modal.html" %}
+            <form action="/labs/result" method="POST" class="space-y-4"
+                  @submit.prevent="submitForm($event)" hx-boost="false"
+                  hx-disabled-elt="find button[type='submit']">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label for="labs-date" class="v-label">{{ t("common.date") }}</label>
@@ -105,6 +112,7 @@
                 </div>
                 <button type="submit" class="v-btn-ghost w-full">{{ t("labs.add_result") }}</button>
             </form>
+            </div>
         </div>
     </div>
 

@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain
 from vitals.integrations.garmin_client import GarminClient
-from vitals.models.garmin import SERIES_BODY_BATTERY, SERIES_STRESS, SLEEP_SERIES_TYPES
+from vitals.models.garmin import (
+    SERIES_BODY_BATTERY,
+    SERIES_HEART_RATE,
+    SERIES_STRESS,
+    SLEEP_SERIES_TYPES,
+)
 from vitals.services import alerts_service, garmin_service
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates
@@ -35,13 +40,15 @@ async def garmin_dashboard(
     history. Activities live on their own tab (see ``activities_list``)."""
     latest = await garmin_service.latest_daily(db)
     history = await garmin_service.list_daily(db, limit=30)
-    # The latest day's stress / Body Battery curves (empty dict on a day that has
-    # only day-level scalars — the template then hides the chart card). Asked for
-    # by name: the same date also holds the night's ~2k samples, which belong to
-    # the sleep page and would otherwise ride along into this page for nothing.
+    # The latest day's stress / Body Battery / heart-rate curves (empty dict on a
+    # day that has only day-level scalars — the template then hides the chart
+    # card). Asked for by name: the same date also holds the night's ~2k samples,
+    # which belong to the sleep page and would otherwise ride along for nothing.
     intraday = (
         await garmin_service.intraday_series_map(
-            db, latest.date, series_types=(SERIES_STRESS, SERIES_BODY_BATTERY)
+            db,
+            latest.date,
+            series_types=(SERIES_STRESS, SERIES_BODY_BATTERY, SERIES_HEART_RATE),
         )
         if latest
         else {}

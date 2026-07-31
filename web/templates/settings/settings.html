@@ -18,6 +18,7 @@
     <p class="v-settings-intro v-text-body max-w-2xl">{{ t("settings.description") }}</p>
 
     <!-- Saved / Error banners -->
+    <div id="saved-banner">
     {% if saved == 'profile' %}
     <div class="v-alert info">{{ t("settings.saved.profile") }}</div>
     {% elif saved == 'ai' %}
@@ -34,7 +35,27 @@
     <div class="v-alert info" style="background: var(--good-soft); border-color: rgba(111,197,142,0.3); color: var(--good);">{{ t("settings.saved.restart") }}</div>
     {% elif saved == 'language' %}
     <div class="v-alert info">{{ t("settings.saved.language") }}</div>
-
+    {% elif saved == 'proactive' %}
+    <div class="v-alert info">{{ t("settings.saved.proactive") }}</div>
+    {% endif %}
+    {% if saved == 'proactive' and adjusted %}
+    <div class="v-alert warn">{{ t("settings.proactive_adjusted") }}</div>
+    {% endif %}
+    </div>
+    {% if saved %}
+    <script>
+    (function () {
+        // U9: base.html holds scroll position across an htmx-boosted save, so a
+        // banner saved further down the page never scrolls into view. Read the
+        // (already-rendered, already-translated) banner text back out and toast
+        // it too — same message, guaranteed visible. Runs again on every boosted
+        // swap of this block (hence var, not top-level const/let — see the IIFE
+        // note on window.vitalsToast in base.html for why that matters here).
+        var banner = document.getElementById('saved-banner');
+        var text = banner ? banner.textContent.replace(/\s+/g, ' ').trim() : '';
+        if (text && window.vitalsToast) window.vitalsToast(text, 'success');
+    })();
+    </script>
     {% endif %}
 
     {% if error == 'wrong_password' %}
@@ -180,7 +201,7 @@
                 <p class="v-text-micro mt-1">{{ t("settings.keep_hint") }}</p>
                 {% endif %}
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div class="space-y-1.5">
                     <label for="s-digest-model" class="v-label">{{ t("settings.digest_model") }}</label>
                     <input id="s-digest-model" name="llm_model_digest" type="text"
@@ -194,6 +215,13 @@
                            value="{{ llm_model_parser }}" class="v-input font-mono"
                            placeholder="google/gemini-2.5-flash">
                     <p class="v-text-micro mt-1">{{ t("settings.parser_model_hint") }}</p>
+                </div>
+                <div class="space-y-1.5">
+                    <label for="s-brief-model" class="v-label">{{ t("settings.brief_model") }}</label>
+                    <input id="s-brief-model" name="llm_model_brief" type="text"
+                           value="{{ llm_model_brief }}" class="v-input font-mono"
+                           placeholder="{{ llm_model_digest }}">
+                    <p class="v-text-micro mt-1">{{ t("settings.brief_model_hint") }}</p>
                 </div>
             </div>
             <div class="space-y-1.5">
@@ -273,6 +301,9 @@
             </div>
         </form>
     </div>
+
+    <!-- ─── PROACTIVE LAYER (bot schedule, nudges, Garmin polling) ─────────── -->
+    {% include "partials/proactive_card.html" %}
 
     <!-- ─── CLAUDE MCP ────────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">

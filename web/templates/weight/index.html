@@ -371,7 +371,8 @@
                                         '—' }}</td>
                                     <td class="text-right whitespace-nowrap v-col-actions pr-3">
                                         <span class="v-icon-actions">
-                                            {% if w.source == 'manual' %}
+                                            {# Editable = he entered it himself, whichever surface he used. #}
+                                            {% if w.source in ('manual', 'mcp') %}
                                             <button aria-label="{{ t('common.edit') }}"
                                                 @click="editWeight({id: {{ w.id }}, date: '{{ w.date }}', weight_kg: {{ w.weight_kg }}, note: {{ (w.note or '') | tojson | forceescape }}})"
                                                 class="v-icon-btn" title="{{ t("common.edit") }}">

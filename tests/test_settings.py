@@ -361,3 +361,63 @@ async def test_settings_restart_endpoint(auth_client, monkeypatch):
     assert len(killed) == 1
     assert killed[0] == (os.getpid(), 15)  # 15 is signal.SIGTERM
 
+
+# ── proactive settings — U10/U11 regressions ──────────────────────────────────
+
+
+async def test_settings_save_proactive_flags_adjusted_values(auth_client):
+    """U11: prefs.sanitize() (called inside prefs.set_prefs) silently clamps
+    out-of-range input. The redirect must say so instead of a bare "saved",
+    or the user has no way to know their number was changed underneath them."""
+    r = await auth_client.post(
+        "/settings/proactive",
+        data={
+            "brief_time": "11:00",
+            "evening_time": "23:45",
+            "quiet_start": "02:00",
+            "quiet_end": "10:00",
+            "daily_budget": "9000",  # BUDGET_RANGE is (1, 12) — gets clamped
+            "garmin_sync_hours": "6",
+            "pulse_seconds": "900",
+            "pulse_start_hour": "8",
+            "pulse_end_hour": "24",
+        },
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/settings?saved=proactive&adjusted=1"
+
+
+async def test_settings_save_proactive_no_adjusted_flag_in_range(auth_client):
+    """The flip side: an in-range save must not claim anything was adjusted."""
+    r = await auth_client.post(
+        "/settings/proactive",
+        data={
+            "brief_time": "11:00",
+            "evening_time": "23:45",
+            "quiet_start": "02:00",
+            "quiet_end": "10:00",
+            "daily_budget": "4",
+            "garmin_sync_hours": "6",
+            "pulse_seconds": "900",
+            "pulse_start_hour": "8",
+            "pulse_end_hour": "24",
+        },
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/settings?saved=proactive"
+
+
+async def test_settings_modules_toggle_updates_proactive_chip_oob(auth_client):
+    """U10: the proactive card's "module off" chip is populated once at the
+    initial page load; toggling `signals` via /settings/modules (hx-swap="none"
+    + OOB) must carry a fresh copy of the chip, or it goes stale until reload."""
+    r = await auth_client.post("/settings/modules", data={"module": "signals", "enabled": "false"})
+    assert r.status_code == 200
+    assert 'id="proactive-off-chip"' in r.text
+    assert 'hx-swap-oob="true"' in r.text
+    assert "модуль выключен" in r.text  # settings.proactive_off_chip (ru)
+
+    r = await auth_client.post("/settings/modules", data={"module": "signals", "enabled": "true"})
+    assert r.status_code == 200
+    assert '<span id="proactive-off-chip" hx-swap-oob="true"></span>' in r.text
+

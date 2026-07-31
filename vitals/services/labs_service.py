@@ -15,13 +15,13 @@ Owns the labs domain:
     an OpenRouter vision model (the document is also kept raw). The LLM client is
     injected so the parser is unit-tested without network or a key.
 
-The product is a navigator: nothing here blocks. Extraction is *optional* — every
-result can be entered manually, so the module works with no LLM configured.
-:func:`add_result` also feeds a value into the conflict engine's ``lab_safety``
-rules (:func:`_raise_conflict_alerts`) so e.g. logging a high potassium result
-while a potassium supplement is active surfaces a warning immediately — but,
-per the navigator principle above, it reads ``evaluate()`` directly rather than
-the ``enforce()``/override flow, so a rule can never block a lab save.
+Extraction is *optional* — every result can be entered manually, so the module
+works with no LLM configured. :func:`add_result` runs the value through the
+conflict engine's ``lab_safety`` rules, so logging a high potassium result while
+a potassium supplement is active surfaces immediately. It uses the same
+``enforce()``/override flow as every other write path rather than a quieter
+read-only check: a hard rule stops the save and hands back the violation, and the
+caller decides — the web form and the MCP tools both offer "save anyway".
 """
 from __future__ import annotations
 
@@ -262,12 +262,14 @@ async def add_result(
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
     raw_payload_id: Optional[int] = None,
+    override: bool = False,
 ) -> LabResult:
     """Record a marker value, computing its flag and ensuring its catalog row.
 
     If the result carries no range, fall back to the catalog's default range so a
     flag can still be computed. Raises ``ValueError`` on a nameless marker or an
-    implausible value."""
+    implausible value, and :class:`ConflictBlocked` when a hard cross-domain rule
+    fires without ``override``."""
     marker = normalize_marker(marker)
     if not marker:
         raise ValueError("marker is required")
@@ -279,6 +281,18 @@ async def add_result(
     eff_low = ref_low if ref_low is not None else catalog.ref_low
     eff_high = ref_high if ref_high is not None else catalog.ref_high
     flag = compute_flag(value, eff_low, eff_high)
+
+    # The same gate every other write path runs, before the row exists: a hard
+    # rule (an active potassium supplement meeting a hyperkalemic potassium
+    # result) stops the save unless the caller overrides, and soft rules keep
+    # doing what they did — an alert, never a block.
+    await conflict_engine.enforce(
+        session,
+        Domain.LABS.value,
+        {"marker": marker, "value": value, "flag": flag},
+        override=override,
+        entity_ref=f"labs:{marker}",
+    )
 
     row = LabResult(
         date=on_date,
@@ -296,31 +310,66 @@ async def add_result(
     )
     session.add(row)
     await session.flush()
-
-    await _raise_conflict_alerts(session, marker=marker, value=value, flag=flag)
     return row
 
 
-async def _raise_conflict_alerts(
-    session: AsyncSession, *, marker: str, value: float, flag: Optional[str]
-) -> None:
-    """Surface cross-domain conflict rules referencing this marker as passive
-    alerts. Labs is a navigator — nothing here blocks — so this reads
-    ``evaluate()`` directly instead of the enforce()/override flow every other
-    domain uses; a ``hard_block``-severity rule just becomes a warn-like alert
-    here, never a save-time error."""
-    violations = await conflict_engine.evaluate(
-        session, Domain.LABS.value, {"marker": marker, "value": value, "flag": flag}
+async def update_result(
+    session: AsyncSession,
+    result_id: int,
+    *,
+    on_date: Optional[date_type] = None,
+    marker: Optional[str] = None,
+    value: Optional[float] = None,
+    unit: Optional[str] = None,
+    ref_low: Optional[float] = None,
+    ref_high: Optional[float] = None,
+    lab_name: Optional[str] = None,
+    note: Optional[str] = None,
+) -> Optional[LabResult]:
+    """Correct an existing result — a mistyped value or a range read off the wrong
+    column. Only the fields passed are changed; ``flag`` is recomputed from the
+    resulting value + range, and the alerts derived from it are refreshed.
+
+    Without this, fixing a typo meant deleting the row and re-adding it, which is
+    the one thing this project promises never to do to a measurement."""
+    row = await session.get(LabResult, result_id)
+    if row is None:
+        return None
+
+    if marker is not None:
+        normalized = normalize_marker(marker)
+        if not normalized:
+            raise ValueError("marker is required")
+        row.marker = normalized
+    if value is not None:
+        if not math.isfinite(value) or abs(value) > _VALUE_ABS_MAX:
+            raise ValueError(f"implausible lab value for {row.marker}: {value!r}")
+        row.value = value
+    if on_date is not None:
+        row.date = on_date
+    if unit is not None:
+        row.unit = unit
+    if ref_low is not None:
+        row.ref_low = ref_low
+    if ref_high is not None:
+        row.ref_high = ref_high
+    if lab_name is not None:
+        row.lab_name = lab_name
+    if note is not None:
+        row.note = note
+
+    catalog = await _ensure_marker(
+        session, row.marker, unit=row.unit, ref_low=row.ref_low, ref_high=row.ref_high
     )
-    for v in violations:
-        await alerts_service.raise_alert(
-            session,
-            domain=Domain.LABS.value,
-            severity=v.severity,
-            message=v.message,
-            alert_key=f"conflict:{v.rule_id}",
-            entity_ref=f"labs:{marker}",
-        )
+    if row.ref_low is None:
+        row.ref_low = catalog.ref_low
+    if row.ref_high is None:
+        row.ref_high = catalog.ref_high
+    row.flag = compute_flag(row.value, row.ref_low, row.ref_high)
+
+    await session.flush()
+    await refresh_alerts(session)
+    return row
 
 
 async def list_results(
@@ -529,6 +578,7 @@ async def confirm_extracted(
     markers: Sequence[dict],
     lab_name: Optional[str] = None,
     raw_payload_id: Optional[int] = None,
+    override: bool = False,
 ) -> list[LabResult]:
     """Persist the owner-edited marker rows from the upload preview (step 2 of
     upload -> preview -> confirm). Marks the raw payload processed. Does not
@@ -552,6 +602,7 @@ async def confirm_extracted(
             lab_name=lab_name,
             source=Source.LAB_PARSER.value,
             raw_payload_id=raw_payload_id,
+            override=override,
         )
         created.append(row)
 
@@ -568,6 +619,7 @@ async def ingest_extracted(
     extracted: dict,
     *,
     file_key: Optional[str] = None,
+    override: bool = False,
 ) -> dict:
     """Persist an extracted document: keep it raw, then create a result row per
     marker (deduping identical (date, marker, value)). Does not commit.
@@ -610,6 +662,7 @@ async def ingest_extracted(
                 lab_name=lab_name,
                 source=Source.LAB_PARSER.value,
                 raw_payload_id=raw_row.id,
+                override=override,
             )
         except ValueError as e:
             # One garbled row must not cost the whole document — it stays in the
@@ -622,6 +675,42 @@ async def ingest_extracted(
 
     raw_row.processed_at = now_local()
     return summary
+
+
+async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
+    """Re-run extraction ingest against a lab payload already on disk — no new
+    upload. Covers uploads the owner never confirmed (extracted but abandoned
+    at the preview step), so those markers aren't lost. Reuses
+    :func:`ingest_extracted` (dedupes by date+marker+value, so this is safe even
+    if some rows were confirmed by hand before the sweep got to it). Preserves
+    ``fetched_at``: this is a reparse, not a new upload. Used by
+    :func:`reparse_pending` (the nightly sweep — raw_payload_service.
+    sweep_pending_job)."""
+    extracted = raw_row.payload if isinstance(raw_row.payload, dict) else {}
+    original_fetched_at = raw_row.fetched_at
+    await ingest_extracted(session, extracted, file_key=raw_row.external_id)
+    raw_row.fetched_at = original_fetched_at
+
+
+async def reparse_pending(
+    session: AsyncSession,
+    *,
+    limit: int = raw_payload_service.REPARSE_BATCH,
+    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+) -> int:
+    """Sweep lab raw payloads (extractions never confirmed by the owner) still
+    pending a normalized row. Does not commit."""
+    has_normalized = (
+        select(LabResult.id).where(LabResult.raw_payload_id == RawPayload.id).exists()
+    )
+    return await raw_payload_service.sweep_domain(
+        session,
+        domain=DOMAIN,
+        reparse=reparse_from_raw,
+        has_normalized=has_normalized,
+        limit=limit,
+        since_days=since_days,
+    )
 
 
 async def _result_exists(

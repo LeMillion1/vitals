@@ -143,8 +143,14 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch):
 
 
 # ── Digest context ────────────────────────────────────────────────────────────
-async def test_assemble_context_is_robust_when_empty(db_session):
+async def test_assemble_context_is_robust_when_empty(db_session, monkeypatch):
     """Context assembles even with no data in any domain."""
+    # The profile block comes from env (load_dotenv picks up a real .env), so pin it —
+    # otherwise this passes on a bare checkout and fails inside the deploy image, where
+    # the production .env carries the owner's actual age/height.
+    monkeypatch.setenv("VITALS_USER_AGE", "18")
+    monkeypatch.setenv("VITALS_SEX", "male")
+    monkeypatch.setenv("VITALS_HEIGHT_CM", "190")
     ctx = await digest_service.assemble_context(db_session, on_date=DAY)
     assert ctx["date"] == "2026-06-10"
     assert ctx["report_meta"]["report_date"] == "2026-06-10"
@@ -163,6 +169,38 @@ async def test_assemble_context_is_robust_when_empty(db_session):
     assert ctx["skincare"] is None
     assert ctx["genetics"] is None
     assert ctx["alerts"] is None
+
+
+async def test_signals_reach_the_digest_context(db_session):
+    """The capture domain exists to explain the other domains' numbers. If it
+    never lands in the context, everything written to the bot is write-only."""
+    from vitals.services import signals_service
+
+    await signals_service.create_signals(
+        db_session,
+        items=[{"kind": "exposure", "key": "caffeine_late", "at_time": "22:00",
+                "note": "кофе в 22"}],
+        on_date=DAY - timedelta(days=1),
+    )
+    rows = await signals_service.create_signals(
+        db_session,
+        items=[{"kind": "symptom", "key": "headache", "value_num": 4}],
+        on_date=DAY,
+    )
+    await db_session.commit()
+
+    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+
+    assert [s["key"] for s in ctx["signals"]] == ["caffeine_late", "headache"]
+    assert ctx["signals"][0]["at_time"] == "22:00", "the hour is what makes it correlatable"
+    assert ctx["signals"][0]["note"] == "кофе в 22"
+
+    # A row he tapped "не то" on is not evidence and must not reach the model.
+    await signals_service.mark_misparse(db_session, rows[0].batch_id)
+    await db_session.commit()
+
+    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    assert [s["key"] for s in ctx["signals"]] == ["caffeine_late"]
 
 
 async def test_assemble_context_pulls_each_domain(db_session):
@@ -363,6 +401,11 @@ DIGEST_DOMAIN_KEYS: dict[Domain, tuple[str, ...]] = {
     Domain.SKINCARE: ("skincare",),
     Domain.MILESTONES: ("milestones",),
     Domain.TIMELINE: ("timeline",),
+    # Signals reach Claude.ai through the LLM export (DOMAIN_EXPORT_KEYS) — that's
+    # where the deep cross-domain analysis lives. The weekly digest's context stays
+    # exactly as it was; the composer that reads signals is прогон 3's block layer,
+    # not this domain's.
+    Domain.SIGNALS: (),
     # Infra rows reach the digest as the active-alert list, not as their own block.
     Domain.SYSTEM: ("alerts",),
 }

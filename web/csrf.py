@@ -17,7 +17,10 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
 async def _origin_check(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/mcp") or path == "/oauth/token":
+    # Server-to-server callers that authenticate with their own secret, not a
+    # session cookie: MCP, the OAuth token exchange, and the Telegram webhook
+    # (which a forged Origin header would otherwise 403 instead of ignore).
+    if path.startswith("/mcp") or path.startswith("/tg/") or path == "/oauth/token":
         return await call_next(request)
 
     if request.method not in _SAFE_METHODS:

@@ -263,7 +263,11 @@
                 responsive: true,
                 maintainAspectRatio: false,
                 devicePixelRatio: window.devicePixelRatio || 2,
-                interaction: { mode: 'index', intersect: false },
+                // Registered by charts.js. A group's two curves come from different
+                // arrays of the sleep payload at different cadences (heart rate is
+                // per minute, HRV every five), so 'index' — which pairs them by
+                // position in the array — would read one series an hour off.
+                interaction: { mode: 'nearestByTime', intersect: false },
                 plugins: {
                     legend: {
                         position: 'bottom',

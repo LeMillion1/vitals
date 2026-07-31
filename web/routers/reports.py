@@ -10,12 +10,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
-from vitals.enums import Domain
+from vitals.enums import DigestKind, Domain
 from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import digest_service, milestones_service
+from vitals.services.proactive import brief, delivery
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.ratelimit import rate_limit
+from web.routers.telegram import get_notifier
 from web.templating import templates
 
 logger = logging.getLogger(__name__)
@@ -35,10 +37,12 @@ async def reports_dashboard(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    """Goal cards + the latest weekly digest and its history."""
+    """Goal cards, the latest weekly digest and its history, and today's brief."""
     cards = await milestones_service.dashboard_cards(db)
     latest = await digest_service.latest_digest(db)
     history = await digest_service.list_digests(db, limit=12)
+    latest_brief = await digest_service.latest_digest(db, kind=DigestKind.DAILY_BRIEF.value)
+    config = load_config()
 
     return templates.TemplateResponse(
         request,
@@ -48,10 +52,13 @@ async def reports_dashboard(
             "cards": cards,
             "latest_digest": latest,
             "history": history,
+            "latest_brief": latest_brief,
             "goal_domains": GOAL_DOMAINS,
-            "llm_configured": bool(load_config().openrouter_api_key),
+            "llm_configured": bool(config.openrouter_api_key),
+            "channel_configured": bool(config.telegram_bot_token and config.telegram_chat_id),
             "today": today_local().isoformat(),
             "digest": request.query_params.get("digest"),
+            "brief": request.query_params.get("brief"),
         },
     )
 
@@ -124,6 +131,52 @@ async def generate_digest_now(
         logger.warning("Digest generation failed: %s", e)
         return _redirect(request, "?digest=error")
     return _redirect(request, "?digest=ok")
+
+
+@router.post("/brief")
+async def build_brief_now(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    username: str = Depends(require_auth),
+    _rl: None = Depends(rate_limit("brief_build", limit=10, window=60)),
+):
+    """Assemble today's brief and show it here. Sends nothing — this is the button
+    for cranking the prompt as many times as you like."""
+    try:
+        row = await brief.generate_brief(db, LLMClient())
+        await db.commit()
+    except Exception as e:  # noqa: BLE001 — same soft-fail as the digest button
+        logger.warning("Brief build failed: %s", e)
+        return _redirect(request, "?brief=error")
+    return _redirect(request, "?brief=ok" if row is not None else "?brief=empty")
+
+
+@router.post("/brief/test")
+async def send_test_brief(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    username: str = Depends(require_auth),
+    notifier=Depends(get_notifier),
+    _rl: None = Depends(rate_limit("brief_test", limit=5, window=300)),
+):
+    """One live send, to catch what only a real Telegram message shows — broken
+    formatting, a message too long, a channel that isn't actually wired up."""
+    if notifier is None:
+        return _redirect(request, "?brief=no_channel")
+    try:
+        row = await brief.generate_brief(db, LLMClient())
+        if row is None:
+            await db.commit()
+            return _redirect(request, "?brief=empty")
+        sent = await delivery.send(
+            db, notifier, text=row.content, category=delivery.CATEGORY_TEST,
+            dedupe_key=f"brief_test:{today_local().isoformat()}",
+        )
+        await db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Test brief failed: %s", e)
+        return _redirect(request, "?brief=error")
+    return _redirect(request, "?brief=sent" if sent is not None else "?brief=error")
 
 
 def _redirect(request: Request, suffix: str = "") -> RedirectResponse:

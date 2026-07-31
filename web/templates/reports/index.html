@@ -96,13 +96,13 @@
                 <span class="v-text-heading">{{ t("reports.digest_title") }}</span>
             </div>
             <form action="/reports/digest" method="POST" class="flex items-center gap-2">
-                <select name="period_days" class="v-select text-xs" style="width: auto; padding: 0.45rem 2.2rem 0.45rem 0.75rem; height: 36px;">
+                <select name="period_days" class="v-select text-xs" style="width: auto;">
                     <option value="1">{{ t("reports.period_1d") }}</option>
                     <option value="3">{{ t("reports.period_3d") }}</option>
                     <option value="7" selected>{{ t("reports.period_7d") }}</option>
                     <option value="30">{{ t("reports.period_30d") }}</option>
                 </select>
-                <button type="submit" class="v-btn text-xs" style="padding: 0.45rem 1.15rem; height: 36px;" {% if not llm_configured %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
+                <button type="submit" class="v-btn text-xs" {% if not llm_configured %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
                     {% if llm_configured %}{{ t("reports.generate_btn") }}{% else %}{{ t("reports.llm_not_configured") }}{% endif %}
                 </button>
             </form>
@@ -145,6 +145,57 @@
                 {% endfor %}
             </ul>
         </details>
+        {% endif %}
+    </div>
+
+    <!-- Morning brief (Telegram) -->
+    <div class="v-card v-report-narrative p-6 space-y-3">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+            <div class="flex items-center gap-2">
+                <span class="v-bar"></span>
+                <span class="v-text-heading">{{ t("reports.brief_title") }}</span>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+                <form action="/reports/brief" method="POST" hx-disabled-elt="find button[type='submit']">
+                    <button type="submit" class="v-btn text-xs">
+                        {{ t("reports.brief_build") }}
+                    </button>
+                </form>
+                <form action="/reports/brief/test" method="POST" hx-disabled-elt="find button[type='submit']">
+                    <button type="submit" class="v-btn-ghost text-xs" {% if not channel_configured %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
+                        {% if channel_configured %}{{ t("reports.brief_test") }}{% else %}{{ t("reports.brief_no_channel") }}{% endif %}
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <p class="v-text-label">{{ t("reports.brief_hint") }}</p>
+
+        {% if brief == 'ok' %}
+        <div class="v-alert info">{{ t("reports.brief_ok") }}</div>
+        {% elif brief == 'sent' %}
+        <div class="v-alert info">{{ t("reports.brief_sent") }}</div>
+        {% elif brief == 'empty' %}
+        <div class="v-alert info">{{ t("reports.brief_empty") }}</div>
+        {% elif brief == 'no_channel' %}
+        <div class="v-alert warn">{{ t("reports.brief_no_channel_hint") }}</div>
+        {% elif brief == 'error' %}
+        <div class="v-alert warn">{{ t("reports.brief_error") }}</div>
+        {% endif %}
+
+        {% if latest_brief %}
+        <div class="v-card-inset p-6">
+            <div class="v-text-label mb-3">{{ latest_brief.date | format_date }}{% if latest_brief.model %} · {{ latest_brief.model }}{% endif %}</div>
+            <div class="v-text-body" style="white-space: pre-wrap;">{{ latest_brief.content }}</div>
+        </div>
+        {% else %}
+        <div class="v-empty-state">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <p>{{ t("reports.no_briefs") }}</p>
+        </div>
         {% endif %}
     </div>
 </div>

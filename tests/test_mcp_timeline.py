@@ -55,3 +55,32 @@ async def test_log_event_noop_when_module_disabled(db_session, session_factory, 
 
     res = await mcp_router.log_event(title="Should not save", on_date="2026-06-01")
     assert res == {"error": "module 'timeline' is disabled"}
+
+
+async def test_update_event_keeps_what_the_call_left_out(db_session, session_factory, monkeypatch):
+    await _enable_timeline(db_session)
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+
+    created = await mcp_router.log_event(
+        title="Простуда",
+        on_date="2026-06-01",
+        end_date="2026-06-05",
+        kind="illness",
+        domain="timeline",
+        note="температура три дня",
+    )
+
+    renamed = await mcp_router.update_event(created["id"], title="Простуда с температурой")
+    assert renamed["title"] == "Простуда с температурой"
+    # A rename must not cost the event its date, span, kind or note.
+    assert renamed["date"] == "2026-06-01"
+    assert renamed["end_date"] == "2026-06-05"
+    assert renamed["kind"] == "illness"
+    assert renamed["note"] == "температура три дня"
+
+    assert await mcp_router.update_event(9999, title="x") == {"error": "Event 9999 not found"}
+
+    assert await mcp_router.delete_record("timeline", created["id"]) == {
+        "deleted": True, "domain": "timeline", "record_id": created["id"],
+    }
+    assert await mcp_router.get_timeline() == []

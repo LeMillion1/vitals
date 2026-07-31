@@ -323,6 +323,31 @@ async def test_llm_export_includes_body_scans(db_session):
     assert metrics == {"body_fat_pct": 18.5, "skeletal_muscle_mass": 42.0}
 
 
+async def test_llm_export_since_keeps_open_periods_and_catalogs(db_session):
+    """``since`` narrows the digest for the MCP tool. Two things must survive the cut
+    regardless of when they started: a period still running today (an open dose
+    phase), and the catalogs, which are current state rather than history."""
+    from vitals.services import glp1_service, supplements_service
+
+    await glp1_service.add_dose_phase(
+        db_session, start_date=date(2020, 1, 1), drug="semaglutide", dose_mg=1.0
+    )
+    await glp1_service.add_dose_phase(
+        db_session, start_date=date(2019, 1, 1), end_date=date(2019, 6, 1),
+        drug="semaglutide", dose_mg=0.5,
+    )
+    await supplements_service.add_supplement(db_session, name="Creatine")
+    await db_session.commit()
+
+    out = await export_llm(db_session, since=date(2026, 1, 1))
+    assert [p["dose_mg"] for p in out["glp1_dose_phases"]] == [1.0]  # open phase kept
+    assert [s["name"] for s in out["supplements"]] == ["Creatine"]
+
+    # And with no arguments the export is still the whole history (the web download).
+    full = await export_llm(db_session)
+    assert len(full["glp1_dose_phases"]) == 2
+
+
 # ── Every domain reaches the LLM export ────────────────────────────────────────
 #
 # ``export_llm`` is a long hand-written function, and its real failure mode isn't
@@ -345,6 +370,7 @@ DOMAIN_EXPORT_KEYS: dict[Domain, tuple[str, ...]] = {
     Domain.SKINCARE: ("skincare_logs", "skincare_observations"),
     Domain.MILESTONES: ("milestones", "weekly_digests"),
     Domain.TIMELINE: ("timeline_annotations",),
+    Domain.SIGNALS: ("signals", "day_context"),
     # Infra/alert rows — deliberately excluded from a digest meant for a chat
     # window (test_llm_export_is_clean pins that they stay out).
     Domain.SYSTEM: (),
@@ -364,6 +390,7 @@ async def _seed_every_domain(session) -> None:
     from vitals.models.glp1 import DosePhase, SideEffect
     from vitals.models.milestones import Milestone, WeeklyDigest
     from vitals.models.nutrition import MealLog
+    from vitals.models.signals import DayContext, Signal
     from vitals.models.skincare import SkincareLog, SkincareObservation
     from vitals.models.timeline import Annotation
     from vitals.models.weight import NoiseMarker
@@ -409,6 +436,13 @@ async def _seed_every_domain(session) -> None:
             Annotation(
                 date=d, domain="timeline", source="manual", kind="travel", title="Поездка",
             ),
+            Signal(
+                date=d, domain="signals", source="telegram", kind="symptom",
+                key="head_ache", value_num=4, batch_id="b1", note="голова раскалывается",
+            ),
+            DayContext(
+                date=d, domain="signals", source="manual", answers={"remote": True},
+            ),
         ]
     )
     await session.commit()
@@ -427,6 +461,27 @@ async def test_llm_export_covers_every_domain(db_session):
         if not out.get(key)
     ]
     assert not empty, f"domains missing from the LLM export: {empty}"
+
+
+async def test_llm_export_folds_signal_key_aliases(db_session):
+    """The export ships canonical keys — otherwise the model sees 'head_ache' and
+    'headache' as two unrelated things and the correlation is split in half."""
+    from vitals.models.signals import Signal
+
+    d = date(2026, 4, 25)
+    db_session.add_all([
+        Signal(date=d, domain="signals", source="telegram", kind="symptom",
+               key="head_ache", batch_id="b1"),
+        Signal(date=d, domain="signals", source="telegram", kind="symptom",
+               key="headache", batch_id="b2"),
+        # A cancelled batch stays out of the export entirely.
+        Signal(date=d, domain="signals", source="telegram", kind="state",
+               key="sleepiness", batch_id="b3", misparse=True),
+    ])
+    await db_session.commit()
+
+    out = await export_llm(db_session)
+    assert [s["key"] for s in out["signals"]] == ["headache", "headache"]
 
 
 # ── Postgres sequence reset (real DB only) ─────────────────────────────────────
@@ -551,3 +606,19 @@ async def test_full_backup_round_trips_hrt(db_session):
     assert item.start_offset_days == 28 and item.schedule[0]["dose"] == 30
     assert (await db_session.execute(select(func.count(HrtCycle.id)))).scalar() == 1
     assert (await db_session.execute(select(func.count(HrtCycleTemplate.id)))).scalar() == 1
+
+
+def test_import_summary_labels_signals_and_friends():
+    """The newer domains must be named in the summary, not swallowed by the
+    anonymous "and N more" tail."""
+    from vitals.i18n import t
+    from vitals.services.data_portability_service import ImportStats
+
+    stats = ImportStats(counts={
+        "signals": 3, "day_context": 2, "body_scans": 1,
+        "milestones": 4, "noise_markers": 5,
+    })
+    summary = stats.summary()
+    for table in ("signals", "day_context", "body_scans", "milestones", "noise_markers"):
+        assert t("import.label." + table) in summary
+    assert t("import.summary_extra", n=15) not in summary

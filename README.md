@@ -6,14 +6,14 @@
 </p>
 
 <p align="center">
-  <strong>Self-hosted personal health data lake & dashboard with 69 MCP tools for Claude.ai</strong><br>
-  <sub>Masthead UI · EN/RU interface · 14 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · AI Digests</sub>
+  <strong>Self-hosted personal health data lake & dashboard with 73 MCP tools for Claude.ai</strong><br>
+  <sub>Masthead UI · EN/RU interface · 15 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · Signals & Telegram · AI Digests</sub>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/github/stars/ilodezis/vitals?style=flat-square" alt="Stars">
   <img src="https://img.shields.io/github/last-commit/ilodezis/vitals?style=flat-square" alt="Last Commit">
-  <img src="https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/PostgreSQL-15-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
   <img src="https://img.shields.io/badge/Redis-7-DC382D?style=flat-square&logo=redis&logoColor=white" alt="Redis">
@@ -45,11 +45,13 @@
 
 Главное отличие от фитнес-трекеров — **принцип максимального сохранения сырых данных**. Vitals — умный навигатор здоровья, который подсвечивает неочевидные взаимосвязи между сном, тренировками, медикаментами и весом, помогая принимать взвешенные решения. Не надзиратель — штурман.
 
+С недавних пор у Vitals есть **голос**: проактивный слой в Telegram присылает утренний бриф, вечером спрашивает про завтра и ловит свободный текст («голова раскалывается», «кофе в 22») в отдельный домен сигналов. Дашборд больше не ждёт, пока в него зайдут.
+
 ### Зачем я это сделал
 
 Мои данные были разбросаны по многим приложениям: Garmin, Hevy, заметки по GLP-1 и ГЗТ, таблица с анализами, файл с добавками. Ни одно из них не умело сопоставлять сон с восстановлением после тренировки или связывать побочные эффекты терапии с питанием — всё приходилось держать в голове.
 
-Vitals написан с Claude в качестве основного инструмента разработки — но модель данных, архитектура и доменная структура мои. MCP-слой — ключевая часть: Claude может в реальном времени читать и записывать данные по всем 14 доменам, отвечая на вопросы вроде «как мой сон за последнюю неделю влияет на восстановление?» с конкретными цифрами.
+Vitals написан с Claude в качестве основного инструмента разработки — но модель данных, архитектура и доменная структура мои. MCP-слой — ключевая часть: Claude может в реальном времени читать и записывать данные по всем 15 доменам, отвечая на вопросы вроде «как мой сон за последнюю неделю влияет на восстановление?» с конкретными цифрами.
 
 ### Что умеет
 
@@ -62,11 +64,11 @@ Vitals написан с Claude в качестве основного инст�
 <td width="50%">
 
 **📊 Данные и аналитика**
-- 14 независимых доменов здоровья, терапии и хронологии
+- 15 независимых доменов здоровья, терапии и хронологии
 - Автосинк Garmin Connect + Hevy API
 - OCR-парсинг анализов через LLM (Gemini)
 - Vision-парсинг бланков состава тела InBody / МедАсс (BIA)
-- Движок конфликтов: 114 курируемых правил (усвоение, фармакогенетика, дерматология, безопасность анализов, GLP-1, ГЗТ, противопоказания)
+- Движок конфликтов: 116 курируемых правил (усвоение, фармакогенетика, дерматология, безопасность анализов, GLP-1, ГЗТ, противопоказания)
 - 7-дневное скользящее среднее + линейная регрессия
 - Детекция плато на GLP-1
 - Кросс-доменная хронология событий (Timeline) + флажки-аннотации на графиках
@@ -77,7 +79,8 @@ Vitals написан с Claude в качестве основного инст�
 
 **🤖 AI и интеграции**
 - Еженедельные AI-дайджесты (Claude / GPT)
-- 69 MCP-инструментов для Claude.ai (чтение + запись + override)
+- Проактивный канал в Telegram: утренний бриф, вечерний блок, подсказки по условию
+- 73 MCP-инструмента для Claude.ai (чтение + запись + override)
 - OAuth 2.0 + PKCE авторизация MCP
 - Полный экспорт данных для LLM (copy-paste ready)
 - Атомарный бэкап и восстановление БД
@@ -115,9 +118,9 @@ Vitals написан с Claude в качестве основного инст�
 ### 📖 Содержание
 
 - [Философия и ключевые принципы](#-философия-и-ключевые-принципы)
-- [Домены данных (14 модулей)](#-домены-данных)
+- [Домены данных (15 модулей)](#-домены-данных)
 - [Архитектура системы](#-архитектура-системы)
-- [MCP-интеграция с Claude.ai (69 инструментов)](#-mcp-интеграция-с-claudeai)
+- [MCP-интеграция с Claude.ai (73 инструмента)](#-mcp-интеграция-с-claudeai)
 - [Быстрый старт (Docker Compose)](#-быстрый-старт)
 - [Безопасный деплой (Сетап автора)](#-безопасный-деплой-сетап-автора)
 - [Параметры конфигурации (.env)](#-параметры-конфигурации)
@@ -131,11 +134,11 @@ Vitals написан с Claude в качестве основного инст�
 
 > [!NOTE]
 > **1. Сохранность сырых данных (Raw Payloads Store)**
-> Все интеграции сохраняют исходные ответы API в JSONB-таблицу `raw_payloads` параллельно со структурированными записями. Если завтра обновится парсер — вся история перепарсится без потерь.
+> Все интеграции сохраняют исходные ответы API в JSONB-таблицу `raw_payloads` параллельно со структурированными записями: Garmin, Hevy, анализы, BIA-бланки, исходный VCF и входящие сообщения бота. Если завтра обновится парсер — вся история перепарсится без потерь, и это не обещание на словах: ночная задача `raw_payload_sweep` (03:30) заново разбирает всё, что помечено «нужен перепарс», по каждому домену независимо.
 
 > [!TIP]
 > **2. Движок конфликтов (Conflict Engine)**
-> Данные, не код: **114 курируемых правил** с источниками и уровнем доказательности (A/B/C) в `vitals/data/conflict_rules.yaml`, покрывающих усвоение нутриентов, фармакогенетику, дерматологию, безопасность по анализам, GLP-1, ГЗТ/TRT и противопоказания. Правила понимают не только точное совпадение, но и диапазоны (`доза ≥ 2 мг`), списки, «любое из», и разносят предупреждение по времени приёма (утро/вечер/с едой), а не только по факту совместности. Несовместимая добавка с генетикой или анализом вернёт `409 Conflict`; можно нажать «Записать всё равно (Override)» — причина запишется в лог. Каталог просматривается и включается/выключается на странице `/interactions`.
+> Данные, не код: **116 курируемых правил** с источниками и уровнем доказательности (A/B/C) в `vitals/data/conflict_rules.yaml`, покрывающих усвоение нутриентов, фармакогенетику, дерматологию, безопасность по анализам, GLP-1, ГЗТ/TRT и противопоказания. Правила понимают не только точное совпадение, но и диапазоны (`доза ≥ 2 мг`), списки, «любое из», и разносят предупреждение по времени приёма (утро/вечер/с едой), а не только по факту совместности. Несовместимая добавка с генетикой или анализом вернёт `409 Conflict`; можно нажать «Записать всё равно (Override)» — причина запишется в лог. Каталог просматривается и включается/выключается на странице `/interactions`.
 
 > [!IMPORTANT]
 > **3. Локализованное время (Timezone Engine)**
@@ -200,9 +203,11 @@ Vitals написан с Claude в качестве основного инст�
 <details>
 <summary><strong>⌚ 5. Garmin Connect</strong></summary>
 
-- **Модели**: `GarminDaily`, `GarminActivity`
-- Автосинк: сон, фазы сна, HRV (вариабельность пульса), пульс покоя, стресс, Body Battery, Training Readiness
-- Сессия Garth: токены в Redis + бэкап на диск → минимум повторных авторизаций (защита от капчи и блоков)
+- **Модели**: `GarminDaily`, `GarminActivity`, `GarminIntraday`
+- Автосинк: сон, фазы сна, HRV (вариабельность пульса), пульс покоя, стресс, Body Battery, Training Readiness + внутридневные кривые стресса и Body Battery
+- Сессия `garminconnect` (библиотека пиновая — 0.3.7): токены в Redis + бэкап на диск, том с токенами попадает в `backup.sh` рядом с дампом БД
+- **Предохранитель логина**: вход по паролю рационируется (3 раза в 24 ч, потом пауза 6 ч, счётчики в Redis) — Garmin блокирует аккаунт за частые попытки, и каждый ретрай продлевает блок. Живой токен предохранителя не касается; MFA и «залогинились слишком часто» различаются в алертах
+- Расписание опроса — не в `.env`, а на карточке «Проактивный слой» в `/settings`: интервал полного синка + лёгкий пульс (шаги за сегодня) между ними, применяется без перезапуска контейнера
 - Полностью переработанный раздел сна с детализированной страницей каждой ночи
 - Резервный канал: импорт JSON-экспортов из Health Auto Export
 </details>
@@ -259,6 +264,7 @@ Vitals написан с Claude в качестве основного инст�
 - **Модели**: `GeneticVariant`
 - Парсер VCF-файлов → сопоставление SNP с каталогом предрасположенностей (HFE, MTHFR, G6PD, CYP1A2, COMT и др.)
 - Источник данных для Conflict Engine — фармакогенетические правила при назначении добавок (например, гемохроматоз блокирует железо)
+- Исходные строки VCF (до 50k на импорт) складываются в `raw_payloads` — расширили словарь интерпретаций, старый файл перечитывается без повторной загрузки
 </details>
 
 <details>
@@ -284,17 +290,37 @@ Vitals написан с Claude в качестве основного инст�
 - Динамический расчёт % выполнения и прогноз оставшегося времени до цели
 </details>
 
+<details>
+<summary><strong>💬 15. Сигналы и проактивный канал (Telegram)</strong></summary>
+
+- **Модели**: `Signal`, `DayContext`, `NotificationLog` (журнал отправок)
+- Домен, который **объясняет** цифры остальных четырнадцати: всё, что случилось «в моменте» и не имеет формы — «спать хочу», «голова болит», «кофе в 22». Свободный текст в Telegram → сырое сообщение в `raw_payloads` → разбор в строки `Signal` трёх видов (`state` / `symptom` / `exposure`) с эхо-подтверждением и кнопкой «не то» для отката всей пачки
+- Ключи сигналов сознательно **свободные** на период обкатки: хранятся как их написала модель и сворачиваются к каноничному имени **на чтении** (`KEY_ALIASES`) — консолидация словаря будет правкой словаря, а не миграцией
+- Страница `/signals`: лента захваченного, таблица частот ключей с реальными формулировками под каждым (материал для будущего реестра) и точечное удаление строки, которую парсер понял неправильно. Ввод — только через бота: приложение не второй бот, бот не вторая форма ввода
+- Сообщения, на которых парсер споткнулся (модель упала, кончился баланс), не теряются: утренний бриф перед сборкой делает второй заход — неделя назад, до 20 сообщений
+- `DayContext` — одна строка на день: удалёнка/офис, зал, нагрузка. Вечерний блок в 23:45 спрашивает про завтра, шаблон недели заранее заполняет то, что предсказуемо по дню недели; каждая кнопка несёт свою дату, так что ответ после полуночи попадает в нужный день
+- **Утренний бриф**: детерминированные блоки собирает код из того же кросс-доменного контекста, что и недельный дайджест, модель добавляет ровно один абзац интерпретации — упала модель, бриф всё равно придёт; пустой день = молчание, а не пустой бриф. Хранится в `weekly_digests` (`kind='daily_brief'`), виден в `/reports` (там же кнопки «Собрать бриф» и «Отправить тестовое»)
+- **Нуджи** (подсказки в течение дня) — список спецификаций (условие, текст, кулдаун, категория-переключатель), один движок обходит реестр; добавить подсказку = одна запись. Сейчас три категории: активность, питание, свежесть данных
+- Единые ворота отправки: выключенный модуль, дедуп, тихие часы (только для нудджей) и дневной бюджет сообщений; ответы на вопросы владельца из бюджета исключены
+- Ответы на вопросы: реплай на сообщение бота или просто «почему hrv просел?» — модель видит то сообщение, на которое отвечают, и контекст последнего брифа, и ничего больше. Глубокие разборы — в Claude.ai через MCP, там 73 инструмента и модель получше
+- Сигналы и `day_context` попадают в контекст и недельного дайджеста, и брифа — с временем суток, потому что «кофе в 22» и «кофе в 9» это разные факты с одним ключом
+- Канал — за протоколом `Notifier`, выше него никто не знает про Telegram. Модуль `signals` по умолчанию **выключен** и работает как рубильник всего проактивного слоя: выключен — бот молчит совсем. Настройки (время брифа и вечернего блока, тихие часы, бюджет, категории нуджей, частота опроса Garmin, шаблон недели) — на карточке в `/settings`, сохранение перевешивает задачи на живом планировщике **без перезапуска**
+- MCP: `get_signals`, `log_signal`, `get_day_context` — Клод видит то, что владелец сказал боту
+- Настройка: `VITALS_TELEGRAM_BOT_TOKEN`, `VITALS_TELEGRAM_CHAT_ID`, `VITALS_TELEGRAM_WEBHOOK_PATH`, `VITALS_TELEGRAM_WEBHOOK_SECRET` (см. `.env.example`) — слушается **единственный** chat id, вебхук проверяется по секретному заголовку
+</details>
+
 ---
 
 ### 🏗️ Архитектура системы
 
 ```mermaid
 graph TD
-    Garmin[Garmin Connect / Garth] -->|автосинк| Raw[raw_payloads · JSONB]
+    Garmin[Garmin Connect] -->|автосинк| Raw[raw_payloads · JSONB]
     Hevy[Hevy REST API] -->|автосинк| Raw
     Labs[PDF-анализы / Фото] -->|LLM-парсинг| Raw
     BIA[PDF/Фото InBody] -->|LLM-парсинг| Raw
     VCF[Генетические VCF] -->|импорт| Raw
+    TGin[Telegram: свободный текст] -->|вебхук| Raw
 
     Raw --> CE[Conflict Engine]
     CE --> IL[InsightsMixin Layer]
@@ -306,7 +332,9 @@ graph TD
     DB & Cache --> FastAPI[FastAPI Router + Auth + CSRF]
 
     FastAPI --> UI[Jinja2 + HTMX + Alpine.js]
-    FastAPI --> MCP[FastMCP SSE Server]
+    FastAPI --> MCP[FastMCP · streamable HTTP]
+    Scheduler --> PL[Проактивный слой]
+    PL -->|ворота: бюджет, тихие часы, дедуп| TGout[Telegram: бриф, вечер, нуджи]
 
     UI --> Charts[Chart.js]
     UI --> AI[AI-Дайджесты · LLM]
@@ -317,17 +345,39 @@ graph TD
 | :--- | :--- |
 | **`vitals/`** (ядро) | Модели, сервисы, бизнес-логика. Не знает о FastAPI. Импортируется в скрипты и тесты. |
 | **`web/`** (доставка) | FastAPI-роутинг, авторизация, CSRF, шаблоны Jinja2. Вызывает сервисы, не содержит бизнес-логику. |
+| **`vitals/services/proactive/`** | Проактивный слой четырьмя швами: `channels` (как сообщение уходит), `delivery` (можно ли его отправить), `compose`/`brief` (что сказано), `inbound` (что пришло обратно), `nudges` (когда повод есть), `day_plan` и `prefs`. Ничего выше `channels` не знает слова «telegram». |
 | **Фронтенд** | HTML-over-the-wire: HTMX + Alpine.js + Chart.js. Единственная оболочка — Masthead (см. [DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)). Тексты — через `vitals/i18n.py` (RU/EN). |
+
+#### Фоновые задачи (APScheduler)
+
+Каждая задача идёт под Redis-локом (один исполнитель на всех воркеров) и штампует heartbeat, который видит `/health`.
+
+| Задача | Расписание | Что делает |
+| :--- | :--- | :--- |
+| `keepalive` | каждую минуту | Пульс планировщика — по нему `/health` понимает, что он жив |
+| `glp1_plateau` | 06:00 | Проверка плато на GLP-1, пассивный алерт |
+| `hrt_reminders` | 07:00 | Анализы на курсе + пропущенные инъекции |
+| `nutrition_day_end` | 23:00 | Итог по КБЖУ за день (предупреждения не считаются с половины дня) |
+| `raw_payload_sweep` | 03:30 | Перепарс всего, что помечено «нужен перепарс» (Garmin, Hevy, анализы, BIA) |
+| `hevy_sync` | каждые 6 ч | Синк тренировок |
+| `garmin_sync` | каждые N ч (настройка, по умолчанию 6) | Полный синк Garmin |
+| `garmin_pulse` | интервал в активные часы (настройка) | Лёгкий пульс: шаги за сегодня, один запрос без логина |
+| `daily_brief` | время из настроек (по умолчанию 11:00) | Синк Garmin → сборка брифа → отправка под бюджетом |
+| `evening_block` | время из настроек (по умолчанию 23:45) | Итог дня + вопросы про завтра |
+| `nudges` | ежечасно в :05 | Обход реестра подсказок: условие, кулдаун, категория |
+| `weekly_digest` | понедельник, 08:00 | AI-дайджест |
+
+Время брифа, вечернего блока и частота Garmin живут в БД (карточка в `/settings`), а не в `.env` — сохранение перерегистрирует задачи на работающем планировщике, перезапуск не нужен.
 
 ---
 
 ### 🔗 MCP-интеграция с Claude.ai
 
-Встроенный сервер [FastMCP](https://github.com/jlowin/fastmcp) server доступен на `/mcp` (SSE-транспорт). Авторизация: OAuth 2.0 + PKCE с верификацией Bearer-токенов. Настраивается в веб-интерфейсе (раздел настроек).
+Встроенный сервер [FastMCP](https://github.com/jlowin/fastmcp) server доступен на `/mcp/` (транспорт streamable HTTP). Авторизация: OAuth 2.0 с верификацией Bearer-токенов. PKCE (`S256`) **обязателен** — запрос на `/oauth/authorize` без `code_challenge` отклоняется, а не проходит мимо проверки. Метаданные защищённого ресурса отдаются на `/.well-known/oauth-protected-resource` (RFC 9728), и ответ `401` указывает на них через `WWW-Authenticate: Bearer resource_metadata="..."`, чтобы клиент сам нашёл, где авторизоваться. Настраивается в веб-интерфейсе (раздел настроек).
 
-**69 инструментов** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурсы (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`.
+**73 инструмента** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурса (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`.
 
-#### Чтение (30 инструментов)
+#### Чтение (33 инструмента)
 
 | Инструмент | Описание |
 | :--- | :--- |
@@ -340,7 +390,7 @@ graph TD
 | `get_hevy_workouts` | Силовые тренировки с подходами и весами |
 | `get_supplements_catalog` | Каталог добавок с дозировками и уровнями доказательности |
 | `get_skincare_logs` | Рутина ухода и наблюдения за состоянием кожи |
-| `get_genetics_snps` | Генетические варианты (rsid, гены) |
+| `get_genetics_snps` | Генетические варианты с фильтром по гену и/или rsid («покажи мой rs1801133») |
 | `get_active_alerts` | Нерешённые предупреждения и уведомления о конфликтах |
 | `get_weekly_digests` | Архив AI-дайджестов |
 | `check_supplement_conflicts` | Проверка добавки (по названию, RU/EN) на конфликты с генетикой, анализами, другими добавками и уходом за кожей |
@@ -356,58 +406,69 @@ graph TD
 | `get_lab_results` | Результаты анализов (биомаркер, значение, референс, флаг отклонения) |
 | `get_timeline` | Кросс-доменная лента событий (ручные аннотации + авто-события) |
 | `get_full_snapshot` | Кросс-доменный срез за период одним вызовом |
-| `export_everything` | Полный экспорт всей истории по всем доменам за один вызов |
+| `export_everything` | Экспорт истории по всем доменам за один вызов (по умолчанию — последние 90 дней; вся история и отдельные домены — явными аргументами) |
 | `get_data_overview` | Карта данных: по каждому домену число строк, диапазон дат, дата обновления |
 | `get_milestones` | Карточки целей с расчётом прогресса |
 | `get_modules` | Какие опциональные модули включены |
 | `get_trend` | Тренд метрики: наклон (день/неделя), скользящее среднее, прогноз даты до цели |
+| `get_signals` | Сигналы из бота: состояния, симптомы, воздействия (фильтры по виду, ключу, датам) |
+| `get_day_context` | Какой это был день: удалёнка/офис, зал, нагрузка |
+| `get_proactive_state` | Состояние проактивного слоя: включён ли, расписание, шаблон недели, недавние отправки (только чтение — перенастройка бота остаётся за владельцем) |
 
-#### Запись (39 инструментов)
+#### Запись (40 инструментов)
 
 | Инструмент | Описание |
 | :--- | :--- |
 | `log_meal` | Запись приёма пищи с калориями и макро (Б/Ж/У) |
 | `update_meal` | Обновление существующей записи о еде |
-| `delete_meal` | Удаление записи о еде |
 | `log_weight` | Запись веса (перекрывает Garmin за ту же дату) |
-| `delete_weight` | Удаление записи веса (реактивация следующей по приоритету) |
 | `log_glp1` | Запись инъекции GLP-1 (препарат, доза, место) |
 | `log_hrt_dose` | Запись приема дозы ГЗТ (расчет мл -> мг; бренд/лаборатория/партия; конфликт-гейт) |
 | `add_hrt_cycle` | Начать новый курс ГЗТ (тип, дата начала, название; закрывает прошлый открытый) |
 | `add_hrt_cycle_item` | Добавить препарат и план его приема в курс ГЗТ (разовые дозы, интервал, неделя старта) |
+| `update_hrt_dose` | Редактировать дозу ГЗТ (непереданные поля сохраняются; конфликт-гейт) |
+| `log_hrt_side_effect` | Записать побочный эффект ГЗТ (тип, тяжесть 1–5) |
+| `close_hrt_cycle` | Закрыть курс ГЗТ датой окончания (по умолчанию — сегодня) |
 | `log_skincare` | Запись/обновление дневного чек-листа ухода (upsert) |
 | `log_measurement` | Запись замеров тела (авто-расчёт Navy % жира) |
 | `log_note` | Добавление заметки к записи любого домена (включая анализы) |
 | `log_body_scan` | Запись замера состава тела из метрик (мост в домен веса) |
-| `delete_body_scan` | Удаление замера состава тела (с метриками) |
 | `log_lab_result` | Запись одного биомаркера (авто-расчёт флага отклонения) |
 | `log_lab_results` | Запись всей панели анализов за раз (список маркеров → результаты + дедупликация) |
-| `delete_lab_result` | Удаление результата анализа |
+| `update_lab_result` | Редактировать результат анализа (пересчёт флага отклонения, обновление алертов) |
 | `log_event` | Ручная аннотация хронологии (поездка, болезнь, смена протокола) |
+| `update_event` | Редактировать событие хронологии (непереданные поля сохраняются) |
 | `create_milestone` | Создать карточку цели (целевое значение, дедлайн) |
 | `update_milestone` | Обновить цель (в т.ч. статус: достигнута/пропущена/пауза) |
-| `delete_milestone` | Удалить цель |
 | `update_glp1` | Редактировать инъекцию GLP-1 (с конфликт-гейтом) |
-| `delete_glp1` | Удалить инъекцию GLP-1 |
 | `log_side_effect` | Записать побочный эффект GLP-1 (тип, тяжесть 1–5) |
-| `delete_side_effect` | Удалить побочный эффект |
 | `add_dose_phase` | Добавить фазу дозировки GLP-1 |
-| `delete_dose_phase` | Удалить фазу дозировки |
 | `log_skincare_observation` | Записать наблюдение за кожей (воспаление, ПВГ, зона) |
-| `delete_skincare_observation` | Удалить наблюдение за кожей |
 | `add_supplement` | Добавить добавку в каталог (конфликт-гейт) |
 | `update_supplement` | Обновить добавку в каталоге |
 | `set_supplement_active` | Включить/выключить добавку (конфликт-гейт при включении) |
-| `delete_supplement` | Удалить добавку из каталога |
 | `update_measurement` | Редактировать замер тела (пересчёт Navy % жира / LBM) |
-| `delete_measurement` | Удалить замер тела |
 | `add_noise_marker` | Отметить период как шумовой (исключается из тренда веса) |
-| `delete_noise_marker` | Удалить шумовой период (диапазон возвращается в тренд) |
+| `upsert_genetic_variant` | Добавить или обновить генетический вариант (по паре ген + rsid) |
 | `set_module` | Включить/выключить опциональный модуль |
+| `log_signal` | Записать сигнал (состояние / симптом / воздействие) — через тот же сервис, что и бот |
+| `mark_signal_misparse` | Пометить разбор сообщения как ошибочный — то же, что кнопка «не то» в боте (по `batch_id`) |
+| `log_day_context` | Записать, какой это был день — те же ответы, что владелец нажимает в вечернем блоке (догадка шаблона сохраняется рядом с ответом) |
+| `set_week_template` | Задать шаблон недели: чем считается каждый будний день, пока владелец не сказал иначе |
+| `resolve_alert` | Закрыть предупреждение — оно исчезает из `get_active_alerts` |
+| `override_alert` | Отметить блокирующее предупреждение как «принято, делаю всё равно» |
 | `generate_digest_now` | Сгенерировать свежий еженедельный AI-дайджест сейчас |
+| `delete_record` | Удалить одну запись любого домена по ID (`domain` + `record_id`) — вес, замер, шумовой период, анализ, цель, еда, GLP-1 (инъекция / побочка / фаза), ГЗТ (доза / курс / препарат курса), состав тела, событие хронологии, наблюдение за кожей, добавка, генетический вариант, сигнал |
 
 > [!TIP]
 > **Override-флоу.** Все записывающие инструменты, проходящие движок конфликтов (вес, GLP-1, ГЗТ, добавки, кожа, замеры, состав тела), принимают `override=true`. При жёстком блоке инструмент возвращает `{"blocked": true, "violations": [...]}` вместо сохранения — повтор вызова с `override=true` сохраняет (аналог кнопки «Записать всё равно» в UI).
+
+> [!IMPORTANT]
+> **Правки частичные.** Все `update_*` меняют только те поля, которые переданы в вызове; остальные берутся из существующей строки, а не обнуляются. Дата не передана — остаётся дата самой записи, а не «сегодня». Веб-формы работают иначе (шлют всё, очистка поля действительно очищает колонку) — расхождение намеренное и живёт на границе MCP.
+>
+> **Периметр записи.** Запись в выключенный опциональный модуль отклоняется на общей точке входа, а не в каждом инструменте по отдельности: новый инструмент наследует проверку, а не «не забудь дописать».
+>
+> **Провенанс.** Записи через коннектор помечаются источником `mcp`. В приоритете источников веса `mcp` равен ручному вводу — то есть перекрывает Garmin и не перекрывается им; между собой решает свежесть. Старые записи задним числом не перекрашиваются.
 
 #### Пример диалога с Claude
 
@@ -479,6 +540,23 @@ docker compose up -d --build
 ```bash
 curl -s http://127.0.0.1:8000/health
 ```
+
+#### 6. Проактивный слой в Telegram (опционально)
+
+Без этих четырёх переменных приложение работает ровно как раньше: бот молчит, вебхук отвечает 401.
+
+1. Создайте бота у [@BotFather](https://t.me/BotFather) → `VITALS_TELEGRAM_BOT_TOKEN`.
+2. Узнайте свой id у [@userinfobot](https://t.me/userinfobot) → `VITALS_TELEGRAM_CHAT_ID`. Это **единственный** чат, который бот слушает.
+3. Сгенерируйте секретный сегмент пути и секрет заголовка:
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(24))"
+   ```
+   → `VITALS_TELEGRAM_WEBHOOK_PATH` и `VITALS_TELEGRAM_WEBHOOK_SECRET`.
+4. Зарегистрируйте вебхук один раз (домен должен быть доступен Telegram снаружи):
+   ```bash
+   curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" -d "url=https://<ваш-хост>/tg/<PATH>" -d "secret_token=<SECRET>"
+   ```
+5. Включите модуль **Сигналы** в `/settings` — он же рубильник всего проактивного слоя — и настройте время брифа, тихие часы и бюджет сообщений на карточке «Проактивный слой».
 
 ---
 
@@ -694,6 +772,7 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_OPENROUTER_BASE_URL` | Адрес API OpenRouter | `https://openrouter.ai/api/v1` |
 | `VITALS_LLM_MODEL_DIGEST` | Модель для дайджестов | `anthropic/claude-sonnet-4.6` |
 | `VITALS_LLM_MODEL_PARSER` | Модель для OCR анализов и BIA | `google/gemini-2.5-flash` |
+| `VITALS_LLM_MODEL_BRIEF` | Модель утреннего брифа (пусто → модель дайджеста) | *Опционально* |
 | `VITALS_HEVY_API_KEY` | API-ключ Hevy | *Опционально* |
 | `VITALS_HEVY_BASE_URL` | Адрес API Hevy | `https://api.hevyapp.com` |
 | `VITALS_GARMIN_EMAIL` | Email Garmin Connect | *Опционально* |
@@ -703,6 +782,12 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_MCP_CLIENT_SECRET` | OAuth Client Secret для MCP | *Обязательно* |
 | `VITALS_MCP_REDIRECT_URIS` | Разрешённые OAuth-callback'и (через запятую) | `https://claude.ai/api/mcp/auth_callback` |
 | `VITALS_EXTERNAL_API_TOKEN` | Токен для сервер-сервер Glance API | *Опционально* |
+| `VITALS_TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather | *Опционально* |
+| `VITALS_TELEGRAM_CHAT_ID` | Единственный чат, который бот слушает | *Опционально* |
+| `VITALS_TELEGRAM_WEBHOOK_PATH` | Секретный сегмент URL вебхука (`/tg/<path>`) | *Опционально* |
+| `VITALS_TELEGRAM_WEBHOOK_SECRET` | Секрет из заголовка `X-Telegram-Bot-Api-Secret-Token` | *Опционально* |
+
+> Расписаний здесь нет намеренно: время брифа и вечернего блока, тихие часы, дневной бюджет сообщений, категории нуджей и частота опроса Garmin живут в БД и правятся на карточке «Проактивный слой» в `/settings` — эти настройки должны применяться без перезапуска контейнера.
 </details>
 
 ---
@@ -773,11 +858,13 @@ The interface standardizes entirely on a single UI shell — **Masthead** — fe
 
 Unlike typical fitness trackers, Vitals prioritizes **preserving raw historical data**. It serves as a smart wellness navigator — uncovering correlations between sleep, workouts, supplements, and body composition. Not a watchdog — a co-pilot.
 
+Vitals now has a **voice**: a proactive layer over Telegram delivers a morning brief, asks about tomorrow in the evening, and catches free text ("headache", "coffee at 22:00") into its own signals domain. The dashboard no longer waits to be opened.
+
 ### Why I built this
 
 My data was scattered across many apps: Garmin, Hevy, GLP-1 and HRT notes, a spreadsheet with lab results, a file with supplements. None of them could cross-reference sleep with training recovery or link therapy side effects to nutrition — I had to keep it all in my head.
 
-Built with Claude as the primary coding tool — but the data model, architecture, and domain design are mine. The MCP layer is the key part: Claude can read and write data across all 14 domains in real time, answering questions like "how did my sleep this week affect my recovery?" with actual numbers.
+Built with Claude as the primary coding tool — but the data model, architecture, and domain design are mine. The MCP layer is the key part: Claude can read and write data across all 15 domains in real time, answering questions like "how did my sleep this week affect my recovery?" with actual numbers.
 
 <p align="center">
   <img src="./gifs/MCP_en.gif" alt="Claude querying Vitals via MCP" width="100%">
@@ -794,11 +881,11 @@ Built with Claude as the primary coding tool — but the data model, architectur
 <td width="50%">
 
 **📊 Data & Analytics**
-- 14 independent health, therapy and event domains
+- 15 independent health, therapy and event domains
 - Auto-sync Garmin Connect + Hevy API
 - OCR lab report parsing via LLM (Gemini)
 - Vision-parsing of InBody / МедАсс (BIA) body composition reports
-- Conflict engine: 114 curated rules (absorption, pharmacogenomics, dermatology, lab safety, GLP-1, HRT, contraindications)
+- Conflict engine: 116 curated rules (absorption, pharmacogenomics, dermatology, lab safety, GLP-1, HRT, contraindications)
 - 7-day moving average + linear regression
 - GLP-1 plateau detection
 - Cross-domain event timeline (Timeline) + chart annotation flags
@@ -809,7 +896,8 @@ Built with Claude as the primary coding tool — but the data model, architectur
 
 **🤖 AI & Integrations**
 - Weekly AI digests (Claude / GPT via OpenRouter)
-- 69 MCP tools for Claude.ai (read + write + override)
+- Proactive Telegram channel: morning brief, evening block, condition-driven nudges
+- 73 MCP tools for Claude.ai (read + write + override)
 - OAuth 2.0 + PKCE authorization for MCP
 - Full data export for LLM (copy-paste ready)
 - Atomic database backup & restore
@@ -847,9 +935,9 @@ Built with Claude as the primary coding tool — but the data model, architectur
 ### 📖 Table of Contents
 
 - [Core Philosophy](#-core-philosophy)
-- [Supported Domains (14 modules)](#-supported-domains)
+- [Supported Domains (15 modules)](#-supported-domains)
 - [Technical Architecture](#-technical-architecture)
-- [MCP Integration with Claude.ai (69 tools)](#-mcp-integration-with-claudeai-1)
+- [MCP Integration with Claude.ai (73 tools)](#-mcp-integration-with-claudeai-1)
 - [Quick Start (Docker Compose)](#-quick-start)
 - [Secure Deployment (Creator's Setup)](#-secure-deployment-creators-setup)
 - [Configuration (.env)](#-configuration)
@@ -863,11 +951,11 @@ Built with Claude as the primary coding tool — but the data model, architectur
 
 > [!NOTE]
 > **1. Raw Data Preservation**
-> All API integrations preserve original JSON payloads in a JSONB `raw_payloads` table alongside normalized records. If a parser changes — the entire history can be re-processed with zero loss.
+> All API integrations preserve original JSON payloads in a JSONB `raw_payloads` table alongside normalized records: Garmin, Hevy, lab reports, BIA sheets, the source VCF, and every inbound bot message. If a parser changes — the entire history can be re-processed with zero loss, and that isn't only a promise: a nightly `raw_payload_sweep` (03:30) re-derives everything flagged for re-parsing, each domain committing independently.
 
 > [!TIP]
 > **2. Resilient Conflict Engine**
-> Data, not code: **114 curated rules** with sources and an evidence tier (A/B/C) in `vitals/data/conflict_rules.yaml`, covering nutrient absorption, pharmacogenomics, dermatology, lab safety, GLP-1, HRT, and contraindications. Rules understand more than exact matches — comparisons (`dose ≥ 2mg`), lists, "any of", and time-of-day separation (morning/evening/with food), not just simultaneous presence. A supplement clashing with genetics or a lab result returns `409 Conflict`; users can explicitly override with an audit note. Browse and toggle the whole catalog on `/interactions`.
+> Data, not code: **116 curated rules** with sources and an evidence tier (A/B/C) in `vitals/data/conflict_rules.yaml`, covering nutrient absorption, pharmacogenomics, dermatology, lab safety, GLP-1, HRT, and contraindications. Rules understand more than exact matches — comparisons (`dose ≥ 2mg`), lists, "any of", and time-of-day separation (morning/evening/with food), not just simultaneous presence. A supplement clashing with genetics or a lab result returns `409 Conflict`; users can explicitly override with an audit note. Browse and toggle the whole catalog on `/interactions`.
 
 > [!IMPORTANT]
 > **3. Localized Time Boundaries**
@@ -932,9 +1020,11 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 <details>
 <summary><strong>⌚ 5. Garmin Connect</strong></summary>
 
-- **Models**: `GarminDaily`, `GarminActivity`
-- Auto-sync: sleep, sleep stages, HRV, resting HR, stress, Body Battery, Training Readiness
-- Garth session tokens cached in Redis + disk backup → minimal re-auth (avoids captchas/blocks)
+- **Models**: `GarminDaily`, `GarminActivity`, `GarminIntraday`
+- Auto-sync: sleep, sleep stages, HRV, resting HR, stress, Body Battery, Training Readiness + intraday stress / Body Battery curves
+- `garminconnect` session (pinned to 0.3.7): tokens cached in Redis + disk backup, and the token volume is archived by `backup.sh` next to the SQL dump
+- **Login breaker**: credential logins are rationed (3 per 24h, then a 6h pause, both in Redis) — Garmin rate-limits logins per account and every retry extends the block. A healthy token never touches it; MFA and "throttled" are reported apart from bad credentials
+- The poll schedule is not an env var: the full-sync interval and the light pulse (today's steps) between syncs live on the "Proactive layer" card in `/settings` and apply without a container restart
 - Fully reworked sleep analysis with detailed individual night pages
 - Fallback: direct Health Auto Export JSON import
 </details>
@@ -991,6 +1081,7 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 - **Models**: `GeneticVariant`
 - VCF file parser → health-relevant SNPs (HFE, MTHFR, G6PD, CYP1A2, COMT, and more)
 - Feeds pharmacogenomic rules into the Conflict Engine (e.g. hemochromatosis carrier status blocks iron supplementation)
+- The source VCF rows (up to 50k per import) are kept in `raw_payloads` — extending the interpretation dictionary re-reads the old file without asking for a re-upload
 </details>
 
 <details>
@@ -1016,17 +1107,37 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 - Real-time progress % based on active weight metrics
 </details>
 
+<details>
+<summary><strong>💬 15. Signals & Proactive Channel (Telegram)</strong></summary>
+
+- **Models**: `Signal`, `DayContext`, `NotificationLog` (the send journal)
+- The domain that **explains** the numbers in the other fourteen: everything that happens "in the moment" and has no shape — "can't keep my eyes open", "headache", "coffee at 22:00". Free text in Telegram → the raw message into `raw_payloads` → parsed into `Signal` rows of three kinds (`state` / `symptom` / `exposure`), echoed back with a "wrong" button that undoes the whole batch
+- Signal keys stay deliberately **free** during the shake-out period: stored exactly as the parser wrote them and folded to a canonical name **on read** (`KEY_ALIASES`) — consolidating the vocabulary is a dict edit, not a migration
+- The `/signals` page: the capture feed, a key-frequency table showing the actual phrasings behind each key (the raw material for a future closed registry), and per-row deletion when the parser got one wrong. Capture happens through the bot only — the app is not a second bot, the bot is not a second input form
+- Messages the parser choked on (model down, no balance) aren't lost: the morning brief takes a second pass before it assembles — one week back, up to 20 messages
+- `DayContext` — one row per day: remote/office, gym, workload. The evening block asks about tomorrow at 23:45; the week template pre-fills what a weekday can actually predict. Every button carries its own date, so a tap after midnight still answers the right day
+- **Morning brief**: the deterministic blocks are built by code from the same cross-domain context the weekly digest assembles, and the model contributes exactly one interpretation paragraph — if it fails, the brief still arrives; an empty day is silence, not an empty brief. Stored in `weekly_digests` (`kind='daily_brief'`), visible in `/reports` along with "Build brief" and "Send a test message" buttons
+- **Nudges** — a list of specs (condition, text, cooldown, category toggle) walked by one engine; adding a nudge is a single entry. Three categories today: activity, nutrition, data freshness
+- One gate for everything outgoing: module off, dedupe, quiet hours (nudges only) and a daily message budget; replies to the owner are deliberately exempt from the budget
+- Answering questions: a reply to one of the bot's messages, or just "why is my hrv down?" — the model sees the message being replied to plus the context the last brief was built on, and nothing else. Deep analysis belongs in Claude.ai over MCP, which has 73 tools and a better model
+- Signals and `day_context` reach both the weekly digest and the brief, with the hour attached — "coffee at 22:00" and "coffee at 09:00" are opposite facts wearing the same key
+- The channel sits behind a `Notifier` protocol — nothing above it knows about Telegram. The `signals` module is **off by default** and doubles as the master switch for the whole proactive layer: off means the bot says nothing at all. Brief and evening times, quiet hours, budget, nudge categories, the Garmin poll rate and the week template live on a card in `/settings`, and saving re-registers the jobs on the running scheduler **without a restart**
+- MCP: `get_signals`, `log_signal`, `get_day_context` — Claude can see what the owner told the bot
+- Setup: `VITALS_TELEGRAM_BOT_TOKEN`, `VITALS_TELEGRAM_CHAT_ID`, `VITALS_TELEGRAM_WEBHOOK_PATH`, `VITALS_TELEGRAM_WEBHOOK_SECRET` (see `.env.example`) — exactly **one** chat id is listened to, and the webhook is verified by a secret header
+</details>
+
 ---
 
 ### 🏗️ Technical Architecture
 
 ```mermaid
 graph TD
-    Garmin[Garmin Connect / Garth] -->|auto-sync| Raw[raw_payloads · JSONB]
+    Garmin[Garmin Connect] -->|auto-sync| Raw[raw_payloads · JSONB]
     Hevy[Hevy REST API] -->|auto-sync| Raw
     Labs[Lab PDFs / Images] -->|LLM parsing| Raw
     BIA[InBody PDFs / Images] -->|LLM parsing| Raw
     VCF[Genetics VCF] -->|import| Raw
+    TGin[Telegram: free text] -->|webhook| Raw
 
     Raw --> CE[Conflict Engine]
     CE --> IL[InsightsMixin Layer]
@@ -1038,7 +1149,9 @@ graph TD
     DB & Cache --> FastAPI[FastAPI Router + Auth + CSRF]
 
     FastAPI --> UI[Jinja2 + HTMX + Alpine.js]
-    FastAPI --> MCP[FastMCP SSE Server]
+    FastAPI --> MCP[FastMCP · streamable HTTP]
+    Scheduler --> PL[Proactive layer]
+    PL -->|gate: budget, quiet hours, dedupe| TGout[Telegram: brief, evening, nudges]
 
     UI --> Charts[Chart.js]
     UI --> AI[AI Digests · LLM]
@@ -1049,17 +1162,39 @@ graph TD
 | :--- | :--- |
 | **`vitals/`** (core) | Models, services, business logic. Zero web dependencies. Importable in scripts and tests. |
 | **`web/`** (delivery) | FastAPI routing, auth, CSRF, Jinja2 templates. Calls services — contains no business logic. |
+| **`vitals/services/proactive/`** | The proactive layer along four seams: `channels` (how a message leaves), `delivery` (whether it may), `compose`/`brief` (what is said), `inbound` (what comes back), `nudges` (when there's a reason at all), plus `day_plan` and `prefs`. Nothing above `channels` knows the word "telegram". |
 | **Frontend** | HTML-over-the-wire: HTMX + Alpine.js + Chart.js. One shell — Masthead (see [DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)). All copy flows through `vitals/i18n.py` (EN/RU). |
+
+#### Background jobs (APScheduler)
+
+Every job runs under a Redis lock (one runner across workers) and stamps a heartbeat that `/health` watches.
+
+| Job | Schedule | What it does |
+| :--- | :--- | :--- |
+| `keepalive` | every minute | Scheduler pulse — how `/health` knows it's alive |
+| `glp1_plateau` | 06:00 | GLP-1 plateau check, passive alert |
+| `hrt_reminders` | 07:00 | Bloodwork due on cycle + missed injections |
+| `nutrition_day_end` | 23:00 | End-of-day macro totals (warnings never fire off a partial day) |
+| `raw_payload_sweep` | 03:30 | Re-parse everything flagged pending (Garmin, Hevy, labs, BIA) |
+| `hevy_sync` | every 6h | Workout sync |
+| `garmin_sync` | every N hours (setting, default 6) | Full Garmin sync |
+| `garmin_pulse` | interval, active hours (setting) | Light pulse: today's steps, one request, no login |
+| `daily_brief` | from settings (default 11:00) | Garmin sync → assemble the brief → send under budget |
+| `evening_block` | from settings (default 23:45) | Day summary + questions about tomorrow |
+| `nudges` | hourly at :05 | Walks the nudge registry: condition, cooldown, category |
+| `weekly_digest` | Mondays, 08:00 | AI digest |
+
+Brief time, evening time and the Garmin poll rate live in the database (the `/settings` card), not in `.env` — saving re-registers the jobs on the running scheduler, no restart needed.
 
 ---
 
 ### 🔗 MCP Integration with Claude.ai
 
-Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp` (SSE transport). Authorization: OAuth 2.0 + PKCE with signed Bearer token verification. Configured in the web dashboard settings.
+Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streamable HTTP transport). Authorization: OAuth 2.0 with signed Bearer token verification. PKCE (`S256`) is **mandatory** — an `/oauth/authorize` request without a `code_challenge` is rejected rather than skipping the check. Protected-resource metadata is served at `/.well-known/oauth-protected-resource` (RFC 9728), and a `401` points at it via `WWW-Authenticate: Bearer resource_metadata="..."` so the client can discover where to authorize. Configured in the web dashboard settings.
 
-**69 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt.
+**73 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt.
 
-#### Read (30 tools)
+#### Read (33 tools)
 
 | Tool | Description |
 | :--- | :--- |
@@ -1072,7 +1207,7 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp` (SSE tran
 | `get_hevy_workouts` | Strength workouts with sets, reps, weights |
 | `get_supplements_catalog` | Supplements with dosages and evidence tiers |
 | `get_skincare_logs` | Skincare routine logs and skin observations |
-| `get_genetics_snps` | Genetic SNPs (rsid, genes) |
+| `get_genetics_snps` | Genetic SNPs filtered by gene and/or rsid ("show me my rs1801133") |
 | `get_active_alerts` | Unresolved warnings and conflict notifications |
 | `get_weekly_digests` | Historical AI digest archive |
 | `check_supplement_conflicts` | Check a supplement (by name, RU/EN) against genetics, labs, other supplements, and skincare |
@@ -1093,53 +1228,64 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp` (SSE tran
 | `get_milestones` | Goal cards with computed progress (filter by status) |
 | `get_modules` | Which optional modules are enabled |
 | `get_trend` | Metric trend: slope (day/week), latest rolling mean, projected date-to-target |
+| `get_signals` | Signals captured by the bot: states, symptoms, exposures (filter by kind, key, dates) |
+| `get_day_context` | What kind of day it was: remote/office, gym, workload |
+| `get_proactive_state` | State of the proactive layer: on/off, schedule, week template, recent sends (read-only — retiming or muting the bot stays with the owner) |
 
-#### Write (39 tools)
+#### Write (40 tools)
 
 | Tool | Description |
 | :--- | :--- |
 | `log_meal` | Record a meal with calories and macros |
 | `update_meal` | Update an existing meal entry |
-| `delete_meal` | Delete a meal entry |
 | `log_weight` | Record weight (overrides Garmin for the same date) |
-| `delete_weight` | Delete a weight entry (reactivates next priority) |
 | `log_glp1` | Record a GLP-1 injection (drug, dose, site) |
 | `log_hrt_dose` | Record an HRT dose (ml × concentration → mg; brand/lab/batch; conflict-gated) |
 | `add_hrt_cycle` | Start an HRT cycle (kind; closes the previous open one) |
 | `add_hrt_cycle_item` | Add a compound to a cycle (schedule: segments/ramp, or dose + interval) |
+| `update_hrt_dose` | Edit an HRT dose (fields left out are preserved; conflict-gated) |
+| `log_hrt_side_effect` | Record an HRT side effect (type, severity 1–5) |
+| `close_hrt_cycle` | Close an HRT cycle with an end date (defaults to today) |
 | `log_skincare` | Record/update daily skincare checklist (upsert) |
 | `log_measurement` | Record body measurements (auto-computes Navy body-fat %) |
 | `log_note` | Add a note to any domain record (including lab results) |
 | `log_body_scan` | Record a body-composition scan from metrics (bridges into weight) |
-| `delete_body_scan` | Delete a body-composition scan (and its metrics) |
 | `log_lab_result` | Record a single biomarker (auto-computes the out-of-range flag) |
 | `log_lab_results` | Record a whole lab panel at once (a list of markers → results + dedup) |
-| `delete_lab_result` | Delete a lab result |
+| `update_lab_result` | Edit a lab result (recomputes the out-of-range flag, refreshes alerts) |
 | `log_event` | Manual timeline annotation (trip, illness, protocol change) |
+| `update_event` | Edit a timeline event (fields left out are preserved) |
 | `create_milestone` | Create a goal card (target value, deadline) |
 | `update_milestone` | Update a goal (incl. status: achieved/missed/paused) |
-| `delete_milestone` | Delete a goal |
 | `update_glp1` | Edit a GLP-1 injection (conflict-gated) |
-| `delete_glp1` | Delete a GLP-1 injection |
 | `log_side_effect` | Record a GLP-1 side effect (type, severity 1–5) |
-| `delete_side_effect` | Delete a side effect |
 | `add_dose_phase` | Add a GLP-1 dose phase (overlaid on the weight chart) |
-| `delete_dose_phase` | Delete a dose phase |
 | `log_skincare_observation` | Record a skin observation (inflammation, PIH, zone) |
-| `delete_skincare_observation` | Delete a skin observation |
 | `add_supplement` | Add a supplement to the catalog (conflict-gated) |
 | `update_supplement` | Update a catalog supplement |
 | `set_supplement_active` | Toggle a supplement active (conflict-gated on enable) |
-| `delete_supplement` | Delete a supplement from the catalog |
 | `update_measurement` | Edit a body measurement (recomputes Navy body-fat % / LBM) |
-| `delete_measurement` | Delete a body measurement |
 | `add_noise_marker` | Mark a range as noise (excluded from the weight trend) |
-| `delete_noise_marker` | Delete a noise marker (range re-enters the trend) |
+| `upsert_genetic_variant` | Add or update a genetic variant (keyed on gene + rsid) |
 | `set_module` | Enable/disable an optional module |
+| `log_signal` | Record a signal (state / symptom / exposure) — through the same service the bot uses |
+| `mark_signal_misparse` | Flag one message's parse as wrong — the bot's "не то" button, by `batch_id` |
+| `log_day_context` | Record what kind of day it was — the same answers the owner taps in the evening block (the template's guess is kept next to the answer) |
+| `set_week_template` | Set the week template: what each weekday is assumed to be until the owner says otherwise |
+| `resolve_alert` | Resolve an alert — it disappears from `get_active_alerts` |
+| `override_alert` | Mark a blocking alert overridden — "noted, doing it anyway" |
 | `generate_digest_now` | Generate a fresh weekly AI digest now |
+| `delete_record` | Delete one record from any domain by ID (`domain` + `record_id`) — weight, measurement, noise marker, lab result, goal, meal, GLP-1 (injection / side effect / dose phase), HRT (dose / cycle / cycle item), body scan, timeline event, skin observation, supplement, genetic variant, signal |
 
 > [!TIP]
 > **Override flow.** Every write tool that runs the conflict engine (weight, GLP-1, HRT, supplements, skincare, measurements, body composition) accepts `override=true`. On a hard block the tool returns `{"blocked": true, "violations": [...]}` instead of saving — retry the same call with `override=true` to save anyway (the equivalent of the UI's "Save anyway" button).
+
+> [!IMPORTANT]
+> **Edits are partial.** Every `update_*` tool changes only the fields the call actually passes; the rest are carried over from the existing row instead of being nulled. Omit the date and the record keeps its own date rather than jumping to today. The web forms behave differently on purpose (they submit everything, and clearing a field there really does clear the column) — the divergence is resolved at the MCP boundary.
+>
+> **Write perimeter.** Writing into a disabled optional module is refused at one shared entry point rather than tool by tool: a new tool inherits the check instead of having to remember it.
+>
+> **Provenance.** Records written through the connector are stamped `source = "mcp"`. In the weight source priority `mcp` ranks equal to manual entry — it overrides a Garmin import and is not overridden by one; between equals, recency decides. Existing rows are not relabelled retroactively.
 
 #### Example interaction
 
@@ -1211,6 +1357,23 @@ Dashboard: `http://127.0.0.1:8000`
 ```bash
 curl -s http://127.0.0.1:8000/health
 ```
+
+#### 6. Proactive Telegram layer (optional)
+
+Leave these four empty and the app behaves exactly as before: the bot never sends, and the webhook fails closed with 401.
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) → `VITALS_TELEGRAM_BOT_TOKEN`.
+2. Get your own id from [@userinfobot](https://t.me/userinfobot) → `VITALS_TELEGRAM_CHAT_ID`. This is the **only** chat that is listened to.
+3. Generate the secret URL segment and the header secret:
+   ```bash
+   python -c "import secrets; print(secrets.token_urlsafe(24))"
+   ```
+   → `VITALS_TELEGRAM_WEBHOOK_PATH` and `VITALS_TELEGRAM_WEBHOOK_SECRET`.
+4. Register the webhook once (the host must be reachable by Telegram):
+   ```bash
+   curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" -d "url=https://<your-host>/tg/<PATH>" -d "secret_token=<SECRET>"
+   ```
+5. Enable the **Signals** module in `/settings` — it is the master switch for the whole proactive layer — then set brief time, quiet hours and the daily message budget on the "Proactive layer" card.
 
 ---
 
@@ -1428,6 +1591,7 @@ Connection-pool and timeout tuning (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFL
 | `VITALS_OPENROUTER_BASE_URL` | OpenRouter API base URL | `https://openrouter.ai/api/v1` |
 | `VITALS_LLM_MODEL_DIGEST` | Digest model | `anthropic/claude-sonnet-4.6` |
 | `VITALS_LLM_MODEL_PARSER` | Lab OCR model | `google/gemini-2.5-flash` |
+| `VITALS_LLM_MODEL_BRIEF` | Morning-brief model (empty → the digest model) | *Optional* |
 | `VITALS_HEVY_API_KEY` | Hevy API key | *Optional* |
 | `VITALS_HEVY_BASE_URL` | Hevy API base URL | `https://api.hevyapp.com` |
 | `VITALS_GARMIN_EMAIL` | Garmin Connect email | *Optional* |
@@ -1437,6 +1601,12 @@ Connection-pool and timeout tuning (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFL
 | `VITALS_MCP_CLIENT_SECRET` | MCP OAuth Client Secret | *Required* |
 | `VITALS_MCP_REDIRECT_URIS` | Allowed OAuth callbacks (comma-separated) | `https://claude.ai/api/mcp/auth_callback` |
 | `VITALS_EXTERNAL_API_TOKEN` | Token for server-server Glance API | *Optional* |
+| `VITALS_TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | *Optional* |
+| `VITALS_TELEGRAM_CHAT_ID` | The only chat the bot listens to | *Optional* |
+| `VITALS_TELEGRAM_WEBHOOK_PATH` | Secret segment of the webhook URL (`/tg/<path>`) | *Optional* |
+| `VITALS_TELEGRAM_WEBHOOK_SECRET` | Secret in the `X-Telegram-Bot-Api-Secret-Token` header | *Optional* |
+
+> No schedules here, on purpose: brief and evening times, quiet hours, the daily message budget, nudge categories and the Garmin poll rate live in the database and are edited on the "Proactive layer" card in `/settings` — those settings have to apply without restarting the container.
 </details>
 
 ---

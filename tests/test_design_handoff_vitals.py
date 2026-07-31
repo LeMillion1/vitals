@@ -47,7 +47,9 @@ def test_handoff_uses_exact_surface_and_accent_tokens():
         "--good: #6FC58E",
         "--bad: #E87056",
         "--cool: #6FB6C9",
-        "--violet: #B093D6",
+        # Lightened from the handoff's #B093D6 for AA text contrast (U2) —
+        # the accessibility pass wins over the exact swatch.
+        "--violet: #BCA4DC",
     ):
         assert token in TOKENS_CSS
 

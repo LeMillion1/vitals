@@ -116,7 +116,7 @@ consume them via `var(--token)` — never a hardcoded hex.
 | `--bad-strong` | `#FF8469` | Critical / out-of-range emphasis |
 | `--warn` / `--warn-soft` | `#F0B24A` / `rgba(240,178,74,.13)` | The `warn` alert tier |
 | `--cool` / `--cool-soft` | `#6FB6C9` / `rgba(111,182,201,.13)` | Temporal/category tag — "day" side of a day/night pairing |
-| `--violet` / `--violet-soft` | `#B093D6` / `rgba(176,147,214,.13)` | Temporal/category tag — "evening/night" side |
+| `--violet` / `--violet-soft` | `#BCA4DC` / `rgba(176,147,214,.13)` | Temporal/category tag — "evening/night" side. The base tone was lightened from `#B093D6` so text on `--violet-soft` clears AA |
 
 `.good`/`.bad` are **direction-agnostic** — the page decides which way is good.
 On the Weight page, for instance, a negative weekly slope (losing weight) maps
@@ -381,7 +381,7 @@ an anchor.
 
 | Class | Modifiers | Note |
 |---|---|---|
-| `.v-chip` | `.good`, `.bad`, `.v-chip-sm` | Neutral by default (surface-3) — deliberately **no** `.accent` modifier. `.v-chip-sm` is a compact-size modifier (10px/tight padding), combined with the base class — e.g. `class="v-chip v-chip-sm good"` — for a status badge sitting inline with a label |
+| `.v-chip` | `.good`, `.bad`, `.v-chip-sm` | Neutral by default (surface-3) — deliberately **no** `.accent` modifier. `.v-chip-sm` is a compact-size modifier (10px/tight padding), combined with the base class — e.g. `class="v-chip v-chip-sm good"` — for a status badge sitting inline with a label. `.bad` paints its text with `--bad-strong`, not `--bad`: the plain tone on `--bad-soft` measures 3.58:1 |
 | `.v-tag` | `.cool`, `.violet`, `.good`, `.bad`, `.muted` | `.cool`/`.violet` pair for day/evening-night style temporal tags |
 | `.v-pill` / `.v-pill-on`, `.v-site-btn` / `.v-site-on` | — | Filter pills / body-map site picker; "selected" = neutral `--surface-2` elevation, not amber |
 | `.v-dot` | `.amber`, `.cool`, `.violet`, `.good` | 7px inline status dot |
@@ -519,6 +519,10 @@ any time you're tempted to make a table row clickable.
   animation that bypasses standard `transition`/`animation` timing to dodge it.
 - **Touch targets ≥44px** on every interactive element below 640/768px
   (buttons, segmented control, pills, icon buttons, inputs).
+- **`touch-action: manipulation`** on tap targets (`.v-btn`, `.v-btn-ghost`,
+  `.v-icon-btn`, `.v-pill`, `.v-seg-btn`, `.v-bnav-link`) — they are single-purpose
+  controls, not double-tap-to-zoom candidates, and saying so up front removes the
+  browser's ~300ms click delay. Add any new tap-target class to that list.
 - **`[x-cloak]`** hides Alpine-bound markup until it's initialized — apply it
   to anything that would otherwise flash unstyled/uninitialized on load.
 - **i18n is not optional:** all copy goes through `t("key")` (see

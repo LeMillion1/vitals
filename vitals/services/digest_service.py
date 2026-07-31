@@ -18,7 +18,7 @@ from typing import Any, Optional, Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Source
+from vitals.enums import DigestKind, Source
 from vitals.integrations.llm_client import LLMEmptyResponse
 from vitals.models.milestones import DOMAIN, WeeklyDigest
 from vitals.utils.timeutils import today_local
@@ -52,6 +52,8 @@ DIGEST_SYSTEM = """\
 - nutrition: avg калории/белок в день, days_with_logs, цели
 - hrt: гормональный протокол — active_compounds (что идёт сейчас), doses за период (дата, соединение, доза, место укола), side_effects (тип, тяжесть 1-5). Самое сильное вмешательство: связывай его со сном/HRV, анализами, кожей и настроением.
 - timeline: ручные аннотации, пересекающие период (болезнь, поездка, смена протокола, событие). Это готовое объяснение для провала или скачка в других доменах — сверяйся с ними, прежде чем списать всё на тренировки или питание.
+- signals: что пользователь сам сказал о своём состоянии, в хронологическом порядке. kind=state (есть всегда, value_num 1-5: «энергии ноль»), symptom (случилось, value_num 1-5: «голова раскалывается»), exposure (сделал/принял, at_time — время суток: «кофе в 22»). note — исходная формулировка. Единственный блок, который объясняет ПОЧЕМУ цифры такие: ищи связи «exposure вечером → метрика Garmin наутро» и «симптом держится N дней подряд → что ещё в эти дни». Это его слова, а не измерение — не считай их точными числами и не строй на одной записи вывод.
+- day_context: каким был каждый день — where (office/remote/off), gym (был ли зал), load (light/normal/heavy, отвечается вечером о дне, который уже прошёл). source=manual — его собственный ответ, source=template — догадка недельного шаблона, которую он не стал поправлять (слабее, вывод на ней одной не строй). Это фон под всеми остальными цифрами: три тяжёлых дня подряд объясняют провал восстановления лучше, чем тренировки.
 - milestones: активные цели с прогрессом и дедлайнами
 
 ИНВАРИАНТЫ (нарушение = баг):
@@ -103,6 +105,8 @@ Any domain can be null (no data). Don't invent what isn't there.
 - nutrition: avg calories/protein per day, days_with_logs, targets
 - hrt: hormone protocol — active_compounds (what's running now), doses in the period (date, compound, dose, injection site), side_effects (type, severity 1-5). The strongest intervention here: relate it to sleep/HRV, labs, skin and mood.
 - timeline: manual annotations overlapping the period (illness, travel, protocol change, life event). These are the ready-made explanation for a dip or spike in the other domains — check them before blaming training or nutrition.
+- signals: what the user said about how he felt, in chronological order. kind=state (always present, value_num 1-5), symptom (happened, value_num 1-5), exposure (did/took it, at_time = time of day). note is his original wording. The only block that explains WHY the numbers look like they do: look for "exposure in the evening → Garmin metric next morning" and "symptom running N days straight → what else those days had". These are his words, not measurements — don't treat them as exact figures and don't build a conclusion on a single row.
+- day_context: what each day was made of — where (office/remote/off), gym (did he train), load (light/normal/heavy, answered in the evening about the day just finished). source=manual is his own answer; source=template is the weekly template's guess he didn't bother correcting (weaker — don't build a conclusion on that alone). This is the backdrop for every other number: three heavy days in a row explain a recovery dip better than training does.
 - milestones: active goals with progress and deadlines
 
 INVARIANTS (breaking = bug):
@@ -190,6 +194,11 @@ async def assemble_context(
     last_ma = series["trend_ma"][-1] if series["trend_ma"] else None
     ctx["weight"] = {
         "latest_kg": weights[-1].weight_kg if weights else None,
+        # When that measurement was taken. ``latest_kg`` is the newest weight
+        # *ever* logged, with no window on it — printed bare it reads as today's,
+        # and the empty-day check had no way to tell "he weighed in this morning"
+        # from "he last stepped on the scale in March".
+        "latest_date": weights[-1].date.isoformat() if weights else None,
         "ma7_kg": last_ma["weight_kg"] if last_ma else None,
         # Date the MA7 was last calculated. During a noise period ALL measurements
         # inside it are excluded from the MA, so ma7_date will be the last clean
@@ -436,10 +445,68 @@ async def assemble_context(
         for a in annotations
     ] or None
 
+    # Signals — the day in his own words. Every other block is a measurement; this
+    # is the only one that can say *why* a measurement moved: "кофе в 22" the night
+    # before the HRV dip, a headache running through a week of bad sleep. Read
+    # chronologically, because a narrative reads a period forward. Rows tapped
+    # "не то" are excluded by the service — a misparse is not evidence, even
+    # though it stays on the table as material for the key revision (прогон 7).
+    from vitals.services import signals_service
+
+    signals = await signals_service.list_signals(session, start=since, end=today)
+    ctx["signals"] = [signal_row(s) for s in reversed(signals)] or None
+
     from vitals.services import milestones_service
 
     ctx["milestones"] = await milestones_service.dashboard_cards(session)
+
+    # Day context — what each day was *made of*: office or remote, gym or not, how
+    # heavy it turned out. Every other block says what the body did; this says what
+    # the week asked of it, which is the whole difference between "HRV fell" and
+    # "HRV fell across three heavy office days in a row". Read straight off the
+    # model: the domain's service resolves one day at a time (the bot only ever
+    # needs today), and a period read has no other caller.
+    from vitals.models.signals import DayContext
+
+    day_rows = (
+        await session.execute(
+            select(DayContext)
+            .where(DayContext.date >= since, DayContext.date <= today)
+            .order_by(DayContext.date)
+        )
+    ).scalars().all()
+    ctx["day_context"] = [
+        {
+            "date": row.date.isoformat(),
+            "answers": row.answers or {},
+            # Whose answer it is. A template guess he never corrected is weaker
+            # evidence than a day he spoke for, and the model has no other way to
+            # tell them apart.
+            "source": row.source,
+        }
+        for row in day_rows
+    ] or None
     return ctx
+
+
+def signal_row(signal) -> dict:
+    """One signal as the model sees it.
+
+    Shared with the daily brief, which reads the same rows over a wider window —
+    two shapes for the same block would mean two prompt descriptions to keep in
+    step, and the one that drifted would drift silently.
+    """
+    return {
+        "date": signal.date.isoformat(),
+        "kind": signal.kind,
+        "key": signal.key,
+        "value_num": signal.value_num,
+        "unit": signal.unit,
+        # The hour is what makes an exposure correlatable at all: "кофе в 22" and
+        # "кофе в 9" are opposite facts wearing the same key.
+        "at_time": signal.at_time.strftime("%H:%M") if signal.at_time else None,
+        "note": signal.note,
+    }
 
 
 def build_prompt(context: dict, lang: str = "ru") -> str:
@@ -492,6 +559,7 @@ async def generate_digest(
         date=on_date or today_local(),
         domain=DOMAIN,
         source=source,
+        kind=DigestKind.WEEKLY.value,
         content=content,
         context_json=context,
         model=getattr(llm, "digest_model", None),
@@ -501,16 +569,28 @@ async def generate_digest(
     return row
 
 
-async def latest_digest(session: AsyncSession) -> Optional[WeeklyDigest]:
+async def latest_digest(
+    session: AsyncSession, *, kind: str = DigestKind.WEEKLY.value
+) -> Optional[WeeklyDigest]:
+    """The most recent narrative of one kind. Defaults to the weekly digest, so a
+    daily brief can never show up where a weekly one is expected."""
     result = await session.execute(
-        select(WeeklyDigest).order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc()).limit(1)
+        select(WeeklyDigest)
+        .where(WeeklyDigest.kind == kind)
+        .order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc())
+        .limit(1)
     )
     return result.scalars().first()
 
 
-async def list_digests(session: AsyncSession, *, limit: int = 20) -> Sequence[WeeklyDigest]:
+async def list_digests(
+    session: AsyncSession, *, limit: int = 20, kind: str = DigestKind.WEEKLY.value
+) -> Sequence[WeeklyDigest]:
     result = await session.execute(
-        select(WeeklyDigest).order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc()).limit(limit)
+        select(WeeklyDigest)
+        .where(WeeklyDigest.kind == kind)
+        .order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc())
+        .limit(limit)
     )
     return result.scalars().all()
 

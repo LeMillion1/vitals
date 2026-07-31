@@ -24,6 +24,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oauth"])
 
 
+def _pkce_requested(code_challenge: Optional[str], method: Optional[str]) -> bool:
+    """True when the client brought a usable S256 challenge.
+
+    PKCE is mandatory here, not optional: a code issued without a challenge has
+    nothing to verify at the token endpoint, which is precisely the interception
+    PKCE exists to stop. The discovery metadata advertises S256 only, so anything
+    else (absent, empty, ``plain``) is a misconfigured or hostile client."""
+    return bool(code_challenge) and method == "S256"
+
+
 def verify_pkce(code_verifier: str, code_challenge: str, method: Optional[str]) -> bool:
     """Verifies the Proof Key for Code Exchange (PKCE) challenge.
 
@@ -52,6 +62,24 @@ async def oauth_metadata(request: Request):
         "grant_types_supported": ["authorization_code"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
         "code_challenge_methods_supported": ["S256"]
+    }
+
+
+# The path a 401 from the MCP endpoint points at (RFC 9728 §3). Kept next to the
+# route so the middleware's WWW-Authenticate header and this document can't drift.
+PROTECTED_RESOURCE_PATH = "/.well-known/oauth-protected-resource"
+
+
+@router.get(PROTECTED_RESOURCE_PATH)
+async def oauth_protected_resource(request: Request):
+    """Protected-resource metadata (RFC 9728) — tells a client that hit a 401 on
+    /mcp/ which authorization server issues tokens for it, so discovery starts from
+    the resource instead of a guessed well-known path on the same host."""
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "resource": f"{base_url}/mcp",
+        "authorization_servers": [base_url],
+        "bearer_methods_supported": ["header"],
     }
 
 
@@ -91,6 +119,13 @@ async def oauth_authorize(
             request,
             "oauth_authorize.html",
             {"error": t("oauth.error.invalid_redirect"), "client_id": client_id, "redirect_uri": redirect_uri},
+        )
+
+    if not _pkce_requested(code_challenge, code_challenge_method):
+        return templates.TemplateResponse(
+            request,
+            "oauth_authorize.html",
+            {"error": t("oauth.error.pkce_required"), "client_id": client_id, "redirect_uri": redirect_uri},
         )
 
     # Check if the user is already authenticated in Vitals
@@ -146,6 +181,12 @@ async def oauth_approve(
 
     if redirect_uri not in cfg.mcp_redirect_uris:
         raise HTTPException(status_code=400, detail="redirect_uri not allowed")
+
+    # Re-checked here, not just on the consent page: this endpoint is reachable
+    # on its own, and a code minted without a challenge would be exchangeable
+    # without a verifier.
+    if not _pkce_requested(code_challenge, code_challenge_method):
+        raise HTTPException(status_code=400, detail="code_challenge with S256 is required")
 
     # Issue a secure authorization code
     code = f"code_{secrets.token_urlsafe(32)}"
@@ -258,20 +299,26 @@ async def oauth_token(
             content={"error": "invalid_grant", "error_description": "Redirect URI mismatch"},
         )
 
-    # Verify PKCE challenge if requested during authorize step
+    # Verify the PKCE challenge. Unconditionally: a code that reached Redis without
+    # one can only be a leftover from an older issuer or a forged payload, and
+    # treating it as "PKCE not requested" would hand back a token for it.
     stored_challenge = code_data.get("code_challenge")
     stored_method = code_data.get("code_challenge_method")
-    if stored_challenge:
-        if not code_verifier:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "invalid_grant", "error_description": "Missing code_verifier"},
-            )
-        if not verify_pkce(code_verifier, stored_challenge, stored_method):
-            return JSONResponse(
-                status_code=400,
-                content={"error": "invalid_grant", "error_description": "PKCE verification failed"},
-            )
+    if not _pkce_requested(stored_challenge, stored_method):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_grant", "error_description": "Code was issued without PKCE"},
+        )
+    if not code_verifier:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_grant", "error_description": "Missing code_verifier"},
+        )
+    if not verify_pkce(code_verifier, stored_challenge, stored_method):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_grant", "error_description": "PKCE verification failed"},
+        )
 
     # Sign the access token. Lifetime is 1 year (see expires_in below), enforced
     # on every request via max_age in the MCP auth middleware. Uses a dedicated

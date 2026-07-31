@@ -49,7 +49,7 @@ async def test_log_get_history_delete_body_scan(db_session, session_factory, mon
     hist = await mcp_router.get_body_metric_history("body_fat_pct")
     assert hist and hist[0]["value"] == 18.5
 
-    deleted = await mcp_router.delete_body_scan(scan_id)
+    deleted = await mcp_router.delete_record("body_comp", scan_id)
     assert deleted["deleted"] is True
     assert "error" in await mcp_router.get_body_scan(scan_id)
 
@@ -60,7 +60,7 @@ async def test_write_tools_blocked_when_module_disabled(db_session, session_fact
 
     res = await mcp_router.log_body_scan(metrics=[{"label": "Вес", "value": 80.0}], on_date="2026-06-10")
     assert res.get("error")
-    d = await mcp_router.delete_body_scan(1)
+    d = await mcp_router.delete_record("body_comp", 1)
     assert d.get("error")
 
 

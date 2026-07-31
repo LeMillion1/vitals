@@ -28,6 +28,7 @@ from sqlalchemy.orm import selectinload
 
 from vitals.enums import Source
 from vitals.models.hevy import DOMAIN, HevyExercise, HevySet, HevyWorkout
+from vitals.models.raw_payload import RawPayload
 from vitals.services import raw_payload_service
 from vitals.services.analytics.progression import (
     ProgressionConfig,
@@ -203,6 +204,37 @@ async def _upsert_workout(
             )
     await session.flush()
     return created
+
+
+async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
+    """Re-derive a Hevy workout straight from its stored raw payload. Unlike a
+    normal sync this skips re-upserting the raw row itself, so ``fetched_at``
+    stays put — this is a re-derive, not a fresh pull. Used by
+    :func:`reparse_pending` (the nightly sweep — raw_payload_service.
+    sweep_pending_job)."""
+    raw = raw_row.payload if isinstance(raw_row.payload, dict) else {}
+    await _upsert_workout(session, raw, raw_payload_id=raw_row.id)
+
+
+async def reparse_pending(
+    session: AsyncSession,
+    *,
+    limit: int = raw_payload_service.REPARSE_BATCH,
+    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+) -> int:
+    """Sweep Hevy raw payloads still pending a normalized workout row. Does not
+    commit."""
+    has_normalized = (
+        select(HevyWorkout.id).where(HevyWorkout.raw_payload_id == RawPayload.id).exists()
+    )
+    return await raw_payload_service.sweep_domain(
+        session,
+        domain=DOMAIN,
+        reparse=reparse_from_raw,
+        has_normalized=has_normalized,
+        limit=limit,
+        since_days=since_days,
+    )
 
 
 # ── Reads ─────────────────────────────────────────────────────────────────────

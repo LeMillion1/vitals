@@ -6,7 +6,7 @@ Redis cache connection, and background APScheduler thread.
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Request, status
@@ -49,17 +49,19 @@ async def lifespan(app: FastAPI):
     from vitals.scheduler.scheduler import seed_heartbeats, setup_scheduler
     from vitals.services import conflict_catalog, hrt_catalog
     from vitals.services.conflict_registrations import register_all_resolvers
+    from vitals.services.proactive import prefs
 
     config = load_config()
 
-    # Attach per-module jobs before the scheduler reads the registry.
-    register_all_jobs()
     # Register cross-domain conflict resolvers (supplements/genetics/skincare/...).
     register_all_resolvers()
     # Upsert the curated rule catalog (vitals/data/conflict_rules.yaml) — cheap,
     # idempotent, and keeps the DB in sync with the checked-in YAML on every
     # deploy without a data migration per rule change.
     async with session_factory() as session:
+        # Job schedules come from the DB (Settings → proactive), so the registry is
+        # attached here rather than before the session opens.
+        register_all_jobs(await prefs.get_prefs(session))
         await conflict_catalog.sync_catalog(session)
         # Upsert the curated HRT compound catalog (vitals/data/hrt_compounds.yaml).
         await hrt_catalog.sync_catalog(session)
@@ -75,7 +77,14 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     app.state.scheduler = scheduler
 
-    yield
+    async with AsyncExitStack() as stack:
+        # The mounted MCP app builds its streamable-HTTP session manager in its own
+        # lifespan, which app.mount() never runs — without this every /mcp/ request
+        # fails with "manager not initialized".
+        mcp_lifespan = getattr(app.state, "mcp_lifespan", None)
+        if mcp_lifespan is not None:
+            await stack.enter_async_context(mcp_lifespan(app))
+        yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
     scheduler.shutdown()
@@ -293,7 +302,9 @@ from web.routers.interactions import router as interactions_router  # noqa: E402
 from web.routers.settings import router as settings_router  # noqa: E402
 from web.routers.charts import router as charts_router  # noqa: E402
 from web.routers.timeline import router as timeline_router  # noqa: E402
+from web.routers.signals import router as signals_router  # noqa: E402
 from web.routers.external_api import router as external_api_router  # noqa: E402
+from web.routers.telegram import router as telegram_router  # noqa: E402
 
 # Core modules — always reachable.
 app.include_router(alerts_router)
@@ -305,6 +316,8 @@ app.include_router(settings_router)
 app.include_router(charts_router)
 # Read-only JSON API for an external personal dashboard (Bearer-token guarded, not session auth).
 app.include_router(external_api_router)
+# Telegram webhook — its own secret path + header, no session auth.
+app.include_router(telegram_router)
 
 # Optional modules — guarded: a disabled module's routes 404 → redirect to /weight.
 app.include_router(glp1_router, dependencies=[Depends(require_module("glp1"))])
@@ -316,6 +329,7 @@ app.include_router(skincare_router, dependencies=[Depends(require_module("skinca
 app.include_router(nutrition_router, dependencies=[Depends(require_module("nutrition"))])
 app.include_router(interactions_router, dependencies=[Depends(require_module("interactions"))])
 app.include_router(timeline_router, dependencies=[Depends(require_module("timeline"))])
+app.include_router(signals_router, dependencies=[Depends(require_module("signals"))])
 
 # ── OAuth & MCP Integration ──────────────────────────────────────────────────
 try:
@@ -323,7 +337,9 @@ try:
     from web.routers.mcp import get_mcp_app  # noqa: E402
 
     app.include_router(oauth_router)
-    app.mount("/mcp", get_mcp_app())
+    mcp_app, mcp_lifespan = get_mcp_app()
+    app.mount("/mcp", mcp_app)
+    app.state.mcp_lifespan = mcp_lifespan
 except ImportError:
     import logging
     logging.getLogger(__name__).warning("MCP/OAuth disabled (fastmcp not available)")

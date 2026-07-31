@@ -93,6 +93,10 @@ class Config:
     # extraction of lab PDFs/photos (Gemini 2.5 Flash — cheap, strong document OCR).
     llm_model_digest: str = "anthropic/claude-sonnet-4.6"
     llm_model_parser: str = "google/gemini-2.5-flash"
+    # Morning brief = 2-3 sentences off ready-made numbers, run every day, so a
+    # cheaper/faster model than the digest is usually the right trade. Empty means
+    # "use the digest model", which keeps the brief working before it's ever set.
+    llm_model_brief: str = ""
 
     # ── Nutrition goals ──────────────────────────────────────────────────────────
     nutrition_protein_target_g: float = 150.0
@@ -109,6 +113,21 @@ class Config:
     garmin_email: str = ""
     garmin_password: str = ""
     garmin_token_dir: str = DEFAULT_GARMIN_TOKEN_DIR
+    # The poll schedule (full sync interval, light pulse, active hours) is NOT
+    # here: it lives in app_settings via vitals/services/proactive/prefs.py, so
+    # the settings card can change it without a container restart.
+
+    # ── Telegram (proactive channel) ────────────────────────────────────────────
+    # All four empty by default: the bot simply never sends and the webhook fails
+    # closed, so the app runs exactly as before until the owner configures it.
+    # ``chat_id`` is the single recipient — everything from any other chat is
+    # dropped. ``webhook_path`` is a random secret segment (the URL itself is a
+    # credential); ``webhook_secret`` is what Telegram echoes back in the
+    # ``X-Telegram-Bot-Api-Secret-Token`` header. Both are compared constant-time.
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_webhook_path: str = ""
+    telegram_webhook_secret: str = ""
 
     db_statement_timeout_ms: int = DEFAULT_DB_STATEMENT_TIMEOUT_MS
     db_pool_size: int = DEFAULT_DB_POOL_SIZE
@@ -173,6 +192,7 @@ def load_config() -> Config:
         llm_model_parser=os.getenv(
             "VITALS_LLM_MODEL_PARSER", "google/gemini-2.5-flash"
         ),
+        llm_model_brief=os.getenv("VITALS_LLM_MODEL_BRIEF", "").strip(),
         hevy_api_key=os.getenv("VITALS_HEVY_API_KEY", ""),
         hevy_base_url=(os.getenv("VITALS_HEVY_BASE_URL") or DEFAULT_HEVY_BASE_URL),
         garmin_email=os.getenv("VITALS_GARMIN_EMAIL", ""),
@@ -180,6 +200,10 @@ def load_config() -> Config:
         garmin_token_dir=(
             os.getenv("VITALS_GARMIN_TOKEN_DIR") or DEFAULT_GARMIN_TOKEN_DIR
         ),
+        telegram_bot_token=os.getenv("VITALS_TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_chat_id=os.getenv("VITALS_TELEGRAM_CHAT_ID", "").strip(),
+        telegram_webhook_path=os.getenv("VITALS_TELEGRAM_WEBHOOK_PATH", "").strip(),
+        telegram_webhook_secret=os.getenv("VITALS_TELEGRAM_WEBHOOK_SECRET", "").strip(),
         db_statement_timeout_ms=_pos_int(
             "VITALS_DB_STATEMENT_TIMEOUT_MS", DEFAULT_DB_STATEMENT_TIMEOUT_MS
         ),

@@ -7,6 +7,7 @@ import logging
 import os
 import uuid
 from datetime import date as date_type
+from urllib.parse import urlencode
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
@@ -19,6 +20,7 @@ from vitals.enums import Domain, Source
 from vitals.i18n import t
 from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import alerts_service, labs_service, raw_payload_service
+from vitals.services.conflict_engine import ConflictBlocked
 from web.deps import get_session, require_auth
 from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
@@ -89,6 +91,7 @@ async def add_result(
     ref_high: Optional[float] = Form(None),
     lab_name: Optional[str] = Form(None),
     note: Optional[str] = Form(None),
+    override: bool = Form(False),
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
@@ -103,13 +106,21 @@ async def add_result(
             ref_high=ref_high,
             lab_name=lab_name,
             note=note,
+            override=override,
+        )
+    except ConflictBlocked as e:
+        # Same 409 + violations contract the weight/GLP-1/supplement forms use, so
+        # the shared "save anyway" modal works here without its own flow.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"violations": [v.to_dict() for v in e.violations]},
         )
     except ValueError as e:
         # The service validates for every caller (MCP included) — the form has to
         # surface that as a 400 rather than fall through to a 500.
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     await db.commit()
-    return _redirect(request, f"?marker={marker.strip()}&added=1")
+    return _redirect(request, marker=marker.strip(), added=1)
 
 
 class LabMarkerIn(BaseModel):
@@ -126,6 +137,7 @@ class LabConfirm(BaseModel):
     file_key: Optional[str] = None
     raw_payload_id: Optional[int] = None
     markers: list[LabMarkerIn] = []
+    override: bool = False
 
 
 @router.post("/upload")
@@ -223,6 +235,12 @@ async def labs_confirm(
             markers=[m.model_dump() for m in payload.markers],
             lab_name=payload.lab_name,
             raw_payload_id=payload.raw_payload_id,
+            override=payload.override,
+        )
+    except ConflictBlocked as e:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"violations": [v.to_dict() for v in e.violations]},
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -244,7 +262,7 @@ async def defer_marker(
         db, name, until=date_type.fromisoformat(until), note=note
     )
     await db.commit()
-    return _redirect(request, f"?marker={name}")
+    return _redirect(request, marker=name)
 
 
 @router.post("/result/{result_id}/delete")
@@ -259,8 +277,14 @@ async def delete_result(
     return _redirect(request)
 
 
-def _redirect(request: Request, suffix: str = "") -> RedirectResponse:
-    url = f"/labs{suffix}"
+def _redirect(request: Request, **params) -> RedirectResponse:
+    """Back to the labs page, optionally selecting a marker.
+
+    Params are urlencoded, not interpolated: a marker name is Cyrillic here, and
+    it ends up in the ``HX-Redirect`` **header**, which is latin-1 only — raw
+    "Ферритин" in there is a 500, not a broken link.
+    """
+    url = "/labs" + (f"?{urlencode(params)}" if params else "")
     response = RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
     if "hx-request" in request.headers:
         response.headers["HX-Redirect"] = url
