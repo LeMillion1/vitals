@@ -1260,7 +1260,6 @@ _EN: dict[str, str] = {
     # ── Today (the landing screen) ────────────────────────────────────────
     "nav.today": "Today",
     "today.page_title": "Today",
-    "today.protocol_day": "Day {n} of the protocol",
     "today.changes_title": "What changed this week",
     "today.changes_empty": "Not enough history yet for a week-over-week read.",
     "today.feed_title": "The day so far",
@@ -2534,7 +2533,6 @@ _RU: dict[str, str] = {
     # ── Сегодня (посадочный экран) ────────────────────────────────────────
     "nav.today": "Сегодня",
     "today.page_title": "Сегодня",
-    "today.protocol_day": "День {n} протокола",
     "today.changes_title": "Что изменилось за неделю",
     "today.changes_empty": "Истории пока мало — сравнивать неделю не с чем.",
     "today.feed_title": "Лента дня",

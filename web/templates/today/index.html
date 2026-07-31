@@ -15,7 +15,7 @@
 <div class="v-page v-page-today px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="weightOSDashboard('log')">
 
     <div class="v-today-eyebrow-row">
-        <span class="mh-eyebrow">{{ date | format_date }}{% if protocol_day %} · {{ t("today.protocol_day", n=protocol_day) }}{% endif %}</span>
+        <span class="mh-eyebrow">{{ date | format_date }} · <span x-data="{ t: '{{ time }}' }" x-init="let el = $el, id = setInterval(() => { if (!document.body.contains(el)) return clearInterval(id); t = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); }, 1000)" x-text="t"></span></span>
         <div class="v-today-sync">
             {% for s in sync %}
             <span class="v-dot good"></span>

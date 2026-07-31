@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.config import load_config
 from vitals.enums import DigestKind, Domain, Severity
 from vitals.i18n import t
-from vitals.utils.timeutils import today_local
+from vitals.utils.timeutils import now_local, today_local
 
 # How far off his own mean a number has to sit before the baseline is worth
 # printing next to it. 5% is ~3 bpm of resting HR and ~4 points of sleep score —
@@ -269,7 +269,7 @@ async def build(
 
     return {
         "date": today,
-        "protocol_day": await _protocol_day(session, today) if em.get("glp1") else None,
+        "time": now_local().strftime("%H:%M"),
         "narrative": narrative,
         "narrative_source": narrative_source,
         "sync": _sync_rows(ctx, em),
@@ -346,14 +346,6 @@ def _sync_rows(ctx: dict, em: dict) -> list[dict]:
         if last:
             rows.append({"label": "Hevy", "date": last})
     return rows
-
-
-async def _protocol_day(session: AsyncSession, today) -> Optional[int]:
-    """Which day of the current GLP-1 dose phase this is (1-based)."""
-    from vitals.services import glp1_service
-
-    phase = await glp1_service.active_dose_phase(session, on_date=today)
-    return (today - phase.start_date).days + 1 if phase else None
 
 
 async def _goal(session: AsyncSession, series: dict) -> Optional[dict]:
