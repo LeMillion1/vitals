@@ -74,7 +74,9 @@ MODULE_REGISTRY: dict[str, ModuleSpec] = {
         ModuleSpec("labs", "core", "/labs", "markers"),
         ModuleSpec("genetics", "optional", "/genetics", "markers"),
         # ── Lifestyle ────────────────────────────────────────────────────────
-        ModuleSpec("supplements", "optional", "/supplements", "lifestyle", bottom_nav=True),
+        # Not in the bottom bar: "Today" took a slot there and supplements is the
+        # least frequent of the five — it lives in the drawer with the rest.
+        ModuleSpec("supplements", "optional", "/supplements", "lifestyle"),
         ModuleSpec("skincare", "optional", "/skincare", "lifestyle"),
         ModuleSpec("interactions", "optional", "/interactions", "lifestyle"),
         # Signals — the free-text capture domain *and* the master switch for the

@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("today.page_title") }}{% endblock %}
+
+{% block content %}
+{# The landing screen. No masthead_header() and no rubric tab row on purpose:
+   this page is not a section of a rubric, it is what the app opens on, so it
+   carries its own hero — a sentence, not a section name.
+
+   The x-data root is the weight dashboard's own factory: the "Записать" card
+   posts to the conflict-aware /weight/log and needs exactly the submitForm /
+   overrideSave / violations trio that already lives there. A second copy of
+   that flow is a second place for the 409 handling to drift. #}
+{% set em = request.state.enabled_modules or {} %}
+<div class="v-page v-page-today px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="weightOSDashboard('log')">
+
+    <div class="v-today-eyebrow-row">
+        <span class="mh-eyebrow">{{ date | format_date }}{% if protocol_day %} · {{ t("today.protocol_day", n=protocol_day) }}{% endif %}</span>
+        <div class="v-today-sync">
+            {% for s in sync %}
+            <span class="v-dot good"></span>
+            <span>{{ s.label }} · {{ s.date | format_date }}</span>
+            {% else %}
+            <span>{{ t("today.sync_none") }}</span>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="v-today-hero">
+        <h1 class="v-today-title">{{ narrative }}</h1>
+        <div class="v-today-figures">
+            {% for f in figures %}
+            <div class="v-today-figure">
+                <div class="v-today-figure-value {{ f.tone }}">{{ f.value }}{% if f.unit %}<span
+                        class="v-today-figure-unit">{{ f.unit }}</span>{% endif %}</div>
+                <div class="v-today-figure-label">{{ t("today.metric_" + f.key) }}</div>
+                {% if f.sub %}<div class="v-today-figure-sub">{{ f.sub }}</div>{% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="v-today-body">
+
+        <!-- ── Left column ────────────────────────────────────────────────── -->
+        <div class="space-y-6">
+
+            <div class="v-card p-6 space-y-4">
+                <div class="flex items-center gap-2">
+                    <span class="v-bar v-bar-sm"></span>
+                    <span class="v-text-card">{{ t("today.changes_title") }}</span>
+                </div>
+                {% for c in changes %}
+                {# A whole-row <a> on a CSS grid — never a clickable <tr>. #}
+                <a href="{{ c.href }}" class="v-today-change v-card-inset">
+                    <div>
+                        <div class="v-today-change-name">{{ t("today.metric_" + c.key) }}</div>
+                        {# The domain line names where the row goes — dropped when it
+                           would just repeat the metric ("Вес" under "Вес"). #}
+                        {% if t("nav." + c.domain_key) != t("today.metric_" + c.key) %}
+                        <div class="v-today-change-domain">{{ t("nav." + c.domain_key) }}</div>
+                        {% endif %}
+                    </div>
+                    <div class="v-today-change-text">{{ c.sentence }}</div>
+                    <div class="v-today-change-delta {{ c.tone }}">{{ c.delta }}</div>
+                </a>
+                {% else %}
+                <p class="v-text-body" style="color: var(--muted)">{{ t("today.changes_empty") }}</p>
+                {% endfor %}
+            </div>
+
+            <div class="v-card p-6 space-y-3">
+                <div class="flex items-center gap-2">
+                    <span class="v-bar v-bar-sm"></span>
+                    <span class="v-text-card">{{ t("today.feed_title") }}</span>
+                </div>
+                {% for row in feed %}
+                <div class="v-today-feed-row">
+                    <span class="v-today-feed-time">{{ row.time or '—' }}</span>
+                    <span class="v-dot {{ row.dot }}"></span>
+                    <div>
+                        <div class="v-today-feed-text">{{ row.text }}</div>
+                        {% if row.detail %}<div class="v-today-feed-detail">{{ row.detail }}</div>{% endif %}
+                    </div>
+                </div>
+                {% else %}
+                <p class="v-text-body" style="color: var(--muted)">{{ t("today.feed_empty") }}</p>
+                {% endfor %}
+            </div>
+
+        </div>
+
+        <!-- ── Right column ───────────────────────────────────────────────── -->
+        <div class="space-y-6">
+
+            <div class="v-card p-6 space-y-4">
+                <div class="flex items-center gap-2">
+                    <span class="v-bar v-bar-accent"></span>
+                    <span class="v-text-card">{{ t("today.log_title") }}</span>
+                </div>
+                <form @submit.prevent="submitForm($event)" action="/weight/log" id="form-log" hx-boost="false"
+                    class="space-y-4">
+                    <input type="hidden" name="override" x-model="overrideFlag">
+                    <input type="hidden" name="date" value="{{ today }}">
+                    <div class="v-weight-hero">
+                        <label for="today-weight_kg" class="v-label">{{ t("weight.weight_kg") }}</label>
+                        <div class="v-weight-stepper">
+                            <button type="button" class="v-weight-step" aria-label="−0.1 kg"
+                                @click="$refs.weightInput.stepDown(10); $refs.weightInput.dispatchEvent(new Event('input', { bubbles: true }))">−</button>
+                            <input inputmode="decimal" id="today-weight_kg" type="number" name="weight_kg" step="0.01"
+                                required x-ref="weightInput"
+                                value="{% if latest_weight %}{{ latest_weight | round(1) }}{% endif %}"
+                                placeholder="0.0" class="v-input">
+                            <button type="button" class="v-weight-step" aria-label="+0.1 kg"
+                                @click="$refs.weightInput.stepUp(10); $refs.weightInput.dispatchEvent(new Event('input', { bubbles: true }))">+</button>
+                        </div>
+                    </div>
+                    <button type="submit" class="v-btn w-full">{{ t("today.log_cta") }}</button>
+                </form>
+                {# Chips hand the day's other entries to the page that owns the
+                   long tail of fields, with that page's form already open —
+                   through the existing window.__vitalsRestoreTab, not a second
+                   mechanism. A chip whose module is off is not rendered. #}
+                <div class="v-today-chips">
+                    {% if em.nutrition %}<a href="/nutrition" class="v-chip">{{ t("today.chip_meal") }}</a>{% endif %}
+                    {% if em.glp1 %}<a href="/glp1" class="v-chip"
+                        @click="window.__vitalsRestoreTab = 'injection'">{{ t("today.chip_dose") }}</a>{% endif %}
+                    <a href="/weight/measures" class="v-chip"
+                        @click="window.__vitalsRestoreTab = 'measure'">{{ t("today.chip_measure") }}</a>
+                    {% if em.timeline %}<a href="/timeline?new=1" class="v-chip">{{ t("today.chip_event") }}</a>{% endif %}
+                </div>
+            </div>
+
+            <div class="v-card p-6 space-y-3">
+                <div class="flex items-center gap-2">
+                    <span class="v-bar v-bar-sm"></span>
+                    <span class="v-text-card">{{ t("today.attention_title") }}</span>
+                </div>
+                {% for a in attention %}
+                <div class="v-alert {{ a.severity }}">
+                    {% if a.severity == 'note' %}<span
+                        style="color: var(--muted)">{{ t("today.observation_prefix") }}</span>{% endif %}{{ a.message }}
+                </div>
+                {% else %}
+                <p class="v-text-body" style="color: var(--muted)">{{ t("today.attention_empty") }}</p>
+                {% endfor %}
+            </div>
+
+            <div class="v-card p-6 space-y-3">
+                <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2">
+                        <span class="v-bar v-bar-sm"></span>
+                        <span class="v-text-card">{{ t("today.goal_title") }}</span>
+                    </div>
+                    {% if goal %}<span class="v-text-micro" style="color: var(--muted)">{{ goal.target }} {{
+                        t("common.kg") }}{% if goal.deadline %} · {{ goal.deadline | format_date }}{% endif %}</span>{%
+                    endif %}
+                </div>
+                {% if goal %}
+                <div class="v-meter">
+                    <div class="v-meter-fill is-good" style="width: {{ goal.pct }}%"></div>
+                </div>
+                <div class="flex items-center justify-between gap-2">
+                    <span class="v-text-micro" style="color: var(--muted)">{{ t("today.goal_progress", done=goal.done,
+                        total=goal.total, unit=t("common.kg")) }}</span>
+                    <span class="v-text-micro" style="color: var(--fg-2)">{{ goal.pct }}%</span>
+                </div>
+                {% else %}
+                <p class="v-text-body" style="color: var(--muted)">{{ t("today.goal_empty") }}</p>
+                {% endif %}
+            </div>
+
+        </div>
+    </div>
+
+    <!-- MODAL: Override Confirm — /weight/log answers 409 on a rule violation -->
+    {% include "partials/conflict_modal.html" %}
+
+</div>
+{% endblock %}

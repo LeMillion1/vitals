@@ -277,7 +277,7 @@ async def health(
 
 @app.get("/")
 async def root():
-    return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url="/today", status_code=status.HTTP_303_SEE_OTHER)
 
 
 # ── Include Routers ───────────────────────────────────────────────────────────
@@ -287,6 +287,7 @@ app.include_router(auth_router)
 # Routers under web/routers/ will be included dynamically to avoid import cycles.
 # These routers will be imported and registered below.
 from web.routers.alerts import router as alerts_router  # noqa: E402
+from web.routers.today import router as today_router  # noqa: E402
 from web.routers.weight import router as weight_router  # noqa: E402
 from web.routers.glp1 import router as glp1_router  # noqa: E402
 from web.routers.supplements import router as supplements_router  # noqa: E402
@@ -306,7 +307,9 @@ from web.routers.signals import router as signals_router  # noqa: E402
 from web.routers.external_api import router as external_api_router  # noqa: E402
 from web.routers.telegram import router as telegram_router  # noqa: E402
 
-# Core modules — always reachable.
+# Core modules — always reachable. /today is the landing page and composes every
+# enabled domain, so it can never be gated behind one of them.
+app.include_router(today_router)
 app.include_router(alerts_router)
 app.include_router(weight_router)
 app.include_router(garmin_router)

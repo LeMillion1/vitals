@@ -17,7 +17,9 @@
 {# ── Section icons — Tabler outline set (stroke width set to 1.5 in CSS on
    .mh-rail-btn svg, so it reads lighter than Tabler's native 2). ───────────── #}
 {% macro mh_icon(key) %}
-{%- if key == 'weight' -%}
+{%- if key == 'today' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" /><path d="M3 12h1" /><path d="M12 3v1" /><path d="M20 12h1" /><path d="M12 20v1" /><path d="M5.6 5.6l.7 .7" /><path d="M18.4 5.6l-.7 .7" /><path d="M17.7 17.7l.7 .7" /><path d="M6.3 17.7l-.7 .7" /></svg>
+{%- elif key == 'weight' -%}
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M7 20l10 0" /><path d="M6 6l6 -1l6 1" /><path d="M12 3l0 17" /><path d="M9 12l-3 -6l-3 6a3 3 0 0 0 6 0" /><path d="M21 12l-3 -6l-3 6a3 3 0 0 0 6 0" /></svg>
 {%- elif key == 'garmin' -%}
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4.5l1.5 -6l4 12l2 -9l1.5 3h4.5" /></svg>
@@ -61,10 +63,20 @@
    client-side. Same startswith() test the active button uses. #}
 {% set cur = namespace(rubric='') %}
 {% for s in nav_modules(em) %}{% if current_path.startswith(s.route) %}{% set cur.rubric = s.rubric %}{% endif %}{% endfor %}
+{# Pages that belong to no rubric — /today, /settings — would otherwise leave the
+   rail with every group shut, which is exactly the wrong state for the screen the
+   app opens on: the way in would take two clicks. The first rubric stands in. #}
+{% if not cur.rubric %}{% set cur.rubric = module_rubrics[0] %}{% endif %}
 <aside id="primary-nav-masthead" {% if oob %}hx-swap-oob="true"{% endif %} class="mh-rail">
     <a href="/" class="mh-rail-wordmark" title="Vitals">Vitals</a>
     <div class="mh-rail-div"></div>
     <nav class="mh-rail-nav">
+        {# "Today" is pinned above the rubrics rather than joining MODULE_REGISTRY:
+           it is not a domain, it has no toggle, and a registry entry would give it
+           a rubric number in the masthead eyebrow it must not have. #}
+        <div class="mh-rail-pinned">
+            <a href="/today" title="{{ t('nav.today') }}" class="mh-rail-btn {% if current_path == '/today' %}is-active{% endif %}"{% if current_path == '/today' %} aria-current="page"{% endif %}>{{ mh_icon('today') }}<span class="mh-rail-label">{{ t('nav.today') }}</span></a>
+        </div>
         {# One block per rubric, collapsed to its heading unless the visitor is
            inside it: fifteen 42px buttons plus three headings overflowed the rail
            on a 1440x900 laptop. A rubric whose every member is gated off is
@@ -106,17 +118,15 @@
 {% endmacro %}
 
 {# ── Editorial header ────────────────────────────────────────────────────────
-   eyebrow → rubric tabs → H1 → key-figures row. `metrics` is a list of dicts:
+   eyebrow → H1 → key-figures row. `metrics` is a list of dicts:
    {value, unit?, label, tone? ('good'|'bad'|''), primary? (bool), href? (str)}.
    A metric with `href` renders as a link (e.g. straight to a detail page).
    Wrap the call in {% call %} to slot section actions (sync/upload buttons)
    top-right. #}
 {% macro masthead_header(section, title, metrics) %}
-{% set em = request.state.enabled_modules or {} %}
 {% set spec = module_registry.get(section) %}
-{% set rb = namespace(cat=none, members=[], num=0) %}
+{% set rb = namespace(cat=none, num=0) %}
 {% if spec and spec.rubric %}
-{% set rb.members = nav_modules(em, rubric=spec.rubric) %}
 {% set rb.cat = 'masthead.rubric.' + (spec.eyebrow or spec.rubric) %}
 {% set rb.num = module_rubrics.index(spec.rubric) + 1 %}
 {% endif %}
@@ -126,11 +136,9 @@
         <span class="mh-eyebrow">{{ t("masthead.section_word") }} {{ "%02d" | format(rb.num) }} · {{ t(rb.cat) if rb.cat else '' }}</span>
         {% if caller %}<div class="mh-actions">{{ caller() }}</div>{% endif %}
     </div>
-    <nav class="mh-tabs">
-        {% for s in rb.members %}
-        <a href="{{ s.route }}" class="mh-tab {% if s.key == section %}is-active{% endif %}">{{ t('nav.' + s.key) }}</a>
-        {% endfor %}
-    </nav>
+    {# No rubric tab row: the rail states the section list from 768px up, and
+       below that the drawer does. A third copy of it 60px under the eyebrow was
+       the same navigation said for the third time. #}
     <div class="mh-hero-row">
         <h1 class="mh-title">{{ title }}</h1>
         {% if metrics %}

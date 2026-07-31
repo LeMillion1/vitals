@@ -169,3 +169,16 @@ async def test_concurrent_toggles_do_not_lose_updates(db_session):
         state = await modules_service.get_enabled_modules(verify, redis=None)
     assert state["glp1"] is True, "session A's toggle was lost"
     assert state["hevy"] is True, "session B's toggle was lost"
+
+
+def test_bottom_bar_holds_four_modules_plus_today_and_more():
+    """The phone bar has five slots. "Сегодня" took one, so supplements — the
+    least frequent of the old five — moved into the drawer instead of the bar
+    growing a sixth cell nobody can hit."""
+    from vitals.services.modules_service import MODULE_REGISTRY, nav_modules
+
+    enabled = {k: True for k in MODULE_REGISTRY}
+    bottom = [s.key for s in nav_modules(enabled, bottom=True)]
+
+    assert bottom == ["weight", "garmin", "hevy"]
+    assert "supplements" in [s.key for s in nav_modules(enabled, bottom=False)]

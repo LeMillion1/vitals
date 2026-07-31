@@ -11,7 +11,10 @@
 'muted', 'side_effect': 'bad', 'milestone': 'cool', 'photo': 'muted'} %}
 {% set DERIVED_KIND_LABEL = {'side_effect': 'timeline.kind.side_effect', 'milestone': 'timeline.kind.milestone',
 'photo': 'timeline.kind.photo'} %}
-<div class="v-page v-page-timeline px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="{ showForm: false }">
+{# ?new=1 opens the entry form on arrival — that is how the "+ Событие" chip on
+   /today hands the day's event over to the page that owns the full form. #}
+<div class="v-page v-page-timeline px-6 py-7 max-w-6xl mx-auto space-y-8"
+    x-data="{ showForm: {{ 'true' if request.query_params.get('new') else 'false' }} }">
 
     {% call masthead_header('timeline', t('nav.timeline'), [
     {'label': t('timeline.metric_total'), 'primary': true, 'value': events|length},

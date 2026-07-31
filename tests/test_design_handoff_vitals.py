@@ -74,18 +74,13 @@ def test_masthead_title_and_metrics_share_one_hero_row():
     assert ".grid.grid-cols-3" in MASTHEAD_CSS
 
 
-def test_rubric_tabs_are_gone_wherever_the_rail_is_on_screen():
-    """Navigation was stated three times. From 768px up the rail is visible and the
-    in-content tab row said the same thing 60px away — it survives only below 768,
-    the one viewport with no rail. The markup stays; only the desktop render goes."""
-    assert 'class="mh-tabs"' in MASTHEAD_TEMPLATE
-    desktop = MASTHEAD_CSS.split("@media (min-width: 768px)")
-    assert any(
-        block.lstrip().startswith("{")
-        and ".mh-tabs" in block.split("}\n}")[0]
-        and "display: none" in block.split("}\n}")[0]
-        for block in desktop[1:]
-    )
+def test_rubric_tabs_are_gone_everywhere():
+    """Navigation was stated three times: the rail, this in-content tab row 60px
+    under the eyebrow, and the phone's bottom bar plus drawer. The rail answers it
+    from 768px up and the drawer answers it below, so the row is gone — markup and
+    styles both, rather than left in the page hidden at every width."""
+    assert "mh-tab" not in MASTHEAD_TEMPLATE
+    assert "mh-tab" not in MASTHEAD_CSS
 
 
 def test_rail_rows_shrank_and_rubrics_collapse():

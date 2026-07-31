@@ -5,12 +5,12 @@
    inert in the classic interface (the <link> is unconditional, the class is
    not). Palette is NOT redefined — all colours come from the existing
    :root tokens in vitals.css. Only the frame changes: a sidebar icon-rail
-   instead of the top navbar, and an editorial masthead (eyebrow → tabs → big
-   title → key figures) instead of KPI cards.
+   instead of the top navbar, and an editorial masthead (eyebrow → big title →
+   key figures) instead of KPI cards.
    ============================================================================ */
 
 body.ui-masthead {
-    /* Display face for titles/tabs only; body text stays on Inter. */
+    /* Display face for titles only; body text stays on Inter. */
     --mh-display: 'Bricolage Grotesque', 'Outfit', 'Inter', ui-sans-serif, system-ui, sans-serif;
     /* ── Masthead type scale ──────────────────────────────────────────────
        The editorial layer's own sizes, on top of the six app tokens in
@@ -31,7 +31,6 @@ body.ui-masthead {
     --mh-text-wordmark-sm: 22px;   /* rail wordmark, collapsed ("V") */
     --mh-text-lead: 21px;          /* secondary key figure */
     --mh-text-brand: 19px;         /* mobile topbar wordmark */
-    --mh-text-tab: 15px;           /* rubric tab */
     --mh-text-eyebrow: 11px;       /* uppercase eyebrows / labels */
     --mh-text-nano: 10px;          /* smallest uppercase micro-label */
     --mh-rail-w: 68px;
@@ -162,6 +161,17 @@ body.ui-masthead .mh-rail-nav::-webkit-scrollbar {
     display: none;
 }
 
+/* "Today" is pinned above the rubrics: it is the app's entry point, not a domain,
+   so it gets a row of its own and a hairline instead of a rubric heading. */
+body.ui-masthead .mh-rail-pinned {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+}
+
 /* Rubric group: a small stack of buttons under a quiet heading. The gap between
    groups reads as a soft separator even in icon-only mode, where the heading
    itself is hidden. */
@@ -270,10 +280,6 @@ body.ui-masthead .mh-rail-btn:active,
 body.ui-masthead .mh-topbar-menu:active {
     color: var(--accent-2);
     background: var(--accent-soft);
-}
-
-body.ui-masthead .mh-tab:active {
-    color: var(--accent-2);
 }
 
 body.ui-masthead .mh-rail-btn.is-active {
@@ -481,34 +487,6 @@ body.ui-masthead .mh-actions {
     align-items: center;
     gap: 10px;
     flex: none;
-}
-
-body.ui-masthead .mh-tabs {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 24px;
-    margin-top: 14px;
-}
-
-body.ui-masthead .mh-tab {
-    font: 500 var(--text-body) var(--mh-display);
-    color: var(--muted);
-    text-decoration: none;
-    padding-bottom: 8px;
-    border-bottom: 2px solid transparent;
-    transition: color .15s ease, border-color .15s ease;
-    white-space: nowrap;
-}
-
-body.ui-masthead .mh-tab:hover {
-    color: var(--fg-2);
-}
-
-body.ui-masthead .mh-tab.is-active {
-    font-weight: 600;
-    color: var(--fg);
-    border-bottom-color: var(--accent);
 }
 
 body.ui-masthead .mh-title {
@@ -777,19 +755,6 @@ body.ui-masthead .mh-macro-card-unit {
 
 /* ── Mobile adaptations ──────────────────────────────────────────────────── */
 @media (max-width: 767px) {
-    /* Rubric tabs survive on a phone as a single scrolling row — they are the
-       only in-page way to reach a sibling section without opening the drawer. */
-    body.ui-masthead .mh-tabs {
-        gap: 18px;
-        flex-wrap: nowrap;
-        overflow-x: auto;
-        scrollbar-width: none;
-    }
-
-    body.ui-masthead .mh-tabs::-webkit-scrollbar {
-        display: none;
-    }
-
     body.ui-masthead .mh-title {
         font-size: var(--mh-text-hero-md);
         margin-top: 8px;
@@ -842,24 +807,11 @@ body.ui-masthead .mh-rail-nav { padding-inline: 12px; }
 body.ui-masthead .mh-rail-btn { height: 38px; }
 body.ui-masthead .mh-rail-foot { padding-inline: 12px; }
 
-body.ui-masthead .mh-tabs {
-    border-bottom: 1px solid var(--line);
-}
-
-/* From 768px up the rail is on screen and already answers "which sibling sections
-   exist" — the in-content tab row restated it 60px away. It survives only below
-   768px, the one viewport with no rail. */
-@media (min-width: 768px) {
-    body.ui-masthead .mh-tabs {
-        display: none;
-    }
-}
 /* The eyebrow row carries the section action (Sync / Add meal / …). It must be
    allowed to wrap: on a phone the button plus its status line is wider than the
    viewport, and a nowrap row pushed <main> 176px sideways. */
 body.ui-masthead .mh-eyebrow-row { flex-wrap: wrap; }
 body.ui-masthead .mh-actions { flex-wrap: wrap; max-width: 100%; }
-body.ui-masthead .mh-tab { font-size: var(--mh-text-tab); }
 body.ui-masthead .mh-hero-row {
     display: flex;
     align-items: flex-end;

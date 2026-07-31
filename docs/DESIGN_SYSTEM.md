@@ -182,7 +182,6 @@ sizes that already exist on the core scale (12/13/14px) reference the core token
 | `--mh-text-wordmark` / `-sm` | 26px / 22px | rail wordmark, expanded / collapsed "V" |
 | `--mh-text-lead` | 21px | `.mh-metric-value` (secondary figures) |
 | `--mh-text-brand` | 19px | mobile topbar wordmark |
-| `--mh-text-tab` | 15px | `.mh-tab` |
 | `--mh-text-eyebrow` | 11px | uppercase eyebrows and key-figure captions |
 | `--mh-text-nano` | 10px | smallest uppercase micro-label |
 
@@ -270,10 +269,18 @@ names the group — while the **active** row keeps its icon, `--accent-soft` fil
 and 3px amber `::before` bar. Below 901px the rail is icon-only: no labels, no
 counts, the chevron alone marks the row as a control and the icons stay.
 
+Above the rubrics sits one pinned row, `.mh-rail-pinned` → «Сегодня» (`/today`).
+It is deliberately **not** in `MODULE_REGISTRY`: it is the entry point, not a
+domain, it has no toggle, and a registry entry would give it a rubric number in
+the masthead eyebrow. On a page that belongs to no rubric (`/today`, `/settings`)
+the first rubric is expanded, so the rail never opens fully shut.
+
 **Mobile (<768px):** the rail is replaced by a 52px `.mh-topbar` — brand
-wordmark + a hamburger "menu" trigger. `.mh-tabs` (the in-content rubric row) is
-**mobile-only**: from 768px up the rail is on screen and already answers the same
-question, so the tab row is `display:none` there.
+wordmark + a hamburger "menu" trigger. The bottom bar carries «Сегодня» plus the
+`bottom_nav=True` modules and «Ещё»; the drawer is the full catalogue. There is
+**no in-content rubric tab row** any more: the rail answers "which sibling
+sections exist" from 768px up and the drawer answers it below, so a third copy of
+the same list was navigation stated three times.
 
 **Section header**, rendered by the `masthead_header(section, title, metrics)`
 macro at the top of every module page:
@@ -524,10 +531,35 @@ readability, independent of the card's own width.
 
 ### 5.4 One navigation registry, three consumers
 
-Masthead's rail, its in-content tabs, and its "section N" numbering all read
-from the single `MH_RUBRICS`/`MH_SECTIONS` map in `partials/masthead.html`
-(see [3.1](#31-masthead-canonical)). When adding a module, register it there
-once — resist the urge to add a section to just the rail or just the tabs.
+The rail, the phone's bottom bar and its drawer, and the "section N" numbering
+all read `MODULE_REGISTRY` / `nav_modules()` from
+`vitals/services/modules_service.py` (see [3.1](#31-masthead-canonical)). When
+adding a module, register it there once — resist the urge to add a section to
+just one surface. The single exception is «Сегодня», written out by hand in the
+rail and the bottom bar precisely because it is not a module.
+
+### 5.4a The landing screen — `/today`
+
+`web/templates/today/index.html` is the one page with no `masthead_header()`: it
+opens the app, so it carries its own hero — an `<h1>` that is a **sentence**
+about the day, then five key figures (`.v-today-figure`). Everything it renders
+is composed in `vitals/services/today_service.py` from services the domain pages
+already use; no analytics live there. Two rules the screen depends on:
+
+* **The narrative never blocks on the LLM.** Today's `daily_brief` row is used
+  when it exists, otherwise a deterministic sentence is assembled from the same
+  context — a page must never wait on a model.
+* **A block whose module is off is not assembled at all.** An instance running
+  "weight + Garmin only" gets a shorter screen, not five empty cards, and a
+  quick-log chip pointing at a disabled section is never rendered.
+
+The right column holds the page's one `.v-btn` and its one amber accent: the
+weight quick-log, which posts to the conflict-aware `/weight/log` and therefore
+includes `partials/conflict_modal.html`. In the day's feed the dot colour marks
+provenance — integration `--cool`, manual `--good`, the proactive layer
+`--accent`, a signal from the bot `--violet`. That accent is the only place on
+the page where a value carries the brand colour, and only because it marks the
+app's own message rather than a measurement.
 
 ### 5.5 Link-row instead of a clickable `<tr>`
 

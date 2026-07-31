@@ -1758,3 +1758,88 @@ async def test_a_save_returns_to_the_page_it_was_posted_from(auth_client):
         follow_redirects=False,
     )
     assert r.headers["location"] == "/weight"
+
+
+# ── /today: the landing screen ──────────────────────────────────────────────────
+
+
+async def test_root_lands_on_today(auth_client):
+    """The app opened on a weight-entry form. It now opens on the day."""
+    r = await auth_client.get("/", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/today"
+
+
+async def test_today_page_renders_its_own_hero_and_quick_log(auth_client):
+    """One sentence, five figures, a one-field weight form and the chips that hand
+    the rest of the day to the page that owns the long form. No masthead header
+    and no rubric tab row: this page is not a section of a rubric."""
+    html = {"Accept": "text/html"}
+    await auth_client.post(
+        "/weight/log", data={"date": today_local().isoformat(), "weight_kg": "86.1"}
+    )
+
+    r = await auth_client.get("/today", headers=html)
+    assert r.status_code == 200
+    assert 'class="v-today-title"' in r.text
+    assert r.text.count('class="v-today-figure"') == 5   # weight, sleep, HRV, BB, eaten
+    assert 'class="mh-head"' not in r.text
+    assert 'action="/weight/log"' in r.text
+    # The form posts to a conflict-aware route, so the override modal has to ship
+    # with it (tests/test_router_page_contracts.py guards the same pairing).
+    assert "showConfirm" in r.text
+    for href in ('href="/nutrition"', 'href="/glp1"', 'href="/weight/measures"', 'href="/timeline?new=1"'):
+        assert href in r.text, href
+
+
+async def test_today_survives_every_optional_module_being_off(auth_client, db_session):
+    """An instance running "weight + Garmin only" gets a shorter screen, not five
+    empty cards — and no chip pointing at a section that isn't there."""
+    from vitals.services.modules_service import OPTIONAL_KEYS
+
+    for key in sorted(OPTIONAL_KEYS):
+        r = await auth_client.post("/settings/modules", data={"module": key, "enabled": "false"})
+        assert r.status_code == 200
+
+    r = await auth_client.get("/today", headers={"Accept": "text/html"})
+    assert r.status_code == 200
+    assert 'class="v-today-title"' in r.text
+    assert 'href="/nutrition"' not in r.text
+    assert 'href="/timeline?new=1"' not in r.text
+    # Weight is core, so its measurement chip is always reachable.
+    assert 'href="/weight/measures"' in r.text
+
+
+async def test_today_is_pinned_in_the_rail_without_a_rubric_number(auth_client):
+    """It is the entry point, not a domain: pinned above the rubrics, never inside
+    one, and it must not appear in the module registry's numbering."""
+    from vitals.services.modules_service import MODULE_REGISTRY
+
+    assert "today" not in MODULE_REGISTRY
+    r = await auth_client.get("/today", headers={"Accept": "text/html"})
+    assert 'class="mh-rail-pinned"' in r.text
+    pinned = r.text.split('class="mh-rail-pinned"')[1].split("</div>")[0]
+    assert 'href="/today"' in pinned and "is-active" in pinned
+
+
+async def test_rail_keeps_a_way_in_on_a_rubricless_page(auth_client):
+    """/today belongs to no rubric, so nothing would be expanded — the screen the
+    app opens on would hide every section behind a second click. The first rubric
+    stands in."""
+    r = await auth_client.get("/today", headers={"Accept": "text/html"})
+    groups = _rail_groups(r.text)
+    assert list(groups.values()).count(True) == 1, groups
+    assert 'href="/weight"' in r.text
+
+
+async def test_weight_saved_from_today_comes_back_to_today(auth_client):
+    """The quick-log posts to /weight/log; landing back on /weight would bounce the
+    owner out of the screen he was working on."""
+    r = await auth_client.post(
+        "/weight/log",
+        data={"date": today_local().isoformat(), "weight_kg": "85.4"},
+        headers={"referer": "http://test/today"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/today"

@@ -16,11 +16,19 @@
 {% macro mobile_bottom_nav(oob=false) %}
 {% set current_path = request.url.path if request else '' %}
 {% set bottom = nav_modules(request.state.enabled_modules or {}, bottom=true) %}
-<!-- Bottom bar — columns follow the enabled modules so optional slots
-     (Workouts, Supplements) never leave empty cells in a fixed grid. -->
+<!-- Bottom bar — "Today" plus the bottom_nav modules and the drawer trigger.
+     Columns follow the enabled modules, so an optional slot (Workouts) never
+     leaves an empty cell in a fixed grid. -->
 <nav id="mobile-bottom-nav" {% if oob %}hx-swap-oob="true"{% endif %}
     class="md:hidden v-bottom-nav bg-[rgba(28,25,32,0.95)] backdrop-blur-md border-t border-[var(--line)] grid items-center px-1"
-    style="grid-template-columns: repeat({{ bottom|length + 1 }}, minmax(0, 1fr)); padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(3.5rem + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
+    style="grid-template-columns: repeat({{ bottom|length + 2 }}, minmax(0, 1fr)); padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(3.5rem + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
+    {# "Today" is the app's entry point, not a module — it has no registry entry
+       and no toggle, so it is the one slot written out here by hand. #}
+    <a href="/today"
+        class="v-bnav-link flex flex-col items-center justify-center gap-1 h-full py-1 text-center {% if current_path == '/today' %}text-[var(--accent)]{% else %}text-[var(--muted)] hover:text-[var(--fg-2)]{% endif %}"{% if current_path == '/today' %} aria-current="page"{% endif %}>
+        <span class="v-nav-ico">{{ mh_icon('today') }}</span>
+        <span class="text-[0.62rem] font-bold">{{ t('nav.today') }}</span>
+    </a>
     {% for s in bottom %}
     <a href="{{ s.route }}"
         class="v-bnav-link flex flex-col items-center justify-center gap-1 h-full py-1 text-center {% if current_path.startswith(s.route) %}text-[var(--accent)]{% else %}text-[var(--muted)] hover:text-[var(--fg-2)]{% endif %}"{% if current_path.startswith(s.route) %} aria-current="page"{% endif %}>

@@ -2624,3 +2624,208 @@ sup {
     .v-nutrition-intake .mh-macro-card { padding: 9px; }
     .v-nutrition-intake .mh-macro-card-top { align-items: flex-start; }
 }
+/* ── Screen: Today (the landing page) ──────────────────────────────────────
+   The one page with no masthead: it opens the app, so it carries its own hero
+   — a sentence about the day, then the five figures that sentence is about.
+   Sizes are one step down from the section masthead on purpose; a landing
+   screen that shouts is a screen the owner stops reading. */
+.v-today-eyebrow-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    min-height: 38px;
+}
+
+.v-today-sync {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: var(--text-micro);
+    color: var(--muted);
+}
+
+.v-today-hero {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.v-today-title {
+    font: 800 38px/1.15 var(--mh-display, 'Bricolage Grotesque', 'Inter', sans-serif);
+    letter-spacing: -.02em;
+    color: var(--fg);
+    max-width: 900px;
+    text-wrap: pretty;
+}
+
+.v-today-figures {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 28px;
+    border-top: 1px solid var(--line);
+    padding-top: 20px;
+}
+
+.v-today-figure {
+    min-width: 150px;
+}
+
+.v-today-figure-value {
+    font: 700 30px/1 var(--mh-display, 'Bricolage Grotesque', 'Inter', sans-serif);
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+}
+
+.v-today-figure-value.good { color: var(--good); }
+.v-today-figure-value.bad { color: var(--bad); }
+.v-today-figure-value.warn { color: var(--warn); }
+
+.v-today-figure-unit {
+    font: 500 12px/1 'Inter', sans-serif;
+    color: var(--muted);
+    margin-left: 4px;
+}
+
+.v-today-figure-label {
+    font: 600 11px/1.4 'Inter', sans-serif;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-top: 6px;
+}
+
+.v-today-figure-sub {
+    font-size: 12px;
+    color: var(--line-2);
+    margin-top: 3px;
+}
+
+.v-today-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 372px;
+    gap: 24px;
+    align-items: start;
+}
+
+/* A navigating row is one <a> on a grid — never a clickable <tr>. */
+.v-today-change {
+    display: grid;
+    grid-template-columns: 172px minmax(0, 1fr) 96px;
+    align-items: center;
+    gap: 20px;
+    padding: 14px 16px;
+    text-decoration: none;
+    color: inherit;
+    border: 1px solid transparent;
+    transition: background-color .15s ease, border-color .15s ease;
+}
+
+.v-today-change:hover {
+    border-color: var(--accent-line);
+}
+
+.v-today-change-name {
+    font: 600 14px/1.3 'Inter', sans-serif;
+    color: var(--fg);
+}
+
+.v-today-change-domain {
+    font-size: 12px;
+    color: var(--faint);
+    margin-top: 2px;
+}
+
+.v-today-change-text {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--fg-2);
+    text-wrap: pretty;
+}
+
+.v-today-change-delta {
+    text-align: right;
+    font: 700 16px/1 'Inter', sans-serif;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-2);
+}
+
+.v-today-change-delta.good { color: var(--good); }
+.v-today-change-delta.bad { color: var(--bad); }
+
+.v-today-feed-row {
+    display: grid;
+    grid-template-columns: 56px 12px minmax(0, 1fr);
+    align-items: start;
+    gap: 14px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.v-today-feed-row:last-child {
+    border-bottom: 0;
+}
+
+.v-today-feed-row .v-dot {
+    margin-top: 6px;
+}
+
+.v-today-feed-time {
+    font-size: 13px;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+}
+
+.v-today-feed-text {
+    font-size: 14px;
+    color: var(--fg-2);
+}
+
+.v-today-feed-detail {
+    font-size: 12px;
+    color: var(--line-2);
+    margin-top: 2px;
+}
+
+.v-today-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+/* Chips are tap targets on a phone, not just labels. */
+.v-today-chips .v-chip {
+    text-decoration: none;
+    padding: .55rem .7rem;
+    min-height: 44px;
+    align-items: center;
+    touch-action: manipulation;
+}
+
+.v-today-chips .v-chip:hover {
+    border-color: var(--accent-line);
+    color: var(--fg);
+}
+
+.v-today-chips .v-chip:active {
+    filter: brightness(1.08);
+}
+
+@media (max-width: 900px) {
+    .v-today-body { grid-template-columns: minmax(0, 1fr); }
+    .v-today-title { font-size: 30px; }
+    .v-today-figures { gap: 20px; }
+    .v-today-figure { min-width: 120px; }
+}
+
+@media (max-width: 560px) {
+    .v-today-title { font-size: 26px; }
+    .v-today-figure-value { font-size: 24px; }
+    .v-today-change {
+        grid-template-columns: minmax(0, 1fr) 72px;
+        gap: 10px;
+    }
+    .v-today-change-text { grid-column: 1 / -1; }
+}

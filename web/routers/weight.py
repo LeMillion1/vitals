@@ -30,8 +30,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/weight", tags=["weight"])
 
-# The section's own pages — the only redirect targets ``_back`` will honour.
-SECTION_PAGES = ("/weight", "/weight/measures")
+# The pages that post here — the only redirect targets ``_back`` will honour.
+# ``/today`` is on the list because its quick-log card posts to /weight/log too,
+# and a save made there must land back on Today rather than bounce the owner
+# into the weight section.
+SECTION_PAGES = ("/weight", "/weight/measures", "/today")
 
 # Render order of metric categories in the body-composition detail view.
 BODY_CAT_ORDER = ["composition", "water", "segmental", "score", "derived", "other"]
