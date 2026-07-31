@@ -1457,12 +1457,61 @@ a.v-seg-btn {
     }
 }
 
+/* ── Progress meter ────────────────────────────────────────────────────────
+   The app's ONE way of drawing "share of a target": calories and protein on
+   /nutrition, the cycle position on /hrt. There used to be three languages for
+   the same idea (an SVG donut, an inline-styled bar, a bare percentage), so the
+   same fact looked like three different kinds of thing.
+
+   A bar, not a ring, on the handoff's own recommendation: it reads more
+   precisely, survives a narrow column, and one class pair carries it everywhere.
+   Named .v-meter because .v-progress-bar is already the HTMX page loader.
+   `.mh-macro-bar` stays — a composition (protein/fat/carbs adding to 100%) is
+   not progress towards anything. */
+.v-meter {
+    height: 10px;
+    border-radius: var(--radius-pill);
+    background: var(--bg-inset);
+    border: 1px solid rgba(255, 255, 255, 0.02);
+    overflow: hidden;
+}
+
+.v-meter-fill {
+    height: 100%;
+    max-width: 100%;
+    border-radius: var(--radius-pill);
+    background: var(--surface-3);
+    transition: width .7s cubic-bezier(.4, 0, .2, 1);
+}
+
+.v-meter-fill.is-good {
+    background: linear-gradient(90deg, #4FB97A, #8CE6B0);
+}
+
+.v-meter-fill.is-warn {
+    background: linear-gradient(90deg, #EAA12B, #FCD370);
+}
+
+.v-meter-fill.is-bad {
+    background: linear-gradient(90deg, #D9603F, #FF9578);
+}
+
 /* ── Alerts (system) ───────────────────────────────────────────────────── */
 .v-alert {
     border-radius: var(--radius);
     border: 1px solid var(--line);
     padding: .7rem 1rem;
     font-size: var(--text-body);
+}
+
+/* An interpretation, not a failure — the app read the numbers and has something
+   to say. Deliberately the quietest rung: no semantic colour at all, because a
+   reading of the data is not an error and painting it amber next to "Garmin
+   needs MFA" is what taught the owner to skip both. */
+.v-alert.note {
+    background: var(--bg-inset);
+    border-color: var(--line);
+    color: var(--fg-2);
 }
 
 .v-alert.info {

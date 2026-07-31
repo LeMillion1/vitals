@@ -47,37 +47,24 @@
         </div>
 
         <div class="mh-intake-grid">
-            <!-- Calorie ring column -->
-            <div class="mh-intake-ring-panel">
-                <div class="mh-ring" style="--pct: {{ calories_pct }}; --ring-color: var({% if summary.on_track.calories %}--good{% elif summary.totals.calories > goals.calories_max %}--bad{% else %}--warn{% endif %});">
-                    <svg class="mh-ring-svg" viewBox="0 0 120 120" aria-hidden="true" shape-rendering="geometricPrecision">
-                        <defs>
-                            <linearGradient id="calGradGood" x1="0%" y1="100%" x2="100%" y2="0%">
-                                <stop offset="0%" style="stop-color: var(--good)" />
-                                <stop offset="100%" style="stop-color: color-mix(in srgb, var(--good) 55%, white)" />
-                            </linearGradient>
-                            <linearGradient id="calGradWarn" x1="0%" y1="100%" x2="100%" y2="0%">
-                                <stop offset="0%" style="stop-color: var(--warn)" />
-                                <stop offset="100%" style="stop-color: color-mix(in srgb, var(--warn) 55%, white)" />
-                            </linearGradient>
-                            <linearGradient id="calGradBad" x1="0%" y1="100%" x2="100%" y2="0%">
-                                <stop offset="0%" style="stop-color: var(--bad)" />
-                                <stop offset="100%" style="stop-color: color-mix(in srgb, var(--bad) 55%, white)" />
-                            </linearGradient>
-                        </defs>
-                        <circle class="mh-ring-track" cx="60" cy="60" r="52"></circle>
-                        <circle class="mh-ring-fill" cx="60" cy="60" r="52" pathLength="100"
-                                stroke="url(#{% if summary.on_track.calories %}calGradGood{% elif summary.totals.calories > goals.calories_max %}calGradBad{% else %}calGradWarn{% endif %})"></circle>
-                    </svg>
-                    <div class="mh-ring-inner">
-                        <span class="mh-ring-val">{{ summary.totals.calories | format_number }}</span>
-                        <span class="mh-ring-lbl">{{ t("common.kcal") }}</span>
-                    </div>
-                </div>
-            </div>
-
             <!-- Macros column -->
             <div class="mh-intake-macros-panel">
+                <!-- Calories — the same .v-meter as every other "share of a target"
+                     in the app. Was an SVG donut, which read as a different kind of
+                     fact from the protein bar right beside it. -->
+                <div class="mh-macro-row">
+                    <div class="mh-macro-row-header">
+                        <span class="mh-macro-row-title">{{ t("nutrition.calories") }}</span>
+                        <span class="mh-macro-row-value">
+                            <strong class="mh-value-highlight">{{ summary.totals.calories | format_number }}</strong> / {{ goals.calories_min | format_number }}–{{ goals.calories_max | format_number }} {{ t("common.kcal") }}
+                        </span>
+                    </div>
+                    <div class="v-meter">
+                        <div class="v-meter-fill {% if summary.on_track.calories %}is-good{% elif summary.totals.calories > goals.calories_max %}is-bad{% else %}is-warn{% endif %}"
+                             style="width: {{ calories_pct }}%"></div>
+                    </div>
+                </div>
+
                 <!-- Protein progress bar -->
                 <div class="mh-macro-row">
                     <div class="mh-macro-row-header">
@@ -86,8 +73,8 @@
                             <strong class="mh-value-highlight">{{ summary.totals.protein_g | format_number }}</strong> / {{ goals.protein_target_g | format_number }} {{ t("common.g") }}
                         </span>
                     </div>
-                    <div class="mh-protein-bar">
-                        <div class="mh-protein-fill {% if summary.on_track.protein %}is-good{% else %}is-warn{% endif %}"
+                    <div class="v-meter">
+                        <div class="v-meter-fill {% if summary.on_track.protein %}is-good{% else %}is-warn{% endif %}"
                              style="width: {{ protein_pct }}%"></div>
                     </div>
                 </div>

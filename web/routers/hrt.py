@@ -55,6 +55,26 @@ def _parse_date(value: str) -> date_type:
         raise ValueError(f"invalid date: {value!r}") from None
 
 
+def _cycle_progress(cycle, today: date_type) -> Optional[dict]:
+    """``{week, weeks, pct}`` for a closed-ended cycle, else ``None``.
+
+    Presentation arithmetic, not domain logic: it answers "how far along is the
+    bar" for one card. An open-ended cycle has no end date, so it has no share to
+    draw and the card falls back to its plain dates.
+    """
+    if cycle is None or not cycle.end_date:
+        return None
+    total = (cycle.end_date - cycle.start_date).days + 1
+    if total <= 0:
+        return None
+    elapsed = min(max((today - cycle.start_date).days + 1, 0), total)
+    return {
+        "week": (elapsed - 1) // 7 + 1 if elapsed else 0,
+        "weeks": (total - 1) // 7 + 1,
+        "pct": round(elapsed * 100 / total),
+    }
+
+
 @router.get("", response_class=HTMLResponse)
 async def hrt_dashboard(
     request: Request,
@@ -123,6 +143,10 @@ async def hrt_dashboard(
                 hrt_reminders.PANEL_WINDOW_BY_KIND.get(active_cycle.kind, 90)
                 if active_cycle else None
             ),
+            # How far through a closed-ended cycle today sits — drawn as the same
+            # .v-meter the rest of the app uses for "share of a target". Only
+            # meaningful with an end date; an open-ended cycle has no denominator.
+            "cycle_progress": _cycle_progress(active_cycle, today),
             "site_counts": hrt_service.site_frequency(doses),
             "sites": [s.value for s in HrtInjectionSite],
             "units": [u.value for u in DoseUnit],

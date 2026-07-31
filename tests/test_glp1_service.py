@@ -167,7 +167,10 @@ async def test_refresh_plateau_raises_and_resolves(db_session):
     alert = await glp1_service.refresh_plateau_alert(db_session, on_date=today)
     await db_session.commit()
     assert alert is not None
-    assert alert.severity == Severity.WARN.value
+    # A plateau is an interpretation of the trend, not a failure — the quiet
+    # ``note`` tone, and it must never be treated as blocking.
+    assert alert.severity == Severity.NOTE.value
+    assert alerts_service.is_blocking(alert.severity) is False
 
     active = await alerts_service.list_active(db_session, domain="glp1")
     assert any(a.alert_key == glp1_service.PLATEAU_ALERT_KEY for a in active)

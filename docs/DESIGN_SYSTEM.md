@@ -474,6 +474,12 @@ blurred scrim + spinner for a blocking operation.
 
 Straight from the conflict-engine rule in `CLAUDE.md`, with its UI half:
 
+0. `note` renders inline as `.v-alert.note` — `--bg-inset` on `--line`, text in
+   `--fg-2`, no semantic colour at all. It is an **interpretation**, never a
+   failure: the app read the numbers and has something to say (recovery is low,
+   the dose has plateaued). It never blocks and never demands dismissal. Split
+   out of `warn` because painting a reading of the data in the same amber as
+   "Garmin needs MFA" taught the owner to skip both.
 1. `info` / `warn` render inline as `.v-alert` — never interrupt a save.
 2. `block` + no override → the service raises `ConflictBlocked` → the router
    responds `409` with the violation payload.
@@ -486,6 +492,19 @@ Straight from the conflict-engine rule in `CLAUDE.md`, with its UI half:
 
 Reuse this exact shape for any new blocking validation — don't invent a second
 confirm-dialog pattern.
+
+### 5.1a One progress language — `.v-meter`
+
+"Share of a target" is drawn exactly one way: a 10px `--radius-pill` track
+(`.v-meter`, `--bg-inset`) with a `.v-meter-fill` sized by an inline `width: N%`
+and toned `.is-good` / `.is-warn` / `.is-bad`. Calories and protein on
+`/nutrition`, the cycle position on `/hrt`. It replaced an SVG donut, a
+bespoke bar and a bare percentage that all meant the same thing.
+
+A bar rather than a ring: it reads more precisely and survives a narrow column.
+The name avoids `.v-progress-bar`, which is the HTMX page loader. `.mh-macro-bar`
+is **not** this component — a composition summing to 100% is not progress
+towards anything, so it keeps its own segmented treatment.
 
 ### 5.2 Upload-first ingestion
 

@@ -74,7 +74,7 @@
 
     <!-- Recovery advice + sync status -->
     {% if advice %}
-    <div class="v-alert warn">{{ advice }}</div>
+    <div class="v-alert note">{{ t("garmin.observation_prefix") }} {{ advice }}</div>
     {% endif %}
     {% if sync == 'ok' %}
     <div class="v-alert info">{{ t("garmin.sync_ok", count=synced) }}</div>

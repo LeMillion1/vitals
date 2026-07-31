@@ -67,3 +67,41 @@ async def test_nutrition_dashboard_masthead_day_nav_and_empty_state(auth_client,
     r_empty = await auth_client.get(f"/nutrition?date={empty_day.isoformat()}", headers={"Accept": "text/html"})
     assert r_empty.status_code == 200
     assert "В этот день приёмов нет." in r_empty.text
+
+
+async def test_intake_uses_the_shared_meter_not_a_bespoke_ring(auth_client, db_session):
+    """One progress language. Calories used to be an SVG donut and protein an
+    inline bar right beside it — the same fact drawn as two different kinds of
+    thing. Both are now .v-meter, and the ring is gone from the codebase."""
+    await nutrition_service.log_meal(
+        db_session, on_date=today_local(), name="Овсянка",
+        calories=400, protein_g=20, fat_g=10, carbs_g=50,
+    )
+    await db_session.commit()
+
+    r = await auth_client.get("/nutrition", headers={"Accept": "text/html"})
+    assert r.status_code == 200
+    assert r.text.count('class="v-meter"') == 2      # calories + protein
+    assert "v-meter-fill" in r.text
+    assert "mh-ring" not in r.text
+    assert "mh-protein-bar" not in r.text
+    # A composition bar is not progress — it survives the unification.
+    assert "mh-macro-bar" in r.text
+
+
+def test_meter_is_the_only_progress_component_and_the_ring_is_deleted():
+    from pathlib import Path
+
+    static = Path(__file__).resolve().parents[1] / "web/static"
+    tokens = (static / "vitals.css").read_text(encoding="utf-8")
+    masthead = (static / "vitals-masthead.css").read_text(encoding="utf-8")
+
+    assert ".v-meter {" in tokens and ".v-meter-fill {" in tokens
+    for modifier in ("is-good", "is-warn", "is-bad"):
+        assert f".v-meter-fill.{modifier}" in tokens
+    assert "mh-ring" not in masthead
+    assert "mh-protein" not in masthead
+    # …and it is shared, not a nutrition-local class: at least two domain pages.
+    templates = Path(__file__).resolve().parents[1] / "web/templates"
+    users = {p.parent.name for p in templates.rglob("*.html") if "v-meter" in p.read_text(encoding="utf-8")}
+    assert len(users) >= 2, users

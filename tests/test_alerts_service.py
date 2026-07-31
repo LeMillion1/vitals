@@ -201,6 +201,19 @@ def test_is_blocking_only_for_block():
     assert alerts_service.is_blocking(Severity.BLOCK.value) is True
     assert alerts_service.is_blocking(Severity.WARN.value) is False
     assert alerts_service.is_blocking(Severity.INFO.value) is False
+    # ``note`` is an interpretation of the data — it must never stop a save.
+    assert alerts_service.is_blocking(Severity.NOTE.value) is False
+
+
+async def test_note_tone_dedupes_like_every_other_severity(db_session):
+    """The fourth rung is a plain severity string, not a special case: raising the
+    same ``note`` twice still refreshes one row rather than stacking two."""
+    first = await _raise(db_session, severity=Severity.NOTE.value, message="плато")
+    second = await _raise(db_session, severity=Severity.NOTE.value, message="плато, 18 дней")
+    assert first.id == second.id
+    assert second.severity == Severity.NOTE.value
+    assert len(await _all_rows(db_session)) == 1
+    assert [a.id for a in await alerts_service.list_active(db_session)] == [first.id]
 
 
 # ── Postgres-only invariants (SQLite fakes these) ─────────────────────────────

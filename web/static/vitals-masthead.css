@@ -27,8 +27,6 @@ body.ui-masthead {
     --mh-text-hero-sm: 30px;       /* H1 — narrow phone */
     --mh-text-metric: 36px;        /* primary key figure */
     --mh-text-metric-md: 34px;     /* primary key figure — desktop shell */
-    --mh-text-ring: 32px;          /* value inside a progress ring */
-    --mh-text-ring-md: 26px;
     --mh-text-wordmark: 26px;      /* rail wordmark, expanded */
     --mh-text-wordmark-sm: 22px;   /* rail wordmark, collapsed ("V") */
     --mh-text-lead: 21px;          /* secondary key figure */
@@ -576,9 +574,6 @@ body.ui-masthead .mh-metric-label {
     margin-top: 4px;
 }
 
-/* Day-intake ring (nutrition, I2) — SVG donut with a rounded cap over a soft
-   recessed track. --pct/--ring-color are set inline per-render; the fill circle
-   carries pathLength="100" so stroke-dasharray reads straight off the percent. */
 body.ui-masthead .mh-date-nav {
     display: flex;
     align-items: center;
@@ -619,101 +614,6 @@ body.ui-masthead .mh-date-display:hover {
     color: var(--accent-2);
 }
 
-body.ui-masthead .mh-ring {
-    position: relative;
-    width: 160px;
-    height: 160px;
-    flex: none;
-    border-radius: 50%;
-    background: radial-gradient(circle, rgba(255, 255, 255, 0.015) 0%, transparent 70%);
-    -webkit-backface-visibility: hidden;
-    backface-visibility: hidden;
-}
-
-body.ui-masthead .mh-ring-svg {
-    width: 100%;
-    height: 100%;
-    transform: rotate(-90deg); /* start the arc at 12 o'clock */
-    -webkit-backface-visibility: hidden;
-    backface-visibility: hidden;
-    transform-style: preserve-3d;
-    will-change: transform;
-    shape-rendering: geometricPrecision;
-}
-
-body.ui-masthead .mh-ring-track {
-    fill: none;
-    stroke: rgba(255, 255, 255, 0.03);
-    stroke-width: 6;
-    shape-rendering: geometricPrecision;
-}
-
-body.ui-masthead .mh-ring-fill {
-    fill: none;
-    stroke-width: 9;
-    stroke-linecap: round;
-    stroke-dasharray: var(--pct, 0) 100;
-    transition: stroke-dasharray .7s cubic-bezier(.4, 0, .2, 1);
-    shape-rendering: geometricPrecision;
-}
-
-body.ui-masthead .mh-ring-inner {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    gap: 4px;
-}
-
-body.ui-masthead .mh-ring-val {
-    font-size: var(--mh-text-ring);
-    font-weight: 800;
-    color: var(--fg);
-    font-family: 'Outfit', 'Inter', system-ui, sans-serif;
-    line-height: 1;
-    letter-spacing: -0.02em;
-}
-
-body.ui-masthead .mh-ring-lbl {
-    font-size: var(--mh-text-eyebrow);
-    font-weight: 700;
-    text-transform: uppercase;
-    color: var(--muted);
-    letter-spacing: 0.1em;
-    margin-top: 2px;
-}
-
-body.ui-masthead .mh-ring-goal {
-    font-size: var(--mh-text-eyebrow);
-    color: var(--faint);
-    margin-top: 2px;
-}
-
-body.ui-masthead .mh-protein-bar {
-    height: 10px;
-    border-radius: var(--radius-pill);
-    background: var(--bg-inset);
-    border: 1px solid rgba(255, 255, 255, 0.02);
-    overflow: hidden;
-}
-
-body.ui-masthead .mh-protein-fill {
-    height: 100%;
-    border-radius: var(--radius-pill);
-    transition: width .7s cubic-bezier(.4, 0, .2, 1);
-}
-
-body.ui-masthead .mh-protein-fill.is-good {
-    background: linear-gradient(90deg, #4FB97A, #8CE6B0);
-}
-
-body.ui-masthead .mh-protein-fill.is-warn {
-    background: linear-gradient(90deg, #EAA12B, #FCD370);
-}
-
 body.ui-masthead .mh-macro-bar {
     display: flex;
     gap: 3px;
@@ -744,19 +644,6 @@ body.ui-masthead .mh-intake-grid {
     display: grid;
     grid-template-columns: 1fr;
     gap: 24px;
-    align-items: center;
-}
-
-@media (min-width: 768px) {
-    body.ui-masthead .mh-intake-grid {
-        grid-template-columns: 180px 1fr;
-        gap: 32px;
-    }
-}
-
-body.ui-masthead .mh-intake-ring-panel {
-    display: flex;
-    justify-content: center;
     align-items: center;
 }
 
@@ -926,19 +813,6 @@ body.ui-masthead .mh-macro-card-unit {
         display: none;
     }
 
-    body.ui-masthead .mh-ring {
-        width: 128px;
-        height: 128px;
-    }
-
-    body.ui-masthead .mh-ring-val {
-        font-size: var(--mh-text-ring-md);
-    }
-
-    body.ui-masthead .mh-ring-lbl,
-    body.ui-masthead .mh-ring-goal {
-        font-size: var(--mh-text-nano);
-    }
 }
 
 /* Handoff 2026-07: editorial amber shell.

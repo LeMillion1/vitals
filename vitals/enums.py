@@ -13,13 +13,22 @@ from enum import StrEnum
 class Severity(StrEnum):
     """system_alerts ladder (see services/alerts_service.py).
 
+    - ``NOTE``  — an *interpretation*, never a failure: the app read the data and
+      has something to say about it (recovery is low, the dose has plateaued).
+      Nothing is broken, nothing needs dismissing, and it never blocks a save.
+      Split out of ``WARN`` because painting a reading of the numbers in the same
+      amber as "Garmin needs MFA" taught the owner to ignore both.
     - ``INFO``  — passive UI badge (noisy-weight period active, goal deadline near).
-    - ``WARN``  — non-intrusive UI status only, never popups/modals (GLP-1 plateau,
-      recovery low, Garmin MFA needed).
+    - ``WARN``  — non-intrusive UI status only, never popups/modals (Garmin MFA
+      needed, an integration stopped syncing).
     - ``BLOCK`` — raised as a pre-save validation error; overridable via the
       conflict-engine flow.
+
+    The column is a plain ``VARCHAR(16)`` with no CHECK constraint, so adding a
+    member needs no migration.
     """
 
+    NOTE = "note"
     INFO = "info"
     WARN = "warn"
     BLOCK = "block"

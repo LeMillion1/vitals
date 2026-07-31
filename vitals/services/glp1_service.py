@@ -337,7 +337,7 @@ async def evaluate_plateau(
 async def refresh_plateau_alert(
     session: AsyncSession, *, on_date: Optional[date_type] = None
 ) -> Optional[object]:
-    """Raise a ``warn`` alert while the current dose is plateaued; resolve it once
+    """Raise a ``note`` alert while the current dose is plateaued; resolve it once
     progress resumes (or the dose changes). Idempotent — safe on every dashboard
     load / scheduler tick. Respects same-day dismissal like the noise alert."""
     context = await evaluate_plateau(session, on_date=on_date)
@@ -354,7 +354,9 @@ async def refresh_plateau_alert(
         return await alerts_service.raise_alert(
             session,
             domain=Domain.GLP1.value,
-            severity=Severity.WARN.value,
+            # A plateau is a reading of the trend, not something that went
+            # wrong — the quiet ``note`` tone, not amber.
+            severity=Severity.NOTE.value,
             message=message,
             alert_key=PLATEAU_ALERT_KEY,
         )

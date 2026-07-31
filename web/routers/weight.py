@@ -7,6 +7,7 @@ import logging
 import os
 import uuid
 from typing import Optional
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -29,17 +30,42 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/weight", tags=["weight"])
 
+# The section's own pages — the only redirect targets ``_back`` will honour.
+SECTION_PAGES = ("/weight", "/weight/measures")
+
 # Render order of metric categories in the body-composition detail view.
 BODY_CAT_ORDER = ["composition", "water", "segmental", "score", "derived", "other"]
 
 
-@router.get("", response_class=HTMLResponse)
-async def weight_dashboard(
-    request: Request,
-    db: AsyncSession = Depends(get_session),
-    username: str = Depends(require_auth),
-):
-    """Renders the weight OS dashboard, refreshing alerts and passing active metrics."""
+def _back(request: Request, default: str = "/weight"):
+    """POST → 303 back to the page the form was posted from.
+
+    Every handler below used to hardcode ``/weight``. The section now has two
+    pages — the trend (``/weight``) and the measurements desk
+    (``/weight/measures``) — and which one a form belongs to is only knowable
+    from where it was rendered, so the Referer decides. It has to be *our own*
+    Referer naming one of this section's own pages; anything else (cross-site,
+    stale, absent) falls back to ``default``, so the header can never steer the
+    save anywhere the app did not already choose to go.
+    """
+    referer = urlsplit(request.headers.get("referer", ""))
+    same_site = referer.netloc == urlsplit(str(request.base_url)).netloc
+    url = referer.path if same_site and referer.path in SECTION_PAGES else default
+    response = RedirectResponse(url=url, status_code=status.HTTP_303_SEE_OTHER)
+    if "hx-request" in request.headers:
+        response.headers["HX-Redirect"] = url
+    return response
+
+
+async def _section_context(
+    request: Request, db: AsyncSession, username: str
+) -> dict:
+    """Everything both weight pages render.
+
+    One loader for two templates on purpose: the masthead key figures (latest,
+    7-day mean, body fat, weekly delta) are identical on both, and computing
+    them twice is how the two headers would drift apart.
+    """
     # Is the optional body-composition module on? Gates the tab, the BIA chart
     # overlay, and the scan section — disabled behaves as if it isn't there.
     em = getattr(request.state, "enabled_modules", None) or {}
@@ -138,29 +164,53 @@ async def weight_dashboard(
     from vitals.utils.timeutils import today_local
     today_str = today_local().isoformat()
 
+    return {
+        "username": username,
+        "weights": sorted_weights,
+        "measurements": sorted_measurements,
+        "latest_bf": latest_bf,
+        "latest_bf_source": latest_bf_source,
+        "noise_markers": noise_markers,
+        "photos": photos,
+        "alerts": alerts,
+        "series": series,
+        "today": today_str,
+        "sex": load_config().sex,
+        # Body composition (optional module)
+        "body_comp_enabled": body_comp_enabled,
+        "bc_scans": bc_scans,
+        "bc_latest": bc_latest,
+        "bc_headline": bc_headline,
+        "bc_cat_order": BODY_CAT_ORDER,
+        "llm_configured": bool(load_config().openrouter_api_key),
+    }
+
+
+@router.get("", response_class=HTMLResponse)
+async def weight_dashboard(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    username: str = Depends(require_auth),
+):
+    """The trend: key figures, the chart, the history table and weight entry."""
     return templates.TemplateResponse(
-        request,
-        "weight/index.html",
-        {
-            "username": username,
-            "weights": sorted_weights,
-            "measurements": sorted_measurements,
-            "latest_bf": latest_bf,
-            "latest_bf_source": latest_bf_source,
-            "noise_markers": noise_markers,
-            "photos": photos,
-            "alerts": alerts,
-            "series": series,
-            "today": today_str,
-            "sex": load_config().sex,
-            # Body composition (optional module)
-            "body_comp_enabled": body_comp_enabled,
-            "bc_scans": bc_scans,
-            "bc_latest": bc_latest,
-            "bc_headline": bc_headline,
-            "bc_cat_order": BODY_CAT_ORDER,
-            "llm_configured": bool(load_config().openrouter_api_key),
-        },
+        request, "weight/index.html", await _section_context(request, db, username)
+    )
+
+
+@router.get("/measures", response_class=HTMLResponse)
+async def weight_measures(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    username: str = Depends(require_auth),
+):
+    """The measurements desk: circumferences, BIA scans, photos, noise markers.
+
+    Split out of ``/weight`` (which was six domains stacked in one page) so the
+    chart reaches the fold on a laptop and neither page is a place to hunt in.
+    """
+    return templates.TemplateResponse(
+        request, "weight/measures.html", await _section_context(request, db, username)
     )
 
 
@@ -208,12 +258,7 @@ async def log_weight_entry(
             status_code=status.HTTP_400_BAD_REQUEST, content={"error": str(e)}
         )
 
-    if "hx-request" in request.headers:
-        response = RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
-        response.headers["HX-Redirect"] = "/weight"
-        return response
-
-    return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
+    return _back(request)
 
 
 @router.post("/measurement")
@@ -264,12 +309,7 @@ async def log_measurement_entry(
             status_code=status.HTTP_400_BAD_REQUEST, content={"error": str(e)}
         )
 
-    if "hx-request" in request.headers:
-        response = RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
-        response.headers["HX-Redirect"] = "/weight"
-        return response
-
-    return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
+    return _back(request)
 
 
 @router.post("/noise")
@@ -293,12 +333,7 @@ async def add_noise_entry(
     )
     await db.commit()
 
-    if "hx-request" in request.headers:
-        response = RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
-        response.headers["HX-Redirect"] = "/weight"
-        return response
-
-    return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
+    return _back(request)
 
 
 @router.post("/photo")
@@ -354,12 +389,7 @@ async def add_photo_entry(
 
     await db.commit()
 
-    if "hx-request" in request.headers:
-        response = RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
-        response.headers["HX-Redirect"] = "/weight"
-        return response
-
-    return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
+    return _back(request)
 
 
 # ── Body composition (InBody / МедАсс) — optional module ──────────────────────
@@ -496,7 +526,7 @@ async def body_scan_confirm(
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST, content={"error": str(e)}
         )
-    return JSONResponse({"ok": True, "redirect": "/weight"})
+    return JSONResponse({"ok": True})
 
 
 @router.post("/body-scan/{scan_id}/delete")
@@ -520,11 +550,7 @@ async def delete_body_scan_entry(
             except OSError as e:
                 logger.warning("Could not remove scan file %s: %s", file_path, e)
 
-    if "hx-request" in request.headers:
-        response = RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
-        response.headers["HX-Redirect"] = "/weight"
-        return response
-    return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
+    return _back(request)
 
 
 @router.post("/log/{id}/delete")
@@ -537,12 +563,7 @@ async def delete_weight_entry(
     await weight_service.delete_weight_log(db, id)
     await db.commit()
 
-    if "hx-request" in request.headers:
-        response = RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
-        response.headers["HX-Redirect"] = "/weight"
-        return response
-
-    return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
+    return _back(request)
 
 
 @router.post("/measurement/{id}/delete")
@@ -555,12 +576,7 @@ async def delete_measurement_entry(
     await weight_service.delete_body_measurement(db, id)
     await db.commit()
 
-    if "hx-request" in request.headers:
-        response = RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
-        response.headers["HX-Redirect"] = "/weight"
-        return response
-
-    return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
+    return _back(request)
 
 
 @router.post("/noise/{id}/delete")
@@ -573,12 +589,7 @@ async def delete_noise_marker_entry(
     await weight_service.delete_noise_marker(db, id)
     await db.commit()
 
-    if "hx-request" in request.headers:
-        response = RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
-        response.headers["HX-Redirect"] = "/weight"
-        return response
-
-    return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
+    return _back(request)
 
 
 @router.post("/photo/delete")
@@ -599,10 +610,5 @@ async def delete_photo_entry(
             except Exception as e:
                 print(f"Error removing file {file_path}: {e}")
 
-    if "hx-request" in request.headers:
-        response = RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
-        response.headers["HX-Redirect"] = "/weight"
-        return response
-
-    return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
+    return _back(request)
 

@@ -46,6 +46,20 @@
             {% endif %}
         </div>
 
+        <!-- How far through the cycle today sits — the app's one progress
+             language (.v-meter). Only drawn for a cycle with an end date. -->
+        {% if cycle_progress %}
+        <div class="space-y-2">
+            <div class="flex items-baseline justify-between">
+                <span class="v-label">{{ t("hrt.cycle_progress") }}</span>
+                <span class="v-text-micro v-num">{{ t("hrt.week_of", week=cycle_progress.week, weeks=cycle_progress.weeks) }}</span>
+            </div>
+            <div class="v-meter">
+                <div class="v-meter-fill is-good" style="width: {{ cycle_progress.pct }}%"></div>
+            </div>
+        </div>
+        {% endif %}
+
         <!-- Release sparkline (server-rendered, active mg over 90 days) -->
         {% if release_sparkline.points %}
         <div>

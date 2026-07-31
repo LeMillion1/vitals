@@ -14,6 +14,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.weight import WeightLog
 from vitals.services.modules_service import SETTINGS_KEY
+from vitals.utils.timeutils import today_local
 
 # No module-level ``pytest.mark.asyncio``: pytest.ini runs asyncio_mode=auto, and
 # the mark on this file's *sync* template tests only produced warnings.
@@ -1675,3 +1676,85 @@ async def test_rail_collapsed_rubric_items_are_hidden_before_alpine_boots(auth_c
     assert '<div class="mh-rail-group-items" style="display:none" x-show="open"' in r.text
     # …and the open one has no inline override for x-show to fight with.
     assert '<div class="mh-rail-group-items" x-show="open"' in r.text
+
+
+# ── /weight split: trend vs measures ────────────────────────────────────────────
+
+
+async def test_weight_section_splits_into_trend_and_measures(auth_client):
+    """/weight was six domains in one page. It is now the trend (chart, history,
+    one weight field); /weight/measures is the desk (circumferences, noise,
+    photos). Both carry the same masthead figures and the same sub-tabs."""
+    html = {"Accept": "text/html"}
+    await auth_client.post(
+        "/weight/log", data={"date": today_local().isoformat(), "weight_kg": "86.1"}
+    )
+    trend = await auth_client.get("/weight", headers=html)
+    measures = await auth_client.get("/weight/measures", headers=html)
+    assert trend.status_code == 200 and measures.status_code == 200
+
+    for r in (trend, measures):
+        assert 'href="/weight/measures"' in r.text     # the sub-tab pair
+        assert "mh-metric" in r.text                   # same key figures
+        assert 'id="conflict-modal"' in r.text or "showConfirm" in r.text
+
+    # The trend page asks for one number and nothing else.
+    assert 'id="weightChart"' in trend.text
+    assert 'id="form-log"' in trend.text
+    assert 'action="/weight/measurement"' not in trend.text
+    assert 'action="/weight/photo"' not in trend.text
+
+    # The desk holds everything that is not the trend.
+    assert 'action="/weight/measurement"' in measures.text
+    assert 'action="/weight/noise"' in measures.text
+    assert 'action="/weight/photo"' in measures.text
+    assert 'id="weightChart"' not in measures.text
+
+
+async def test_measures_page_gates_body_scans_on_the_module(auth_client, db_session):
+    """The body_comp toggle keeps gating its blocks inside the desk, not the
+    whole page — with it off the page must still render the rest."""
+    html = {"Accept": "text/html"}
+    await auth_client.post("/settings/modules", data={"module": "body_comp", "enabled": "false"})
+    off = await auth_client.get("/weight/measures", headers=html)
+    assert off.status_code == 200
+    assert 'action="/weight/body-scan/upload"' not in off.text
+    assert "bsPreviewOpen" not in off.text
+    assert 'action="/weight/measurement"' in off.text          # the rest survives
+
+    await auth_client.post("/settings/modules", data={"module": "body_comp", "enabled": "true"})
+    on = await auth_client.get("/weight/measures", headers=html)
+    assert on.status_code == 200
+    assert "bsPreviewOpen" in on.text
+
+
+async def test_a_save_returns_to_the_page_it_was_posted_from(auth_client):
+    """Every weight POST used to redirect to /weight. A measurement saved on the
+    desk must come back to the desk, not bounce onto the trend page."""
+    r = await auth_client.post(
+        "/weight/measurement",
+        data={"date": today_local().isoformat(), "neck_cm": "38", "waist_cm": "85"},
+        headers={"referer": "http://test/weight/measures"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/weight/measures"
+
+    # A weigh-in from the trend page still lands on the trend page…
+    r = await auth_client.post(
+        "/weight/log",
+        data={"date": today_local().isoformat(), "weight_kg": "86.1"},
+        headers={"referer": "http://test/weight"},
+        follow_redirects=False,
+    )
+    assert r.headers["location"] == "/weight"
+
+    # …and an off-site or missing Referer falls back to /weight rather than
+    # turning the save into an open redirect.
+    r = await auth_client.post(
+        "/weight/log",
+        data={"date": today_local().isoformat(), "weight_kg": "86.2"},
+        headers={"referer": "https://evil.example/weight/measures"},
+        follow_redirects=False,
+    )
+    assert r.headers["location"] == "/weight"

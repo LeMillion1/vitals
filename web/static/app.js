@@ -29,9 +29,13 @@ window.vitalsLoader = {
 // listener registered here would silently never run, leaving weightOSDashboard()
 // undefined and throwing "ReferenceError: weightOSDashboard is not defined" the
 // first time this page is reached via SPA navigation instead of a hard reload.
-window.weightOSDashboard = function () {
+// One factory, two pages: /weight (the trend, one weight field) and
+// /weight/measures (circumferences, noise, photos, BIA scans). Each passes the
+// tab it actually renders, because 'log' does not exist on the measures page and
+// defaulting to it there would open the card on nothing.
+window.weightOSDashboard = function (defaultTab) {
     return {
-        activeTab: 'log',
+        activeTab: defaultTab || 'log',
         overrideFlag: false,
         showConfirm: false,
         violations: [],
@@ -161,8 +165,11 @@ window.weightOSDashboard = function () {
                     this.showConfirm = true;
                     restoreBtn();
                 } else if (response.ok) {
-                    // Check if there is a redirection header (HTMX pattern)
-                    const redirectUrl = response.headers.get('HX-Redirect') || '/weight';
+                    // Check if there is a redirection header (HTMX pattern).
+                    // The fallback is the current page, not /weight: the section
+                    // has two of them and a measurement save must not bounce the
+                    // owner onto the trend page.
+                    const redirectUrl = response.headers.get('HX-Redirect') || window.location.pathname;
                     window.vitalsRefresh(redirectUrl, { tab: this.activeTab });
                 } else {
                     restoreBtn();
@@ -291,7 +298,7 @@ window.weightOSDashboard = function () {
                     return;
                 }
                 if (resp.ok) {
-                    window.vitalsRefresh('/weight', { tab: this.activeTab });
+                    window.vitalsRefresh(window.location.pathname, { tab: this.activeTab });
                 } else if (window.vitalsToast) {
                     window.vitalsToast(window.t('save_error'));
                 }
