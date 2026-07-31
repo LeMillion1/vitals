@@ -34,6 +34,26 @@ def _pkce_requested(code_challenge: Optional[str], method: Optional[str]) -> boo
     return bool(code_challenge) and method == "S256"
 
 
+def redirect_allowed(redirect_uri: Optional[str], cfg) -> bool:
+    """True when the callback points at one of the configured client hosts.
+
+    Host-level, not full-URL: Google hands Gemini Spark a per-user callback
+    (``…/r/user_bound_custom-mcp-<google-account-id>-<mcp_host>``), so pinning
+    exact URLs would mean hand-editing config for every installation. ``netloc``
+    rather than ``hostname`` deliberately — it carries any userinfo and port, so
+    ``https://claude.ai@evil.com/cb`` compares as ``claude.ai@evil.com`` and
+    fails, and a stray port can't slip through either.
+
+    The real anti-exfiltration guarantees sit downstream regardless: the code is
+    worthless without the PKCE verifier held by whoever started the flow, and
+    /oauth/token additionally demands the static client secret.
+    """
+    if not redirect_uri:
+        return False
+    parts = urlsplit(redirect_uri)
+    return parts.scheme == "https" and parts.netloc.lower() in cfg.mcp_redirect_hosts
+
+
 def verify_pkce(code_verifier: str, code_challenge: str, method: Optional[str]) -> bool:
     """Verifies the Proof Key for Code Exchange (PKCE) challenge.
 
@@ -114,7 +134,7 @@ async def oauth_authorize(
             {"error": t("oauth.error.unsupported_response"), "client_id": client_id, "redirect_uri": redirect_uri},
         )
 
-    if redirect_uri not in cfg.mcp_redirect_uris:
+    if not redirect_allowed(redirect_uri, cfg):
         return templates.TemplateResponse(
             request,
             "oauth_authorize.html",
@@ -179,7 +199,7 @@ async def oauth_approve(
     if client_id != cfg.mcp_client_id:
         raise HTTPException(status_code=400, detail="Invalid client_id")
 
-    if redirect_uri not in cfg.mcp_redirect_uris:
+    if not redirect_allowed(redirect_uri, cfg):
         raise HTTPException(status_code=400, detail="redirect_uri not allowed")
 
     # Re-checked here, not just on the consent page: this endpoint is reachable
@@ -293,7 +313,7 @@ async def oauth_token(
 
     code_data = json.loads(code_raw)
 
-    if redirect_uri not in cfg.mcp_redirect_uris or redirect_uri != code_data["redirect_uri"]:
+    if not redirect_allowed(redirect_uri, cfg) or redirect_uri != code_data["redirect_uri"]:
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_grant", "error_description": "Redirect URI mismatch"},

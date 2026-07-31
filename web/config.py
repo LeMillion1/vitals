@@ -13,9 +13,17 @@ from dataclasses import dataclass
 SESSION_COOKIE = "vitals_session"
 DEFAULT_SESSION_TTL = 30 * 24 * 3600  # 30 days
 
-# Claude.ai's custom-connector OAuth callback (same URI for web/desktop/mobile/Cowork).
-# Override/extend via VITALS_MCP_REDIRECT_URIS (csv) if Anthropic changes this.
-DEFAULT_MCP_REDIRECT_URIS: tuple[str, ...] = ("https://claude.ai/api/mcp/auth_callback",)
+# Callback hosts of the AI clients allowed to connect to the MCP server. Matched
+# by host rather than by full URL on purpose: Claude and ChatGPT each use one
+# fixed callback path, but Google mints a per-user one
+# (…/r/user_bound_custom-mcp-<google-account-id>-<mcp_host>), so a full-URL
+# allowlist would need hand-editing on every install — and would put the owner's
+# Google account id in a config file. Extend via VITALS_MCP_REDIRECT_HOSTS (csv).
+DEFAULT_MCP_REDIRECT_HOSTS: tuple[str, ...] = (
+    "claude.ai",                            # Claude.ai custom connector (web/desktop/mobile/Cowork)
+    "chatgpt.com",                          # ChatGPT connector platform
+    "oauth-redirect.googleusercontent.com", # Gemini Spark connected apps
+)
 
 
 @dataclass(frozen=True)
@@ -28,7 +36,7 @@ class WebConfig:
     cookie_samesite: str = "lax"
     mcp_client_id: str = "vitals-claude-connector"
     mcp_client_secret: str = ""
-    mcp_redirect_uris: tuple[str, ...] = DEFAULT_MCP_REDIRECT_URIS
+    mcp_redirect_hosts: tuple[str, ...] = DEFAULT_MCP_REDIRECT_HOSTS
     # Shared secret for the read-only /external JSON API (a separate personal
     # dashboard app reads a few health glance cards from here server-to-server).
     # Empty = feature off: the endpoint fails closed with 503, never a
@@ -78,7 +86,9 @@ def get_web_config() -> WebConfig:
         cookie_samesite=os.getenv("VITALS_COOKIE_SAMESITE", "lax"),
         mcp_client_id=os.getenv("VITALS_MCP_CLIENT_ID", "vitals-claude-connector"),
         mcp_client_secret=os.getenv("VITALS_MCP_CLIENT_SECRET", ""),
-        mcp_redirect_uris=_env_csv("VITALS_MCP_REDIRECT_URIS", DEFAULT_MCP_REDIRECT_URIS),
+        mcp_redirect_hosts=tuple(
+            h.lower() for h in _env_csv("VITALS_MCP_REDIRECT_HOSTS", DEFAULT_MCP_REDIRECT_HOSTS)
+        ),
         external_api_token=os.getenv("VITALS_EXTERNAL_API_TOKEN", ""),
     )
 

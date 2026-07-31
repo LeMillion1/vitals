@@ -780,7 +780,7 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_GARMIN_TOKEN_DIR` | Путь к токенам Garmin | `/data/garmin_session` |
 | `VITALS_MCP_CLIENT_ID` | OAuth Client ID для MCP | `vitals-claude-connector` |
 | `VITALS_MCP_CLIENT_SECRET` | OAuth Client Secret для MCP | *Обязательно* |
-| `VITALS_MCP_REDIRECT_URIS` | Разрешённые OAuth-callback'и (через запятую) | `https://claude.ai/api/mcp/auth_callback` |
+| `VITALS_MCP_REDIRECT_HOSTS` | Разрешённые хосты OAuth-callback'ов (через запятую, только https) | `claude.ai,chatgpt.com,oauth-redirect.googleusercontent.com` |
 | `VITALS_EXTERNAL_API_TOKEN` | Токен для сервер-сервер Glance API | *Опционально* |
 | `VITALS_TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather | *Опционально* |
 | `VITALS_TELEGRAM_CHAT_ID` | Единственный чат, который бот слушает | *Опционально* |
@@ -1599,7 +1599,7 @@ Connection-pool and timeout tuning (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFL
 | `VITALS_GARMIN_TOKEN_DIR` | Garmin session token path | `/data/garmin_session` |
 | `VITALS_MCP_CLIENT_ID` | MCP OAuth Client ID | `vitals-claude-connector` |
 | `VITALS_MCP_CLIENT_SECRET` | MCP OAuth Client Secret | *Required* |
-| `VITALS_MCP_REDIRECT_URIS` | Allowed OAuth callbacks (comma-separated) | `https://claude.ai/api/mcp/auth_callback` |
+| `VITALS_MCP_REDIRECT_HOSTS` | Allowed OAuth callback hosts (comma-separated, https only) | `claude.ai,chatgpt.com,oauth-redirect.googleusercontent.com` |
 | `VITALS_EXTERNAL_API_TOKEN` | Token for server-server Glance API | *Optional* |
 | `VITALS_TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | *Optional* |
 | `VITALS_TELEGRAM_CHAT_ID` | The only chat the bot listens to | *Optional* |

@@ -162,6 +162,51 @@ async def test_oauth_approve_invalid_redirect_uri(auth_client):
     assert response.status_code == 400
 
 
+# ── Callback allowlist is per-host, not per-URL ───────────────────────────────
+# Gemini Spark's callback carries the owner's Google account id and the MCP host
+# in its path, so it differs on every installation — the allowlist matches the
+# host and leaves the path alone.
+GEMINI_REDIRECT = (
+    "https://oauth-redirect.googleusercontent.com/r/"
+    "user_bound_custom-mcp-110072519687538803290-vitals_example_com"
+)
+
+
+async def test_oauth_approve_accepts_per_user_google_callback(auth_client):
+    """The path is not pinned: an unseen per-user Google callback still mints a code."""
+    response = await auth_client.post(
+        "/oauth/authorize/approve",
+        data={
+            "client_id": "vitals-claude-connector",
+            "redirect_uri": GEMINI_REDIRECT,
+            "code_challenge": CODE_CHALLENGE,
+            "code_challenge_method": "S256",
+        },
+    )
+    assert response.status_code == 302
+    assert response.headers["location"].startswith(f"{GEMINI_REDIRECT}?code=")
+
+
+@pytest.mark.parametrize("redirect_uri", [
+    "http://claude.ai/callback",              # plaintext — a code would ride the wire
+    "https://claude.ai@evil.com/callback",    # userinfo dressed up as the allowed host
+    "https://evil.claude.ai/callback",        # subdomain is a different host, not a suffix match
+    "https://claude.ai.evil.com/callback",    # allowed host as a prefix of an attacker's
+])
+async def test_oauth_approve_rejects_lookalike_callbacks(auth_client, redirect_uri):
+    """Host matching must be exact — no scheme downgrade, no userinfo/suffix tricks."""
+    response = await auth_client.post(
+        "/oauth/authorize/approve",
+        data={
+            "client_id": "vitals-claude-connector",
+            "redirect_uri": redirect_uri,
+            "code_challenge": CODE_CHALLENGE,
+            "code_challenge_method": "S256",
+        },
+    )
+    assert response.status_code == 400
+
+
 async def test_oauth_full_flow_and_token_exchange(auth_client, redis):
     """Test full OAuth 2.0 flow: authorize approve -> code generation -> token exchange."""
     # 1. Approve authorization

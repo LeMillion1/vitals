@@ -12,11 +12,10 @@ os.environ["VITALS_AUTH_USERNAME"] = "timur"
 os.environ["VITALS_AUTH_PASSWORD_HASH"] = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
 os.environ["VITALS_COOKIE_SECURE"] = "false"
 os.environ["VITALS_MCP_CLIENT_SECRET"] = "local-test-mcp-secret"
-# Real Claude.ai callback (so a real connector can be tested against localhost via
-# a tunnel) plus a fake local one for manual curl/browser checks of the OAuth flow.
-os.environ["VITALS_MCP_REDIRECT_URIS"] = (
-    "https://claude.ai/api/mcp/auth_callback,http://127.0.0.1:8000/callback"
-)
+# Callback hosts are left at their defaults (Claude/ChatGPT/Gemini), so a real
+# connector can be tested against localhost through a tunnel. No loopback entry:
+# the allowlist is https-only, and a plaintext callback would be a hole worth
+# more than the convenience of eyeballing the redirect in a browser.
 
 import fakeredis.aioredis
 import uvicorn
