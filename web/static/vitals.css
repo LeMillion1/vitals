@@ -2319,6 +2319,12 @@ sup {
     font: 700 38px/1 var(--mh-display, 'Bricolage Grotesque', 'Inter', sans-serif);
     font-variant-numeric: tabular-nums;
     box-shadow: none;
+    -moz-appearance: textfield;
+}
+.v-weight-stepper .v-input::-webkit-inner-spin-button,
+.v-weight-stepper .v-input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
 }
 .v-weight-step {
     border: 1px solid var(--line);
