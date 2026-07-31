@@ -182,6 +182,7 @@ sizes that already exist on the core scale (12/13/14px) reference the core token
 | `--mh-text-wordmark` / `-sm` | 26px / 22px | rail wordmark, expanded / collapsed "V" |
 | `--mh-text-lead` | 21px | `.mh-metric-value` (secondary figures) |
 | `--mh-text-brand` | 19px | mobile topbar wordmark |
+| `--mh-text-tab` | 15px | `.mh-tab` |
 | `--mh-text-eyebrow` | 11px | uppercase eyebrows and key-figure captions |
 | `--mh-text-nano` | 10px | smallest uppercase micro-label |
 
@@ -272,15 +273,22 @@ counts, the chevron alone marks the row as a control and the icons stay.
 Above the rubrics sits one pinned row, `.mh-rail-pinned` → «Сегодня» (`/today`).
 It is deliberately **not** in `MODULE_REGISTRY`: it is the entry point, not a
 domain, it has no toggle, and a registry entry would give it a rubric number in
-the masthead eyebrow. On a page that belongs to no rubric (`/today`, `/settings`)
-the first rubric is expanded, so the rail never opens fully shut.
+the masthead eyebrow.
+
+Every section is a row, always on screen. Collapsing the rubrics to one open
+group was tried (it fits a 1440x900 laptop without scrolling) and reverted at the
+owner's request: a rail exists to show where you can go, and a list that has to
+be opened first does not do that. If vertical space becomes the problem again,
+shorten the list — do not hide it.
 
 **Mobile (<768px):** the rail is replaced by a 52px `.mh-topbar` — brand
 wordmark + a hamburger "menu" trigger. The bottom bar carries «Сегодня» plus the
-`bottom_nav=True` modules and «Ещё»; the drawer is the full catalogue. There is
-**no in-content rubric tab row** any more: the rail answers "which sibling
-sections exist" from 768px up and the drawer answers it below, so a third copy of
-the same list was navigation stated three times.
+`bottom_nav=True` modules and «Ещё»; the drawer is the full catalogue.
+
+**Rubric tabs** (`.mh-tabs`, rendered by `masthead_header`) list the sibling
+sections of the page you are on, in the content column, at every width. They
+repeat what the rail says, and that is the point: the rail is a place to go, this
+row is where you already are.
 
 **Section header**, rendered by the `masthead_header(section, title, metrics)`
 macro at the top of every module page:

@@ -1638,44 +1638,37 @@ async def test_login_rate_limited_by_ip(client):
 
 # ── Rail: collapsible rubrics ───────────────────────────────────────────────────
 
-_RAIL_GROUP = __import__("re").compile(
-    r'x-data="\{ open: (true|false) \}">\s*<button[^>]*title="([^"]+)"'
-)
+_RAIL_ITEM = __import__("re").compile(r'class="mh-rail-btn[^"]*"')
 
 
-def _rail_groups(html: str) -> dict[str, bool]:
-    """{rubric label: expanded?} as the rail rendered it."""
-    return {label: state == "true" for state, label in _RAIL_GROUP.findall(html)}
-
-
-@pytest.mark.parametrize(
-    "route, rubric",
-    [("/weight", "health"), ("/reports", "health"), ("/labs", "markers")],
-)
-async def test_rail_expands_only_the_current_rubric(auth_client, route, rubric):
-    """The rail no longer renders fifteen buttons at once: the rubric holding the
-    current page is expanded, every other one is a collapsed header row. The state
-    is derived from the path server-side, so it survives a boosted navigation."""
-    from vitals.i18n import t
+@pytest.mark.parametrize("route", ["/weight", "/reports", "/labs", "/today"])
+async def test_rail_lists_every_section_at_once(auth_client, route):
+    """The rail is flat: every enabled section is a row on screen, whatever page
+    you are on. It briefly collapsed to one rubric at a time to save vertical
+    space; that cost the thing a rail is for, and the owner asked for the whole
+    list back."""
+    from vitals.services.modules_service import nav_modules
 
     r = await auth_client.get(route, headers={"Accept": "text/html"})
     assert r.status_code == 200
-    groups = _rail_groups(r.text)
-    assert groups, "rail rendered no rubric groups"
-    for other in ("health", "markers", "lifestyle"):
-        label = t("masthead.rubric." + other)
-        if label in groups:
-            assert groups[label] is (other == rubric), f"{route}: {other}"
+    rail = r.text.split('id="primary-nav-masthead"')[1].split("</aside>")[0]
+    for spec in nav_modules({k: True for k in ("hevy", "nutrition", "timeline", "glp1",
+                                               "hrt", "genetics", "supplements",
+                                               "skincare", "interactions", "signals")}):
+        assert f'href="{spec.route}"' in rail, f"{route}: {spec.key} missing from the rail"
+    # No group is hidden behind a toggle any more.
+    assert "mh-rail-group-head" not in rail
+    assert "display:none" not in rail
+    # …and "Today" still sits pinned above the rubrics.
+    assert 'class="mh-rail-pinned"' in r.text
 
 
-async def test_rail_collapsed_rubric_items_are_hidden_before_alpine_boots(auth_client):
-    """A collapsed group carries a static inline display:none, not just x-show —
-    otherwise its items flash (and stay) visible until Alpine wires the root up,
-    which on a boosted swap is exactly the failure mode this shell has hit before."""
+async def test_domain_pages_carry_the_rubric_tab_row(auth_client):
+    """The sibling sections of the page you are on, in the content column."""
     r = await auth_client.get("/weight", headers={"Accept": "text/html"})
-    assert '<div class="mh-rail-group-items" style="display:none" x-show="open"' in r.text
-    # …and the open one has no inline override for x-show to fight with.
-    assert '<div class="mh-rail-group-items" x-show="open"' in r.text
+    tabs = r.text.split('class="mh-tabs"')[1].split("</nav>")[0]
+    assert 'href="/garmin"' in tabs and 'href="/reports"' in tabs
+    assert 'class="mh-tab is-active"' in tabs
 
 
 # ── /weight split: trend vs measures ────────────────────────────────────────────
@@ -1820,16 +1813,6 @@ async def test_today_is_pinned_in_the_rail_without_a_rubric_number(auth_client):
     assert 'class="mh-rail-pinned"' in r.text
     pinned = r.text.split('class="mh-rail-pinned"')[1].split("</div>")[0]
     assert 'href="/today"' in pinned and "is-active" in pinned
-
-
-async def test_rail_keeps_a_way_in_on_a_rubricless_page(auth_client):
-    """/today belongs to no rubric, so nothing would be expanded — the screen the
-    app opens on would hide every section behind a second click. The first rubric
-    stands in."""
-    r = await auth_client.get("/today", headers={"Accept": "text/html"})
-    groups = _rail_groups(r.text)
-    assert list(groups.values()).count(True) == 1, groups
-    assert 'href="/weight"' in r.text
 
 
 async def test_weight_saved_from_today_comes_back_to_today(auth_client):

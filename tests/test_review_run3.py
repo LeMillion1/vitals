@@ -162,10 +162,9 @@ def test_tappable_surfaces_have_an_active_state(selector):
     assert f"{selector}:active" in VITALS_CSS
 
 
-def test_rail_and_chips_have_an_active_state():
-    # The rubric tab row is gone (the rail and the drawer already list the
-    # sections); the Today chips are the tap targets that replaced it.
+def test_rail_tabs_and_chips_have_an_active_state():
     assert ".mh-rail-btn:active" in MASTHEAD_CSS
+    assert ".mh-tab:active" in MASTHEAD_CSS
     assert ".v-today-chips .v-chip:active" in VITALS_CSS
 
 

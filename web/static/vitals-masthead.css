@@ -5,12 +5,12 @@
    inert in the classic interface (the <link> is unconditional, the class is
    not). Palette is NOT redefined — all colours come from the existing
    :root tokens in vitals.css. Only the frame changes: a sidebar icon-rail
-   instead of the top navbar, and an editorial masthead (eyebrow → big title →
-   key figures) instead of KPI cards.
+   instead of the top navbar, and an editorial masthead (eyebrow → tabs → big
+   title → key figures) instead of KPI cards.
    ============================================================================ */
 
 body.ui-masthead {
-    /* Display face for titles only; body text stays on Inter. */
+    /* Display face for titles/tabs only; body text stays on Inter. */
     --mh-display: 'Bricolage Grotesque', 'Outfit', 'Inter', ui-sans-serif, system-ui, sans-serif;
     /* ── Masthead type scale ──────────────────────────────────────────────
        The editorial layer's own sizes, on top of the six app tokens in
@@ -31,6 +31,7 @@ body.ui-masthead {
     --mh-text-wordmark-sm: 22px;   /* rail wordmark, collapsed ("V") */
     --mh-text-lead: 21px;          /* secondary key figure */
     --mh-text-brand: 19px;         /* mobile topbar wordmark */
+    --mh-text-tab: 15px;           /* rubric tab */
     --mh-text-eyebrow: 11px;       /* uppercase eyebrows / labels */
     --mh-text-nano: 10px;          /* smallest uppercase micro-label */
     --mh-rail-w: 68px;
@@ -182,60 +183,18 @@ body.ui-masthead .mh-rail-group {
 }
 
 body.ui-masthead .mh-rail-group + .mh-rail-group {
-    margin-top: 10px;
+    margin-top: 18px;
 }
 
-/* Rubric heading — now a real control: the group it heads is collapsed unless the
-   current page lives in it, and this row toggles it open. On the icon-only rail
-   (<901) the label has no room, so the row keeps only its count, centred. */
-body.ui-masthead .mh-rail-group-head {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    height: 36px;
-    flex: none;
-    padding: 0 13px;
-    width: 100%;
-    color: var(--faint);
-    transition: color .15s ease;
-}
-
-body.ui-masthead .mh-rail-group-head:hover {
-    color: var(--fg-2);
-}
-
+/* Heading: hidden by default (icon-only rail), revealed with the labels when the
+   rail is expanded — see the >=901 block below. */
 body.ui-masthead .mh-rail-group-label {
     display: none;
+    padding: 0 13px 4px;
+    color: var(--faint);
     font: 700 var(--mh-text-nano) 'Inter', sans-serif;
     letter-spacing: .12em;
     text-transform: uppercase;
-}
-
-body.ui-masthead .mh-rail-group-count {
-    display: none;
-    font: 600 var(--mh-text-eyebrow) 'Inter', sans-serif;
-    letter-spacing: 0;
-    color: var(--line-2);
-    font-variant-numeric: tabular-nums;
-}
-
-body.ui-masthead .mh-rail-group-chev {
-    width: 14px;
-    height: 14px;
-    flex: none;
-    stroke-width: 1.5;
-    transition: transform .18s ease;
-}
-
-body.ui-masthead .mh-rail-group-chev.is-open {
-    transform: rotate(90deg);
-}
-
-body.ui-masthead .mh-rail-group-items {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
 }
 
 /* Section buttons — 44px tall (touch target), rounded, muted → accent when
@@ -282,6 +241,10 @@ body.ui-masthead .mh-topbar-menu:active {
     background: var(--accent-soft);
 }
 
+body.ui-masthead .mh-tab:active {
+    color: var(--accent-2);
+}
+
 body.ui-masthead .mh-rail-btn.is-active {
     color: var(--accent-2);
     background: var(--accent-soft);
@@ -313,52 +276,14 @@ body.ui-masthead .mh-rail-label {
     transition: opacity .15s ease, max-width .18s ease;
 }
 
-/* Inside an expanded rubric the heading already says which domain group this is,
-   so the per-item icon is redundant chrome — a quiet 6px dot in an 18px slot
-   keeps the labels on the icons' optical line without fifteen glyphs competing.
-   The active row keeps its icon (and the amber bar). Icon-only rail (<901) has no
-   labels, so there the icon is the only thing identifying the row: dot hidden. */
-body.ui-masthead .mh-rail-dot {
-    display: none;
-    width: 18px;
-    flex: none;
-    align-items: center;
-    justify-content: center;
-}
-
-body.ui-masthead .mh-rail-dot::before {
-    content: '';
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--line);
-}
-
 @media (min-width: 901px) {
     body.ui-masthead .mh-rail-label {
         opacity: 1;
         max-width: 160px;
     }
 
-    body.ui-masthead .mh-rail-group-head {
-        justify-content: space-between;
-    }
-
-    body.ui-masthead .mh-rail-group-label,
-    body.ui-masthead .mh-rail-group-count {
+    body.ui-masthead .mh-rail-group-label {
         display: block;
-    }
-
-    body.ui-masthead .mh-rail-group-count {
-        margin-left: auto;
-    }
-
-    body.ui-masthead .mh-rail-group-items .mh-rail-btn:not(.is-active) .mh-rail-dot {
-        display: flex;
-    }
-
-    body.ui-masthead .mh-rail-group-items .mh-rail-btn:not(.is-active) > svg {
-        display: none;
     }
 }
 
@@ -487,6 +412,37 @@ body.ui-masthead .mh-actions {
     align-items: center;
     gap: 10px;
     flex: none;
+}
+
+/* Rubric tabs — the sibling sections of the page you are on, in the content
+   column. They restate what the rail says, and that repetition is the point: the
+   rail is a place to go, this row is where you already are. */
+body.ui-masthead .mh-tabs {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 24px;
+    margin-top: 14px;
+}
+
+body.ui-masthead .mh-tab {
+    font: 500 var(--text-body) var(--mh-display);
+    color: var(--muted);
+    text-decoration: none;
+    padding-bottom: 8px;
+    border-bottom: 2px solid transparent;
+    transition: color .15s ease, border-color .15s ease;
+    white-space: nowrap;
+}
+
+body.ui-masthead .mh-tab:hover {
+    color: var(--fg-2);
+}
+
+body.ui-masthead .mh-tab.is-active {
+    font-weight: 600;
+    color: var(--fg);
+    border-bottom-color: var(--accent);
 }
 
 body.ui-masthead .mh-title {
@@ -755,6 +711,17 @@ body.ui-masthead .mh-macro-card-unit {
 
 /* ── Mobile adaptations ──────────────────────────────────────────────────── */
 @media (max-width: 767px) {
+    body.ui-masthead .mh-tabs {
+        gap: 18px;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    body.ui-masthead .mh-tabs::-webkit-scrollbar {
+        display: none;
+    }
+
     body.ui-masthead .mh-title {
         font-size: var(--mh-text-hero-md);
         margin-top: 8px;
@@ -804,14 +771,18 @@ body.ui-masthead .mh-rail-wordmark::after {
 }
 body.ui-masthead .mh-rail { padding: 20px 0; gap: 18px; }
 body.ui-masthead .mh-rail-nav { padding-inline: 12px; }
-body.ui-masthead .mh-rail-btn { height: 38px; }
+body.ui-masthead .mh-rail-btn { height: 42px; }
 body.ui-masthead .mh-rail-foot { padding-inline: 12px; }
 
+body.ui-masthead .mh-tabs {
+    border-bottom: 1px solid var(--line);
+}
 /* The eyebrow row carries the section action (Sync / Add meal / …). It must be
    allowed to wrap: on a phone the button plus its status line is wider than the
    viewport, and a nowrap row pushed <main> 176px sideways. */
 body.ui-masthead .mh-eyebrow-row { flex-wrap: wrap; }
 body.ui-masthead .mh-actions { flex-wrap: wrap; max-width: 100%; }
+body.ui-masthead .mh-tab { font-size: var(--mh-text-tab); }
 body.ui-masthead .mh-hero-row {
     display: flex;
     align-items: flex-end;

@@ -74,21 +74,23 @@ def test_masthead_title_and_metrics_share_one_hero_row():
     assert ".grid.grid-cols-3" in MASTHEAD_CSS
 
 
-def test_rubric_tabs_are_gone_everywhere():
-    """Navigation was stated three times: the rail, this in-content tab row 60px
-    under the eyebrow, and the phone's bottom bar plus drawer. The rail answers it
-    from 768px up and the drawer answers it below, so the row is gone — markup and
-    styles both, rather than left in the page hidden at every width."""
-    assert "mh-tab" not in MASTHEAD_TEMPLATE
-    assert "mh-tab" not in MASTHEAD_CSS
+def test_rubric_tabs_are_rendered_at_every_width():
+    """The in-content tab row was removed as a third statement of the same
+    navigation, then asked back: it says where you *are*, which the rail does not.
+    It renders at every width — no breakpoint hides it."""
+    assert 'class="mh-tabs"' in MASTHEAD_TEMPLATE
+    assert ".mh-tabs" in MASTHEAD_CSS
+    assert "display: none" not in MASTHEAD_CSS.split(".mh-tabs {")[1].split("}")[0]
 
 
-def test_rail_rows_shrank_and_rubrics_collapse():
-    assert "body.ui-masthead .mh-rail-btn { height: 38px; }" in MASTHEAD_CSS
-    assert ".mh-rail-group-head" in MASTHEAD_CSS
-    assert ".mh-rail-group-count" in MASTHEAD_CSS
-    # The dot only replaces the icon where labels exist to identify the row.
-    assert ".mh-rail-group-items .mh-rail-btn:not(.is-active) > svg" in MASTHEAD_CSS
+def test_rail_is_a_flat_list_of_every_section():
+    """Collapsible rubrics (and the dot that replaced each row's icon) are gone —
+    every section is a row with its own glyph, always visible."""
+    assert "body.ui-masthead .mh-rail-btn { height: 42px; }" in MASTHEAD_CSS
+    assert ".mh-rail-group-head" not in MASTHEAD_CSS
+    assert ".mh-rail-group-count" not in MASTHEAD_CSS
+    assert ".mh-rail-dot" not in MASTHEAD_CSS
+    assert ".mh-rail-group-label" in MASTHEAD_CSS
 
 
 def test_brand_uses_handoff_a_mark_for_favicon():

@@ -58,15 +58,6 @@
 {% macro masthead_rail(oob=false) %}
 {% set current_path = request.url.path if request else '' %}
 {% set em = request.state.enabled_modules or {} %}
-{# Which rubric is the visitor inside? Derived from the path on every render, so a
-   boosted navigation re-opens the right group for free and nothing is persisted
-   client-side. Same startswith() test the active button uses. #}
-{% set cur = namespace(rubric='') %}
-{% for s in nav_modules(em) %}{% if current_path.startswith(s.route) %}{% set cur.rubric = s.rubric %}{% endif %}{% endfor %}
-{# Pages that belong to no rubric — /today, /settings — would otherwise leave the
-   rail with every group shut, which is exactly the wrong state for the screen the
-   app opens on: the way in would take two clicks. The first rubric stands in. #}
-{% if not cur.rubric %}{% set cur.rubric = module_rubrics[0] %}{% endif %}
 <aside id="primary-nav-masthead" {% if oob %}hx-swap-oob="true"{% endif %} class="mh-rail">
     <a href="/" class="mh-rail-wordmark" title="Vitals">Vitals</a>
     <div class="mh-rail-div"></div>
@@ -77,29 +68,23 @@
         <div class="mh-rail-pinned">
             <a href="/today" title="{{ t('nav.today') }}" class="mh-rail-btn {% if current_path == '/today' %}is-active{% endif %}"{% if current_path == '/today' %} aria-current="page"{% endif %}>{{ mh_icon('today') }}<span class="mh-rail-label">{{ t('nav.today') }}</span></a>
         </div>
-        {# One block per rubric, collapsed to its heading unless the visitor is
-           inside it: fifteen 42px buttons plus three headings overflowed the rail
-           on a 1440x900 laptop. A rubric whose every member is gated off is
-           skipped entirely so its heading never floats over an empty group.
-           Alpine only handles peeking into a *collapsed* group — the open one is
-           server-derived, so the rail is correct before Alpine boots. #}
+        {# One block per rubric. Groups with a quiet uppercase heading (shown only
+           when the rail is expanded) turn a flat 12-item list into scannable
+           sections. A rubric whose every member is gated off is skipped entirely
+           so its heading never floats over an empty group.
+
+           Every section is on screen at once, deliberately: collapsing the rubrics
+           to fit a 1440x900 laptop bought vertical space at the price of the thing
+           a rail is for — seeing where you can go without opening anything. The
+           owner tried it and asked for the flat list back. #}
         {% for rubric in module_rubrics %}
         {% set members_vis = nav_modules(em, rubric=rubric) %}
         {% if members_vis %}
-        {% set is_open = (rubric == cur.rubric) %}
-        <div class="mh-rail-group" x-data="{ open: {{ 'true' if is_open else 'false' }} }">
-            <button type="button" class="mh-rail-group-head" @click="open = !open" :aria-expanded="open ? 'true' : 'false'" title="{{ t('masthead.rubric.' + rubric) }}">
-                <span class="mh-rail-group-label">{{ t('masthead.rubric.' + rubric) }}</span>
-                <span class="mh-rail-group-count">{{ members_vis | length }}</span>
-                {# The chevron, not the count, is what makes the row read as a control
-                   — on the icon-only rail (<901) it is the only thing left in it. #}
-                <svg class="mh-rail-group-chev{% if is_open %} is-open{% endif %}" :class="open && 'is-open'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6l-6 6" /></svg>
-            </button>
-            <div class="mh-rail-group-items"{% if not is_open %} style="display:none"{% endif %} x-show="open" x-transition.opacity.duration.180ms>
-                {% for s in members_vis %}
-                <a href="{{ s.route }}" title="{{ t('nav.' + s.key) }}" class="mh-rail-btn {% if current_path.startswith(s.route) %}is-active{% endif %}"{% if current_path.startswith(s.route) %} aria-current="page"{% endif %}><span class="mh-rail-dot"></span>{{ mh_icon(s.key) }}<span class="mh-rail-label">{{ t('nav.' + s.key) }}</span></a>
-                {% endfor %}
-            </div>
+        <div class="mh-rail-group">
+            <div class="mh-rail-group-label">{{ t('masthead.rubric.' + rubric) }}</div>
+            {% for s in members_vis %}
+            <a href="{{ s.route }}" title="{{ t('nav.' + s.key) }}" class="mh-rail-btn {% if current_path.startswith(s.route) %}is-active{% endif %}"{% if current_path.startswith(s.route) %} aria-current="page"{% endif %}>{{ mh_icon(s.key) }}<span class="mh-rail-label">{{ t('nav.' + s.key) }}</span></a>
+            {% endfor %}
         </div>
         {% endif %}
         {% endfor %}
@@ -118,15 +103,17 @@
 {% endmacro %}
 
 {# ── Editorial header ────────────────────────────────────────────────────────
-   eyebrow → H1 → key-figures row. `metrics` is a list of dicts:
+   eyebrow → rubric tabs → H1 → key-figures row. `metrics` is a list of dicts:
    {value, unit?, label, tone? ('good'|'bad'|''), primary? (bool), href? (str)}.
    A metric with `href` renders as a link (e.g. straight to a detail page).
    Wrap the call in {% call %} to slot section actions (sync/upload buttons)
    top-right. #}
 {% macro masthead_header(section, title, metrics) %}
+{% set em = request.state.enabled_modules or {} %}
 {% set spec = module_registry.get(section) %}
-{% set rb = namespace(cat=none, num=0) %}
+{% set rb = namespace(cat=none, members=[], num=0) %}
 {% if spec and spec.rubric %}
+{% set rb.members = nav_modules(em, rubric=spec.rubric) %}
 {% set rb.cat = 'masthead.rubric.' + (spec.eyebrow or spec.rubric) %}
 {% set rb.num = module_rubrics.index(spec.rubric) + 1 %}
 {% endif %}
@@ -136,9 +123,11 @@
         <span class="mh-eyebrow">{{ t("masthead.section_word") }} {{ "%02d" | format(rb.num) }} · {{ t(rb.cat) if rb.cat else '' }}</span>
         {% if caller %}<div class="mh-actions">{{ caller() }}</div>{% endif %}
     </div>
-    {# No rubric tab row: the rail states the section list from 768px up, and
-       below that the drawer does. A third copy of it 60px under the eyebrow was
-       the same navigation said for the third time. #}
+    <nav class="mh-tabs">
+        {% for s in rb.members %}
+        <a href="{{ s.route }}" class="mh-tab {% if s.key == section %}is-active{% endif %}">{{ t('nav.' + s.key) }}</a>
+        {% endfor %}
+    </nav>
     <div class="mh-hero-row">
         <h1 class="mh-title">{{ title }}</h1>
         {% if metrics %}
