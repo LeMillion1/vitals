@@ -235,8 +235,9 @@ async def build(
 
     # ── The narrative ────────────────────────────────────────────────────────
     digest = await digest_service.latest_digest(session, kind=DigestKind.DAILY_BRIEF.value)
-    if digest is not None and digest.date == today:
-        narrative, narrative_source = digest.content.strip(), "digest"
+    brief_prose = _prose_from(digest) if digest is not None and digest.date == today else ""
+    if brief_prose:
+        narrative, narrative_source = brief_prose, "digest"
         feed.append({
             "time": "",
             # The one place a value on this page may carry the accent: it marks
@@ -279,6 +280,37 @@ async def build(
         "goal": await _goal(session, series),
         "latest_weight": weight.get("latest_kg"),
     }
+
+
+def _prose_from(row) -> str:
+    """The model's paragraph out of a stored brief — and nothing else.
+
+    ``content`` is the entire message that went to Telegram: the deterministic
+    header (the very numbers this page prints as its key figures), then the day
+    line, then the model's block last. Rendered whole it turned the hero into the
+    whole message set in 38px, with every figure said twice.
+
+    Where the prose starts is not guessed: the leading blocks are rebuilt from the
+    context the row was stored with, exactly as ``generate_brief`` assembled them.
+    ``model`` is set only when the model actually answered that morning, so it is
+    also the honest test for "is there prose here at all" — a header-only brief
+    falls through to the deterministic sentence instead of promoting a number line
+    into the headline.
+    """
+    from vitals.services.proactive import compose, day_plan
+
+    if not getattr(row, "model", None):
+        return ""
+    ctx = row.context_json or {}
+    lead = len(compose.header_blocks(ctx))
+    if day_plan.day_block(ctx.get("day")) is not None:
+        lead += 1
+    parts = (row.content or "").split("\n\n")
+    if lead >= len(parts):
+        # The stored message doesn't have the shape we just derived (hand-written
+        # row, older format). Better a computed sentence than a mangled one.
+        return ""
+    return "\n\n".join(parts[lead:]).strip()
 
 
 def _fallback_narrative(ctx: dict, calories: Optional[float]) -> str:

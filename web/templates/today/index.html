@@ -27,7 +27,11 @@
     </div>
 
     <div class="v-today-hero">
-        <h1 class="v-today-title">{{ narrative }}</h1>
+        {# The hero is whatever the morning had to say, and its length is the
+           model's to decide — two sentences at 38px are five lines that push the
+           figures under the fold. One step down keeps a long morning readable
+           without truncating anything the owner is meant to read. #}
+        <h1 class="v-today-title{% if narrative | length > 140 %} is-long{% endif %}">{{ narrative }}</h1>
         <div class="v-today-figures">
             {% for f in figures %}
             <div class="v-today-figure">

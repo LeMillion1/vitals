@@ -41,24 +41,63 @@ async def test_build_survives_an_empty_database(db_session):
     assert all(f["value"] == "—" for f in ctx["figures"][:4])
 
 
-async def test_narrative_prefers_todays_brief_over_the_computed_one(db_session):
-    db_session.add(
-        WeeklyDigest(
-            date=today_local(),
-            domain=INSIGHTS_DOMAIN,
-            source=Source.MANUAL.value,
-            kind=DigestKind.DAILY_BRIEF.value,
-            content="Восстановление просело третий день подряд.",
-        )
+# What ``generate_brief`` actually stores: the whole message that went to
+# Telegram — the deterministic header, the day line, then the model's block.
+BRIEF_CONTEXT = {
+    "garmin": {"sleep_score": 75, "hrv_avg": 42, "resting_hr": 63, "body_battery_high": 86},
+    "weight": {"latest_kg": 106.8, "trend_kg_per_week": -1.06},
+    "day": {"answers": {"where": "дома", "gym": "нет"}, "source": Source.TEMPLATE.value},
+}
+BRIEF_PROSE = "HRV и пульс покоя держатся на твоём базовом уровне — крути день как обычно."
+
+
+def _stored_brief(prose: str = BRIEF_PROSE, *, model: str | None = "test-model"):
+    """A brief row shaped the way the morning job writes one."""
+    from vitals.services.proactive import compose, day_plan
+
+    blocks = compose.header_blocks(BRIEF_CONTEXT)
+    day = day_plan.day_block(BRIEF_CONTEXT["day"])
+    if day is not None:
+        blocks.append(day)
+    if prose:
+        blocks.append(compose.Block(compose.KIND_NARRATIVE, prose, 90))
+    return WeeklyDigest(
+        date=today_local(),
+        domain=INSIGHTS_DOMAIN,
+        source=Source.MANUAL.value,
+        kind=DigestKind.DAILY_BRIEF.value,
+        content=compose.render(blocks),
+        context_json=BRIEF_CONTEXT,
+        model=model,
     )
+
+
+async def test_hero_takes_only_the_prose_out_of_todays_brief(db_session):
+    """The stored brief is the whole Telegram message, header numbers included —
+    printed whole it made the hero repeat every key figure back in 38px."""
+    db_session.add(_stored_brief())
     await db_session.commit()
 
     ctx = await today_service.build(db_session, enabled_modules=ALL_OFF)
 
-    assert ctx["narrative"] == "Восстановление просело третий день подряд."
+    assert ctx["narrative"] == BRIEF_PROSE
     assert ctx["narrative_source"] == "digest"
+    assert "Body Battery" not in ctx["narrative"]
+    assert "HRV 42" not in ctx["narrative"]
     # The brief is the one feed row allowed to carry the accent.
     assert [row["dot"] for row in ctx["feed"]] == ["amber"]
+
+
+async def test_a_header_only_brief_falls_back_to_the_computed_sentence(db_session):
+    """The model stayed silent that morning, so the row is numbers only — promoting
+    a number line into the headline is worse than composing one."""
+    db_session.add(_stored_brief(prose="", model=None))
+    await db_session.commit()
+
+    ctx = await today_service.build(db_session, enabled_modules=ALL_OFF)
+
+    assert ctx["narrative_source"] == "computed"
+    assert ctx["feed"] == []
 
 
 async def test_yesterdays_brief_does_not_stand_in_for_today(db_session):

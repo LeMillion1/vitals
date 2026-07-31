@@ -2661,6 +2661,13 @@ sup {
     text-wrap: pretty;
 }
 
+/* A long morning: the model wrote two sentences instead of one. One step down the
+   scale rather than a clamp — nothing the owner is meant to read gets hidden. */
+.v-today-title.is-long {
+    font-size: 30px;
+    line-height: 1.2;
+}
+
 .v-today-figures {
     display: flex;
     flex-wrap: wrap;
