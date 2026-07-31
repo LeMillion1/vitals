@@ -207,6 +207,19 @@ async def test_oauth_approve_rejects_lookalike_callbacks(auth_client, redirect_u
     assert response.status_code == 400
 
 
+async def test_csp_form_action_covers_every_callback_host(client):
+    """The allowlist has to be honoured twice: once by the server, once by the CSP.
+    Chrome applies form-action across the approval redirect, so a host the server
+    accepts but the header omits swallows the "Approve" click with a console
+    message that names the same-origin form action and hides the real cause."""
+    response = await client.get("/login", headers={"Accept": "text/html"})
+    csp = response.headers["Content-Security-Policy"]
+    form_action = csp.split("form-action ", 1)[1].split(";", 1)[0]
+
+    for host in get_web_config().mcp_redirect_hosts:
+        assert f"https://{host}" in form_action, f"{host} accepted by the server but blocked by CSP"
+
+
 async def test_oauth_full_flow_and_token_exchange(auth_client, redis):
     """Test full OAuth 2.0 flow: authorize approve -> code generation -> token exchange."""
     # 1. Approve authorization
