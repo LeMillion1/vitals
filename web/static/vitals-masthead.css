@@ -18,12 +18,15 @@ body.ui-masthead {
        that already exist on the app scale (12/13/14/15px) reference the app
        token instead of getting a duplicate under a new name. Mirrored in
        docs/DESIGN_SYSTEM.md. */
-    --mh-text-hero: 62px;          /* H1 — pre-handoff base */
-    --mh-text-hero-lg: 54px;       /* H1 — desktop (handoff shell) */
-    --mh-text-hero-md: 38px;       /* H1 + primary metric — tablet */
+    --mh-text-hero: 40px;          /* H1 — pre-handoff base */
+    --mh-text-hero-lg: 36px;       /* H1 — desktop (handoff shell) */
+    /* Tablet step. Dropped 38→32 together with the desktop sizes above: the
+       responsive ladder has to stay monotonic, and a 38px tablet H1 would now be
+       *larger* than the 36px desktop one. */
+    --mh-text-hero-md: 32px;       /* H1 + primary metric — tablet */
     --mh-text-hero-sm: 30px;       /* H1 — narrow phone */
-    --mh-text-metric: 50px;        /* primary key figure */
-    --mh-text-metric-md: 48px;     /* primary key figure — desktop shell */
+    --mh-text-metric: 36px;        /* primary key figure */
+    --mh-text-metric-md: 34px;     /* primary key figure — desktop shell */
     --mh-text-ring: 32px;          /* value inside a progress ring */
     --mh-text-ring-md: 26px;
     --mh-text-wordmark: 26px;      /* rail wordmark, expanded */
@@ -171,18 +174,60 @@ body.ui-masthead .mh-rail-group {
 }
 
 body.ui-masthead .mh-rail-group + .mh-rail-group {
-    margin-top: 18px;
+    margin-top: 10px;
 }
 
-/* Heading: hidden by default (icon-only rail), revealed with the labels when the
-   rail is expanded — see the >=1101 block below. */
+/* Rubric heading — now a real control: the group it heads is collapsed unless the
+   current page lives in it, and this row toggles it open. On the icon-only rail
+   (<901) the label has no room, so the row keeps only its count, centred. */
+body.ui-masthead .mh-rail-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 36px;
+    flex: none;
+    padding: 0 13px;
+    width: 100%;
+    color: var(--faint);
+    transition: color .15s ease;
+}
+
+body.ui-masthead .mh-rail-group-head:hover {
+    color: var(--fg-2);
+}
+
 body.ui-masthead .mh-rail-group-label {
     display: none;
-    padding: 0 13px 4px;
-    color: var(--faint);
     font: 700 var(--mh-text-nano) 'Inter', sans-serif;
     letter-spacing: .12em;
     text-transform: uppercase;
+}
+
+body.ui-masthead .mh-rail-group-count {
+    display: none;
+    font: 600 var(--mh-text-eyebrow) 'Inter', sans-serif;
+    letter-spacing: 0;
+    color: var(--line-2);
+    font-variant-numeric: tabular-nums;
+}
+
+body.ui-masthead .mh-rail-group-chev {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    stroke-width: 1.5;
+    transition: transform .18s ease;
+}
+
+body.ui-masthead .mh-rail-group-chev.is-open {
+    transform: rotate(90deg);
+}
+
+body.ui-masthead .mh-rail-group-items {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
 
 /* Section buttons — 44px tall (touch target), rounded, muted → accent when
@@ -264,14 +309,52 @@ body.ui-masthead .mh-rail-label {
     transition: opacity .15s ease, max-width .18s ease;
 }
 
+/* Inside an expanded rubric the heading already says which domain group this is,
+   so the per-item icon is redundant chrome — a quiet 6px dot in an 18px slot
+   keeps the labels on the icons' optical line without fifteen glyphs competing.
+   The active row keeps its icon (and the amber bar). Icon-only rail (<901) has no
+   labels, so there the icon is the only thing identifying the row: dot hidden. */
+body.ui-masthead .mh-rail-dot {
+    display: none;
+    width: 18px;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+}
+
+body.ui-masthead .mh-rail-dot::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--line);
+}
+
 @media (min-width: 901px) {
     body.ui-masthead .mh-rail-label {
         opacity: 1;
         max-width: 160px;
     }
 
-    body.ui-masthead .mh-rail-group-label {
+    body.ui-masthead .mh-rail-group-head {
+        justify-content: space-between;
+    }
+
+    body.ui-masthead .mh-rail-group-label,
+    body.ui-masthead .mh-rail-group-count {
         display: block;
+    }
+
+    body.ui-masthead .mh-rail-group-count {
+        margin-left: auto;
+    }
+
+    body.ui-masthead .mh-rail-group-items .mh-rail-btn:not(.is-active) .mh-rail-dot {
+        display: flex;
+    }
+
+    body.ui-masthead .mh-rail-group-items .mh-rail-btn:not(.is-active) > svg {
+        display: none;
     }
 }
 
@@ -882,11 +965,20 @@ body.ui-masthead .mh-rail-wordmark::after {
 }
 body.ui-masthead .mh-rail { padding: 20px 0; gap: 18px; }
 body.ui-masthead .mh-rail-nav { padding-inline: 12px; }
-body.ui-masthead .mh-rail-btn { height: 42px; }
+body.ui-masthead .mh-rail-btn { height: 38px; }
 body.ui-masthead .mh-rail-foot { padding-inline: 12px; }
 
 body.ui-masthead .mh-tabs {
     border-bottom: 1px solid var(--line);
+}
+
+/* From 768px up the rail is on screen and already answers "which sibling sections
+   exist" — the in-content tab row restated it 60px away. It survives only below
+   768px, the one viewport with no rail. */
+@media (min-width: 768px) {
+    body.ui-masthead .mh-tabs {
+        display: none;
+    }
 }
 /* The eyebrow row carries the section action (Sync / Add meal / …). It must be
    allowed to wrap: on a phone the button plus its status line is wider than the
@@ -911,7 +1003,7 @@ body.ui-masthead .mh-hero-row {
        the divider left hanging. */
     flex-wrap: wrap;
     gap: 22px 56px;
-    margin-top: 28px;
+    margin-top: 20px;
 }
 body.ui-masthead .mh-title {
     flex: none;

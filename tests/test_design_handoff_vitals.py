@@ -65,12 +65,35 @@ def test_rail_matches_handoff_widths_and_wordmark():
 def test_masthead_title_and_metrics_share_one_hero_row():
     assert 'class="mh-hero-row"' in MASTHEAD_TEMPLATE
     assert ".mh-hero-row" in MASTHEAD_CSS
-    # The 54px lives on --mh-text-hero-lg since U6 pulled every masthead size
-    # into a named token; the rule references the token.
-    assert "--mh-text-hero-lg: 54px" in MASTHEAD_CSS
+    # The desktop H1 size lives on --mh-text-hero-lg since U6 pulled every
+    # masthead size into a named token; the rule references the token. Compressed
+    # 54→36 by the IA pass — the header was eating ~120px above every page.
+    assert "--mh-text-hero-lg: 36px" in MASTHEAD_CSS
     assert "font: 800 var(--mh-text-hero-lg)/.95" in MASTHEAD_CSS
     assert "max-width: 1240px" in MASTHEAD_CSS
     assert ".grid.grid-cols-3" in MASTHEAD_CSS
+
+
+def test_rubric_tabs_are_gone_wherever_the_rail_is_on_screen():
+    """Navigation was stated three times. From 768px up the rail is visible and the
+    in-content tab row said the same thing 60px away — it survives only below 768,
+    the one viewport with no rail. The markup stays; only the desktop render goes."""
+    assert 'class="mh-tabs"' in MASTHEAD_TEMPLATE
+    desktop = MASTHEAD_CSS.split("@media (min-width: 768px)")
+    assert any(
+        block.lstrip().startswith("{")
+        and ".mh-tabs" in block.split("}\n}")[0]
+        and "display: none" in block.split("}\n}")[0]
+        for block in desktop[1:]
+    )
+
+
+def test_rail_rows_shrank_and_rubrics_collapse():
+    assert "body.ui-masthead .mh-rail-btn { height: 38px; }" in MASTHEAD_CSS
+    assert ".mh-rail-group-head" in MASTHEAD_CSS
+    assert ".mh-rail-group-count" in MASTHEAD_CSS
+    # The dot only replaces the icon where labels exist to identify the row.
+    assert ".mh-rail-group-items .mh-rail-btn:not(.is-active) > svg" in MASTHEAD_CSS
 
 
 def test_brand_uses_handoff_a_mark_for_favicon():

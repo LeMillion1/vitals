@@ -172,12 +172,12 @@ sizes that already exist on the core scale (12/13/14px) reference the core token
 
 | Token | Size | Use |
 |---|---|---|
-| `--mh-text-hero` | 62px | `.mh-title` base |
-| `--mh-text-hero-lg` | 54px | `.mh-title` on desktop |
-| `--mh-text-hero-md` | 38px | `.mh-title` + hero figure on tablet |
+| `--mh-text-hero` | 40px | `.mh-title` base |
+| `--mh-text-hero-lg` | 36px | `.mh-title` on desktop |
+| `--mh-text-hero-md` | 32px | `.mh-title` + hero figure on tablet |
 | `--mh-text-hero-sm` | 30px | `.mh-title` on a narrow phone |
-| `--mh-text-metric` | 50px | `.mh-metric-value.is-primary` |
-| `--mh-text-metric-md` | 48px | the same on the desktop shell |
+| `--mh-text-metric` | 36px | `.mh-metric-value.is-primary` |
+| `--mh-text-metric-md` | 34px | the same on the desktop shell |
 | `--mh-text-ring` / `-md` | 32px / 26px | value inside a progress ring |
 | `--mh-text-wordmark` / `-sm` | 26px / 22px | rail wordmark, expanded / collapsed "V" |
 | `--mh-text-lead` | 21px | `.mh-metric-value` (secondary figures) |
@@ -257,8 +257,23 @@ Health (weight, garmin, hevy, nutrition, reports, charts), Markers (glp1, labs,
 genetics), Lifestyle (supplements, skincare, interactions); membership is
 gated by `enabled_modules`.
 
+**Rubrics collapse.** Fifteen 38px buttons plus three headings do not fit a
+1440×900 rail, so only the rubric holding the current page renders its items.
+The other two are a 36px `.mh-rail-group-head` row — label + count + chevron —
+whose click expands them in place (local Alpine `open`, nothing persisted:
+which rubric is open is re-derived from `request.url.path` on every render, so a
+boosted navigation and the out-of-band re-render both land correct). A collapsed
+`.mh-rail-group-items` carries a static inline `display:none` next to its
+`x-show`, so it is never briefly visible before Alpine boots. Inside an expanded
+rubric the icon gives way to a quiet 6px `.mh-rail-dot` — the heading already
+names the group — while the **active** row keeps its icon, `--accent-soft` fill
+and 3px amber `::before` bar. Below 901px the rail is icon-only: no labels, no
+counts, the chevron alone marks the row as a control and the icons stay.
+
 **Mobile (<768px):** the rail is replaced by a 52px `.mh-topbar` — brand
-wordmark + a hamburger "menu" trigger.
+wordmark + a hamburger "menu" trigger. `.mh-tabs` (the in-content rubric row) is
+**mobile-only**: from 768px up the rail is on screen and already answers the same
+question, so the tab row is `display:none` there.
 
 **Section header**, rendered by the `masthead_header(section, title, metrics)`
 macro at the top of every module page:

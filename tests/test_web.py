@@ -1633,3 +1633,45 @@ async def test_login_rate_limited_by_ip(client):
             "/login", data={"username": "tester", "password": "wrong"}
         )
     assert last.status_code == 429
+
+
+# ── Rail: collapsible rubrics ───────────────────────────────────────────────────
+
+_RAIL_GROUP = __import__("re").compile(
+    r'x-data="\{ open: (true|false) \}">\s*<button[^>]*title="([^"]+)"'
+)
+
+
+def _rail_groups(html: str) -> dict[str, bool]:
+    """{rubric label: expanded?} as the rail rendered it."""
+    return {label: state == "true" for state, label in _RAIL_GROUP.findall(html)}
+
+
+@pytest.mark.parametrize(
+    "route, rubric",
+    [("/weight", "health"), ("/reports", "health"), ("/labs", "markers")],
+)
+async def test_rail_expands_only_the_current_rubric(auth_client, route, rubric):
+    """The rail no longer renders fifteen buttons at once: the rubric holding the
+    current page is expanded, every other one is a collapsed header row. The state
+    is derived from the path server-side, so it survives a boosted navigation."""
+    from vitals.i18n import t
+
+    r = await auth_client.get(route, headers={"Accept": "text/html"})
+    assert r.status_code == 200
+    groups = _rail_groups(r.text)
+    assert groups, "rail rendered no rubric groups"
+    for other in ("health", "markers", "lifestyle"):
+        label = t("masthead.rubric." + other)
+        if label in groups:
+            assert groups[label] is (other == rubric), f"{route}: {other}"
+
+
+async def test_rail_collapsed_rubric_items_are_hidden_before_alpine_boots(auth_client):
+    """A collapsed group carries a static inline display:none, not just x-show —
+    otherwise its items flash (and stay) visible until Alpine wires the root up,
+    which on a boosted swap is exactly the failure mode this shell has hit before."""
+    r = await auth_client.get("/weight", headers={"Accept": "text/html"})
+    assert '<div class="mh-rail-group-items" style="display:none" x-show="open"' in r.text
+    # …and the open one has no inline override for x-show to fight with.
+    assert '<div class="mh-rail-group-items" x-show="open"' in r.text
