@@ -1079,22 +1079,24 @@ async def daily_count(session: AsyncSession) -> int:
 
 
 # ── Scheduler job ─────────────────────────────────────────────────────────────
-async def sync_job(session_factory, redis=None) -> None:
+async def sync_job(session_factory, redis=None, *, days: int = 2) -> Optional[dict]:
     """Garmin poll (registered in vitals/scheduler/jobs.py). No-ops cleanly when
-    Garmin isn't configured."""
+    Garmin isn't configured — returns None in that case, else the sync summary
+    (the MCP ``sync_garmin`` tool reports it back to the model)."""
     from vitals.integrations.garmin_client import GarminClient
 
     client = GarminClient.from_config(redis=redis)
     if not client.is_configured:
-        return
+        return None
     async with session_factory() as session:
         from vitals.services.language_service import get_language
         from vitals.i18n import current_lang
         lang = await get_language(session, redis)
         current_lang.set(lang)
 
-        summary = await sync(session, client)
+        summary = await sync(session, client, days=days)
         await session.commit()
         if redis is not None and summary.get("error") is None:
             import time
             await redis.set("sync:last_success:garmin", str(int(time.time())))
+        return summary

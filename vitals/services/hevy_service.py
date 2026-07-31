@@ -370,17 +370,20 @@ async def latest_notes(session: AsyncSession, exercise_template_id: str) -> Opti
 
 
 # ── Scheduler job ─────────────────────────────────────────────────────────────
-async def sync_job(session_factory, redis=None) -> None:
+async def sync_job(session_factory, redis=None) -> Optional[dict]:
     """Every-6h Hevy sync (registered in vitals/scheduler/jobs.py). No-ops cleanly
-    when Hevy isn't configured so the scheduler never logs spurious failures."""
+    when Hevy isn't configured so the scheduler never logs spurious failures —
+    returns None in that case, else the sync summary (the MCP ``sync_hevy`` tool
+    reports it back to the model)."""
     from vitals.integrations.hevy_client import HevyClient
 
     client = HevyClient.from_config()
     if not client.is_configured:
-        return
+        return None
     async with session_factory() as session:
-        await sync(session, client)
+        summary = await sync(session, client)
         await session.commit()
         if redis is not None:
             import time
             await redis.set("sync:last_success:hevy", str(int(time.time())))
+        return summary

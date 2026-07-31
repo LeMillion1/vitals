@@ -65,7 +65,8 @@ from vitals.models import (
 )
 from vitals.services import conflict_engine
 from vitals.services.conflict_engine import ConflictBlocked
-from web.deps import get_session_factory
+from vitals.utils.timeutils import today_local
+from web.deps import get_redis_client, get_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -2573,6 +2574,80 @@ async def set_week_template(template: dict) -> dict:
         clean = await day_plan.set_week_template(session, merged)
         await session.commit()
         return clean
+
+
+# ── Sync tools (pull from Garmin / Hevy on demand) ────────────────────────────
+# A sync is an outbound call to someone else's API — Garmin's in particular
+# throttles logins — and the scheduler already polls both several times a day.
+# These exist for the gap case ("the last two days are empty"), so three calls a
+# day each is plenty. Counter is per calendar day, in Redis; fail-open like
+# web/ratelimit.py — a counter must never be the reason a sync can't run.
+SYNC_DAILY_LIMIT = 3
+
+
+async def _spend_sync_quota(bucket: str, limit: int = SYNC_DAILY_LIMIT) -> Optional[dict]:
+    """Count one call against today's quota. Returns an error dict once it's spent."""
+    key = f"mcp:sync_quota:{bucket}:{today_local().isoformat()}"
+    try:
+        redis = get_redis_client()
+        used = await redis.incr(key)
+        if used == 1:
+            await redis.expire(key, 86400)
+    except Exception:
+        logger.warning("sync quota backend unavailable for %s; allowing", bucket, exc_info=True)
+        return None
+    if used > limit:
+        return {
+            "error": f"{bucket} has already run {limit} times today, which is the daily "
+                     "cap for on-demand syncs. The scheduled sync keeps running regardless; "
+                     "the quota resets at midnight."
+        }
+    return None
+
+
+@mcp.tool()
+async def sync_garmin(days: int = 2) -> dict:
+    """Pulls fresh Garmin data now — daily metrics plus activities for the last
+    ``days`` (default 2: yesterday and today; up to 30 to fill a longer gap).
+
+    Use it when the data looks stale or a day is missing, not before every read:
+    the scheduler already polls several times a day. Capped at 3 calls a day.
+    Returns ``{days, activities, error}``; an auth/MFA/throttle failure comes back
+    as ``error`` (and raises an alert) rather than as an exception."""
+    from vitals.services import garmin_service
+
+    spent = await _spend_sync_quota("sync_garmin")
+    if spent:
+        return spent
+
+    summary = await garmin_service.sync_job(
+        get_session_factory(), get_redis_client(), days=max(1, min(int(days), 30))
+    )
+    if summary is None:
+        return {"error": "Garmin is not configured — no credentials in settings"}
+    return summary
+
+
+@mcp.tool()
+@gated("hevy")
+async def sync_hevy() -> dict:
+    """Pulls the latest Hevy workouts now. Same rules as ``sync_garmin``: for a gap
+    in the data, not for routine reads (the scheduler syncs every 6 hours), capped
+    at 3 calls a day. Returns ``{fetched, created, updated, skipped}``."""
+    from vitals.integrations.hevy_client import HevyAPIError, HevyNotConfigured
+    from vitals.services import hevy_service
+
+    spent = await _spend_sync_quota("sync_hevy")
+    if spent:
+        return spent
+
+    try:
+        summary = await hevy_service.sync_job(get_session_factory(), get_redis_client())
+    except (HevyNotConfigured, HevyAPIError) as e:
+        return {"error": f"Hevy sync failed: {e}"}
+    if summary is None:
+        return {"error": "Hevy is not configured — no API key in settings"}
+    return summary
 
 
 # ── Resources & prompts ───────────────────────────────────────────────────────

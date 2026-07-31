@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <strong>Self-hosted personal health data lake & dashboard with 73 MCP tools for Claude.ai</strong><br>
+  <strong>Self-hosted personal health data lake & dashboard with 75 MCP tools for Claude.ai</strong><br>
   <sub>Masthead UI · EN/RU interface · 15 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · Signals & Telegram · AI Digests</sub>
 </p>
 
@@ -80,7 +80,7 @@ Vitals написан с Claude в качестве основного инст�
 **🤖 AI и интеграции**
 - Еженедельные AI-дайджесты (Claude / GPT)
 - Проактивный канал в Telegram: утренний бриф, вечерний блок, подсказки по условию
-- 73 MCP-инструмента для Claude.ai (чтение + запись + override)
+- 75 MCP-инструментов для Claude.ai (чтение + запись + override)
 - OAuth 2.0 + PKCE авторизация MCP
 - Полный экспорт данных для LLM (copy-paste ready)
 - Атомарный бэкап и восстановление БД
@@ -120,7 +120,7 @@ Vitals написан с Claude в качестве основного инст�
 - [Философия и ключевые принципы](#-философия-и-ключевые-принципы)
 - [Домены данных (15 модулей)](#-домены-данных)
 - [Архитектура системы](#-архитектура-системы)
-- [MCP-интеграция с Claude.ai (73 инструмента)](#-mcp-интеграция-с-claudeai)
+- [MCP-интеграция с Claude.ai (75 инструментов)](#-mcp-интеграция-с-claudeai)
 - [Быстрый старт (Docker Compose)](#-быстрый-старт)
 - [Безопасный деплой (Сетап автора)](#-безопасный-деплой-сетап-автора)
 - [Параметры конфигурации (.env)](#-параметры-конфигурации)
@@ -302,7 +302,7 @@ Vitals написан с Claude в качестве основного инст�
 - **Утренний бриф**: детерминированные блоки собирает код из того же кросс-доменного контекста, что и недельный дайджест, модель добавляет ровно один абзац интерпретации — упала модель, бриф всё равно придёт; пустой день = молчание, а не пустой бриф. Хранится в `weekly_digests` (`kind='daily_brief'`), виден в `/reports` (там же кнопки «Собрать бриф» и «Отправить тестовое»)
 - **Нуджи** (подсказки в течение дня) — список спецификаций (условие, текст, кулдаун, категория-переключатель), один движок обходит реестр; добавить подсказку = одна запись. Сейчас три категории: активность, питание, свежесть данных
 - Единые ворота отправки: выключенный модуль, дедуп, тихие часы (только для нудджей) и дневной бюджет сообщений; ответы на вопросы владельца из бюджета исключены
-- Ответы на вопросы: реплай на сообщение бота или просто «почему hrv просел?» — модель видит то сообщение, на которое отвечают, и контекст последнего брифа, и ничего больше. Глубокие разборы — в Claude.ai через MCP, там 73 инструмента и модель получше
+- Ответы на вопросы: реплай на сообщение бота или просто «почему hrv просел?» — модель видит то сообщение, на которое отвечают, и контекст последнего брифа, и ничего больше. Глубокие разборы — в Claude.ai через MCP, там 75 инструментов и модель получше
 - Сигналы и `day_context` попадают в контекст и недельного дайджеста, и брифа — с временем суток, потому что «кофе в 22» и «кофе в 9» это разные факты с одним ключом
 - Канал — за протоколом `Notifier`, выше него никто не знает про Telegram. Модуль `signals` по умолчанию **выключен** и работает как рубильник всего проактивного слоя: выключен — бот молчит совсем. Настройки (время брифа и вечернего блока, тихие часы, бюджет, категории нуджей, частота опроса Garmin, шаблон недели) — на карточке в `/settings`, сохранение перевешивает задачи на живом планировщике **без перезапуска**
 - MCP: `get_signals`, `log_signal`, `get_day_context` — Клод видит то, что владелец сказал боту
@@ -375,7 +375,7 @@ graph TD
 
 Встроенный сервер [FastMCP](https://github.com/jlowin/fastmcp) server доступен на `/mcp/` (транспорт streamable HTTP). Авторизация: OAuth 2.0 с верификацией Bearer-токенов. PKCE (`S256`) **обязателен** — запрос на `/oauth/authorize` без `code_challenge` отклоняется, а не проходит мимо проверки. Метаданные защищённого ресурса отдаются на `/.well-known/oauth-protected-resource` (RFC 9728), и ответ `401` указывает на них через `WWW-Authenticate: Bearer resource_metadata="..."`, чтобы клиент сам нашёл, где авторизоваться. Настраивается в веб-интерфейсе (раздел настроек).
 
-**73 инструмента** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурса (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`.
+**75 инструментов** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурса (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`.
 
 #### Чтение (33 инструмента)
 
@@ -459,6 +459,16 @@ graph TD
 | `override_alert` | Отметить блокирующее предупреждение как «принято, делаю всё равно» |
 | `generate_digest_now` | Сгенерировать свежий еженедельный AI-дайджест сейчас |
 | `delete_record` | Удалить одну запись любого домена по ID (`domain` + `record_id`) — вес, замер, шумовой период, анализ, цель, еда, GLP-1 (инъекция / побочка / фаза), ГЗТ (доза / курс / препарат курса), состав тела, событие хронологии, наблюдение за кожей, добавка, генетический вариант, сигнал |
+
+#### Синхронизация (2 инструмента)
+
+| Инструмент | Описание |
+| :--- | :--- |
+| `sync_garmin` | Подтянуть свежие данные Garmin прямо сейчас — дневные метрики и активности за последние `days` (по умолчанию 2, максимум 30) |
+| `sync_hevy` | Подтянуть свежие тренировки из Hevy прямо сейчас |
+
+> [!NOTE]
+> **Лимит — 3 вызова в сутки на каждый.** Синхронизация — это исходящий запрос в чужой API (Garmin к тому же троттлит логины), а планировщик и так опрашивает оба источника несколько раз в день. Эти инструменты нужны на случай дыры в данных («последние два дня пустые»), а не перед каждым чтением. Счётчик живёт в Redis и считается по календарному дню; когда лимит исчерпан, инструмент возвращает `{"error": ...}` и никуда не ходит. Плановая синхронизация от лимита не зависит и продолжает работать.
 
 > [!TIP]
 > **Override-флоу.** Все записывающие инструменты, проходящие движок конфликтов (вес, GLP-1, ГЗТ, добавки, кожа, замеры, состав тела), принимают `override=true`. При жёстком блоке инструмент возвращает `{"blocked": true, "violations": [...]}` вместо сохранения — повтор вызова с `override=true` сохраняет (аналог кнопки «Записать всё равно» в UI).
@@ -897,7 +907,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 **🤖 AI & Integrations**
 - Weekly AI digests (Claude / GPT via OpenRouter)
 - Proactive Telegram channel: morning brief, evening block, condition-driven nudges
-- 73 MCP tools for Claude.ai (read + write + override)
+- 75 MCP tools for Claude.ai (read + write + override)
 - OAuth 2.0 + PKCE authorization for MCP
 - Full data export for LLM (copy-paste ready)
 - Atomic database backup & restore
@@ -937,7 +947,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 - [Core Philosophy](#-core-philosophy)
 - [Supported Domains (15 modules)](#-supported-domains)
 - [Technical Architecture](#-technical-architecture)
-- [MCP Integration with Claude.ai (73 tools)](#-mcp-integration-with-claudeai-1)
+- [MCP Integration with Claude.ai (75 tools)](#-mcp-integration-with-claudeai-1)
 - [Quick Start (Docker Compose)](#-quick-start)
 - [Secure Deployment (Creator's Setup)](#-secure-deployment-creators-setup)
 - [Configuration (.env)](#-configuration)
@@ -1119,7 +1129,7 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 - **Morning brief**: the deterministic blocks are built by code from the same cross-domain context the weekly digest assembles, and the model contributes exactly one interpretation paragraph — if it fails, the brief still arrives; an empty day is silence, not an empty brief. Stored in `weekly_digests` (`kind='daily_brief'`), visible in `/reports` along with "Build brief" and "Send a test message" buttons
 - **Nudges** — a list of specs (condition, text, cooldown, category toggle) walked by one engine; adding a nudge is a single entry. Three categories today: activity, nutrition, data freshness
 - One gate for everything outgoing: module off, dedupe, quiet hours (nudges only) and a daily message budget; replies to the owner are deliberately exempt from the budget
-- Answering questions: a reply to one of the bot's messages, or just "why is my hrv down?" — the model sees the message being replied to plus the context the last brief was built on, and nothing else. Deep analysis belongs in Claude.ai over MCP, which has 73 tools and a better model
+- Answering questions: a reply to one of the bot's messages, or just "why is my hrv down?" — the model sees the message being replied to plus the context the last brief was built on, and nothing else. Deep analysis belongs in Claude.ai over MCP, which has 75 tools and a better model
 - Signals and `day_context` reach both the weekly digest and the brief, with the hour attached — "coffee at 22:00" and "coffee at 09:00" are opposite facts wearing the same key
 - The channel sits behind a `Notifier` protocol — nothing above it knows about Telegram. The `signals` module is **off by default** and doubles as the master switch for the whole proactive layer: off means the bot says nothing at all. Brief and evening times, quiet hours, budget, nudge categories, the Garmin poll rate and the week template live on a card in `/settings`, and saving re-registers the jobs on the running scheduler **without a restart**
 - MCP: `get_signals`, `log_signal`, `get_day_context` — Claude can see what the owner told the bot
@@ -1192,7 +1202,7 @@ Brief time, evening time and the Garmin poll rate live in the database (the `/se
 
 Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streamable HTTP transport). Authorization: OAuth 2.0 with signed Bearer token verification. PKCE (`S256`) is **mandatory** — an `/oauth/authorize` request without a `code_challenge` is rejected rather than skipping the check. Protected-resource metadata is served at `/.well-known/oauth-protected-resource` (RFC 9728), and a `401` points at it via `WWW-Authenticate: Bearer resource_metadata="..."` so the client can discover where to authorize. Configured in the web dashboard settings.
 
-**73 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt.
+**75 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt.
 
 #### Read (33 tools)
 
@@ -1276,6 +1286,16 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `override_alert` | Mark a blocking alert overridden — "noted, doing it anyway" |
 | `generate_digest_now` | Generate a fresh weekly AI digest now |
 | `delete_record` | Delete one record from any domain by ID (`domain` + `record_id`) — weight, measurement, noise marker, lab result, goal, meal, GLP-1 (injection / side effect / dose phase), HRT (dose / cycle / cycle item), body scan, timeline event, skin observation, supplement, genetic variant, signal |
+
+#### Sync (2 tools)
+
+| Tool | Description |
+| :--- | :--- |
+| `sync_garmin` | Pull fresh Garmin data now — daily metrics and activities for the last `days` (default 2, up to 30) |
+| `sync_hevy` | Pull the latest Hevy workouts now |
+
+> [!NOTE]
+> **Capped at 3 calls a day each.** A sync is an outbound call to someone else's API (Garmin throttles logins on top of that), and the scheduler already polls both sources several times a day. These tools are for the gap case ("the last two days are empty"), not for use before every read. The counter lives in Redis and resets on the calendar day; once the cap is spent the tool returns `{"error": ...}` without going anywhere. The scheduled sync is unaffected and keeps running.
 
 > [!TIP]
 > **Override flow.** Every write tool that runs the conflict engine (weight, GLP-1, HRT, supplements, skincare, measurements, body composition) accepts `override=true`. On a hard block the tool returns `{"blocked": true, "violations": [...]}` instead of saving — retry the same call with `override=true` to save anyway (the equivalent of the UI's "Save anyway" button).
