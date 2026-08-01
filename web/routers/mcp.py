@@ -29,6 +29,7 @@ from datetime import date as date_type, timedelta
 from typing import Optional
 
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
@@ -63,7 +64,7 @@ from vitals.models import (
     WeightLog,
     WeeklyDigest,
 )
-from vitals.services import conflict_engine
+from vitals.services import conflict_engine, modules_service
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis_client, get_session_factory
@@ -73,17 +74,30 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("Vitals")
 
 
+# Columns every row carries and no tool ever accepts back: bookkeeping the model
+# cannot act on. Dropped from serialized rows along with every ``None`` value —
+# at a hundred rows per read the key names alone outweigh the data. ``id`` and
+# ``date`` stay (edits and deletes address rows by id); ``source`` stays (weight
+# priority and provenance are answers in their own right).
+_ROW_NOISE = frozenset({"domain", "created_at", "updated_at", "raw_payload_id"})
+
+
 def serialize_row(row) -> dict:
-    """Helper to convert any SQLAlchemy model instance into a JSON-serializable dict."""
+    """Helper to convert any SQLAlchemy model instance into a JSON-serializable dict.
+
+    Omits bookkeeping columns (``_ROW_NOISE``) and unset fields: an absent key and
+    a ``null`` one read the same to the model, and the null costs tokens per row.
+    """
     if row is None:
         return {}
     d = {}
     for column in row.__table__.columns:
+        if column.name in _ROW_NOISE:
+            continue
         val = getattr(row, column.name)
-        if hasattr(val, "isoformat"):
-            d[column.name] = val.isoformat()
-        else:
-            d[column.name] = val
+        if val is None:
+            continue
+        d[column.name] = val.isoformat() if hasattr(val, "isoformat") else val
     return d
 
 
@@ -166,6 +180,15 @@ async def _module_enabled(session, key: str) -> bool:
     return bool(state.get(key))
 
 
+# tool name → the optional module it belongs to. Writes register themselves through
+# ``gated``; the reads of those same domains are listed below. Used only to hide a
+# switched-off module's tools from ``tools/list`` — the surface is 75 tools and
+# their schemas are re-sent with every message of every conversation, so a domain
+# the owner does not track is pure weight. Reads stay callable if invoked directly:
+# hiding them is a budget decision, not a permission one.
+TOOL_MODULES: dict[str, str] = {}
+
+
 def gated(module_key: str):
     """Refuse a write when its optional module is switched off.
 
@@ -176,6 +199,8 @@ def gated(module_key: str):
     of an optional domain; ``tests/test_mcp_module_gate.py`` holds the full list,
     so a new tool has to be classified rather than quietly ungated."""
     def decorator(fn):
+        TOOL_MODULES[fn.__name__] = module_key
+
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
             session_factory = get_session_factory()
@@ -290,6 +315,22 @@ async def get_glp1_logs(
 # project — a year is ~350k rows — so an unbounded read would blow the context.
 INTRADAY_POINT_CAP = 5000
 
+# The two per-night timelines on a daily row: a hypnogram is ~30 intervals and the
+# breathing spans a handful more, so together they are ~70% of the row's JSON and
+# ride along on every read of the last hundred nights. Replaced by a breadcrumb
+# unless asked for — hiding the data outright would read as "there are no sleep
+# stages" and the model would stop asking.
+_SLEEP_DETAIL_COLUMNS = ("sleep_stages", "breathing_events")
+
+
+def _fold_sleep_detail(row: dict) -> dict:
+    """Swap each present sleep-detail column for a count + how to get the real thing."""
+    for name in _SLEEP_DETAIL_COLUMNS:
+        value = row.get(name)
+        if value:
+            row[name] = f"{len(value)} entries — call again with sleep_detail=True"
+    return row
+
 
 @mcp.tool()
 async def get_garmin_metrics(
@@ -297,6 +338,7 @@ async def get_garmin_metrics(
     end_date: Optional[str] = None,
     limit: int = 100,
     intraday: bool = False,
+    sleep_detail: bool = False,
 ) -> dict:
     """Retrieves daily Garmin recovery/sleep scores and recorded activity sessions.
     Each series defaults to the most recent 100 rows.
@@ -312,15 +354,20 @@ async def get_garmin_metrics(
 
     A night's samples are dated to the daily row they belong to (the morning of
     waking), including the ones recorded the previous evening, so one night reads
-    as one date. The night's *stage* timeline is not a series — it's
-    ``sleep_stages`` on the daily row (``[{start, end, stage}]``, stage being
-    deep/light/rem/awake), next to ``breathing_events``.
+    as one date.
 
     Off by default because it is orders of magnitude more data than the daily
     rows: use it to answer *when* something happened (a stress spike, a Body
     Battery drain, an SpO2 dip and which sleep stage it fell in), always with a
     narrow start_date/end_date window. The response caps at 5000 points and sets
     ``intraday_truncated`` to true when the window held more than that.
+
+    The night's *stage* timeline is not a series — it's ``sleep_stages`` on the
+    daily row (``[{start, end, stage}]``, stage being deep/light/rem/awake), next
+    to ``breathing_events``. Both are folded to a count by default and returned in
+    full with ``sleep_detail=True`` — a separate switch from ``intraday`` so that
+    reading one night's hypnogram doesn't drag every curve along with it. Ask for
+    it with a narrow window when the question is about the shape of a night.
     """
     session_factory = get_session_factory()
     start = _parse_date(start_date, field="start_date")
@@ -345,8 +392,11 @@ async def get_garmin_metrics(
         a_stmt = a_stmt.order_by(GarminActivity.date.desc(), GarminActivity.start_time.desc()).limit(limit)
         activities = (await session.execute(a_stmt)).scalars().all()
 
+        rows = [serialize_row(d) for d in daily]
+        if not sleep_detail:
+            rows = [_fold_sleep_detail(r) for r in rows]
         result = {
-            "daily_recovery": [serialize_row(d) for d in daily],
+            "daily_recovery": rows,
             "activities": [serialize_row(a) for a in activities],
         }
 
@@ -2685,6 +2735,55 @@ async def weekly_review() -> str:
         "give at most three concrete, non-alarmist suggestions. This is decision "
         "support, not medical advice."
     )
+
+
+# The read side of the same map (the writes registered themselves via ``gated``).
+# ``tests/test_mcp_tool_budget.py`` checks every name here is a real tool, so a
+# rename can't quietly leave a domain's reads visible forever.
+TOOL_MODULES.update({
+    "get_glp1_logs": "glp1",
+    "get_hevy_workouts": "hevy",
+    "get_supplements_catalog": "supplements",
+    "get_skincare_logs": "skincare",
+    "get_genetics_snps": "genetics",
+    "get_hrt_logs": "hrt",
+    "get_hrt_cycles": "hrt",
+    "get_nutrition_summary": "nutrition",
+    "search_meals": "nutrition",
+    "get_body_scans": "body_comp",
+    "get_body_scan": "body_comp",
+    "get_body_metric_history": "body_comp",
+    "get_timeline": "timeline",
+    "get_signals": "signals",
+    "get_day_context": "signals",
+    "get_proactive_state": "signals",
+})
+
+
+class ModuleVisibilityMiddleware(Middleware):
+    """Hide a switched-off module's tools from ``tools/list``.
+
+    They already refuse the call ("module '<key>' is disabled") — listing them only
+    spends the conversation's budget on schemas for domains the owner does not
+    track, and invites the model to try them. Resolved per request rather than
+    latched at import, so flipping a toggle in Settings takes effect on the next
+    reconnect without a restart. Fails open: if the module state can't be read, the
+    full surface is listed rather than an empty one.
+    """
+
+    async def on_list_tools(self, context, call_next):
+        tools = await call_next(context)
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                enabled = await modules_service.get_enabled_modules(session)
+        except Exception:
+            logger.warning("mcp: module state unavailable; listing every tool", exc_info=True)
+            return tools
+        return [t for t in tools if enabled.get(TOOL_MODULES.get(t.name, ""), True)]
+
+
+mcp.add_middleware(ModuleVisibilityMiddleware())
 
 
 def _www_authenticate(scope) -> bytes:

@@ -198,9 +198,10 @@ async def test_get_garmin_metrics_intraday_off_by_default(db_session, session_fa
 async def test_get_garmin_metrics_exposes_sleep_series_and_stages(
     db_session, session_factory, monkeypatch
 ):
-    """The night's data reaches Claude by the same two paths as everything else:
-    point series through ``intraday``, and the stage timeline reflected off the
-    daily row's JSONB column by ``serialize_row`` — neither needed new plumbing."""
+    """The night's data reaches Claude by two independent switches: point series
+    through ``intraday``, the stage timeline off the daily row's JSONB column
+    through ``sleep_detail``. Separate so that asking for one night's shape does
+    not also pull every curve of the window (see test_mcp_tool_budget.py)."""
     from datetime import date, datetime
 
     from vitals.models.garmin import GarminDaily, GarminIntraday
@@ -227,7 +228,7 @@ async def test_get_garmin_metrics_exposes_sleep_series_and_stages(
     await db_session.commit()
 
     result = await mcp_router.get_garmin_metrics(
-        start_date="2026-06-10", end_date="2026-06-10", intraday=True
+        start_date="2026-06-10", end_date="2026-06-10", intraday=True, sleep_detail=True
     )
     assert [p["value"] for p in result["intraday"]["sleep_hr"]] == [58.0]
     assert [p["value"] for p in result["intraday"]["sleep_spo2"]] == [91.0]
