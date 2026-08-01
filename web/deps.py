@@ -130,15 +130,25 @@ async def load_nav_status(
     """Global dependency: today's readout for the nav rail's status card (and the
     phone's "More" screen), stashed on ``request.state``.
 
-    Only for document requests. The rail is chrome, so an HTMX partial, an MCP
-    call or an /external-api POST would pay four pointless reads for markup they
-    never render — those send ``Accept: application/json``, a browser navigation
-    (boosted or not) sends ``text/html``.
+    Only for document requests: the rail is chrome, so an MCP call or a JSON API
+    read would pay four pointless queries for markup it never renders.
+
+    "Is this a document request" is decided by ruling API clients OUT, not by
+    requiring ``text/html`` in. **A boosted navigation sends no Accept header at
+    all** — htmx leaves XHR's default alone — so requiring ``text/html`` skipped
+    the reads on exactly the requests that re-render the whole rail, and the card
+    blinked out of existence on every click and back on every reload. A missing
+    or wildcard Accept now counts as a document; only a client that explicitly
+    asks for something else (``application/json``, ``text/event-stream``) is
+    skipped.
 
     Fail-safe: any error yields an empty list — the card just doesn't draw.
     """
     request.state.nav_status = []
-    if request.method != "GET" or "text/html" not in request.headers.get("accept", ""):
+    accept = request.headers.get("accept", "")
+    if request.method != "GET":
+        return
+    if accept and "text/html" not in accept and "*/*" not in accept:
         return
     from vitals.services import nav_status_service
 

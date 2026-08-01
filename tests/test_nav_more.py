@@ -1,4 +1,4 @@
-"""The August 2026 nav handoff: the /more screen and the rail's sync card.
+"""The August 2026 nav handoff: the /more screen and the rail's status card.
 
 Both surfaces read the same two services (modules_service for what to list,
 nav_status_service for today's numbers), so these cover the pieces the static
@@ -134,3 +134,43 @@ async def test_status_rows_never_raise_on_a_broken_session():
             raise RuntimeError("db is down")
 
     assert await nav_status_service.rail_stats(Boom()) == []
+
+
+# ── The card has to survive a boosted navigation ─────────────────────────────
+
+async def test_status_card_survives_a_boosted_navigation(auth_client, db_session):
+    """The regression: hx-boost sends no Accept header at all, so a guard that
+    required "text/html" skipped the reads on exactly the requests that
+    re-render the whole rail — the card vanished on every click and came back on
+    every reload."""
+    db_session.add(
+        GarminDaily(
+            date=today_local(),
+            domain=GARMIN_DOMAIN,
+            source=Source.GARMIN_API.value,
+            sleep_seconds=7 * 3600,
+        )
+    )
+    await db_session.commit()
+
+    full = await auth_client.get("/weight", headers={"Accept": "text/html"})
+    # What hx-boost actually puts on the wire: HX-Request, and XHR's default
+    # Accept — which htmx never touches, so it is either absent or "*/*".
+    absent = await auth_client.get("/weight", headers={"HX-Request": "true", "Accept": ""})
+    wildcard = await auth_client.get("/weight", headers={"HX-Request": "true", "Accept": "*/*"})
+    for name, response in (("full", full), ("absent", absent), ("wildcard", wildcard)):
+        assert 'class="mh-rail-stats"' in response.text, name
+
+
+async def test_a_json_client_still_pays_nothing_for_the_card(auth_client):
+    """The guard exists to keep MCP and API reads off these four queries."""
+    from web.deps import load_nav_status
+
+    class Req:
+        method = "GET"
+        headers = {"accept": "application/json"}
+        state = type("S", (), {})()
+
+    req = Req()
+    await load_nav_status(req, db=None)
+    assert req.state.nav_status == []
