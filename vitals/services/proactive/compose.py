@@ -55,6 +55,23 @@ _RECOVERY_KEYS = (
 # "просадка" on it with nothing to call it against.
 BASELINE_KEYS = _RECOVERY_KEYS + ("spo2_lowest",)
 
+# Any one of these present means Garmin has closed and scored last night. All
+# three absent on *today's* row means the night is still running.
+NIGHT_SCORED_KEYS = ("sleep_score", "sleep_seconds", "sleep_end")
+
+# Everything on a day row that is derived from the night. Absent is not the same
+# as "not there yet": Garmin fills resting HR and Body Battery from the day so
+# far, so mid-night they hold real-looking numbers that mean nothing.
+_NIGHT_KEYS = _RECOVERY_KEYS + (
+    "spo2_lowest",
+    "body_battery_change",
+    "breathing_disruption",
+    "training_readiness",
+    "advice",
+)
+
+LINE_NIGHT_PENDING = "Ночь ещё не размечена — цифр восстановления за сегодня нет."
+
 # Below this the day-to-day wobble of these metrics swamps the difference, and a
 # "(норма 82)" printed next to 81 teaches him to skip the parenthesis — which is
 # the one place the header says anything he can't already read off the watch.
@@ -115,6 +132,38 @@ def is_empty_day(ctx: dict, *, on_date: date_type) -> bool:
     )
 
 
+def night_pending(ctx: dict, *, on_date: date_type) -> bool:
+    """Today's Garmin row is here, but last night has not been scored yet.
+
+    That is the watch still on a sleeping wrist at brief time. Body Battery reads
+    its overnight *low*, resting HR is half a day's worth, and there is no sleep
+    score at all — numbers that look like a terrible morning and are simply the
+    middle of the night. Judging recovery off them is reading the night before it
+    ended, and the brief is persisted: the misreading outlives the morning and
+    every report downstream quotes it back as fact.
+
+    A row for another date is not pending — that is stale data, which the
+    freshness rules already govern.
+    """
+    garmin = ctx.get("garmin") or {}
+    if garmin.get("date") != on_date.isoformat():
+        return False
+    return all(garmin.get(key) is None for key in NIGHT_SCORED_KEYS)
+
+
+def drop_unscored_night(ctx: dict) -> dict:
+    """Blank every night-derived number and mark the context as such.
+
+    A gap is honest and a mid-night number is not, so the brief prints neither
+    them nor a verdict built on them — and ``night_pending`` in the stored context
+    is what tells the digest, months later, why this morning has no numbers.
+    """
+    garmin = {**(ctx.get("garmin") or {}), "night_pending": True}
+    for key in _NIGHT_KEYS:
+        garmin[key] = None
+    return {**ctx, "garmin": garmin}
+
+
 def _is_fresh(value, on_date: date_type) -> bool:
     """Is this ISO date recent enough to count as "something happened"?"""
     parsed = _parse_date(value)
@@ -145,6 +194,9 @@ def header_blocks(ctx: dict) -> list[Block]:
     ]
     if parts:
         blocks.append(Block(KIND_GARMIN, " · ".join(parts), 10))
+    elif garmin.get("night_pending"):
+        # Otherwise a brief that gave up waiting reads as a brief that broke.
+        blocks.append(Block(KIND_GARMIN, LINE_NIGHT_PENDING, 10))
 
     weight = ctx.get("weight") or {}
     wparts = []

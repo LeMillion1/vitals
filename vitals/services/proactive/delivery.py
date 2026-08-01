@@ -100,7 +100,7 @@ async def find_sent(session: AsyncSession, external_id: str) -> Optional[Notific
     return result.scalars().first()
 
 
-async def _already_sent(session: AsyncSession, dedupe_key: str) -> bool:
+async def already_sent(session: AsyncSession, dedupe_key: str) -> bool:
     result = await session.execute(
         select(Notification.id).where(Notification.dedupe_key == dedupe_key)
     )
@@ -131,7 +131,7 @@ async def send(
         logger.info("skipping %s: the signals module is switched off", category)
         return None
 
-    if dedupe_key and await _already_sent(session, dedupe_key):
+    if dedupe_key and await already_sent(session, dedupe_key):
         logger.info("skipping %s: already sent (%s)", category, dedupe_key)
         return None
 

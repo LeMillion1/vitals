@@ -35,7 +35,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.nutrition_service import day_end_job as nutrition_day_end_job
     from vitals.services.hrt_reminders import reminders_job as hrt_reminders_job
     from vitals.services.garmin_service import pulse_job as garmin_pulse_job
-    from vitals.services.proactive.brief import brief_job
+    from vitals.services.proactive.brief import brief_job, last_attempt_hour
     from vitals.services.proactive.day_plan import evening_job
     from vitals.services.proactive.nudges import nudges_job
     from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
@@ -109,12 +109,18 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # night's sleep is the point of the message), stays silent on an empty day, and
     # sends nothing at all until a Telegram channel is configured. Its own lock
     # TTL: the Garmin pull in front of it makes this the slowest job in the registry.
+    #
+    # An hourly *range*, not one fire: at the scheduled minute last night may not
+    # be scored yet (he is still asleep, the watch has not closed the night), and
+    # the brief refuses to read recovery off a running night. Each later hour
+    # looks again; the delivery journal keeps it to one message a day, and the job
+    # returns before the Garmin pull once that message has gone.
     brief_hour, brief_minute = prefs.hhmm(settings["brief_time"])
     register_job(
         "daily_brief",
         brief_job,
         trigger="cron",
-        hour=brief_hour,
+        hour=f"{brief_hour}-{last_attempt_hour(brief_hour)}",
         minute=brief_minute,
         lock_ttl=900,
     )

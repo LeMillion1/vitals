@@ -258,6 +258,11 @@ async def assemble_context(
         {
             "date": g.date.isoformat(),
             "sleep_score": g.sleep_score,
+            # The night's own boundaries. Carried so a reader — the brief's
+            # unscored-night check, or the model — can tell "no sleep recorded"
+            # from "sleep recorded and it was bad", which a bare score cannot.
+            "sleep_seconds": g.sleep_seconds,
+            "sleep_end": g.sleep_end.isoformat() if g.sleep_end else None,
             "resting_hr": g.resting_hr,
             "hrv_avg": g.hrv_avg,
             "body_battery_high": g.body_battery_high,

@@ -34,7 +34,7 @@ from vitals.i18n import t
 from vitals.models.milestones import DOMAIN as DIGEST_DOMAIN, WeeklyDigest
 from vitals.services import alerts_service, digest_service
 from vitals.services.proactive import compose, day_plan
-from vitals.utils.timeutils import today_local
+from vitals.utils.timeutils import now_local, today_local
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,12 @@ _BRIEF_MAX_TOKENS = 2000
 # short enough to follow a cut that is actually moving his resting HR.
 _BASELINE_DAYS = 14
 _BASELINE_MIN_DAYS = 4
+
+# How long past its scheduled time the job keeps re-checking for last night to
+# land before it gives up and sends what there is. The brief fires on the clock,
+# but the night it is about ends whenever he wakes up — five hours covers a lie-in
+# without letting a watch that never syncs hold the morning hostage forever.
+BRIEF_WAIT_HOURS = 5
 
 BRIEF_SYSTEM = """\
 Ты пишешь короткий утренний разбор для владельца дашборда здоровья Vitals.
@@ -72,6 +78,13 @@ Garmin). Базовые понятия объяснять не надо.
 чем: у неё нет нормы, и «просадка» по ней — выдуманный факт, а не оценка.
 Если сегодня всё близко к норме — скажи это прямо одним предложением. Ровный
 день — это результат, а не повод сочинить динамику.
+
+Если `garmin.night_pending` = true — Garmin ещё не разметил прошедшую ночь (часы
+на спящей руке в момент сборки). Сна, HRV, пульса покоя и Body Battery за сегодня
+НЕТ, и вывести их из соседних блоков нельзя. Скажи одним предложением, что ночь
+ещё не подгрузилась, и дальше говори только про то, что в данных есть. Про
+восстановление, тяжесть тренировки и «организм не отдохнул» в этом случае не
+рассуждай вообще — это ровно тот выдуманный факт, который здесь запрещён.
 
 Блок `day` — что за день сегодня (удалёнка, зал). Если его `source` = "template",
 это догадка шаблона недели, а не ответ пользователя: учитывай мягко, не утверждай
@@ -217,6 +230,12 @@ async def generate_brief(
     if compose.is_empty_day(ctx, on_date=on_date):
         logger.info("no brief for %s: no sleep and nothing new", on_date)
         return None
+    # Unconditional, not a flag the caller may forget: whether to *wait* for the
+    # night is the job's call, but nobody — job, web button, MCP — gets to build a
+    # brief on numbers taken mid-night.
+    if compose.night_pending(ctx, on_date=on_date):
+        logger.info("brief for %s: last night is not scored, recovery dropped", on_date)
+        ctx = compose.drop_unscored_night(ctx)
 
     blocks = compose.header_blocks(ctx)
     day = day_plan.day_block(ctx.get("day"))
@@ -245,20 +264,60 @@ def dedupe_key(on_date: date_type) -> str:
     return f"brief:{on_date.isoformat()}"
 
 
+def last_attempt_hour(brief_hour: int) -> int:
+    """The final hour of the retry window. Clamped to 23 so a late brief time can
+    never schedule a fire past midnight — that one would be about the wrong day."""
+    return min(brief_hour + BRIEF_WAIT_HOURS, 23)
+
+
+async def night_scored(session: AsyncSession, on_date: date_type) -> bool:
+    """Has Garmin closed last night yet? ``False`` = worth waiting for.
+
+    No row for the day at all counts as *scored*: that is a watch that has not
+    synced, or is not used at all, and holding the brief for it would make an
+    optional device a hard dependency of the one proactive feature.
+    """
+    from vitals.services import garmin_service
+
+    row = await garmin_service.get_daily(session, on_date)
+    if row is None:
+        return True
+    return any(getattr(row, key, None) is not None for key in compose.NIGHT_SCORED_KEYS)
+
+
 # ── Scheduler job ─────────────────────────────────────────────────────────────
 async def brief_job(session_factory, redis=None) -> None:
-    """The 11:00 brief (B6).
+    """The 11:00 brief (B6) — fired hourly across the wait window, sent once.
 
     Pulls Garmin first, on its own, instead of hoping the poll schedule happened
     to run this morning — last night's sleep is the whole point of the message.
     A Garmin failure is not a reason to stay quiet: the brief goes out with
     whatever is in the lake.
+
+    11:00 is a guess at when he is up, and one morning it was wrong: the brief
+    went out while he was still asleep, read the middle of the night as a wrecked
+    recovery and advised skipping the gym over it — then stored that, where the
+    weekly digest reads it back as what the morning actually was. So
+    the job no longer assumes: with today's row present but the night un-scored it
+    sends nothing and lets the next hourly fire look again, up to
+    ``BRIEF_WAIT_HOURS``. In practice the brief now lands within the hour of
+    waking rather than on the hour of the clock. The last fire gives up and sends
+    what there is, minus the numbers the night never produced.
     """
     from vitals.integrations.llm_client import LLMClient
     from vitals.services import garmin_service
     from vitals.services.language_service import get_language
     from vitals.i18n import current_lang
-    from vitals.services.proactive import channels, delivery, inbound
+    from vitals.services.proactive import channels, delivery, inbound, prefs
+
+    today = today_local()
+    # Before the Garmin pull, not after: on a normal day the brief left at 11:00
+    # and every later fire in the window is a no-op that must not cost a login.
+    async with session_factory() as session:
+        if await delivery.already_sent(session, dedupe_key(today)):
+            return
+        brief_hour, _ = prefs.hhmm((await prefs.get_prefs(session))["brief_time"])
+    out_of_patience = now_local().hour >= last_attempt_hour(brief_hour)
 
     try:
         await garmin_service.sync_job(session_factory, redis)
@@ -281,7 +340,13 @@ async def brief_job(session_factory, redis=None) -> None:
             await session.rollback()
             logger.warning("re-parse sweep before the brief failed", exc_info=True)
 
-        today = today_local()
+        # Nothing is built, so nothing is stored and no model call is spent: an
+        # un-scored night is not an empty day either, so it raises no alert — the
+        # next fire is an hour away and this is the normal state of a lie-in.
+        if not out_of_patience and not await night_scored(session, today):
+            logger.info("brief for %s postponed: last night is not scored yet", today)
+            return
+
         row = await generate_brief(session, LLMClient(), source=Source.SCHEDULER.value)
         if row is None:
             await alerts_service.raise_alert(

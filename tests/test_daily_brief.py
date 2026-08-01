@@ -6,7 +6,7 @@ down with it turns the one proactive feature into nothing; and a brief that keep
 arriving with "нет данных", or that carries the hormone protocol into Telegram,
 is a product decision reversed by accident.
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -251,6 +251,100 @@ async def test_protocol_never_reaches_the_brief(db_session):
     full = await digest_service.assemble_context(db_session, on_date=DAY)
     assert full["glp1"]["drug"] == "semaglutide"
     assert full["supplements"][0]["name"] == "Ашваганда"
+
+
+# ── The night that hasn't ended yet ───────────────────────────────────────────
+# Today's row as it looks while he is still asleep: Garmin fills the day-so-far
+# numbers, and the sleep DTO — score, duration, sleep end — does not exist until
+# the night is closed. Body Battery here is the overnight *low*, not a peak.
+GARMIN_MID_NIGHT = {
+    "summary": {"restingHeartRate": 68, "bodyBatteryHighestValue": 24},
+}
+
+
+async def test_a_running_night_never_reaches_the_brief(db_session):
+    """The prod bug: the 11:00 brief caught him asleep, read Body Battery 24 and
+    resting HR 68 off a night still in progress, called recovery wrecked and told
+    him to skip the gym — then stored all of it, where the weekly digest reads it
+    back as what that morning actually was."""
+    await garmin_service.ingest_daily(db_session, DAY, GARMIN_MID_NIGHT)
+    await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
+    await db_session.commit()
+
+    row = await brief.generate_brief(db_session, FakeLLM(), on_date=DAY)
+    await db_session.commit()
+
+    assert "Пульс покоя" not in row.content
+    assert "Body Battery" not in row.content
+    assert compose.LINE_NIGHT_PENDING in row.content
+    assert "Вес 88 кг" in row.content  # what *is* known still goes out
+    # And the stored context says why, so nothing downstream fills the gap in.
+    assert row.context_json["garmin"]["night_pending"] is True
+    assert row.context_json["garmin"]["resting_hr"] is None
+    assert row.context_json["garmin"]["advice"] is None
+
+
+async def test_a_scored_night_is_untouched(db_session):
+    """The guard must not fire on a normal morning — that would delete the header."""
+    await _seed_day(db_session)
+
+    ctx = await brief.build_context(db_session, on_date=DAY)
+    assert compose.night_pending(ctx, on_date=DAY) is False
+    assert await brief.night_scored(db_session, DAY) is True
+
+
+async def test_job_waits_for_the_night_instead_of_briefing_over_it(
+    db_session, session_factory, monkeypatch
+):
+    """Inside the wait window an un-scored night costs nothing: no message, no
+    stored brief, no model call, no empty-day alert — the next hourly fire looks
+    again. Once the night lands, the brief goes out normally."""
+    notifier = FakeNotifier()
+    llm = FakeLLM()
+    _patch_job(monkeypatch, notifier, llm)
+    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(brief, "now_local", lambda: datetime(2026, 7, 26, 11, 0))
+    await garmin_service.ingest_daily(db_session, DAY, GARMIN_MID_NIGHT)
+    await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
+    await db_session.commit()
+
+    await brief.brief_job(session_factory)
+
+    assert notifier.sent == []
+    assert (await db_session.execute(select(WeeklyDigest))).scalars().all() == []
+    assert (await db_session.execute(select(SystemAlert))).scalars().all() == []
+    assert llm.calls == []
+
+    # He wakes up, the watch closes the night, the next fire an hour later sends.
+    await garmin_service.ingest_daily(db_session, DAY, GARMIN_RAW)
+    await db_session.commit()
+
+    await brief.brief_job(session_factory)
+
+    assert len(notifier.sent) == 1
+    assert "Сон 80" in notifier.sent[0]["text"]
+
+
+async def test_job_stops_waiting_at_the_end_of_the_window(
+    db_session, session_factory, monkeypatch
+):
+    """Waiting forever is its own failure: the last fire sends what there is,
+    minus the numbers the night never produced."""
+    notifier = FakeNotifier()
+    _patch_job(monkeypatch, notifier, FakeLLM())
+    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(
+        brief, "now_local", lambda: datetime(2026, 7, 26, brief.last_attempt_hour(11), 0)
+    )
+    await garmin_service.ingest_daily(db_session, DAY, GARMIN_MID_NIGHT)
+    await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
+    await db_session.commit()
+
+    await brief.brief_job(session_factory)
+
+    assert len(notifier.sent) == 1
+    assert compose.LINE_NIGHT_PENDING in notifier.sent[0]["text"]
+    assert "Body Battery" not in notifier.sent[0]["text"]
 
 
 # ── The empty day ─────────────────────────────────────────────────────────────

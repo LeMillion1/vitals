@@ -129,7 +129,8 @@ def test_settings_rebuild_the_job_triggers():
     register_all_jobs({"brief_time": "07:30", "evening_time": "22:15", "garmin_sync_hours": 4})
     registry = scheduler_mod._registry
 
-    assert registry["daily_brief"].trigger_kwargs == {"hour": 7, "minute": 30}
+    # A window, not one fire: the brief waits out a night that isn't scored yet.
+    assert registry["daily_brief"].trigger_kwargs == {"hour": "7-12", "minute": 30}
     assert registry["evening_block"].trigger_kwargs == {"hour": 22, "minute": 15}
     assert registry["garmin_sync"].trigger_kwargs == {"hour": "*/4", "minute": 0}
 
@@ -159,7 +160,7 @@ async def test_saving_reschedules_without_a_restart(auth_client, db_session):
     app.state.scheduler = scheduler
     try:
         before = scheduler.get_job("daily_brief")
-        assert "hour='11'" in str(before.trigger)
+        assert "hour='11-16'" in str(before.trigger)
 
         r = await auth_client.post(
             "/settings/proactive",
@@ -180,7 +181,7 @@ async def test_saving_reschedules_without_a_restart(auth_client, db_session):
         assert r.status_code == 303
 
         after = scheduler.get_job("daily_brief")
-        assert "hour='9'" in str(after.trigger)
+        assert "hour='9-14'" in str(after.trigger)
         assert "minute='5'" in str(after.trigger)
         # Pulse switched off → gone from the running scheduler too.
         assert scheduler.get_job("garmin_pulse") is None
