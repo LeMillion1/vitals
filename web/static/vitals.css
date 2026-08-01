@@ -872,13 +872,19 @@ a.v-card:hover {
 }
 
 /* Segmented control (tabs) */
+/* Sub-tab switch. Shrink-wrapped and pill-shaped, not a full-width band: it
+   sits directly under the rubric chips, which are 33px pills, and a 48px slab
+   stretched across the whole column read as a second, heavier navigation than
+   the one above it. Scrolls sideways when the labels outgrow the column. */
 .v-seg {
     display: flex;
-    gap: .15rem;
-    padding: .2rem;
+    width: fit-content;
+    max-width: 100%;
+    gap: 4px;
+    padding: 4px;
     background: var(--bg-inset);
     border: 1px solid var(--line);
-    border-radius: var(--radius);
+    border-radius: var(--radius-pill);
     overflow-x: auto;
     scrollbar-width: none;
     -ms-overflow-style: none;
@@ -889,13 +895,14 @@ a.v-card:hover {
 }
 
 .v-seg-btn {
-    flex: 1;
+    flex: 0 0 auto;
     text-align: center;
-    padding: .5rem .35rem;
+    padding: 7px 18px;
+    line-height: 1.4;
     font-size: var(--text-label);
     font-weight: 600;
     color: var(--muted);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-pill);
     transition: background .15s ease, color .15s ease;
     cursor: pointer;
     border: 0;

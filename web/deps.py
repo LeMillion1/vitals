@@ -127,11 +127,11 @@ async def load_nav_status(
     request: Request,
     db: AsyncSession = Depends(get_session),
 ) -> None:
-    """Global dependency: source-freshness rows for the nav rail's status card
-    (and the phone's "More" screen), stashed on ``request.state``.
+    """Global dependency: today's readout for the nav rail's status card (and the
+    phone's "More" screen), stashed on ``request.state``.
 
     Only for document requests. The rail is chrome, so an HTMX partial, an MCP
-    call or an /external-api POST would pay three pointless reads for markup they
+    call or an /external-api POST would pay four pointless reads for markup they
     never render — those send ``Accept: application/json``, a browser navigation
     (boosted or not) sends ``text/html``.
 
@@ -143,11 +143,11 @@ async def load_nav_status(
     from vitals.services import nav_status_service
 
     try:
-        request.state.nav_status = await nav_status_service.sync_rows(
+        request.state.nav_status = await nav_status_service.rail_stats(
             db, getattr(request.state, "enabled_modules", None)
         )
     except Exception:
-        logger.exception("nav status load failed; hiding the sync card")
+        logger.exception("nav status load failed; hiding the status card")
 
 
 async def load_language(

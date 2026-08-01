@@ -431,7 +431,7 @@
     </script>
 </head>
 
-<body class="v-app-shell flex flex-col overflow-hidden select-none ui-masthead" x-data="{ cmdOpen: false, cmdQuery: '' }" hx-boost="true">
+<body class="v-app-shell flex flex-col overflow-hidden select-none ui-masthead" hx-boost="true">
     <div id="top-progress-bar" class="v-progress-bar"></div>
 
     {% from "partials/nav_mobile.html" import mobile_bottom_nav with context %}
@@ -504,37 +504,6 @@
     {% if username %}
     {{ mobile_bottom_nav() }}
 
-    <!-- Command palette (⌘K / Ctrl+K, or the rail's search row). Section jumper
-         only for now: it filters the same registry the rail renders, client-side,
-         with no backend behind it — recent entries need a search endpoint that
-         doesn't exist yet. The shortcut and the row are built to the handoff so
-         that endpoint is the only thing left to add.
-
-         The inline display:none matters: this is an x-show overlay that gets
-         re-created on every boosted body swap, and without a static default it
-         paints open for the frame before Alpine initialises it. -->
-    <div x-show="cmdOpen" x-cloak style="display:none" class="mh-cmd"
-        @keydown.escape.window="cmdOpen = false"
-        @keydown.window.ctrl.k.prevent="cmdOpen = true; cmdQuery = ''; $nextTick(() => $refs.cmdInput.focus())"
-        @keydown.window.meta.k.prevent="cmdOpen = true; cmdQuery = ''; $nextTick(() => $refs.cmdInput.focus())"
-        @click.self="cmdOpen = false">
-        <div class="mh-cmd-panel">
-            <input type="search" x-ref="cmdInput" x-model="cmdQuery" class="mh-cmd-input"
-                placeholder="{{ t('nav.search_placeholder') }}" aria-label="{{ t('nav.search') }}"
-                x-effect="if (cmdOpen) $nextTick(() => $refs.cmdInput.focus())">
-            <div class="mh-cmd-list">
-                {% set em = request.state.enabled_modules or {} %}
-                <a href="/today" class="mh-cmd-row" @click="cmdOpen = false"
-                    x-show="{{ t('nav.today') | lower | tojson | forceescape }}.includes(cmdQuery.trim().toLowerCase())">{{ t('nav.today') }}</a>
-                {% for rubric in module_rubrics %}{% for s in nav_modules(em, rubric=rubric) %}
-                <a href="{{ s.route }}" class="mh-cmd-row" @click="cmdOpen = false"
-                    x-show="{{ t('nav.' + s.key) | lower | tojson | forceescape }}.includes(cmdQuery.trim().toLowerCase())">{{ t('nav.' + s.key) }}<span class="mh-cmd-rubric">{{ t('masthead.rubric.' + rubric) }}</span></a>
-                {% endfor %}{% endfor %}
-                <a href="/settings" class="mh-cmd-row" @click="cmdOpen = false"
-                    x-show="{{ t('nav.settings_title') | lower | tojson | forceescape }}.includes(cmdQuery.trim().toLowerCase())">{{ t('nav.settings_title') }}</a>
-            </div>
-        </div>
-    </div>
     {% endif %}
 
     <!-- Service worker setup -->

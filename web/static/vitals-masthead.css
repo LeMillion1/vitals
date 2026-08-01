@@ -37,12 +37,10 @@ body.ui-masthead {
        the nav handoff: it hid the labels, which is the one thing the rail is for,
        and a 30px row fits all sixteen sections at 1440x900 without it. */
     --mh-rail-w: 240px;
-    /* Rail-local surfaces the app palette has no name for: the recessed search
-       well, the status card, and the hover fill on a section row. */
-    --mh-rail-well: #100E14;
+    /* Rail-local surfaces the app palette has no name for: the status card and
+       the hover fill on a section row. */
     --mh-rail-card: #1A171E;
     --mh-rail-hover: #211E27;
-    --mh-rail-line-quiet: #2B2731;
 }
 
 /* ── Desktop layout row ──────────────────────────────────────────────────
@@ -100,50 +98,6 @@ body.ui-masthead .mh-rail-spacer {
     body.ui-masthead .mh-rail-spacer {
         display: block;
     }
-}
-
-/* Command-palette trigger. A recessed well rather than a button, so it reads as
-   a field you type into, and it states its own shortcut — otherwise nobody ever
-   discovers the shortcut exists. */
-body.ui-masthead .mh-rail-search {
-    flex: none;
-    margin: 0 12px;
-    height: 32px;
-    border-radius: 9px;
-    background: var(--mh-rail-well);
-    border: 1px solid var(--mh-rail-line-quiet);
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 0 11px;
-    cursor: pointer;
-    transition: border-color .15s ease;
-}
-
-body.ui-masthead .mh-rail-search:hover {
-    border-color: var(--line);
-}
-
-body.ui-masthead .mh-rail-search svg {
-    width: 14px;
-    height: 14px;
-    flex: none;
-    stroke-width: 1.6;
-    color: var(--faint);
-}
-
-body.ui-masthead .mh-rail-search-label {
-    font: 500 var(--text-micro) 'Inter', sans-serif;
-    color: var(--faint);
-}
-
-body.ui-masthead .mh-rail-kbd {
-    margin-left: auto;
-    font: 600 var(--mh-text-nano) 'Inter', sans-serif;
-    color: var(--line-2);
-    border: 1px solid var(--mh-rail-line-quiet);
-    border-radius: 5px;
-    padding: 2px 5px;
 }
 
 /* The section list takes the slack, so the status card and the footer sit on the
@@ -304,8 +258,12 @@ body.ui-masthead .mh-rail-label {
     text-overflow: ellipsis;
 }
 
-/* Source-freshness card — see mh_sync_rows in partials/masthead.html. */
-body.ui-masthead .mh-rail-sync {
+/* Today's readout — see mh_stat_rows in partials/masthead.html. Each stat is a
+   quiet uppercase label on its own line, then the number with an optional note
+   pushed to the right. Two lines rather than one because 192px of rail cannot
+   hold "Питание  1840 / 2100 ккал  белок 142 г" on a single row at any size
+   worth reading. */
+body.ui-masthead .mh-rail-stats {
     flex: none;
     margin: 0 12px;
     padding: 12px;
@@ -313,32 +271,41 @@ body.ui-masthead .mh-rail-sync {
     background: var(--mh-rail-card);
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
 }
 
-body.ui-masthead .mh-sync-row {
+body.ui-masthead .mh-stat {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    font: 500 var(--text-micro) 'Inter', sans-serif;
-    color: var(--fg-2);
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 8px;
+    row-gap: 2px;
 }
 
-body.ui-masthead .mh-sync-row.is-stale {
+body.ui-masthead .mh-stat-label {
+    width: 100%;
+    color: var(--faint);
+    font: 700 var(--mh-text-nano) 'Inter', sans-serif;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+}
+
+body.ui-masthead .mh-stat-value {
+    color: var(--fg);
+    font: 600 var(--text-label) 'Inter', sans-serif;
+    font-variant-numeric: tabular-nums;
+}
+
+body.ui-masthead .mh-stat-sub {
+    margin-left: auto;
     color: var(--muted);
+    font: 500 var(--text-micro) 'Inter', sans-serif;
+    font-variant-numeric: tabular-nums;
 }
 
-body.ui-masthead .mh-sync-dot {
-    flex: none;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--good);
-}
-
-body.ui-masthead .mh-sync-row.is-stale .mh-sync-dot {
-    background: var(--warn);
-}
+body.ui-masthead .mh-stat-sub.good { color: var(--good); }
+body.ui-masthead .mh-stat-sub.bad  { color: var(--bad); }
+body.ui-masthead .mh-stat-sub.warn { color: var(--warn); }
 
 /* Bottom cluster: settings on the left, log out as a bare glyph on the right —
    never part of .mh-rail-nav's own scroll region. */
@@ -1023,7 +990,7 @@ body.ui-masthead .mh-more {
 /* Beats the shared `main > .v-page` page padding: this screen is a menu, and it
    starts right under the status bar, not 40px down. */
 body.ui-masthead main > .v-page.mh-more {
-    padding: 6px 20px 24px !important;
+    padding: 20px 20px 24px !important;
 }
 
 body.ui-masthead .mh-more-group {
@@ -1080,18 +1047,19 @@ body.ui-masthead .mh-more-meta.is-bad {
     color: var(--bad);
 }
 
-body.ui-masthead .mh-more-sync {
+body.ui-masthead .mh-more-stats {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 14px;
     padding: 16px;
     border-radius: 18px;
     background: var(--mh-rail-card);
     border: 1px solid var(--line);
 }
 
-body.ui-masthead .mh-more-sync .mh-sync-row {
-    font-size: var(--text-label);
+body.ui-masthead .mh-more-stats .mh-stat-value,
+body.ui-masthead .mh-more-stats .mh-stat-sub {
+    font-size: var(--text-card);
 }
 
 /* Deliberately quiet: a bordered row, not a danger button. */
@@ -1109,69 +1077,4 @@ body.ui-masthead .mh-more-logout {
 body.ui-masthead .mh-more-logout:active {
     background: var(--accent-soft);
     color: var(--accent-2);
-}
-
-/* ── Command palette (⌘K) ─────────────────────────────────────────────────── */
-body.ui-masthead .mh-cmd {
-    position: fixed;
-    inset: 0;
-    z-index: 60;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    padding: 12vh 20px 20px;
-    background: rgba(0, 0, 0, .6);
-    backdrop-filter: blur(4px);
-}
-
-body.ui-masthead .mh-cmd-panel {
-    width: 100%;
-    max-width: 520px;
-    max-height: 70vh;
-    display: flex;
-    flex-direction: column;
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-    border: 1px solid var(--line-2);
-    box-shadow: var(--shadow-lg);
-    overflow: hidden;
-}
-
-body.ui-masthead .mh-cmd-input {
-    flex: none;
-    height: 52px;
-    padding: 0 18px;
-    background: var(--mh-rail-well);
-    border: 0;
-    border-bottom: 1px solid var(--line);
-    color: var(--fg);
-    font: 500 var(--text-card) 'Inter', sans-serif;
-    outline: none;
-}
-
-body.ui-masthead .mh-cmd-list {
-    overflow-y: auto;
-    padding: 8px;
-}
-
-body.ui-masthead .mh-cmd-row {
-    display: flex;
-    align-items: center;
-    height: 42px;
-    padding: 0 12px;
-    border-radius: var(--radius-sm);
-    color: var(--fg-2);
-    text-decoration: none;
-    font: 500 var(--text-body) 'Inter', sans-serif;
-}
-
-body.ui-masthead .mh-cmd-row:hover {
-    background: var(--mh-rail-hover);
-    color: var(--fg);
-}
-
-body.ui-masthead .mh-cmd-rubric {
-    margin-left: auto;
-    color: var(--faint);
-    font: 500 var(--text-micro) 'Inter', sans-serif;
 }

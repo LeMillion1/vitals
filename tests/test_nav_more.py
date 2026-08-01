@@ -1,8 +1,8 @@
 """The August 2026 nav handoff: the /more screen and the rail's sync card.
 
 Both surfaces read the same two services (modules_service for what to list,
-nav_status_service for how fresh each source is), so these cover the pieces the
-static template contracts in test_review_run3.py can't see.
+nav_status_service for today's numbers), so these cover the pieces the static
+template contracts in test_review_run3.py can't see.
 """
 from __future__ import annotations
 
@@ -10,20 +10,38 @@ from datetime import timedelta
 
 from vitals.enums import Source
 from vitals.models.garmin import DOMAIN as GARMIN_DOMAIN, GarminDaily
+from vitals.models.weight import DOMAIN as WEIGHT_DOMAIN, WeightLog
 from vitals.services import nav_status_service
 from vitals.utils.timeutils import today_local
 
 
 # ── /more ────────────────────────────────────────────────────────────────────
 
-async def test_more_screen_lists_the_sections_the_bottom_bar_cannot_hold(auth_client):
-    """Markers gets no bottom-bar column, so it has to be reachable here."""
+async def test_more_screen_lists_every_visible_section(auth_client):
+    """Not only the rubrics without a bottom-bar column. The bar's three slots
+    reach their siblings through the masthead chips, which is a fine way to
+    switch and a terrible way to find — half the app looked missing on a phone.
+    """
+    from vitals.services.modules_service import nav_modules
+
     response = await auth_client.get("/more", headers={"Accept": "text/html"})
     assert response.status_code == 200
-    assert 'href="/labs"' in response.text
+    enabled = {"labs": True, "weight": True, "garmin": True, "reports": True, "charts": True}
+    for spec in nav_modules(enabled):
+        assert f'href="{spec.route}"' in response.text, spec.key
     assert 'href="/settings"' in response.text
     # It is a page, not an overlay — nothing to close, and Back leaves it.
     assert "mobileMenuOpen" not in response.text
+
+
+async def test_more_screen_has_one_account_row_not_a_second_settings_link(auth_client):
+    """The "Modules" row pointed at the same page as "Settings"; its count moved
+    onto the Settings row instead of standing as a second destination."""
+    response = await auth_client.get("/more", headers={"Accept": "text/html"})
+    # Scoped to the screen itself — the rail (hidden on a phone, still rendered)
+    # carries its own Settings link.
+    screen = response.text.split('class="v-page v-page-more')[1].split("</form>")[0]
+    assert screen.count('href="/settings"') == 1
 
 
 async def test_more_screen_reports_how_many_modules_are_on(auth_client):
@@ -33,49 +51,86 @@ async def test_more_screen_reports_how_many_modules_are_on(auth_client):
     assert f"из {len(MODULE_REGISTRY)}" in response.text
 
 
-# ── Source freshness ─────────────────────────────────────────────────────────
+# ── The rail's status card ───────────────────────────────────────────────────
 
-async def test_sync_rows_report_days_since_the_newest_row(db_session):
-    on_date = today_local() - timedelta(days=3)
+async def test_status_card_reports_todays_weight_and_the_weeks_direction(db_session):
+    """The card exists to say where he is, not how the plumbing is doing — the
+    first version reported "labs · 99 days ago" every single day."""
+    for days_ago, kg in ((9, 87.0), (0, 86.1)):
+        db_session.add(
+            WeightLog(
+                date=today_local() - timedelta(days=days_ago),
+                domain=WEIGHT_DOMAIN,
+                source=Source.MANUAL.value,
+                weight_kg=kg,
+            )
+        )
+    await db_session.flush()
+
+    rows = {r.key: r for r in await nav_status_service.rail_stats(db_session)}
+    assert rows["weight"].value.startswith("86.1")
+    assert rows["weight"].sub == "−0.9"
+    assert rows["weight"].tone == "good"
+
+
+async def test_a_source_that_went_quiet_says_so_instead_of_a_number(db_session):
     db_session.add(
-        GarminDaily(date=on_date, domain=GARMIN_DOMAIN, source=Source.GARMIN_API.value)
+        GarminDaily(
+            date=today_local() - timedelta(days=6),
+            domain=GARMIN_DOMAIN,
+            source=Source.GARMIN_API.value,
+            sleep_seconds=7 * 3600,
+        )
     )
     await db_session.flush()
 
-    rows = {r.key: r for r in await nav_status_service.sync_rows(db_session)}
-    assert rows["garmin"].days == 3
-    # Garmin syncs nightly, so three days without one is worth flagging.
-    assert rows["garmin"].stale is True
+    rows = {r.key: r for r in await nav_status_service.rail_stats(db_session)}
+    assert rows["recovery"].tone == "warn"
+    assert "6" in rows["recovery"].value
 
 
-async def test_a_source_with_no_data_at_all_reads_as_stale(db_session):
-    rows = {r.key: r for r in await nav_status_service.sync_rows(db_session)}
-    assert rows["garmin"].days is None
-    assert rows["garmin"].stale is True
+async def test_last_nights_sleep_reads_as_hours_and_minutes(db_session):
+    db_session.add(
+        GarminDaily(
+            date=today_local(),
+            domain=GARMIN_DOMAIN,
+            source=Source.GARMIN_API.value,
+            sleep_seconds=7 * 3600 + 20 * 60,
+            training_readiness=62,
+        )
+    )
+    await db_session.flush()
+
+    rows = {r.key: r for r in await nav_status_service.rail_stats(db_session)}
+    assert rows["recovery"].value == "7:20"
+    assert "62" in rows["recovery"].sub
+
+
+async def test_a_domain_with_nothing_logged_yet_gets_no_row(db_session):
+    assert await nav_status_service.rail_stats(db_session) == []
 
 
 async def test_a_disabled_module_gets_no_row(db_session):
-    enabled = {"garmin": True, "hevy": False, "labs": True}
-    keys = {r.key for r in await nav_status_service.sync_rows(db_session, enabled)}
-    assert keys == {"garmin", "labs"}
+    db_session.add(
+        GarminDaily(
+            date=today_local(),
+            domain=GARMIN_DOMAIN,
+            source=Source.GARMIN_API.value,
+            sleep_seconds=7 * 3600,
+        )
+    )
+    await db_session.flush()
+
+    enabled = {"garmin": False, "weight": True}
+    assert await nav_status_service.rail_stats(db_session, enabled) == []
 
 
-async def test_sync_rows_never_raise_on_a_broken_session():
-    """The rail is chrome: an unreadable source must hide a row, not 500 the
+async def test_status_rows_never_raise_on_a_broken_session():
+    """The rail is chrome: an unreadable domain must lose its row, not 500 the
     page it is drawn on."""
 
     class Boom:
         async def execute(self, *a, **kw):
             raise RuntimeError("db is down")
 
-    assert await nav_status_service.sync_rows(Boom()) == []
-
-
-async def test_more_cell_stays_lit_inside_the_sections_it_holds(auth_client):
-    """Labs has no column of its own, so without this the phone bar would go
-    completely dark the moment you opened it."""
-    for path in ("/more", "/labs", "/settings"):
-        response = await auth_client.get(path, headers={"Accept": "text/html"})
-        bar = response.text.split('id="mobile-bottom-nav"')[1].split("</nav>")[0]
-        more_cell = bar.split('href="/more"')[1].split(">")[0]
-        assert "is-active" in more_cell, path
+    assert await nav_status_service.rail_stats(Boom()) == []

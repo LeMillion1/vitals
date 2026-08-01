@@ -1,27 +1,32 @@
 {% extends "base.html" %}
-{% from "partials/masthead.html" import mh_icon, mh_sync_rows with context %}
+{% from "partials/masthead.html" import mh_icon, mh_stat_rows with context %}
 
 {% block title %}{{ t("nav.more") }}{% endblock %}
 
 {% block content %}
-{# The phone's "More" screen (frame 3d). A page, not a bottom sheet: system Back
-   works, it can be linked to, and it never floats over the content it came from.
+{# The phone's "More" screen. A page, not a bottom sheet: system Back works, it
+   can be linked to, and it never floats over the content it came from.
 
-   Desktop never routes here — the rail shows every section at once — but the URL
+   It lists **every** section, not only the rubrics the bottom bar has no column
+   for. The bar's three slots reach their siblings through the masthead chips,
+   which is a fine way to *switch* but a terrible way to *find* — this screen is
+   where you look when you don't already know where a section lives.
+
+   Desktop never routes here (the rail shows everything at once) but the URL
    still renders rather than 404ing, because a wide window is exactly where
    someone lands after following the link from their phone. #}
+{% set em = request.state.enabled_modules or {} %}
 <div class="v-page v-page-more mh-more">
     {# .mh-title, not a heading style of its own: this screen's H1 should be the
        same object as every section's H1, at the same responsive sizes. #}
     <h1 class="mh-title">{{ t("nav.more") }}</h1>
 
-    {# Sections the bottom bar has no column for. Derived from the same registry
-       as the bar (more_rubrics ← bottom_slots), so a module can never be missing
-       from both surfaces at once. #}
-    {% for rubric in more_rubrics(request.state.enabled_modules or {}) %}
+    {% for rubric in module_rubrics %}
+    {% set members = nav_modules(em, rubric=rubric) %}
+    {% if members %}
     <section class="mh-more-group">
         <div class="mh-more-group-label">{{ t('masthead.rubric.' + rubric) }}</div>
-        {% for s in nav_modules(request.state.enabled_modules or {}, rubric=rubric) %}
+        {% for s in members %}
         <a href="{{ s.route }}" class="mh-more-row">
             <span class="mh-more-ico">{{ mh_icon(s.key) }}</span>
             <span class="mh-more-name">{{ t('nav.' + s.key) }}</span>
@@ -31,24 +36,23 @@
         </a>
         {% endfor %}
     </section>
+    {% endif %}
     {% endfor %}
 
     <section class="mh-more-group">
         <div class="mh-more-group-label">{{ t("more.account") }}</div>
+        {# One row, not two: a separate "Modules" row led to the same page and
+           read as a second destination. The count is the only thing it added, so
+           it moved here as this row's note. #}
         <a href="/settings" class="mh-more-row">
             <span class="mh-more-ico">{{ mh_icon('settings') }}</span>
             <span class="mh-more-name">{{ t('nav.settings_title') }}</span>
-        </a>
-        <a href="/settings#modules" class="mh-more-row">
-            <span class="mh-more-ico">{{ mh_icon('modules') }}</span>
-            <span class="mh-more-name">{{ t('more.modules') }}</span>
             <span class="mh-more-meta">{{ t('more.modules_count', on=modules_on, total=modules_total) }}</span>
         </a>
     </section>
 
-    {% set rows = mh_sync_rows() %}
-    {% if rows.strip() %}
-    <div class="mh-more-sync">{{ rows }}</div>
+    {% if request.state.nav_status %}
+    <div class="mh-more-stats">{{ mh_stat_rows() }}</div>
     {% endif %}
 
     {# Deliberately the quietest thing on the screen. As a full-width danger

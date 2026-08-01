@@ -49,10 +49,8 @@
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M8 9h8" /><path d="M8 13h6" /><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z" /></svg>
 {%- elif key == 'interactions' -%}
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0" /><path d="M15 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0" /></svg>
-{# Chrome glyphs — not sections: the rail's search row, the phone bar's "More"
-   slot, the Modules row on the More screen, and the shared log-out arrow. #}
-{%- elif key == 'search' -%}
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M21 21l-6 -6" /></svg>
+{# Chrome glyphs — not sections: the phone bar's "More" slot, the Settings
+   gear, and the shared log-out arrow. #}
 {%- elif key == 'more' -%}
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /><path d="M5 6h14" /><path d="M5 18h14" /></svg>
 {%- elif key == 'modules' -%}
@@ -64,15 +62,17 @@
 {%- endif -%}
 {% endmacro %}
 
-{# ── Source-freshness rows ───────────────────────────────────────────────────
-   Shared by the rail's status card and the "More" screen so the two never tell
-   different stories. Rows come from ``request.state.nav_status``
-   (vitals/services/nav_status_service.py); an empty list renders nothing. #}
-{% macro mh_sync_rows() %}
+{# ── Status card rows ──────────────────────────────────────────
+   Today's numbers, shared by the rail's card and the phone's "More" screen so
+   the two never tell different stories. Rows come from
+   ``request.state.nav_status`` (vitals/services/nav_status_service.py); an empty
+   list renders nothing. #}
+{% macro mh_stat_rows() %}
 {% for row in request.state.nav_status or [] %}
-<div class="mh-sync-row {% if row.stale %}is-stale{% endif %}">
-    <span class="mh-sync-dot"></span>
-    <span>{{ t('nav.' + row.key) }} · {% if row.days is none %}{{ t('sync.never') }}{% elif row.days == 0 %}{{ t('sync.today') }}{% elif row.days == 1 %}{{ t('sync.yesterday') }}{% else %}{{ t('sync.days_ago', n=row.days, word=plural(row.days, t('sync.day_one'), t('sync.day_few'), t('sync.day_many'))) }}{% endif %}</span>
+<div class="mh-stat">
+    <span class="mh-stat-label">{{ t('stat.' + row.key) }}</span>
+    <span class="mh-stat-value">{{ row.value }}</span>
+    {% if row.sub %}<span class="mh-stat-sub {{ row.tone }}">{{ row.sub }}</span>{% endif %}
 </div>
 {% endfor %}
 {% endmacro %}
@@ -85,13 +85,6 @@
 {% set em = request.state.enabled_modules or {} %}
 <aside id="primary-nav-masthead" {% if oob %}hx-swap-oob="true"{% endif %} class="mh-rail">
     <a href="/" class="mh-rail-wordmark" title="Vitals">Vitals</a>
-    {# Command palette trigger. A row, not an icon: it states the shortcut, which
-       is the only way anyone learns a shortcut exists. #}
-    <button type="button" class="mh-rail-search" @click="cmdOpen = true">
-        {{ mh_icon('search') }}
-        <span class="mh-rail-search-label">{{ t('nav.search') }}</span>
-        <kbd class="mh-rail-kbd">⌘K</kbd>
-    </button>
     <nav class="mh-rail-nav">
         {# "Today" is pinned above the rubrics rather than joining MODULE_REGISTRY:
            it is not a domain, it has no toggle, and a registry entry would give it
@@ -122,10 +115,11 @@
         {% endif %}
         {% endfor %}
     </nav>
-    {# Source freshness fills the space the dense list gave back — the rail's
-       bottom third would otherwise be empty, and "is anything not arriving?" is
-       the one question a data lake owes you without opening a page. #}
-    {% if request.state.nav_status %}<div class="mh-rail-sync">{{ mh_sync_rows() }}</div>{% endif %}
+    {# Today's readout fills the space the dense list gave back. It reports
+       numbers, not plumbing: how fresh a source is is true every day and useful
+       on none of them, so staleness only replaces a number once a source has
+       actually gone quiet. #}
+    {% if request.state.nav_status %}<div class="mh-rail-stats">{{ mh_stat_rows() }}</div>{% endif %}
     <div class="mh-rail-foot">
         <a href="/settings" class="mh-rail-foot-link {% if current_path.startswith('/settings') %}is-active{% endif %}">{{ t('nav.settings') }}</a>
         <form action="/logout" method="POST" hx-boost="false" class="contents">

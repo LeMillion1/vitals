@@ -279,17 +279,23 @@ It is deliberately **not** in `MODULE_REGISTRY`: it is the entry point, not a
 domain, it has no toggle, and a registry entry would give it a rubric number in
 the masthead eyebrow.
 
-**Search row / command palette.** `.mh-rail-search` is a 32px recessed well that
-states its own shortcut (`⌘K` / `Ctrl+K`). It opens `.mh-cmd`, an Alpine overlay
-that filters the same registry client-side; `Esc` closes it. Section jumper only
-so far — recent entries need a search endpoint that does not exist yet.
-
-**Sync status card.** `.mh-rail-sync` fills the space the dense list gave back:
-one row per data source (Garmin / Hevy / Labs), green inside its expected cadence
-and amber past it, from
+**Status card.** `.mh-rail-stats` fills the space the dense list gave back:
+today's numbers, one row per enabled domain — weight with the week's direction,
+last night's sleep with readiness, today's intake against the ceiling, when the
+last session was. From
 [`nav_status_service.py`](../vitals/services/nav_status_service.py) via the
-`load_nav_status` global dependency (HTML GETs only). "Is anything silently not
-arriving?" is the one question a data lake owes you without opening a page.
+`load_nav_status` global dependency (HTML GETs only).
+
+It reports **numbers, not plumbing**. The first version reported how fresh each
+source was ("Labs · 99 days ago") — true every single day and useful on none of
+them. Staleness only replaces a number once a source has actually gone quiet,
+which is the one time that fact is worth the space. A domain with nothing logged
+yet simply has no row, and a domain that throws loses its row rather than the
+page.
+
+There is no search row and no command palette: everything fits on screen, so a
+second way to reach a section that is already one click away was chrome for its
+own sake.
 
 **Mobile (<768px):** the rail is replaced by a 52px `.mh-topbar` that carries the
 wordmark and **nothing else**. The phone used to show three navigation surfaces
@@ -302,11 +308,13 @@ enabled-module count, so every toggle shifted every icon and clipped the
 captions. The ends are fixed («Сегодня», «Ещё»); the three middle slots come from
 `bottom_slots()`: a whole rubric (tapping it opens the rubric's first section,
 the `.mh-tabs` chips switch within it) or the one module that earns its own
-column. Whatever gets no slot lives on **`/more`**, a real page with a real URL
-(system Back works, it can be linked to, nothing floats over the content) whose
-list is derived by `more_rubrics()` — so a section can never be missing from both
-surfaces. The «Ещё» cell stays lit for everything behind it (`more_routes()`),
-otherwise standing on Labs would leave all five cells dark.
+column. **`/more`** is a real page with a real URL (system Back works, it can be linked
+to, nothing floats over the content) and it lists **every** section, grouped by
+rubric — not only the rubrics that got no slot. The chips reach a slot's siblings
+fine, but that is a way to *switch*, not a way to *find*; listing only the
+leftovers made half the app look missing on a phone. The «Ещё» cell stays lit for
+everything reachable only through it (`more_routes()`), otherwise standing on
+Labs would leave all five cells dark.
 
 Below 768px `.mh-tabs` becomes a horizontally scrolling row of pills, ordered
 **below** the H1 (it is source-ordered above it, where a desktop tab row
