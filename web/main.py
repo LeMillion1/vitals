@@ -26,6 +26,7 @@ from web.deps import (
     get_redis,
     load_enabled_modules,
     load_language,
+    load_nav_status,
     require_module,
 )
 from web.templating import STATIC_DIR, templates
@@ -97,7 +98,12 @@ app = FastAPI(
     redoc_url=None,
     # Resolve the enabled-module map once per request → request.state (read by
     # base.html nav and the require_module guards below).
-    dependencies=[Depends(load_language), Depends(load_enabled_modules)],
+    dependencies=[
+        Depends(load_language),
+        Depends(load_enabled_modules),
+        # After load_enabled_modules — it reads the resolved module map.
+        Depends(load_nav_status),
+    ],
 )
 
 # Install security barriers
@@ -173,6 +179,9 @@ async def _populate_state_for_error_page(request: Request) -> None:
     current_lang.set(lang)
     request.state.lang = lang
     request.state.enabled_modules = enabled
+    # The rail's sync card is chrome, not information the error page owes anyone —
+    # an empty list just hides it.
+    request.state.nav_status = []
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -288,6 +297,7 @@ app.include_router(auth_router)
 # These routers will be imported and registered below.
 from web.routers.alerts import router as alerts_router  # noqa: E402
 from web.routers.today import router as today_router  # noqa: E402
+from web.routers.more import router as more_router  # noqa: E402
 from web.routers.weight import router as weight_router  # noqa: E402
 from web.routers.glp1 import router as glp1_router  # noqa: E402
 from web.routers.supplements import router as supplements_router  # noqa: E402
@@ -310,6 +320,9 @@ from web.routers.telegram import router as telegram_router  # noqa: E402
 # Core modules — always reachable. /today is the landing page and composes every
 # enabled domain, so it can never be gated behind one of them.
 app.include_router(today_router)
+# The phone's "More" screen — a plain page, never gated: it is how a phone
+# reaches Settings and the sections the bottom bar has no column for.
+app.include_router(more_router)
 app.include_router(alerts_router)
 app.include_router(weight_router)
 app.include_router(garmin_router)

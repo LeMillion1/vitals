@@ -15,6 +15,8 @@ from vitals.services.modules_service import (
     MODULE_REGISTRY,
     NAV_RUBRICS,
     OPTIONAL_KEYS,
+    bottom_slots,
+    more_rubrics,
     nav_modules,
 )
 
@@ -44,26 +46,51 @@ def test_navigation_reads_the_registry_not_a_template_copy():
         assert "MH_RUBRICS" not in src, name
     base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
     assert "mobile_bottom_nav()" in base
-    assert "mobile_drawer_links()" in base
-    # Section links may only be produced by a loop over the registry.
+    # Section links may only be produced by a loop over the registry. The bar's
+    # own two fixed ends (/today, /more) are not sections and are exempt.
     mobile = (TEMPLATES / "partials/nav_mobile.html").read_text(encoding="utf-8")
-    assert 'href="{{ s.route }}"' in mobile
+    assert 'href="{{ slot.route }}"' in mobile
     for spec in MODULE_REGISTRY.values():
         assert f'href="{spec.route}"' not in mobile, spec.key
 
 
-def test_bottom_bar_and_drawer_partition_the_visible_modules():
+def test_bottom_bar_and_more_screen_cover_every_visible_module():
+    """Five fixed columns can't hold sixteen sections, so the bar carries three
+    slots and /more carries whatever got none. Nothing may fall out of both."""
     enabled = {k: True for k in MODULE_REGISTRY}
-    every = nav_modules(enabled)
-    bottom = nav_modules(enabled, bottom=True)
-    drawer = nav_modules(enabled, bottom=False)
-    assert bottom and drawer
-    assert [s.key for s in bottom] + [s.key for s in drawer] != []
-    assert set(bottom).isdisjoint(drawer)
-    assert set(bottom) | set(drawer) == set(every)
+    every = {s.key for s in nav_modules(enabled)}
+    slots = bottom_slots(enabled)
+    assert len(slots) == 3
+
+    reachable = set()
+    for slot in slots:
+        reachable |= {s.key for s in nav_modules(enabled) if s.route in slot.routes}
+        # A rubric slot also reaches its siblings through the masthead chips.
+        if slot.key in NAV_RUBRICS:
+            reachable |= {s.key for s in nav_modules(enabled, rubric=slot.key)}
+    for rubric in more_rubrics(enabled):
+        reachable |= {s.key for s in nav_modules(enabled, rubric=rubric)}
+    assert reachable == every
+
     # Rubrics partition the same set, in the same order.
     by_rubric = [s for r in NAV_RUBRICS for s in nav_modules(enabled, rubric=r)]
-    assert by_rubric == every
+    assert by_rubric == nav_modules(enabled)
+
+
+def test_a_module_with_its_own_column_does_not_light_up_its_rubric_too():
+    enabled = {k: True for k in MODULE_REGISTRY}
+    slots = {s.key: s for s in bottom_slots(enabled)}
+    assert "nutrition" in slots
+    assert "/nutrition" not in slots["health"].routes
+
+
+def test_bottom_bar_keeps_three_slots_when_a_slot_module_is_off():
+    enabled = {k: True for k in MODULE_REGISTRY}
+    enabled["nutrition"] = False
+    keys = [s.key for s in bottom_slots(enabled)]
+    assert keys == ["health", "lifestyle", "markers"]
+    # Markers moved into the bar, so it must no longer be listed on /more.
+    assert more_rubrics(enabled) == []
 
 
 @pytest.mark.parametrize("key", sorted(k for k in OPTIONAL_KEYS if MODULE_REGISTRY[k].rubric))
@@ -71,18 +98,32 @@ def test_disabled_optional_module_leaves_every_nav_surface(key):
     enabled = {k: True for k in MODULE_REGISTRY}
     enabled[key] = False
     assert key not in {s.key for s in nav_modules(enabled)}
-    assert key not in {s.key for s in nav_modules(enabled, bottom=True)}
-    assert key not in {s.key for s in nav_modules(enabled, bottom=False)}
+    assert MODULE_REGISTRY[key].route not in {
+        r for slot in bottom_slots(enabled) for r in slot.routes
+    }
 
 
 # ── U3 — the toggle updates the phone too ────────────────────────────────────
 
-def test_module_toggle_response_refreshes_both_phone_surfaces():
+def test_bottom_bar_grid_is_fixed_at_five_columns():
+    """The regression this whole rework exists for: the grid used to be
+    `repeat({{ bottom|length + 2 }}, …)`, so every module toggle changed the
+    column count and the icons drifted."""
+    assert "grid-template-columns: repeat(5, minmax(0, 1fr));" in MASTHEAD_CSS
+    mobile = (TEMPLATES / "partials/nav_mobile.html").read_text(encoding="utf-8")
+    assert "grid-template-columns" not in mobile
+    # …and it must default to hidden. These rules outrank the `md:hidden`
+    # utility on the element, so a bare `display: grid` laid the phone bar
+    # across the desktop viewport, on top of the rail.
+    bar_rule = MASTHEAD_CSS.split("body.ui-masthead .mh-bnav {")[1].split("}")[0]
+    assert "display: none;" in bar_rule
+
+
+def test_module_toggle_response_refreshes_the_phone_bar():
     oob = (TEMPLATES / "partials/modules_oob.html").read_text(encoding="utf-8")
     assert "mobile_bottom_nav(oob=true)" in oob
-    assert "mobile_drawer_links(oob=true)" in oob
     mobile = (TEMPLATES / "partials/nav_mobile.html").read_text(encoding="utf-8")
-    assert mobile.count('hx-swap-oob="true"') == 2
+    assert mobile.count('hx-swap-oob="true"') == 1
 
 
 # ── U1 / U12 — display fonts and Cyrillic ────────────────────────────────────

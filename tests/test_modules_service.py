@@ -171,14 +171,26 @@ async def test_concurrent_toggles_do_not_lose_updates(db_session):
     assert state["hevy"] is True, "session B's toggle was lost"
 
 
-def test_bottom_bar_holds_four_modules_plus_today_and_more():
-    """The phone bar has five slots. "Сегодня" took one, so supplements — the
-    least frequent of the old five — moved into the drawer instead of the bar
-    growing a sixth cell nobody can hit."""
-    from vitals.services.modules_service import MODULE_REGISTRY, nav_modules
+def test_bottom_bar_is_five_fixed_columns_whatever_is_enabled():
+    """The phone bar is Today + three slots + More, always — the grid used to be
+    sized from the enabled-module count, so every toggle shifted every icon."""
+    from vitals.services.modules_service import (
+        BOTTOM_SLOT_COUNT,
+        MODULE_REGISTRY,
+        OPTIONAL_KEYS,
+        bottom_slots,
+    )
 
     enabled = {k: True for k in MODULE_REGISTRY}
-    bottom = [s.key for s in nav_modules(enabled, bottom=True)]
+    assert [s.key for s in bottom_slots(enabled)] == ["health", "nutrition", "lifestyle"]
 
-    assert bottom == ["weight", "garmin", "hevy"]
-    assert "supplements" in [s.key for s in nav_modules(enabled, bottom=False)]
+    # Turning any single optional module off must not cost the bar a column.
+    for key in OPTIONAL_KEYS:
+        one_off = {**enabled, key: False}
+        assert len(bottom_slots(one_off)) == BOTTOM_SLOT_COUNT, key
+
+    # …nor must turning every optional module off (core-only worst case).
+    core_only = {k: k not in OPTIONAL_KEYS for k in MODULE_REGISTRY}
+    slots = bottom_slots(core_only)
+    assert [s.key for s in slots] == ["health", "markers"]
+    assert all(s.route for s in slots)

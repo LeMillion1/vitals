@@ -55,9 +55,12 @@ def test_handoff_uses_exact_surface_and_accent_tokens():
 
 
 def test_rail_matches_handoff_widths_and_wordmark():
-    assert "--mh-rail-w: 68px" in MASTHEAD_CSS
-    assert "--mh-rail-w-expanded: 244px" in MASTHEAD_CSS
-    assert "@media (min-width: 901px)" in MASTHEAD_CSS
+    """One rail width from md up. The 68px icon-only step (and the 901px
+    breakpoint that expanded it) is gone with the August nav handoff: a 30px row
+    fits every section at 1440x900, so there is no width left to buy by hiding
+    the labels."""
+    assert "--mh-rail-w: 240px" in MASTHEAD_CSS
+    assert "--mh-rail-w-expanded" not in MASTHEAD_CSS
     assert 'class="mh-rail-wordmark"' in MASTHEAD_TEMPLATE
     assert ">Vitals</a>" in MASTHEAD_TEMPLATE
 
@@ -84,12 +87,14 @@ def test_rubric_tabs_are_rendered_at_every_width():
 
 
 def test_rail_is_a_flat_list_of_every_section():
-    """Collapsible rubrics (and the dot that replaced each row's icon) are gone —
-    every section is a row with its own glyph, always visible."""
-    assert "body.ui-masthead .mh-rail-btn { height: 42px; }" in MASTHEAD_CSS
+    """Every section is on screen at once — no collapsible rubrics, nothing
+    behind a "more" affordance. The August nav handoff bought the vertical space
+    that needs by density instead: a 30px row, and the section glyph only on the
+    active row (the rest carry a dot in the same column)."""
+    assert "height: 30px;" in MASTHEAD_CSS
     assert ".mh-rail-group-head" not in MASTHEAD_CSS
     assert ".mh-rail-group-count" not in MASTHEAD_CSS
-    assert ".mh-rail-dot" not in MASTHEAD_CSS
+    assert ".mh-rail-dot" in MASTHEAD_CSS
     assert ".mh-rail-group-label" in MASTHEAD_CSS
 
 

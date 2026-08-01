@@ -123,6 +123,33 @@ async def load_enabled_modules(
         request.state.enabled_modules = dict(modules_service.DEFAULT_STATE)
 
 
+async def load_nav_status(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    """Global dependency: source-freshness rows for the nav rail's status card
+    (and the phone's "More" screen), stashed on ``request.state``.
+
+    Only for document requests. The rail is chrome, so an HTMX partial, an MCP
+    call or an /external-api POST would pay three pointless reads for markup they
+    never render — those send ``Accept: application/json``, a browser navigation
+    (boosted or not) sends ``text/html``.
+
+    Fail-safe: any error yields an empty list — the card just doesn't draw.
+    """
+    request.state.nav_status = []
+    if request.method != "GET" or "text/html" not in request.headers.get("accept", ""):
+        return
+    from vitals.services import nav_status_service
+
+    try:
+        request.state.nav_status = await nav_status_service.sync_rows(
+            db, getattr(request.state, "enabled_modules", None)
+        )
+    except Exception:
+        logger.exception("nav status load failed; hiding the sync card")
+
+
 async def load_language(
     request: Request,
     db: AsyncSession = Depends(get_session),

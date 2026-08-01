@@ -246,44 +246,73 @@ hardcoded fill. Rendered size varies by context: 18px in the masthead rail,
 
 ### 3.1 Masthead (canonical)
 
-**Desktop (≥768px):** a fixed 76px icon-rail (`--mh-rail-w`, class `.mh-rail`)
-on the left: pulsing brand mark → divider → one icon button per enabled section
-→ spacer → settings + avatar. The rail's contents, the in-content tab row, and
-the "section N of rubric" numbering all derive from **one registry** —
-`MH_RUBRICS` / `MH_SECTIONS` in
-[`partials/masthead.html`](../web/templates/partials/masthead.html) — so the
-rail and the tabs never drift apart. Sections are grouped into three rubrics:
-Health (weight, garmin, hevy, nutrition, reports, charts), Markers (glp1, labs,
-genetics), Lifestyle (supplements, skincare, interactions); membership is
-gated by `enabled_modules`.
+**Desktop (≥768px):** a fixed 240px rail (`--mh-rail-w`, class `.mh-rail`) on
+the left: wordmark → ⌘K search row → «Сегодня» → three rubric groups → sync
+status card → footer (Settings + log out). One width at every desktop size — the
+old 68px icon-only step below 901px is gone, because hiding the labels removed
+the one thing a rail is for.
 
-**Rubrics collapse.** Fifteen 38px buttons plus three headings do not fit a
-1440×900 rail, so only the rubric holding the current page renders its items.
-The other two are a 36px `.mh-rail-group-head` row — label + count + chevron —
-whose click expands them in place (local Alpine `open`, nothing persisted:
-which rubric is open is re-derived from `request.url.path` on every render, so a
-boosted navigation and the out-of-band re-render both land correct). A collapsed
-`.mh-rail-group-items` carries a static inline `display:none` next to its
-`x-show`, so it is never briefly visible before Alpine boots. Inside an expanded
-rubric the icon gives way to a quiet 6px `.mh-rail-dot` — the heading already
-names the group — while the **active** row keeps its icon, `--accent-soft` fill
-and 3px amber `::before` bar. Below 901px the rail is icon-only: no labels, no
-counts, the chevron alone marks the row as a control and the icons stay.
+The rail's contents, the in-content tab row, the phone's bottom bar and the
+«Ещё» screen all derive from **one registry** — `MODULE_REGISTRY` /
+`nav_modules()` / `bottom_slots()` / `more_rubrics()` in
+[`modules_service.py`](../vitals/services/modules_service.py), exposed as Jinja
+globals — so no two surfaces can drift apart. Sections are grouped into three
+rubrics: Health (weight, garmin, hevy, nutrition, timeline, reports, charts),
+Markers (glp1, hrt, labs, genetics), Lifestyle (supplements, skincare,
+interactions, signals); membership is gated by `enabled_modules`.
+
+**Every section is a row, always on screen.** Collapsing the rubrics to one open
+group was tried (it fits a 1440x900 laptop without scrolling) and reverted at the
+owner's request: a rail exists to show where you can go, and a list that has to
+be opened first does not do that. The August 2026 nav handoff bought that
+vertical space by density instead — a **30px** `.mh-rail-btn` row (36px for the
+pinned «Сегодня»), and the section's own glyph **only on the active row**. Every
+other row carries a 5px `.mh-rail-dot` in the icon's column, so the labels stay
+aligned and the eye has exactly one glyph to find. The active row keeps its icon,
+an `--accent-soft` fill, an `--accent-line` border and the 3px amber `::before`
+bar, and hover never restyles it. All sixteen sections plus three headings come
+to ~660px of a ~860px rail; `.mh-rail-nav` still carries `overflow-y: auto` as a
+safety net only.
 
 Above the rubrics sits one pinned row, `.mh-rail-pinned` → «Сегодня» (`/today`).
 It is deliberately **not** in `MODULE_REGISTRY`: it is the entry point, not a
 domain, it has no toggle, and a registry entry would give it a rubric number in
 the masthead eyebrow.
 
-Every section is a row, always on screen. Collapsing the rubrics to one open
-group was tried (it fits a 1440x900 laptop without scrolling) and reverted at the
-owner's request: a rail exists to show where you can go, and a list that has to
-be opened first does not do that. If vertical space becomes the problem again,
-shorten the list — do not hide it.
+**Search row / command palette.** `.mh-rail-search` is a 32px recessed well that
+states its own shortcut (`⌘K` / `Ctrl+K`). It opens `.mh-cmd`, an Alpine overlay
+that filters the same registry client-side; `Esc` closes it. Section jumper only
+so far — recent entries need a search endpoint that does not exist yet.
 
-**Mobile (<768px):** the rail is replaced by a 52px `.mh-topbar` — brand
-wordmark + a hamburger "menu" trigger. The bottom bar carries «Сегодня» plus the
-`bottom_nav=True` modules and «Ещё»; the drawer is the full catalogue.
+**Sync status card.** `.mh-rail-sync` fills the space the dense list gave back:
+one row per data source (Garmin / Hevy / Labs), green inside its expected cadence
+and amber past it, from
+[`nav_status_service.py`](../vitals/services/nav_status_service.py) via the
+`load_nav_status` global dependency (HTML GETs only). "Is anything silently not
+arriving?" is the one question a data lake owes you without opening a page.
+
+**Mobile (<768px):** the rail is replaced by a 52px `.mh-topbar` that carries the
+wordmark and **nothing else**. The phone used to show three navigation surfaces
+at once — this bar's "Menu" button, the bottom bar's own "More" button, and the
+single drawer both opened; the bottom bar is the only one left.
+
+`.mh-bnav` is **always five equal columns** (`repeat(5, minmax(0, 1fr))`),
+independent of how many modules are on — the grid used to be sized from the
+enabled-module count, so every toggle shifted every icon and clipped the
+captions. The ends are fixed («Сегодня», «Ещё»); the three middle slots come from
+`bottom_slots()`: a whole rubric (tapping it opens the rubric's first section,
+the `.mh-tabs` chips switch within it) or the one module that earns its own
+column. Whatever gets no slot lives on **`/more`**, a real page with a real URL
+(system Back works, it can be linked to, nothing floats over the content) whose
+list is derived by `more_rubrics()` — so a section can never be missing from both
+surfaces. The «Ещё» cell stays lit for everything behind it (`more_routes()`),
+otherwise standing on Labs would leave all five cells dark.
+
+Below 768px `.mh-tabs` becomes a horizontally scrolling row of pills, ordered
+**below** the H1 (it is source-ordered above it, where a desktop tab row
+belongs). The active chip is scrolled into view with `scrollLeft` on the row
+itself — never `scrollIntoView`, which also scrolls every ancestor and on iOS
+drags `<main>` and the fixed shell with it.
 
 **Rubric tabs** (`.mh-tabs`, rendered by `masthead_header`) list the sibling
 sections of the page you are on, in the content column, at every width. They
@@ -539,7 +568,7 @@ readability, independent of the card's own width.
 
 ### 5.4 One navigation registry, three consumers
 
-The rail, the phone's bottom bar and its drawer, and the "section N" numbering
+The rail, the phone's bottom bar, the «Ещё» screen and the "section N" numbering
 all read `MODULE_REGISTRY` / `nav_modules()` from
 `vitals/services/modules_service.py` (see [3.1](#31-masthead-canonical)). When
 adding a module, register it there once — resist the urge to add a section to

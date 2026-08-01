@@ -49,7 +49,32 @@
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M8 9h8" /><path d="M8 13h6" /><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12z" /></svg>
 {%- elif key == 'interactions' -%}
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0" /><path d="M15 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0 -10 0" /></svg>
+{# Chrome glyphs — not sections: the rail's search row, the phone bar's "More"
+   slot, the Modules row on the More screen, and the shared log-out arrow. #}
+{%- elif key == 'search' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M21 21l-6 -6" /></svg>
+{%- elif key == 'more' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /><path d="M5 6h14" /><path d="M5 18h14" /></svg>
+{%- elif key == 'modules' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6v6h-6z" /><path d="M14 4h6v6h-6z" /><path d="M4 14h6v6h-6z" /><path d="M14 14h6v6h-6z" /></svg>
+{%- elif key == 'settings' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+{%- elif key == 'logout' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V6a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
 {%- endif -%}
+{% endmacro %}
+
+{# ── Source-freshness rows ───────────────────────────────────────────────────
+   Shared by the rail's status card and the "More" screen so the two never tell
+   different stories. Rows come from ``request.state.nav_status``
+   (vitals/services/nav_status_service.py); an empty list renders nothing. #}
+{% macro mh_sync_rows() %}
+{% for row in request.state.nav_status or [] %}
+<div class="mh-sync-row {% if row.stale %}is-stale{% endif %}">
+    <span class="mh-sync-dot"></span>
+    <span>{{ t('nav.' + row.key) }} · {% if row.days is none %}{{ t('sync.never') }}{% elif row.days == 0 %}{{ t('sync.today') }}{% elif row.days == 1 %}{{ t('sync.yesterday') }}{% else %}{{ t('sync.days_ago', n=row.days, word=plural(row.days, t('sync.day_one'), t('sync.day_few'), t('sync.day_many'))) }}{% endif %}</span>
+</div>
+{% endfor %}
 {% endmacro %}
 
 {# ── Sidebar rail ────────────────────────────────────────────────────────────
@@ -60,43 +85,51 @@
 {% set em = request.state.enabled_modules or {} %}
 <aside id="primary-nav-masthead" {% if oob %}hx-swap-oob="true"{% endif %} class="mh-rail">
     <a href="/" class="mh-rail-wordmark" title="Vitals">Vitals</a>
-    <div class="mh-rail-div"></div>
+    {# Command palette trigger. A row, not an icon: it states the shortcut, which
+       is the only way anyone learns a shortcut exists. #}
+    <button type="button" class="mh-rail-search" @click="cmdOpen = true">
+        {{ mh_icon('search') }}
+        <span class="mh-rail-search-label">{{ t('nav.search') }}</span>
+        <kbd class="mh-rail-kbd">⌘K</kbd>
+    </button>
     <nav class="mh-rail-nav">
         {# "Today" is pinned above the rubrics rather than joining MODULE_REGISTRY:
            it is not a domain, it has no toggle, and a registry entry would give it
            a rubric number in the masthead eyebrow it must not have. #}
         <div class="mh-rail-pinned">
-            <a href="/today" title="{{ t('nav.today') }}" class="mh-rail-btn {% if current_path == '/today' %}is-active{% endif %}"{% if current_path == '/today' %} aria-current="page"{% endif %}>{{ mh_icon('today') }}<span class="mh-rail-label">{{ t('nav.today') }}</span></a>
+            <a href="/today" class="mh-rail-btn is-lead {% if current_path == '/today' %}is-active{% endif %}"{% if current_path == '/today' %} aria-current="page"{% endif %}>{{ mh_icon('today') }}<span class="mh-rail-label">{{ t('nav.today') }}</span></a>
         </div>
-        {# One block per rubric. Groups with a quiet uppercase heading (shown only
-           when the rail is expanded) turn a flat 12-item list into scannable
-           sections. A rubric whose every member is gated off is skipped entirely
-           so its heading never floats over an empty group.
+        {# One block per rubric, under a quiet uppercase heading. A rubric whose
+           every member is gated off is skipped entirely so its heading never
+           floats over an empty group.
 
-           Every section is on screen at once, deliberately: collapsing the rubrics
-           to fit a 1440x900 laptop bought vertical space at the price of the thing
-           a rail is for — seeing where you can go without opening anything. The
-           owner tried it and asked for the flat list back. #}
+           Every section is on screen at once, deliberately — collapsing the
+           rubrics to fit a 1440x900 laptop buys vertical space at the price of
+           the one thing a rail is for. The July nav handoff bought that space a
+           different way instead: a 30px row, and the section's own glyph only on
+           the row you are standing on. The other rows carry a dot, so the icon
+           column still lines up and the eye has exactly one glyph to find. #}
         {% for rubric in module_rubrics %}
         {% set members_vis = nav_modules(em, rubric=rubric) %}
         {% if members_vis %}
         <div class="mh-rail-group">
             <div class="mh-rail-group-label">{{ t('masthead.rubric.' + rubric) }}</div>
             {% for s in members_vis %}
-            <a href="{{ s.route }}" title="{{ t('nav.' + s.key) }}" class="mh-rail-btn {% if current_path.startswith(s.route) %}is-active{% endif %}"{% if current_path.startswith(s.route) %} aria-current="page"{% endif %}>{{ mh_icon(s.key) }}<span class="mh-rail-label">{{ t('nav.' + s.key) }}</span></a>
+            {% set active = current_path.startswith(s.route) %}
+            <a href="{{ s.route }}" class="mh-rail-btn {% if active %}is-active{% endif %}"{% if active %} aria-current="page"{% endif %}>{% if active %}{{ mh_icon(s.key) }}{% else %}<span class="mh-rail-dot"></span>{% endif %}<span class="mh-rail-label">{{ t('nav.' + s.key) }}</span></a>
             {% endfor %}
         </div>
         {% endif %}
         {% endfor %}
     </nav>
+    {# Source freshness fills the space the dense list gave back — the rail's
+       bottom third would otherwise be empty, and "is anything not arriving?" is
+       the one question a data lake owes you without opening a page. #}
+    {% if request.state.nav_status %}<div class="mh-rail-sync">{{ mh_sync_rows() }}</div>{% endif %}
     <div class="mh-rail-foot">
-        <a href="/settings" class="mh-rail-btn {% if current_path.startswith('/settings') %}is-active{% endif %}" title="{{ t('nav.settings_title') }}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg><span class="mh-rail-label">{{ t('nav.settings') }}</span>
-        </a>
+        <a href="/settings" class="mh-rail-foot-link {% if current_path.startswith('/settings') %}is-active{% endif %}">{{ t('nav.settings') }}</a>
         <form action="/logout" method="POST" hx-boost="false" class="contents">
-            <button type="submit" class="mh-rail-btn" title="{{ t('nav.logout') }}">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V6a3 3 0 013-3h4a3 3 0 013 3v1" /></svg><span class="mh-rail-label">{{ t('nav.logout') }}</span>
-            </button>
+            <button type="submit" class="mh-rail-foot-out" title="{{ t('nav.logout') }}" aria-label="{{ t('nav.logout') }}">{{ mh_icon('logout') }}</button>
         </form>
     </div>
 </aside>

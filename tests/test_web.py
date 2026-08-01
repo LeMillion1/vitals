@@ -1276,15 +1276,20 @@ async def test_mobile_navigation_rendering_unauth(client):
     """Test that mobile navigation is not rendered when unauthenticated."""
     response = await client.get("/login", headers={"Accept": "text/html"})
     assert response.status_code == 200
-    assert "Еще" not in response.text
+    assert "Ещё" not in response.text
 
 
 async def test_mobile_navigation_rendering_auth(auth_client):
-    """Test that mobile navigation is rendered when authenticated."""
+    """Test that mobile navigation is rendered when authenticated.
+
+    Five fixed columns: Today, three slots, More — and no drawer any more, so the
+    "More" cell is a link to the /more page, not a button that opens an overlay.
+    """
     response = await auth_client.get("/weight", headers={"Accept": "text/html"})
     assert response.status_code == 200
-    assert "Еще" in response.text
-    assert "mobileMenuOpen" in response.text
+    assert "Ещё" in response.text
+    assert 'href="/more"' in response.text
+    assert "mobileMenuOpen" not in response.text
 
 
 async def test_alerts_with_same_text_are_distinct_and_resolve_all(auth_client, db_session):

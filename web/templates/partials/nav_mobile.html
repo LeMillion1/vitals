@@ -1,13 +1,16 @@
-{# Phone navigation — bottom bar + the "More" drawer's link grid.
+{# Phone navigation — the bottom bar.
 
-   Both are driven by `nav_modules()` (vitals/services/modules_service.py), the
-   same registry the desktop rail reads, so a module can never show up in one
-   surface and not the other. Icons come from the shared `mh_icon` macro.
+   Five columns, always: "Today", three slots from `bottom_slots()`
+   (vitals/services/modules_service.py) and "More". The grid used to be sized
+   from the number of enabled modules — `repeat({{ bottom|length + 2 }}, …)` —
+   so every module toggle shifted every icon and clipped the captions. A slot is
+   a rubric (or the one module that earns its own column); the sections inside it
+   are reached through the masthead chips, and whatever gets no slot lives on the
+   /more screen. Nothing can fall out of both: `more_rubrics()` is derived from
+   `bottom_slots()`.
 
-   Two macros rather than one include because the pieces live in different
-   places in base.html; both take `oob=true` so a module toggle can re-render
-   them out-of-band (modules_oob.html). The drawer *shell* (x-show, transitions,
-   backdrop) stays in base.html and is never swapped — only the grid inside it.
+   `oob=true` emits the hx-swap-oob marker so a module toggle re-renders the bar
+   in place (modules_oob.html).
 
        {% from "partials/nav_mobile.html" import mobile_bottom_nav with context %}
 #}
@@ -15,46 +18,29 @@
 
 {% macro mobile_bottom_nav(oob=false) %}
 {% set current_path = request.url.path if request else '' %}
-{% set bottom = nav_modules(request.state.enabled_modules or {}, bottom=true) %}
-<!-- Bottom bar — "Today" plus the bottom_nav modules and the drawer trigger.
-     Columns follow the enabled modules, so an optional slot (Workouts) never
-     leaves an empty cell in a fixed grid. -->
+{% set slots = bottom_slots(request.state.enabled_modules or {}) %}
 <nav id="mobile-bottom-nav" {% if oob %}hx-swap-oob="true"{% endif %}
-    class="md:hidden v-bottom-nav bg-[rgba(28,25,32,0.95)] backdrop-blur-md border-t border-[var(--line)] grid items-center px-1"
-    style="grid-template-columns: repeat({{ bottom|length + 2 }}, minmax(0, 1fr)); padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(3.5rem + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
+    class="md:hidden v-bottom-nav mh-bnav"
+    style="padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(78px + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
     {# "Today" is the app's entry point, not a module — it has no registry entry
        and no toggle, so it is the one slot written out here by hand. #}
-    <a href="/today"
-        class="v-bnav-link flex flex-col items-center justify-center gap-1 h-full py-1 text-center {% if current_path == '/today' %}text-[var(--accent)]{% else %}text-[var(--muted)] hover:text-[var(--fg-2)]{% endif %}"{% if current_path == '/today' %} aria-current="page"{% endif %}>
+    <a href="/today" class="v-bnav-link {% if current_path == '/today' %}is-active{% endif %}"{% if current_path == '/today' %} aria-current="page"{% endif %}>
         <span class="v-nav-ico">{{ mh_icon('today') }}</span>
-        <span class="text-[0.62rem] font-bold">{{ t('nav.today') }}</span>
+        <span class="mh-bnav-label">{{ t('nav.today') }}</span>
     </a>
-    {% for s in bottom %}
-    <a href="{{ s.route }}"
-        class="v-bnav-link flex flex-col items-center justify-center gap-1 h-full py-1 text-center {% if current_path.startswith(s.route) %}text-[var(--accent)]{% else %}text-[var(--muted)] hover:text-[var(--fg-2)]{% endif %}"{% if current_path.startswith(s.route) %} aria-current="page"{% endif %}>
-        <span class="v-nav-ico">{{ mh_icon(s.key) }}</span>
-        <span class="text-[0.62rem] font-bold">{{ t('nav.' + s.key) }}</span>
+    {% for slot in slots %}
+    {% set active = current_path.startswith(slot.routes) %}
+    <a href="{{ slot.route }}" class="v-bnav-link {% if active %}is-active{% endif %}"{% if active %} aria-current="page"{% endif %}>
+        <span class="v-nav-ico">{{ mh_icon(slot.icon) }}</span>
+        <span class="mh-bnav-label">{{ t(slot.label_key) }}</span>
     </a>
     {% endfor %}
-    <button type="button" @click="mobileMenuOpen = true"
-        class="v-bnav-link flex flex-col items-center justify-center gap-1 h-full py-1 text-center text-[var(--muted)] hover:text-[var(--fg-2)] focus:outline-none">
-        <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-        <span class="text-[0.62rem] font-bold">{{ t("nav.more") }}</span>
-    </button>
+    {# "More" stays lit for everything that lives behind it — Markers, Settings —
+       otherwise standing on Labs leaves all five cells dark. #}
+    {% set in_more = current_path.startswith(more_routes(request.state.enabled_modules or {})) %}
+    <a href="/more" class="v-bnav-link {% if in_more %}is-active{% endif %}"{% if in_more %} aria-current="page"{% endif %}>
+        <span class="v-nav-ico">{{ mh_icon('more') }}</span>
+        <span class="mh-bnav-label">{{ t("nav.more") }}</span>
+    </a>
 </nav>
-{% endmacro %}
-
-{% macro mobile_drawer_links(oob=false) %}
-<!-- Drawer links — every nav module that isn't already in the bottom bar. -->
-<div id="mobile-drawer-links" {% if oob %}hx-swap-oob="true"{% endif %} class="grid grid-cols-2 gap-4">
-    {% for s in nav_modules(request.state.enabled_modules or {}, bottom=false) %}
-    <a href="{{ s.route }}" @click="mobileMenuOpen = false"
-        class="v-drawer-link flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)] hover:border-[var(--accent-line)] transition gap-2">
-        <span class="v-nav-ico text-[var(--fg-2)]">{{ mh_icon(s.key) }}</span>
-        <span class="text-xs font-bold text-[var(--fg-2)]">{{ t('nav.' + s.key) }}</span>
-    </a>
-    {% endfor %}
-</div>
 {% endmacro %}

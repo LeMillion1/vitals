@@ -43,7 +43,6 @@ class ModuleSpec:
     category: str       # "core" | "optional"
     route: str          # URL prefix / nav href
     rubric: str = ""    # "health" | "markers" | "lifestyle"; "" = not in nav
-    bottom_nav: bool = False   # phone: bottom bar (else the "More" drawer)
     eyebrow: str = ""   # overrides the rubric's masthead eyebrow for one section
     # No label here on purpose: every surface renders ``t("nav." + key)``, so a
     # label field would be a second, silently-stale copy of the i18n string.
@@ -61,21 +60,21 @@ MODULE_REGISTRY: dict[str, ModuleSpec] = {
     m.key: m
     for m in (
         # ── Health ───────────────────────────────────────────────────────────
-        ModuleSpec("weight", "core", "/weight", "health", bottom_nav=True),
-        ModuleSpec("garmin", "core", "/garmin", "health", bottom_nav=True),
-        ModuleSpec("hevy", "optional", "/hevy", "health", bottom_nav=True),
+        ModuleSpec("weight", "core", "/weight", "health"),
+        ModuleSpec("garmin", "core", "/garmin", "health"),
+        ModuleSpec("hevy", "optional", "/hevy", "health"),
         ModuleSpec("nutrition", "optional", "/nutrition", "health"),
         ModuleSpec("timeline", "optional", "/timeline", "health"),
         ModuleSpec("reports", "core", "/reports", "health", eyebrow="digest"),
         ModuleSpec("charts", "core", "/charts", "health"),
         # ── Markers ──────────────────────────────────────────────────────────
+        # The bottom bar has no Markers slot (see BOTTOM_SLOT_CANDIDATES) — on a
+        # phone these four live on the "More" screen.
         ModuleSpec("glp1", "optional", "/glp1", "markers"),
         ModuleSpec("hrt", "optional", "/hrt", "markers"),
         ModuleSpec("labs", "core", "/labs", "markers"),
         ModuleSpec("genetics", "optional", "/genetics", "markers"),
         # ── Lifestyle ────────────────────────────────────────────────────────
-        # Not in the bottom bar: "Today" took a slot there and supplements is the
-        # least frequent of the five — it lives in the drawer with the rest.
         ModuleSpec("supplements", "optional", "/supplements", "lifestyle"),
         ModuleSpec("skincare", "optional", "/skincare", "lifestyle"),
         ModuleSpec("interactions", "optional", "/interactions", "lifestyle"),
@@ -95,14 +94,12 @@ def nav_modules(
     enabled: Optional[dict[str, bool]] = None,
     *,
     rubric: Optional[str] = None,
-    bottom: Optional[bool] = None,
 ) -> list[ModuleSpec]:
     """Navigation entries visible for ``enabled``, in registry order.
 
     Core modules are always visible; Optional ones only when their key is on.
-    ``rubric``/``bottom`` narrow the result to one rail group or to the phone's
-    bottom bar (``bottom=False`` → the "More" drawer). Registered as a Jinja
-    global so the rail, the tab bar and the mobile nav all read this one list.
+    ``rubric`` narrows the result to one rail group. Registered as a Jinja global
+    so the rail, the tab bar and the mobile nav all read this one list.
     """
     em = enabled or {}
     return [
@@ -111,8 +108,106 @@ def nav_modules(
         if s.rubric
         and (s.category == "core" or em.get(s.key))
         and (rubric is None or s.rubric == rubric)
-        and (bottom is None or s.bottom_nav == bottom)
     ]
+
+
+# ── Phone bottom bar ─────────────────────────────────────────────────────────
+# Five columns, always — the old bar sized its grid from the number of enabled
+# modules, so icons drifted and labels clipped whenever a toggle moved. "Today"
+# and "More" are fixed ends; the three middle slots are drawn from the candidate
+# list below, first three with visible content win. A slot is either a whole
+# rubric (tapping it opens the rubric's first section, the masthead chips switch
+# within it) or one module that earns its own column.
+#
+# Markers is last on purpose: it is the least-often-opened rubric, so with
+# everything on it falls through to the "More" screen — which is exactly the
+# section list frame 3d shows.
+BOTTOM_SLOT_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ("health", "rubric"),
+    ("nutrition", "module"),
+    ("lifestyle", "rubric"),
+    ("markers", "rubric"),
+)
+BOTTOM_SLOT_COUNT = 3
+
+
+@dataclass(frozen=True)
+class NavSlot:
+    """One middle column of the phone bottom bar."""
+
+    key: str                    # slot id — also the icon/label lookup key
+    label_key: str              # i18n key for the caption
+    icon: str                   # ``mh_icon`` key (the slot's first section)
+    route: str                  # tap target
+    routes: tuple[str, ...]     # path prefixes that light this slot up
+
+
+def bottom_slots(enabled: Optional[dict[str, bool]] = None) -> list[NavSlot]:
+    """The three middle slots of the phone bottom bar, always exactly three
+    (unless the registry itself has nothing left to show)."""
+    em = enabled or {}
+    # A module with its own column also sits inside a rubric (nutrition is in
+    # Health), so its route must not light up both slots — the narrower one wins.
+    own_column = {
+        MODULE_REGISTRY[k].route for k, kind in BOTTOM_SLOT_CANDIDATES if kind == "module"
+    }
+    out: list[NavSlot] = []
+    for key, kind in BOTTOM_SLOT_CANDIDATES:
+        if len(out) == BOTTOM_SLOT_COUNT:
+            break
+        if kind == "rubric":
+            members = nav_modules(em, rubric=key)
+            if not members:
+                continue
+            routes = tuple(m.route for m in members if m.route not in own_column)
+            out.append(
+                NavSlot(
+                    key=key,
+                    label_key=f"nav.tab.{key}",
+                    icon=members[0].key,
+                    route=members[0].route,
+                    routes=routes or tuple(m.route for m in members),
+                )
+            )
+        else:
+            spec = MODULE_REGISTRY[key]
+            if spec.category != "core" and not em.get(key):
+                continue
+            out.append(
+                NavSlot(
+                    key=key,
+                    label_key=f"nav.{key}",
+                    icon=key,
+                    route=spec.route,
+                    routes=(spec.route,),
+                )
+            )
+    return out
+
+
+def more_rubrics(enabled: Optional[dict[str, bool]] = None) -> list[str]:
+    """Rubrics that did NOT get a bottom-bar slot — the section list on /more.
+
+    Derived, not a second hand-kept list: whatever the bar cannot fit is exactly
+    what the "More" screen has to carry, so a module can never fall out of both.
+    """
+    taken = {s.key for s in bottom_slots(enabled)}
+    return [
+        r for r in NAV_RUBRICS if r not in taken and nav_modules(enabled, rubric=r)
+    ]
+
+
+def more_routes(enabled: Optional[dict[str, bool]] = None) -> tuple[str, ...]:
+    """Path prefixes that light up the bottom bar's "More" cell.
+
+    Not just ``/more``: every section reachable only through that screen is
+    "inside" it as far as the bar is concerned, so standing on Labs must not
+    leave all five cells dark.
+    """
+    return ("/more", "/settings") + tuple(
+        s.route for r in more_rubrics(enabled) for s in nav_modules(enabled, rubric=r)
+    )
+
 
 CORE_KEYS: frozenset[str] = frozenset(
     k for k, s in MODULE_REGISTRY.items() if s.category == "core"

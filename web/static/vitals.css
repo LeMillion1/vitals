@@ -673,10 +673,9 @@ a.v-card:hover {
     color: var(--bad);
 }
 
-/* Bottom bar / drawer: no transform (the grid cell would jitter) — the tile
-   just lights up under the finger. */
-.v-bnav-link:active,
-.v-drawer-link:active {
+/* Bottom bar: no transform (the grid cell would jitter) — the cell just lights
+   up under the finger. */
+.v-bnav-link:active {
     background: var(--accent-soft);
     color: var(--accent);
 }

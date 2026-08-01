@@ -1,16 +1,13 @@
 {# Response body for POST /settings/modules. The toggle uses hx-swap="none", so
    nothing is swapped into the trigger; this fragment carries only out-of-band
-   updates: the desktop rail plus both phone surfaces (bottom bar and the "More"
-   drawer's link grid), so enabling/disabling a module is reflected live on every
-   screen size without a page reload.
+   updates: the desktop rail plus the phone's bottom bar, so enabling/disabling a
+   module is reflected live on both screen sizes without a page reload.
 
-   The drawer *shell* (x-show/x-transition/backdrop) is deliberately NOT swapped —
-   only the inert grid inside it — so Alpine's overlay state is never re-created
-   underneath an open drawer. #}
-{% from "partials/nav_mobile.html" import mobile_bottom_nav, mobile_drawer_links with context %}
+   The "More" screen is not swapped: it is its own page (/more), never in the DOM
+   while the toggle is being flipped on /settings. #}
+{% from "partials/nav_mobile.html" import mobile_bottom_nav with context %}
 {% with oob=true %}{% include "partials/nav_masthead.html" %}{% endwith %}
 {{ mobile_bottom_nav(oob=true) }}
-{{ mobile_drawer_links(oob=true) }}
 {# U10: the proactive card's "module off" chip (proactive_card.html) — only
    present in the DOM while on /settings, harmless no-op OOB elsewhere since
    htmx drops an OOB fragment with no id match in the current page. #}

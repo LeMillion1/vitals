@@ -8,7 +8,14 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
 from vitals.i18n import t, get_js_strings, plural
-from vitals.services.modules_service import MODULE_REGISTRY, NAV_RUBRICS, nav_modules
+from vitals.services.modules_service import (
+    MODULE_REGISTRY,
+    NAV_RUBRICS,
+    bottom_slots,
+    more_rubrics,
+    more_routes,
+    nav_modules,
+)
 from vitals.services.supplements_service import timing_bucket
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
@@ -129,3 +136,8 @@ templates.env.globals["plural"] = plural
 templates.env.globals["module_registry"] = MODULE_REGISTRY
 templates.env.globals["module_rubrics"] = NAV_RUBRICS
 templates.env.globals["nav_modules"] = nav_modules
+# Phone bottom bar (five fixed columns) and the "More" screen read the same
+# registry through these two derived views — see modules_service.
+templates.env.globals["bottom_slots"] = bottom_slots
+templates.env.globals["more_rubrics"] = more_rubrics
+templates.env.globals["more_routes"] = more_routes

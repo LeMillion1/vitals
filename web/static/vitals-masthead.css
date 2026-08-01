@@ -24,18 +24,25 @@ body.ui-masthead {
        responsive ladder has to stay monotonic, and a 38px tablet H1 would now be
        *larger* than the 36px desktop one. */
     --mh-text-hero-md: 32px;       /* H1 + primary metric — tablet */
-    --mh-text-hero-sm: 30px;       /* H1 — narrow phone */
+    --mh-text-hero-sm: 27px;       /* H1 — narrow phone (nav handoff, frame 3c) */
     --mh-text-metric: 36px;        /* primary key figure */
     --mh-text-metric-md: 34px;     /* primary key figure — desktop shell */
-    --mh-text-wordmark: 26px;      /* rail wordmark, expanded */
-    --mh-text-wordmark-sm: 22px;   /* rail wordmark, collapsed ("V") */
+    --mh-text-wordmark: 22px;      /* rail wordmark */
     --mh-text-lead: 21px;          /* secondary key figure */
     --mh-text-brand: 19px;         /* mobile topbar wordmark */
     --mh-text-tab: 15px;           /* rubric tab */
     --mh-text-eyebrow: 11px;       /* uppercase eyebrows / labels */
     --mh-text-nano: 10px;          /* smallest uppercase micro-label */
-    --mh-rail-w: 68px;
-    --mh-rail-w-expanded: 244px;
+    /* One rail width at every desktop size. The icon-only 68px step is gone with
+       the nav handoff: it hid the labels, which is the one thing the rail is for,
+       and a 30px row fits all sixteen sections at 1440x900 without it. */
+    --mh-rail-w: 240px;
+    /* Rail-local surfaces the app palette has no name for: the recessed search
+       well, the status card, and the hover fill on a section row. */
+    --mh-rail-well: #100E14;
+    --mh-rail-card: #1A171E;
+    --mh-rail-hover: #211E27;
+    --mh-rail-line-quiet: #2B2731;
 }
 
 /* ── Desktop layout row ──────────────────────────────────────────────────
@@ -54,13 +61,12 @@ body.ui-masthead .mh-shell {
    rules are more specific than the utilities, so they would always win — the
    rail is hidden below md and shown from md up via the media query below.
 
-   position:fixed on purpose: a hover-preview expansion (below) then only ever
-   grows this overlay, never the flex layout, so <main> and its charts/tables
-   never reflow just because the pointer passed over the rail. .mh-rail-spacer
-   is the plain in-flow box that actually reserves the column width in
-   .mh-shell — pinning (also below) is the one deliberate case that resizes
-   both the rail and the spacer together, which is the only time <main> is
-   meant to move. */
+   position:fixed on purpose: the rail is full-height chrome that must not join
+   <main>'s scroll region. .mh-rail-spacer is the plain in-flow box that reserves
+   the column width in .mh-shell, so the two always agree. One width at every
+   desktop size — no hover-expand, no pin toggle, so <main> never reflows from a
+   stray pointer and there is no client-side rail state to re-sync across
+   boosted navigations. */
 body.ui-masthead .mh-rail {
     position: fixed;
     top: 0;
@@ -71,12 +77,11 @@ body.ui-masthead .mh-rail {
     border-right: 1px solid var(--line);
     display: none;
     flex-direction: column;
-    align-items: center;
-    padding: 20px 0;
-    gap: 18px;
+    align-items: stretch;
+    padding: 20px 0 16px;
+    gap: 14px;
     overflow: hidden;
     z-index: 35;
-    transition: width .18s ease, box-shadow .18s ease;
 }
 
 @media (min-width: 768px) {
@@ -97,62 +102,60 @@ body.ui-masthead .mh-rail-spacer {
     }
 }
 
-/* Desktop (>=901, the handoff's own breakpoint): the rail is permanently
-   expanded — section labels, group headings and every button label are visible.
-   Below that (tablet, 768–900) it stays a slim icon-only rail. No hover-expand
-   and no pin toggle: the width is purely breakpoint-driven, so <main> never
-   reflows from a stray pointer and there is no client-side rail state to
-   re-sync across boosted navigations. */
-@media (min-width: 901px) {
-    body.ui-masthead .mh-rail,
-    body.ui-masthead .mh-rail-spacer {
-        width: var(--mh-rail-w-expanded);
-    }
-}
-
-body.ui-masthead .mh-rail-logo {
-    width: 44px;
-    height: 44px;
+/* Command-palette trigger. A recessed well rather than a button, so it reads as
+   a field you type into, and it states its own shortcut — otherwise nobody ever
+   discovers the shortcut exists. */
+body.ui-masthead .mh-rail-search {
     flex: none;
-    border-radius: 50%;
-    background: var(--bg);
-    border: 1px solid var(--line);
+    margin: 0 12px;
+    height: 32px;
+    border-radius: 9px;
+    background: var(--mh-rail-well);
+    border: 1px solid var(--mh-rail-line-quiet);
     display: flex;
     align-items: center;
-    justify-content: center;
-    color: var(--accent);
+    gap: 9px;
+    padding: 0 11px;
+    cursor: pointer;
+    transition: border-color .15s ease;
 }
 
-body.ui-masthead .mh-rail-logo svg {
-    width: 18px;
-    height: 18px;
+body.ui-masthead .mh-rail-search:hover {
+    border-color: var(--line);
 }
 
-/* Soft pulse around the logo — the active page marker. */
-body.ui-masthead .mh-rail-logo.is-live {
-    animation: mh-pulse 2.6s ease-in-out infinite;
-}
-
-@keyframes mh-pulse {
-    0%, 100% { opacity: .9; filter: drop-shadow(0 0 2px rgba(245, 166, 35, .25)); }
-    50%      { opacity: 1;  filter: drop-shadow(0 0 7px rgba(245, 166, 35, .6)); }
-}
-
-body.ui-masthead .mh-rail-div {
-    width: 24px;
-    height: 1px;
+body.ui-masthead .mh-rail-search svg {
+    width: 14px;
+    height: 14px;
     flex: none;
-    background: var(--line);
+    stroke-width: 1.6;
+    color: var(--faint);
 }
 
+body.ui-masthead .mh-rail-search-label {
+    font: 500 var(--text-micro) 'Inter', sans-serif;
+    color: var(--faint);
+}
+
+body.ui-masthead .mh-rail-kbd {
+    margin-left: auto;
+    font: 600 var(--mh-text-nano) 'Inter', sans-serif;
+    color: var(--line-2);
+    border: 1px solid var(--mh-rail-line-quiet);
+    border-radius: 5px;
+    padding: 2px 5px;
+}
+
+/* The section list takes the slack, so the status card and the footer sit on the
+   bottom edge. overflow-y:auto is a safety net only — sixteen 30px rows plus
+   three headings fit inside 1440x900 with ~200px to spare. */
 body.ui-masthead .mh-rail-nav {
     display: flex;
     flex-direction: column;
-    align-self: stretch;
-    align-items: stretch;
+    flex: 1;
     min-height: 0;
     gap: 0;
-    padding: 0 16px;
+    padding: 0 12px;
     overflow-y: auto;
     overflow-x: hidden;
     scrollbar-width: none;
@@ -168,59 +171,67 @@ body.ui-masthead .mh-rail-pinned {
     display: flex;
     flex-direction: column;
     flex: none;
-    padding-bottom: 8px;
-    margin-bottom: 8px;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
     border-bottom: 1px solid var(--line);
 }
 
-/* Rubric group: a small stack of buttons under a quiet heading. The gap between
-   groups reads as a soft separator even in icon-only mode, where the heading
-   itself is hidden. */
+/* Rubric group: a stack of rows under a quiet heading. 1px between rows — the
+   rows are dense enough that any real gap would read as three separate lists
+   inside one group. */
 body.ui-masthead .mh-rail-group {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 1px;
 }
 
-body.ui-masthead .mh-rail-group + .mh-rail-group {
-    margin-top: 18px;
-}
-
-/* Heading: hidden by default (icon-only rail), revealed with the labels when the
-   rail is expanded — see the >=901 block below. */
 body.ui-masthead .mh-rail-group-label {
-    display: none;
-    padding: 0 13px 4px;
+    padding: 0 12px 6px;
     color: var(--faint);
     font: 700 var(--mh-text-nano) 'Inter', sans-serif;
     letter-spacing: .12em;
     text-transform: uppercase;
 }
 
-/* Section buttons — 44px tall (touch target), rounded, muted → accent when
-   active. Width fills the row instead of a fixed 44px square: collapsed, nav's
-   own 16px side padding leaves exactly 44px of content width (matching the
-   rail's own centering math), so it still reads as a square icon button;
-   expanded, the same row just has room for the label to reveal beside it. */
+body.ui-masthead .mh-rail-group + .mh-rail-group .mh-rail-group-label {
+    padding-top: 16px;
+}
+
+/* Section rows — 30px. The row you are on is the only one with its section's
+   glyph; the rest carry a dot in the same column, which keeps the labels aligned
+   and leaves the eye exactly one icon to find. 30px is under the 44px touch
+   minimum on purpose: the rail is desktop-only (hidden below 768px), where the
+   pointer target is the full 216px-wide row. */
 body.ui-masthead .mh-rail-btn {
     position: relative;
-    height: 44px;
+    height: 30px;
     flex: none;
-    border-radius: 10px;
+    border-radius: 8px;
     display: flex;
     align-items: center;
-    justify-content: flex-start;
-    padding: 0 13px;
+    gap: 10px;
+    padding: 0 12px;
     color: var(--muted);
     background: transparent;
     border: 1px solid transparent;
     overflow: hidden;
-    transition: background .15s ease, color .15s ease, border-color .15s ease;
+    font: 500 var(--text-label) 'Inter', sans-serif;
+    transition: background-color .12s ease, color .12s ease;
+}
+
+/* "Today" — taller and pre-filled, the one row that is a destination rather than
+   a section of something. */
+body.ui-masthead .mh-rail-btn.is-lead {
+    height: 36px;
+    border-radius: 9px;
+    background: var(--mh-rail-hover);
+    color: var(--fg-2);
+    font-weight: 600;
 }
 
 body.ui-masthead .mh-rail-btn svg {
-    width: 18px;
-    height: 18px;
+    width: 15px;
+    height: 15px;
     flex: none;
     /* Lighter stroke than the icons' inline stroke-width="2" — CSS wins over the
        presentation attribute, so the whole rail set reads thinner and less bulky
@@ -228,15 +239,36 @@ body.ui-masthead .mh-rail-btn svg {
     stroke-width: 1.5;
 }
 
+body.ui-masthead .mh-rail-btn.is-lead svg {
+    width: 17px;
+    height: 17px;
+}
+
+/* The dot stands in the icon's column on every inactive row. Its 5px margins
+   centre it under the 15px glyph, so labels never shift when the active row
+   moves. */
+body.ui-masthead .mh-rail-dot {
+    flex: none;
+    width: 5px;
+    height: 5px;
+    margin: 0 5px;
+    border-radius: 50%;
+    background: var(--line);
+    transition: background-color .12s ease;
+}
+
 body.ui-masthead .mh-rail-btn:hover {
-    color: var(--fg-2);
-    background: var(--surface);
+    color: var(--fg);
+    background: var(--mh-rail-hover);
+}
+
+body.ui-masthead .mh-rail-btn:hover .mh-rail-dot {
+    background: var(--faint);
 }
 
 /* Tap feedback (U2) — hover never fires on a phone and Tailwind's preflight
    clears the native tap highlight, so the press needs its own state. */
-body.ui-masthead .mh-rail-btn:active,
-body.ui-masthead .mh-topbar-menu:active {
+body.ui-masthead .mh-rail-btn:active {
     color: var(--accent-2);
     background: var(--accent-soft);
 }
@@ -245,84 +277,110 @@ body.ui-masthead .mh-tab:active {
     color: var(--accent-2);
 }
 
-body.ui-masthead .mh-rail-btn.is-active {
+/* The active row is never re-styled by hover: it is where you already are. */
+body.ui-masthead .mh-rail-btn.is-active,
+body.ui-masthead .mh-rail-btn.is-active:hover {
     color: var(--accent-2);
     background: var(--accent-soft);
     border-color: var(--accent-line);
+    font-weight: 600;
 }
 
-/* Amber "you are here" bar tacked to the button's leading edge — a positional
-   cue that reads instantly even in the icon-only rail, on top of the fill. */
+/* Amber "you are here" bar tacked to the row's leading edge, on top of the fill. */
 body.ui-masthead .mh-rail-btn.is-active::before {
     content: '';
     position: absolute;
-    left: 0;
-    top: 9px;
-    bottom: 9px;
+    left: -1px;
+    top: 6px;
+    bottom: 6px;
     width: 3px;
     border-radius: 0 3px 3px 0;
     background: var(--accent);
 }
 
-/* Label — collapsed to zero width in the icon-only rail; revealed on desktop
-   (>=1101), the same breakpoint that expands the rail's own width. */
 body.ui-masthead .mh-rail-label {
-    margin-left: 12px;
-    font: 600 var(--text-label) 'Inter', sans-serif;
     white-space: nowrap;
-    opacity: 0;
-    max-width: 0;
     overflow: hidden;
-    transition: opacity .15s ease, max-width .18s ease;
+    text-overflow: ellipsis;
 }
 
-@media (min-width: 901px) {
-    body.ui-masthead .mh-rail-label {
-        opacity: 1;
-        max-width: 160px;
-    }
-
-    body.ui-masthead .mh-rail-group-label {
-        display: block;
-    }
-}
-
-/* Bottom cluster: settings, logout. Always visible — never part of
-   .mh-rail-nav's own scroll region (see above) — and laid out with the same
-   align-self:stretch + 16px side padding as the nav so its icons line up with
-   the nav's icons exactly, collapsed or expanded. */
-body.ui-masthead .mh-rail-foot {
+/* Source-freshness card — see mh_sync_rows in partials/masthead.html. */
+body.ui-masthead .mh-rail-sync {
     flex: none;
-    align-self: stretch;
+    margin: 0 12px;
+    padding: 12px;
+    border-radius: 12px;
+    background: var(--mh-rail-card);
     display: flex;
     flex-direction: column;
-    align-items: stretch;
-    gap: 14px;
-    padding: 12px 16px 0;
+    gap: 8px;
+}
+
+body.ui-masthead .mh-sync-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 500 var(--text-micro) 'Inter', sans-serif;
+    color: var(--fg-2);
+}
+
+body.ui-masthead .mh-sync-row.is-stale {
+    color: var(--muted);
+}
+
+body.ui-masthead .mh-sync-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--good);
+}
+
+body.ui-masthead .mh-sync-row.is-stale .mh-sync-dot {
+    background: var(--warn);
+}
+
+/* Bottom cluster: settings on the left, log out as a bare glyph on the right —
+   never part of .mh-rail-nav's own scroll region. */
+body.ui-masthead .mh-rail-foot {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0 12px;
+    padding: 10px 0 0;
     border-top: 1px solid var(--line);
 }
 
-body.ui-masthead .mh-rail-avatar {
-    position: relative;
-    align-self: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    background: var(--surface-2);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font: 600 var(--mh-text-eyebrow) 'Inter', sans-serif;
-    color: var(--fg-2);
+body.ui-masthead .mh-rail-foot-link {
+    font: 500 var(--text-label) 'Inter', sans-serif;
+    color: var(--muted);
     text-decoration: none;
+    transition: color .12s ease;
 }
 
-/* Keep the 26px circle but expand the clickable area to 44px (U12). */
-body.ui-masthead .mh-rail-avatar::before {
-    content: '';
-    position: absolute;
-    inset: -9px;
-    border-radius: 50%;
+body.ui-masthead .mh-rail-foot-link:hover,
+body.ui-masthead .mh-rail-foot-link.is-active {
+    color: var(--fg);
+}
+
+body.ui-masthead .mh-rail-foot-out {
+    display: flex;
+    color: var(--faint);
+    background: none;
+    border: none;
+    cursor: pointer;
+    transition: color .12s ease;
+}
+
+body.ui-masthead .mh-rail-foot-out:hover {
+    color: var(--fg-2);
+}
+
+body.ui-masthead .mh-rail-foot-out svg {
+    width: 16px;
+    height: 16px;
+    stroke-width: 1.5;
 }
 
 /* ── Mobile top bar (replaces the classic <header> under md) ──────────────── */
@@ -361,30 +419,8 @@ body.ui-masthead .mh-topbar-brand span {
     color: var(--fg);
 }
 
-body.ui-masthead .mh-topbar-menu {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    /* Tap zone: stretch to the full topbar height (52px, well over the 44px
-       minimum) instead of shrink-wrapping to the text+icon size. Padding
-       widens the hit area further; the negative margin cancels it back out
-       visually so the icon still sits flush with the topbar's own edge. */
-    align-self: stretch;
-    padding: 0 8px;
-    margin-right: -8px;
-    color: var(--fg-2);
-    font: 600 var(--mh-text-nano) 'Inter', sans-serif;
-    letter-spacing: .08em;
-    text-transform: uppercase;
-    background: none;
-    border: none;
-    cursor: pointer;
-}
-
-body.ui-masthead .mh-topbar-menu svg {
-    width: 14px;
-    height: 14px;
-}
+/* No .mh-topbar-menu rule: the phone's top bar carries no controls at all since
+   the nav handoff — the bottom bar and /more own phone navigation. */
 
 /* ── The editorial masthead (rendered at the top of each section's content) ── */
 body.ui-masthead .mh-head {
@@ -749,30 +785,19 @@ body.ui-masthead .mh-macro-card-unit {
 
 /* Handoff 2026-07: editorial amber shell.
    Rail visibility stays owned by the breakpoint rules at the top of this file
-   (hidden < 768, icon rail 768–900, expanded ≥ 901) — this block only restyles
-   what the handoff changes, so the mobile top bar + bottom nav + drawer keep
-   working on a phone, where a permanent 68px rail would eat a fifth of the
-   screen and leave the section list unreadable. */
+   (hidden < 768, 240px rail from 768 up) — this block only restyles what the
+   handoff changes, so the mobile top bar and bottom bar keep working on a phone,
+   where a permanent rail would eat two thirds of the screen. */
 body.ui-masthead .mh-rail-wordmark {
-    width: 100%;
-    min-height: 28px;
+    flex: none;
     display: flex;
     align-items: center;
-    justify-content: flex-start;
-    padding: 0 20px;
+    padding: 0 18px;
     color: var(--fg);
     text-decoration: none;
-    font: 800 0/1 var(--mh-display);
+    font: 800 var(--mh-text-wordmark)/1 var(--mh-display);
     letter-spacing: -.02em;
 }
-body.ui-masthead .mh-rail-wordmark::after {
-    content: 'V';
-    font: 800 var(--mh-text-wordmark-sm)/1 var(--mh-display);
-}
-body.ui-masthead .mh-rail { padding: 20px 0; gap: 18px; }
-body.ui-masthead .mh-rail-nav { padding-inline: 12px; }
-body.ui-masthead .mh-rail-btn { height: 42px; }
-body.ui-masthead .mh-rail-foot { padding-inline: 12px; }
 
 body.ui-masthead .mh-tabs {
     border-bottom: 1px solid var(--line);
@@ -841,13 +866,6 @@ body.ui-masthead main > .v-page {
 }
 body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !important; }
 
-@media (min-width: 901px) {
-    body.ui-masthead .mh-rail-wordmark { font-size: var(--mh-text-wordmark); }
-    body.ui-masthead .mh-rail-wordmark::after { content: none; }
-    body.ui-masthead .mh-rail-nav,
-    body.ui-masthead .mh-rail-foot { padding-inline: 16px; }
-}
-
 /* Below ~1200 the column gets too narrow for four wide metrics on one line, so
    the strip wraps inside itself — and a divider that lands on a line break is
    left standing in empty space. Spacing separates them just as well once the
@@ -895,4 +913,265 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
     body.ui-masthead .grid.grid-cols-3 {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Nav handoff 2026-08 — phone surfaces
+   ============================================================================
+   The phone used to carry three navigation surfaces at once: a top bar with a
+   "Menu" button, a bottom bar with its own "More" button, and the single drawer
+   both of them opened. The top bar lost its controls, the drawer became the
+   /more page, and the bar below is the only phone navigation left. */
+
+/* Five equal columns, fixed — the old bar computed its grid from the number of
+   enabled modules, so every toggle shifted every icon and clipped the captions.
+
+   Visibility is owned here, not by the `md:hidden` utility on the element: these
+   rules are more specific, so a bare `display: grid` would beat the utility and
+   leave the phone bar sitting across the desktop viewport on top of the rail. */
+body.ui-masthead .mh-bnav {
+    display: none;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    align-items: start;
+    padding-top: 10px;
+    background: rgba(21, 19, 24, .96);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--line);
+}
+
+@media (max-width: 767px) {
+    body.ui-masthead .mh-bnav {
+        display: grid;
+    }
+}
+
+body.ui-masthead .mh-bnav .v-bnav-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    /* The cell is the tap target, not the glyph: 44px minimum even though the
+       icon+label stack is shorter. */
+    min-height: 44px;
+    padding: 0 2px;
+    color: var(--faint);
+    text-decoration: none;
+    text-align: center;
+}
+
+body.ui-masthead .mh-bnav .v-bnav-link.is-active {
+    color: var(--accent-2);
+}
+
+body.ui-masthead .mh-bnav .v-nav-ico svg {
+    width: 22px;
+    height: 22px;
+    stroke-width: 1.6;
+}
+
+body.ui-masthead .mh-bnav-label {
+    font: 700 var(--mh-text-nano) 'Inter', sans-serif;
+    white-space: nowrap;
+}
+
+/* ── Phone: the section header ─────────────────────────────────────────────
+   Rubric eyebrow → section title → chips. The chip row moves BELOW the title on
+   a phone (it is source-ordered above it, where a desktop tab row belongs), and
+   becomes pills that scroll sideways: the clipped last chip is the affordance
+   that says the list continues. */
+@media (max-width: 767px) {
+    body.ui-masthead .mh-tabs {
+        order: 1;
+        border-bottom: 0;
+        gap: 7px;
+        margin-top: 14px;
+        padding-bottom: 2px;
+        scroll-snap-type: x proximity;
+    }
+
+    body.ui-masthead .mh-tab {
+        flex: none;
+        scroll-snap-align: start;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-pill);
+        padding: 7px 14px;
+        font-size: var(--text-label);
+        font-weight: 500;
+        color: var(--muted);
+    }
+
+    body.ui-masthead .mh-tab.is-active {
+        font-weight: 600;
+        color: var(--accent-2);
+        background: var(--accent-soft);
+        border-color: var(--accent-line);
+    }
+
+    body.ui-masthead .mh-hero-row {
+        order: 0;
+    }
+}
+
+/* ── The "More" screen (/more) ───────────────────────────────────────────── */
+body.ui-masthead .mh-more {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    max-width: 640px;
+}
+
+/* Beats the shared `main > .v-page` page padding: this screen is a menu, and it
+   starts right under the status bar, not 40px down. */
+body.ui-masthead main > .v-page.mh-more {
+    padding: 6px 20px 24px !important;
+}
+
+body.ui-masthead .mh-more-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+body.ui-masthead .mh-more-group-label {
+    padding: 0 14px 8px;
+    color: var(--faint);
+    font: 700 var(--mh-text-nano) 'Inter', sans-serif;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+}
+
+body.ui-masthead .mh-more-row {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    height: 54px;
+    padding: 0 14px;
+    border-radius: var(--radius);
+    color: var(--fg-2);
+    text-decoration: none;
+}
+
+body.ui-masthead .mh-more-row:active {
+    background: var(--accent-soft);
+}
+
+body.ui-masthead .mh-more-ico {
+    display: flex;
+    color: var(--faint);
+}
+
+body.ui-masthead .mh-more-ico svg {
+    width: 20px;
+    height: 20px;
+    stroke-width: 1.6;
+}
+
+body.ui-masthead .mh-more-name {
+    font: 500 var(--text-card) 'Inter', sans-serif;
+}
+
+body.ui-masthead .mh-more-meta {
+    margin-left: auto;
+    font: 500 var(--text-label) 'Inter', sans-serif;
+    color: var(--faint);
+}
+
+body.ui-masthead .mh-more-meta.is-bad {
+    color: var(--bad);
+}
+
+body.ui-masthead .mh-more-sync {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 18px;
+    background: var(--mh-rail-card);
+    border: 1px solid var(--line);
+}
+
+body.ui-masthead .mh-more-sync .mh-sync-row {
+    font-size: var(--text-label);
+}
+
+/* Deliberately quiet: a bordered row, not a danger button. */
+body.ui-masthead .mh-more-logout {
+    width: 100%;
+    height: 50px;
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    background: none;
+    color: var(--muted);
+    font: 600 var(--text-body) 'Inter', sans-serif;
+    cursor: pointer;
+}
+
+body.ui-masthead .mh-more-logout:active {
+    background: var(--accent-soft);
+    color: var(--accent-2);
+}
+
+/* ── Command palette (⌘K) ─────────────────────────────────────────────────── */
+body.ui-masthead .mh-cmd {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 12vh 20px 20px;
+    background: rgba(0, 0, 0, .6);
+    backdrop-filter: blur(4px);
+}
+
+body.ui-masthead .mh-cmd-panel {
+    width: 100%;
+    max-width: 520px;
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    border: 1px solid var(--line-2);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+}
+
+body.ui-masthead .mh-cmd-input {
+    flex: none;
+    height: 52px;
+    padding: 0 18px;
+    background: var(--mh-rail-well);
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    color: var(--fg);
+    font: 500 var(--text-card) 'Inter', sans-serif;
+    outline: none;
+}
+
+body.ui-masthead .mh-cmd-list {
+    overflow-y: auto;
+    padding: 8px;
+}
+
+body.ui-masthead .mh-cmd-row {
+    display: flex;
+    align-items: center;
+    height: 42px;
+    padding: 0 12px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-2);
+    text-decoration: none;
+    font: 500 var(--text-body) 'Inter', sans-serif;
+}
+
+body.ui-masthead .mh-cmd-row:hover {
+    background: var(--mh-rail-hover);
+    color: var(--fg);
+}
+
+body.ui-masthead .mh-cmd-rubric {
+    margin-left: auto;
+    color: var(--faint);
+    font: 500 var(--text-micro) 'Inter', sans-serif;
 }
