@@ -6,11 +6,12 @@ Three inbound shapes, deliberately three code paths:
     the evening block will ask for (прогон 4). Stateless: the button carries
     everything needed in its payload, so a tap works days later.
   * **a question** — either a reply to one of our messages or a plain «почему hrv
-    просел?». Answered from the message replied to *plus* the context the last
-    brief was built on, and nothing else. This is still not a second chat with
-    the data: deep questions belong in Claude.ai over MCP, which has 69 tools and
-    a better model. Here the model sees one message, the day's numbers, and is
-    told to invent nothing.
+    просел?». Answered from the message replied to — or, when nothing was
+    replied to, the last few messages we sent — *plus* the context the last brief
+    was built on, and nothing else. This is still not a second chat with the
+    data: deep questions belong in Claude.ai over MCP, which has 69 tools and a
+    better model. Here the model sees the tail of the conversation, the day's
+    numbers, and is told to invent nothing.
   * **anything else typed** — free text into ``signals`` (raw first, always),
     followed by an echo of what was understood plus one "не то" button.
 
@@ -105,13 +106,18 @@ _PARSER_SYSTEM = """\
 
 _REPLY_SYSTEM = """\
 Ты отвечаешь на вопрос владельца дашборда здоровья.
-Перед тобой может быть сообщение, которое бот прислал раньше, и JSON с данными
-последнего разбора дня. Отвечай по-русски, коротко (2-4 предложения), опираясь
-и на текст, и на JSON — числа бери только оттуда.
+Перед тобой могут быть последние сообщения самого бота (по порядку, последнее —
+внизу) и JSON с данными последнего разбора дня. Короткий вопрос без пояснений
+почти всегда про то, что бот только что написал — сначала ищи ответ там, и
+только потом в JSON. Отвечай по-русски, коротко (2-4 предложения); числа бери
+только из этих двух источников.
 Если ответа в них нет — так и скажи. Никаких выдуманных чисел.\
 """
 
 _REPLY_MAX_TOKENS = 800
+# How far back the "what did you just say" context reaches. Three covers an echo
+# followed by a nudge that landed in between; more starts pulling in yesterday.
+_CONTEXT_MESSAGES = 3
 _NO_LLM_REPLY = "Сейчас не отвечу — модель недоступна. Загляни в приложение."
 # The day's numbers as JSON, capped: the brief's context grows a field per module
 # and the prompt is paid for by the token.
@@ -456,9 +462,16 @@ async def _answer_reply(
     notifier: Optional[Notifier],
     message_id: Optional[Any],
 ) -> None:
-    """``answered`` is the message being replied to, or ``None`` for a question
-    typed on its own — in which case the day's numbers are all there is."""
-    context = ((answered.payload or {}).get("text") or "") if answered is not None else ""
+    """``answered`` is the message being replied to; for a question typed on its
+    own the last few things we said stand in for it."""
+    if answered is not None:
+        context = (answered.payload or {}).get("text") or ""
+    else:
+        context = "\n\n".join(
+            text
+            for row in await delivery.recent_sent(session, limit=_CONTEXT_MESSAGES)
+            if (text := (row.payload or {}).get("text"))
+        )
     try:
         text = await answer_reply(question, context, await _day_facts(session))
     except Exception:
@@ -578,7 +591,7 @@ async def answer_reply(question: str, context: str, facts: str = "") -> str:
     """
     parts = []
     if context:
-        parts.append(f"Сообщение бота:\n{context}")
+        parts.append(f"Последние сообщения бота:\n{context}")
     if facts:
         parts.append(f"Данные последнего разбора дня (JSON):\n{facts}")
     parts.append(f"Вопрос:\n{question}")

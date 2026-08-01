@@ -750,6 +750,35 @@ async def test_the_question_path_is_given_the_days_numbers(
     assert fake.sent[-1]["text"] == "HRV 42 — ниже твоей нормы."
 
 
+async def test_a_question_without_a_reply_still_sees_what_the_bot_just_said(
+    bot_client, db_session, monkeypatch
+):
+    """«что за ключ странный на второе» is about the echo sent a minute earlier.
+    Typed plainly (nobody uses Telegram's Reply), it used to reach the model with
+    no message attached, and the answer was a guess about the 2nd of the month."""
+    c, fake = bot_client
+    await delivery.send(db_session, fake, text="Утро: разбор дня.",
+                        category=delivery.CATEGORY_BRIEF, now=NOON)
+    await delivery.send(db_session, fake, text="Записал:\n• спать охота → sleepiness 3/5\n"
+                                              "• энергос → sugar 1 serving в 17:00",
+                        category=delivery.CATEGORY_ECHO, now=NOON)
+    asked = {}
+
+    async def _answer(question, context, facts=""):
+        asked["context"] = context
+        return "sugar — ключ для сахара, 1 порция."
+
+    monkeypatch.setattr(inbound, "answer_reply", _answer)
+
+    await c.post(f"/tg/{WEBHOOK_PATH}",
+                 json=_text_update(1, "что за ключ странный на второе"), headers=HEADERS)
+
+    assert "sugar 1 serving" in asked["context"]
+    # Oldest first, so the message being asked about is the one nearest the question.
+    assert asked["context"].index("Утро") < asked["context"].index("Записал")
+    assert fake.sent[-1]["text"] == "sugar — ключ для сахара, 1 порция."
+
+
 # ── Budget & quiet hours ──────────────────────────────────────────────────────
 async def test_budget_cuts_the_fifth_self_initiated_message(db_session):
     fake = FakeNotifier()

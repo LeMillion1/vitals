@@ -100,6 +100,21 @@ async def find_sent(session: AsyncSession, external_id: str) -> Optional[Notific
     return result.scalars().first()
 
 
+async def recent_sent(session: AsyncSession, *, limit: int = 3) -> list[Notification]:
+    """The last few messages we sent, oldest first — the context a question typed
+    without Telegram's Reply has to be read against.
+
+    Almost nothing is typed as a reply on mobile, so «что за ключ странный на
+    второе» arrived with no message attached and was answered against the morning
+    brief's JSON: the bot could not see the echo it had sent a minute earlier and
+    guessed the owner meant the 2nd of the month.
+    """
+    result = await session.execute(
+        select(Notification).order_by(Notification.id.desc()).limit(limit)
+    )
+    return list(reversed(result.scalars().all()))
+
+
 async def already_sent(session: AsyncSession, dedupe_key: str) -> bool:
     result = await session.execute(
         select(Notification.id).where(Notification.dedupe_key == dedupe_key)
