@@ -375,7 +375,7 @@ graph TD
 
 Встроенный сервер [FastMCP](https://github.com/jlowin/fastmcp) server доступен на `/mcp/` (транспорт streamable HTTP). Авторизация: OAuth 2.0 с верификацией Bearer-токенов. PKCE (`S256`) **обязателен** — запрос на `/oauth/authorize` без `code_challenge` отклоняется, а не проходит мимо проверки. Метаданные защищённого ресурса отдаются на `/.well-known/oauth-protected-resource` (RFC 9728), и ответ `401` указывает на них через `WWW-Authenticate: Bearer resource_metadata="..."`, чтобы клиент сам нашёл, где авторизоваться. Настраивается в веб-интерфейсе (раздел настроек).
 
-**75 инструментов** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурса (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`.
+**75 инструментов** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурса (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`. Список инструментов фильтруется по включённым модулям: выключенный домен не показывается в `tools/list` (он и так отклонял запись), так что контекст разговора не тратится на схемы того, что владелец не отслеживает. Включили модуль обратно — инструменты вернутся при следующем подключении коннектора, без перезапуска.
 
 #### Чтение (33 инструмента)
 
@@ -386,7 +386,7 @@ graph TD
 | `get_glp1_logs` | Инъекции, фазы дозировок GLP-1, побочные эффекты |
 | `get_hrt_logs` | Дозы ГЗТ/TRT, побочные эффекты, активный курс и его план |
 | `get_hrt_cycles` | Список всех курсов ГЗТ с их подетальными планами |
-| `get_garmin_metrics` | HRV, сон, пульс покоя, активность |
+| `get_garmin_metrics` | HRV, сон, пульс покоя, активность. `intraday=true` — поминутные кривые дня и ночи, `sleep_detail=true` — гипнограмма ночи и события дыхания |
 | `get_hevy_workouts` | Силовые тренировки с подходами и весами |
 | `get_supplements_catalog` | Каталог добавок с дозировками и уровнями доказательности |
 | `get_skincare_logs` | Рутина ухода и наблюдения за состоянием кожи |
@@ -479,6 +479,13 @@ graph TD
 > **Периметр записи.** Запись в выключенный опциональный модуль отклоняется на общей точке входа, а не в каждом инструменте по отдельности: новый инструмент наследует проверку, а не «не забудь дописать».
 >
 > **Провенанс.** Записи через коннектор помечаются источником `mcp`. В приоритете источников веса `mcp` равен ручному вводу — то есть перекрывает Garmin и не перекрывается им; между собой решает свежесть. Старые записи задним числом не перекрашиваются.
+
+> [!NOTE]
+> **Ответ платит только за то, о чём спросили.** Схемы 75 инструментов пересылаются с каждым сообщением разговора, а чтение по умолчанию отдаёт сотню строк — поэтому в ответах нет ничего, чем модель не может воспользоваться.
+>
+> - **Строка — это данные, а не служебка.** `serialize_row` не отдаёт колонки, которые ни один инструмент не принимает обратно (`domain`, `created_at`, `updated_at`, `raw_payload_id`), и не отдаёт незаполненные поля: отсутствующий ключ и `null` читаются одинаково, а `null` стоит токенов на каждой строке. `id`, `date` и `source` остаются — правки и удаления адресуются по id, а провенанс сам по себе ответ. Строка ужимается на 39–59%.
+> - **Гипнограмма — по запросу.** Поминутная раскладка фаз сна и события дыхания — это ~70% дневной строки Garmin, и раньше они ехали на каждом чтении последней сотни ночей. По умолчанию сворачиваются в счётчик с подсказкой (`"28 entries — call again with sleep_detail=True"`), а не исчезают: молчание модель прочитала бы как «фаз сна нет». Флаг отдельный от `intraday` — вопрос про форму одной ночи не тянет за собой все кривые окна. Чтение за 100 дней: ~96k → ~24k токенов.
+> - **Пустая колонка молчит.** Ночь без гипнограммы не получает подсказку вовсе — «не измерено» и «свёрнуто» остаются различимы.
 
 #### Пример диалога с Claude
 
@@ -1202,7 +1209,7 @@ Brief time, evening time and the Garmin poll rate live in the database (the `/se
 
 Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streamable HTTP transport). Authorization: OAuth 2.0 with signed Bearer token verification. PKCE (`S256`) is **mandatory** — an `/oauth/authorize` request without a `code_challenge` is rejected rather than skipping the check. Protected-resource metadata is served at `/.well-known/oauth-protected-resource` (RFC 9728), and a `401` points at it via `WWW-Authenticate: Bearer resource_metadata="..."` so the client can discover where to authorize. Configured in the web dashboard settings.
 
-**75 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt.
+**75 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt. The listing is filtered by enabled modules: a switched-off domain is not shown in `tools/list` at all (it already refused writes), so a conversation does not spend its context on schemas for what the owner does not track. Switch a module back on and its tools return on the connector's next reconnect, no restart needed.
 
 #### Read (33 tools)
 
@@ -1213,7 +1220,7 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `get_glp1_logs` | GLP-1 injections, dose phases, side effects |
 | `get_hrt_logs` | HRT/TRT doses, side effects, and the active cycle with its plan |
 | `get_hrt_cycles` | All HRT cycles with their per-compound plans |
-| `get_garmin_metrics` | HRV, sleep, resting HR, activities |
+| `get_garmin_metrics` | HRV, sleep, resting HR, activities. `intraday=true` for the per-minute day and night curves, `sleep_detail=true` for the night's hypnogram and breathing events |
 | `get_hevy_workouts` | Strength workouts with sets, reps, weights |
 | `get_supplements_catalog` | Supplements with dosages and evidence tiers |
 | `get_skincare_logs` | Skincare routine logs and skin observations |
@@ -1306,6 +1313,13 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 > **Write perimeter.** Writing into a disabled optional module is refused at one shared entry point rather than tool by tool: a new tool inherits the check instead of having to remember it.
 >
 > **Provenance.** Records written through the connector are stamped `source = "mcp"`. In the weight source priority `mcp` ranks equal to manual entry — it overrides a Garmin import and is not overridden by one; between equals, recency decides. Existing rows are not relabelled retroactively.
+
+> [!NOTE]
+> **A response pays only for what was asked.** The 75 tool schemas are re-sent with every message of a conversation, and a read answers with a hundred rows by default — so responses carry nothing the model cannot act on.
+>
+> - **A row is data, not bookkeeping.** `serialize_row` omits the columns no tool accepts back (`domain`, `created_at`, `updated_at`, `raw_payload_id`) and every unset field: an absent key and a `null` read the same, and the `null` costs tokens on every row. `id`, `date` and `source` stay — edits and deletes address rows by id, and provenance is an answer in its own right. Rows shrink 39–59%.
+> - **The hypnogram is opt-in.** The per-minute sleep-stage timeline and breathing events are ~70% of a Garmin daily row, and used to ride along on every read of the last hundred nights. They now fold to a count plus a hint (`"28 entries — call again with sleep_detail=True"`) rather than vanishing: silence would read as "this night has no stages". The switch is separate from `intraday`, so asking about the shape of one night does not pull every curve in the window. A 100-day read drops from ~96k to ~24k tokens.
+> - **An empty column stays silent.** A night without a hypnogram gets no hint at all — "never measured" and "folded away" remain distinguishable.
 
 #### Example interaction
 
