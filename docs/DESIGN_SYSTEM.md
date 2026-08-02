@@ -563,6 +563,10 @@ Buttons carry `flex: 1 1 40%`, so a track that has to wrap breaks into even rows
 of two rather than three and a lonely fourth; the phone, where all four fit on
 one line, resets that to `auto`.
 
+On a phone the track is `width: 100%` — every other control in a form card runs
+edge to edge, and a fit-content switch ending short of them read as an object
+dropped into the card rather than part of it. Desktop keeps `fit-content`.
+
 The track is `--radius-lg`, **not** a capsule. A capsule is the shape of "where
 you are" (`.mh-tab`), and it only reads as one while the control is a single
 row — wrapped, a 999px track is a lozenge with a ragged tail.

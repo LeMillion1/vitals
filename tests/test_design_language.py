@@ -193,6 +193,14 @@ def test_small_controls_are_44px_on_a_phone(selector, css):
     assert "2.75rem" in _rule(css, selector), selector
 
 
+def test_the_segmented_control_fills_its_card_on_a_phone():
+    """Fit-content left the track ending 65px short of the card holding it —
+    every other control in that card runs edge to edge, so the switch read as
+    something dropped in rather than as part of the form."""
+    assert "width: 100%;" in _rule(PHONE_APP, ".v-seg")
+    assert "width: fit-content;" in _rule(APP_CSS, ".v-seg")
+
+
 def test_the_stepper_keys_are_44px():
     assert "grid-template-columns: 44px minmax(0, 1fr) 44px;" in APP_CSS
 

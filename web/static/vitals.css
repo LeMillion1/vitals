@@ -1632,12 +1632,18 @@ a.v-seg-btn {
     /* ── Segmented control — bigger taps ──
        Track padding/gap stay at the 6px declared once above: squashing them
        here is what put the pill's arc against the track's own. */
+    /* Fit-content left the track ending 65px short of the card it sits in, which
+       reads as a misplaced object rather than as the card's own control. */
+    .v-seg {
+        width: 100%;
+    }
+
     .v-seg-btn {
         padding: 0.5rem 0.75rem;
         font-size: var(--text-micro);
         min-height: 2.75rem;
         /* Four tabs at this size need 305px and the phone column is 370px: one
-           row, no wrap, so no preferred width to keep them even. */
+           row, no wrap, and the spare width is shared out evenly between them. */
         flex: 1 1 auto;
     }
 
