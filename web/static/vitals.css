@@ -705,6 +705,35 @@ a.v-card:hover {
     color: var(--faint);
 }
 
+/* An input with a leading icon. Tailwind's `pl-10` cannot do this job: vitals.css
+   loads after tailwind.css and `padding` above is a shorthand, so it re-sets
+   padding-left at equal specificity and wins on order — the text was printing on
+   top of the icon. Stated here instead, where the padding it overrides lives.
+   Two class names deep on purpose: the phone block further down re-declares the
+   same shorthand, and specificity settles it there without a duplicate rule. */
+.v-input.v-input-icon {
+    padding-left: 2.4rem;
+}
+
+/* Chrome paints autofilled fields in its own pale blue and there is no way to set
+   background-color on them — an inset shadow the size of the field is the only
+   surface that shows through. Applies to every input, not just the login form. */
+.v-input:-webkit-autofill,
+.v-input:-webkit-autofill:hover,
+.v-input:-webkit-autofill:focus,
+.v-select:-webkit-autofill,
+.v-textarea:-webkit-autofill {
+    box-shadow: inset 0 0 0 100px var(--bg-inset);
+    -webkit-text-fill-color: var(--fg);
+    caret-color: var(--fg);
+}
+
+.v-input:-webkit-autofill:focus,
+.v-select:-webkit-autofill:focus,
+.v-textarea:-webkit-autofill:focus {
+    box-shadow: inset 0 0 0 100px var(--bg-inset), 0 0 0 3px var(--accent-soft);
+}
+
 /* A plain checkbox drew a 13px box the browser painted in its own blue. One
    rule instead of a `w-4 h-4 accent-[…]` triple repeated in six templates —
    `.v-switch`'s hidden input out-specifies this, so the toggles are untouched. */
