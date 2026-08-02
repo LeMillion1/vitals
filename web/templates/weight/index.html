@@ -103,7 +103,7 @@
                 {{ card_header(t("weight.history_title")) }}
                 <div class="v-card-inset">
                     <div class="v-table-wrap">
-                        <table class="v-table">
+                        <table class="v-table v-rows">
                             <thead>
                                 <tr>
                                     <th class="v-col-date whitespace-nowrap">{{ t("common.date") }}</th>
@@ -119,15 +119,22 @@
                                 <tr class="{% if w.superseded %}opacity-40 line-through{% endif %}"
                                     :class="editingLogId === {{ w.id }} ? 'is-editing' : ''"
                                     {% if loop.index0 >= 8 %}x-show="showAllWeights" x-cloak{% endif %}>
-                                    <td class="v-num v-col-date" style="color: var(--fg)">{{ w.date | format_date }}
+                                    <td class="v-num v-col-date v-row-date" style="color: var(--fg)">{{ w.date |
+                                        format_date }}
                                     </td>
-                                    <td class="v-num font-semibold" style="color: var(--fg)">{{ w.weight_kg }}<span
+                                    <td class="v-num font-semibold" data-label="{{ t('nav.weight') }}"
+                                        style="color: var(--fg)">{{ w.weight_kg }}<span
                                             class="v-unit">{{ t("common.kg") }}</span></td>
-                                    <td><span class="v-text-micro">{% if w.source == 'manual' %}{{
+                                    {# Phone: "source: manual" eight rows running says nothing —
+                                       it is the default. Only an import earns the line. #}
+                                    <td class="{% if w.source == 'manual' %}hide-xs{% endif %}"
+                                        data-label="{{ t('weight.source') }}"><span class="v-text-micro">{% if w.source == 'manual' %}{{
                                             t("weight.source_manual") }}{% else %}{{ w.source }}{% endif %}</span></td>
-                                    <td class="max-w-[150px] min-w-0 truncate" title="{{ w.note or '' }}">{{ w.note or
+                                    <td class="max-w-[150px] min-w-0 truncate {% if not w.note %}hide-xs{% endif %}"
+                                        data-label="{{ t('common.note') }}"
+                                        title="{{ w.note or '' }}">{{ w.note or
                                         '—' }}</td>
-                                    <td class="text-right whitespace-nowrap v-col-actions pr-3">
+                                    <td class="text-right whitespace-nowrap v-col-actions pr-3 v-row-actions">
                                         <span class="v-icon-actions">
                                             {# Editable = he entered it himself, whichever surface he used. #}
                                             {% if w.source in ('manual', 'mcp') %}

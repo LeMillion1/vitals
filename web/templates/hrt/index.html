@@ -176,7 +176,7 @@
         <div class="border-t border-[var(--line)] pt-4 space-y-2">
             <span class="v-label">{{ t("hrt.planned_upcoming") }}</span>
             <div class="v-table-wrap">
-                <table class="v-table">
+                <table class="v-table v-rows">
                     <thead>
                         <tr>
                             <th>{{ t("hrt.date") }}</th>
@@ -187,9 +187,9 @@
                     <tbody>
                         {% for p in planned %}
                         <tr>
-                            <td class="v-num whitespace-nowrap">{{ p.date }}</td>
-                            <td>{{ compound_names.get(p.compound_key, p.compound_key) }}</td>
-                            <td class="v-num whitespace-nowrap">{{ p.dose }} {{ p.unit }}</td>
+                            <td class="v-num whitespace-nowrap v-row-date">{{ p.date }}</td>
+                            <td data-label="{{ t('hrt.compound') }}">{{ compound_names.get(p.compound_key, p.compound_key) }}</td>
+                            <td class="v-num whitespace-nowrap" data-label="{{ t('hrt.dose') }}">{{ p.dose }} {{ p.unit }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -411,7 +411,7 @@
         {{ card_header(t("hrt.log_title")) }}
         {% if doses %}
         <div class="v-table-wrap">
-            <table class="v-table">
+            <table class="v-table v-rows">
                 <thead>
                     <tr>
                         <th>{{ t("hrt.date") }}</th>
@@ -425,16 +425,20 @@
                 <tbody>
                     {% for d in doses %}
                     <tr>
-                        <td class="v-num whitespace-nowrap">{{ d.date }}</td>
-                        <td>{{ compound_names.get(d.compound_key, d.compound_key) }}</td>
-                        <td class="v-num whitespace-nowrap">
+                        <td class="v-num whitespace-nowrap v-row-date">{{ d.date }}</td>
+                        <td data-label="{{ t('hrt.compound') }}">{{ compound_names.get(d.compound_key, d.compound_key) }}</td>
+                        <td class="v-num whitespace-nowrap" data-label="{{ t('hrt.dose') }}">
                             {{ d.dose | round(2) }} {{ d.unit }}{% if d.volume_ml %} · {{ d.volume_ml | round(2) }} мл{% endif %}
                         </td>
-                        <td>
+                        {# A stacked row prints the label even when the cell is blank,
+                           so a vial with no brand and no site would cost two empty
+                           lines per dose. Drop them on the phone instead. #}
+                        <td class="{% if not (d.brand or d.lab or d.batch) %}hide-xs{% endif %}"
+                            data-label="{{ t('hrt.brand') }}">
                             {{ d.brand or '' }}{% if d.lab %} / {{ d.lab }}{% endif %}{% if d.batch %} · {{ d.batch }}{% endif %}
                         </td>
-                        <td class="whitespace-nowrap">{{ (d.site or '') | replace('_', ' ') }}</td>
-                        <td class="text-right">
+                        <td class="whitespace-nowrap {% if not d.site %}hide-xs{% endif %}" data-label="{{ t('hrt.site') }}">{{ (d.site or '') | replace('_', ' ') }}</td>
+                        <td class="text-right v-row-actions">
                             <form method="post" action="/hrt/dose/{{ d.id }}/delete" class="inline" data-confirm="{{ t('hrt.confirm_delete_dose') }}">
                                 <button type="submit" class="v-btn-ghost text-xs">{{ t("hrt.delete") }}</button>
                             </form>

@@ -22,7 +22,7 @@
         <p class="v-text-micro" style="color: var(--muted)">{{ t("signals.frequency_hint") }}</p>
         {% if frequency %}
         <div class="v-table-wrap">
-            <table class="v-table">
+            <table class="v-table v-rows">
                 <thead>
                     <tr>
                         <th>{{ t("signals.col_key") }}</th>
@@ -33,15 +33,15 @@
                 <tbody>
                     {% for stat in frequency %}
                     <tr>
-                        <td>
+                        <td class="v-row-title">
                             <span class="v-text-body font-mono">{{ stat.key }}</span>
                             {% if stat.variants %}
                             <div class="v-text-micro font-mono mt-1" style="color: var(--muted)"
                                 title="{{ t('signals.alias_hint') }}">← {{ stat.variants | join(', ') }}</div>
                             {% endif %}
                         </td>
-                        <td class="v-num">{{ stat.count }}</td>
-                        <td class="v-text-micro" style="color: var(--fg-2)">
+                        <td class="v-num" data-label="{{ t('signals.col_count') }}">{{ stat.count }}</td>
+                        <td class="v-text-micro v-row-wide" style="color: var(--fg-2)">
                             {% for example in stat.examples %}
                             <div class="truncate" title="{{ example }}">{{ example }}</div>
                             {% else %}

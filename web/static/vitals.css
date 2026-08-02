@@ -2166,6 +2166,24 @@ sup {
     max-width: 52rem;
 }
 
+/* The digest body comes from the model, so its width is not ours to predict —
+   one wide table inside "previous reports" pushed the whole page 175px
+   sideways. Contain it here, once, instead of chasing each report. */
+.v-digest table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+.v-digest pre {
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+.v-digest code {
+    overflow-wrap: anywhere;
+}
+
 /* ── Login page float-up animation ── */
 @keyframes float-up {
     from {
@@ -2340,6 +2358,185 @@ sup {
 .v-card-inset > .v-table-wrap {
     border: 0;
     border-radius: inherit;
+}
+
+/* ── Phone: a table row becomes a card ─────────────────────────────────────
+   Ten pages carried tables 1.5–1.9× wider than the 402px column. They scrolled
+   sideways inside the card with nothing on screen to say they could, and the
+   cells that did fit were cut off — a lab's reference range read "3.6–5.…",
+   which is worse than no range at all.
+
+   Under 768px the same <table> lays itself out as stacked rows: two columns of
+   label/value, with the date, the name and the actions on their own full-width
+   lines. The markup stays a table, so the desktop this owner is happy with is
+   byte-identical — a class on the table and a data-label per cell, instead of
+   ten templates rewritten into <div>s.
+
+   Opt-in per table (.v-rows), because it isn't always the right call: three
+   narrow numeric columns (lap splits, a scan's metrics) already fit a phone,
+   and stacking those would only make them tall. */
+@media (max-width: 767px) {
+
+    .v-table.v-rows,
+    .v-table.v-rows > tbody {
+        display: block;
+        width: 100%;
+    }
+
+    .v-table.v-rows > thead,
+    .v-table.v-rows > colgroup {
+        display: none;
+    }
+
+    /* Two label/value columns, not one: a day of Garmin numbers is seven
+       fields, and one per line is a wall. Full-width lines opt out below. */
+    .v-table.v-rows > tbody > tr {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 2px var(--space-3);
+        padding: var(--space-3) 0;
+        border-bottom: 1px solid var(--line);
+        background: none;
+    }
+
+    .v-table.v-rows > tbody > tr:last-child {
+        border-bottom: 0;
+    }
+
+    .v-table.v-rows > tbody > tr > td {
+        display: flex;
+        align-items: baseline;
+        /* Label pinned left by its own auto margin rather than by
+           space-between: a value and its unit are two elements, and
+           space-between would push the "кг" away from the number. */
+        justify-content: flex-end;
+        gap: var(--space-2);
+        /* A blockified table cell does not stretch to its grid track in
+           Chrome — justify-self is ignored, so the width has to be asked for. */
+        width: 100%;
+        padding: 1px var(--space-4);
+        box-shadow: none;
+        min-width: 0;
+        /* Whatever the desktop cell did to hold one line — nowrap, truncate, a
+           max-width — is exactly what cut the value off here. */
+        max-width: none;
+        overflow: visible;
+        text-overflow: clip;
+        white-space: normal;
+        /* break-word, never anywhere: a half-width cell holding "28" and its
+           unit is narrow enough that `anywhere` split the number itself —
+           /labs read a vitamin D of 28 as "2" over "8". A word only breaks
+           when it cannot fit a line of its own. */
+        overflow-wrap: break-word;
+        text-align: right;
+    }
+
+    .v-table.v-rows > tbody > tr > td[data-label]::before {
+        content: attr(data-label);
+        flex: none;
+        margin-right: auto;
+        color: var(--muted);
+        font-size: var(--text-micro);
+        font-weight: 500;
+        letter-spacing: .04em;
+        text-align: left;
+    }
+
+    .v-table.v-rows .v-row-date,
+    .v-table.v-rows .v-row-title,
+    .v-table.v-rows .v-row-wide,
+    .v-table.v-rows .v-row-actions,
+    .v-table.v-rows > tbody > tr > td[colspan] {
+        grid-column: 1 / -1;
+        text-align: left;
+    }
+
+    /* Prose in a cell — an interpretation, a list of phrasings — takes the row
+       whole and keeps its own type; only the title is promoted. */
+    .v-table.v-rows .v-row-wide {
+        display: block;
+    }
+
+    .v-table.v-rows .v-row-date {
+        justify-content: flex-start;
+        /* Centred, not on the baseline: the grid stretches this cell to the
+           height of the 44px tap targets beside it, and a baseline date then
+           hangs at the top of a band of nothing. */
+        align-items: center;
+        color: var(--muted);
+        font-size: var(--text-micro);
+    }
+
+    /* The name is what the row is about, so it gets the whole width and wraps
+       instead of ending in an ellipsis. */
+    .v-table.v-rows .v-row-title {
+        display: block;
+        padding-bottom: 2px;
+        color: var(--fg);
+        font-weight: 600;
+    }
+
+    .v-table.v-rows .v-row-actions {
+        justify-content: flex-end;
+        padding-top: var(--space-2);
+    }
+
+    /* Edit and delete belong beside whatever leads the row, not on a line of
+       their own — a bare actions line costs ~60px per row, and /weight alone
+       shows twenty. Whichever comes first, the date or the title, gives up its
+       full width and shares row 1 with the buttons. */
+    .v-table.v-rows > tbody > tr:has(.v-row-actions) > .v-row-date,
+    .v-table.v-rows > tbody > tr:has(.v-row-actions):not(:has(.v-row-date)) > .v-row-title {
+        grid-column: 1;
+        /* The buttons beside it are 44px tap targets, so the track is 44px
+           tall whatever the text does — centre the text in it rather than
+           leaving it hanging at the top. */
+        align-self: center;
+    }
+
+    .v-table.v-rows > tbody > tr:has(.v-row-date) > .v-row-actions,
+    .v-table.v-rows > tbody > tr:has(.v-row-title) > .v-row-actions {
+        grid-row: 1;
+        grid-column: 2;
+        padding-top: 0;
+    }
+
+    .v-table.v-rows > tbody > tr > td[colspan] {
+        display: block;
+        padding: var(--space-3) var(--space-4);
+    }
+
+    /* Desktop caps the width of what a cell holds, not just the cell — the
+       genetics interpretation is a 180px div inside its <td>. Nothing inside a
+       stacked row needs a cap. */
+    .v-table.v-rows > tbody > tr > td > * {
+        max-width: none;
+    }
+
+    /* Same for the cut inside the cell: /signals ellipsises each example
+       phrasing, /genetics caps its interpretation. On a phone the row has the
+       height to say all of it. */
+    .v-table.v-rows > tbody > tr > td .truncate {
+        overflow: visible;
+        text-overflow: clip;
+        white-space: normal;
+    }
+
+    .v-table.v-rows .hide-xs {
+        display: none;
+    }
+
+    /* Nothing is wider than the card any more, so the sideways scroll goes —
+       and with it the inner max-height, which on a phone is a scroll trap: the
+       finger lands in the list and the page underneath stands still.
+       Prefixed with .v-page to outrank the per-screen caps written later in this
+       file (.v-garmin-history, .v-hrt-log) — same specificity, and they win on
+       source order otherwise. */
+    .v-page .v-table-wrap:has(.v-rows),
+    .v-page .v-card-inset:has(.v-rows) {
+        max-height: none;
+        overflow: visible;
+    }
 }
 .v-btn:hover,
 .v-btn-ghost:hover,

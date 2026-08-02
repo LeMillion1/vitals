@@ -52,7 +52,9 @@
                         <div class="space-y-2">
                             <div class="flex items-center gap-2.5">
                                 <span class="v-text-heading">{{ v.gene }}</span>
-                                {% if v.rsid %}<span class="v-chip">{{ v.rsid }}</span>{% endif %}
+                                {# An rsid is an identifier, not a section chip — same shape
+                                   meant two different things on one screen. #}
+                                {% if v.rsid %}<span class="v-tag muted v-num">{{ v.rsid }}</span>{% endif %}
                             </div>
                             {% if is_risk %}
                             <span class="v-tag" style="color: var(--warn); background: var(--warn-soft); border-color: rgba(240,178,74,.3)">{{ t("genetics.conflict_marker") }}</span>
@@ -163,27 +165,27 @@
                 {{ card_header(t("genetics.catalog_title")) }}
                 <div class="max-h-[28rem] overflow-y-auto v-card-inset">
                     <div class="v-table-wrap">
-                        <table class="v-table">
+                        <table class="v-table v-rows">
                         <thead>
                             <tr><th>{{ t("genetics.gene") }}</th><th>{{ t("genetics.genotype") }}</th><th>Marker</th><th>{{ t("genetics.interpretation") }}</th><th class="text-right"></th></tr>
                         </thead>
                         <tbody>
                             {% for v in variants %}
                             <tr>
-                                <td>
+                                <td class="v-row-title">
                                     <div class="font-semibold" style="color: var(--fg)">{{ v.gene }}</div>
                                     {% if v.rsid %}<div class="v-text-micro v-num">{{ v.rsid }}</div>{% endif %}
                                 </td>
-                                <td class="v-num">{{ v.genotype or '—' }}</td>
-                                <td><span class="v-text-micro">{{ v.marker or '—' }}</span></td>
-                                <td class="space-y-1">
+                                <td class="v-num" data-label="{{ t('genetics.genotype') }}">{{ v.genotype or '—' }}</td>
+                                <td data-label="Marker"><span class="v-text-micro">{{ v.marker or '—' }}</span></td>
+                                <td class="space-y-1 v-row-wide">
                                     <div class="font-medium mt-1 leading-normal" style="color: var(--fg-2)">{{ v.impact or '—' }}</div>
                                     {% if v.interpretation %}<div class="v-text-micro leading-normal max-w-[180px] break-words">{{ v.interpretation }}</div>{% endif %}
                                     {% if v.action_notes %}
                                     <div class="v-text-micro px-2 py-1 rounded-lg mt-1 inline-block font-medium max-w-[180px] break-words" style="color: var(--good); background: var(--good-soft); border: 1px solid rgba(111,197,142,.2)">{{ v.action_notes }}</div>
                                     {% endif %}
                                 </td>
-                                <td class="text-right">
+                                <td class="text-right v-row-actions">
                                     <form action="/genetics/{{ v.id }}/delete" method="POST" class="inline" data-confirm="{{ t("genetics.confirm_delete") }}">
                                         <button aria-label="{{ t('common.delete') }}" type="submit" class="v-icon-btn danger" title="{{ t("common.delete") }}">
                                             <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>

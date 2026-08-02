@@ -144,7 +144,7 @@
                 {{ card_header(t("glp1.history_title")) }}
                 <div class="max-h-[38rem] overflow-y-auto v-card-inset">
                     <div class="v-table-wrap">
-                        <table class="v-table" style="width: 100%; table-layout: fixed">
+                        <table class="v-table v-rows" style="width: 100%; table-layout: fixed">
                         <colgroup>
                             <col style="width: 110px">
                             <col style="width: 140px">
@@ -158,11 +158,11 @@
                         <tbody>
                             {% for inj in injections %}
                             <tr>
-                                <td class="v-num" style="color: var(--fg)">{{ inj.date | format_date }}</td>
-                                <td class="truncate">{{ t("enum.drug." + inj.drug) }}</td>
-                                <td class="v-num font-semibold" style="color: var(--fg)">{{ inj.dose_mg }} {{ t("common.mg") }}</td>
-                                <td class="v-text-micro truncate">{{ t("enum.site." + inj.site) if inj.site else '—' }}</td>
-                                <td class="text-right whitespace-nowrap">
+                                <td class="v-num v-row-date" style="color: var(--fg)">{{ inj.date | format_date }}</td>
+                                <td class="truncate" data-label="{{ t('glp1.drug_label') }}">{{ t("enum.drug." + inj.drug) }}</td>
+                                <td class="v-num font-semibold" data-label="{{ t('glp1.dose_header') }}" style="color: var(--fg)">{{ inj.dose_mg }} {{ t("common.mg") }}</td>
+                                <td class="v-text-micro truncate {% if not inj.site %}hide-xs{% endif %}" data-label="{{ t('glp1.site_header') }}">{{ t("enum.site." + inj.site) if inj.site else '—' }}</td>
+                                <td class="text-right whitespace-nowrap v-row-actions">
                                     <span class="v-icon-actions">
                                     <button aria-label="{{ t('common.edit') }}" @click="editInjection({id: {{ inj.id }}, date: '{{ inj.date }}', drug: '{{ inj.drug }}', dose_mg: {{ inj.dose_mg }}, site: {{ (inj.site | tojson if inj.site else 'null') | forceescape }}, note: {{ (inj.note or '') | tojson | forceescape }}})" class="v-icon-btn" title="{{ t('common.edit') }}">
                                         <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>

@@ -115,20 +115,20 @@
         {% endcall %}
         <div class="max-h-[28rem] overflow-y-auto v-card-inset">
             <div class="v-table-wrap">
-                <table class="v-table">
+                <table class="v-table v-rows">
                 <thead>
                     <tr><th class="v-col-date whitespace-nowrap">{{ t("common.date") }}</th><th class="text-right">{{ t("garmin.awake_count") }}</th><th class="text-right">{{ t("garmin.col_rhr") }}</th><th class="text-right">{{ t("garmin.col_hrv") }}</th><th class="text-right">{{ t("garmin.stress") }}</th><th class="text-right">{{ t("garmin.col_bb") }}</th><th class="text-right">{{ t("garmin.steps") }}</th></tr>
                 </thead>
                 <tbody>
                     {% for d in history %}
                     <tr>
-                        <td class="v-num v-col-date" style="color: var(--fg)">{{ d.date | format_date }}</td>
-                        <td class="v-num text-right">{{ d.awake_count if d.awake_count is not none else '—' }}</td>
-                        <td class="v-num text-right">{{ d.resting_hr or '—' }}</td>
-                        <td class="v-num text-right">{{ d.hrv_avg | round(0) | int if d.hrv_avg else '—' }}</td>
-                        <td class="v-num text-right">{{ d.avg_stress if d.avg_stress is not none else '—' }}</td>
-                        <td class="v-num text-right">{% if d.body_battery_high %}{{ d.body_battery_low or '?' }}–{{ d.body_battery_high }}{% else %}—{% endif %}</td>
-                        <td class="v-num text-right">{{ d.steps | format_number if d.steps is not none else '—' }}</td>
+                        <td class="v-num v-col-date v-row-date" style="color: var(--fg)">{{ d.date | format_date }}</td>
+                        <td class="v-num text-right" data-label="{{ t('garmin.awake_count') }}">{{ d.awake_count if d.awake_count is not none else '—' }}</td>
+                        <td class="v-num text-right" data-label="{{ t('garmin.col_rhr') }}">{{ d.resting_hr or '—' }}</td>
+                        <td class="v-num text-right" data-label="{{ t('garmin.col_hrv') }}">{{ d.hrv_avg | round(0) | int if d.hrv_avg else '—' }}</td>
+                        <td class="v-num text-right" data-label="{{ t('garmin.stress') }}">{{ d.avg_stress if d.avg_stress is not none else '—' }}</td>
+                        <td class="v-num text-right" data-label="{{ t('garmin.col_bb') }}">{% if d.body_battery_high %}{{ d.body_battery_low or '?' }}–{{ d.body_battery_high }}{% else %}—{% endif %}</td>
+                        <td class="v-num text-right" data-label="{{ t('garmin.steps') }}">{{ d.steps | format_number if d.steps is not none else '—' }}</td>
                     </tr>
                     {% else %}
                     <tr><td colspan="7" class="text-center" style="color: var(--muted)">{{ t("garmin.no_history") }}</td></tr>

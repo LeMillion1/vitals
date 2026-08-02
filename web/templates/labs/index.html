@@ -124,7 +124,7 @@
                 {% endcall %}
                 <div class="max-h-[24rem] overflow-y-auto v-card-inset">
                     <div class="v-table-wrap">
-                        <table class="v-table">
+                        <table class="v-table v-rows">
                         <thead>
                             <tr><th>{{ t("labs.marker") }}</th><th>{{ t("labs.value") }}</th><th>{{ t("labs.norm") }}</th><th>{{ t("labs.status") }}</th><th>{{ t("common.date") }}</th><th></th></tr>
                         </thead>
@@ -135,19 +135,19 @@
                             <tr class="cursor-pointer" style="{% if r.marker == selected %}background: var(--surface-2){% endif %}"
                                 onclick="window.location.href='/labs?marker={{ r.marker | urlencode }}'"
                                 x-show="!showOnlyProblematic || {{ 'true' if is_bad else 'false' }}">
-                                <td class="max-w-[150px] truncate" style="color: {% if r.marker == selected %}var(--fg){% else %}var(--fg-2){% endif %}" title="{{ r.marker }}">{{ r.marker }}</td>
-                                <td class="v-num font-semibold" style="color: var(--fg)">{{ r.value | format_number }}{% if r.unit %}<span class="v-unit">{{ r.unit | format_unit }}</span>{% endif %}</td>
-                                <td class="v-num v-text-micro">{% if r.ref_low is not none or r.ref_high is not none %}{{ r.ref_low if r.ref_low is not none else '' }}–{{ r.ref_high if r.ref_high is not none else '' }}{% else %}—{% endif %}</td>
-                                <td>
+                                <td class="max-w-[150px] truncate v-row-title" style="color: {% if r.marker == selected %}var(--fg){% else %}var(--fg-2){% endif %}" title="{{ r.marker }}">{{ r.marker }}</td>
+                                <td class="v-num font-semibold" data-label="{{ t('labs.value') }}" style="color: var(--fg)">{{ r.value | format_number }}{% if r.unit %}<span class="v-unit">{{ r.unit | format_unit }}</span>{% endif %}</td>
+                                <td class="v-num v-text-micro" data-label="{{ t('labs.norm') }}">{% if r.ref_low is not none or r.ref_high is not none %}{{ r.ref_low if r.ref_low is not none else '' }}–{{ r.ref_high if r.ref_high is not none else '' }}{% else %}—{% endif %}</td>
+                                <td data-label="{{ t('labs.status') }}">
                                     <span class="v-text-label font-semibold"
                                           style="color: {% if 'critical' in f %}var(--bad-strong){% elif f in ['low','high'] %}var(--warn){% else %}var(--good){% endif %}">
                                         {{ t("enum.flag." + f) }}
                                     </span>
                                 </td>
-                                <td class="v-num v-text-micro">{{ r.date | format_date }}</td>
+                                <td class="v-num v-text-micro" data-label="{{ t('common.date') }}">{{ r.date | format_date }}</td>
                                 {# The row itself navigates to the marker, so the delete
                                    form must swallow the click before it bubbles up. #}
-                                <td class="text-right" onclick="event.stopPropagation()">
+                                <td class="text-right v-row-actions" onclick="event.stopPropagation()">
                                     <form method="post" action="/labs/result/{{ r.id }}/delete" class="inline"
                                           data-confirm="{{ t('labs.confirm_delete_result') }}">
                                         <button type="submit" class="v-icon-btn danger" title="{{ t('common.delete') }}"
@@ -213,7 +213,7 @@
                 </div>
             </div>
             <div class="max-h-[50vh] overflow-y-auto v-card-inset">
-                <table class="v-table w-full">
+                <table class="v-table v-rows w-full">
                     <thead>
                         <tr>
                             <th>{{ t("labs.marker") }}</th>
@@ -227,12 +227,12 @@
                     <tbody>
                         <template x-for="(row, i) in lqRows" :key="i">
                             <tr>
-                                <td><input type="text" x-model="row.marker" class="v-input" style="min-width: 9rem"></td>
-                                <td><input inputmode="decimal" type="number" step="any" x-model.number="row.value" class="v-input" style="width: 6rem"></td>
-                                <td><input type="text" x-model="row.unit" class="v-input" style="width: 4.5rem"></td>
-                                <td><input inputmode="decimal" type="number" step="any" x-model.number="row.ref_low" class="v-input" style="width: 5rem"></td>
-                                <td><input inputmode="decimal" type="number" step="any" x-model.number="row.ref_high" class="v-input" style="width: 5rem"></td>
-                                <td class="text-right"><button aria-label="{{ t('common.delete') }}" type="button" class="v-icon-btn danger"
+                                <td class="v-row-title"><input type="text" x-model="row.marker" class="v-input" style="min-width: 9rem"></td>
+                                <td data-label="{{ t('labs.value') }}"><input inputmode="decimal" type="number" step="any" x-model.number="row.value" class="v-input" style="width: 6rem"></td>
+                                <td data-label="{{ t('labs.unit') }}"><input type="text" x-model="row.unit" class="v-input" style="width: 4.5rem"></td>
+                                <td data-label="{{ t('labs.ref_low') }}"><input inputmode="decimal" type="number" step="any" x-model.number="row.ref_low" class="v-input" style="width: 5rem"></td>
+                                <td data-label="{{ t('labs.ref_high') }}"><input inputmode="decimal" type="number" step="any" x-model.number="row.ref_high" class="v-input" style="width: 5rem"></td>
+                                <td class="text-right v-row-actions"><button aria-label="{{ t('common.delete') }}" type="button" class="v-icon-btn danger"
                                         @click="lqRemoveRow(i)" title="{{ t('common.delete') }}">✕</button></td>
                             </tr>
                         </template>

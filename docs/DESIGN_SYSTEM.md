@@ -535,6 +535,31 @@ hover. `.v-num` forces tabular-nums on numeric cells. `.v-col-date`/`.v-col-acti
 pin fixed-width columns; `.v-table-wrap` scrolls horizontally on mobile;
 `.hide-xs` drops low-priority columns below 480px.
 
+**`.v-table.v-rows` — the same table, stacked into rows on a phone.** A data
+table that has to hold more than three columns is 1.5–1.9× wider than the 402px
+phone column: it scrolled sideways inside its card with nothing on screen to say
+it could, and cut what didn't fit — a lab's reference range that reads `3.6–5.…`
+is worse than no range. Add `.v-rows` and, below 768px, the header row is
+dropped and each `<tr>` becomes a two-column grid of label/value pairs. The
+markup stays a table, so the desktop is byte-identical.
+
+Every `<td>` in an opted-in table must say what it is — with the header row
+gone, a bare value is a number with no name:
+
+| On the cell | Result below 768px |
+|---|---|
+| `data-label="…"` | label left, value right, half the row |
+| `.v-row-date` | full width, muted, leads the row |
+| `.v-row-title` | full width, `--fg`, 600 — what the row is about; wraps instead of truncating |
+| `.v-row-wide` | full width, keeps its own type — prose, a list of examples |
+| `.v-row-actions` | edit/delete, pinned right of the date |
+| `.hide-xs` | dropped — an empty cell, or a value that repeats down every row |
+
+Don't opt in three narrow numeric columns (lap splits, a scan's metric list) —
+they already fit, and stacking only makes them tall. Never pin `min-width` on a
+`.v-rows` table: no media query can undo it. Contracts live in
+`tests/test_mobile_tables.py`.
+
 `.v-night-row` — not a `.v-table` row. A CSS-grid link-row (`<a class="v-night-row">`)
 that reads like a table row but is a single anchor, for lists where every row
 navigates somewhere (Garmin's sleep history). See
@@ -679,6 +704,11 @@ and render each row as one `<a>` styled with CSS grid (`.v-night-row`) instead
 of table markup: the whole row is the target, `:hover` is honest, and
 keyboard/middle-click/"open in new tab" work for free. Reach for this pattern
 any time you're tempted to make a table row clickable.
+
+Where the row is *not* a link — it carries edit and delete buttons, or it is
+simply data — keep the `<table>` and add `.v-rows` instead (see
+[4 · Table](#table)). Rewriting a history table into `<div>`s buys nothing the
+phone rules don't already give, and costs the desktop layout.
 
 ## 6. Accessibility
 

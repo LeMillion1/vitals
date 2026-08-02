@@ -274,7 +274,7 @@
                 {{ card_header(t("weight.measures_title")) }}
                 <div class="max-h-60 overflow-y-auto v-card-inset">
                     <div class="v-table-wrap">
-                        <table class="v-table">
+                        <table class="v-table v-rows">
                             <thead>
                                 <tr>
                                     <th class="v-col-date whitespace-nowrap">{{ t("common.date") }}</th>
@@ -292,17 +292,17 @@
                                    would collide. #}
                                 {% for m in measurements %}
                                 <tr {% if m.source == 'navy' %}:class="editingMeasureId === {{ m.id }} ? 'is-editing' : ''"{% endif %}>
-                                    <td class="v-num v-col-date" style="color: var(--fg)">{{ m.date | format_date }}</td>
-                                    <td class="v-num">{{ m.neck_cm or '—' }}</td>
-                                    <td class="v-num">{{ m.waist_cm or '—' }}</td>
+                                    <td class="v-num v-col-date v-row-date" style="color: var(--fg)">{{ m.date | format_date }}</td>
+                                    <td class="v-num" data-label="{{ t('weight.neck') }}">{{ m.neck_cm or '—' }}</td>
+                                    <td class="v-num" data-label="{{ t('weight.waist') }}">{{ m.waist_cm or '—' }}</td>
                                     {% if sex == 'female' %}
-                                    <td class="v-num">{{ m.hips_cm or '—' }}</td>
+                                    <td class="v-num" data-label="{{ t('weight.hips') }}">{{ m.hips_cm or '—' }}</td>
                                     {% endif %}
-                                    <td class="v-num font-semibold" style="color: var(--fg)">{% if m.body_fat_pct %}{{
+                                    <td class="v-num font-semibold" data-label="{{ t('weight.fat_pct') }}" style="color: var(--fg)">{% if m.body_fat_pct %}{{
                                         m.body_fat_pct | round(1) }}<span class="v-unit">%</span>{% else %}—{% endif %}</td>
-                                    <td class="v-num" style="color: var(--fg)">{% if m.lbm_kg %}{{ m.lbm_kg | round(1)
+                                    <td class="v-num" data-label="{{ t('weight.lean_mass') }}" style="color: var(--fg)">{% if m.lbm_kg %}{{ m.lbm_kg | round(1)
                                         }}<span class="v-unit">{{ t("common.kg") }}</span>{% else %}—{% endif %}</td>
-                                    <td class="text-right whitespace-nowrap v-col-actions pr-3">
+                                    <td class="text-right whitespace-nowrap v-col-actions pr-3 v-row-actions">
                                          <span class="v-icon-actions">
                                              {% if m.source == 'navy' %}
                                              <button aria-label="{{ t('common.edit') }}"
@@ -439,7 +439,7 @@
                 </div>
             </div>
             <div class="max-h-[50vh] overflow-y-auto v-card-inset">
-                <table class="v-table w-full">
+                <table class="v-table v-rows w-full">
                     <thead>
                         <tr>
                             <th>{{ t("body.col_metric") }}</th>
@@ -451,13 +451,13 @@
                     <tbody>
                         <template x-for="(row, i) in bsRows" :key="i">
                             <tr>
-                                <td><input type="text" x-model="row.label" class="v-input" style="min-width: 9rem">
+                                <td class="v-row-title"><input type="text" x-model="row.label" class="v-input" style="min-width: 9rem">
                                 </td>
-                                <td><input inputmode="decimal" type="number" step="any" x-model.number="row.value" class="v-input"
+                                <td data-label="{{ t('body.col_value') }}"><input inputmode="decimal" type="number" step="any" x-model.number="row.value" class="v-input"
                                         style="width: 6rem"></td>
-                                <td><input type="text" x-model="row.unit" class="v-input" style="width: 4.5rem">
+                                <td data-label="{{ t('body.col_unit') }}"><input type="text" x-model="row.unit" class="v-input" style="width: 4.5rem">
                                 </td>
-                                <td class="text-right"><button aria-label="{{ t('common.delete') }}" type="button" class="v-icon-btn danger"
+                                <td class="text-right v-row-actions"><button aria-label="{{ t('common.delete') }}" type="button" class="v-icon-btn danger"
                                         @click="bsRemoveRow(i)" title="{{ t('common.delete') }}">✕</button></td>
                             </tr>
                         </template>
