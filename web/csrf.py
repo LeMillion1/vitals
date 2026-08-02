@@ -45,7 +45,7 @@ def add_csrf_origin_check(app: FastAPI) -> None:
 # the proxied HTML response) rather than anything our own templates load, so
 # there's no template reference to point at; it needs its own
 # script-src/connect-src entries or the browser blocks it outright. Fonts
-# (Inter / Outfit / Bricolage Grotesque — no monospace, per the design system)
+# (Inter / Bricolage Grotesque — no monospace, per the design system)
 # are self-hosted woff2 under web/static/fonts/, so font-src/style-src stay 'self'.
 #
 # form-action allows any https target, not just 'self': the consent form posts to

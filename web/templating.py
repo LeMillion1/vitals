@@ -7,7 +7,7 @@ from typing import Any
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
-from vitals.i18n import t, get_js_strings, plural
+from vitals.i18n import t, decimal, get_js_strings, plural
 from vitals.services.modules_service import (
     MODULE_REGISTRY,
     NAV_RUBRICS,
@@ -26,7 +26,14 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
 def format_number(value: Any) -> Any:
-    """Format numeric values with space separators: e.g. 12345.67 -> "12 345.67"."""
+    """Format numeric values with space groups and the locale's decimal mark:
+    12345.67 -> "12 345.7" in English, "12 345,7" in Russian.
+
+    The separator follows the platform rather than arguing with it. A number
+    input is drawn by the browser in the *user's* locale — Chrome renders the
+    value 86.1 as "86,1" under ru and no attribute on the element changes that
+    — so on /weight the same weight appeared as "86,1" in the field and "86.1"
+    in the table below it. One of the two had to move, and only this one can."""
     try:
         if isinstance(value, (int, float)):
             n = value
@@ -41,7 +48,7 @@ def format_number(value: Any) -> Any:
         n = round(n, 1)
         if n.is_integer():
             return f"{int(n):,}".replace(",", " ")
-        return f"{n:,.1f}".replace(",", " ")
+        return decimal(f"{n:,.1f}".replace(",", " "))
     except (TypeError, ValueError):
         return value
 
@@ -98,11 +105,13 @@ def format_date(value: Any) -> str:
 
 
 def format_hm(seconds: Any) -> str:
-    """Format a duration in seconds as "7h 18m"; falsy input renders as an em dash."""
+    """Format a duration in seconds as "7 ч 18 мин"; falsy input renders as an
+    em dash. The abbreviations come from the catalogue: "8h 40m" sitting next to
+    "Оценка сна" was the app speaking two languages on one line."""
     if not seconds:
         return "—"
     seconds = int(seconds)
-    return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+    return f"{seconds // 3600} {t('common.hour_abbr')} {(seconds % 3600) // 60} {t('common.min_abbr')}"
 
 
 def meal_word(n: Any) -> str:

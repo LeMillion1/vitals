@@ -41,7 +41,6 @@ def _blocks(css: str, query: str) -> list[str]:
 
 
 PHONE_CSS = "\n".join(_blocks(MASTHEAD_CSS, "(max-width: 767px)"))
-NARROW_CSS = "\n".join(_blocks(MASTHEAD_CSS, "(max-width: 560px)"))
 
 
 def _rule(css: str, selector: str) -> str:
@@ -63,7 +62,9 @@ def test_phone_drops_the_wordmark_strip_but_keeps_the_notch():
     topbar = _rule(PHONE_CSS, "body.ui-masthead .mh-topbar")
     assert "height: max(env(safe-area-inset-top), var(--sat, 0px));" in topbar
     assert "min-height: 0;" in topbar
-    assert "display: none" in _rule(PHONE_CSS, "body.ui-masthead .mh-topbar-brand")
+    # Hidden at both widths for a whole release, so the markup went with it.
+    assert "mh-topbar-brand" not in MASTHEAD_CSS
+    assert "mh-topbar-brand" not in BASE_TEMPLATE
 
 
 def test_section_bar_is_sticky_against_the_page_not_the_header():
@@ -98,10 +99,10 @@ def test_primary_figure_never_outgrows_the_title():
     different ones — 900 lifted the figure to 32px, 560 dropped the title to
     27px and left the figure alone — which drew a "—" larger than the word under
     it on fourteen pages."""
-    assert "body.ui-masthead .mh-title { font-size: var(--mh-text-hero-sm); }" in NARROW_CSS
+    assert "body.ui-masthead .mh-title { font-size: var(--text-title); }" in PHONE_CSS
     assert (
-        "body.ui-masthead .mh-metric-value.is-primary { font-size: var(--mh-text-hero-sm); }"
-        in NARROW_CSS
+        "body.ui-masthead .mh-metric-value.is-primary { font-size: var(--text-title); }"
+        in PHONE_CSS
     )
 
 
@@ -109,7 +110,7 @@ def test_card_padding_is_declared_once():
     """24px from the utility, 16px at 640 and 18px at 560 used to stack, and the
     18px nobody chose was the one that won."""
     assert len(re.findall(r"\.v-card\.p-6\s*\{", APP_CSS)) == 1
-    assert "18px" not in _blocks(APP_CSS, "(max-width: 560px)")[0]
+    assert "padding: 18px" not in APP_CSS
     assert "padding: var(--space-4);" in _rule(APP_CSS, ".v-card.p-6")
 
 

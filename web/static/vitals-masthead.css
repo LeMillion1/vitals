@@ -10,31 +10,13 @@
    ============================================================================ */
 
 body.ui-masthead {
-    /* Display face for titles/tabs only; body text stays on Inter. */
-    --mh-display: 'Bricolage Grotesque', 'Outfit', 'Inter', ui-sans-serif, system-ui, sans-serif;
-    /* ── Masthead type scale ──────────────────────────────────────────────
-       The editorial layer's own sizes, on top of the six app tokens in
-       vitals.css. Declared once here so no rule below invents a number; sizes
-       that already exist on the app scale (12/13/14/15px) reference the app
-       token instead of getting a duplicate under a new name. Mirrored in
-       docs/DESIGN_SYSTEM.md. */
-    --mh-text-hero: 40px;          /* H1 — pre-handoff base */
-    --mh-text-hero-lg: 36px;       /* H1 — desktop (handoff shell) */
-    /* Tablet step. Dropped 38→32 together with the desktop sizes above: the
-       responsive ladder has to stay monotonic, and a 38px tablet H1 would now be
-       *larger* than the 36px desktop one. */
-    --mh-text-hero-md: 32px;       /* H1 + primary metric — tablet */
-    --mh-text-hero-sm: 27px;       /* H1 — narrow phone (nav handoff, frame 3c) */
-    --mh-text-metric: 36px;        /* primary key figure */
-    --mh-text-metric-md: 34px;     /* primary key figure — desktop shell */
-    --mh-text-wordmark: 22px;      /* rail wordmark */
-    --mh-text-lead: 21px;          /* secondary key figure */
-    --mh-text-brand: 19px;         /* mobile topbar wordmark */
-    --mh-text-bar: 17px;           /* H1 inside the phone's sticky section bar */
-    --mh-text-tab: 15px;           /* rubric tab */
-    --mh-text-eyebrow: 11px;       /* uppercase eyebrows / labels */
-    --mh-text-nano: 10px;          /* smallest uppercase micro-label */
-    /* One rail width at every desktop size. The icon-only 68px step is gone with
+    /* There is no masthead type scale any more. This file used to declare
+       thirteen sizes of its own on top of the app's, which is how a 27px phone
+       H1, a 32px tablet one and a 34px key figure ended up on three different
+       ladders — and how a "—" came to be drawn larger than the word under it.
+       Every size here now names a step of the one scale in vitals.css.
+
+       One rail width at every desktop size. The icon-only 68px step is gone with
        the nav handoff: it hid the labels, which is the one thing the rail is for,
        and a 30px row fits all sixteen sections at 1440x900 without it. */
     --mh-rail-w: 240px;
@@ -143,7 +125,7 @@ body.ui-masthead .mh-rail-group {
 body.ui-masthead .mh-rail-group-label {
     padding: 0 12px 6px;
     color: var(--faint);
-    font: 700 var(--mh-text-nano) 'Inter', sans-serif;
+    font: 700 var(--text-eyebrow) 'Inter', sans-serif;
     letter-spacing: .12em;
     text-transform: uppercase;
 }
@@ -161,7 +143,7 @@ body.ui-masthead .mh-rail-btn {
     position: relative;
     height: 30px;
     flex: none;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     display: flex;
     align-items: center;
     gap: 10px;
@@ -178,25 +160,20 @@ body.ui-masthead .mh-rail-btn {
    a section of something. */
 body.ui-masthead .mh-rail-btn.is-lead {
     height: 36px;
-    border-radius: 9px;
+    border-radius: var(--radius-sm);
     background: var(--mh-rail-hover);
     color: var(--fg-2);
     font-weight: 600;
 }
 
 body.ui-masthead .mh-rail-btn svg {
-    width: 15px;
-    height: 15px;
+    width: var(--ico);
+    height: var(--ico);
     flex: none;
     /* Lighter stroke than the icons' inline stroke-width="2" — CSS wins over the
        presentation attribute, so the whole rail set reads thinner and less bulky
        without touching each glyph's paths. */
     stroke-width: 1.5;
-}
-
-body.ui-masthead .mh-rail-btn.is-lead svg {
-    width: 17px;
-    height: 17px;
 }
 
 /* The dot stands in the icon's column on every inactive row. Its 5px margins
@@ -249,7 +226,7 @@ body.ui-masthead .mh-rail-btn.is-active::before {
     top: 6px;
     bottom: 6px;
     width: 3px;
-    border-radius: 0 3px 3px 0;
+    border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
     background: var(--accent);
 }
 
@@ -268,7 +245,7 @@ body.ui-masthead .mh-rail-stats {
     flex: none;
     margin: 0 12px;
     padding: 12px;
-    border-radius: 12px;
+    border-radius: var(--radius);
     background: var(--mh-rail-card);
     display: flex;
     flex-direction: column;
@@ -286,7 +263,7 @@ body.ui-masthead .mh-stat {
 body.ui-masthead .mh-stat-label {
     width: 100%;
     color: var(--faint);
-    font: 700 var(--mh-text-nano) 'Inter', sans-serif;
+    font: 700 var(--text-eyebrow) 'Inter', sans-serif;
     letter-spacing: .12em;
     text-transform: uppercase;
 }
@@ -346,8 +323,8 @@ body.ui-masthead .mh-rail-foot-out:hover {
 }
 
 body.ui-masthead .mh-rail-foot-out svg {
-    width: 16px;
-    height: 16px;
+    width: var(--ico);
+    height: var(--ico);
     stroke-width: 1.5;
 }
 
@@ -368,27 +345,9 @@ body.ui-masthead .mh-topbar {
     background: var(--bg-inset);
 }
 
-body.ui-masthead .mh-topbar-brand {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    text-decoration: none;
-}
-
-body.ui-masthead .mh-topbar-brand svg {
-    width: 15px;
-    height: 15px;
-    color: var(--accent);
-}
-
-body.ui-masthead .mh-topbar-brand span {
-    font: 800 var(--mh-text-brand)/1 var(--mh-display);
-    letter-spacing: -.02em;
-    color: var(--fg);
-}
-
-/* No .mh-topbar-menu rule: the phone's top bar carries no controls at all since
-   the nav handoff — the bottom bar and /more own phone navigation. */
+/* No brand and no controls: since the nav handoff the phone's top bar is a
+   safe-area spacer, the bottom bar and /more own phone navigation, and a strip
+   saying "Vitals" to someone already inside the app cost 52px. */
 
 /* ── The editorial masthead (rendered at the top of each section's content) ──
    Four blocks, one per line of the reading order, placed by grid area rather
@@ -412,7 +371,7 @@ body.ui-masthead .mh-bar {
 }
 
 body.ui-masthead .mh-eyebrow {
-    font: 600 var(--mh-text-eyebrow) 'Inter', sans-serif;
+    font: 600 var(--text-eyebrow) 'Inter', sans-serif;
     letter-spacing: .14em;
     text-transform: uppercase;
     color: var(--faint);
@@ -451,7 +410,7 @@ body.ui-masthead .mh-tabs {
 }
 
 body.ui-masthead .mh-tab {
-    font: 500 var(--text-body) var(--mh-display);
+    font: 500 var(--text-body) var(--display);
     color: var(--muted);
     text-decoration: none;
     padding-bottom: 8px;
@@ -471,10 +430,7 @@ body.ui-masthead .mh-tab.is-active {
 }
 
 body.ui-masthead .mh-title {
-    font: 800 var(--mh-text-hero)/1.05 var(--mh-display);
     color: var(--fg);
-    letter-spacing: -.02em;
-    margin: 16px 0 0;
 }
 
 /* Key figures row — replaces the KPI cards. */
@@ -501,13 +457,13 @@ a.mh-metric {
 }
 
 body.ui-masthead .mh-metric-value {
-    font: 600 var(--mh-text-lead) 'Inter', sans-serif;
+    font: 600 var(--text-lead) 'Inter', sans-serif;
     color: var(--fg);
     font-variant-numeric: tabular-nums;
 }
 
 body.ui-masthead .mh-metric-value.is-primary {
-    font: 700 var(--mh-text-metric) var(--mh-display);
+    font: 700 var(--text-display) var(--display);
     letter-spacing: -.01em;
 }
 
@@ -526,7 +482,7 @@ body.ui-masthead .mh-metric-unit {
 }
 
 body.ui-masthead .mh-metric-label {
-    font: 600 var(--mh-text-eyebrow) 'Inter', sans-serif;
+    font: 600 var(--text-eyebrow) 'Inter', sans-serif;
     letter-spacing: .1em;
     text-transform: uppercase;
     color: var(--faint);
@@ -556,7 +512,7 @@ body.ui-masthead .mh-date-nav-btn {
 
 body.ui-masthead .mh-date-nav-btn:hover {
     color: var(--fg);
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--surface-2);
 }
 
 body.ui-masthead .mh-date-display {
@@ -580,7 +536,6 @@ body.ui-masthead .mh-macro-bar {
     border-radius: var(--radius-pill);
     overflow: hidden;
     background: var(--bg-inset);
-    border: 1px solid rgba(255, 255, 255, 0.02);
 }
 
 body.ui-masthead .mh-macro-seg {
@@ -645,7 +600,7 @@ body.ui-masthead .mh-value-highlight {
 }
 
 body.ui-masthead .mh-macro-badge {
-    font-size: var(--mh-text-nano);
+    font-size: var(--text-eyebrow);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -748,12 +703,12 @@ body.ui-masthead .mh-macro-card-unit {
     }
 
     body.ui-masthead .mh-title {
-        font-size: var(--mh-text-hero-md);
+        font-size: var(--text-display);
         margin-top: 8px;
     }
 
     body.ui-masthead .mh-metric-value.is-primary {
-        font-size: var(--mh-text-hero-md);
+        font-size: var(--text-display);
     }
 
     body.ui-masthead .mh-metrics {
@@ -784,7 +739,7 @@ body.ui-masthead .mh-rail-wordmark {
     padding: 0 18px;
     color: var(--fg);
     text-decoration: none;
-    font: 800 var(--mh-text-wordmark)/1 var(--mh-display);
+    font: 800 var(--text-lead)/1 var(--display);
     letter-spacing: -.02em;
 }
 
@@ -795,7 +750,7 @@ body.ui-masthead .mh-tabs {
    line is wider than a narrow column, and a nowrap row pushed <main> 176px
    sideways. */
 body.ui-masthead .mh-actions { flex-wrap: wrap; max-width: 100%; }
-body.ui-masthead .mh-tab { font-size: var(--mh-text-tab); }
+body.ui-masthead .mh-tab { font-size: var(--text-card); }
 /* Title and key figures share the bottom row of the grid, anchored to each
    other rather than to the right gutter. Pushed to the far edge the strip's
    distance from the H1 changed with every page — four wide metrics on Weight
@@ -804,7 +759,7 @@ body.ui-masthead .mh-tab { font-size: var(--mh-text-tab); }
    column gap makes every page's masthead the same object. */
 body.ui-masthead .mh-title {
     margin: 0;
-    font: 800 var(--mh-text-hero-lg)/.95 var(--mh-display);
+    font: 800 var(--text-hero)/.95 var(--display);
     letter-spacing: -.025em;
 }
 body.ui-masthead .mh-head .mh-title {
@@ -821,7 +776,7 @@ body.ui-masthead .mh-metrics {
     margin-top: 20px;
 }
 body.ui-masthead .mh-metric-div { margin: 0 26px; }
-body.ui-masthead .mh-metric-value.is-primary { font-size: var(--mh-text-metric-md); }
+body.ui-masthead .mh-metric-value.is-primary { font-size: var(--text-display); }
 /* Content grid: 1240px column, 56px gutters. The vertical padding is on the
    page wrapper only — #alerts-container shares the horizontal grid but keeps
    its own tight top padding, otherwise a one-line alert renders as a 141px
@@ -842,7 +797,7 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
    the strip wraps inside itself — and a divider that lands on a line break is
    left standing in empty space. Spacing separates them just as well once the
    row is no longer a single line. */
-@media (max-width: 1200px) {
+@media (max-width: 1199px) {
     body.ui-masthead .mh-metric-div { display: none; }
     body.ui-masthead .mh-metrics { gap: 16px 34px; }
     /* Same threshold: once the figures need a second line they stop being a
@@ -860,14 +815,14 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
     body.ui-masthead .mh-head .mh-metrics { margin-top: 22px; }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1199px) {
     body.ui-masthead main > .max-w-6xl,
     body.ui-masthead main > #alerts-container {
         padding-left: 32px !important;
         padding-right: 32px !important;
     }
-    body.ui-masthead .mh-title { font-size: var(--mh-text-hero-md); }
-    body.ui-masthead .mh-metric-value.is-primary { font-size: var(--mh-text-hero-md); }
+    body.ui-masthead .mh-title { font-size: var(--text-display); }
+    body.ui-masthead .mh-metric-value.is-primary { font-size: var(--text-display); }
     body.ui-masthead .mh-metrics {
         justify-content: flex-start;
         flex-wrap: wrap;
@@ -875,15 +830,15 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
     }
 }
 
-@media (max-width: 560px) {
+@media (max-width: 767px) {
     body.ui-masthead main > .max-w-6xl,
     body.ui-masthead main > #alerts-container { padding: 22px 16px !important; }
-    body.ui-masthead .mh-title { font-size: var(--mh-text-hero-sm); }
+    body.ui-masthead .mh-title { font-size: var(--text-title); }
     /* Declared beside .mh-title on purpose: the two used to move on different
        breakpoints (900 lifted the figure to 32px, 560 dropped the title to 27px
        and left the figure alone), which is how a "—" ended up drawn larger than
        the word it stood under on fourteen pages. Same block, never larger. */
-    body.ui-masthead .mh-metric-value.is-primary { font-size: var(--mh-text-hero-sm); }
+    body.ui-masthead .mh-metric-value.is-primary { font-size: var(--text-title); }
     body.ui-masthead .mh-metrics {
         display: grid;
         /* auto-fit, not two fixed columns: three figures in a hard 2-col grid
@@ -900,7 +855,7 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
    size rule above regardless of which breakpoint wrote it. */
 body.ui-masthead .mh-metric-value.is-text,
 body.ui-masthead .mh-metric-value.is-primary.is-text {
-    font: 600 var(--mh-text-lead) 'Inter', sans-serif;
+    font: 600 var(--text-lead) 'Inter', sans-serif;
     font-variant-numeric: normal;
     letter-spacing: normal;
 }
@@ -920,21 +875,21 @@ body.ui-masthead .mh-metric-value.is-text {
 /* A date or a range is still a figure — it just can't be a headline-sized one
    in a 110px column, where it wrapped mid-token. */
 body.ui-masthead .mh-metric-value.is-primary.is-compact {
-    font: 700 var(--mh-text-lead) var(--mh-display);
+    font: 700 var(--text-lead) var(--display);
 }
 
-@media (max-width: 560px) {
+@media (max-width: 767px) {
     body.ui-masthead .mh-metric-value.is-text,
     body.ui-masthead .mh-metric-value.is-primary.is-text,
     body.ui-masthead .mh-metric-value.is-compact,
     body.ui-masthead .mh-metric-value.is-primary.is-compact {
-        font-size: var(--mh-text-tab);
+        font-size: var(--text-card);
     }
 }
 
 body.ui-masthead .mh-metric-value.is-empty,
 body.ui-masthead .mh-metric-value.is-primary.is-empty {
-    font: 600 var(--mh-text-lead) 'Inter', sans-serif;
+    font: 600 var(--text-lead) 'Inter', sans-serif;
     color: var(--faint);
 }
 
@@ -943,7 +898,7 @@ body.ui-masthead .mh-metric-value.is-primary.is-empty {
 body.ui-masthead .mh-metric-value.is-neg {
     margin-left: -.14em;
 }
-@media (max-width: 560px) {
+@media (max-width: 767px) {
     body.ui-masthead .grid.grid-cols-3 {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -998,13 +953,13 @@ body.ui-masthead .mh-bnav .v-bnav-link.is-active {
 }
 
 body.ui-masthead .mh-bnav .v-nav-ico svg {
-    width: 22px;
-    height: 22px;
+    width: var(--ico-lg);
+    height: var(--ico-lg);
     stroke-width: 1.6;
 }
 
 body.ui-masthead .mh-bnav-label {
-    font: 700 var(--mh-text-nano) 'Inter', sans-serif;
+    font: 700 var(--text-eyebrow) 'Inter', sans-serif;
     white-space: nowrap;
 }
 
@@ -1023,14 +978,25 @@ body.ui-masthead .mh-bnav-label {
     }
 
     body.ui-masthead .mh-tab {
+        display: flex;
+        align-items: center;
+        /* 33px of pill was what the audit measured. The chip is navigation on a
+           touch screen, so it is sized as a target and not as a label. */
+        min-height: 2.75rem;
         flex: none;
         scroll-snap-align: start;
         border: 1px solid var(--line);
         border-radius: var(--radius-pill);
-        padding: 7px 14px;
+        padding: 0 14px;
         font-size: var(--text-label);
         font-weight: 500;
         color: var(--muted);
+    }
+
+    /* A 28px arrow beside a date is a miss waiting to happen. */
+    body.ui-masthead .mh-date-nav-btn {
+        width: 2.75rem;
+        height: 2.75rem;
     }
 
     body.ui-masthead .mh-tab.is-active {
@@ -1039,6 +1005,19 @@ body.ui-masthead .mh-bnav-label {
         background: var(--accent-soft);
         border-color: var(--accent-line);
     }
+}
+
+/* Sub-tabs at desktop width: the same underlined tabs as the section row above
+   them, one step quieter, so the two read as one navigation system with two
+   levels rather than as a tab row and a segmented control. */
+body.ui-masthead .mh-subtabs {
+    border-bottom: 0;
+    margin-top: 0;
+    gap: 20px;
+}
+
+body.ui-masthead .mh-subtabs .mh-tab {
+    font-size: var(--text-label);
 }
 
 /* ── The "More" screen (/more) ───────────────────────────────────────────── */
@@ -1064,7 +1043,7 @@ body.ui-masthead .mh-more-group {
 body.ui-masthead .mh-more-group-label {
     padding: 0 14px 8px;
     color: var(--faint);
-    font: 700 var(--mh-text-nano) 'Inter', sans-serif;
+    font: 700 var(--text-eyebrow) 'Inter', sans-serif;
     letter-spacing: .12em;
     text-transform: uppercase;
 }
@@ -1090,8 +1069,8 @@ body.ui-masthead .mh-more-ico {
 }
 
 body.ui-masthead .mh-more-ico svg {
-    width: 20px;
-    height: 20px;
+    width: var(--ico-lg);
+    height: var(--ico-lg);
     stroke-width: 1.6;
 }
 
@@ -1114,7 +1093,7 @@ body.ui-masthead .mh-more-stats {
     flex-direction: column;
     gap: 14px;
     padding: 16px;
-    border-radius: 18px;
+    border-radius: var(--radius-lg);
     background: var(--mh-rail-card);
     border: 1px solid var(--line);
 }
@@ -1154,9 +1133,9 @@ body.ui-masthead .mh-more-logout:active {
 
 @media (max-width: 767px) {
     /* Gutter the full-bleed bars have to cancel. It tracks the page padding the
-       shell already sets (56/32/16px), so the bar's background reaches the
-       screen edges instead of leaving two strips of scrolling content. */
-    body.ui-masthead { --mh-gutter: 32px; }
+       shell sets on a phone, so the bar's background reaches the screen edges
+       instead of leaving two strips of scrolling content. */
+    body.ui-masthead { --mh-gutter: 16px; }
 
     /* The wordmark strip is gone — it spent 52px saying "Vitals" to someone
        already inside the app. The element stays as a bare safe-area spacer
@@ -1168,10 +1147,6 @@ body.ui-masthead .mh-more-logout:active {
         padding: 0;
         border-bottom: 0;
         background: var(--bg);
-    }
-
-    body.ui-masthead .mh-topbar-brand {
-        display: none;
     }
 
     /* .mh-head stops being a box: sticky positions against the nearest ancestor
@@ -1207,7 +1182,7 @@ body.ui-masthead .mh-more-logout:active {
     body.ui-masthead .mh-head .mh-bar .mh-title {
         margin: 0;
         min-width: 0;
-        font: 600 var(--mh-text-bar)/1.2 var(--mh-display);
+        font: 600 var(--text-heading)/1.2 var(--display);
         letter-spacing: -.01em;
         white-space: nowrap;
         overflow: hidden;
@@ -1255,6 +1230,22 @@ body.ui-masthead .mh-more-logout:active {
     }
 }
 
-@media (max-width: 560px) {
-    body.ui-masthead { --mh-gutter: 16px; }
+/* Sub-tabs on a phone. Last in the file on purpose: the rules above pin
+   `.mh-tabs` to the top of the scroll, and only one row may pin — a second
+   sticky band under the first is two thirds of the header back again. */
+@media (max-width: 767px) {
+    body.ui-masthead .mh-subtabs {
+        position: static;
+        margin-inline: 0;
+        padding: 0;
+        background: none;
+    }
+
+    /* Neutral, not amber: amber marks where you are in the app, and inside a
+       section the chip row above has already said that. */
+    body.ui-masthead .mh-subtabs .mh-tab.is-active {
+        color: var(--fg);
+        background: var(--surface-2);
+        border-color: var(--line-2);
+    }
 }

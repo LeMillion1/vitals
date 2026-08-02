@@ -56,7 +56,7 @@
                 <span class="v-metric-value">{% if daily.sleep_score %}{{ daily.sleep_score }}{% else %}—{% endif %}</span>
             </div>
             {% if daily.sleep_need_actual %}
-            <span class="v-text-micro">{{ t("garmin.sleep_need") }} {{ daily.sleep_need_actual // 60 }}h {{ daily.sleep_need_actual % 60 }}m</span>
+            <span class="v-text-micro">{{ t("garmin.sleep_need") }} {{ (daily.sleep_need_actual * 60) | format_hm }}</span>
             {% endif %}
         </div>
         <div class="v-metric">

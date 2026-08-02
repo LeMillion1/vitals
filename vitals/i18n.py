@@ -172,6 +172,8 @@ _EN: dict[str, str] = {
     "common.eg": "e.g. {value}",
     "common.mg": "mg",
     "common.days_abbr": "d",
+    "common.decimal_sep": ".",
+    "common.hour_abbr": "h",
     "common.min_abbr": "min",
     "common.kcal": "kcal",
     "common.g": "g",
@@ -407,7 +409,7 @@ _EN: dict[str, str] = {
     "glp1.tag": "GLP-1 therapy",
     "glp1.heading": "Injection monitoring",
     "glp1.description": "Tracking semaglutide/tirzepatide injections, dosing phases, and side effects.",
-    "glp1.toggle_form": "Enter info",
+    "glp1.toggle_form": "New entry",
     "glp1.toggle_history": "To history",
     "glp1.current_dose": "Current dose",
     "glp1.drug": "Drug",
@@ -1137,6 +1139,7 @@ _EN: dict[str, str] = {
     "charts.no_charts": "No custom charts yet.",
     "charts.builder_title": "New chart",
     "charts.name_label": "Chart name",
+    "charts.series_n": "Series {n}",
     "charts.add_series": "Add metric",
     "charts.remove_series": "Remove",
     "charts.select_domain": "Domain",
@@ -1474,6 +1477,8 @@ _RU: dict[str, str] = {
     "common.eg": "напр. {value}",
     "common.mg": "мг",
     "common.days_abbr": "дн",
+    "common.decimal_sep": ",",
+    "common.hour_abbr": "ч",
     "common.min_abbr": "мин",
     "common.kcal": "ккал",
     "common.g": "г",
@@ -1707,7 +1712,7 @@ _RU: dict[str, str] = {
     "glp1.tag": "Терапия GLP-1",
     "glp1.heading": "Мониторинг инъекций",
     "glp1.description": "Контроль инъекций семаглутида/тирзепатида, фаз дозирования и побочных эффектов.",
-    "glp1.toggle_form": "Внести инфо",
+    "glp1.toggle_form": "Новая запись",
     "glp1.toggle_history": "К истории",
     "glp1.current_dose": "Текущая доза",
     "glp1.drug": "Препарат",
@@ -2436,6 +2441,7 @@ _RU: dict[str, str] = {
     "charts.no_charts": "Пока нет кастомных графиков.",
     "charts.builder_title": "Новый график",
     "charts.name_label": "Название графика",
+    "charts.series_n": "Ряд {n}",
     "charts.add_series": "Добавить метрику",
     "charts.remove_series": "Удалить",
     "charts.select_domain": "Домен",
@@ -2533,7 +2539,7 @@ _RU: dict[str, str] = {
     "signals.subheading": "Всё, что сказано боту мимоходом — сонливость, голова, кофе в 22 — разобрано в строки. Это тот слой, который объясняет цифры Garmin.",
     "signals.metric_total": "Записей",
     "signals.metric_keys": "Ключей",
-    "signals.metric_misparse": "Промахов",
+    "signals.metric_misparse": "Промахи",
     "signals.frequency_title": "Частота ключей",
     "signals.frequency_hint": "Что модель пишет на самом деле, вместе с ошибками — материал, по которому потом собирается реестр ключей.",
     "signals.frequency_empty": "Пока ничего не записано.",
@@ -2679,3 +2685,16 @@ def plural(n: int | float, one: str, few_or_other: str, many: str | None = None)
             return few_or_other
         return many
     return one if n == 1 else few_or_other
+
+
+def decimal(text: str) -> str:
+    """Re-point a decimal point at the language's own mark.
+
+    One separator per language, because the browser gives us no choice about
+    one side of it: a ``<input type="number">`` is drawn by Chrome in the
+    *user's* locale — the value 86.1 renders as "86,1" under ru and no attribute
+    on the element changes that. So on /weight the same weight read "86,1" in
+    the field and "86.1" in the table under it. The readouts follow the
+    platform; this is the one place that decides how.
+    """
+    return text.replace(".", STRINGS.get(current_lang.get(), _EN)["common.decimal_sep"])

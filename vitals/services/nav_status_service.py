@@ -23,7 +23,7 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.i18n import plural, t
+from vitals.i18n import decimal, plural, t
 from vitals.services.modules_service import CORE_KEYS
 from vitals.utils.timeutils import today_local
 
@@ -74,11 +74,11 @@ async def _weight_row(session: AsyncSession) -> Optional[StatRow]:
         delta = latest.weight_kg - earlier[-1].weight_kg
         # U+2212 minus, not a hyphen: at 11px a hyphen next to a digit reads as
         # a dash in the label, and the sign is the whole point of this note.
-        sub = f"{delta:+.1f}".replace("-", "−")
+        sub = decimal(f"{delta:+.1f}".replace("-", "−"))
         tone = "good" if delta < 0 else ("bad" if delta > 0 else "")
     return StatRow(
         key="weight",
-        value=f"{latest.weight_kg:.1f} {t('common.kg')}",
+        value=f"{decimal(f'{latest.weight_kg:.1f}')} {t('common.kg')}",
         sub=sub,
         tone=tone,
     )

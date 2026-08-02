@@ -27,13 +27,15 @@
             ] %}
 
             {% for day_index, day_name, day_abbr in days %}
+            {# Two frames, not four: the card, then the day. Today's row is marked
+               by its border alone — the ring under it drew a second one 1px
+               away, and inside it the AM/PM groups each carried a third. #}
             <div class="v-card-tile p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 transition hover:border-[var(--line-2)]"
-                 :class="todayDow === {{ day_index }} ? 'ring-1 ring-[var(--line-2)] border-[var(--line-2)]' : ''">
+                 :class="todayDow === {{ day_index }} ? 'border-[var(--line-2)]' : ''">
 
                 <!-- Left: Day of the week info -->
                 <div class="flex items-center gap-3 md:w-48 shrink-0">
-                    <div class="h-10 w-10 rounded-xl bg-[var(--surface-3)] flex items-center justify-center flex-col shrink-0"
-                         :style="todayDow === {{ day_index }} ? 'background: var(--surface-2); border: 1px solid var(--line-2)' : 'border: 1px solid var(--line)'">
+                    <div class="h-10 w-10 rounded-xl bg-[var(--surface-3)] flex items-center justify-center flex-col shrink-0">
                         <span class="v-text-label font-extrabold" :style="todayDow === {{ day_index }} ? 'color: var(--fg)' : 'color: var(--muted)'">{{ t("skincare.day." + day_abbr) }}</span>
                     </div>
                     <div class="flex flex-col gap-0.5">
@@ -47,7 +49,7 @@
                 <!-- Right: Routines -->
                 <div class="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <!-- Morning -->
-                    <div class="space-y-1.5 p-3 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)]">
+                    <div class="space-y-1.5">
                         <span class="v-text-micro flex items-center gap-1.5"><svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.8 0l.7 -.7" /></svg> {{ t("skincare.morning") }}</span>
                         <div class="flex flex-wrap gap-1.5">
                             {% set has_morning = namespace(value=false) %}
@@ -60,7 +62,7 @@
                     </div>
 
                     <!-- Evening -->
-                    <div class="space-y-1.5 p-3 rounded-xl bg-[var(--bg-inset)] border border-[var(--line)]">
+                    <div class="space-y-1.5">
                         <span class="v-text-micro flex items-center gap-1.5"><svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" /></svg> {{ t("skincare.evening") }}</span>
                         <div class="flex flex-wrap gap-1.5">
                             {% set has_evening = namespace(value=false) %}
@@ -252,7 +254,15 @@
                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
 
-            {{ card_header('', attrs='x-text="isEditing ? '' ~ t("skincare.modal_edit") ~ '' : '' ~ t("skincare.modal_new") ~ ''"') }}
+            {# The heading is an Alpine expression, so the two labels have to arrive
+               as JS string literals. Escaped single quotes inside the Jinja
+               literal, and NOT `| tojson`: tojson returns Markup, and `~` against
+               Markup escapes the other operand — including the attribute's own
+               quotes, which is how this became `x-text=&#34;isEditing` and threw
+               on every open of the modal. #}
+            {%- set head_edit = t("skincare.modal_edit") -%}
+            {%- set head_new = t("skincare.modal_new") -%}
+            {{ card_header('', attrs='x-text="isEditing ? \'' ~ head_edit ~ '\' : \'' ~ head_new ~ '\'"') }}
 
             <form @submit.prevent="submitForm($event)" action="/skincare/product/save" method="POST" id="form-skincare-product" hx-boost="false" class="space-y-4">
                 <input type="hidden" name="override" x-model="overrideFlag">

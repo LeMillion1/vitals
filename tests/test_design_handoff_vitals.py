@@ -73,11 +73,11 @@ def test_masthead_title_and_metrics_share_one_hero_row():
     longer be nested together. Desktop still seats them side by side."""
     assert ".mh-hero-row" not in MASTHEAD_TEMPLATE
     assert '"title   metrics"' in MASTHEAD_CSS
-    # The desktop H1 size lives on --mh-text-hero-lg since U6 pulled every
-    # masthead size into a named token; the rule references the token. Compressed
-    # 54→36 by the IA pass — the header was eating ~120px above every page.
-    assert "--mh-text-hero-lg: 36px" in MASTHEAD_CSS
-    assert "font: 800 var(--mh-text-hero-lg)/.95" in MASTHEAD_CSS
+    # The desktop H1 is the top step of the app's one type ladder. The masthead
+    # used to own a parallel --mh-text-* set; run 5 folded it in, so the size is
+    # declared in vitals.css and only referenced here.
+    assert "--text-hero: 36px" in TOKENS_CSS
+    assert "font: 800 var(--text-hero)/.95" in MASTHEAD_CSS
     assert "max-width: 1240px" in MASTHEAD_CSS
     assert ".grid.grid-cols-3" in MASTHEAD_CSS
 
@@ -176,8 +176,10 @@ def test_page_contracts_have_responsive_layout_rules():
         ".v-hrt-overview",
     ):
         assert selector in TOKENS_CSS
-    assert "@media (max-width: 900px)" in TOKENS_CSS
-    assert "@media (max-width: 560px)" in TOKENS_CSS
+    # Three rebuild points, not eight. 480/560/640/900/1024/1200 all folded into
+    # phone / tablet / desktop in run 5.
+    assert "@media (max-width: 1199px)" in TOKENS_CSS
+    assert "@media (max-width: 767px)" in TOKENS_CSS
 
 def test_settings_uses_the_shared_handoff_masthead():
     template = (ROOT / "web/templates/settings/settings.html").read_text(encoding="utf-8")

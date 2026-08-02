@@ -70,7 +70,7 @@ def test_segmented_pill_is_not_the_same_capsule_as_its_track():
 
 
 def test_stepper_button_radius_fits_its_6px_track():
-    assert _radii(APP_CSS, ".v-weight-step") == ["8px"]
+    assert _radii(APP_CSS, ".v-weight-step") == ["var(--radius-xs)"]
 
 
 def test_bad_clears_aa_on_a_card():
@@ -115,9 +115,8 @@ def test_no_template_rolls_its_own_card_header():
 
 def test_metric_strip_fills_its_last_row():
     """Three figures in a hard two-column grid left a hole bottom-right."""
-    narrow = MASTHEAD_CSS[MASTHEAD_CSS.index("@media (max-width: 560px)"):]
-    assert "repeat(auto-fit, minmax(110px, 1fr))" in narrow
-    assert "repeat(2, minmax(0, 1fr));\n        width: 100%" not in narrow
+    assert "repeat(auto-fit, minmax(110px, 1fr))" in MASTHEAD_CSS
+    assert "repeat(2, minmax(0, 1fr));\n        width: 100%" not in MASTHEAD_CSS
 
 
 def test_non_numbers_are_not_drawn_as_numbers():

@@ -149,7 +149,15 @@
                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
 
-            {{ card_header('', attrs='x-text="isEditing ? '' ~ t("supplements.modal_edit") ~ '' : '' ~ t("supplements.modal_new") ~ ''"') }}
+            {# The heading is an Alpine expression, so the two labels have to arrive
+               as JS string literals. Escaped single quotes inside the Jinja
+               literal, and NOT `| tojson`: tojson returns Markup, and `~` against
+               Markup escapes the other operand — including the attribute's own
+               quotes, which is how this became `x-text=&#34;isEditing` and threw
+               on every open of the modal. #}
+            {%- set head_edit = t("supplements.modal_edit") -%}
+            {%- set head_new = t("supplements.modal_new") -%}
+            {{ card_header('', attrs='x-text="isEditing ? \'' ~ head_edit ~ '\' : \'' ~ head_new ~ '\'"') }}
 
             <form @submit.prevent="submitForm($event)" action="/supplements/save" id="form-supplement" hx-boost="false" class="space-y-4">
                 <input type="hidden" name="override" x-model="overrideFlag">

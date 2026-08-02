@@ -9,7 +9,7 @@
 > Grounded entirely in the current implementation — every token and class below
 > exists in [`web/static/vitals.css`](../web/static/vitals.css) and
 > [`web/static/vitals-masthead.css`](../web/static/vitals-masthead.css) at the time
-> of writing (updated 2026-07-25). If you change a token, update this file in the
+> of writing (updated 2026-08-02). If you change a token, update this file in the
 > same PR.
 
 ## At a glance
@@ -21,8 +21,9 @@
   not for decoration. Everything else stays neutral so those signals keep meaning.
 - **No monospace, anywhere.** Numbers use Inter with `tabular-nums`; columns still
   align.
-- **Six type sizes. No others.** `--text-title` → `--text-micro`; don't reach for
-  an arbitrary `text-[17px]`.
+- **One type ladder, ten steps, no others.** `--text-eyebrow` → `--text-hero`.
+  Don't reach for an arbitrary `text-[17px]`, and don't redefine a token under a
+  breakpoint — move the class down a step instead.
 - **A ladder, not a wall of red.** System alerts are `info` / `warn` / `block` —
   calm by default, loud only when a save must actually be stopped.
 
@@ -62,8 +63,11 @@ today, and the reasoning is worth carrying into every new screen:
 4. **No monospace, full stop.** A hard owner constraint. `.font-mono`/`.tnum`
    are aliased back to Inter + `tabular-nums` so number columns still line up
    without a mono typeface anywhere in the product.
-5. **A closed type scale.** Six sizes cover every heading, label and value in
-   the app. Adding a seventh should be rare enough to need a reason.
+5. **Closed inventories.** One type ladder, one radius set, one border set,
+   two icon sizes, three breakpoints, one display face. Each is enforced by
+   `tests/test_design_language.py`, because the failure mode is never one bad
+   value — it is a second way of saying a thing, added because the first was
+   hard to find. Adding a step should be rare enough to need a reason.
 6. **Editorial over "boxes of boxes."** Masthead's header (eyebrow → tabs → big
    title → key figures) reads like a magazine section opener, not a SaaS KPI
    dashboard. Prefer that hierarchy to another grid of stat cards.
@@ -111,12 +115,18 @@ consume them via `var(--token)` — never a hardcoded hex.
 
 | Token | Value | Use |
 |---|---|---|
-| `--good` / `--good-soft` | `#6FC58E` / `rgba(111,197,142,.13)` | Positive tone on a metric or chip |
-| `--bad` / `--bad-soft` | `#EE7A60` / `rgba(238,122,96,.13)` | Negative tone; also the `block` alert color |
+| `--good` / `-soft` / `-line` | `#6FC58E` / `.13` / `.30` | Positive tone on a metric or chip |
+| `--bad` / `-soft` / `-line` | `#EE7A60` / `.13` / `.30` | Negative tone; also the `block` alert color |
 | `--bad-strong` | `#FF8469` | Critical / out-of-range emphasis |
-| `--warn` / `--warn-soft` | `#F0B24A` / `rgba(240,178,74,.13)` | The `warn` alert tier |
-| `--cool` / `--cool-soft` | `#6FB6C9` / `rgba(111,182,201,.13)` | Temporal/category tag — "day" side of a day/night pairing |
-| `--violet` / `--violet-soft` | `#BCA4DC` / `rgba(176,147,214,.13)` | Temporal/category tag — "evening/night" side. The base tone was lightened from `#B093D6` so text on `--violet-soft` clears AA |
+| `--warn` / `-soft` / `-line` | `#F0B24A` / `.13` / `.30` | The `warn` alert tier |
+| `--cool` / `-soft` / `-line` | `#6FB6C9` / `.13` / `.30` | Temporal/category tag — "day" side of a day/night pairing |
+| `--violet` / `-soft` / `-line` | `#BCA4DC` / `.13` / `.30` | Temporal/category tag — "evening/night" side. The base tone was lightened from `#B093D6` so text on `--violet-soft` clears AA |
+
+**Every tone has the same three parts** — the base, a `-soft` fill at 13%, a
+`-line` border at 30%. Before that rule there were twenty border colours for
+five tones (`warn` at .35, .28 and .3; several `bad` borders still mixing the
+pre-AA `#E87056` the token had stopped using). A border never carries its own
+`rgba()`; `tests/test_design_language.py` fails the build if one appears.
 
 `.good`/`.bad` are **direction-agnostic** — the page decides which way is good.
 On the Weight page, for instance, a negative weekly slope (losing weight) maps
@@ -132,59 +142,64 @@ assumption about which sign is desirable.
 
 ### 2.2 Typography
 
-Three families, self-hosted as woff2 under `web/static/fonts/` and loaded via
+Two families, self-hosted as woff2 under `web/static/fonts/` and loaded via
 `web/static/fonts.css` (linked from `base.html` and `oauth_authorize.html` —
 no Google Fonts CDN dependency):
 
 | Family | Weights loaded | Role |
 |---|---|---|
 | **Inter** | 400–800 | Body text, UI chrome, all numbers (via `tabular-nums`) |
-| **Outfit** | 400–900 | Headings, card titles, classic KPI metric values — the "display sans" |
-| **Bricolage Grotesque** | 600–800 | Masthead-only: big editorial titles and tab labels (`--mh-display`) |
+| **Bricolage Grotesque** | 600–800 | Every display setting: page titles, card titles, tabs, key figures |
 
-**Cyrillic:** only Inter has it. Outfit and Bricolage Grotesque have no Cyrillic
-subset upstream at all, so **every display stack names `'Inter'` right after the
-display family** — Latin and digits render in Outfit/Bricolage, Russian falls to
-a font we actually ship instead of an arbitrary system font that differs per
-device. Never write a stack that goes straight from a display family to a
-generic (`sans-serif`, `system-ui`); `tests/test_review_run3.py` enforces it.
+There used to be a third. Outfit sat on `.v-text-card` / `.v-text-heading` /
+`.v-text-metric` — that is, on the title of every card — while Bricolage held
+the page title directly above them, so one vertical carried two display faces
+for no reason anyone could name. Outfit is no longer loaded and its woff2 files
+are gone. The surviving stack is named once, as `--display`, and referenced
+everywhere else.
+
+**Cyrillic:** only Inter has it. Bricolage Grotesque has no Cyrillic subset
+upstream at all, so **`--display` names `'Inter'` immediately after it** — Latin
+and digits render in Bricolage, Russian falls to a font we actually ship instead
+of an arbitrary system font that differs per device. Never write a stack that
+goes straight from a display family to a generic (`sans-serif`, `system-ui`);
+`tests/test_review_run3.py` enforces it.
 
 No monospace typeface is loaded or used. `.font-mono` / `.tnum` force Inter with
 `font-variant-numeric: tabular-nums` and `cv01`/`ss01` feature settings, so
 number-heavy tables still align in columns.
 
-**Core scale** (six sizes, defined as tokens, shrink slightly ≤640px):
-
-| Token | Desktop | ≤640px | Use |
-|---|---|---|---|
-| `--text-title` | 26px | 22px | Page hero `<h1>` |
-| `--text-metric` | 28px | 24px | Big numbers in stat cards |
-| `--text-heading` | 18px | 16px | Section headings |
-| `--text-card` | 15px | 14px | Card titles |
-| `--text-body` | 14px | 14px | Table values, body copy |
-| `--text-label` | 13px | 13px | Labels, column headers (muted) |
-| `--text-micro` | 12px | 12px | Units, dates, secondary info (muted) |
-
-**Masthead scale** — the editorial layer needs sizes the core six don't cover,
-so it has its own token set declared once in `body.ui-masthead`
-(`web/static/vitals-masthead.css`). No `.mh-*` rule may write a raw pixel size;
-sizes that already exist on the core scale (12/13/14px) reference the core token.
+**One ladder, ten steps, nothing between them.** Two scales used to run in
+parallel — these tokens plus a `--mh-text-*` set inside `body.ui-masthead` — and
+once the em-relative Tailwind utilities were counted the app was setting
+**twenty** actual sizes, 19.2px (73 elements) and 13.5px (117) among them, which
+nobody had chosen. The masthead scale is gone; every `.mh-*` rule names a step
+of the ladder below.
 
 | Token | Size | Use |
 |---|---|---|
-| `--mh-text-hero` | 40px | `.mh-title` base |
-| `--mh-text-hero-lg` | 36px | `.mh-title` on desktop |
-| `--mh-text-hero-md` | 32px | `.mh-title` + hero figure on tablet |
-| `--mh-text-hero-sm` | 30px | `.mh-title` on a narrow phone |
-| `--mh-text-metric` | 36px | `.mh-metric-value.is-primary` |
-| `--mh-text-metric-md` | 34px | the same on the desktop shell |
-| `--mh-text-ring` / `-md` | 32px / 26px | value inside a progress ring |
-| `--mh-text-wordmark` / `-sm` | 26px / 22px | rail wordmark, expanded / collapsed "V" |
-| `--mh-text-lead` | 21px | `.mh-metric-value` (secondary figures) |
-| `--mh-text-brand` | 19px | mobile topbar wordmark |
-| `--mh-text-tab` | 15px | `.mh-tab` |
-| `--mh-text-eyebrow` | 11px | uppercase eyebrows and key-figure captions |
-| `--mh-text-nano` | 10px | smallest uppercase micro-label |
+| `--text-eyebrow` | 11px | Uppercase micro-labels, bottom-bar captions — **the floor** |
+| `--text-micro` | 12px | Units, dates, secondary info (muted) |
+| `--text-label` | 13px | Labels, column headers (muted) |
+| `--text-body` | 14px | Table values, body copy, buttons |
+| `--text-card` | 15px | Card titles, section tabs |
+| `--text-heading` | 18px | Section headings, the phone's sticky section bar |
+| `--text-lead` | 21px | Secondary key figures, rail wordmark |
+| `--text-title` | 26px | Page `<h1>` and the primary key figure on a phone |
+| `--text-display` | 32px | The same pair on a tablet |
+| `--text-hero` | 36px | Page `<h1>` on the desktop shell |
+
+Rules for using it:
+
+- **A breakpoint moves a class down the ladder; it never redefines a token.**
+  `--text-heading` used to mean 18px on a desktop and 16px on a phone, which is
+  two scales again under one name. The phone block re-points `.v-text-heading`
+  at `--text-card` instead.
+- **No rule writes a size.** The single literal left in either stylesheet is the
+  `16px` iOS requires on a focused form control so it does not zoom the page —
+  a platform constraint, not a type decision.
+- **The ladder is monotonic and every step is used.** A step nothing references
+  is a step to delete, not one to keep "for later".
 
 ### 2.3 Spacing & radius
 
@@ -198,18 +213,31 @@ Radius scale, applied by role rather than by component:
 
 | Token | Value | Typical use |
 |---|---|---|
-| `--radius-sm` | 10px | Icon buttons, chips, dropdown options |
+| `--radius-xs` | 8px | Corners inside a tight track — stepper keys, inline code |
+| `--radius-sm` | 10px | Icon buttons, chips, dropdown options, filter pills |
 | `--radius` | 14px | Buttons, inputs, alerts, `.v-card-inset` |
 | `--radius-lg` | 20px | Cards, modals, metric tiles |
-| `--radius-pill` | 999px | Switch track, filter-pill shapes |
+| `--radius-pill` | 999px | Switch track, section chips, meters |
+
+Ten values were in use before this — `999px` and `9999px`, the same corner
+written twice, plus 4 / 8 / 9 / 12 / 18px picked one rule at a time. **No rule
+writes a radius.** The only literals a `border-radius` may carry are `0`, `50%`
+and `inherit`.
 
 **Nesting rule: an inner corner is always smaller than the corner it sits in**
 (inner ≈ outer − padding). A card is `--radius-lg` at every width — no
 breakpoint drops it to `--radius` — so anything nested in it can be `--radius`
 and still read as inside it rather than stuck on top of it. Where the padding is
-tighter than that, go smaller still: the stepper buttons on `/weight` are 8px
-inside a `--radius` track 6px away. The segmented control follows the same rule
-with a capsule outside and `--radius` on the pill.
+tighter than that, go smaller still: the stepper keys on `/weight` are
+`--radius-xs` inside a `--radius` track 6px away. The segmented control follows
+the same rule with a capsule outside and `--radius` on the pill.
+
+**Depth rule: two frames, never four.** A card, then one thing inside it. And a
+card nested in a card is **raised, not sunk** — `.v-card .v-card-tile` takes
+`--surface-2`, because `.v-card-tile`'s own `--bg-inset` is darker than the page
+*behind* the card and read as a hole punched through it. A well
+(`.v-card-inset`: a table body, an input) stays recessed; being sunk is the
+whole point of a well.
 
 ### 2.4 Elevation
 
@@ -233,8 +261,15 @@ style —
 ```
 
 Color always comes from `currentColor` (inherits text color / token), never a
-hardcoded fill. Rendered size varies by context: 18px in the masthead rail,
-~15px inline next to nav labels, ~20–32px in headers and empty states.
+hardcoded fill.
+
+**Two rendered sizes, and no rule writes its own.** Six were in use
+(15/16/17/20/22/24px) with nothing saying which belonged where:
+
+| Token | Size | Use |
+|---|---|---|
+| `--ico` | 16px | Inline beside a label — rail rows, dropdown chevrons |
+| `--ico-lg` | 22px | Standalone — bottom bar, /more rows, drop zones, empty states |
 
 ### 2.6 Motion
 
@@ -406,10 +441,21 @@ classic frame.
 
 ### 3.3 Responsive & PWA plumbing
 
-- Breakpoints actually in use: **480 / 640 / 768px.**
+- **Three rebuild points, and only three:** `≤767px` phone, `768–1199px`
+  tablet, `≥1200px` desktop. There were eight — 480 / 560 / 640 / 767 / 768 /
+  900 / 1024 / 1200 — and which of them won a property was a question of which
+  had been written last, which is how `.v-card.p-6` ended up with 18px of
+  padding nobody had chosen. Write `max-width: 767px`, `max-width: 1199px`,
+  `min-width: 768px` or `min-width: 1200px`, and nothing else.
 - Below 768px, inputs are forced to 16px font (`.v-input`/`.v-select`/`.v-textarea`)
   to stop iOS Safari's auto-zoom-on-focus; interactive elements grow to ≥44px
-  touch targets (buttons, segmented control, filter pills, icon buttons).
+  touch targets (buttons, segmented control, filter pills, chips, icon buttons,
+  stepper keys, date arrows, checkboxes, `summary` disclosures).
+- **`html { color-scheme: dark }`** tells the browser the page is dark, once,
+  instead of every native control being repainted by hand. The calendar glyph
+  and the file button used to be `filter: invert(0.85)`-ed and a checkbox was
+  left as a white square drawn in the browser's own blue — which is also why
+  growing it to a 22px tap target made it louder rather than better.
 - Safe-area insets (`env(safe-area-inset-*)`) are cached into `--sat`/`--sab`/
   `--sal`/`--sar` by a small viewport-sync script in `base.html`, because iOS
   standalone-PWA mode resolves `env()`/`dvh` unreliably on cold start. Use
@@ -500,11 +546,15 @@ span and hides the native text below 768px.
 
 `.v-seg` (track) / `.v-seg-btn.is-active` (surface-2 pill, **not** amber) — used
 for the Settings language switch, chart range pickers, and similar
-mutually-exclusive choices. Also doubles as real navigation: `<a class="v-seg-btn">`
-for sub-tabs that are separate routes (e.g. Garmin's Overview/Sleep/Activities).
-The `a.v-seg-btn { display: block; text-decoration: none; }` pair in `vitals.css`
-is what makes the class selector — written for `<button>` — behave the same on
-an anchor.
+mutually-exclusive choices **inside one page**.
+
+It is **not** navigation. Route sub-tabs used to wear it, which put two
+navigation rows in two different shapes one under the other — a phone read them
+as two unrelated systems. They are `.mh-tabs.mh-subtabs` now: the same chips as
+the section row above them, sized at `--text-label`, with a neutral raised
+"active" instead of amber, and `position: static` so only the section row pins
+itself to the top of the scroll. See `garmin/_tabs.html` and
+`weight/_tabs.html`.
 
 ### Chips, tags, pills, dots
 
@@ -512,7 +562,7 @@ an anchor.
 |---|---|---|
 | `.v-chip` | `.good`, `.bad`, `.v-chip-sm` | Neutral by default (surface-3) — deliberately **no** `.accent` modifier. `.v-chip-sm` is a compact-size modifier (10px/tight padding), combined with the base class — e.g. `class="v-chip v-chip-sm good"` — for a status badge sitting inline with a label. `.bad` paints its text with `--bad-strong`, not `--bad`: the plain tone on `--bad-soft` measures 3.58:1 |
 | `.v-tag` | `.cool`, `.violet`, `.good`, `.bad`, `.muted` | `.cool`/`.violet` pair for day/evening-night style temporal tags |
-| `.v-pill` / `.v-pill-on`, `.v-site-btn` / `.v-site-on` | — | Filter pills / body-map site picker; "selected" = neutral `--surface-2` elevation, not amber |
+| `.v-pill` / `.v-pill-on`, `.v-site-btn` / `.v-site-on` | — | Filter pills / body-map site picker; `--radius-sm`, never a capsule, and "selected" = neutral `--surface-2` elevation, never amber. A capsule with an amber fill is what `.mh-tab` means — /genetics stacked a row of filters straight under the section chips wearing exactly that shape |
 | `.v-dot` | `.amber`, `.cool`, `.violet`, `.good` | 7px inline status dot |
 
 ### Switch
@@ -590,6 +640,15 @@ full flow.
 (fade + translate in). Repositions above the bottom nav on mobile so it never
 overlaps tap targets.
 
+### Ribbon — `.v-ribbon`
+
+A row that scrolls sideways has to say so. The chip rows get away without help
+because a chip clipped by the screen edge *is* the signal; a strip of square
+thumbnails ends flush with the card and reads as "that is all of them". Add
+`.v-ribbon` beside `overflow-x-auto` and the last 28px fade out. Masked rather
+than overlaid on purpose — an overlay would need to know the container's
+background, and these sit on more than one surface.
+
 ### Empty state & file drop
 
 `.v-empty-state` — centered icon + one line of muted copy, used wherever a
@@ -653,6 +712,23 @@ A bar rather than a ring: it reads more precisely and survives a narrow column.
 The name avoids `.v-progress-bar`, which is the HTMX page loader. `.mh-macro-bar`
 is **not** this component — a composition summing to 100% is not progress
 towards anything, so it keeps its own segmented treatment.
+
+### 5.1b One decimal mark — `vitals.i18n.decimal()`
+
+`.` in English, `,` in Russian, and one function decides. This is not a
+preference: an `<input type="number">` is painted by the browser in the *user's*
+locale, so on a Russian phone Chrome writes the value `86.1` into the field as
+"86,1" and no attribute on the element changes that. On `/weight` the same
+weight therefore read "86,1" in the field and "86.1" in the table under it.
+Only the readouts can move, so they follow the platform.
+
+Three code paths used to print a number to this dashboard, each rounding it its
+own way — the `format_number` Jinja filter, `today_service._num`/`_signed`, and
+a bare f-string in `nav_status_service`. All three call `decimal()` now. When
+you add a fourth, call it too; `tests/test_design_language.py` pins the outputs.
+
+Out of scope on purpose: chat nudges, chart annotations and anything the model
+writes. Those are prose, not readouts.
 
 ### 5.2 Upload-first ingestion
 
@@ -761,8 +837,14 @@ phone rules don't already give, and costs the desktop layout.
   white or `--fg`.
 - **`prefers-reduced-motion: reduce`** is honored globally; don't ship an
   animation that bypasses standard `transition`/`animation` timing to dodge it.
-- **Touch targets ≥44px** on every interactive element below 640/768px
-  (buttons, segmented control, pills, icon buttons, inputs).
+- **Touch targets ≥44px** on every interactive element below 768px. What a
+  control is *drawn* as is not what a thumb has to *hit*: a rubric chip was 33px,
+  a stepper key 34, a date arrow 28, a `summary` triangle 17 and a checkbox 13.
+  Give the element `min-height: 2.75rem` (and `min-width` where it is square)
+  rather than scaling up its glyph.
+- **Nothing is set below 11px.** `--text-eyebrow` (11px) is the floor and is for
+  uppercase micro-labels only — bottom-bar captions, key-figure captions, rail
+  group headings. Everything else starts at `--text-micro` (12px).
 - **`touch-action: manipulation`** on tap targets (`.v-btn`, `.v-btn-ghost`,
   `.v-icon-btn`, `.v-pill`, `.v-seg-btn`, `.v-bnav-link`) — they are single-purpose
   controls, not double-tap-to-zoom candidates, and saying so up front removes the
@@ -799,3 +881,16 @@ phone rules don't already give, and costs the desktop layout.
   [Section 4](#4-components) first — most needs (a status dot, a filter pill, a
   neutral tag) already have a class; a near-duplicate with a different name is
   a bug waiting to cause visual drift.
+- **The inventories are closed sets, and a test says so.**
+  `tests/test_design_language.py` reads both stylesheets and fails if a rule
+  writes its own font size, corner radius, border colour or icon size, or if a
+  fourth breakpoint appears. When one of them fails, the fix is to name the
+  value you meant — not to widen the test. Adding a step to the ladder is a
+  deliberate act: it means every screen now has one more size to be inconsistent
+  with.
+- **One meaning, one shape.** Amber and a capsule mean "this is where you are"
+  (`.mh-tab`). A filter narrows what is on the page and is therefore a
+  rectangle with a neutral raised state (`.v-pill`). A segmented control
+  (`.v-seg`) switches state *inside* a page and never links between routes —
+  route sub-tabs are `.mh-tabs.mh-subtabs`, the same chips as the section row
+  above them, one step quieter, and only the section row pins itself.

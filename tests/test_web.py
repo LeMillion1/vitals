@@ -325,7 +325,7 @@ async def test_glp1_dashboard_renders(auth_client):
     assert "История инъекций" in response.text
     assert "Фазы дозировки" in response.text
     assert "showForm" in response.text
-    assert "Внести инфо" in response.text
+    assert "Новая запись" in response.text
 
 
 async def test_glp1_log_injection(auth_client, db_session):
@@ -810,14 +810,9 @@ async def test_garmin_activities_list_renders(auth_client, db_session):
 async def test_garmin_tabs_mark_the_right_tab_active(auth_client):
     """The overview/sleep/activities sub-tab bar renders on all three top-level
     Garmin routes with exactly the current one marked is-active."""
-    r = await auth_client.get("/garmin", headers={"Accept": "text/html"})
-    assert 'href="/garmin" class="v-seg-btn is-active"' in r.text
-
-    r = await auth_client.get("/garmin/sleep", headers={"Accept": "text/html"})
-    assert 'href="/garmin/sleep" class="v-seg-btn is-active"' in r.text
-
-    r = await auth_client.get("/garmin/activities", headers={"Accept": "text/html"})
-    assert 'href="/garmin/activities" class="v-seg-btn is-active"' in r.text
+    for route in ("/garmin", "/garmin/sleep", "/garmin/activities"):
+        r = await auth_client.get(route, headers={"Accept": "text/html"})
+        assert f'href="{route}" class="mh-tab is-active"' in r.text
 
 
 async def test_garmin_sync_not_configured_redirects(auth_client):

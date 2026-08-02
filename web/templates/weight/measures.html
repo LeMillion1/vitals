@@ -199,10 +199,10 @@
                         </div>
                         <span style="color: var(--fg-2)">{{ n.reason }}</span>
                         {% if n.direction == 'up' %}
-                        <span style="color: var(--good); font-size: var(--text-micro)"
+                        <span style="color: var(--muted); font-size: var(--text-micro)"
                             title="{{ t('weight.noise_direction_up') }}">{{ t('weight.noise_up_label') }}</span>
                         {% elif n.direction == 'down' %}
-                        <span style="color: var(--bad); font-size: var(--text-micro)"
+                        <span style="color: var(--muted); font-size: var(--text-micro)"
                             title="{{ t('weight.noise_direction_down') }}">{{ t('weight.noise_down_label') }}</span>
                         {% endif %}
                     </li>
@@ -215,7 +215,7 @@
             <!-- Photos (Gallery) -->
             <div class="v-card p-6 space-y-3">
                 {{ card_header(t("weight.gallery_title")) }}
-                <div class="flex gap-2 overflow-x-auto pb-1 max-h-40">
+                <div class="v-ribbon flex gap-2 overflow-x-auto pb-1 max-h-40">
                     {% for p in photos %}
                     <div class="flex-none w-20 text-center space-y-1">
                         <div class="w-20 h-20 v-card-inset overflow-hidden cursor-pointer"

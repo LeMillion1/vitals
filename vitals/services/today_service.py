@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
 from vitals.enums import DigestKind, Domain, Severity
-from vitals.i18n import t
+from vitals.i18n import decimal, t
 from vitals.utils.timeutils import now_local, today_local
 
 # How far off his own mean a number has to sit before the baseline is worth
@@ -45,7 +45,7 @@ def _num(value: Any) -> str:
         value = float(value)
     except (TypeError, ValueError):
         return str(value)
-    return f"{round(value, 1):g}"
+    return decimal(f"{round(value, 1):g}")
 
 
 def _signed(value: Any) -> str:
@@ -54,7 +54,8 @@ def _signed(value: Any) -> str:
         value = round(float(value), 1)
     except (TypeError, ValueError):
         return str(value)
-    return f"+{value:g}" if value > 0 else f"{value:g}".replace("-", "−")
+    text = f"+{value:g}" if value > 0 else f"{value:g}".replace("-", "−")
+    return decimal(text)
 
 
 def _mean(rows: Sequence[Any], key: str) -> Optional[float]:

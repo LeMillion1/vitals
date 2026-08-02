@@ -7,7 +7,7 @@
    thin and consistent.
    ============================================================================ */
 
-/* Fonts (Inter/Outfit/Bricolage Grotesque) are self-hosted via fonts.css,
+/* Fonts (Inter + Bricolage Grotesque) are self-hosted via fonts.css,
    linked separately in base.html — see web/static/fonts.css (S2). */
 
 :root {
@@ -47,25 +47,38 @@
     --accent-soft: rgba(245, 166, 35, 0.13);
     --accent-line: rgba(245, 166, 35, 0.34);
 
+    /* Display face — one, not two. Outfit and Bricolage Grotesque were both
+       loaded and both used for headings, so a card title and the page title
+       above it came from different families. Neither ships Cyrillic, so
+       'Inter' has to follow immediately: Latin and digits render in Bricolage,
+       Russian falls to a font we actually ship. */
+    --display: 'Bricolage Grotesque', 'Inter', ui-sans-serif, system-ui, sans-serif;
+
     /* Semantic */
     --good: #6FC58E;
     --good-soft: rgba(111, 197, 142, 0.13);
+    --good-line: rgba(111, 197, 142, 0.3);
     --bad: #EE7A60;
     /* lightened from #E87056 — 4.27:1 on --surface failed AA, this reads 4.70:1
        (same move already made for --violet) */
     --bad-soft: rgba(238, 122, 96, 0.13);
+    --bad-line: rgba(238, 122, 96, 0.3);
     --bad-strong: #FF8469;
     /* critical / out-of-range emphasis */
     --warn: #F0B24A;
     --warn-soft: rgba(240, 178, 74, 0.13);
+    --warn-line: rgba(240, 178, 74, 0.3);
     --cool: #6FB6C9;
     /* day / info */
     --cool-soft: rgba(111, 182, 201, 0.13);
+    --cool-line: rgba(111, 182, 201, 0.3);
     --violet: #BCA4DC;
     /* evening / night — lightened from #B093D6 for AA text contrast (U2) */
     --violet-soft: rgba(176, 147, 214, 0.13);
+    --violet-line: rgba(188, 164, 220, 0.3);
 
     --radius: 14px;
+    --radius-xs: 8px;
     --radius-sm: 10px;
     --radius-lg: 20px;
     --radius-pill: 999px;
@@ -73,21 +86,32 @@
     --shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 12px 30px -16px rgba(0, 0, 0, .55);
     --shadow-lg: 0 24px 60px -22px rgba(0, 0, 0, .7);
 
-    /* Typography scale — six sizes, no others. */
-    --text-title: 26px;
-    /* page hero titles (H1) */
-    --text-metric: 28px;
-    /* big numbers in stat cards */
-    --text-heading: 18px;
-    /* section headings */
-    --text-card: 15px;
-    /* card titles */
-    --text-body: 14px;
-    /* table values, body text */
-    --text-label: 13px;
-    /* labels, column headers (muted) */
+    /* Typography — one ladder, ten steps, nothing between them.
+       Two scales used to run side by side (these and a --mh-text-* set in the
+       masthead) and twenty actual sizes came out of them once the em-relative
+       utilities were counted — 19.2px and 13.5px among them, chosen by nobody.
+       Every size in the app is one of these ten; the only literal left is the
+       16px iOS requires on a form control to not zoom the page on focus. */
+    --text-eyebrow: 11px;
+    /* uppercase micro-labels, bottom-bar captions — the smallest type we set */
     --text-micro: 12px;
     /* units, dates, secondary info (muted) */
+    --text-label: 13px;
+    /* labels, column headers (muted) */
+    --text-body: 14px;
+    /* table values, body copy, buttons */
+    --text-card: 15px;
+    /* card titles, section tabs */
+    --text-heading: 18px;
+    /* section headings, the phone's section bar */
+    --text-lead: 21px;
+    /* secondary key figures */
+    --text-title: 26px;
+    /* page H1 on a phone, big numbers in stat cards */
+    --text-display: 32px;
+    /* H1 + primary key figure on a tablet */
+    --text-hero: 36px;
+    /* H1 on the desktop shell */
 
     /* Spacing — 4px base grid */
     --space-1: 4px;
@@ -97,6 +121,11 @@
     --space-6: 24px;
     --space-8: 32px;
     --space-12: 48px;
+
+    /* Icons come in two sizes. Six were in use (15/16/17/20/22/24) with no rule
+       saying which belonged where. Inline beside a label, or standalone. */
+    --ico: 16px;
+    --ico-lg: 22px;
 }
 
 /* ── Base ──────────────────────────────────────────────────────────────── */
@@ -158,18 +187,11 @@ body {
 }
 
 /* ── Typography scale ─────────────────────────────────────────────────────
-   Six sizes, no others. Apply one of these classes instead of ad-hoc
+   Ten sizes, no others. Apply one of these classes instead of ad-hoc
    text-[...] utilities so every label, heading and value in the app resolves
-   to the same scale. */
-.v-text-metric {
-    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
-    font-size: var(--text-metric);
-    font-weight: 650;
-    line-height: 1.1;
-}
-
+   to the same ladder. */
 .v-text-title {
-    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: var(--display);
     font-size: var(--text-title);
     font-weight: 800;
     line-height: 1.15;
@@ -178,7 +200,7 @@ body {
 }
 
 .v-text-heading {
-    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: var(--display);
     font-size: var(--text-heading);
     font-weight: 700;
     line-height: 1.3;
@@ -195,7 +217,7 @@ h1.v-text-heading {
 }
 
 .v-text-card {
-    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: var(--display);
     font-size: var(--text-card);
     font-weight: 600;
     line-height: 1.4;
@@ -253,7 +275,7 @@ h1.v-text-heading {
 
 ::-webkit-scrollbar-thumb {
     background: var(--line-2);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     border: 1px solid transparent;
     background-clip: content-box;
 }
@@ -272,12 +294,6 @@ main {
 
 main::-webkit-scrollbar {
     display: none;
-}
-
-/* Date-picker / file indicators legible on dark */
-input[type="date"]::-webkit-calendar-picker-indicator,
-input[type="file"]::-webkit-file-upload-button {
-    filter: invert(0.85);
 }
 
 /* Date overlay — iOS renders date text centered via system component;
@@ -306,7 +322,7 @@ input[type="date"].v-input {
     display: none;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
     input[type="date"].v-date-native {
         color: transparent !important;
     }
@@ -323,11 +339,18 @@ input[type="date"].v-input {
 
 /* ── Safe-area envelope ───────────────────────────────────────────────── */
 /* Left/right insets stay on html for landscape notch.
-   Top inset is handled by .v-header so body height stays 100dvh exactly.
+   Top inset is handled by the shell's own top bar so body height stays
+   100dvh exactly.
    overflow:hidden + height:100% keep the document root itself non-scrollable —
    a prerequisite for the position:fixed app shell below to fully suppress the
    iOS "scroll the page to reveal a focused input" behaviour under the keyboard. */
 html {
+    /* The native controls are told the page is dark once, instead of each of
+       them being repainted by hand: the calendar glyph and the file button used
+       to be `filter: invert(0.85)`-ed, and a checkbox was left as a white square
+       the browser drew in its own blue — which is also why growing it to a 22px
+       tap target made it louder rather than better. */
+    color-scheme: dark;
     height: 100%;
     overflow: hidden;
     padding-left: env(safe-area-inset-left);
@@ -363,127 +386,18 @@ html {
     overscroll-behavior: none;
 }
 
-/* ── App shell ─────────────────────────────────────────────────────────── */
-.v-header {
-    background: rgba(28, 25, 32, 0.82);
-    backdrop-filter: saturate(140%) blur(12px);
-    -webkit-backdrop-filter: saturate(140%) blur(12px);
-    border-bottom: 1px solid var(--line);
-    /* Absorb the status-bar safe area so content never clips under the notch.
-       env() can resolve to 0 on the first standalone-PWA frame; max() falls back
-       to the JS-measured --sat cached by base.html's viewport-sync script. */
-    padding-top: max(env(safe-area-inset-top), var(--sat, 0px));
-    height: calc(4rem + max(env(safe-area-inset-top), var(--sat, 0px)));
-}
-
-.v-brand-dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 999px;
-    background: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-soft), 0 0 14px 1px rgba(245, 166, 35, .5);
-}
-
-.v-brand-icon {
-    width: 1.4rem;
-    height: 1.4rem;
-    color: var(--accent);
-    filter: drop-shadow(0 0 4px rgba(245, 166, 35, 0.4));
-    animation: pulse-glow 2.5s infinite ease-in-out;
-}
-
-@keyframes pulse-glow {
-
-    0%,
-    100% {
-        filter: drop-shadow(0 0 2px rgba(245, 166, 35, 0.3));
-        opacity: 0.85;
-    }
-
-    50% {
-        filter: drop-shadow(0 0 8px rgba(245, 166, 35, 0.7));
-        opacity: 1;
-    }
-}
-
-/* Brand handoff: Bricolage Grotesque ExtraBold, −2% tracking, solid --fg. No
-   gradient fill and no accent inside the word — the accent lives in the mark. */
+/* The classic top-bar frame — .v-header, .v-nav-link, .v-brand-dot,
+   .v-brand-icon and its pulse — is gone. No template has rendered it since the
+   masthead shell landed, and between them those rules carried six of this
+   file's stray font sizes. .v-wordmark survives: /login and /404 still set the
+   brand in it. */
 .v-wordmark {
-    font-family: 'Bricolage Grotesque', 'Outfit', 'Inter', ui-sans-serif, system-ui, sans-serif;
-    font-size: 1.75rem;
+    font-family: var(--display);
+    font-size: var(--text-display);
     font-weight: 800;
     letter-spacing: -0.02em;
     color: var(--fg);
 }
-
-.v-nav-link {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    padding: 0.4rem 0.75rem;
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: var(--muted);
-    border-radius: var(--radius-sm);
-    border: 1px solid transparent;
-    transition: color .15s ease, background-color .15s ease, border-color .15s ease;
-}
-
-.v-nav-link svg {
-    width: 0.95rem;
-    height: 0.95rem;
-    margin-right: 0.35rem;
-    color: var(--muted);
-    transition: color .15s ease, transform .2s ease;
-}
-
-.v-nav-link:hover {
-    color: var(--fg);
-    background: var(--surface-2);
-}
-
-.v-nav-link:hover svg {
-    color: var(--fg);
-    transform: translateY(-0.5px);
-}
-
-.v-nav-link.is-active {
-    color: var(--accent-2);
-    background: var(--accent-soft);
-    border-color: var(--accent-line);
-    box-shadow: 0 4px 12px -3px rgba(245, 166, 35, 0.15);
-}
-
-.v-nav-link.is-active svg {
-    color: var(--accent-2);
-}
-
-.v-nav-divider {
-    width: 1px;
-    height: 0.9rem;
-    background-color: var(--line);
-    margin: 0 0.4rem;
-    flex: none;
-}
-
-/* Desktop primary nav can outgrow the header once many optional modules are on.
-   Let it scroll horizontally inside its own space instead of pushing the brand
-   and the settings/logout controls off-screen (which forced a whole-page
-   horizontal scroll and put those controls out of reach). Scrollbar hidden —
-   the row still scrolls by wheel/trackpad/touch. */
-.v-nav-scroll {
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-}
-
-.v-nav-scroll::-webkit-scrollbar {
-    display: none;
-}
-
-/* The active nav tab is one of only two places amber appears at rest —
-   see .v-btn (primary CTA) for the other. Everything else in this file
-   uses neutral surfaces/borders so those two spots keep their signal. */
 
 /* ── Cards ─────────────────────────────────────────────────────────────── */
 .v-card {
@@ -510,6 +424,14 @@ html {
     border: 1px solid var(--line);
     border-radius: var(--radius);
     transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+
+/* A card nested in a card is raised, never sunk. .v-card-tile's own --bg-inset
+   is darker than the page behind the card, so a tile inside one read as a hole
+   punched through it instead of a thing sitting on it. A well (.v-card-inset —
+   a table body, an input) stays recessed: being sunk is what a well is for. */
+.v-card .v-card-tile {
+    background: var(--surface-2);
 }
 
 .v-card-tile:hover {
@@ -554,8 +476,8 @@ a.v-card:hover {
 }
 
 .v-metric-value {
-    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
-    font-size: var(--text-metric);
+    font-family: var(--display);
+    font-size: var(--text-title);
     font-weight: 600;
     line-height: 1.1;
     font-variant-numeric: tabular-nums;
@@ -564,9 +486,8 @@ a.v-card:hover {
 }
 
 .v-metric-value-text {
-    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
-    font-size: 1.375rem;
-    /* 22px */
+    font-family: var(--display);
+    font-size: var(--text-lead);
     font-weight: 600;
     line-height: 1.2;
     color: var(--fg);
@@ -610,7 +531,7 @@ a.v-card:hover {
     }
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 1200px) {
     .v-daystrip {
         grid-template-columns: repeat(5, minmax(0, 1fr));
     }
@@ -626,7 +547,7 @@ a.v-card:hover {
     background: var(--accent);
     color: var(--accent-ink);
     font-weight: 650;
-    font-size: .875rem;
+    font-size: var(--text-body);
     padding: .7rem 1.15rem;
     border-radius: var(--radius);
     border: 1px solid transparent;
@@ -653,7 +574,7 @@ a.v-card:hover {
     background: transparent;
     color: var(--fg-2);
     font-weight: 600;
-    font-size: .875rem;
+    font-size: var(--text-body);
     padding: .7rem 1.15rem;
     border-radius: var(--radius);
     border: 1px solid var(--line-2);
@@ -784,6 +705,20 @@ a.v-card:hover {
     color: var(--faint);
 }
 
+/* A plain checkbox drew a 13px box the browser painted in its own blue. One
+   rule instead of a `w-4 h-4 accent-[…]` triple repeated in six templates —
+   `.v-switch`'s hidden input out-specifies this, so the toggles are untouched. */
+input[type="checkbox"]:not([role="switch"]) {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+summary {
+    cursor: pointer;
+}
+
 .v-input:focus,
 .v-select:focus,
 .v-textarea:focus {
@@ -836,8 +771,8 @@ a.v-card:hover {
 
 .v-dropdown-trigger svg {
     flex: none;
-    width: 1rem;
-    height: 1rem;
+    width: var(--ico);
+    height: var(--ico);
     color: var(--muted);
     transition: transform .15s ease;
 }
@@ -1001,7 +936,7 @@ a.v-seg-btn {
     font-weight: 500;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 767px) {
 
     /* Four columns can't hold three Russian labels plus the phase bar, so the
        bar drops to a full-width second line and the header goes away with it —
@@ -1036,7 +971,7 @@ a.v-seg-btn {
 .v-phase-bar {
     display: flex;
     height: 6px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     overflow: hidden;
     background: var(--bg-inset);
 }
@@ -1085,7 +1020,7 @@ a.v-seg-btn {
 /* Compact size — status badges inline with a label (e.g. "key set"), where
    the default .v-chip padding/type reads too heavy. */
 .v-chip-sm {
-    font-size: 10px;
+    font-size: var(--text-eyebrow);
     padding: 2px 6px;
 }
 
@@ -1093,14 +1028,14 @@ a.v-seg-btn {
 .v-chip.good {
     background: var(--good-soft);
     color: var(--good);
-    border-color: rgba(111, 197, 142, .3);
+    border-color: var(--good-line);
 }
 
 .v-chip.bad {
     background: var(--bad-soft);
     /* --bad-strong, not --bad — plain --bad on --bad-soft is 3.58:1 (U1b) */
     color: var(--bad-strong);
-    border-color: rgba(232, 112, 86, .3);
+    border-color: var(--bad-line);
 }
 
 .v-tag {
@@ -1119,25 +1054,25 @@ a.v-seg-btn {
 .v-tag.cool {
     color: var(--cool);
     background: var(--cool-soft);
-    border-color: rgba(111, 182, 201, .3);
+    border-color: var(--cool-line);
 }
 
 .v-tag.violet {
     color: var(--violet);
     background: var(--violet-soft);
-    border-color: rgba(176, 147, 214, .3);
+    border-color: var(--violet-line);
 }
 
 .v-tag.good {
     color: var(--good);
     background: var(--good-soft);
-    border-color: rgba(111, 197, 142, .3);
+    border-color: var(--good-line);
 }
 
 .v-tag.bad {
     color: var(--bad);
     background: var(--bad-soft);
-    border-color: rgba(232, 112, 86, .3);
+    border-color: var(--bad-line);
 }
 
 .v-tag.muted {
@@ -1220,7 +1155,7 @@ a.v-seg-btn {
 .v-dot {
     width: 7px;
     height: 7px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     display: inline-block;
     flex-shrink: 0;
     background: var(--muted);
@@ -1318,10 +1253,14 @@ a.v-seg-btn {
     gap: var(--space-1);
 }
 
-/* Filter pills (genetics) */
+/* Filter pills (genetics). Never a capsule, never amber when on: a capsule with
+   an amber fill is what `.mh-tab` means — "this is the page you are on" — and
+   /genetics stacked a row of filters directly under a row of section chips
+   wearing exactly that shape. A filter narrows what is on the page; it is not a
+   place you went, so it is a rectangle with a neutral raised state. */
 .v-pill {
     padding: .5rem .9rem;
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     cursor: pointer;
     font-size: var(--text-label);
     font-weight: 500;
@@ -1508,7 +1447,7 @@ a.v-seg-btn {
     margin-bottom: auto;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 767px) {
     .v-backdrop {
         padding: 1rem 0.5rem;
     }
@@ -1534,7 +1473,6 @@ a.v-seg-btn {
     height: 10px;
     border-radius: var(--radius-pill);
     background: var(--bg-inset);
-    border: 1px solid rgba(255, 255, 255, 0.02);
     overflow: hidden;
 }
 
@@ -1584,13 +1522,13 @@ a.v-seg-btn {
 
 .v-alert.warn {
     background: var(--warn-soft);
-    border-color: rgba(240, 178, 74, .35);
+    border-color: var(--warn-line);
     color: var(--warn);
 }
 
 .v-alert.block {
     background: var(--bad-soft);
-    border-color: rgba(232, 112, 86, .4);
+    border-color: var(--bad-line);
     color: var(--bad);
 }
 
@@ -1601,7 +1539,7 @@ a.v-seg-btn {
 /* ── Mobile & Responsive ──────────────────────────────────────────────── */
 
 /* Prevent iOS zoom on input focus — inputs must be >= 16px */
-@media (max-width: 768px) {
+@media (max-width: 767px) {
 
     .v-input,
     .v-select,
@@ -1610,15 +1548,16 @@ a.v-seg-btn {
     }
 }
 
-@media (max-width: 640px) {
+/* ── The phone ────────────────────────────────────────────────────────────
+   One block, one breakpoint. There used to be four — 768, 640, 560 and 480 —
+   and which of them won a property was a matter of which had been written last,
+   so a card ended up with 18px of padding nobody chose and a key figure was set
+   larger than the title above it. The type steps are named on the ladder here
+   instead of re-declaring the tokens under this width: a token that means 18px
+   on a desktop and 16px on a phone is two scales again.
 
-    /* ── Typography scale — tighter on mobile ── */
-    :root {
-        --text-title: 22px;
-        --text-metric: 24px;
-        --text-heading: 16px;
-        --text-card: 14px;
-    }
+   Type in this block only ever goes DOWN the ladder, never to a new number. */
+@media (max-width: 767px) {
 
     /* ── Page content padding — narrower gutters ── */
     .px-6 {
@@ -1631,21 +1570,8 @@ a.v-seg-btn {
         padding-bottom: 1.25rem !important;
     }
 
-    /* ── Header — compact on mobile ── */
-    .v-header {
-        height: calc(3.25rem + max(env(safe-area-inset-top), var(--sat, 0px)));
-        padding-top: max(env(safe-area-inset-top), var(--sat, 0px));
-        padding-left: 0.875rem;
-        padding-right: 0.875rem;
-    }
-
     .v-wordmark {
-        font-size: 1.5rem;
-    }
-
-    .v-brand-icon {
-        width: 1.15rem;
-        height: 1.15rem;
+        font-size: var(--text-title);
     }
 
     /* ── Metrics — compact grid ── */
@@ -1657,11 +1583,11 @@ a.v-seg-btn {
     }
 
     .v-metric-value {
-        font-size: 1.25rem;
+        font-size: var(--text-heading);
     }
 
     .v-metric-value-text {
-        font-size: 1rem;
+        font-size: var(--text-card);
     }
 
     .v-metric-label {
@@ -1680,7 +1606,7 @@ a.v-seg-btn {
 
     .v-table tbody td {
         padding: var(--space-1) var(--space-2);
-        font-size: 13px;
+        font-size: var(--text-label);
     }
 
     /* ── Buttons — minimum 44px touch targets ── */
@@ -1699,11 +1625,13 @@ a.v-seg-btn {
         height: 2.75rem;
     }
 
-    /* ── Segmented control — bigger taps ── */
+    /* ── Segmented control — bigger taps ──
+       Track padding/gap stay at the 6px declared once above: squashing them
+       here is what put the pill's arc against the track's own. */
     .v-seg-btn {
-        padding: 0.6rem 0.25rem;
-        font-size: 12px;
-        min-height: 2.5rem;
+        padding: 0.5rem 0.75rem;
+        font-size: var(--text-micro);
+        min-height: 2.75rem;
     }
 
     /* ── Form controls — comfortable touch ── */
@@ -1755,7 +1683,7 @@ a.v-seg-btn {
     /* ── Alerts — compact ── */
     .v-alert {
         padding: 0.6rem 0.75rem;
-        font-size: 13px;
+        font-size: var(--text-label);
     }
 
     /* ── File drop zone — compact ── */
@@ -1766,7 +1694,7 @@ a.v-seg-btn {
     /* ── Filter pills — touch friendly ── */
     .v-pill {
         padding: 0.55rem 0.85rem;
-        min-height: 2.5rem;
+        min-height: 2.75rem;
     }
 
     .v-site-btn {
@@ -1774,9 +1702,35 @@ a.v-seg-btn {
         padding: 0.6rem 0.75rem;
     }
 
-    /* ── Mobile drawer grid — bigger targets ── */
-    .v-mobile-drawer-item {
-        min-height: 4.5rem;
+    /* ── Type: one step down the same ladder ── */
+    .v-text-title,
+    h1.v-text-heading {
+        font-size: var(--text-lead);
+    }
+
+    .v-text-heading {
+        font-size: var(--text-card);
+    }
+
+    .v-text-card {
+        font-size: var(--text-label);
+    }
+
+    .v-table .hide-xs {
+        display: none;
+    }
+
+    /* ── Tap targets the audit found under 44px ──
+       A disclosure triangle and a checkbox are one-purpose controls a thumb has
+       to hit, and what they are drawn as is not what they are hit as. */
+    summary {
+        min-height: 2.75rem;
+        padding-block: 0.75rem;
+    }
+
+    input[type="checkbox"]:not([role="switch"]) {
+        width: 22px;
+        height: 22px;
     }
 }
 
@@ -1962,13 +1916,23 @@ a.v-seg-btn {
 
 .v-file-drop svg {
     color: var(--muted);
-    width: 1.5rem;
-    height: 1.5rem;
+    width: var(--ico-lg);
+    height: var(--ico-lg);
     transition: color 0.15s ease;
 }
 
 .v-file-drop:hover svg {
     color: var(--accent-2);
+}
+
+/* A ribbon that scrolls sideways says so. The chip rows get away without this
+   because a chip clipped by the screen edge is itself the signal; a strip of
+   square thumbnails ends flush and reads as "that is all of them". Masked, not
+   overlaid: an overlay would need the container's background, and this one sits
+   on two different surfaces. */
+.v-ribbon {
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
 }
 
 /* ── Empty State Component ── */
@@ -1992,8 +1956,8 @@ a.v-seg-btn {
     opacity: 0.65;
     stroke-width: 1.8;
     color: var(--muted);
-    width: 2rem;
-    height: 2rem;
+    width: var(--ico-lg);
+    height: var(--ico-lg);
 }
 
 .v-empty-state p {
@@ -2018,8 +1982,8 @@ sup {
 
 /* Markdown parsing typography inside text bodies */
 .v-text-body h2 {
-    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
-    font-size: 1.2rem;
+    font-family: var(--display);
+    font-size: var(--text-lead);
     font-weight: 700;
     color: var(--fg);
     margin-top: 2rem;
@@ -2035,8 +1999,8 @@ sup {
 }
 
 .v-text-body h3 {
-    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
-    font-size: 1.05rem;
+    font-family: var(--display);
+    font-size: var(--text-heading);
     font-weight: 650;
     color: var(--fg);
     margin-top: 1.5rem;
@@ -2044,8 +2008,8 @@ sup {
 }
 
 .v-text-body h4 {
-    font-family: 'Outfit', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
-    font-size: 0.95rem;
+    font-family: var(--display);
+    font-size: var(--text-card);
     font-weight: 600;
     color: var(--fg);
     margin-top: 1.25rem;
@@ -2091,7 +2055,7 @@ sup {
     margin: 0.85rem 0;
     border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
     color: var(--fg-2);
-    font-size: 0.92em;
+    font-size: var(--text-body);
 }
 
 .v-text-body blockquote p {
@@ -2126,10 +2090,10 @@ sup {
     font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum" 1;
-    font-size: 0.85em;
+    font-size: var(--text-label);
     background: var(--surface-2);
     padding: 0.15em 0.4em;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     color: var(--accent-2);
 }
 
@@ -2138,7 +2102,7 @@ sup {
     width: 100%;
     border-collapse: collapse;
     margin: 1rem 0;
-    font-size: 0.9em;
+    font-size: var(--text-label);
 }
 
 .v-text-body thead th {
@@ -2217,7 +2181,7 @@ sup {
     pointer-events: none;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
     .v-toast-container {
         right: 0.5rem;
         left: 0.5rem;
@@ -2256,48 +2220,9 @@ sup {
 }
 
 .v-nav-ico svg {
-    width: 1.5rem;
-    height: 1.5rem;
+    width: var(--ico-lg);
+    height: var(--ico-lg);
     stroke-width: 1.5;
-}
-
-/* ── Mobile table card headers — hide low-priority columns ── */
-@media (max-width: 480px) {
-    .v-table .hide-xs {
-        display: none;
-    }
-
-    .v-metric-value {
-        font-size: 1.125rem;
-    }
-
-    .v-metric-label {
-        font-size: var(--text-micro);
-    }
-
-    /* Track padding/gap stay at the 6px declared once above: squashing them to
-       3.2px here is what put the pill's arc against the track's own. Only the
-       label shrinks. */
-    .v-seg-btn {
-        padding: 0.5rem 0.5rem;
-        font-size: var(--text-micro);
-    }
-
-    .v-text-heading {
-        font-size: 15px;
-    }
-
-    .v-text-card {
-        font-size: 13px;
-    }
-
-    .v-text-title {
-        font-size: 20px;
-    }
-
-    h1.v-text-heading {
-        font-size: 20px;
-    }
 }
 
 /* ── Reduced motion ── */
@@ -2310,10 +2235,6 @@ sup {
         animation-iteration-count: 1 !important;
         transition-duration: .001ms !important;
         scroll-behavior: auto !important;
-    }
-
-    .v-brand-icon {
-        animation: none !important;
     }
 }
 /* Design handoff: dense data tables and weight entry.
@@ -2337,7 +2258,7 @@ sup {
     background: var(--bg-inset);
     border-bottom-color: var(--line-2);
     color: var(--faint);
-    font-size: 11px;
+    font-size: var(--text-eyebrow);
     font-weight: 600;
     letter-spacing: .08em;
     text-transform: uppercase;
@@ -2553,7 +2474,7 @@ sup {
 }
 .v-weight-stepper {
     display: grid;
-    grid-template-columns: 34px minmax(0, 1fr) 34px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
     gap: 8px;
     align-items: stretch;
     padding: 6px;
@@ -2567,7 +2488,7 @@ sup {
     border: 0;
     background: transparent;
     text-align: center;
-    font: 700 38px/1 var(--mh-display, 'Bricolage Grotesque', 'Inter', sans-serif);
+    font: 700 var(--text-hero)/1 var(--display);
     font-variant-numeric: tabular-nums;
     box-shadow: none;
     -moz-appearance: textfield;
@@ -2579,11 +2500,12 @@ sup {
 }
 .v-weight-step {
     border: 1px solid var(--line);
-    /* 6px inside a --radius stepper — outer minus padding, not a third value */
-    border-radius: 8px;
+    /* --radius minus the track's 6px padding: the nesting rule taken to its
+       smallest declared step instead of to a number invented here */
+    border-radius: var(--radius-xs);
     background: var(--surface-3);
     color: var(--fg-2);
-    font: 500 22px/1 'Inter', sans-serif;
+    font: 500 var(--text-lead)/1 'Inter', sans-serif;
     cursor: pointer;
     transition: color .15s ease, border-color .15s ease, filter .15s ease;
 }
@@ -2592,7 +2514,7 @@ sup {
     border-color: var(--accent-line);
     filter: brightness(1.06);
 }
-@media (min-width: 1024px) {
+@media (min-width: 1200px) {
     .weight-main { order: 1; }
     .weight-sidebar {
         order: 2;
@@ -2650,7 +2572,7 @@ sup {
 /* Garmin — daily readout, recovery and history. */
 .v-garmin-summary {
     overflow: hidden;
-    border-color: rgba(111, 182, 201, .24);
+    border-color: var(--cool-line);
     background:
         radial-gradient(circle at 92% 0, rgba(111, 182, 201, .12), transparent 32%),
         var(--surface);
@@ -2691,7 +2613,7 @@ sup {
 /* Nutrition — a visual daily scorecard followed by the meal ledger. */
 .v-nutrition-intake {
     overflow: hidden;
-    border-color: rgba(245, 166, 35, .26);
+    border-color: var(--accent-line);
     background:
         radial-gradient(circle at 12% 15%, rgba(245, 166, 35, .10), transparent 34%),
         var(--surface);
@@ -2754,11 +2676,11 @@ sup {
    inside it (.v-digest), so the digest doesn't sit 100px shy of the goal cards
    directly above it. */
 .v-report-narrative {
-    border-color: rgba(111, 197, 142, .22);
+    border-color: var(--good-line);
 }
 .v-report-narrative .v-digest {
     max-width: 78ch;
-    font-size: 15px;
+    font-size: var(--text-card);
     line-height: 1.75;
 }
 
@@ -2774,7 +2696,7 @@ sup {
     overflow: hidden;
 }
 .v-chart-card .h-\[280px\] { min-height: 260px; }
-.v-page-charts > [x-data^="chartBuilder"] { border-color: rgba(111, 182, 201, .22); }
+.v-page-charts > [x-data^="chartBuilder"] { border-color: var(--cool-line); }
 
 /* GLP-1 — current protocol, injection history and supporting context. */
 /* Explicitly start-aligned, never stretched: the sidebar column holds two
@@ -2783,7 +2705,7 @@ sup {
    of empty card under three lines of text. Each card is worth its own content. */
 .v-glp1-current { align-items: start; }
 .v-glp1-history .v-card {
-    border-color: rgba(176, 147, 214, .22);
+    border-color: var(--violet-line);
     background:
         linear-gradient(180deg, rgba(176, 147, 214, .06), transparent 38%),
         var(--surface);
@@ -2798,7 +2720,7 @@ sup {
 }
 .v-lab-chart {
     overflow: hidden;
-    border-color: rgba(111, 182, 201, .24);
+    border-color: var(--cool-line);
 }
 .v-lab-chart canvas { min-height: 250px; }
 
@@ -2819,7 +2741,7 @@ sup {
 .v-routine-warning {
     position: sticky;
     top: 32px;
-    border-color: rgba(232, 112, 86, .26);
+    border-color: var(--bad-line);
 }
 
 /* Interactions — compact pair matrix with an always-visible summary strip. */
@@ -2851,7 +2773,7 @@ sup {
 /* HRT — active cycle as the hero surface, logs as dense evidence. */
 .v-hrt-overview {
     overflow: hidden;
-    border-color: rgba(176, 147, 214, .25);
+    border-color: var(--violet-line);
     background:
         radial-gradient(circle at 92% 4%, rgba(176, 147, 214, .12), transparent 34%),
         var(--surface);
@@ -2859,7 +2781,7 @@ sup {
 .v-hrt-overview svg polyline { filter: drop-shadow(0 5px 8px rgba(245, 166, 35, .2)); }
 .v-hrt-log .v-table-wrap { max-height: 32rem; }
 
-@media (max-width: 900px) {
+@media (max-width: 1199px) {
     .v-garmin-summary .v-daystrip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .v-hevy-workspace > .v-card:last-child,
     .v-routine-warning,
@@ -2877,7 +2799,7 @@ sup {
     .v-card.p-6 { padding: var(--space-4); }
 }
 
-@media (max-width: 560px) {
+@media (max-width: 767px) {
     .v-page { gap: var(--space-6); }
     /* The card used to drop to --radius here while everything nested in it kept
        --radius too — outer and inner corner on the same arc, which is what made
@@ -2905,7 +2827,7 @@ sup {
 .v-nutrition-intake .mh-macro-card-label-wrap {
     min-width: 0;
 }
-@media (max-width: 560px) {
+@media (max-width: 767px) {
     .v-nutrition-intake .mh-macro-card { padding: 9px; }
     .v-nutrition-intake .mh-macro-card-top { align-items: flex-start; }
 }
@@ -2939,7 +2861,7 @@ sup {
 }
 
 .v-today-title {
-    font: 800 38px/1.15 var(--mh-display, 'Bricolage Grotesque', 'Inter', sans-serif);
+    font: 800 var(--text-hero)/1.15 var(--display);
     letter-spacing: -.02em;
     color: var(--fg);
     max-width: 900px;
@@ -2949,7 +2871,7 @@ sup {
 /* A long morning: the model wrote two sentences instead of one. One step down the
    scale rather than a clamp — nothing the owner is meant to read gets hidden. */
 .v-today-title.is-long {
-    font-size: 30px;
+    font-size: var(--text-title);
     line-height: 1.2;
 }
 
@@ -2966,7 +2888,7 @@ sup {
 }
 
 .v-today-figure-value {
-    font: 700 30px/1 var(--mh-display, 'Bricolage Grotesque', 'Inter', sans-serif);
+    font: 700 var(--text-title)/1 var(--display);
     font-variant-numeric: tabular-nums;
     color: var(--fg);
 }
@@ -2976,13 +2898,13 @@ sup {
 .v-today-figure-value.warn { color: var(--warn); }
 
 .v-today-figure-unit {
-    font: 500 12px/1 'Inter', sans-serif;
+    font: 500 var(--text-micro)/1 'Inter', sans-serif;
     color: var(--muted);
     margin-left: 4px;
 }
 
 .v-today-figure-label {
-    font: 600 11px/1.4 'Inter', sans-serif;
+    font: 600 var(--text-eyebrow)/1.4 'Inter', sans-serif;
     letter-spacing: .1em;
     text-transform: uppercase;
     color: var(--faint);
@@ -2990,7 +2912,7 @@ sup {
 }
 
 .v-today-figure-sub {
-    font-size: 12px;
+    font-size: var(--text-micro);
     color: var(--line-2);
     margin-top: 3px;
 }
@@ -3020,18 +2942,18 @@ sup {
 }
 
 .v-today-change-name {
-    font: 600 14px/1.3 'Inter', sans-serif;
+    font: 600 var(--text-body)/1.3 'Inter', sans-serif;
     color: var(--fg);
 }
 
 .v-today-change-domain {
-    font-size: 12px;
+    font-size: var(--text-micro);
     color: var(--faint);
     margin-top: 2px;
 }
 
 .v-today-change-text {
-    font-size: 13px;
+    font-size: var(--text-label);
     line-height: 1.5;
     color: var(--fg-2);
     text-wrap: pretty;
@@ -3039,7 +2961,7 @@ sup {
 
 .v-today-change-delta {
     text-align: right;
-    font: 700 16px/1 'Inter', sans-serif;
+    font: 700 var(--text-card)/1 'Inter', sans-serif;
     font-variant-numeric: tabular-nums;
     color: var(--fg-2);
 }
@@ -3065,18 +2987,18 @@ sup {
 }
 
 .v-today-feed-time {
-    font-size: 13px;
+    font-size: var(--text-label);
     color: var(--faint);
     font-variant-numeric: tabular-nums;
 }
 
 .v-today-feed-text {
-    font-size: 14px;
+    font-size: var(--text-body);
     color: var(--fg-2);
 }
 
 .v-today-feed-detail {
-    font-size: 12px;
+    font-size: var(--text-micro);
     color: var(--line-2);
     margin-top: 2px;
 }
@@ -3131,19 +3053,19 @@ sup {
     filter: brightness(1.08);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1199px) {
     .v-today-body { grid-template-columns: minmax(0, 1fr); }
-    .v-today-title { font-size: 30px; }
+    .v-today-title { font-size: var(--text-display); }
     .v-today-figures { gap: 20px; }
     .v-today-figure { min-width: 120px; }
 }
 
-@media (max-width: 560px) {
-    .v-today-title { font-size: 26px; }
+@media (max-width: 767px) {
+    .v-today-title { font-size: var(--text-title); }
     /* The desktop step-down is one step; on a 402px column a long morning at
        26px is still the whole first screen and nothing else. Two steps here —
        the point is that it gets read, not that it is set large. */
-    .v-today-title.is-long { font-size: 20px; line-height: 1.35; }
+    .v-today-title.is-long { font-size: var(--text-lead); line-height: 1.35; }
     .v-today-hero { gap: 16px; }
     /* The hero already says it in words. The strip is there to be glanced at,
        not to repeat the sentence above it in 30px figures: three across, no
@@ -3155,7 +3077,7 @@ sup {
         padding-top: 14px;
     }
     .v-today-figure { min-width: 0; }
-    .v-today-figure-value { font-size: 20px; }
+    .v-today-figure-value { font-size: var(--text-lead); }
     .v-today-figure-sub { display: none; }
     /* One line per change: what moved, by how much, in one reading. The domain
        line is dropped (the row links there anyway) and the delta sits against
@@ -3167,5 +3089,5 @@ sup {
         padding: 10px 12px;
     }
     .v-today-change-domain { display: none; }
-    .v-today-change-delta { font-size: 14px; }
+    .v-today-change-delta { font-size: var(--text-body); }
 }

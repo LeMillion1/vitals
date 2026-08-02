@@ -31,7 +31,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
 
-    <!-- Self-hosted fonts: Inter, Outfit & Bricolage Grotesque (masthead titles) -->
+    <!-- Self-hosted fonts: Inter (everything) + Bricolage Grotesque (display) -->
     <link rel="stylesheet" href="{{ static_version('/static/fonts.css') }}">
 
     <!-- Tailwind CSS (compiled CLI bundle) + Vitals design system -->
@@ -439,16 +439,14 @@
          No controls on it any more (nav handoff, July): the phone used to carry
          three navigation surfaces at once — this bar's "Menu" button, the bottom
          bar's own "More" button, and the one drawer both of them opened. The
-         bottom bar owns phone navigation now and /more is a real page, so this
-         bar is just the wordmark. -->
+         bottom bar owns phone navigation now and /more is a real page, and the
+         wordmark that was left went with the mobile shell pass. -->
     {% if username %}
-    <header class="mh-topbar">
-        <!-- Wordmark only, no logo glyph: the handoff puts the "A" mark on the
-             app icon/favicon and keeps the interface itself text-only. -->
-        <a href="/" class="mh-topbar-brand">
-            <span>Vitals</span>
-        </a>
-    </header>
+    <!-- Empty on purpose: below 768px this is the safe-area spacer that keeps
+         <main> clear of the status bar, and above it the element is hidden.
+         The wordmark it used to carry was 52px spent telling someone already
+         inside the app which app they were in. -->
+    <header class="mh-topbar"></header>
     {% endif %}
     <div class="mh-shell">
         {% if username %}
@@ -802,26 +800,32 @@
         })();
     </script>
 
-    <!-- Bring the active rubric chip into view on a phone. The chip row scrolls
-         sideways and the active section is often past the fold, so without this
-         the row looks like it starts at the first chip every time. scrollLeft on
-         the row itself, never scrollIntoView: the latter also scrolls every
-         ancestor, which on iOS drags <main> (the app's only scroll container)
-         and the fixed shell with it. -->
+    <!-- Bring the active chip into view on a phone. The chip rows scroll sideways
+         and the active one is often past the fold, so without this the row looks
+         like it starts at the first chip every time. scrollLeft on the row
+         itself, never scrollIntoView: the latter also scrolls every ancestor,
+         which on iOS drags <main> (the app's only scroll container) and the
+         fixed shell with it.
+
+         Aligned to the row's leading edge, not centred. Centring left the
+         PREVIOUS chip half off-screen, and a word cut in half at the left edge
+         reads as a rendering fault rather than as "there is more this way".
+         When the active chip is near the end the browser clamps the scroll and
+         it simply ends up fully visible. -->
     <script>
         (function () {
-            function centerChip() {
-                var row = document.querySelector('.mh-tabs');
-                if (!row || row.scrollWidth <= row.clientWidth) return;
-                var active = row.querySelector('.mh-tab.is-active');
-                if (!active) return;
-                row.scrollLeft = Math.max(
-                    0, active.offsetLeft - (row.clientWidth - active.offsetWidth) / 2
-                );
+            function leadChip() {
+                document.querySelectorAll('.mh-tabs').forEach(function (row) {
+                    if (row.scrollWidth <= row.clientWidth) return;
+                    var first = row.querySelector('.mh-tab');
+                    var active = row.querySelector('.mh-tab.is-active');
+                    if (!first || !active) return;
+                    row.scrollLeft = Math.max(0, active.offsetLeft - first.offsetLeft);
+                });
             }
-            document.addEventListener('DOMContentLoaded', centerChip);
-            document.addEventListener('htmx:load', centerChip);
-            centerChip();
+            document.addEventListener('DOMContentLoaded', leadChip);
+            document.addEventListener('htmx:load', leadChip);
+            leadChip();
         })();
     </script>
 

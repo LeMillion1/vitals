@@ -66,7 +66,7 @@
                 <template x-for="(row, index) in series" :key="index">
                     <div class="border border-[var(--line)] rounded-lg p-3 space-y-3">
                         <div class="flex items-center justify-between">
-                            <span class="v-text-label font-semibold" x-text="'{{ t("charts.select_metric") }} #' + (index + 1)"></span>
+                            <span class="v-text-label font-semibold" x-text="'{{ t("charts.series_n") }}'.replace('{n}', index + 1)"></span>
                             <button type="button" class="v-btn-ghost text-xs" @click="removeSeries(index)" x-show="series.length > 1">
                                 {{ t("charts.remove_series") }}
                             </button>

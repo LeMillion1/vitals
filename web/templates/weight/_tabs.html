@@ -3,8 +3,8 @@
    client-side view swap. The masthead key figures above them are identical on
    both pages, so the split reads as two views of one section. #}
 {% macro weight_tabs(active) %}
-<nav class="v-seg">
-    <a href="/weight" class="v-seg-btn{{ ' is-active' if active == 'trend' }}">{{ t("weight.tab_trend") }}</a>
-    <a href="/weight/measures" class="v-seg-btn{{ ' is-active' if active == 'measures' }}">{{ t("weight.tab_measures_page") }}</a>
+<nav class="mh-tabs mh-subtabs">
+    <a href="/weight" class="mh-tab{{ ' is-active' if active == 'trend' }}">{{ t("weight.tab_trend") }}</a>
+    <a href="/weight/measures" class="mh-tab{{ ' is-active' if active == 'measures' }}">{{ t("weight.tab_measures_page") }}</a>
 </nav>
 {% endmacro %}
