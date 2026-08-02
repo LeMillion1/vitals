@@ -192,12 +192,20 @@ async def upsert_body_measurement(
     hips_cm: Optional[float] = None,
     note: Optional[str] = None,
     override: bool = False,
+    partial: bool = True,
 ) -> BodyMeasurement:
     """Create/update the day's measurement and (re)derive body-fat % + LBM.
 
-    Partial merge: a field left ``None`` keeps whatever's already on file for
-    the date instead of being blanked (e.g. MCP ``log_measurement`` is often
-    called with just one of the three circumferences)."""
+    Partial merge (``partial=True``, the default): a field left ``None`` keeps
+    whatever's already on file for the date instead of being blanked (e.g. MCP
+    ``log_measurement`` is often called with just one of the three
+    circumferences).
+
+    ``partial=False`` means the caller is handing over the row's whole truth and
+    ``None`` blanks the field. That is the HTML edit form: it always submits
+    every field it renders, and FastAPI turns an emptied input into ``None`` —
+    so under the merge the owner could never delete a value he had entered by
+    mistake, it would silently come back."""
     _check_range("neck_cm", neck_cm, _CIRCUMFERENCE_CM_RANGE)
     _check_range("waist_cm", waist_cm, _CIRCUMFERENCE_CM_RANGE)
     _check_range("hips_cm", hips_cm, _CIRCUMFERENCE_CM_RANGE)
@@ -217,9 +225,12 @@ async def upsert_body_measurement(
         row = BodyMeasurement(date=on_date, domain=DOMAIN, source=Source.MANUAL.value)
         session.add(row)
 
-    effective_neck = neck_cm if neck_cm is not None else row.neck_cm
-    effective_waist = waist_cm if waist_cm is not None else row.waist_cm
-    effective_hips = hips_cm if hips_cm is not None else row.hips_cm
+    if partial:
+        effective_neck = neck_cm if neck_cm is not None else row.neck_cm
+        effective_waist = waist_cm if waist_cm is not None else row.waist_cm
+        effective_hips = hips_cm if hips_cm is not None else row.hips_cm
+    else:
+        effective_neck, effective_waist, effective_hips = neck_cm, waist_cm, hips_cm
 
     height_cm, sex = _body_config()
     body_fat_pct = None
@@ -246,7 +257,7 @@ async def upsert_body_measurement(
     row.hips_cm = effective_hips
     row.body_fat_pct = body_fat_pct
     row.lbm_kg = lbm_kg
-    if note is not None:
+    if note is not None or not partial:
         row.note = note
     await session.flush()
     return row
@@ -628,9 +639,14 @@ async def update_body_measurement(
     hips_cm: Optional[float] = None,
     note: Optional[str] = None,
     override: bool = False,
+    partial: bool = True,
 ) -> Optional[BodyMeasurement]:
     """Edit an existing body measurement. If the date has changed, delete the old row
-    and upsert the new one."""
+    and upsert the new one.
+
+    ``partial`` carries the same meaning as in ``upsert_body_measurement``: the
+    default keeps omitted fields (MCP), ``False`` lets the caller blank them
+    (the HTML form)."""
     result = await session.execute(
         select(BodyMeasurement).where(BodyMeasurement.id == measurement_id)
     )
@@ -639,15 +655,18 @@ async def update_body_measurement(
         return None
 
     if row.date != on_date:
-        # Carry the untouched fields off the old row *before* deleting it. The
-        # partial merge in upsert_body_measurement reads the row on the target
-        # date, which is empty here — so a caller that passed only one field (the
-        # MCP edit tool routinely does) would otherwise blank the other two, and
-        # body_fat_pct/lbm_kg derived from them, with no way to get them back.
-        neck_cm = neck_cm if neck_cm is not None else row.neck_cm
-        waist_cm = waist_cm if waist_cm is not None else row.waist_cm
-        hips_cm = hips_cm if hips_cm is not None else row.hips_cm
-        note = note if note is not None else row.note
+        if partial:
+            # Carry the untouched fields off the old row *before* deleting it. The
+            # partial merge in upsert_body_measurement reads the row on the target
+            # date, which is empty here — so a caller that passed only one field (the
+            # MCP edit tool routinely does) would otherwise blank the other two, and
+            # body_fat_pct/lbm_kg derived from them, with no way to get them back.
+            # Under partial=False the caller sent the whole row, so there is nothing
+            # to carry: what it left empty it means to delete.
+            neck_cm = neck_cm if neck_cm is not None else row.neck_cm
+            waist_cm = waist_cm if waist_cm is not None else row.waist_cm
+            hips_cm = hips_cm if hips_cm is not None else row.hips_cm
+            note = note if note is not None else row.note
         await session.delete(row)
         await session.flush()
 
@@ -659,4 +678,5 @@ async def update_body_measurement(
         hips_cm=hips_cm,
         note=note,
         override=override,
+        partial=partial,
     )

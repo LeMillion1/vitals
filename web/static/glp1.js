@@ -54,6 +54,8 @@ window.glp1Dashboard = function (lastSite) {
             idInput.value = inj.id;
             const submitBtn = form.querySelector('button[type="submit"]');
             if (submitBtn) submitBtn.textContent = window.t('glp1.update');
+            // The form can sit off-screen from the row that opened it.
+            try { form.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { }
         },
 
         cancelEdit() {

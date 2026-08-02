@@ -46,6 +46,21 @@ window.weightOSDashboard = function (defaultTab) {
         lastFormEvent: null,
         isEditingLog: false,
         isEditingMeasure: false,
+        // Which row is open, and its date — the entry card and the history row
+        // both need to say so. Filling the form silently was indistinguishable
+        // from a dead button: at phone width .weight-sidebar is *above* the
+        // tables (it only moves to the right column at 1024px), so the card the
+        // pencil fills is two screens up and out of sight.
+        editingLogId: null,
+        editingMeasureId: null,
+        editingDate: '',
+
+        // Bring the form the pencil just filled into view. Same line as
+        // protocol.js editRow(); never focus() a field afterwards — that pops
+        // the iOS keyboard mid-scroll and lands the page somewhere else.
+        scrollToForm(form) {
+            try { form.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { }
+        },
 
         // U9: restore the tab a save swapped this component away from (set by
         // vitalsRefresh in base.html <head> before the swap, so it is already
@@ -60,6 +75,8 @@ window.weightOSDashboard = function (defaultTab) {
         editWeight(w) {
             this.activeTab = 'log';
             this.isEditingLog = true;
+            this.editingLogId = w.id;
+            this.editingDate = w.date_label || w.date;
             const form = document.getElementById('form-log');
             if (form) {
                 form.elements['date'].value = w.date;
@@ -77,12 +94,15 @@ window.weightOSDashboard = function (defaultTab) {
                 if (submitBtn) {
                     submitBtn.textContent = window.t('weight.update');
                 }
+                this.scrollToForm(form);
             }
         },
 
         editMeasurement(m) {
             this.activeTab = 'measure';
             this.isEditingMeasure = true;
+            this.editingMeasureId = m.id;
+            this.editingDate = m.date_label || m.date;
             const form = document.getElementById('form-measure');
             if (form) {
                 form.elements['date'].value = m.date;
@@ -102,12 +122,15 @@ window.weightOSDashboard = function (defaultTab) {
                 if (submitBtn) {
                     submitBtn.textContent = window.t('weight.update_measures');
                 }
+                this.scrollToForm(form);
             }
         },
 
         cancelEdit(tab) {
+            this.editingDate = '';
             if (tab === 'log') {
                 this.isEditingLog = false;
+                this.editingLogId = null;
                 const form = document.getElementById('form-log');
                 if (form) {
                     form.reset();
@@ -122,6 +145,7 @@ window.weightOSDashboard = function (defaultTab) {
                 }
             } else if (tab === 'measure') {
                 this.isEditingMeasure = false;
+                this.editingMeasureId = null;
                 const form = document.getElementById('form-measure');
                 if (form) {
                     form.reset();

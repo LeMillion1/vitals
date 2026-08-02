@@ -22,9 +22,14 @@
         <!-- Sticky entry sidebar (rendered on the right at desktop) -->
         <div class="weight-sidebar lg:col-span-4 space-y-6">
 
-            <!-- Input Card -->
-            <div class="v-card p-6 space-y-4">
-                {{ card_header(t("weight.new_entry")) }}
+            <!-- Input Card. In edit mode the card rings itself and names the row
+                 it is holding — filling the fields silently read as a dead pencil,
+                 and at phone width this card is scrolled far off the table. -->
+            <div class="v-card p-6 space-y-4" :class="isEditingMeasure ? 'is-editing' : ''">
+                {% call card_header(t("weight.new_entry")) %}
+                <span class="v-chip v-chip-sm" x-show="isEditingMeasure" x-cloak
+                    x-text="'{{ t('weight.editing_prefix') }} · ' + editingDate"></span>
+                {% endcall %}
                 <!-- Tabs -->
                 <div class="v-seg">
                     <button @click="activeTab = 'measure'" :class="activeTab === 'measure' ? 'is-active' : ''"
@@ -282,8 +287,11 @@
                                 </tr>
                             </thead>
                             <tbody>
+                                {# Only Navy rows can be open for edit, and only they may
+                                   test their id: scan ids come from another table and
+                                   would collide. #}
                                 {% for m in measurements %}
-                                <tr>
+                                <tr {% if m.source == 'navy' %}:class="editingMeasureId === {{ m.id }} ? 'is-editing' : ''"{% endif %}>
                                     <td class="v-num v-col-date" style="color: var(--fg)">{{ m.date | format_date }}</td>
                                     <td class="v-num">{{ m.neck_cm or '—' }}</td>
                                     <td class="v-num">{{ m.waist_cm or '—' }}</td>
@@ -298,7 +306,7 @@
                                          <span class="v-icon-actions">
                                              {% if m.source == 'navy' %}
                                              <button aria-label="{{ t('common.edit') }}"
-                                                 @click="editMeasurement({id: {{ m.id }}, date: '{{ m.date }}', neck_cm: {{ m.neck_cm or 'null' }}, waist_cm: {{ m.waist_cm or 'null' }}, hips_cm: {{ m.hips_cm or 'null' }}, note: {{ (m.note or '') | tojson | forceescape }}})"
+                                                 @click="editMeasurement({id: {{ m.id }}, date: '{{ m.date }}', date_label: '{{ m.date | format_date }}', neck_cm: {{ m.neck_cm or 'null' }}, waist_cm: {{ m.waist_cm or 'null' }}, hips_cm: {{ m.hips_cm or 'null' }}, note: {{ (m.note or '') | tojson | forceescape }}})"
                                                  class="v-icon-btn" title="{{ t("common.edit") }}">
                                                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"

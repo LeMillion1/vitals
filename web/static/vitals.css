@@ -2401,6 +2401,33 @@ sup {
     }
 }
 
+/* ── Edit mode ──────────────────────────────────────────────────────────────
+   The pencil re-uses the "new entry" card instead of opening a modal, so
+   without a state the page looks unchanged and the button reads as broken.
+   The card rings itself, and the row it holds is tinted, so the two are
+   legible as a pair even when a phone has just scrolled between them. */
+/* `.v-page .v-card` further down flattens every card's shadow at the same
+   specificity, and it wins by order — so the ring has to out-specify it. */
+.v-page .v-card.is-editing,
+.v-card.is-editing {
+    border-color: var(--accent-line);
+    box-shadow: 0 0 0 1px var(--accent-line), 0 18px 50px rgba(8, 7, 10, .08);
+}
+
+.v-card.is-editing .v-chip {
+    background: var(--accent-soft);
+    color: var(--accent-2);
+    border-color: var(--accent-line);
+}
+
+.v-table tr.is-editing > td {
+    background: var(--accent-soft);
+}
+
+.v-table tr.is-editing > td:first-child {
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+
 /* ============================================================================
    July 2026 handoff — page-level compositions
    Shared tokens and components stay global; these selectors describe each

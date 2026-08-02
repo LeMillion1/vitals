@@ -452,3 +452,67 @@ async def test_update_measurement_date_change_keeps_untouched_fields(db_session)
 
     rows = await weight_service.list_body_measurements(db_session)
     assert len(rows) == 1
+
+
+# ── partial=False: a blank field on the edit form means "delete this" ─────────
+async def test_update_measurement_non_partial_clears_blanked_fields(db_session):
+    """The HTML edit form posts every field it renders, so an empty one is the
+    owner deleting a value. Under the partial merge it silently came back."""
+    await weight_service.log_weight(
+        db_session, on_date=date(2026, 7, 5), weight_kg=88.0
+    )
+    row = await weight_service.upsert_body_measurement(
+        db_session,
+        on_date=date(2026, 7, 5),
+        neck_cm=39.0,
+        waist_cm=86.0,
+        note="morning",
+    )
+    await db_session.commit()
+    assert row.body_fat_pct is not None and row.lbm_kg is not None
+
+    edited = await weight_service.update_body_measurement(
+        db_session,
+        row.id,
+        on_date=date(2026, 7, 5),
+        waist_cm=85.0,
+        partial=False,
+    )
+    await db_session.commit()
+
+    assert edited is not None
+    assert edited.waist_cm == 85.0
+    assert edited.neck_cm is None
+    assert edited.note is None
+    # Navy needs both circumferences, so the derived pair goes with the neck.
+    assert edited.body_fat_pct is None
+    assert edited.lbm_kg is None
+
+
+async def test_update_measurement_non_partial_clears_across_a_date_change(db_session):
+    """Same rule when the edit also moves the row: nothing is carried over."""
+    row = await weight_service.upsert_body_measurement(
+        db_session,
+        on_date=date(2026, 7, 6),
+        neck_cm=39.0,
+        waist_cm=86.0,
+        note="morning",
+    )
+    await db_session.commit()
+
+    moved = await weight_service.update_body_measurement(
+        db_session,
+        row.id,
+        on_date=date(2026, 7, 7),
+        waist_cm=85.0,
+        partial=False,
+    )
+    await db_session.commit()
+
+    assert moved is not None
+    assert moved.date == date(2026, 7, 7)
+    assert moved.waist_cm == 85.0
+    assert moved.neck_cm is None
+    assert moved.note is None
+    rows = await weight_service.list_body_measurements(db_session)
+    assert len(rows) == 1

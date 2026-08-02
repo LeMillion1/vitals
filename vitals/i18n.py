@@ -242,6 +242,8 @@ _EN: dict[str, str] = {
     "weight.update_weight": "Update weight",
     "weight.save_measures": "Save measures",
     "weight.update_measures": "Update measures",
+    # Prefixes the date of the row the entry card is currently editing.
+    "weight.editing_prefix": "Editing",
     "weight.neck": "Neck",
     "weight.waist": "Waist",
     "weight.hips": "Hips",
@@ -1535,6 +1537,7 @@ _RU: dict[str, str] = {
     "weight.update_weight": "Обновить вес",
     "weight.save_measures": "Сохранить замеры",
     "weight.update_measures": "Обновить замеры",
+    "weight.editing_prefix": "Правка",
     "weight.neck": "Шея",
     "weight.waist": "Талия",
     "weight.hips": "Бёдра",

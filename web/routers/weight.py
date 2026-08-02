@@ -281,6 +281,11 @@ async def log_measurement_entry(
     on_date = date_type.fromisoformat(date)
     try:
         if id is not None:
+            # partial=False: this form renders every field it edits and posts
+            # them all, so an empty one is the owner deleting a value, not an
+            # omission. (A male profile has no hips input — hips_cm is therefore
+            # cleared on a web edit, which is moot: nothing sets it for a male
+            # profile in the first place.)
             await weight_service.update_body_measurement(
                 db,
                 measurement_id=id,
@@ -290,6 +295,7 @@ async def log_measurement_entry(
                 hips_cm=hips_cm,
                 note=note,
                 override=override,
+                partial=False,
               )
         else:
             await weight_service.upsert_body_measurement(

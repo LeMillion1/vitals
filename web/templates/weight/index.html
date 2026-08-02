@@ -56,8 +56,11 @@
 
             <!-- Input Card — one field. Measurements, noise, photos and BIA scans
                  moved to /weight/measures, so the trend page asks for one number. -->
-            <div class="v-card p-6 space-y-4">
-                {{ card_header(t("weight.new_entry")) }}
+            <div class="v-card p-6 space-y-4" :class="isEditingLog ? 'is-editing' : ''">
+                {% call card_header(t("weight.new_entry")) %}
+                <span class="v-chip v-chip-sm" x-show="isEditingLog" x-cloak
+                    x-text="'{{ t('weight.editing_prefix') }} · ' + editingDate"></span>
+                {% endcall %}
                 <form @submit.prevent="submitForm($event)" action="/weight/log" id="form-log" hx-boost="false" class="space-y-4">
                     <input type="hidden" name="override" x-model="overrideFlag">
                     <div class="v-weight-hero">
@@ -114,6 +117,7 @@
                             <tbody>
                                 {% for w in weights %}
                                 <tr class="{% if w.superseded %}opacity-40 line-through{% endif %}"
+                                    :class="editingLogId === {{ w.id }} ? 'is-editing' : ''"
                                     {% if loop.index0 >= 8 %}x-show="showAllWeights" x-cloak{% endif %}>
                                     <td class="v-num v-col-date" style="color: var(--fg)">{{ w.date | format_date }}
                                     </td>
@@ -128,7 +132,7 @@
                                             {# Editable = he entered it himself, whichever surface he used. #}
                                             {% if w.source in ('manual', 'mcp') %}
                                             <button aria-label="{{ t('common.edit') }}"
-                                                @click="editWeight({id: {{ w.id }}, date: '{{ w.date }}', weight_kg: {{ w.weight_kg }}, note: {{ (w.note or '') | tojson | forceescape }}})"
+                                                @click="editWeight({id: {{ w.id }}, date: '{{ w.date }}', date_label: '{{ w.date | format_date }}', weight_kg: {{ w.weight_kg }}, note: {{ (w.note or '') | tojson | forceescape }}})"
                                                 class="v-icon-btn" title="{{ t("common.edit") }}">
                                                 <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24"
                                                     stroke="currentColor">

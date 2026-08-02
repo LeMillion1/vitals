@@ -494,6 +494,41 @@ async def test_edit_weight_entry(auth_client, db_session):
     assert w.note == "Edited weight"
 
 
+async def test_edit_measurement_blank_field_clears_it(auth_client, db_session):
+    """The edit form posts every field it renders, so an emptied input has to
+    delete the value. FastAPI turns a blank number input into None, which the
+    service's partial merge used to read as "not passed" and silently restore."""
+    from datetime import date
+    from vitals.services import weight_service
+
+    m = await weight_service.upsert_body_measurement(
+        db_session,
+        on_date=date(2026, 6, 13),
+        neck_cm=39.0,
+        waist_cm=86.0,
+        note="morning",
+    )
+    await db_session.commit()
+
+    response = await auth_client.post(
+        "/weight/measurement",
+        data={
+            "id": m.id,
+            "date": "2026-06-13",
+            "neck_cm": "",
+            "waist_cm": "85.0",
+            "note": "",
+        },
+    )
+    assert response.status_code == 303
+
+    await db_session.refresh(m)
+    assert m.waist_cm == 85.0
+    assert m.neck_cm is None
+    assert m.note is None
+    assert m.body_fat_pct is None
+
+
 async def test_skincare_product_save_and_delete_via_web(auth_client, db_session):
     from vitals.models.skincare import SkincareProduct
 
