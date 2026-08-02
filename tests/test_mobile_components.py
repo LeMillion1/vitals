@@ -77,7 +77,11 @@ def test_segmented_control_wraps_instead_of_hiding_its_last_tab():
     assert "flex-wrap: wrap;" in track
     assert "overflow-x" not in track
     assert ".v-seg::-webkit-scrollbar" not in APP_CSS
-    # Wrapped rows stay flush with the track instead of ending ragged.
+    # A wrapped track breaks into even rows of two, not three and a lonely
+    # fourth — and it stops being a capsule, which only reads as one on a
+    # single row. The phone fits all four on that row and resets the basis.
+    assert set(_radii(APP_CSS, ".v-seg")) == {"var(--radius-lg)"}
+    assert "flex: 1 1 40%;" in _rule(APP_CSS, ".v-seg-btn")
     assert "flex: 1 1 auto;" in _rule(APP_CSS, ".v-seg-btn")
 
 

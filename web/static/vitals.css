@@ -853,7 +853,10 @@ summary {
     padding: 6px;
     background: var(--bg-inset);
     border: 0;
-    border-radius: var(--radius-pill);
+    /* A capsule is the shape of "where you are" (.mh-tab) and it only reads as
+       one while the control is a single row — wrapped, a 999px track turns into
+       a lozenge with a ragged tail. This is a switch, so it is a block. */
+    border-radius: var(--radius-lg);
     /* Wraps rather than scrolls: this control lives in the 341px entry sidebar,
        where four tabs need 368px. Sideways scroll with a hidden bar showed the
        last label sliced in half ("Соста") with nothing to say it continued. */
@@ -861,10 +864,11 @@ summary {
 }
 
 .v-seg-btn {
-    /* Grows only once the track has hit its max-width and wrapped — a fit-content
-       track is already max-content wide, so nothing stretches on a wide screen.
-       On a wrapped track it keeps the rows flush instead of ragged. */
-    flex: 1 1 auto;
+    /* 40%, so a track that has to wrap breaks into even rows of two rather than
+       three-and-a-lonely-fourth. A fit-content track is already max-content wide
+       and resolves the percentage as auto, so nothing stretches on a wide
+       screen; the phone, where all four fit on one line, resets it below. */
+    flex: 1 1 40%;
     text-align: center;
     padding: 7px 18px;
     line-height: 1.4;
@@ -1632,6 +1636,9 @@ a.v-seg-btn {
         padding: 0.5rem 0.75rem;
         font-size: var(--text-micro);
         min-height: 2.75rem;
+        /* Four tabs at this size need 305px and the phone column is 370px: one
+           row, no wrap, so no preferred width to keep them even. */
+        flex: 1 1 auto;
     }
 
     /* ── Form controls — comfortable touch ── */

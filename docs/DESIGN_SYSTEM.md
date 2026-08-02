@@ -556,11 +556,16 @@ the section row above them, sized at `--text-label`, with a neutral raised
 itself to the top of the scroll. See `garmin/_tabs.html` and
 `weight/_tabs.html`.
 
-The track **wraps** (`flex-wrap: wrap`, buttons `flex: 1 1 auto`) — it never
-scrolls sideways. Four tabs need 368px and the entry sidebar is 291px wide, so
-the old hidden-bar sideways scroll left the last label cut mid-word with nothing
-saying the row continued. A wrapped track keeps every option readable and its
-rows flush.
+The track **wraps** (`flex-wrap: wrap`) — it never scrolls sideways. Four tabs
+need 368px and the entry sidebar is 291px wide, so the old hidden-bar sideways
+scroll left the last label cut mid-word with nothing saying the row continued.
+Buttons carry `flex: 1 1 40%`, so a track that has to wrap breaks into even rows
+of two rather than three and a lonely fourth; the phone, where all four fit on
+one line, resets that to `auto`.
+
+The track is `--radius-lg`, **not** a capsule. A capsule is the shape of "where
+you are" (`.mh-tab`), and it only reads as one while the control is a single
+row — wrapped, a 999px track is a lozenge with a ragged tail.
 
 ### Chips, tags, pills, dots
 
