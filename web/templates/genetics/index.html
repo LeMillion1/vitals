@@ -3,7 +3,7 @@
 {% block title %}{{ t("genetics.page_title") }}{% endblock %}
 
 {% block content %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page v-page-genetics px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="{ showAdminPanels: {% if variants %}false{% else %}true{% endif %}, activeTab: 'all' }">
 
     {% call masthead_header('genetics', t('nav.genetics'), [
@@ -109,13 +109,9 @@
     <div x-show="showAdminPanels" class="space-y-6" x-cloak>
         <!-- VCF upload -->
         <div class="v-card p-6 space-y-4">
-            <div class="flex items-center justify-between">
-                <div class="flex items-center gap-2">
-                    <span class="v-bar v-bar-sm"></span>
-                    <span class="v-text-card">{{ t("genetics.vcf_title") }}</span>
-                </div>
-                <span class="v-text-micro">{{ t("genetics.vcf_source") }}</span>
-            </div>
+            {% call card_header(t("genetics.vcf_title")) %}
+            <span class="v-text-micro">{{ t("genetics.vcf_source") }}</span>
+            {% endcall %}
             <p class="v-text-body">{{ t("genetics.vcf_description") }}</p>
             <form action="/genetics/import" method="POST" enctype="multipart/form-data" class="flex flex-col sm:flex-row sm:items-end gap-3">
                 <div class="flex-1">
@@ -140,10 +136,7 @@
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             <!-- Add variant -->
             <div class="lg:col-span-5 v-card p-6 space-y-4">
-                <div class="flex items-center gap-2">
-                    <span class="v-bar v-bar-sm"></span>
-                    <span class="v-text-card">{{ t("genetics.add_variant") }}</span>
-                </div>
+                {{ card_header(t("genetics.add_variant")) }}
                 <p class="v-text-micro">{{ t("genetics.marker_hint") }}</p>
 
                 <form action="/genetics/save" method="POST" class="space-y-4">
@@ -167,10 +160,7 @@
 
             <!-- Catalog -->
             <div class="lg:col-span-7 v-card p-6 space-y-3">
-                <div class="flex items-center gap-2">
-                    <span class="v-bar v-bar-sm"></span>
-                    <span class="v-text-card">{{ t("genetics.catalog_title") }}</span>
-                </div>
+                {{ card_header(t("genetics.catalog_title")) }}
                 <div class="max-h-[28rem] overflow-y-auto v-card-inset">
                     <div class="v-table-wrap">
                         <table class="v-table">

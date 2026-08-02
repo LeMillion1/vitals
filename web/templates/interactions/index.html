@@ -3,7 +3,7 @@
 {% block title %}{{ t("interactions.page_title") }}{% endblock %}
 
 {% block content %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page v-page-interactions px-6 py-7 max-w-6xl mx-auto space-y-8">
 
     {{ masthead_header('interactions', t('nav.interactions'), [
@@ -39,11 +39,9 @@
 
     {% for category in ordered_categories %}
     <div class="v-card v-interaction-matrix p-6 space-y-4">
-        <div class="flex items-center gap-2.5">
-            <span class="v-bar"></span>
-            <h2 class="v-text-heading">{{ t("interactions.category." + category) }}</h2>
-            <span class="v-chip">{{ by_category[category] | length }}</span>
-        </div>
+        {% call card_header(t("interactions.category." + category)) %}
+        <span class="v-chip">{{ by_category[category] | length }}</span>
+        {% endcall %}
 
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {% for r in by_category[category] %}

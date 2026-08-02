@@ -1,3 +1,4 @@
+{% from "partials/masthead.html" import card_header with context %}
 {# Proactive layer (прогон 6) — one card, one form, one save.
 
    Unlike every other card on this page these settings go to the DB, not .env:
@@ -6,15 +7,13 @@
    module being on — the switch to turn it off is the modules card above. #}
 {% set p = proactive %}
 <div class="v-card v-setting-row p-6 space-y-5">
-    <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-        <span class="v-bar v-bar-sm"></span>
-        <span class="v-text-card">{{ t("settings.proactive_title") }}</span>
-        {# U10: always-present id so the toggle_module OOB fragment (modules_oob.html)
-           has something to swap into — an OOB target that doesn't already exist in the
-           DOM is silently dropped by htmx, so the conditional lives inside the span,
-           not around it. #}
-        <span id="proactive-off-chip">{% if not enabled_modules.get('signals') %}<span class="v-chip v-chip-sm ml-1.5">{{ t("settings.proactive_off_chip") }}</span>{% endif %}</span>
-    </div>
+    {% call card_header(t("settings.proactive_title")) %}
+    {# U10: always-present id so the toggle_module OOB fragment (modules_oob.html)
+       has something to swap into — an OOB target that doesn't already exist in the
+       DOM is silently dropped by htmx, so the conditional lives inside the span,
+       not around it. #}
+    <span id="proactive-off-chip">{% if not enabled_modules.get('signals') %}<span class="v-chip v-chip-sm">{{ t("settings.proactive_off_chip") }}</span>{% endif %}</span>
+    {% endcall %}
     <p class="v-text-body" style="color: var(--muted)">
         {{ t("settings.proactive_description") }}
     </p>

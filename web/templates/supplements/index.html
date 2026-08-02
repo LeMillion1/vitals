@@ -3,7 +3,7 @@
 {% block title %}{{ t("supplements.page_title") }}{% endblock %}
 
 {% block content %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 
 {# ── Supplement card macro (defined in-block so it's reliably in scope) ──── #}
 {% macro supplement_card(s, show_timing=False, archived=False) %}
@@ -82,11 +82,7 @@
 
         {% for key, label, sub, tone in timing_blocks %}
         <div class="space-y-3">
-            <div class="flex items-center gap-2.5 pb-2.5" style="border-bottom: 1px solid var(--line)">
-                <span class="v-dot {{ tone }}"></span>
-                <span class="v-text-card">{{ label }}</span>
-                {% if sub %}<span class="v-text-micro">{{ sub }}</span>{% endif %}
-            </div>
+            {{ card_header(label, meta=sub) }}
 
             <!-- Auto-fill grid: avoids orphan single-card rows -->
             <div class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))">
@@ -112,10 +108,7 @@
 
         {% if count_other.value > 0 %}
         <div class="space-y-3 pt-2">
-            <div class="flex items-center gap-2.5 pb-2.5" style="border-bottom: 1px solid var(--line)">
-                <span class="v-dot"></span>
-                <span class="v-text-card">{{ t("supplements.timing.other") }}</span>
-            </div>
+            {{ card_header(t("supplements.timing.other")) }}
             <!-- Auto-fill grid: avoids orphan single-card rows -->
             <div class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))">
                 {% for s in supplements if s.active and not (s.timing | timing_bucket) %}
@@ -156,10 +149,7 @@
                 <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
 
-            <div class="flex items-center gap-2 pb-3" style="border-bottom: 1px solid var(--line)">
-                <span class="v-bar v-bar-sm"></span>
-                <span class="v-text-heading" x-text="isEditing ? '{{ t("supplements.modal_edit") }}' : '{{ t("supplements.modal_new") }}'"></span>
-            </div>
+            {{ card_header('', attrs='x-text="isEditing ? '' ~ t("supplements.modal_edit") ~ '' : '' ~ t("supplements.modal_new") ~ ''"') }}
 
             <form @submit.prevent="submitForm($event)" action="/supplements/save" id="form-supplement" hx-boost="false" class="space-y-4">
                 <input type="hidden" name="override" x-model="overrideFlag">

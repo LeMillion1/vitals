@@ -1,11 +1,9 @@
+{% from "partials/masthead.html" import card_header with context %}
 {# Dashboard modules card on /settings. Core modules render as locked switches
    (checked + disabled); Optional ones POST to /settings/modules on change and
    live-update the header nav via an OOB swap. No Alpine — native checkbox + HTMX. #}
 <div class="v-card p-6 space-y-5">
-    <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-        <span class="v-bar v-bar-sm"></span>
-        <span class="v-text-card">{{ t("modules.title") }}</span>
-    </div>
+    {{ card_header(t("modules.title")) }}
     <p class="v-text-body" style="color: var(--muted)">
         {{ t("modules.description") }}
     </p>

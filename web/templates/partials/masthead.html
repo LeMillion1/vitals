@@ -77,6 +77,25 @@
 {% endfor %}
 {% endmacro %}
 
+{# ── Card header ─────────────────────────────────────────────────────────────
+   The one header a card gets: neutral bar, title, and an optional right-hand
+   slot. Pass `meta` for a line of metadata, or wrap the call in {% call %} to
+   put a control there:
+
+       {{ card_header(t("today.goal_title"), meta=goal.target) }}
+       {% call card_header(t("reports.goals_title")) %}<button …>{% endcall %}
+
+   `attrs` is the escape hatch for a title the template can't know — the two
+   modals whose heading is an Alpine expression. It is written straight into the
+   tag, so it is for markup this repo owns, never for user data. #}
+{% macro card_header(title, meta=none, attrs='') %}
+<div class="v-card-head">
+    <span class="v-bar"></span>
+    <span class="v-text-card" {{ attrs|safe }}>{{ title }}</span>
+    {% if meta or caller %}<div class="v-card-head-meta">{% if meta %}<span>{{ meta }}</span>{% endif %}{% if caller %}{{ caller() }}{% endif %}</div>{% endif %}
+</div>
+{% endmacro %}
+
 {# ── Sidebar rail ────────────────────────────────────────────────────────────
    Standalone so it can be re-rendered out-of-band (modules_oob.html) exactly
    like nav_primary.html. Pass oob=true to emit the hx-swap-oob marker. #}
@@ -171,10 +190,24 @@
     {% if metrics %}
     <div class="mh-metrics">
         {% for m in metrics %}
+        {# Three kinds of thing arrive in this strip and only one of them is a
+           number. A word ("Tirzepatide", "LLM connected") set in the 32px figure
+           face ran into the next column; a "—" for data that hasn't arrived yet
+           was drawn larger than the page title it stood under. Both are sized
+           and coloured for what they are, so the figure keeps its meaning. #}
+        {% set val = m.value | string | trim %}
+        {% set num = val | replace('−', '-') | replace(' ', '') | replace(',', '.') %}
+        {% set empty = val in ('—', '–', '-', '') %}
+        {# A word ("Tirzepatide") is not a figure and stops being typeset as one.
+           A long figure-ish string ("24-07-2026", "1300–1700") stays a figure but
+           steps down a size — at the headline size it wrapped in the middle of
+           the date. Everything else keeps the hierarchy it was given. #}
+        {% set wordy = not empty and (val | select('in', '0123456789') | list | length) == 0 %}
+        {% set compact = not empty and not wordy and val | length > 8 %}
         {% if not loop.first %}<div class="mh-metric-div"></div>{% endif %}
         <{{ 'a' if m.href else 'div' }} class="mh-metric {{ m.tone or '' }}{% if m.primary %} is-primary{% endif %}"{% if m.href %} href="{{ m.href }}"{% endif %}>
             <div style="display:flex;align-items:baseline;">
-                <span class="mh-metric-value {% if m.primary %}is-primary{% endif %}">{{ m.value }}</span>
+                <span class="mh-metric-value {% if m.primary %}is-primary{% endif %}{% if empty %} is-empty{% elif wordy %} is-text{% elif compact %} is-compact{% elif num[0] == '-' %} is-neg{% endif %}">{{ m.value }}</span>
                 {% if m.unit %}<span class="mh-metric-unit">{{ m.unit }}</span>{% endif %}
             </div>
             <div class="mh-metric-label">{{ m.label }}</div>

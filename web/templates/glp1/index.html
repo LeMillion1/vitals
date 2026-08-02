@@ -4,7 +4,7 @@
 
 {% block content %}
 {% from "partials/body_map.html" import body_map %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page v-page-glp1 px-6 py-7 max-w-6xl mx-auto space-y-8"
      x-data="glp1Dashboard({{ (last_injection.site | tojson if last_injection and last_injection.site else 'null') | forceescape }})">
 
@@ -141,10 +141,7 @@
         <!-- History & Info panels (when showForm is false) -->
         <div x-show="!showForm" class="v-glp1-history lg:col-span-8 space-y-6">
             <div class="v-card p-6 space-y-3">
-                <div class="flex items-center gap-2">
-                    <span class="v-bar v-bar-sm"></span>
-                    <span class="v-text-card">{{ t("glp1.history_title") }}</span>
-                </div>
+                {{ card_header(t("glp1.history_title")) }}
                 <div class="max-h-[38rem] overflow-y-auto v-card-inset">
                     <div class="v-table-wrap">
                         <table class="v-table" style="width: 100%; table-layout: fixed">
@@ -190,8 +187,8 @@
 
         <div x-show="!showForm" class="lg:col-span-4 space-y-6">
             <div class="v-card p-6 space-y-3">
-                <span class="v-text-card">{{ t("glp1.phases_title") }}</span>
-                <ul class="space-y-2.5 max-h-48 overflow-y-auto pr-1">
+                {{ card_header(t("glp1.phases_title")) }}
+                <ul class="space-y-2.5 max-h-48 overflow-y-auto">
                     {% for p in phases %}
                     <li class="pb-2" style="border-bottom: 1px solid var(--line)">
                         <div class="flex justify-between items-center v-text-micro v-num">
@@ -216,8 +213,8 @@
             </div>
 
             <div class="v-card p-6 space-y-3">
-                <span class="v-text-card">{{ t("glp1.side_effects_title") }}</span>
-                <ul class="space-y-2.5 max-h-48 overflow-y-auto pr-1">
+                {{ card_header(t("glp1.side_effects_title")) }}
+                <ul class="space-y-2.5 max-h-48 overflow-y-auto">
                     {% for se in side_effects %}
                     <li class="pb-2 flex justify-between items-start" style="border-bottom: 1px solid var(--line)">
                         <div>

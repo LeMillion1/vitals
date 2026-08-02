@@ -3,7 +3,7 @@
 {% block title %}{{ t("settings.page_title") }}{% endblock %}
 
 {% block content %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page v-page-settings px-6 py-7 max-w-6xl mx-auto space-y-8">
 
     <div class="v-settings-sections max-w-4xl space-y-8">
@@ -68,10 +68,7 @@
 
     <!-- ─── LANGUAGE ───────────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
-        <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-            <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">{{ t("settings.language_title") }}</span>
-        </div>
+        {{ card_header(t("settings.language_title")) }}
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.language_description") }}
         </p>
@@ -100,10 +97,7 @@
 
     <!-- ─── PROFILE ────────────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
-        <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-            <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">{{ t("settings.profile_title") }}</span>
-        </div>
+        {{ card_header(t("settings.profile_title")) }}
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.profile_description") }}
         </p>
@@ -176,10 +170,7 @@
 
     <!-- ─── AI / OPENROUTER ────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
-        <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-            <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">{{ t("settings.ai_title") }}</span>
-        </div>
+        {{ card_header(t("settings.ai_title")) }}
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.ai_description") }}
         </p>
@@ -238,10 +229,7 @@
 
     <!-- ─── HEVY ───────────────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
-        <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-            <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">{{ t("settings.hevy_title") }}</span>
-        </div>
+        {{ card_header(t("settings.hevy_title")) }}
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.hevy_description") }}
         </p>
@@ -268,10 +256,7 @@
 
     <!-- ─── GARMIN ─────────────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
-        <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-            <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">{{ t("settings.garmin_title") }}</span>
-        </div>
+        {{ card_header(t("settings.garmin_title")) }}
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.garmin_description") }}
         </p>
@@ -307,10 +292,7 @@
 
     <!-- ─── CLAUDE MCP ────────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
-        <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-            <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">{{ t("settings.mcp_title") }}</span>
-        </div>
+        {{ card_header(t("settings.mcp_title")) }}
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.mcp_description") }}
         </p>
@@ -343,10 +325,7 @@
 
     <!-- ─── DATA PORTABILITY ───────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
-        <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-            <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">{{ t("settings.data_title") }}</span>
-        </div>
+        {{ card_header(t("settings.data_title")) }}
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.data_description") }}
         </p>
@@ -398,10 +377,7 @@
 
     <!-- ─── CHANGE PASSWORD ────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
-        <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-            <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">{{ t("settings.password_title") }}</span>
-        </div>
+        {{ card_header(t("settings.password_title")) }}
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.password_description") }}
         </p>

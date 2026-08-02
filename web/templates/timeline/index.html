@@ -76,7 +76,7 @@
         <span class="v-text-micro v-num" style="color: var(--muted)">{{ day | format_date }}</span>
         {% for e in items %}
         <div class="v-card p-4 flex items-start gap-3">
-            <span class="v-bar mt-1"
+            <span class="v-row-tick mt-1"
                 style="background: {% if e.tone == 'good' %}var(--good){% elif e.tone == 'bad' %}var(--bad){% elif e.tone == 'warn' %}var(--warn){% else %}var(--line-2){% endif %}"></span>
             <div class="flex-1 min-w-0 space-y-1">
                 <div class="flex items-center gap-2 flex-wrap">

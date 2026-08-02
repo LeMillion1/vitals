@@ -886,12 +886,62 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
     body.ui-masthead .mh-metric-value.is-primary { font-size: var(--mh-text-hero-sm); }
     body.ui-masthead .mh-metrics {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        /* auto-fit, not two fixed columns: three figures in a hard 2-col grid
+           left a hole in the bottom-right corner of half the pages. */
+        grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
         width: 100%;
         gap: 18px 14px;
     }
     body.ui-masthead .mh-metric.is-primary { grid-column: 1 / -1; }
     body.ui-masthead .mh-metric-div { display: none; }
+}
+
+/* Kept together, and last, so they outrank every `.mh-metric-value.is-primary`
+   size rule above regardless of which breakpoint wrote it. */
+body.ui-masthead .mh-metric-value.is-text,
+body.ui-masthead .mh-metric-value.is-primary.is-text {
+    font: 600 var(--mh-text-lead) 'Inter', sans-serif;
+    font-variant-numeric: normal;
+    letter-spacing: normal;
+}
+
+/* A word is as long as it is: "Tirzepatide" set as a figure ran straight over
+   the column beside it. Let the cell be narrower than its content wants and let
+   a long word break rather than push its neighbour. */
+body.ui-masthead .mh-metric,
+body.ui-masthead .mh-metric > div {
+    min-width: 0;
+}
+
+body.ui-masthead .mh-metric-value.is-text {
+    overflow-wrap: anywhere;
+}
+
+/* A date or a range is still a figure — it just can't be a headline-sized one
+   in a 110px column, where it wrapped mid-token. */
+body.ui-masthead .mh-metric-value.is-primary.is-compact {
+    font: 700 var(--mh-text-lead) var(--mh-display);
+}
+
+@media (max-width: 560px) {
+    body.ui-masthead .mh-metric-value.is-text,
+    body.ui-masthead .mh-metric-value.is-primary.is-text,
+    body.ui-masthead .mh-metric-value.is-compact,
+    body.ui-masthead .mh-metric-value.is-primary.is-compact {
+        font-size: var(--mh-text-tab);
+    }
+}
+
+body.ui-masthead .mh-metric-value.is-empty,
+body.ui-masthead .mh-metric-value.is-primary.is-empty {
+    font: 600 var(--mh-text-lead) 'Inter', sans-serif;
+    color: var(--faint);
+}
+
+/* The minus sign is optically lighter than a digit, so a negative figure hangs
+   a hair right of the numbers above it in the same column. */
+body.ui-masthead .mh-metric-value.is-neg {
+    margin-left: -.14em;
 }
 @media (max-width: 560px) {
     body.ui-masthead .grid.grid-cols-3 {

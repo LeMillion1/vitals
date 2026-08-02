@@ -3,7 +3,7 @@
 {% block title %}{{ t("hrt.page_title") }}{% endblock %}
 
 {% block content %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page v-page-hrt px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="protocolForm()">
 
     {% call masthead_header('hrt', t('hrt.heading'), [
@@ -19,8 +19,7 @@
 
     <!-- Cycle + release -->
     <div class="v-card v-hrt-overview p-6 space-y-5">
-        <div class="flex items-center justify-between">
-            <h2 class="v-text-heading">{{ t("hrt.active_cycle") }}</h2>
+        {% call card_header(t("hrt.active_cycle")) %}
             {% if active_cycle %}
             <div class="flex items-center gap-2">
                 <form method="post" action="/hrt/cycle/{{ active_cycle.id }}/close" class="inline">
@@ -35,7 +34,7 @@
                 </form>
             </div>
             {% endif %}
-        </div>
+        {% endcall %}
 
         {% if active_cycle %}
         <div class="space-y-1">
@@ -254,7 +253,7 @@
 
     <!-- Cycle templates: apply / share / import -->
     <div class="v-card p-6 space-y-4">
-        <h2 class="v-text-heading">{{ t("hrt.templates") }}</h2>
+        {{ card_header(t("hrt.templates")) }}
 
         {% if cycle_templates %}
         <div class="flex flex-col gap-3">
@@ -409,7 +408,7 @@
 
     <!-- Dose log -->
     <div class="v-card v-hrt-log p-6 space-y-4">
-        <h2 class="v-text-heading">{{ t("hrt.log_title") }}</h2>
+        {{ card_header(t("hrt.log_title")) }}
         {% if doses %}
         <div class="v-table-wrap">
             <table class="v-table">
@@ -459,7 +458,7 @@
     <!-- Site rotation -->
     {% if site_counts %}
     <div class="v-card p-6 space-y-3">
-        <h2 class="v-text-heading">{{ t("hrt.site_rotation") }}</h2>
+        {{ card_header(t("hrt.site_rotation")) }}
         <div class="flex flex-wrap gap-2">
             {% for s, n in site_counts.items() %}
             <span class="v-tag">{{ s | replace('_', ' ') }} · {{ n }}</span>
@@ -470,7 +469,7 @@
 
     <!-- Side effects -->
     <div class="v-card p-6 space-y-4">
-        <h2 class="v-text-heading">{{ t("hrt.side_effects") }}</h2>
+        {{ card_header(t("hrt.side_effects")) }}
         <form method="post" action="/hrt/side-effect" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
             <div>
                 <label for="hrt-date-2" class="v-label">{{ t("hrt.date") }}</label>

@@ -45,7 +45,9 @@ def test_handoff_uses_exact_surface_and_accent_tokens():
         "--surface-3: #46404F",
         "--accent: #F5A623",
         "--good: #6FC58E",
-        "--bad: #E87056",
+        # Lightened from the handoff's #E87056 for AA text contrast on
+        # --surface (4.27 -> 4.70), same call as --violet below.
+        "--bad: #EE7A60",
         "--cool: #6FB6C9",
         # Lightened from the handoff's #B093D6 for AA text contrast (U2) —
         # the accessibility pass wins over the exact swatch.

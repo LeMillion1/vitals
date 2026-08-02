@@ -3,7 +3,7 @@
 {% block title %}{{ t("weight.measures_page_title") }}{% endblock %}
 
 {% block content %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 {% from "weight/_tabs.html" import weight_tabs with context %}
 <div class="v-page v-page-weight px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="weightOSDashboard('measure')">
 
@@ -24,10 +24,7 @@
 
             <!-- Input Card -->
             <div class="v-card p-6 space-y-4">
-                <div class="flex items-center gap-2">
-                    <span class="v-bar v-bar-accent"></span>
-                    <span class="v-text-card">{{ t("weight.new_entry") }}</span>
-                </div>
+                {{ card_header(t("weight.new_entry")) }}
                 <!-- Tabs -->
                 <div class="v-seg">
                     <button @click="activeTab = 'measure'" :class="activeTab === 'measure' ? 'is-active' : ''"
@@ -177,8 +174,8 @@
 
             <!-- Excluded Periods (Noise) -->
             <div class="v-card p-6 space-y-3">
-                <span class="v-text-card">{{ t("weight.excluded_periods") }}</span>
-                <ul class="text-xs space-y-2.5 max-h-40 overflow-y-auto pr-1">
+                {{ card_header(t("weight.excluded_periods")) }}
+                <ul class="text-xs space-y-2.5 max-h-40 overflow-y-auto">
                     {% for n in noise_markers %}
                     <li class="pb-2" style="border-bottom: 1px solid var(--line)">
                         <div class="flex justify-between items-center v-text-micro v-num">
@@ -212,7 +209,7 @@
 
             <!-- Photos (Gallery) -->
             <div class="v-card p-6 space-y-3">
-                <span class="v-text-card">{{ t("weight.gallery_title") }}</span>
+                {{ card_header(t("weight.gallery_title")) }}
                 <div class="flex gap-2 overflow-x-auto pb-1 max-h-40">
                     {% for p in photos %}
                     <div class="flex-none w-20 text-center space-y-1">
@@ -239,12 +236,10 @@
             {% if body_comp_enabled %}
             <!-- Latest scan summary chips -->
             <div class="v-card p-6 space-y-4">
-                <div class="flex items-center justify-between gap-3 flex-wrap">
-                    <div class="flex items-center gap-2"><span class="v-bar"></span><span class="v-text-heading">{{
-                            t("body.title") }}</span></div>
-                    {% if bc_latest %}<span class="v-text-micro v-num">{{ bc_latest.date | format_date }}{% if
-                        bc_latest.device %} · {{ bc_latest.device }}{% endif %}</span>{% endif %}
-                </div>
+                {% call card_header(t("body.title")) %}
+                {% if bc_latest %}<span class="v-num">{{ bc_latest.date | format_date }}{% if
+                    bc_latest.device %} · {{ bc_latest.device }}{% endif %}</span>{% endif %}
+                {% endcall %}
                 {% if bc_headline %}
                 <div class="flex flex-wrap gap-3">
                     {% for h in bc_headline %}
@@ -271,10 +266,7 @@
 
             <!-- Measurements History (Circumferences) Table -->
             <div class="v-card p-6 space-y-3">
-                <div class="flex items-center gap-2">
-                    <span class="v-bar v-bar-sm"></span>
-                    <span class="v-text-card">{{ t("weight.measures_title") }}</span>
-                </div>
+                {{ card_header(t("weight.measures_title")) }}
                 <div class="max-h-60 overflow-y-auto v-card-inset">
                     <div class="v-table-wrap">
                         <table class="v-table">
@@ -345,8 +337,7 @@
             <!-- BODY COMPOSITION (InBody / МедАсс) Scan History -->
             {% if body_comp_enabled %}
             <div class="v-card p-6 space-y-3">
-                <div class="flex items-center gap-2"><span class="v-bar v-bar-sm"></span><span class="v-text-card">{{
-                        t("body.history") }}</span></div>
+                {{ card_header(t("body.history")) }}
                 <div class="space-y-2">
                     {% for s in bc_scans %}
                     <div class="v-card-inset p-3 space-y-2">
@@ -426,8 +417,7 @@
     {% if body_comp_enabled %}
     <div x-show="bsPreviewOpen" class="v-backdrop" x-cloak>
         <div class="v-modal p-6 space-y-4" @click.stop style="max-width: 44rem; width: 100%;">
-            <div class="flex items-center gap-2"><span class="v-bar"></span><span class="v-text-heading">{{
-                    t("body.preview_title") }}</span></div>
+            {{ card_header(t("body.preview_title")) }}
             <p class="v-text-micro" style="color: var(--muted)">{{ t("body.preview_hint") }}</p>
             <div class="grid grid-cols-2 gap-3">
                 <div>

@@ -112,7 +112,7 @@ consume them via `var(--token)` — never a hardcoded hex.
 | Token | Value | Use |
 |---|---|---|
 | `--good` / `--good-soft` | `#6FC58E` / `rgba(111,197,142,.13)` | Positive tone on a metric or chip |
-| `--bad` / `--bad-soft` | `#E87056` / `rgba(232,112,86,.13)` | Negative tone; also the `block` alert color |
+| `--bad` / `--bad-soft` | `#EE7A60` / `rgba(238,122,96,.13)` | Negative tone; also the `block` alert color |
 | `--bad-strong` | `#FF8469` | Critical / out-of-range emphasis |
 | `--warn` / `--warn-soft` | `#F0B24A` / `rgba(240,178,74,.13)` | The `warn` alert tier |
 | `--cool` / `--cool-soft` | `#6FB6C9` / `rgba(111,182,201,.13)` | Temporal/category tag — "day" side of a day/night pairing |
@@ -202,6 +202,14 @@ Radius scale, applied by role rather than by component:
 | `--radius` | 14px | Buttons, inputs, alerts, `.v-card-inset` |
 | `--radius-lg` | 20px | Cards, modals, metric tiles |
 | `--radius-pill` | 999px | Switch track, filter-pill shapes |
+
+**Nesting rule: an inner corner is always smaller than the corner it sits in**
+(inner ≈ outer − padding). A card is `--radius-lg` at every width — no
+breakpoint drops it to `--radius` — so anything nested in it can be `--radius`
+and still read as inside it rather than stuck on top of it. Where the padding is
+tighter than that, go smaller still: the stepper buttons on `/weight` are 8px
+inside a `--radius` track 6px away. The segmented control follows the same rule
+with a capsule outside and `--radius` on the pill.
 
 ### 2.4 Elevation
 
@@ -376,6 +384,17 @@ instead of `<div>`, for a key figure that should double as a shortcut (e.g.
 Garmin's Sleep figure linking straight to the latest night's detail page).
 Omit it and you get the plain non-interactive tile, same as before.
 
+**Not every value in the strip is a figure**, so the macro sorts them and the
+template author doesn't have to. A dash for data that hasn't arrived gets
+`.is-empty` (quiet, `--faint`, never the headline size — it was being drawn
+larger than the page title it stood under); a word like "Tirzepatide" gets
+`.is-text` (text face, wraps instead of running over the next column); a long
+figure-ish string like a date gets `.is-compact` (still a figure, one size down,
+so it stops breaking mid-token); a negative number gets `.is-neg`, which hangs
+the minus into the margin so the digits stay aligned with the column above.
+On a phone the strip is `auto-fit`, not two fixed columns — three figures in a
+hard 2-col grid left a hole in the bottom-right corner.
+
 ### 3.2 Classic (removed)
 
 The old frame: a blurred-glass top `.v-header` navbar (4rem tall, active link
@@ -424,6 +443,23 @@ both interfaces — build with these before reaching for raw Tailwind utilities.
 | `.v-card-flat` | Same, no shadow | Quiet/nested contexts |
 | `.v-card-inset` | `--bg-inset`, `--radius` | Recessed "well" sub-panels |
 | `.v-card-tile` | `--bg-inset`, lifts + amber-line border on hover | Clickable grid tiles |
+
+**Every card is headed the same way**, by the `card_header` macro in
+`partials/masthead.html` — a neutral `--line-2` bar, the title, and an optional
+right-hand slot:
+
+```jinja
+{{ card_header(t("today.goal_title"), meta=goal.target) }}
+
+{% call card_header(t("reports.digest_title")) %}
+  <button class="v-btn-ghost text-xs">…</button>
+{% endcall %}
+```
+
+There is no bar-less variant, no amber bar, no subtitle inside the header (a
+hint goes under it as a `.v-text-micro` line) and no per-card underline. The bar
+never takes a colour: a card heading is structure, and amber stays the active
+nav tab and the page's one primary button.
 
 ### Metrics / key figures
 

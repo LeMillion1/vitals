@@ -3,7 +3,7 @@
 {% block title %}{{ t("nutrition.page_title") }}{% endblock %}
 
 {% block content %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page v-page-nutrition px-6 py-7 max-w-6xl mx-auto space-y-8"
      x-data="nutritionDashboard()">
 
@@ -19,10 +19,7 @@
     <!-- Day intake: ring (calories) + macro bars, driven by ?date= day-nav (I2) -->
     <div class="v-card v-nutrition-intake p-6 space-y-6">
         <div class="mh-intake-header">
-            <div class="flex items-center gap-2">
-                <span class="v-bar v-bar-sm"></span>
-                <span class="v-text-card font-bold tracking-tight">{{ t("nutrition.intake_title") }}</span>
-            </div>
+            {{ card_header(t("nutrition.intake_title")) }}
             <div class="flex items-center gap-2">
                 <div class="mh-date-nav">
                     <a href="/nutrition?date={{ prev_date }}" class="mh-date-nav-btn" title="{{ t('nutrition.prev_day') }}">
@@ -174,11 +171,8 @@
 
             <!-- Today's meals -->
             <div class="v-card p-6 space-y-3">
-                <div class="flex items-center gap-2">
-                    <span class="v-bar v-bar-sm"></span>
-                    <span class="v-text-card">{% if is_today %}{{ t("nutrition.today_title") }}{% else %}{{ t("nutrition.meals_title") }}{% endif %}</span>
-                    <span class="v-text-micro ml-auto">{{ summary.meal_count }} {{ summary.meal_count | meal_word }}</span>
-                </div>
+                {{ card_header(t("nutrition.today_title") if is_today else t("nutrition.meals_title"),
+                                meta=summary.meal_count ~ " " ~ (summary.meal_count | meal_word)) }}
                 <div class="max-h-[28rem] overflow-y-auto v-card-inset">
                     <div class="v-table-wrap">
                         <table class="v-table" style="width: 100%; min-width: 560px; table-layout: fixed">
@@ -236,10 +230,7 @@
             <!-- Full history -->
             {% if history %}
             <div class="v-card p-6 space-y-3" x-data="{ showAllHistory: false }">
-                <div class="flex items-center gap-2">
-                    <span class="v-bar v-bar-sm"></span>
-                    <span class="v-text-card">{{ t("nutrition.history_title") }}</span>
-                </div>
+                {{ card_header(t("nutrition.history_title")) }}
                 <div class="v-card-inset">
                     <div class="v-table-wrap">
                         <table class="v-table" style="width: 100%; min-width: 620px; table-layout: fixed">

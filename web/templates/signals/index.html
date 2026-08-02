@@ -3,7 +3,7 @@
 {% block title %}{{ t("signals.page_title") }}{% endblock %}
 
 {% block content %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 {% set KIND_TAG = {'state': 'muted', 'symptom': 'bad', 'exposure': 'muted'} %}
 <div class="v-page v-page-signals px-6 py-7 max-w-6xl mx-auto space-y-8">
 
@@ -18,10 +18,7 @@
 
     <!-- ─── KEY FREQUENCY (прогон 7's raw material) ───────────────────────── -->
     <div class="v-card p-6 space-y-4">
-        <div class="flex items-center gap-2 pb-2" style="border-bottom: 1px solid var(--line)">
-            <span class="v-bar v-bar-sm"></span>
-            <span class="v-text-card">{{ t("signals.frequency_title") }}</span>
-        </div>
+        {{ card_header(t("signals.frequency_title")) }}
         <p class="v-text-micro" style="color: var(--muted)">{{ t("signals.frequency_hint") }}</p>
         {% if frequency %}
         <div class="v-table-wrap">
@@ -68,7 +65,7 @@
             <span class="v-text-micro v-num" style="color: var(--muted)">{{ day | format_date }}</span>
             {% for s in items %}
             <div class="v-card p-4 flex items-start gap-3">
-                <span class="v-bar mt-1"></span>
+                <span class="v-row-tick mt-1"></span>
                 <div class="flex-1 min-w-0 space-y-1">
                     <div class="flex items-center gap-2 flex-wrap">
                         <span class="v-tag {{ KIND_TAG.get(s.kind, 'muted') }}">{{ t("enum.signal_kind." + s.kind) }}</span>

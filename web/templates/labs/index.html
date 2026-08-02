@@ -3,7 +3,7 @@
 {% block title %}{{ t("labs.page_title") }}{% endblock %}
 
 {% block content %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page v-page-labs px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="labsUpload({% if latest %}false{% else %}true{% endif %})">
 
     {% call masthead_header('labs', t('nav.labs'), [
@@ -33,10 +33,7 @@
     <div x-show="showUpload" class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start" x-cloak>
         <!-- Left: Upload dropzone -->
         <div class="lg:col-span-6 v-card p-6 space-y-3">
-            <div class="flex items-center gap-2">
-                <span class="v-bar v-bar-sm"></span>
-                <span class="v-text-card">{{ t("labs.recognize_title") }}</span>
-            </div>
+            {{ card_header(t("labs.recognize_title")) }}
             <p class="v-text-body">
                 {{ t("labs.recognize_description") }}
             </p>
@@ -61,10 +58,7 @@
 
         <!-- Right: Manual entry -->
         <div class="lg:col-span-6 v-card p-6 space-y-3">
-            <div class="flex items-center gap-2">
-                <span class="v-bar v-bar-sm"></span>
-                <span class="v-text-card">{{ t("labs.manual_title") }}</span>
-            </div>
+            {{ card_header(t("labs.manual_title")) }}
             {# protocolForm(): the shared 409 → "save anyway" flow (see static/protocol.js).
                A lab result now runs the conflict gate like every other write, so a hard
                rule must be shown and overridable here instead of arriving as raw JSON. #}
@@ -122,16 +116,12 @@
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             <!-- Left: latest per marker table -->
             <div class="lg:col-span-8 v-card p-6 space-y-3">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-2">
-                        <span class="v-bar v-bar-sm"></span>
-                        <span class="v-text-card">{{ t("labs.latest_values") }}</span>
-                    </div>
-                    <label class="flex items-center gap-2 v-text-label cursor-pointer select-none">
-                        <input type="checkbox" x-model="showOnlyProblematic" class="rounded bg-surface-2 border-line text-accent focus:ring-accent">
-                        <span>{{ t("labs.only_abnormal") }}</span>
-                    </label>
-                </div>
+                {% call card_header(t("labs.latest_values")) %}
+                <label class="flex items-center gap-2 v-text-label cursor-pointer select-none">
+                    <input type="checkbox" x-model="showOnlyProblematic" class="rounded bg-surface-2 border-line text-accent focus:ring-accent">
+                    <span>{{ t("labs.only_abnormal") }}</span>
+                </label>
+                {% endcall %}
                 <div class="max-h-[24rem] overflow-y-auto v-card-inset">
                     <div class="v-table-wrap">
                         <table class="v-table">
@@ -178,11 +168,8 @@
 
             <!-- Right: catalog -->
             <div class="lg:col-span-4 v-card p-6 space-y-3">
-                <div class="flex items-center gap-2">
-                    <span class="v-bar v-bar-sm"></span>
-                    <span class="v-text-card">{{ t("labs.catalog_title") }}</span>
-                </div>
-                <ul class="space-y-2.5 max-h-[24rem] overflow-y-auto pr-1">
+                {{ card_header(t("labs.catalog_title")) }}
+                <ul class="space-y-2.5 max-h-[24rem] overflow-y-auto">
                     {% for m in markers %}
                     <li class="pb-2 flex justify-between items-center gap-2" style="border-bottom: 1px solid var(--line)">
                         <span class="v-text-body">{{ m.name }}
@@ -201,10 +188,7 @@
 
         <!-- Chart (bottom) -->
         <div class="v-card v-lab-chart p-6 space-y-3">
-            <div class="flex items-center gap-2">
-                <span class="v-bar"></span>
-                <span class="v-text-heading">{{ t("labs.chart_title") }} {{ selected or '—' }}</span>
-            </div>
+            {{ card_header(t("labs.chart_title") ~ " " ~ (selected or '—')) }}
             <div class="h-[280px] w-full relative">
                 <canvas id="labChart"></canvas>
             </div>
@@ -214,11 +198,9 @@
     <!-- MODAL: Lab upload preview (edit recognized markers before saving) -->
     <div x-show="lqPreviewOpen" class="v-backdrop" x-cloak>
         <div class="v-modal p-6 space-y-4" @click.stop style="max-width: 44rem; width: 100%;">
-            <div class="flex items-center gap-2">
-                <span class="v-bar"></span>
-                <span class="v-text-heading">{{ t("labs.preview_title") }}</span>
-                <span class="v-text-micro" style="color: var(--muted)" x-show="lqTotal > 1" x-text="lqProgressLabel()"></span>
-            </div>
+            {% call card_header(t("labs.preview_title")) %}
+            <span x-show="lqTotal > 1" x-text="lqProgressLabel()"></span>
+            {% endcall %}
             <p class="v-text-micro" style="color: var(--muted)">{{ t("labs.preview_hint") }}</p>
             <div class="grid grid-cols-2 gap-3">
                 <div>

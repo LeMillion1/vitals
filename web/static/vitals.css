@@ -50,8 +50,10 @@
     /* Semantic */
     --good: #6FC58E;
     --good-soft: rgba(111, 197, 142, 0.13);
-    --bad: #E87056;
-    --bad-soft: rgba(232, 112, 86, 0.13);
+    --bad: #EE7A60;
+    /* lightened from #E87056 — 4.27:1 on --surface failed AA, this reads 4.70:1
+       (same move already made for --violet) */
+    --bad-soft: rgba(238, 122, 96, 0.13);
     --bad-strong: #FF8469;
     /* critical / out-of-range emphasis */
     --warn: #F0B24A;
@@ -118,6 +120,31 @@ body {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     letter-spacing: -0.005em;
+}
+
+/* Scrollbars, declared once for every scroll area in the app. The platform's
+   15px bar is opaque and sits *on* the content: inside a card that means a pale
+   strip over the last table column (/glp1) and over the right end of every
+   divider in a scrolling list (/weight/measures). `*` because scrollbar-width
+   doesn't inherit; the rails that hide their bar entirely (.v-seg, .mh-tabs,
+   .v-nav-scroll) still win on specificity. */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-2) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--line-2);
+    border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
 }
 
 /* No monospace. Repurpose every `.font-mono` usage to tabular Inter so the
@@ -604,7 +631,9 @@ a.v-card:hover {
     border-radius: var(--radius);
     border: 1px solid transparent;
     transition: background .15s ease, transform .12s ease, box-shadow .15s ease;
-    box-shadow: 0 6px 18px -8px rgba(245, 166, 35, .6);
+    /* Kept inside the button's own gap: the old 18px blur cast an amber wash
+       over whatever sat under the button — on /weight that was the chip row. */
+    box-shadow: 0 2px 8px -5px rgba(245, 166, 35, .6);
     cursor: pointer;
 }
 
@@ -876,14 +905,19 @@ a.v-card:hover {
    sits directly under the rubric chips, which are 33px pills, and a 48px slab
    stretched across the whole column read as a second, heavier navigation than
    the one above it. Scrolls sideways when the labels outgrow the column. */
+/* Track and pill used to be capsules of the same 999px radius 4px apart: the
+   arcs at each end nearly touched and the eye read a collision, not a nesting.
+   The pill now carries a smaller radius than the track's implied one, sits 6px
+   in, and the track drops its border — the pill (--surface-2) was lighter than
+   that border, which turned the track behind it into a thin crescent. */
 .v-seg {
     display: flex;
     width: fit-content;
     max-width: 100%;
-    gap: 4px;
-    padding: 4px;
+    gap: 6px;
+    padding: 6px;
     background: var(--bg-inset);
-    border: 1px solid var(--line);
+    border: 0;
     border-radius: var(--radius-pill);
     overflow-x: auto;
     scrollbar-width: none;
@@ -902,7 +936,7 @@ a.v-card:hover {
     font-size: var(--text-label);
     font-weight: 600;
     color: var(--muted);
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius);
     transition: background .15s ease, color .15s ease;
     cursor: pointer;
     border: 0;
@@ -1307,29 +1341,51 @@ a.v-seg-btn {
     border-color: var(--line-2) !important;
 }
 
-/* ── Section heading accent bar ────────────────────────────────────────── */
-/* Neutral, not amber — it's a structural marker for every section heading,
-   so coloring it would put amber everywhere at once. */
+/* ── Card header ───────────────────────────────────────────────────────────
+   One header for every card in the app, emitted by the `card_header` macro in
+   partials/masthead.html. There used to be five — with a bar, without a bar,
+   with metadata on the right, with a grey subtitle, and "small grey label over
+   a big value" — three of them regularly on the same screen, and the bar was
+   amber on some cards and grey on others with no rule behind it. Amber now
+   means what it means everywhere else: the active nav tab and the page's one
+   primary button. */
+.v-card-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+/* Right-hand slot: metadata ("105 kg · 09-08-2026") or the card's own control.
+   Wraps under the title rather than squeezing it on a narrow column. */
+.v-card-head-meta {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    font-size: var(--text-micro);
+    color: var(--muted);
+}
+
 .v-bar {
     width: 2px;
     height: 1.25rem;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--line-2);
     display: inline-block;
+    flex: none;
 }
 
-.v-bar-sm {
-    width: 2px;
-    height: 1rem;
-}
-
-/* Amber hero bar — used once per page beside the H1 title, the page's single
-   "warm" landmark. Section bars stay neutral (.v-bar) so amber doesn't spread. */
-.v-bar-accent,
-.v-bar.mt-1 {
+/* Tone tick on a list row (timeline events, signals) — not a card header: it
+   reports that row's own good/bad/warn state, which is why it takes a colour. */
+.v-row-tick {
     width: 3px;
-    background: var(--accent);
-    box-shadow: 0 0 8px -1px var(--accent-line);
+    height: 1.25rem;
+    border-radius: var(--radius-pill);
+    background: var(--line-2);
+    display: inline-block;
+    flex: none;
 }
 
 /* ── Tables ────────────────────────────────────────────────────────────── */
@@ -2198,11 +2254,9 @@ sup {
         font-size: var(--text-micro);
     }
 
-    .v-seg {
-        gap: 0.15rem;
-        padding: 0.2rem;
-    }
-
+    /* Track padding/gap stay at the 6px declared once above: squashing them to
+       3.2px here is what put the pill's arc against the track's own. Only the
+       label shrinks. */
     .v-seg-btn {
         padding: 0.5rem 0.5rem;
         font-size: var(--text-micro);
@@ -2281,7 +2335,7 @@ sup {
 .v-table-wrap {
     overflow-x: auto;
     border: 1px solid var(--line);
-    border-radius: 14px;
+    border-radius: var(--radius);
 }
 .v-card-inset > .v-table-wrap {
     border: 0;
@@ -2325,7 +2379,8 @@ sup {
 }
 .v-weight-step {
     border: 1px solid var(--line);
-    border-radius: 10px;
+    /* 6px inside a --radius stepper — outer minus padding, not a third value */
+    border-radius: 8px;
     background: var(--surface-3);
     color: var(--fg-2);
     font: 500 22px/1 'Inter', sans-serif;
@@ -2419,19 +2474,9 @@ sup {
 .v-nutrition-meals .v-card + .v-card { margin-top: 24px; }
 
 /* Supplements — four protocol moments and a deliberately quieter archive. */
-.v-protocol-grid > .space-y-3 {
-    position: relative;
-    padding-left: 18px;
-}
-.v-protocol-grid > .space-y-3::before {
-    content: "";
-    position: absolute;
-    inset: 2px auto 2px 0;
-    width: 3px;
-    border-radius: 3px;
-    background: linear-gradient(var(--accent), var(--cool), var(--violet));
-    opacity: .72;
-}
+/* The timing groups used to carry a gradient spine down their left edge. Every
+   group heading now starts with the app's one card-header bar, and two vertical
+   marks 18px apart read as a rendering fault rather than as structure. */
 .v-protocol-grid .v-card-tile { min-height: 172px; }
 .v-supplement-archive { background: color-mix(in srgb, var(--surface) 72%, var(--bg-inset)); }
 
@@ -2607,10 +2652,12 @@ sup {
 
 @media (max-width: 560px) {
     .v-page { gap: var(--space-6); }
-    .v-page .v-card { border-radius: var(--radius); }
+    /* The card used to drop to --radius here while everything nested in it kept
+       --radius too — outer and inner corner on the same arc, which is what made
+       an inset read as a sticker on top instead of a well inside. The pair is
+       --radius-lg outside / --radius inside at every width (DESIGN_SYSTEM §2.3). */
     .v-garmin-summary .v-daystrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .v-garmin-summary .v-card-inset:last-child { grid-column: 1 / -1; }
-    .v-protocol-grid > .space-y-3 { padding-left: 12px; }
     .v-timeline-feed > .space-y-6::before { left: 8px; }
     .v-timeline-day { padding-left: 26px; }
     .v-timeline-day::before { left: 2px; }

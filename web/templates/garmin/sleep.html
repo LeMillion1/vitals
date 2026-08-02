@@ -35,7 +35,7 @@
 
 {% block content %}
 {% from "garmin/_tabs.html" import garmin_tabs %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page v-page-garmin v-page-garmin-sleep px-6 py-7 max-w-6xl mx-auto space-y-8">
 
     {% call masthead_header('garmin', daily.date | format_date, [
@@ -88,22 +88,18 @@
     <!-- Hypnogram -->
     {% if stages %}
     <div class="v-card p-6 space-y-3">
-        <div class="flex items-center justify-between gap-3">
-            <div class="flex items-center gap-2">
-                <span class="v-bar v-bar-sm"></span>
-                <span class="v-text-card">{{ t("garmin.hypnogram_title") }}</span>
-            </div>
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-                {% for stage, seconds in [('deep', daily.deep_sleep_seconds), ('light', daily.light_sleep_seconds), ('rem', daily.rem_sleep_seconds), ('awake', daily.awake_seconds)] %}
-                {% if seconds %}
-                <span class="v-text-micro flex items-center gap-1.5">
-                    <span class="v-dot {{ {'deep': 'violet', 'light': 'cool', 'rem': 'good'}.get(stage, '') }}"></span>
-                    {{ t("garmin.stage." + stage) }} <span class="v-num" style="color: var(--fg-2)">{{ seconds | format_hm }}</span>
-                </span>
-                {% endif %}
-                {% endfor %}
-            </div>
+        {% call card_header(t("garmin.hypnogram_title")) %}
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {% for stage, seconds in [('deep', daily.deep_sleep_seconds), ('light', daily.light_sleep_seconds), ('rem', daily.rem_sleep_seconds), ('awake', daily.awake_seconds)] %}
+            {% if seconds %}
+            <span class="v-text-micro flex items-center gap-1.5">
+                <span class="v-dot {{ {'deep': 'violet', 'light': 'cool', 'rem': 'good'}.get(stage, '') }}"></span>
+                {{ t("garmin.stage." + stage) }} <span class="v-num" style="color: var(--fg-2)">{{ seconds | format_hm }}</span>
+            </span>
+            {% endif %}
+            {% endfor %}
         </div>
+        {% endcall %}
         <!-- h-[280px]: an arbitrary utility already in the prebuilt tailwind.css.
              A fresh value compiles to nothing until the bundle is rebuilt, and the
              canvas silently collapses to Chart.js's 150px default. -->
@@ -116,22 +112,18 @@
     <!-- Overnight curves -->
     {% if series %}
     <div class="v-card p-6 space-y-3">
-        <div class="flex flex-col md:flex-row md:items-center justify-between gap-3">
-            <div class="flex items-center gap-2">
-                <span class="v-bar v-bar-sm"></span>
-                <span class="v-text-card">{{ t("garmin.sleep_curves_title") }}</span>
-            </div>
-            <!-- Seven series on one canvas would be unreadable; grouped by what
-                 shares a scale, and switched rather than toggled so the chart
-                 always shows a set that's directly comparable. -->
-            <div class="v-seg" id="garminSleepGroups">
-                {% for group in ['pulse', 'breathing', 'recovery', 'movement'] %}
-                <button type="button" class="v-seg-btn{% if loop.first %} is-active{% endif %}" data-sleep-group="{{ group }}">
-                    {{ t("garmin.sleep_group." + group) }}
-                </button>
-                {% endfor %}
-            </div>
+        {% call card_header(t("garmin.sleep_curves_title")) %}
+        <!-- Seven series on one canvas would be unreadable; grouped by what
+             shares a scale, and switched rather than toggled so the chart
+             always shows a set that's directly comparable. -->
+        <div class="v-seg" id="garminSleepGroups">
+            {% for group in ['pulse', 'breathing', 'recovery', 'movement'] %}
+            <button type="button" class="v-seg-btn{% if loop.first %} is-active{% endif %}" data-sleep-group="{{ group }}">
+                {{ t("garmin.sleep_group." + group) }}
+            </button>
+            {% endfor %}
         </div>
+        {% endcall %}
         <div class="h-[280px] w-full relative">
             <canvas id="garminSleepCurves"></canvas>
         </div>

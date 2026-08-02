@@ -3,7 +3,7 @@
 {% block title %}{{ t("hevy.page_title") }}{% endblock %}
 
 {% block content %}
-{% from "partials/masthead.html" import masthead_header with context %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page v-page-hevy px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="{ }">
 
     {% call masthead_header('hevy', t('nav.workouts'), [
@@ -33,10 +33,7 @@
 
         <!-- Left: recent workouts (Main) -->
         <div class="lg:col-span-8 v-card p-6 space-y-3">
-            <div class="flex items-center gap-2">
-                <span class="v-bar v-bar-sm"></span>
-                <span class="v-text-card">{{ t("hevy.recent_title") }}</span>
-            </div>
+            {{ card_header(t("hevy.recent_title")) }}
             <div class="max-h-[32rem] overflow-y-auto space-y-4 px-1 pb-1">
                 {% for w in workouts %}
                 <div class="p-6 rounded-xl border border-[var(--line)] bg-[var(--bg-inset)] hover:border-[var(--line-2)] transition duration-200 space-y-4">
@@ -102,10 +99,7 @@
 
         <!-- Right: exercise catalog (Smaller) -->
         <div class="lg:col-span-4 v-card p-6 space-y-3">
-            <div class="flex items-center gap-2">
-                <span class="v-bar v-bar-sm"></span>
-                <span class="v-text-card">{{ t("hevy.exercises_title") }}</span>
-            </div>
+            {{ card_header(t("hevy.exercises_title")) }}
             <div class="max-h-[32rem] overflow-y-auto space-y-2.5 px-1 pb-1">
                 {% for c in catalog %}
                 <div class="p-3.5 rounded-xl border border-[var(--line)] bg-[var(--bg-inset)] hover:border-[var(--line-2)] transition cursor-pointer {% if c.exercise_template_id == selected %}ring-1 ring-[var(--line-2)] border-[var(--line-2)] bg-[var(--surface-2)]{% endif %}"
@@ -137,18 +131,14 @@
 
     <!-- Chart + progression for the selected exercise (Bottom) -->
     <div class="v-card v-hevy-progress p-6 space-y-3">
-        <div class="flex justify-between items-center gap-3 flex-wrap">
-            <div class="flex items-center gap-2">
-                <span class="v-bar"></span>
-                <span class="v-text-heading">{{ t("hevy.working_weight") }} {{ selected_title or '—' }}</span>
-            </div>
+        {% call card_header(t("hevy.working_weight") ~ " " ~ (selected_title or '—')) %}
             {% if verdict %}
             <div class="flex items-center gap-2 v-text-label px-3 py-1.5 rounded-lg" style="background: var(--surface-3); border: 1px solid var(--line)">
                 <span class="text-base leading-none">{{ verdict.signal }}</span>
                 <span style="color: var(--fg-2)">{{ verdict.message }}</span>
             </div>
             {% endif %}
-        </div>
+        {% endcall %}
         {% if series.points | length >= 2 %}
         <div class="h-[300px] w-full relative">
             <canvas id="hevyChart"></canvas>
