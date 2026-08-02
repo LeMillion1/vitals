@@ -297,10 +297,18 @@ There is no search row and no command palette: everything fits on screen, so a
 second way to reach a section that is already one click away was chrome for its
 own sake.
 
-**Mobile (<768px):** the rail is replaced by a 52px `.mh-topbar` that carries the
-wordmark and **nothing else**. The phone used to show three navigation surfaces
-at once — this bar's "Menu" button, the bottom bar's own "More" button, and the
-single drawer both opened; the bottom bar is the only one left.
+**Mobile (<768px):** the rail is replaced by the section's own sticky bar (see
+"Section header" below). `.mh-topbar` still exists but is reduced to a bare
+safe-area spacer — height `env(safe-area-inset-top)`, nothing in it — so `<main>`
+starts below the status bar on every page, including the ones that render no
+section header (`/today`, `/more`). It used to be a 52px strip carrying the
+wordmark, which told someone already inside the app the name of the app. The
+phone once showed three navigation surfaces at once — that bar's "Menu" button,
+the bottom bar's own "More" button, and the single drawer both opened; the
+bottom bar and the chips are what is left.
+
+`.mh-bnav` is **56px** tall plus the home-indicator inset (it was 78px, sized
+for a caption that never grew into it).
 
 `.mh-bnav` is **always five equal columns** (`repeat(5, minmax(0, 1fr))`),
 independent of how many modules are on — the grid used to be sized from the
@@ -339,11 +347,29 @@ macro at the top of every module page:
 ]) }}
 ```
 
-renders eyebrow (`Section 01 · Health`) → optional right-aligned actions
-(pass via `{% call %}`) → underline tabs for sibling sections in the same
-rubric → the big `<h1>` → an inline key-figures row (`.mh-metrics`,
-divider-separated, one figure flagged `primary` in display type). This row
-**replaces** the classic KPI-card grid — don't build both.
+emits **four independent blocks** — `.mh-bar` (the `<h1>` plus the optional
+actions passed via `{% call %}`), `.mh-eyebrow`, `.mh-tabs`, `.mh-metrics` — and
+each width arranges the same four its own way instead of inheriting the other's
+arrangement.
+
+- **From 768px** `.mh-head` is a grid and `.mh-bar` is `display: contents`, so
+  the reading order is the editorial one: eyebrow + right-aligned actions →
+  underline tabs → the big `<h1>` beside an inline key-figures row
+  (`.mh-metrics`, divider-separated, one figure flagged `primary` in display
+  type). This row **replaces** the classic KPI-card grid — don't build both.
+  Below 900px the title and the figures stack instead of sharing a line.
+- **Below 768px** `.mh-head` is the one that goes `display: contents`, so its
+  children stick against `.v-page` — the whole scroll — rather than against a
+  header they would leave behind after two swipes. `.mh-bar` becomes a 52px
+  sticky bar (title at `--mh-text-bar`, truncating; the action to its right,
+  always `.v-btn-ghost`), the chips pin under it at `top: 52px`, and the eyebrow
+  is dropped: the bar and the active chip already say the section's name. A
+  scroll-direction handler in `base.html` puts `.mh-bar-hidden` on `<body>` on
+  the way down and takes it off on the way up; the chips slide to `top: 0` with
+  the bar.
+
+The action button is one thing in one place: `.v-btn-ghost` in `.mh-bar`, never
+a filled `.v-btn` on some pages and an outline on others.
 
 A metric dict may also carry `href`: that entry renders as `<a class="mh-metric">`
 instead of `<div>`, for a key figure that should double as a shortcut (e.g.

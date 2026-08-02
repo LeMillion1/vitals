@@ -21,7 +21,7 @@
 {% set slots = bottom_slots(request.state.enabled_modules or {}) %}
 <nav id="mobile-bottom-nav" {% if oob %}hx-swap-oob="true"{% endif %}
     class="md:hidden v-bottom-nav mh-bnav"
-    style="padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(78px + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
+    style="padding-bottom: max(env(safe-area-inset-bottom), var(--sab, 0px)); min-height: calc(56px + max(env(safe-area-inset-bottom), var(--sab, 0px)))">
     {# "Today" is the app's entry point, not a module — it has no registry entry
        and no toggle, so it is the one slot written out here by hand. #}
     <a href="/today" class="v-bnav-link {% if current_path == '/today' %}is-active{% endif %}"{% if current_path == '/today' %} aria-current="page"{% endif %}>

@@ -66,8 +66,11 @@ def test_rail_matches_handoff_widths_and_wordmark():
 
 
 def test_masthead_title_and_metrics_share_one_hero_row():
-    assert 'class="mh-hero-row"' in MASTHEAD_TEMPLATE
-    assert ".mh-hero-row" in MASTHEAD_CSS
+    """The hero row is a grid area now, not a wrapper div: the phone needs the
+    H1 in its sticky bar and the key figures further down, so the two can no
+    longer be nested together. Desktop still seats them side by side."""
+    assert ".mh-hero-row" not in MASTHEAD_TEMPLATE
+    assert '"title   metrics"' in MASTHEAD_CSS
     # The desktop H1 size lives on --mh-text-hero-lg since U6 pulled every
     # masthead size into a named token; the rule references the token. Compressed
     # 54→36 by the IA pass — the header was eating ~120px above every page.

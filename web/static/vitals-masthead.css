@@ -30,6 +30,7 @@ body.ui-masthead {
     --mh-text-wordmark: 22px;      /* rail wordmark */
     --mh-text-lead: 21px;          /* secondary key figure */
     --mh-text-brand: 19px;         /* mobile topbar wordmark */
+    --mh-text-bar: 17px;           /* H1 inside the phone's sticky section bar */
     --mh-text-tab: 15px;           /* rubric tab */
     --mh-text-eyebrow: 11px;       /* uppercase eyebrows / labels */
     --mh-text-nano: 10px;          /* smallest uppercase micro-label */
@@ -389,18 +390,25 @@ body.ui-masthead .mh-topbar-brand span {
 /* No .mh-topbar-menu rule: the phone's top bar carries no controls at all since
    the nav handoff — the bottom bar and /more own phone navigation. */
 
-/* ── The editorial masthead (rendered at the top of each section's content) ── */
+/* ── The editorial masthead (rendered at the top of each section's content) ──
+   Four blocks, one per line of the reading order, placed by grid area rather
+   than by nesting — the phone rearranges the same four into a sticky bar (see
+   the mobile shell block at the foot of this file) and neither layout is the
+   other one squeezed. `.mh-bar` is display:contents here so its two children,
+   the H1 and the section action, are grid items in their own right. */
 body.ui-masthead .mh-head {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+        "eyebrow actions"
+        "tabs    tabs"
+        "title   metrics";
+    column-gap: 56px;
+    align-items: end;
 }
 
-body.ui-masthead .mh-eyebrow-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    min-height: 38px;
+body.ui-masthead .mh-bar {
+    display: contents;
 }
 
 body.ui-masthead .mh-eyebrow {
@@ -410,17 +418,31 @@ body.ui-masthead .mh-eyebrow {
     color: var(--faint);
 }
 
-body.ui-masthead .mh-actions {
+/* Only the header's own eyebrow is a grid item — /today reuses the class inside
+   its own date/sync row. */
+body.ui-masthead .mh-head > .mh-eyebrow {
+    grid-area: eyebrow;
+    align-self: center;
     display: flex;
     align-items: center;
+    min-height: 38px;
+}
+
+body.ui-masthead .mh-actions {
+    grid-area: actions;
+    justify-self: end;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
     gap: 10px;
-    flex: none;
 }
 
 /* Rubric tabs — the sibling sections of the page you are on, in the content
    column. They restate what the rail says, and that repetition is the point: the
    rail is a place to go, this row is where you already are. */
 body.ui-masthead .mh-tabs {
+    grid-area: tabs;
     display: flex;
     align-items: center;
     flex-wrap: wrap;
@@ -769,51 +791,34 @@ body.ui-masthead .mh-rail-wordmark {
 body.ui-masthead .mh-tabs {
     border-bottom: 1px solid var(--line);
 }
-/* The eyebrow row carries the section action (Sync / Add meal / …). It must be
-   allowed to wrap: on a phone the button plus its status line is wider than the
-   viewport, and a nowrap row pushed <main> 176px sideways. */
-body.ui-masthead .mh-eyebrow-row { flex-wrap: wrap; }
+/* The section action (Sync / Add meal / …) may wrap: a button plus its status
+   line is wider than a narrow column, and a nowrap row pushed <main> 176px
+   sideways. */
 body.ui-masthead .mh-actions { flex-wrap: wrap; max-width: 100%; }
 body.ui-masthead .mh-tab { font-size: var(--mh-text-tab); }
-body.ui-masthead .mh-hero-row {
-    display: flex;
-    align-items: flex-end;
-    /* Metrics are anchored to the title, not to the right gutter. Pushed to the
-       far edge the strip's distance from the H1 changed with every page — four
-       wide metrics on Weight read as one composition, "52 события · 1 вручную"
-       on Timeline read as two unrelated things at opposite ends of the screen.
-       A constant 56px gap makes every page's masthead the same object. */
-    justify-content: flex-start;
-    /* Wrap the row, not the metrics. Whether title + metrics fit on one line
-       depends on both (a long title, a metric reading "LLM подключена", the
-       rail expanded at 901px), so no breakpoint gets it right — instead the
-       metric block moves under the title as a unit the moment it stops
-       fitting, rather than shedding its last metric onto a second line with
-       the divider left hanging. */
-    flex-wrap: wrap;
-    gap: 22px 56px;
-    margin-top: 20px;
-}
+/* Title and key figures share the bottom row of the grid, anchored to each
+   other rather than to the right gutter. Pushed to the far edge the strip's
+   distance from the H1 changed with every page — four wide metrics on Weight
+   read as one composition, "52 события · 1 вручную" on Timeline read as two
+   unrelated things at opposite ends of the screen. The grid's constant 56px
+   column gap makes every page's masthead the same object. */
 body.ui-masthead .mh-title {
-    flex: none;
     margin: 0;
     font: 800 var(--mh-text-hero-lg)/.95 var(--mh-display);
     letter-spacing: -.025em;
 }
+body.ui-masthead .mh-head .mh-title {
+    grid-area: title;
+    margin-top: 20px;
+}
 body.ui-masthead .mh-metrics {
+    grid-area: metrics;
     justify-content: flex-start;
-    /* min() is the whole trick: while the metrics fit on a line of their own the
-       floor is their natural width, so they refuse to shrink and the hero row
-       wraps them under the title as one block. Once even a full line is too
-       narrow the floor drops to 100% and they wrap among themselves instead of
-       running off the edge. */
-    flex: 0 1 auto;
     flex-wrap: wrap;
-    min-width: min(100%, max-content);
     gap: 0;
     border-top: 0;
     padding-top: 0;
-    margin-top: 0;
+    margin-top: 20px;
 }
 body.ui-masthead .mh-metric-div { margin: 0 26px; }
 body.ui-masthead .mh-metric-value.is-primary { font-size: var(--mh-text-metric-md); }
@@ -840,6 +845,19 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
 @media (max-width: 1200px) {
     body.ui-masthead .mh-metric-div { display: none; }
     body.ui-masthead .mh-metrics { gap: 16px 34px; }
+    /* Same threshold: once the figures need a second line they stop being a
+       column beside the H1 and become a block under it. Left in place they
+       bottom-align against their own second row, which puts the title level
+       with the middle of the strip. */
+    body.ui-masthead .mh-head {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+            "eyebrow actions"
+            "tabs    tabs"
+            "title   title"
+            "metrics metrics";
+    }
+    body.ui-masthead .mh-head .mh-metrics { margin-top: 22px; }
 }
 
 @media (max-width: 900px) {
@@ -847,11 +865,6 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
     body.ui-masthead main > #alerts-container {
         padding-left: 32px !important;
         padding-right: 32px !important;
-    }
-    body.ui-masthead .mh-hero-row {
-        align-items: flex-start;
-        flex-direction: column;
-        gap: 22px;
     }
     body.ui-masthead .mh-title { font-size: var(--mh-text-hero-md); }
     body.ui-masthead .mh-metric-value.is-primary { font-size: var(--mh-text-hero-md); }
@@ -866,7 +879,11 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
     body.ui-masthead main > .max-w-6xl,
     body.ui-masthead main > #alerts-container { padding: 22px 16px !important; }
     body.ui-masthead .mh-title { font-size: var(--mh-text-hero-sm); }
-    body.ui-masthead .mh-hero-row { margin-top: 20px; }
+    /* Declared beside .mh-title on purpose: the two used to move on different
+       breakpoints (900 lifted the figure to 32px, 560 dropped the title to 27px
+       and left the figure alone), which is how a "—" ended up drawn larger than
+       the word it stood under on fourteen pages. Same block, never larger. */
+    body.ui-masthead .mh-metric-value.is-primary { font-size: var(--mh-text-hero-sm); }
     body.ui-masthead .mh-metrics {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -900,7 +917,7 @@ body.ui-masthead .mh-bnav {
     display: none;
     grid-template-columns: repeat(5, minmax(0, 1fr));
     align-items: start;
-    padding-top: 10px;
+    padding-top: 6px;
     background: rgba(21, 19, 24, .96);
     backdrop-filter: blur(12px);
     border-top: 1px solid var(--line);
@@ -916,7 +933,7 @@ body.ui-masthead .mh-bnav .v-bnav-link {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 5px;
+    gap: 3px;
     /* The cell is the tap target, not the glyph: 44px minimum even though the
        icon+label stack is shorter. */
     min-height: 44px;
@@ -948,7 +965,6 @@ body.ui-masthead .mh-bnav-label {
    that says the list continues. */
 @media (max-width: 767px) {
     body.ui-masthead .mh-tabs {
-        order: 1;
         border-bottom: 0;
         gap: 7px;
         margin-top: 14px;
@@ -972,10 +988,6 @@ body.ui-masthead .mh-bnav-label {
         color: var(--accent-2);
         background: var(--accent-soft);
         border-color: var(--accent-line);
-    }
-
-    body.ui-masthead .mh-hero-row {
-        order: 0;
     }
 }
 
@@ -1077,4 +1089,122 @@ body.ui-masthead .mh-more-logout {
 body.ui-masthead .mh-more-logout:active {
     background: var(--accent-soft);
     color: var(--accent-2);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Mobile shell 2026-08 — the phone's own header
+   ============================================================================
+   A phone is not a narrow desktop. The permanent chrome used to cost 223px of
+   874 before a single number appeared, and the section name was written three
+   times on the way down (eyebrow → active chip → H1). What is left is one 52px
+   bar that says where you are and offers the one action of the page, a chip row
+   pinned under it, and then the data.
+
+   Everything below is the phone only — the grid above owns every wider width. */
+
+@media (max-width: 767px) {
+    /* Gutter the full-bleed bars have to cancel. It tracks the page padding the
+       shell already sets (56/32/16px), so the bar's background reaches the
+       screen edges instead of leaving two strips of scrolling content. */
+    body.ui-masthead { --mh-gutter: 32px; }
+
+    /* The wordmark strip is gone — it spent 52px saying "Vitals" to someone
+       already inside the app. The element stays as a bare safe-area spacer
+       (height 0 on a phone without a notch) so <main> still begins below the
+       status bar on every page, including the ones with no section header. */
+    body.ui-masthead .mh-topbar {
+        min-height: 0;
+        height: max(env(safe-area-inset-top), var(--sat, 0px));
+        padding: 0;
+        border-bottom: 0;
+        background: var(--bg);
+    }
+
+    body.ui-masthead .mh-topbar-brand {
+        display: none;
+    }
+
+    /* .mh-head stops being a box: sticky positions against the nearest ancestor
+       box, and inside a 200px-tall header the bar would unstick two swipes into
+       the page. With display:contents its children stick against .v-page — the
+       whole scroll. The DOM is untouched, so `.mh-head > …` selectors and the
+       page's own space-y utilities still work. */
+    body.ui-masthead .mh-head {
+        display: contents;
+    }
+
+    /* Third statement of the section name in a column 402px wide. The bar says
+       it and the active chip says it; this one goes. */
+    body.ui-masthead .mh-head > .mh-eyebrow {
+        display: none;
+    }
+
+    body.ui-masthead .mh-bar {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 52px;
+        margin-inline: calc(-1 * var(--mh-gutter));
+        padding-inline: var(--mh-gutter);
+        background: var(--bg);
+        transition: transform .18s ease;
+    }
+
+    body.ui-masthead .mh-head .mh-bar .mh-title {
+        margin: 0;
+        min-width: 0;
+        font: 600 var(--mh-text-bar)/1.2 var(--mh-display);
+        letter-spacing: -.01em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    body.ui-masthead .mh-bar .mh-actions {
+        flex: none;
+        flex-wrap: nowrap;
+        gap: 8px;
+    }
+
+    /* "Synced · 2 hours ago" is a second sentence, not the action — it has no
+       room in a 52px bar and the same fact is on the Settings screen. */
+    body.ui-masthead .mh-bar .v-text-micro {
+        display: none;
+    }
+
+    /* Chips pin directly under the bar and travel with it: when the bar slides
+       away they take its place rather than leaving a transparent 52px band. */
+    body.ui-masthead .mh-tabs {
+        position: sticky;
+        top: 52px;
+        z-index: 29;
+        margin-top: 0;
+        margin-inline: calc(-1 * var(--mh-gutter));
+        padding: 8px var(--mh-gutter);
+        background: var(--bg);
+        transition: top .18s ease;
+    }
+
+    body.ui-masthead .mh-head .mh-metrics {
+        margin-top: 12px;
+    }
+
+    /* Scrolling down is a request for content; scrolling up is a request for
+       navigation. The class is toggled in base.html with an 8px threshold so
+       the bar doesn't flutter on a jittery finger. */
+    body.mh-bar-hidden .mh-bar {
+        transform: translateY(-100%);
+    }
+
+    body.mh-bar-hidden .mh-tabs {
+        top: 0;
+    }
+}
+
+@media (max-width: 560px) {
+    body.ui-masthead { --mh-gutter: 16px; }
 }

@@ -1592,15 +1592,6 @@ a.v-seg-btn {
         height: 1.15rem;
     }
 
-    /* ── Cards — tighter padding ── */
-    .v-card>.p-6 {
-        padding: 1rem;
-    }
-
-    .v-card.p-6 {
-        padding: 1rem;
-    }
-
     /* ── Metrics — compact grid ── */
     .v-metric {
         padding: var(--space-3) var(--space-3);
@@ -2605,10 +2596,18 @@ sup {
     .v-protocol-grid .v-card-tile { min-height: 0; }
 }
 
+/* Card padding on a phone, declared once. It used to be three rules stacked on
+   each other — 24px from the utility, 16px at 640, 18px at 560 — and the 18px
+   nobody chose was the one that won. 16px is the grid step; 24px returns from
+   768px up. */
+@media (max-width: 767px) {
+    .v-card > .p-6,
+    .v-card.p-6 { padding: var(--space-4); }
+}
+
 @media (max-width: 560px) {
-    .v-page { gap: 22px; }
+    .v-page { gap: var(--space-6); }
     .v-page .v-card { border-radius: var(--radius); }
-    .v-page .v-card.p-6 { padding: 18px; }
     .v-garmin-summary .v-daystrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .v-garmin-summary .v-card-inset:last-child { grid-column: 1 / -1; }
     .v-protocol-grid > .space-y-3 { padding-left: 12px; }
@@ -2617,7 +2616,7 @@ sup {
     .v-timeline-day::before { left: 2px; }
     .v-chart-card .h-\[280px\] { min-height: 220px; }
     .v-interaction-matrix .grid { grid-template-columns: 1fr; }
-    .v-setting-row { padding: 18px; }
+    .v-setting-row { padding: var(--space-4); }
 }
 /* Keep the nutrition macro grid shrinkable inside the 68px mobile rail. */
 .v-nutrition-intake .mh-intake-grid,

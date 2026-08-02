@@ -14,7 +14,7 @@
         {'label': t('garmin.resting_hr'), 'unit': t('garmin.bpm'), 'value': latest.resting_hr if (latest and latest.resting_hr) else '—'}
     ]) %}
         <form action="/garmin/sync" method="POST">
-            <button type="submit" class="v-btn text-xs" {% if not is_configured %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
+            <button type="submit" class="v-btn-ghost text-xs" {% if not is_configured %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
                 {% if is_configured %}{{ t("common.synchronize") }}{% else %}{{ t("common.not_configured") }}{% endif %}
             </button>
         </form>

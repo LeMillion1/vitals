@@ -12,7 +12,7 @@
         {'label': t('hevy.exercises_in_catalog'), 'value': catalog | length}
     ]) %}
         <form action="/hevy/sync" method="POST">
-            <button type="submit" class="v-btn text-xs" {% if not is_configured %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
+            <button type="submit" class="v-btn-ghost text-xs" {% if not is_configured %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
                 {% if is_configured %}{{ t("common.synchronize") }}{% else %}{{ t("common.not_configured") }}{% endif %}
             </button>
         </form>

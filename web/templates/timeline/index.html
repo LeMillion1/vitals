@@ -20,7 +20,7 @@
     {'label': t('timeline.metric_total'), 'primary': true, 'value': events|length},
     {'label': t('timeline.metric_manual'), 'value': manual_count}
     ]) %}
-    <button @click="showForm = !showForm" class="v-btn text-xs">
+    <button @click="showForm = !showForm" class="v-btn-ghost text-xs">
         <span x-text="showForm ? '{{ t(" common.cancel") }}' : '{{ t("timeline.add_button") }}'"></span>
         </button>
     {% endcall %}

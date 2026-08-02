@@ -825,6 +825,38 @@
         })();
     </script>
 
+    <!-- Phone: hide the section bar while reading, bring it back on the way up.
+         Scrolling down is a request for content, scrolling up is a request for
+         navigation. <main> is the app's only scroll container (the shell is
+         position:fixed), and hx-boost replaces it on every navigation, so the
+         listener is re-bound whenever the node changes — the identity check is
+         what makes that safe to call on every htmx:load. The 8px threshold
+         stops the bar flickering under a jittery finger; the 64px floor keeps
+         it on screen for the first swipe. Purely additive: the CSS that reads
+         .mh-bar-hidden only exists below 768px. -->
+    <script>
+        (function () {
+            var main = null, last = 0;
+            function onScroll() {
+                var y = main.scrollTop;
+                if (Math.abs(y - last) < 8) return;
+                document.body.classList.toggle('mh-bar-hidden', y > last && y > 64);
+                last = y;
+            }
+            function bind() {
+                var el = document.querySelector('main');
+                if (!el || el === main) return;
+                main = el;
+                last = el.scrollTop;
+                document.body.classList.remove('mh-bar-hidden');
+                el.addEventListener('scroll', onScroll, { passive: true });
+            }
+            document.addEventListener('DOMContentLoaded', bind);
+            document.addEventListener('htmx:load', bind);
+            bind();
+        })();
+    </script>
+
     <!-- Fix iOS date input centering: iOS renders the date via a system component
          that ignores text-align. We wrap each date input, hide its native text on
          mobile, and overlay a left-aligned formatted span. Runs on first load AND
