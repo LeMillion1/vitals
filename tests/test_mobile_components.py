@@ -69,6 +69,18 @@ def test_segmented_pill_is_not_the_same_capsule_as_its_track():
     assert "padding: 0.2rem" not in APP_CSS
 
 
+def test_segmented_control_wraps_instead_of_hiding_its_last_tab():
+    """Four tabs need 368px; the entry sidebar gives them 291. The track used to
+    scroll sideways with its bar hidden, so the last label was sliced mid-word
+    ("Соста") with nothing on screen to say the row continued."""
+    track = _rule(APP_CSS, ".v-seg")
+    assert "flex-wrap: wrap;" in track
+    assert "overflow-x" not in track
+    assert ".v-seg::-webkit-scrollbar" not in APP_CSS
+    # Wrapped rows stay flush with the track instead of ending ragged.
+    assert "flex: 1 1 auto;" in _rule(APP_CSS, ".v-seg-btn")
+
+
 def test_stepper_button_radius_fits_its_6px_track():
     assert _radii(APP_CSS, ".v-weight-step") == ["var(--radius-xs)"]
 

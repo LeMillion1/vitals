@@ -336,3 +336,7 @@ def test_the_active_chip_is_brought_to_the_row_lead_not_its_middle():
     base = (ROOT / "web/templates/base.html").read_text(encoding="utf-8")
     assert "active.offsetLeft - first.offsetLeft" in base
     assert "row.clientWidth - active.offsetWidth" not in base
+    # …and a chip that is already on screen is left where it is. /skincare
+    # overflows by 24px: scrolling to the lead clamped there and cut 8px off
+    # the first chip for nothing.
+    assert "lead >= gutter && lead + active.offsetWidth <= row.clientWidth - gutter" in base

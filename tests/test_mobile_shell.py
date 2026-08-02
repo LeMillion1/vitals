@@ -82,6 +82,24 @@ def test_section_bar_is_sticky_against_the_page_not_the_header():
     assert "top: 0" in _rule(PHONE_CSS, "body.mh-bar-hidden .mh-tabs")
 
 
+def test_chip_row_keeps_the_page_gutter_when_it_snaps():
+    """The row is full-bleed (negative margin) and pays the gutter back as
+    padding — but a snap port aligns to the scroll box, not to its padding, so
+    the first chip snapped to x=0 and sat against the screen edge while the
+    title beside it kept its 16px."""
+    tabs = _rule(PHONE_CSS, "body.ui-masthead .mh-tabs")
+    assert "padding: 8px var(--mh-gutter);" in tabs
+    assert "scroll-padding-inline: var(--mh-gutter);" in tabs
+
+
+def test_page_starts_right_under_the_status_bar():
+    """The first thing on a page is the sticky bar, which already centres its
+    title inside 52px. 22px of page padding on top of that made a 37px band of
+    nothing between the status bar and the section name."""
+    assert "padding: 8px 16px 22px !important;" in PHONE_CSS
+    assert "padding: 22px 16px !important;" not in PHONE_CSS
+
+
 def test_eyebrow_is_hidden_only_inside_the_section_header():
     """Third statement of the section name after the bar and the active chip.
     /today reuses .mh-eyebrow for its date/time line — that one stays."""

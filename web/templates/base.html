@@ -820,6 +820,14 @@
                     var first = row.querySelector('.mh-tab');
                     var active = row.querySelector('.mh-tab.is-active');
                     if (!first || !active) return;
+                    // first.offsetLeft is the row's own gutter — the band a chip
+                    // has to stay inside to count as fully on screen. A chip that
+                    // already is stays put: on a row overflowing by less than one
+                    // scroll of travel the browser clamps the scroll and the move
+                    // buys nothing but a first chip sliced down the middle.
+                    var gutter = first.offsetLeft;
+                    var lead = active.offsetLeft - row.scrollLeft;
+                    if (lead >= gutter && lead + active.offsetWidth <= row.clientWidth - gutter) return;
                     row.scrollLeft = Math.max(0, active.offsetLeft - first.offsetLeft);
                 });
             }

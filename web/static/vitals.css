@@ -854,17 +854,17 @@ summary {
     background: var(--bg-inset);
     border: 0;
     border-radius: var(--radius-pill);
-    overflow-x: auto;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-}
-
-.v-seg::-webkit-scrollbar {
-    display: none;
+    /* Wraps rather than scrolls: this control lives in the 341px entry sidebar,
+       where four tabs need 368px. Sideways scroll with a hidden bar showed the
+       last label sliced in half ("Соста") with nothing to say it continued. */
+    flex-wrap: wrap;
 }
 
 .v-seg-btn {
-    flex: 0 0 auto;
+    /* Grows only once the track has hit its max-width and wrapped — a fit-content
+       track is already max-content wide, so nothing stretches on a wide screen.
+       On a wrapped track it keeps the rows flush instead of ragged. */
+    flex: 1 1 auto;
     text-align: center;
     padding: 7px 18px;
     line-height: 1.4;

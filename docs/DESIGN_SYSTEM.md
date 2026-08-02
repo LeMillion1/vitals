@@ -556,6 +556,12 @@ the section row above them, sized at `--text-label`, with a neutral raised
 itself to the top of the scroll. See `garmin/_tabs.html` and
 `weight/_tabs.html`.
 
+The track **wraps** (`flex-wrap: wrap`, buttons `flex: 1 1 auto`) — it never
+scrolls sideways. Four tabs need 368px and the entry sidebar is 291px wide, so
+the old hidden-bar sideways scroll left the last label cut mid-word with nothing
+saying the row continued. A wrapped track keeps every option readable and its
+rows flush.
+
 ### Chips, tags, pills, dots
 
 | Class | Modifiers | Note |

@@ -832,7 +832,10 @@ body.ui-masthead main > #alerts-container + .v-page { padding-top: 24px !importa
 
 @media (max-width: 767px) {
     body.ui-masthead main > .max-w-6xl,
-    body.ui-masthead main > #alerts-container { padding: 22px 16px !important; }
+    /* 8px, not 22: the first thing on the page is the sticky bar, which already
+       centres its title inside 52px. The two paddings stacked into a 37px band
+       of nothing between the status bar and the section name. */
+    body.ui-masthead main > #alerts-container { padding: 8px 16px 22px !important; }
     body.ui-masthead .mh-title { font-size: var(--text-title); }
     /* Declared beside .mh-title on purpose: the two used to move on different
        breakpoints (900 lifted the figure to 32px, 560 dropped the title to 27px
@@ -1210,6 +1213,10 @@ body.ui-masthead .mh-more-logout:active {
         margin-top: 0;
         margin-inline: calc(-1 * var(--mh-gutter));
         padding: 8px var(--mh-gutter);
+        /* Without this the snap ports align to the scroll box, not to its
+           padding: the first chip snapped to x=0 and sat against the screen
+           edge while the title beside it kept the 16px gutter. */
+        scroll-padding-inline: var(--mh-gutter);
         background: var(--bg);
         transition: top .18s ease;
     }
