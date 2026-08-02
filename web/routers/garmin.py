@@ -20,6 +20,7 @@ from vitals.models.garmin import (
     SLEEP_SERIES_TYPES,
 )
 from vitals.services import alerts_service, garmin_service
+from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates
 from web.uploads import JSON_EXTS, read_capped, validate_extension
@@ -78,6 +79,10 @@ async def garmin_dashboard(
         {
             "username": username,
             "latest": latest,
+            # So the day strip can say *which* day it is showing. `latest` is the
+            # newest day the watch reported, which before the morning sync is
+            # yesterday — silently, unless the screen says so.
+            "today_date": today_local(),
             "history": history,
             "intraday": intraday,
             "count": count,

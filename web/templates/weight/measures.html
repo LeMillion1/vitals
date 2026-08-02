@@ -56,16 +56,16 @@
                         <div class="grid grid-cols-1 sm:grid-cols-{{ '3' if sex == 'female' else '2' }} gap-3">
                             <div>
                                 <label for="weight-neck_cm" class="v-label">{{ t("weight.neck") }}</label>
-                                <input inputmode="decimal" id="weight-neck_cm" type="number" name="neck_cm" step="0.1" placeholder="38.0" class="v-input">
+                                <input inputmode="decimal" id="weight-neck_cm" type="number" name="neck_cm" step="0.1" placeholder="{{ t('common.eg', value='38.0') }}" class="v-input">
                             </div>
                             <div>
                                 <label for="weight-waist_cm" class="v-label">{{ t("weight.waist") }}</label>
-                                <input inputmode="decimal" id="weight-waist_cm" type="number" name="waist_cm" step="0.1" placeholder="85.0" class="v-input">
+                                <input inputmode="decimal" id="weight-waist_cm" type="number" name="waist_cm" step="0.1" placeholder="{{ t('common.eg', value='85.0') }}" class="v-input">
                             </div>
                             {% if sex == 'female' %}
                             <div>
                                 <label for="weight-hips_cm" class="v-label">{{ t("weight.hips") }}</label>
-                                <input inputmode="decimal" id="weight-hips_cm" type="number" name="hips_cm" step="0.1" placeholder="95.0" class="v-input">
+                                <input inputmode="decimal" id="weight-hips_cm" type="number" name="hips_cm" step="0.1" placeholder="{{ t('common.eg', value='95.0') }}" class="v-input">
                             </div>
                             {% endif %}
                         </div>
@@ -438,7 +438,7 @@
                         class="v-input">
                 </div>
             </div>
-            <div class="max-h-[50vh] overflow-y-auto v-card-inset">
+            <div class="max-h-[50vh] overflow-y-auto v-scroll-cap v-card-inset">
                 <table class="v-table v-rows w-full">
                     <thead>
                         <tr>

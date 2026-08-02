@@ -916,9 +916,12 @@ async def test_garmin_history_table_drops_sleep_column(auth_client, db_session):
             date=date(2026, 6, 9), domain="garmin", source="garmin_api",
             sleep_seconds=9000, resting_hr=47,
         ),
+        # The newest *reported* day, so it is the one the masthead reads — a row
+        # with nothing on it at all is a placeholder and latest_daily skips it,
+        # which would put the older row's sleep back in the header.
         GarminDaily(
             date=date(2026, 6, 16), domain="garmin", source="garmin_api",
-            sleep_seconds=None,
+            sleep_seconds=None, resting_hr=50,
         ),
     ])
     await db_session.commit()

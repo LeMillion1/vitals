@@ -50,7 +50,7 @@
         <!-- ── Left column ────────────────────────────────────────────────── -->
         <div class="space-y-6">
 
-            <div class="v-card p-6 space-y-4">
+            <div class="v-card p-6 space-y-4{% if not changes %} is-empty{% endif %}">
                 {{ card_header(t("today.changes_title")) }}
                 {% for c in changes %}
                 {# A whole-row <a> on a CSS grid — never a clickable <tr>. #}
@@ -71,7 +71,7 @@
                 {% endfor %}
             </div>
 
-            <div class="v-card p-6 space-y-3">
+            <div class="v-card p-6 space-y-3{% if not feed %} is-empty{% endif %}">
                 {{ card_header(t("today.feed_title")) }}
                 {% for row in feed %}
                 <div class="v-today-feed-row">
@@ -127,7 +127,7 @@
                 </div>
             </div>
 
-            <div class="v-card p-6 space-y-3">
+            <div class="v-card p-6 space-y-3{% if not attention %} is-empty{% endif %}">
                 {{ card_header(t("today.attention_title")) }}
                 {% for a in attention %}
                 <div class="v-alert {{ a.severity }}">
@@ -139,7 +139,7 @@
                 {% endfor %}
             </div>
 
-            <div class="v-card p-6 space-y-3">
+            <div class="v-card p-6 space-y-3{% if not goal %} is-empty{% endif %}">
                 {% call card_header(t("today.goal_title")) %}
                 {% if goal %}<span class="v-text-micro" style="color: var(--muted)">{{ goal.target }} {{
                     t("common.kg") }}{% if goal.deadline %} · {{ goal.deadline | format_date }}{% endif %}</span>{%

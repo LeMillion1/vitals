@@ -1986,8 +1986,11 @@ a.v-seg-btn {
     width: 100%;
 }
 
+/* Drawn, not half-loaded: a 1.5px stroke at 40% opacity reads as an image that
+   failed to arrive rather than as an icon that means "nothing here yet". */
 .v-empty-state svg {
-    opacity: 0.4;
+    opacity: 0.65;
+    stroke-width: 1.8;
     color: var(--muted);
     width: 2rem;
     height: 2rem;
@@ -3078,6 +3081,32 @@ sup {
     margin-top: 2px;
 }
 
+/* A card with nothing in it is one line, not a hundred pixels of card around a
+   single grey sentence. Same header, same wording — set beside each other
+   instead of under, with the padding cut to that line's height. Declared after
+   .v-card.p-6 so the flat padding wins on equal specificity. */
+.v-card.is-empty {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+    padding: 12px var(--space-4);
+}
+
+.v-card.is-empty > * + * { margin-top: 0; }
+.v-card.is-empty p { font-size: var(--text-micro); }
+
+/* A list with its own scrollbar. On a phone that cap is a trap: the finger
+   lands inside the list, the list moves and the page stands still. Below the
+   phone breakpoint the list is shown whole and the page is the only thing that
+   scrolls — the utility class next to it still sets the desktop cap. */
+@media (max-width: 767px) {
+    .v-scroll-cap {
+        max-height: none;
+        overflow-y: visible;
+    }
+}
+
 .v-today-chips {
     display: flex;
     flex-wrap: wrap;
@@ -3111,10 +3140,32 @@ sup {
 
 @media (max-width: 560px) {
     .v-today-title { font-size: 26px; }
-    .v-today-figure-value { font-size: 24px; }
-    .v-today-change {
-        grid-template-columns: minmax(0, 1fr) 72px;
-        gap: 10px;
+    /* The desktop step-down is one step; on a 402px column a long morning at
+       26px is still the whole first screen and nothing else. Two steps here —
+       the point is that it gets read, not that it is set large. */
+    .v-today-title.is-long { font-size: 20px; line-height: 1.35; }
+    .v-today-hero { gap: 16px; }
+    /* The hero already says it in words. The strip is there to be glanced at,
+       not to repeat the sentence above it in 30px figures: three across, no
+       baseline sub-lines — 239px of grid becomes about 90. */
+    .v-today-figures {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px 10px;
+        padding-top: 14px;
     }
-    .v-today-change-text { grid-column: 1 / -1; }
+    .v-today-figure { min-width: 0; }
+    .v-today-figure-value { font-size: 20px; }
+    .v-today-figure-sub { display: none; }
+    /* One line per change: what moved, by how much, in one reading. The domain
+       line is dropped (the row links there anyway) and the delta sits against
+       the sentence instead of across 100px of empty column. */
+    .v-today-change {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: baseline;
+        gap: 8px;
+        padding: 10px 12px;
+    }
+    .v-today-change-domain { display: none; }
+    .v-today-change-delta { font-size: 14px; }
 }

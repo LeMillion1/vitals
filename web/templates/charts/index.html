@@ -58,7 +58,8 @@
               hx-disabled-elt="find button[type='submit']">
             <div>
                 <label for="charts-name" class="v-label">{{ t("charts.name_label") }}</label>
-                <input id="charts-name" type="text" name="name" required class="v-input" x-model="name">
+                <input id="charts-name" type="text" name="name" required class="v-input" x-model="name"
+                       placeholder="{{ t('charts.name_placeholder') }}">
             </div>
 
             <div class="space-y-3">
@@ -77,7 +78,7 @@
                                     <button type="button" class="v-dropdown-trigger"
                                             :aria-expanded="row.open === 'domain'" aria-label="{{ t('charts.select_domain') }}"
                                             @click="toggleRowDropdown(row, 'domain', $el)" @keydown.escape="closeRowDropdown(row)">
-                                        <span class="v-dropdown-value" :class="{ 'is-placeholder': !row.domain }" x-text="domainLabel(row) || '—'"></span>
+                                        <span class="v-dropdown-value" :class="{ 'is-placeholder': !row.domain }" x-text="domainLabel(row) || '{{ t('charts.pick_domain') }}'"></span>
                                         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6" /></svg>
                                     </button>
                                     <div class="v-dropdown-panel" :class="{ 'drop-up': row.dropUp }" x-show="row.open === 'domain'" x-cloak>
@@ -95,7 +96,7 @@
                                     <button type="button" class="v-dropdown-trigger" :disabled="!row.domain"
                                             :aria-expanded="row.open === 'metric'" aria-label="{{ t('charts.select_metric') }}"
                                             @click="toggleRowDropdown(row, 'metric', $el)" @keydown.escape="closeRowDropdown(row)">
-                                        <span class="v-dropdown-value" :class="{ 'is-placeholder': !row.metricKey }" x-text="metricLabel(row) || '—'"></span>
+                                        <span class="v-dropdown-value" :class="{ 'is-placeholder': !row.metricKey }" x-text="metricLabel(row) || '{{ t('charts.pick_metric') }}'"></span>
                                         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6" /></svg>
                                     </button>
                                     <div class="v-dropdown-panel" :class="{ 'drop-up': row.dropUp }" x-show="row.open === 'metric'" x-cloak>
@@ -114,7 +115,7 @@
                                     <button type="button" class="v-dropdown-trigger"
                                             :aria-expanded="row.open === 'param'" aria-label="{{ t('charts.select_param') }}"
                                             @click="toggleRowDropdown(row, 'param', $el)" @keydown.escape="closeRowDropdown(row)">
-                                        <span class="v-dropdown-value" :class="{ 'is-placeholder': !row.param }" x-text="paramLabel(row) || '—'"></span>
+                                        <span class="v-dropdown-value" :class="{ 'is-placeholder': !row.param }" x-text="paramLabel(row) || '{{ t('charts.pick_param') }}'"></span>
                                         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6" /></svg>
                                     </button>
                                     <div class="v-dropdown-panel" :class="{ 'drop-up': row.dropUp }" x-show="row.open === 'param'" x-cloak>

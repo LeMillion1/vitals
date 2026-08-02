@@ -34,7 +34,7 @@
         <!-- Left: recent workouts (Main) -->
         <div class="lg:col-span-8 v-card p-6 space-y-3">
             {{ card_header(t("hevy.recent_title")) }}
-            <div class="max-h-[32rem] overflow-y-auto space-y-4 px-1 pb-1">
+            <div class="max-h-[32rem] overflow-y-auto v-scroll-cap space-y-4 px-1 pb-1">
                 {% for w in workouts %}
                 <div class="p-6 rounded-xl border border-[var(--line)] bg-[var(--bg-inset)] hover:border-[var(--line-2)] transition duration-200 space-y-4">
                     <!-- Card Header -->
@@ -100,7 +100,7 @@
         <!-- Right: exercise catalog (Smaller) -->
         <div class="lg:col-span-4 v-card p-6 space-y-3">
             {{ card_header(t("hevy.exercises_title")) }}
-            <div class="max-h-[32rem] overflow-y-auto space-y-2.5 px-1 pb-1">
+            <div class="max-h-[32rem] overflow-y-auto v-scroll-cap space-y-2.5 px-1 pb-1">
                 {% for c in catalog %}
                 <div class="p-3.5 rounded-xl border border-[var(--line)] bg-[var(--bg-inset)] hover:border-[var(--line-2)] transition cursor-pointer {% if c.exercise_template_id == selected %}ring-1 ring-[var(--line-2)] border-[var(--line-2)] bg-[var(--surface-2)]{% endif %}"
                      onclick="window.location.href='/hevy?ex={{ c.exercise_template_id }}'">

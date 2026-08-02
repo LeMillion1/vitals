@@ -59,6 +59,9 @@ function renderCustomChart(canvasId, config) {
     if (!canvas) return;
 
     const C = (window.vitalsChartTheme && window.vitalsChartTheme()) || {};
+    // Same reasoning as the weight chart in app.js: eight dd-mm-yyyy ticks across
+    // a phone's canvas run together into one string of digits.
+    const phone = window.matchMedia('(max-width: 767px)').matches;
     // Multi-series categorical palette, drawn from the design tokens. Ordered so
     // consecutive series land on well-separated hues (amber → teal → green →
     // violet …) before the warmer tones repeat.
@@ -107,7 +110,7 @@ function renderCustomChart(canvasId, config) {
         x: {
             grid: { color: C.grid, drawTicks: false },
             border: { color: C.axisLine },
-            ticks: { color: C.muted, maxRotation: 0, autoSkip: true, maxTicksLimit: 8, font: { family: 'Inter', size: 9 } },
+            ticks: { color: C.muted, maxRotation: 0, autoSkip: true, maxTicksLimit: phone ? 4 : 8, font: { family: 'Inter', size: 9 } },
         },
     };
     if (normalize) {
@@ -148,7 +151,7 @@ function renderCustomChart(canvasId, config) {
             devicePixelRatio: window.devicePixelRatio || 2,
             interaction: { mode: 'index', intersect: false },
             plugins: {
-                legend: { position: 'bottom', labels: { color: C.muted, font: { family: 'Inter', size: 10 }, boxWidth: 12 } },
+                legend: { position: 'bottom', labels: { color: C.muted, font: { family: 'Inter', size: phone ? 9 : 10 }, boxWidth: phone ? 8 : 12, boxHeight: phone ? 8 : undefined, padding: phone ? 6 : 10 } },
                 tooltip: {
                     backgroundColor: C.surface, borderColor: C.line2, borderWidth: 1,
                     titleColor: C.accent2, titleFont: { family: 'Inter', size: 11 },

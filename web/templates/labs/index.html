@@ -122,7 +122,7 @@
                     <span>{{ t("labs.only_abnormal") }}</span>
                 </label>
                 {% endcall %}
-                <div class="max-h-[24rem] overflow-y-auto v-card-inset">
+                <div class="max-h-[24rem] overflow-y-auto v-scroll-cap v-card-inset">
                     <div class="v-table-wrap">
                         <table class="v-table v-rows">
                         <thead>
@@ -169,7 +169,7 @@
             <!-- Right: catalog -->
             <div class="lg:col-span-4 v-card p-6 space-y-3">
                 {{ card_header(t("labs.catalog_title")) }}
-                <ul class="space-y-2.5 max-h-[24rem] overflow-y-auto">
+                <ul class="space-y-2.5 max-h-[24rem] overflow-y-auto v-scroll-cap">
                     {% for m in markers %}
                     <li class="pb-2 flex justify-between items-center gap-2" style="border-bottom: 1px solid var(--line)">
                         <span class="v-text-body">{{ m.name }}
@@ -212,7 +212,7 @@
                     <input id="labs-field-2" type="text" x-model="lqLab.lab_name" placeholder="Synevo" class="v-input">
                 </div>
             </div>
-            <div class="max-h-[50vh] overflow-y-auto v-card-inset">
+            <div class="max-h-[50vh] overflow-y-auto v-scroll-cap v-card-inset">
                 <table class="v-table v-rows w-full">
                     <thead>
                         <tr>

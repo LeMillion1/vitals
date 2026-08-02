@@ -173,7 +173,7 @@
             <div class="v-card p-6 space-y-3">
                 {{ card_header(t("nutrition.today_title") if is_today else t("nutrition.meals_title"),
                                 meta=summary.meal_count ~ " " ~ (summary.meal_count | meal_word)) }}
-                <div class="max-h-[28rem] overflow-y-auto v-card-inset">
+                <div class="max-h-[28rem] overflow-y-auto v-scroll-cap v-card-inset">
                     <div class="v-table-wrap">
                         <table class="v-table v-rows" style="width: 100%; table-layout: fixed">
                         <colgroup>

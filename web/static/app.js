@@ -346,6 +346,16 @@ function initWeightChart() {
     const C = (window.vitalsChartTheme && window.vitalsChartTheme()) || {};
     const data = window.vitalsChartData || { raw: [], trend_ma: [], lbm: [], noise: [], phases: [], bia: null };
 
+    // A 332x220 canvas is not a small desktop chart, it is a different chart.
+    // Everything below that reads `phone` is one decision: on nine months of
+    // daily points at this size, four series, eight date ticks, a label on every
+    // dose phase and a rotated caption across the line all land on top of each
+    // other. Read once at build time — a rotation doesn't rebuild the chart, it
+    // only resizes the canvas.
+    // ponytail: rebuild on orientation change if turning the phone sideways ever
+    // needs to switch the branch back.
+    const phone = window.matchMedia('(max-width: 767px)').matches;
+
     // BIA (InBody/МедАсс) overlay — a second LBM source shown alongside Navy.
     const biaLbm = (data.bia && data.bia.lbm) ? data.bia.lbm : [];
 
@@ -385,7 +395,10 @@ function initWeightChart() {
                     borderColor: 'rgba(232, 112, 86, 0.18)',
                     borderWidth: 1,
                     label: {
-                        display: true,
+                        // The caption is set sideways across the full height of
+                        // the plot — on a phone that means across the data line.
+                        // The tinted band alone still marks the range.
+                        display: !phone,
                         content: window.t('chart.noise_period'),
                         position: 'center',
                         rotation: -90,
@@ -467,7 +480,11 @@ function initWeightChart() {
                 borderWidth: 1,
                 drawTime: 'beforeDatasetsDraw',
                 label: {
-                    display: true,
+                    // On a phone only the phase he is on now is named. Nine
+                    // months of dose changes across 332px put "семаглутид 0.25"
+                    // and "семаглутид 2.4 мг" on the same pixel; the bands stay,
+                    // and the tooltip still names the rest.
+                    display: !phone || idx === blocks.length - 1,
                     content: content,
                     position: { x: 'center', y: 'start' },
                     // The first band hugs the left edge; nudge its label inward so a
@@ -526,7 +543,13 @@ function initWeightChart() {
                     borderWidth: 1.5,
                     pointRadius: 0,
                     tension: 0.1,
-                    spanGaps: true
+                    spanGaps: true,
+                    // Lean mass sits ~30kg under the scale weight, so drawing
+                    // both stretches the Y axis to 70–150 for data that lives in
+                    // 100–140 — half the phone's canvas is then empty. Hidden,
+                    // not dropped: Chart.js leaves a hidden series out of the
+                    // axis range, and its legend entry turns it back on.
+                    hidden: phone
                 },
                 // BIA lean mass (InBody/МедАсс) — distinct teal, points + light line,
                 // so a measured scan reads clearly next to the Navy estimate.
@@ -540,7 +563,7 @@ function initWeightChart() {
                     pointHoverRadius: 5,
                     tension: 0.1,
                     spanGaps: true,
-                    hidden: biaLbm.length === 0
+                    hidden: phone || biaLbm.length === 0
                 }
             ]
         },
@@ -567,9 +590,14 @@ function initWeightChart() {
                         color: C.muted,
                         font: {
                             family: 'Inter',
-                            size: 10
+                            size: phone ? 9 : 10
                         },
-                        boxWidth: 12
+                        boxWidth: phone ? 8 : 12,
+                        padding: phone ? 6 : 10,
+                        // The legend is also the switch for the two hidden lean-mass
+                        // series, so it stays on the phone — just narrow enough that
+                        // four entries don't cost fifty pixels.
+                        boxHeight: phone ? 8 : undefined
                     }
                 },
                 tooltip: {
@@ -606,7 +634,9 @@ function initWeightChart() {
                         color: C.muted,
                         maxRotation: 0,
                         autoSkip: true,
-                        maxTicksLimit: 8,
+                        // Eight dd-mm-yyyy labels across 332px run together into
+                        // one unbroken string of digits. Four have room to be dates.
+                        maxTicksLimit: phone ? 4 : 8,
                         font: {
                             family: 'Inter',
                             size: 9

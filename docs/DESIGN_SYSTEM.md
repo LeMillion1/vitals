@@ -592,8 +592,17 @@ overlaps tap targets.
 
 ### Empty state & file drop
 
-`.v-empty-state` — centered, low-opacity icon + one line of muted copy, used
-wherever a list/table has no rows yet.
+`.v-empty-state` — centered icon + one line of muted copy, used wherever a
+list/table has no rows yet. The icon is drawn at 0.65 opacity / 1.8px stroke: any
+fainter and it reads as an image that failed to load rather than as "nothing here
+yet".
+
+`.v-card.is-empty` — the *card* variant. A card whose only content is one grey
+sentence costs ~100px of chrome to say nothing; adding `is-empty` when the
+collection is empty lays the header and that sentence out on one line and cuts
+the padding to match. `/today` sets it on all four of its collection cards. Use
+it rather than hiding the card: the section still has to be visible, it just
+doesn't need a hundred pixels.
 
 `.v-file-drop` (+ `__text`, `__hint`) — dashed `--bg-inset` well that turns
 `--accent-soft`/`--accent-line` on hover. This exact pattern recurs everywhere
@@ -692,6 +701,38 @@ provenance — integration `--cool`, manual `--good`, the proactive layer
 `--accent`, a signal from the bot `--violet`. That accent is the only place on
 the page where a value carries the brand colour, and only because it marks the
 app's own message rather than a measurement.
+
+### 5.4b Capped lists — `.v-scroll-cap`
+
+A list with `max-h-[…] overflow-y-auto` gives the desktop a tidy card and the
+phone a trap: the finger lands inside the list, the list moves and the page
+stands still. Every capped list therefore also carries `.v-scroll-cap`, which
+drops the cap below 768px and lets the page be the only thing that scrolls. Keep
+the utility class beside it — it still sets the desktop height. The one exception
+is a modal's own viewport cap (the photo lightbox on `/weight/measures`), where
+the cap *is* the layout.
+
+### 5.4c Charts on a phone are a different chart
+
+A 332×220 canvas is not a small desktop chart. `app.js` and `charts.js` each read
+one `phone` flag (`matchMedia('(max-width: 767px)')`) at build time and branch on
+it: four X ticks instead of eight (eight `dd-mm-yyyy` labels run together into one
+string of digits), a narrower legend, and — on the weight chart — the two
+lean-mass series `hidden` and only the current dose phase labelled. Hidden, not
+dropped: Chart.js leaves a hidden series out of the axis range, so the Y axis fits
+the weight instead of stretching to 70–150 for data living in 100–140, and the
+legend entry still turns it back on.
+
+### 5.4d The day a screen is about
+
+`garmin_service.latest_daily` returns the newest day that actually carries
+numbers, not merely the newest row: the sync writes a row as soon as the date
+turns, and at half past midnight every metric on it is still null. Read as "the
+latest day" that placeholder turned `/garmin` and `/today` into a screen of
+dashes with yesterday's complete row sitting one place behind it. When the day
+shown isn't today, the screen says so (`garmin.showing_day` on the day strip;
+`/today` already names the date in its sync line). A screen that silently shows
+yesterday's numbers is worse than one that shows none.
 
 ### 5.5 Link-row instead of a clickable `<tr>`
 

@@ -1031,10 +1031,35 @@ async def intraday_series_map(
     return out
 
 
+# What has to be on a row before it counts as a day the watch reported. The
+# sync writes a row the moment the date turns, and at half past midnight every
+# one of these is still null — a placeholder, not a day. Returned as "the latest
+# day" it turned /garmin and /today into a screen of dashes while yesterday's
+# complete row sat one place behind it.
+_REPORTED_DAILY_COLS = (
+    GarminDaily.sleep_score,
+    GarminDaily.sleep_seconds,
+    GarminDaily.resting_hr,
+    GarminDaily.hrv_avg,
+    GarminDaily.body_battery_high,
+    GarminDaily.avg_stress,
+    GarminDaily.steps,
+    GarminDaily.active_calories,
+)
+
+
 async def latest_daily(
     session: AsyncSession, *, before_or_on: Optional[date_type] = None
 ) -> Optional[GarminDaily]:
-    stmt = select(GarminDaily)
+    """The newest day that actually carries numbers, not merely the newest row.
+
+    Every caller is a screen or a message that reads the row's metrics, so an
+    empty placeholder is never the answer any of them wants — including the
+    silence nudge, for which a row with nothing on it is exactly the silence it
+    is looking for. The placeholder is still stored and still shows up in the
+    history list; it just stops being "the latest day".
+    """
+    stmt = select(GarminDaily).where(or_(*(col.is_not(None) for col in _REPORTED_DAILY_COLS)))
     if before_or_on is not None:
         stmt = stmt.where(GarminDaily.date <= before_or_on)
     stmt = stmt.order_by(GarminDaily.date.desc()).limit(1)
