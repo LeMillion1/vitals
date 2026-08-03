@@ -965,6 +965,20 @@ async def list_daily(
     return result.scalars().all()
 
 
+async def list_daily_between(
+    session: AsyncSession, start: date_type, end: date_type
+) -> Sequence[GarminDaily]:
+    """Every day in a date range, chronological. ``list_daily`` counts backwards
+    from the newest row, which answers "the last N days I have" — not "the days
+    between these two dates", the question every period report actually asks."""
+    result = await session.execute(
+        select(GarminDaily)
+        .where(GarminDaily.date >= start, GarminDaily.date <= end)
+        .order_by(GarminDaily.date)
+    )
+    return result.scalars().all()
+
+
 async def list_nights(
     session: AsyncSession, *, limit: int = 60
 ) -> Sequence[GarminDaily]:

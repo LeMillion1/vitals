@@ -250,6 +250,33 @@ async def list_workouts(
     return result.scalars().all()
 
 
+def workout_summary(workout: HevyWorkout) -> dict:
+    """One session the way a reader needs it: when, what, how much work.
+
+    Tonnage counts working sets only — warm-ups add kilograms without adding
+    training, which is the same line the progression engine already draws.
+    """
+    volume = 0.0
+    working_sets = 0
+    for exercise in workout.exercises:
+        for s in exercise.sets:
+            if s.set_type not in _WORKING_SET_TYPES:
+                continue
+            working_sets += 1
+            if s.weight_kg and s.reps:
+                volume += s.weight_kg * s.reps
+    return {
+        "date": workout.date.isoformat(),
+        "title": workout.title,
+        "duration_min": (
+            round(workout.duration_seconds / 60) if workout.duration_seconds else None
+        ),
+        "working_sets": working_sets,
+        "volume_kg": round(volume) or None,
+        "exercises": [e.title for e in workout.exercises],
+    }
+
+
 async def workout_count(
     session: AsyncSession, *, since: Optional[date_type] = None
 ) -> int:
