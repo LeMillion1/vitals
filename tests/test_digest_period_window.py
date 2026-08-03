@@ -115,6 +115,70 @@ async def test_period_is_handed_the_period_before_it_to_compare_against(db_sessi
     assert stats["previous"]["workouts"] == 2
 
 
+async def test_the_day_being_lived_is_not_a_day_that_was_skipped(db_session, monkeypatch):
+    """Generated at 00:50 on a Tuesday, the report counted that Tuesday as a full
+    day and read its missing log as a day its owner had skipped — while he was
+    still awake on it. Only the finished days are a denominator."""
+    monkeypatch.setattr(digest_service, "today_local", lambda: DAY)
+
+    # Garmin has written today's row, but the watch has scored nothing on it yet.
+    db_session.add(
+        GarminDaily(domain="garmin", source=Source.GARMIN_API.value, date=DAY)
+    )
+    for i in range(1, 7):
+        db_session.add(
+            GarminDaily(
+                domain="garmin",
+                source=Source.GARMIN_API.value,
+                date=DAY - timedelta(days=i),
+                sleep_score=85,
+                resting_hr=59,
+            )
+        )
+    await db_session.commit()
+
+    current = (await digest_service.assemble_context(
+        db_session, on_date=DAY, period_days=7
+    ))["period_stats"]["current"]
+
+    assert current["days"] == 7
+    assert current["days_complete"] == 6, "today is still being lived"
+    assert current["last_day_still_running"] is True
+    assert current["garmin_days"] == 6, "an empty row is a row, not a day of data"
+
+
+async def test_a_past_period_has_no_partial_day(db_session, monkeypatch):
+    """Regenerate last month's digest and every day in it is over."""
+    monkeypatch.setattr(digest_service, "today_local", lambda: DAY + timedelta(days=30))
+
+    current = (await digest_service.assemble_context(
+        db_session, on_date=DAY, period_days=7
+    ))["period_stats"]["current"]
+
+    assert current["days_complete"] == 7
+    assert current["last_day_still_running"] is False
+
+
+async def test_training_cadence_survives_the_window_edge(db_session):
+    """The gap between sessions is the number a window boundary cannot move — and
+    the one the narrative can quote without explaining the boundary first."""
+    db_session.add_all(
+        [
+            _workout("w1", DAY - timedelta(days=10), "Full body"),
+            _workout("w2", DAY - timedelta(days=7), "Full body"),
+            _workout("w3", DAY - timedelta(days=3), "Full body"),
+        ]
+    )
+    await db_session.commit()
+
+    hevy = (await digest_service.assemble_context(
+        db_session, on_date=DAY, period_days=7
+    ))["hevy"]
+
+    assert hevy["total_workouts"] == 1, "the window edge still cuts the count"
+    assert hevy["mean_gap_days"] == 3.5, "the rhythm does not move with it"
+
+
 async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session):
     """A marker sliding 120 → 95 → 80 never trips a flag, so out_of_range never
     sees it — and a table of current values shows one green number."""

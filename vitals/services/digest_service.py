@@ -48,10 +48,15 @@ DIGEST_SYSTEM = """\
 - body_comp: последний BIA/InBody-скан (date, device, metrics: % жира, скелетно-мышечная масса, безжировая масса, висцеральный жир, фазовый угол, балл). Может быть null (скана нет). Это отдельный источник состава тела (BIA); сосуществует с оценкой по замерам (Navy) в weight — не смешивай и не суммируй их.
 - garmin: ПОСЛЕДНИЙ день среза плоскими полями (sleep_score, resting_hr, hrv_avg, body_battery_high, training_readiness, training_status — баланс нагрузка/восстановление, считает сам Garmin: PRODUCTIVE/MAINTAINING/RECOVERY/UNPRODUCTIVE/DETRAINING/STRAINED/PEAKING, может быть null, если мало аэробных тренировок; spo2_lowest — мин. SpO2 за ночь, низкий может говорить об апноэ; body_battery_change — восстановление за ночь; breathing_disruption — NONE/тяжесть нарушения дыхания), плюс days — по строке на каждый день периода (сон, часы сна, пульс покоя, HRV, батарея, стресс, шаги, readiness).
   ВАЖНО: разброс, тренд и «нормально/ненормально» читай по days, а не по одному последнему дню — это срез за период, а не за утро. total_days_logged — сколько дней Garmin лежит в базе ЗА ВСЮ ИСТОРИЮ, а не длина этого отчёта: он говорит только о том, есть ли вообще история. Никогда не называй его размером выборки отчёта («N дней истории, цифрам можно верить») — размер выборки это period_days и длина days.
-- hevy: total_workouts — тренировок ВНУТРИ периода; last_workout — дата последней; sessions — сессии за период И за столько же дней до него (in_period=false — сессия до начала среза, в счёт не входит). У каждой: volume_kg (тоннаж рабочих подходов), working_sets, duration_min, exercises.
-  ВАЖНО: ритм тренировок читай по датам в sessions, а не по total_workouts. Окно скользящее: две сессии с разрывом в 5-7 дней попадают в один срез или в разные только из-за того, в какой день сделан отчёт. Прежде чем писать «тренировок почти нет», посмотри на интервалы между датами (включая in_period=false) — если между сессиями стабильно 3-4 дня, это ритм, а не провал. Объём тоже смотри: три коротких сессии по 4 подхода — не то же самое, что три полноценных.
+- hevy: total_workouts — тренировок ВНУТРИ периода; last_workout — дата последней; mean_gap_days — средний интервал между сессиями; sessions — сессии за период И за столько же дней до него (in_period=false — сессия до начала среза). У каждой: volume_kg (тоннаж рабочих подходов), working_sets, duration_min, exercises.
+  ВАЖНО: ритм тренировок — это mean_gap_days и интервалы между датами в sessions, а не total_workouts. Счётчик зависит от того, в какой день сделан отчёт: две сессии с разрывом в 5-7 дней попадают то в один срез, то в разные. Поэтому total_workouts как показатель режима просто не используй — бери ритм по интервалам, объём по volume_kg.
+  Молча. Не объясняй читателю, как устроено окно, не пиши «формально столько, но фактически иначе», не сообщай, что счётчик вводит в заблуждение. Он не просил разбор методики — он просил разбор своего состояния. Сразу говори по факту: «ходишь раз в 3-4 дня, объём держится» — и дальше.
 - labs: out_of_range — маркеры вне нормы (marker, value, flag, date); trends — по каждому маркеру, у которого есть история, последние до 3 значений с датами + референс (ref_low/ref_high). Дрейф ВНУТРИ нормы — это твой хлеб: маркер, который шёл 120 → 95 → 80 и формально в норме, на дашборде выглядит зелёным, и увидеть это можно только здесь. Смотри направление и близость к границе, а не только флаг.
-- period_stats: {current, previous} — один и тот же набор средних за период и за столько же дней ДО него (сон, часы сна, пульс покоя, HRV, батарея, стресс, шаги, вес, тренировки, тоннаж, ккал/белок, garmin_days и nutrition_days_logged — сколько дней реально с данными). ЭТО ГЛАВНЫЙ БЛОК. Он есть ровно затем, чтобы ты говорил об ИЗМЕНЕНИИ, а не о текущем значении. Считай дельты сам и называй их. Но сначала смотри на garmin_days/nutrition_days_logged: разница, построенная на двух залогированных днях против семи, — это разница в покрытии данных, а не в организме, и её надо назвать именно так.
+- period_stats: {current, previous} — один и тот же набор средних за период и за столько же дней ДО него (сон, часы сна, пульс покоя, HRV, батарея, стресс, шаги, вес, тренировки, тоннаж, ккал/белок). ЭТО ГЛАВНЫЙ БЛОК. Он есть ровно затем, чтобы ты говорил об ИЗМЕНЕНИИ, а не о текущем значении. Считай дельты сам и называй их.
+  ЗНАМЕНАТЕЛИ, прежде чем делать вывод о пропусках:
+  - days_complete — сколько дней в окне РЕАЛЬНО ЗАКОНЧИЛОСЬ. last_day_still_running=true значит, что отчёт сделан посреди последнего дня: он ещё идёт. Незакрытый день — это не пропущенный день. Все «N из 7» считай от days_complete, а не от days и не от period_days. Не пиши «один день не залогирован», если незалогирован ровно сегодняшний, ещё не прожитый день, — про него просто молчи.
+  - garmin_days / nutrition_days_logged — на скольких днях реально стоят цифры. Разница, построенная на двух днях против семи, — это разница в покрытии данных, а не в организме, и назвать её надо именно так.
+  - Строка за сегодня может существовать и быть пустой (часы ещё ничего не посчитали). Это не провал метрики и не повод для тревоги — просто данных пока нет.
 - nutrition: avg калории/белок в день, days_with_logs, цели
 - hrt: гормональный протокол — active_compounds (что идёт сейчас), doses за период (дата, соединение, доза, место укола), side_effects (тип, тяжесть 1-5). Самое сильное вмешательство: связывай его со сном/HRV, анализами, кожей и настроением.
 - timeline: ручные аннотации, пересекающие период (болезнь, поездка, смена протокола, событие). Это готовое объяснение для провала или скачка в других доменах — сверяйся с ними, прежде чем списать всё на тренировки или питание.
@@ -69,7 +74,7 @@ DIGEST_SYSTEM = """\
    - direction="down"    → масштаб ЗАНИЖЕН (обезвоживание, болезнь). Реальная ситуация ХУЖЕ чем числа.
    - direction=null/"neutral" → направление неизвестно, просто отметь что данные зашумлены.
 
-ПИТАНИЕ: пользователь часто забивает на трекинг. Если days_with_logs мало или калории нереалистично низкие — это пропущенный лог, а не голодовка. Не паникуй, просто отметь что данных мало.
+ПИТАНИЕ: пользователь часто забивает на трекинг. Если days_with_logs мало или калории нереалистично низкие — это пропущенный лог, а не голодовка. Не паникуй, просто отметь что данных мало. И сверяйся с days_complete: сегодняшний день ещё идёт, его логов может не быть просто потому, что он не закончился.
 
 ЧТО ПИСАТЬ:
 Главный критерий: отчёт бесполезен, если пользователь мог получить то же самое, открыв дашборд. Все текущие значения он уже видит — там они крупнее и свежее. Ты нужен ради того, чего на экране нет физически, в этом порядке приоритета:
@@ -109,10 +114,15 @@ Any domain can be null (no data). Don't invent what isn't there.
 - body_comp: latest BIA/InBody scan (date, device, metrics: body-fat %, skeletal muscle mass, lean body mass, visceral fat, phase angle, score). Can be null (no scan taken). This is a separate BIA body-composition source; it coexists with the tape/Navy estimate in weight — don't conflate or sum them.
 - garmin: the LAST day of the period as flat fields (sleep_score, resting_hr, hrv_avg, body_battery_high, training_readiness, training_status — load/recovery balance, Garmin-computed: PRODUCTIVE/MAINTAINING/RECOVERY/UNPRODUCTIVE/DETRAINING/STRAINED/PEAKING, can be null if too little aerobic training; spo2_lowest — night-low SpO2, low can suggest apnea; body_battery_change — overnight recovery; breathing_disruption — NONE/severity), plus days — one row per day of the period (sleep score, sleep hours, resting HR, HRV, body battery, stress, steps, readiness).
   IMPORTANT: read spread, trend and "normal/abnormal" off days, not off the single last day — this is a period report, not a morning one. total_days_logged is how many Garmin days sit in the database IN TOTAL, not the length of this report: it only says whether history exists at all. Never present it as the report's sample size ("N days of history, so the numbers are trustworthy") — the sample is period_days and the length of days.
-- hevy: total_workouts — workouts INSIDE the period; last_workout — date of the latest; sessions — sessions in the period AND in the equally long stretch before it (in_period=false — before the window starts, not counted). Each carries volume_kg (working-set tonnage), working_sets, duration_min, exercises.
-  IMPORTANT: read training cadence off the dates in sessions, not off total_workouts. The window rolls: two sessions 5-7 days apart land in the same slice or in different ones purely because of which day the report was generated. Before writing "barely any training", look at the intervals between dates (including in_period=false) — a steady 3-4 day gap is a rhythm, not a gap. Look at volume too: three short 4-set sessions are not three full ones.
+- hevy: total_workouts — workouts INSIDE the period; last_workout — date of the latest; mean_gap_days — average interval between sessions; sessions — sessions in the period AND in the equally long stretch before it (in_period=false — before the window starts). Each carries volume_kg (working-set tonnage), working_sets, duration_min, exercises.
+  IMPORTANT: training cadence is mean_gap_days and the intervals between dates in sessions, not total_workouts. The counter depends on which day the report was generated: two sessions 5-7 days apart land in one slice or in two. So don't use total_workouts as a measure of the routine at all — take cadence from the intervals and volume from volume_kg.
+  Silently. Don't explain how the window works, don't write "formally X but actually Y", don't announce that the counter is misleading. He didn't ask for a critique of the method — he asked about his own state. Just say the fact: "you train every 3-4 days, volume is holding" — and move on.
 - labs: out_of_range — markers outside their range (marker, value, flag, date); trends — for every marker with history, its last up to 3 values with dates plus the reference range (ref_low/ref_high). Drift INSIDE the normal range is your bread and butter: a marker that went 120 → 95 → 80 is formally normal, shows up green on the dashboard, and can only be seen here. Read direction and proximity to the boundary, not just the flag.
-- period_stats: {current, previous} — the same set of averages for the period and for the equally long stretch BEFORE it (sleep score, sleep hours, resting HR, HRV, body battery, stress, steps, weight, workouts, tonnage, calories/protein, plus garmin_days and nutrition_days_logged — how many days actually have data). THIS IS THE KEY BLOCK. It exists so that you talk about CHANGE rather than current values. Compute the deltas yourself and name them. But check garmin_days/nutrition_days_logged first: a difference built on two logged days against seven is a difference in coverage, not in the body, and must be called that.
+- period_stats: {current, previous} — the same set of averages for the period and for the equally long stretch BEFORE it (sleep score, sleep hours, resting HR, HRV, body battery, stress, steps, weight, workouts, tonnage, calories/protein). THIS IS THE KEY BLOCK. It exists so that you talk about CHANGE rather than current values. Compute the deltas yourself and name them.
+  DENOMINATORS, before concluding anything about missed days:
+  - days_complete — how many days in the window have actually FINISHED. last_day_still_running=true means the report was generated in the middle of its last day: that day is still going. A day that isn't over is not a day skipped. Read every "N of 7" against days_complete, not against days or period_days. Don't write "one day unlogged" when the unlogged day is today, which hasn't happened yet — just say nothing about it.
+  - garmin_days / nutrition_days_logged — how many days actually carry numbers. A difference built on two days against seven is a difference in coverage, not in the body, and must be called that.
+  - Today's row can exist and be empty (the watch hasn't scored anything yet). That is not a metric collapsing and not cause for concern — the data simply isn't in yet.
 - nutrition: avg calories/protein per day, days_with_logs, targets
 - hrt: hormone protocol — active_compounds (what's running now), doses in the period (date, compound, dose, injection site), side_effects (type, severity 1-5). The strongest intervention here: relate it to sleep/HRV, labs, skin and mood.
 - timeline: manual annotations overlapping the period (illness, travel, protocol change, life event). These are the ready-made explanation for a dip or spike in the other domains — check them before blaming training or nutrition.
@@ -130,7 +140,7 @@ INVARIANTS (breaking = bug):
    - direction="down"    → scale DEFLATED (dehydration, illness). Real situation is WORSE than numbers.
    - direction=null/"neutral" → direction unknown, just note data is noisy.
 
-NUTRITION: user often skips tracking. Low days_with_logs or unrealistically low calories = missed log, not starvation. Don't panic, just note data is sparse.
+NUTRITION: user often skips tracking. Low days_with_logs or unrealistically low calories = missed log, not starvation. Don't panic, just note data is sparse. And check it against days_complete: today is still running, so its logs may be absent simply because the day isn't over.
 
 WHAT TO WRITE:
 The test that matters: the report is useless if the user could have got the same thing by opening the dashboard. He already sees every current value there — bigger and fresher. You exist for what the screen physically cannot show, in this order of priority:
@@ -348,9 +358,17 @@ async def assemble_context(
         if lookback <= w.date <= today
     ]
     last_workout = await hevy_service.latest_workout_date(session)
+    # The gap between sessions is the one training number a window edge cannot
+    # move. Handed only a count, the narrative had to explain the boundary to say
+    # anything true — and nobody wants a paragraph about window boundaries.
+    gaps = [
+        (date_type.fromisoformat(b["date"]) - date_type.fromisoformat(a["date"])).days
+        for a, b in zip(sessions, sessions[1:])
+    ]
     ctx["hevy"] = {
         "total_workouts": sum(1 for s in sessions if s["in_period"]),
         "last_workout": last_workout.isoformat() if last_workout else None,
+        "mean_gap_days": round(sum(gaps) / len(gaps), 1) if gaps else None,
         "sessions": sessions or None,
     }
 
@@ -595,7 +613,13 @@ async def assemble_context(
     if period_days > 1:
         ctx["period_stats"] = {
             "current": _window_stats(
-                period_start, today, garmin_rows, weights, all_meals, sessions
+                period_start, today, garmin_rows, weights, all_meals, sessions,
+                # The window ends on a day that hasn't happened yet. At 00:50 the
+                # report was counting "6 of 7 days logged" for a Tuesday its owner
+                # had not yet gone to sleep on, and reading the seventh as a day he
+                # skipped. Only true when the report is for the actual current date
+                # — a digest regenerated for a past week has no partial day in it.
+                partial_last_day=(today == today_local()),
             ),
             "previous": _window_stats(
                 prev_start, prev_end, garmin_rows, weights, all_meals, sessions
@@ -609,21 +633,38 @@ def _mean(values) -> Optional[float]:
     return round(sum(present) / len(present), 1) if present else None
 
 
-def _window_stats(start, end, garmin_rows, weights, meals, sessions) -> dict:
+_GARMIN_STAT_COLS = (
+    "sleep_score", "resting_hr", "hrv_avg", "body_battery_high", "avg_stress", "steps",
+)
+
+
+def _window_stats(
+    start, end, garmin_rows, weights, meals, sessions, *, partial_last_day: bool = False
+) -> dict:
     """One window reduced to the numbers worth comparing against another window.
 
     Symmetric on purpose: the model gets two identical shapes to subtract, rather
     than this period's rows plus an invitation to recall the last one — which is
     where a narrative starts supplying the half it doesn't have.
+
+    Every count carries the denominator it should be read against, because the two
+    windows are not the same size in the only sense that matters: the current one
+    ends on a day still being lived, and a day not yet over is not a day skipped.
     """
     g = [r for r in garmin_rows if start <= r.date <= end]
     w = [x for x in weights if start <= x.date <= end]
     m = [x for x in meals if start <= x.date <= end]
     s = [x for x in sessions if start.isoformat() <= x["date"] <= end.isoformat()]
     logged_days = len({x.date for x in m})
+    days = (end - start).days + 1
     return {
         "start": start.isoformat(),
         "end": end.isoformat(),
+        "days": days,
+        # Days that have actually finished. The one the report is generated on has
+        # not, and every "N of 7" in the narrative has to be read against this.
+        "days_complete": days - 1 if partial_last_day else days,
+        "last_day_still_running": partial_last_day,
         "sleep_score": _mean(r.sleep_score for r in g),
         "sleep_hours": _mean(
             round(r.sleep_seconds / 3600, 1) for r in g if r.sleep_seconds
@@ -633,9 +674,12 @@ def _window_stats(start, end, garmin_rows, weights, meals, sessions) -> dict:
         "body_battery_high": _mean(r.body_battery_high for r in g),
         "avg_stress": _mean(r.avg_stress for r in g),
         "steps": _mean(r.steps for r in g),
-        # How much of the window actually has data behind those means — a "worse
-        # week" built on two logged nights is not a worse week.
-        "garmin_days": len(g),
+        # Days with numbers on them, not rows. A row is written for a date before
+        # the watch has scored anything for it, so counting rows reported seven
+        # Garmin days behind means that were computed from six.
+        "garmin_days": sum(
+            1 for r in g if any(getattr(r, c) is not None for c in _GARMIN_STAT_COLS)
+        ),
         "weight_kg": _mean(x.weight_kg for x in w),
         "workouts": len(s),
         "training_volume_kg": sum(x["volume_kg"] or 0 for x in s) or None,
