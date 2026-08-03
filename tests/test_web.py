@@ -48,10 +48,14 @@ async def test_unauthorized_redirects(client):
 
 
 async def test_login_page_renders(client):
-    """GET /login returns HTML layout containing access panels."""
+    """GET /login renders the sign-in form: heading, both fields, submit."""
     response = await client.get("/login", headers={"Accept": "text/html"})
     assert response.status_code == 200
-    assert "Введите данные для авторизации" in response.text
+    assert "С возвращением" in response.text
+    assert 'id="lg-username"' in response.text
+    assert 'id="lg-password"' in response.text
+    # Nothing about the data itself before auth — no subtitle, no stats.
+    assert "Личный кабинет здоровья" not in response.text
 
 
 async def test_login_form_failure(client):
@@ -63,6 +67,9 @@ async def test_login_form_failure(client):
     )
     assert response.status_code == 200
     assert "Неверное имя пользователя или пароль" in response.text
+    # The message stands on its own — the old "Ошибка: " prefix is gone.
+    assert "Ошибка: " not in response.text
+    assert "lg-field is-error" in response.text
 
 
 async def test_login_form_success(client):

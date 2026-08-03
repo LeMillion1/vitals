@@ -705,16 +705,6 @@ a.v-card:hover {
     color: var(--faint);
 }
 
-/* An input with a leading icon. Tailwind's `pl-10` cannot do this job: vitals.css
-   loads after tailwind.css and `padding` above is a shorthand, so it re-sets
-   padding-left at equal specificity and wins on order — the text was printing on
-   top of the icon. Stated here instead, where the padding it overrides lives.
-   Two class names deep on purpose: the phone block further down re-declares the
-   same shorthand, and specificity settles it there without a duplicate rule. */
-.v-input.v-input-icon {
-    padding-left: 2.4rem;
-}
-
 /* Chrome paints autofilled fields in its own pale blue and there is no way to set
    background-color on them — an inset shadow the size of the field is the only
    surface that shows through. Applies to every input, not just the login form. */

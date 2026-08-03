@@ -215,11 +215,13 @@ _EN: dict[str, str] = {
 
     # ── Login ─────────────────────────────────────────────────────────────
     "login.page_title": "Login — Vitals",
-    "login.subtitle": "Personal health dashboard · Enter your credentials",
-    "login.error_prefix": "Error: ",
+    "login.heading": "Welcome back",
     "login.username": "Username",
     "login.password": "Password",
+    "login.reveal": "Show",
+    "login.hide": "Hide",
     "login.submit": "Sign in",
+    "login.submitting": "Checking…",
 
     # ── Weight ────────────────────────────────────────────────────────────
     "weight.page_title": "Weight — Vitals",
@@ -1520,11 +1522,13 @@ _RU: dict[str, str] = {
 
     # ── Login ─────────────────────────────────────────────────────────────
     "login.page_title": "Вход — Vitals",
-    "login.subtitle": "Личный кабинет здоровья · Введите данные для авторизации",
-    "login.error_prefix": "Ошибка: ",
+    "login.heading": "С возвращением",
     "login.username": "Имя пользователя",
     "login.password": "Пароль",
+    "login.reveal": "Показать",
+    "login.hide": "Скрыть",
     "login.submit": "Войти в кабинет",
+    "login.submitting": "Проверяем…",
 
     # ── Weight ────────────────────────────────────────────────────────────
     "weight.page_title": "Вес — Vitals",
