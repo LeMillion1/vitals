@@ -423,23 +423,33 @@ async function triggerRestart() {
 
     if (loader && titleEl && textEl) {
         titleEl.textContent = window.t('loader.restart_title');
-        textEl.textContent = window.t('loader.restart_text').replace('{seconds}', 5);
+        textEl.textContent = window.t('loader.restart_text');
         loader.classList.add('is-active');
     }
 
-    function countdownThenReload() {
-        let secondsLeft = 5;
-        const interval = setInterval(() => {
-            secondsLeft--;
-            if (secondsLeft <= 0) {
-                clearInterval(interval);
-                window.location.href = '/settings?saved=restart';
-            } else {
-                if (textEl) {
-                    textEl.textContent = window.t('loader.restart_text').replace('{seconds}', secondsLeft);
-                }
-            }
-        }, 1000);
+    // A fixed countdown was always wrong: a plain restart needs ~7s, a rebuild
+    // (deploy) far more, so the reload landed on a dead port and showed an error
+    // page. Poll /health instead and reload the moment the app answers again.
+    function waitForAppThenReload() {
+        const deadline = Date.now() + 180000;  // give up after 3 min, reload anyway
+        let sawDown = false;                   // the old process is still serving for ~0.5s
+        (function poll() {
+            fetch('/health', { cache: 'no-store' })
+                .then(r => r.ok)
+                .catch(() => false)
+                .then(up => {
+                    if (up && sawDown) {
+                        window.location.href = '/settings?saved=restart';
+                        return;
+                    }
+                    if (!up) sawDown = true;
+                    if (Date.now() > deadline) {
+                        window.location.href = '/settings?saved=restart';
+                        return;
+                    }
+                    setTimeout(poll, 1000);
+                });
+        })();
     }
 
     // Send POST request
@@ -458,11 +468,11 @@ async function triggerRestart() {
             if (window.vitalsToast) window.vitalsToast(window.t('error.generic'), 'error');
             return;
         }
-        countdownThenReload();
+        waitForAppThenReload();
     })
     // A dropped connection here is the *expected* case — the container is going
-    // down mid-response — so keep counting down rather than reporting an error.
-    .catch(countdownThenReload);
+    // down mid-response — so keep waiting rather than reporting an error.
+    .catch(waitForAppThenReload);
 }
 </script>
 {% endblock %}
