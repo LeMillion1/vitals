@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pytest
+
 from vitals.enums import Source
 from vitals.models.garmin import GarminDaily
 from vitals.models.hevy import HevyWorkout
@@ -16,6 +18,16 @@ from vitals.services import digest_service
 
 # A Tuesday, like the day the complaint came from.
 DAY = date(2026, 8, 4)
+
+
+@pytest.fixture(autouse=True)
+def _now_is_the_morning_after(monkeypatch):
+    """Pin "now" to the day after DAY, so a period asked for on DAY ends on DAY.
+
+    Without it these tests read differently depending on the date they are run:
+    the window ends yesterday whenever the report is generated today.
+    """
+    monkeypatch.setattr(digest_service, "today_local", lambda: DAY + timedelta(days=1))
 
 
 def _workout(external_id: str, on_date: date, title: str) -> HevyWorkout:
@@ -51,7 +63,8 @@ async def test_sessions_before_the_window_are_visible_but_not_counted(db_session
     assert hevy["sessions"][1]["title"] == "Push"
 
 
-async def test_garmin_days_cover_the_period_not_just_the_latest(db_session):
+async def test_recovery_covers_the_period_not_just_the_latest_day(db_session):
+    """A "weekly" report used to be handed one night of recovery data."""
     for i in range(9):
         db_session.add(
             GarminDaily(
@@ -67,13 +80,12 @@ async def test_garmin_days_cover_the_period_not_just_the_latest(db_session):
     await db_session.commit()
 
     ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
-    days = ctx["garmin"]["days"]
 
-    assert [d["date"] for d in days] == [
+    assert [d["date"] for d in ctx["days"]] == [
         (DAY - timedelta(days=i)).isoformat() for i in range(6, -1, -1)
     ], "seven days, chronological — the two older rows stay outside the period"
-    assert days[-1]["sleep_score"] == 80
-    assert days[-1]["sleep_hours"] == 7.0
+    assert ctx["days"][-1]["sleep_score"] == 80
+    assert ctx["days"][-1]["sleep_hours"] == 7.0
     # The all-time count is still there, but it is nine, not the period.
     assert ctx["garmin"]["total_days_logged"] == 9
 
@@ -115,17 +127,18 @@ async def test_period_is_handed_the_period_before_it_to_compare_against(db_sessi
     assert stats["previous"]["workouts"] == 2
 
 
-async def test_the_day_being_lived_is_not_a_day_that_was_skipped(db_session, monkeypatch):
-    """Generated at 00:50 on a Tuesday, the report counted that Tuesday as a full
-    day and read its missing log as a day its owner had skipped — while he was
-    still awake on it. Only the finished days are a denominator."""
-    monkeypatch.setattr(digest_service, "today_local", lambda: DAY)
+async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch):
+    """Generated just after midnight, the report treated the current date as a
+    seventh day of the window and read its missing log as a day its owner had
+    skipped — while he was still awake on it. The window ends yesterday and holds
+    seven closed days instead."""
+    monkeypatch.setattr(digest_service, "today_local", lambda: DAY)  # report run on DAY
 
     # Garmin has written today's row, but the watch has scored nothing on it yet.
     db_session.add(
         GarminDaily(domain="garmin", source=Source.GARMIN_API.value, date=DAY)
     )
-    for i in range(1, 7):
+    for i in range(1, 8):
         db_session.add(
             GarminDaily(
                 domain="garmin",
@@ -137,26 +150,70 @@ async def test_the_day_being_lived_is_not_a_day_that_was_skipped(db_session, mon
         )
     await db_session.commit()
 
-    current = (await digest_service.assemble_context(
-        db_session, on_date=DAY, period_days=7
-    ))["period_stats"]["current"]
+    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+    meta, current = ctx["report_meta"], ctx["period_stats"]["current"]
 
+    assert meta["period_end"] == (DAY - timedelta(days=1)).isoformat()
+    assert meta["period_start"] == (DAY - timedelta(days=7)).isoformat()
+    assert meta["report_date"] == DAY.isoformat(), "generated today, about last week"
     assert current["days"] == 7
-    assert current["days_complete"] == 6, "today is still being lived"
-    assert current["last_day_still_running"] is True
-    assert current["garmin_days"] == 6, "an empty row is a row, not a day of data"
+    assert current["garmin_days"] == 7, "seven closed days, all of them scored"
+    assert [d["date"] for d in ctx["days"]][-1] == (DAY - timedelta(days=1)).isoformat()
 
 
-async def test_a_past_period_has_no_partial_day(db_session, monkeypatch):
-    """Regenerate last month's digest and every day in it is over."""
+async def test_a_past_period_ends_on_its_own_date(db_session, monkeypatch):
+    """Regenerate an old digest and nothing shifts: every day in it is long over."""
     monkeypatch.setattr(digest_service, "today_local", lambda: DAY + timedelta(days=30))
 
-    current = (await digest_service.assemble_context(
+    meta = (await digest_service.assemble_context(
         db_session, on_date=DAY, period_days=7
-    ))["period_stats"]["current"]
+    ))["report_meta"]
 
-    assert current["days_complete"] == 7
-    assert current["last_day_still_running"] is False
+    assert meta["period_end"] == DAY.isoformat()
+    assert meta["period_start"] == (DAY - timedelta(days=6)).isoformat()
+
+
+async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch):
+    """The links the report kept failing to find need the domains on one row."""
+    from vitals.services import nutrition_service, signals_service
+
+    monkeypatch.setattr(digest_service, "today_local", lambda: DAY + timedelta(days=1))
+    session_day = DAY - timedelta(days=3)
+
+    db_session.add_all(
+        [
+            _workout("w_joined", session_day, "Full body"),
+            GarminDaily(
+                domain="garmin",
+                source=Source.GARMIN_API.value,
+                date=session_day + timedelta(days=1),
+                sleep_score=61,
+                hrv_avg=41.0,
+            ),
+        ]
+    )
+    await nutrition_service.log_meal(
+        db_session, on_date=session_day, name="ужин", calories=800, protein_g=60.0
+    )
+    await signals_service.set_day_context(
+        db_session, session_day, answers={"where": "office", "gym": True, "load": "heavy"}
+    )
+    await db_session.commit()
+
+    days = {
+        d["date"]: d
+        for d in (await digest_service.assemble_context(
+            db_session, on_date=DAY, period_days=7
+        ))["days"]
+    }
+
+    trained = days[session_day.isoformat()]
+    assert trained["workout"]["title"] == "Full body"
+    assert trained["calories"] == 800
+    assert trained["protein_g"] == 60.0
+    assert trained["day"]["load"] == "heavy"
+    # The night after the session, on its own row — the shape a link is read from.
+    assert days[(session_day + timedelta(days=1)).isoformat()]["hrv_avg"] == 41.0
 
 
 async def test_training_cadence_survives_the_window_edge(db_session):
