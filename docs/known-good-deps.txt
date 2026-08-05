@@ -1,6 +1,6 @@
 # Snapshot of what is actually installed in the running prod container.
-# Taken 2026-07-28 (before the dependency upgrade runs) via:
-#   ssh vitals "docker exec vitals_app pip freeze"
+# Taken 2026-07-28 (before the dependency upgrade runs) on the server via:
+#   docker exec vitals_app pip freeze
 # Reference point for comparison if anything looks off after an upgrade.
 alembic==1.13.1
 annotated-doc==0.0.4
