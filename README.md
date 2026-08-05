@@ -647,82 +647,7 @@ curl -s http://127.0.0.1:8000/health
      auth_basic_user_file /etc/nginx/.htpasswd;
      ```
 
----
-
-#### Вариант В: Просто повесить на свой домен (через Cloudflare прокси)
-Самый стандартный путь, если у вас есть домен, делегированный на Cloudflare, и вы хотите простой публичный доступ с SSL без дополнительного VPN или авторизации со стороны Cloudflare Zero Trust.
-
-1. **Настройка DNS в Cloudflare**:
-   - Создайте A-запись (например, `vitals.yourdomain.com`), указывающую на публичный IP-адрес вашей VPS.
-   - Убедитесь, что включен прокси-режим (**Proxied** / оранжевое облако). Это скроет реальный IP-адрес вашей VPS от внешнего мира и обеспечит встроенную защиту от DDoS.
-2. **Настройка SSL/TLS в Cloudflare**:
-   - В панели управления Cloudflare перейдите в раздел **SSL/TLS -> Overview**.
-   - Установите режим шифрования в **Full** или **Full (strict)**.
-3. **Установка Nginx на VPS**:
-   ```bash
-   sudo apt update
-   sudo apt install nginx -y
-   ```
-4. **Конфигурация Nginx**:
-   Создайте файл `/etc/nginx/sites-available/vitals` с проксированием трафика на локальный порт 8000:
-   ```nginx
-   server {
-       listen 80;
-       server_name vitals.yourdomain.com;
-
-       client_max_body_size 20M;
-
-       location / {
-           proxy_pass http://127.0.0.1:8000;
-           proxy_set_header Host $host;
-           proxy_set_header X-Real-IP $remote_addr;
-           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-           proxy_set_header X-Forwarded-Proto $scheme;
-       }
-   }
-   ```
-   Активируйте конфигурацию и перезапустите Nginx:
-   ```bash
-   sudo ln -s /etc/nginx/sites-available/vitals /etc/nginx/sites-enabled/
-   sudo nginx -t && sudo systemctl restart nginx
-   ```
-5. **SSL-сертификаты (выберите один из вариантов)**:
-   - **Origin Certificate от Cloudflare** (Рекомендуется):
-     - В панели Cloudflare перейдите в **SSL/TLS -> Origin Server** и нажмите **Create Certificate**.
-     - Скопируйте содержимое приватного ключа и сертификата и сохраните их на VPS (например, в `/etc/ssl/private/cloudflare.key` и `/etc/ssl/certs/cloudflare.pem`).
-     - Обновите конфигурацию Nginx, переведя ее на порт 443 с использованием этих сертификатов:
-       ```nginx
-       server {
-           listen 80;
-           server_name vitals.yourdomain.com;
-           return 301 https://$host$request_uri;
-       }
-
-       server {
-           listen 443 ssl;
-           server_name vitals.yourdomain.com;
-
-           ssl_certificate /etc/ssl/certs/cloudflare.pem;
-           ssl_certificate_key /etc/ssl/private/cloudflare.key;
-
-           client_max_body_size 20M;
-
-           location / {
-               proxy_pass http://127.0.0.1:8000;
-               proxy_set_header Host $host;
-               proxy_set_header X-Real-IP $remote_addr;
-               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-               proxy_set_header X-Forwarded-Proto $scheme;
-           }
-       }
-       ```
-       Перезапустите Nginx: `sudo systemctl restart nginx`.
-   - **Использование Let's Encrypt**:
-     - Если вы не хотите использовать Origin-сертификаты Cloudflare, просто получите стандартный сертификат Let's Encrypt через Certbot:
-       ```bash
-       sudo apt install certbot python3-certbot-nginx -y
-       sudo certbot --nginx -d vitals.yourdomain.com
-       ```
+> **Нужен просто публичный доступ, без VPN и Basic Auth?** Пропустите шаг 5, поставьте домен под прокси Cloudflare (оранжевое облако — реальный IP сервера скрыт) и включите режим шифрования **Full (strict)** в **SSL/TLS → Overview**. Вместо Let's Encrypt можно взять Origin-сертификат Cloudflare (**SSL/TLS → Origin Server**). Учтите: в этом случае страница входа Vitals — единственное, что отделяет ваши медицинские данные от интернета.
 
 ---
 
@@ -1415,7 +1340,7 @@ Leave these four empty and the app behaves exactly as before: the bot never send
 
 Since Vitals stores sensitive medical history, genetic profiles, and personal biometric logs, **it is strongly advised not to leave the application exposed to the public internet**. By default, the port mapping in `docker-compose.yml` binds only to the loopback interface (`127.0.0.1:8000`), keeping the application hidden from outside traffic.
 
-The project creator deploys Vitals on an **Ubuntu VPS** and secures access using one of three methods:
+The project creator deploys Vitals on an **Ubuntu VPS** and secures access using one of two methods:
 
 #### Option A: Cloudflare Tunnel (Recommended)
 This is the simplest and most secure method to publish the app with a valid SSL certificate without exposing any ports on your firewall or router (your server's IP remains hidden).
@@ -1483,82 +1408,7 @@ A traditional setup using Nginx as a reverse proxy.
      auth_basic_user_file /etc/nginx/.htpasswd;
      ```
 
----
-
-#### Option C: Simple Public Domain (via Cloudflare Proxy)
-The standard path if you want direct public access to your Vitals dashboard using a custom domain managed by Cloudflare, with SSL handled by Cloudflare's edge servers.
-
-1. **DNS Settings in Cloudflare**:
-   - Add an A record (e.g., `vitals.yourdomain.com`) pointing to your VPS's public IP address.
-   - Ensure the proxy status is set to **Proxied** (orange cloud). This hides your VPS's public IP and shields it from direct traffic/DDoS attacks.
-2. **SSL/TLS Settings in Cloudflare**:
-   - In the Cloudflare Dashboard, go to **SSL/TLS -> Overview**.
-   - Change the encryption mode to **Full** or **Full (strict)**.
-3. **Install Nginx on the VPS**:
-   ```bash
-   sudo apt update
-   sudo apt install nginx -y
-   ```
-4. **Configure virtual host**:
-   Create a configuration file at `/etc/nginx/sites-available/vitals` to forward traffic to the local port 8000:
-   ```nginx
-   server {
-       listen 80;
-       server_name vitals.yourdomain.com;
-
-       client_max_body_size 20M;
-
-       location / {
-           proxy_pass http://127.0.0.1:8000;
-           proxy_set_header Host $host;
-           proxy_set_header X-Real-IP $remote_addr;
-           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-           proxy_set_header X-Forwarded-Proto $scheme;
-       }
-   }
-   ```
-   Activate the configuration and restart Nginx:
-   ```bash
-   sudo ln -s /etc/nginx/sites-available/vitals /etc/nginx/sites-enabled/
-   sudo nginx -t && sudo systemctl restart nginx
-   ```
-5. **SSL Certificates (Choose one)**:
-   - **Cloudflare Origin Certificate** (Recommended):
-     - In the Cloudflare Dashboard, go to **SSL/TLS -> Origin Server** and click **Create Certificate**.
-     - Copy the certificate and private key and save them on your VPS (e.g., to `/etc/ssl/certs/cloudflare.pem` and `/etc/ssl/private/cloudflare.key`).
-     - Update your Nginx configuration file to listen on port 443 with these certificates:
-       ```nginx
-       server {
-           listen 80;
-           server_name vitals.yourdomain.com;
-           return 301 https://$host$request_uri;
-       }
-
-       server {
-           listen 443 ssl;
-           server_name vitals.yourdomain.com;
-
-           ssl_certificate /etc/ssl/certs/cloudflare.pem;
-           ssl_certificate_key /etc/ssl/private/cloudflare.key;
-
-           client_max_body_size 20M;
-
-           location / {
-               proxy_pass http://127.0.0.1:8000;
-               proxy_set_header Host $host;
-               proxy_set_header X-Real-IP $remote_addr;
-               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-               proxy_set_header X-Forwarded-Proto $scheme;
-           }
-       }
-       ```
-       Restart Nginx: `sudo systemctl restart nginx`.
-   - **Let's Encrypt / Certbot**:
-     - Alternatively, obtain a standard Let's Encrypt certificate:
-       ```bash
-       sudo apt install certbot python3-certbot-nginx -y
-       sudo certbot --nginx -d vitals.yourdomain.com
-       ```
+> **Just want plain public access, without VPN or Basic Auth?** Skip step 5, put the domain behind the Cloudflare proxy (orange cloud — your server's real IP stays hidden) and set the encryption mode to **Full (strict)** under **SSL/TLS → Overview**. Instead of Let's Encrypt you can use a Cloudflare Origin Certificate (**SSL/TLS → Origin Server**). Keep in mind: in that case the Vitals login page is the only thing between your medical data and the internet.
 
 ---
 
