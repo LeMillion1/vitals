@@ -381,12 +381,12 @@
         </div>
     </div>
 
-    <!-- ─── CHANGE PASSWORD ────────────────────────────────────────────────── -->
+    <!-- ─── SIGNING IN: password + two-factor ──────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
-        {{ card_header(t("settings.password_title")) }}
-        <p class="v-text-body" style="color: var(--muted)">
-            {{ t("settings.password_description") }}
-        </p>
+        {{ card_header(t("settings.signin_title")) }}
+
+        <div class="space-y-2.5">
+        <span class="s-signin-label">{{ t("settings.password_label") }}</span>
         <form action="/settings/password" method="POST" class="space-y-4">
             <div class="space-y-1.5">
                 <label for="s-old-pass" class="v-label">{{ t("settings.current_password") }}</label>
@@ -411,29 +411,53 @@
                 <button type="submit" class="v-btn text-xs">{{ t("settings.save_password") }}</button>
             </div>
         </form>
-    </div>
+        </div>
 
-    <!-- ─── TWO-FACTOR AUTH ────────────────────────────────────────────────── -->
-    <div class="v-card v-setting-row p-6 space-y-5">
-        {{ card_header(t("settings.twofa_title")) }}
-        <p class="v-text-body" style="color: var(--muted)">
-            {{ t("settings.twofa_description") }}
-        </p>
+        <div style="border-top: 1px solid var(--line)"></div>
+
+        <div class="space-y-2.5"
+             x-data="{ confirming: {{ 'true' if error == 'twofa_bad_code' else 'false' }} }">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2">
+                <span class="s-signin-label">{{ t("settings.twofa_label") }}</span>
+                {# State sits next to the name, the way the modules card marks a Core
+                   row — a lone chip under the description reads as a stray badge. #}
+                {% if twofa.enabled %}
+                <span class="v-chip v-chip-sm good">{{ t("settings.twofa_on") }}</span>
+                {% endif %}
+            </div>
+
+            {% if twofa.enabled %}
+            {# The code field belongs to the act of switching it off, so it stays
+               out of the way until that is actually asked for — an empty code box
+               sitting under an enabled feature just reads as something unfinished. #}
+            {# margin-left:auto so that when the row wraps on a phone the button
+               still sits right, in line with every other action on this card. #}
+            <button type="button" class="v-btn-ghost text-xs" x-show="!confirming"
+                    style="margin-left:auto"
+                    @click="confirming = true">{{ t("settings.twofa_disable") }}</button>
+            {% elif not twofa.pending %}
+            <form action="/settings/2fa/start" method="POST" style="margin-left:auto">
+                <button type="submit" class="v-btn text-xs">{{ t("settings.twofa_enable") }}</button>
+            </form>
+            {% endif %}
+        </div>
 
         {% if twofa.enabled %}
-        {# ── On ── #}
-        <span class="v-chip v-chip-sm good">{{ t("settings.twofa_on") }}</span>
-        <form action="/settings/2fa/disable" method="POST" class="space-y-4">
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
-                <div class="space-y-1.5">
-                    <label for="s-2fa-off" class="v-label">{{ t("settings.twofa_code") }}</label>
-                    <input id="s-2fa-off" name="code" class="v-input" required
-                           inputmode="numeric" pattern="[0-9]*" maxlength="6"
-                           autocomplete="one-time-code" placeholder="000000">
-                </div>
-                <div class="flex justify-end">
-                    <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.twofa_disable") }}</button>
-                </div>
+        {# Inline display:none, not x-cloak alone: this block survives a boosted
+           swap, and without a static default it flashes open on the way in. #}
+        <form action="/settings/2fa/disable" method="POST" x-show="confirming" x-cloak
+              style="display:none" class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+            <div class="space-y-1.5">
+                <label for="s-2fa-off" class="v-label">{{ t("settings.twofa_code") }}</label>
+                <input id="s-2fa-off" name="code" class="v-input" required
+                       inputmode="numeric" pattern="[0-9]*" maxlength="6"
+                       autocomplete="one-time-code" placeholder="000000">
+            </div>
+            <div class="flex justify-end gap-2">
+                <button type="button" class="v-btn-ghost text-xs"
+                        @click="confirming = false">{{ t("settings.twofa_cancel") }}</button>
+                <button type="submit" class="v-btn text-xs">{{ t("settings.twofa_disable") }}</button>
             </div>
         </form>
 
@@ -451,9 +475,11 @@
                              user-select:all">{{ twofa_secret_display }}</span>
                 <div class="flex flex-wrap gap-2">
                     <button type="button" class="v-btn-ghost text-xs" data-2fa-copy>{{ t("settings.twofa_copy") }}</button>
-                    {# Same enrolment, handed to an authenticator on *this* device
-                       — the QR above is for a second one. #}
-                    <a class="v-btn-ghost text-xs" href="{{ twofa_uri }}">{{ t("settings.twofa_open_app") }}</a>
+                    {# Same enrolment handed to an authenticator on *this* device —
+                       the QR above is for a second one. Hidden where there's a
+                       mouse: on a desktop nothing usually claims otpauth://, so the
+                       click does nothing and the control is dead. #}
+                    <a class="v-btn-ghost text-xs s-2fa-app" href="{{ twofa_uri }}">{{ t("settings.twofa_open_app") }}</a>
                 </div>
             </div>
         </div>
@@ -476,15 +502,36 @@
         <form action="/settings/2fa/disable" method="POST" id="s-2fa-cancel" class="hidden"></form>
 
         {% else %}
-        {# ── Off ── #}
-        <form action="/settings/2fa/start" method="POST" class="flex justify-end">
-            <button type="submit" class="v-btn text-xs">{{ t("settings.twofa_enable") }}</button>
-        </form>
+        {# ── Off. The button is up in the header row; all that is left is saying
+             what it would turn on. #}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("settings.twofa_description") }}</p>
         {% endif %}
+        </div>
     </div>
     </div>
 
 </div>
+
+<style>
+    /* Sub-section heading inside the sign-in card. Not `.v-label` — that is the
+       field-label style, and "Пароль" set in it sat directly above "Текущий
+       пароль" looking like a second field label rather than the block's name. */
+    .s-signin-label {
+        display: block;
+        font-size: 11px;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+        font-weight: 600;
+        color: var(--faint);
+    }
+
+    /* The otpauth:// link is only useful where an authenticator lives on the same
+       device as this page. A mouse means a desktop, where the scheme is usually
+       unclaimed and the click silently does nothing — the QR is the path there. */
+    @media (hover: hover) and (pointer: fine) {
+        .s-2fa-app { display: none; }
+    }
+</style>
 
 <script>
 (function () {
