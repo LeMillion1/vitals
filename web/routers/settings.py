@@ -26,7 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import t
 from vitals.integrations.garmin_client import login_breaker_state
-from vitals.services import data_portability_service, language_service, modules_service
+from vitals.services import (
+    data_portability_service,
+    language_service,
+    modules_service,
+    twofa_service,
+)
 from vitals.services.modules_service import ModuleToggleError
 from vitals.services.proactive import day_plan, prefs
 from vitals.utils.timeutils import today_local
@@ -81,8 +86,20 @@ async def _page(
 ) -> HTMLResponse:
     """Build the template context and render settings.html."""
     proactive = await prefs.get_prefs(db)
+    twofa = await twofa_service.get_state(db)
+    _twofa_uri = (
+        twofa_service.provisioning_uri(twofa.secret, account=username) if twofa.pending else ""
+    )
     ctx = {
         "username": username,
+        # Two-factor auth. The card renders one of three states off this: off,
+        # mid-enrolment (secret minted, not yet proven), on.
+        "twofa": twofa,
+        # Only ever shown while enrolment is unconfirmed — once 2FA is on, the
+        # secret has no reason to appear on screen again.
+        "twofa_secret_display": twofa_service.format_secret(twofa.secret) if twofa.pending else "",
+        "twofa_uri": _twofa_uri,
+        "twofa_qr": twofa_service.qr_svg(_twofa_uri) if _twofa_uri else "",
         "saved": saved,
         "error": error,
         "adjusted": adjusted,
@@ -309,6 +326,57 @@ async def toggle_module(
         "partials/modules_oob.html",
         {"username": username, "enabled_modules": state},
     )
+
+
+# ── Two-factor auth ───────────────────────────────────────────────────────────
+
+
+@router.post("/2fa/start")
+async def start_twofa(
+    request: Request,
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+):
+    """Mint a secret and show it. 2FA is NOT on yet — see ``confirm_twofa``."""
+    if (await twofa_service.get_state(db)).enabled:
+        return _redirect()
+    await twofa_service.start_enrolment(db)
+    await db.commit()
+    return _redirect()
+
+
+@router.post("/2fa/enable")
+async def confirm_twofa(
+    request: Request,
+    code: str = Form(""),
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+    _rl: None = Depends(rate_limit("twofa_setup", limit=10, window=300)),
+):
+    """Finish enrolment: a correct code proves the secret reached the phone."""
+    if not await twofa_service.confirm_enrolment(db, code):
+        return await _page(request, username, db=db, redis=redis, error="twofa_bad_code")
+    await db.commit()
+    return _redirect("?saved=twofa")
+
+
+@router.post("/2fa/disable")
+async def disable_twofa(
+    request: Request,
+    code: str = Form(""),
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+    _rl: None = Depends(rate_limit("twofa_setup", limit=10, window=300)),
+):
+    """Switch 2FA off (needs a current code), or drop a half-finished enrolment
+    (needs nothing — it never granted anything)."""
+    if not await twofa_service.disable(db, code):
+        return await _page(request, username, db=db, redis=redis, error="twofa_bad_code")
+    await db.commit()
+    return _redirect("?saved=twofa_off")
 
 
 @router.post("/proactive")

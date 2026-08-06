@@ -22,6 +22,11 @@ Design notes:
   * ``app_settings`` rows whose key looks like a credential are dropped from the
     backup so the file can't leak tokens. (Real secrets live in ``.env``, which the
     DB export never touches — this is defence in depth for any future token row.)
+    The import is the mirror of that rule: rows the export won't write, it won't
+    delete or accept either, so a restore can neither drop a credential nor plant
+    one. Without the mirror the two halves are asymmetric and a round trip through
+    backup is lossy in precisely the rows being protected — which is how restoring
+    a backup used to switch two-factor auth off.
   * Photo binaries are *not* in the backup — ``progress_photos`` rows carry only the
     ``file_key`` reference (files live on disk). Restore brings back the rows, not
     the images.
@@ -219,16 +224,43 @@ def _validate_payload(payload: Any) -> BackupMetadata:
     return meta
 
 
+async def _secret_settings(session: AsyncSession) -> list[dict[str, Any]]:
+    """The ``app_settings`` rows a backup never carries, read back verbatim so the
+    restore can put them down again after the wipe.
+
+    Same predicate as the exporter, deliberately: one list of markers, checked in
+    Python. Expressed as a SQL ``LIKE`` per marker it would be a second copy, and
+    the day a marker is added the two halves would quietly disagree.
+    """
+    table = Base.metadata.tables["app_settings"]
+    result = await session.execute(select(table))
+    return [
+        dict(mapping)
+        for mapping in result.mappings().all()
+        if _is_secret_setting_key(mapping.get("key"))
+    ]
+
+
 async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     """Replace the whole DB with the file's contents, in the caller's transaction.
 
     Deletes every table (children first), reloads each present table preserving
     primary keys (parents first), then fixes Postgres identity sequences. Only
     ``flush`` — the router commits, so any raised error rolls everything back.
+
+    **What the export refuses to write, the import refuses to delete or accept.**
+    ``export_full`` drops secret-ish ``app_settings`` keys, so a wipe-and-reload
+    would silently lose exactly the rows it was protecting — today that is the 2FA
+    secret, and losing it turns the second factor off with no code presented and
+    nothing on screen to say so. Those rows are therefore carried across the wipe,
+    and rows with the same keys arriving *in* the file are ignored: a backup must
+    not be a way to plant a credential either.
     """
     _validate_payload(payload)
 
     try:
+        preserved = await _secret_settings(session)
+
         # Wipe in reverse FK order so child rows go before the parents they reference.
         for table in reversed(Base.metadata.sorted_tables):
             await session.execute(table.delete())
@@ -237,6 +269,8 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
         # Reload in FK order, preserving ids and all columns.
         for table in Base.metadata.sorted_tables:
             rows = payload.get(table.name)
+            if table.name == "app_settings":
+                rows = [r for r in rows or () if not _is_secret_setting_key(r.get("key"))]
             if not rows:
                 continue
             columns = table.columns
@@ -250,6 +284,9 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
             ]
             await session.execute(table.insert(), records)
             counts[table.name] = len(records)
+
+        if preserved:
+            await session.execute(Base.metadata.tables["app_settings"].insert(), preserved)
 
         await _reset_sequences(session)
         await session.flush()

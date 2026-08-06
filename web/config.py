@@ -13,6 +13,13 @@ from dataclasses import dataclass
 SESSION_COOKIE = "vitals_session"
 DEFAULT_SESSION_TTL = 30 * 24 * 3600  # 30 days
 
+# Short-lived handle tying the password step to the 2FA step. It carries no
+# access on its own — it is signed with its own salt (see ``web/auth.py``), so it
+# cannot be presented as a session cookie, and it only says "this username just
+# passed the password check".
+PENDING_2FA_COOKIE = "vitals_2fa"
+PENDING_2FA_TTL = 300  # 5 minutes to reach for the phone and type the code
+
 # Callback hosts of the AI clients allowed to connect to the MCP server. Matched
 # by host rather than by full URL on purpose: Claude and ChatGPT each use one
 # fixed callback path, but Google mints a per-user one

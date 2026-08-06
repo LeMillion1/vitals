@@ -105,6 +105,7 @@ Vitals написан с Claude в качестве основного инст�
 **🔒 Приватность и контроль**
 - Self-hosted, single-user, behind VPN
 - Bcrypt-авторизация + подписанные сессии
+- Двухфакторный вход (TOTP) — по желанию, включается в настройках
 - CSRF + Origin Guard + CSP
 - Модульный дашборд — включай/выключай домены в настройках
 - Никаких внешних CDN — шрифты и стили полностью локальные
@@ -647,7 +648,7 @@ curl -s http://127.0.0.1:8000/health
      auth_basic_user_file /etc/nginx/.htpasswd;
      ```
 
-> **Нужен просто публичный доступ, без VPN и Basic Auth?** Пропустите шаг 5, поставьте домен под прокси Cloudflare (оранжевое облако — реальный IP сервера скрыт) и включите режим шифрования **Full (strict)** в **SSL/TLS → Overview**. Вместо Let's Encrypt можно взять Origin-сертификат Cloudflare (**SSL/TLS → Origin Server**). Учтите: в этом случае страница входа Vitals — единственное, что отделяет ваши медицинские данные от интернета.
+> **Нужен просто публичный доступ, без VPN и Basic Auth?** Пропустите шаг 5, поставьте домен под прокси Cloudflare (оранжевое облако — реальный IP сервера скрыт) и включите режим шифрования **Full (strict)** в **SSL/TLS → Overview**. Вместо Let's Encrypt можно взять Origin-сертификат Cloudflare (**SSL/TLS → Origin Server**). Учтите: в этом случае страница входа Vitals — единственное, что отделяет ваши медицинские данные от интернета. Именно для такой установки и стоит включить двухфакторный вход (**Настройки → Двухфакторная защита**): тогда одного утёкшего пароля будет мало.
 
 ---
 
@@ -680,6 +681,8 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_SESSION_TTL` | Время жизни сессии (сек) | `2592000` (30 дней) |
 | `VITALS_COOKIE_SECURE` | Флаг Secure для кук | `true` |
 | `VITALS_COOKIE_SAMESITE` | Политика SameSite | `lax` |
+
+Двухфакторный вход переменной не имеет: он выключен по умолчанию и включается в настройках (**Настройки → Двухфакторная защита**). Ключ хранится в базе, а не в `.env`, и в бэкап не попадает — значит после переезда на новый сервер 2FA нужно включить заново.
 </details>
 
 <details>
@@ -864,6 +867,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 **🔒 Privacy & Control**
 - Self-hosted, single-user, behind VPN
 - Bcrypt auth + signed session cookies
+- Optional two-factor sign-in (TOTP), switched on in Settings
 - CSRF + Origin Guard + CSP
 - Modular dashboard — toggle domains on/off in Settings
 - No external CDNs — fonts and assets are hosted locally
@@ -905,7 +909,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 
 > [!CAUTION]
 > **4. Single-User Self-Hosted Privacy**
-> Your biometrics belong to you. Designed for deployment behind a VPN. Secure session cookies, bcrypt passwords, CSRF protection.
+> Your biometrics belong to you. Designed for deployment behind a VPN. Secure session cookies, bcrypt passwords, CSRF protection, and an optional TOTP second factor for installs that face the open internet.
 
 > [!TIP]
 > **5. End-to-End Data Portability**
@@ -1408,7 +1412,7 @@ A traditional setup using Nginx as a reverse proxy.
      auth_basic_user_file /etc/nginx/.htpasswd;
      ```
 
-> **Just want plain public access, without VPN or Basic Auth?** Skip step 5, put the domain behind the Cloudflare proxy (orange cloud — your server's real IP stays hidden) and set the encryption mode to **Full (strict)** under **SSL/TLS → Overview**. Instead of Let's Encrypt you can use a Cloudflare Origin Certificate (**SSL/TLS → Origin Server**). Keep in mind: in that case the Vitals login page is the only thing between your medical data and the internet.
+> **Just want plain public access, without VPN or Basic Auth?** Skip step 5, put the domain behind the Cloudflare proxy (orange cloud — your server's real IP stays hidden) and set the encryption mode to **Full (strict)** under **SSL/TLS → Overview**. Instead of Let's Encrypt you can use a Cloudflare Origin Certificate (**SSL/TLS → Origin Server**). Keep in mind: in that case the Vitals login page is the only thing between your medical data and the internet. That is exactly the setup worth turning two-factor sign-in on for (**Settings → Two-factor authentication**) — a leaked password alone is then not enough.
 
 ---
 
@@ -1441,6 +1445,8 @@ Connection-pool and timeout tuning (`VITALS_DB_POOL_SIZE`, `VITALS_DB_MAX_OVERFL
 | `VITALS_SESSION_TTL` | Session duration (seconds) | `2592000` (30 days) |
 | `VITALS_COOKIE_SECURE` | Secure cookie flag | `true` |
 | `VITALS_COOKIE_SAMESITE` | SameSite policy | `lax` |
+
+Two-factor sign-in has no variable: it is off by default and switched on in the dashboard (**Settings → Two-factor authentication**). The key lives in the database rather than `.env`, and backups never carry it — so after moving to a new server, 2FA has to be turned on again.
 </details>
 
 <details>

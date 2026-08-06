@@ -37,6 +37,10 @@
     <div class="v-alert info">{{ t("settings.saved.language") }}</div>
     {% elif saved == 'proactive' %}
     <div class="v-alert info">{{ t("settings.saved.proactive") }}</div>
+    {% elif saved == 'twofa' %}
+    <div class="v-alert info">{{ t("settings.saved.twofa") }}</div>
+    {% elif saved == 'twofa_off' %}
+    <div class="v-alert info">{{ t("settings.saved.twofa_off") }}</div>
     {% endif %}
     {% if saved == 'proactive' and adjusted %}
     <div class="v-alert warn">{{ t("settings.proactive_adjusted") }}</div>
@@ -64,6 +68,8 @@
     <div class="v-alert warn">{{ t("settings.error.password_mismatch") }}</div>
     {% elif error == 'password_too_short' %}
     <div class="v-alert warn">{{ t("settings.error.password_too_short") }}</div>
+    {% elif error == 'twofa_bad_code' %}
+    <div class="v-alert warn">{{ t("settings.error.twofa_bad_code") }}</div>
     {% endif %}
 
     <!-- ─── LANGUAGE ───────────────────────────────────────────────────────── -->
@@ -406,11 +412,97 @@
             </div>
         </form>
     </div>
+
+    <!-- ─── TWO-FACTOR AUTH ────────────────────────────────────────────────── -->
+    <div class="v-card v-setting-row p-6 space-y-5">
+        {{ card_header(t("settings.twofa_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("settings.twofa_description") }}
+        </p>
+
+        {% if twofa.enabled %}
+        {# ── On ── #}
+        <span class="v-chip v-chip-sm good">{{ t("settings.twofa_on") }}</span>
+        <form action="/settings/2fa/disable" method="POST" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+                <div class="space-y-1.5">
+                    <label for="s-2fa-off" class="v-label">{{ t("settings.twofa_code") }}</label>
+                    <input id="s-2fa-off" name="code" class="v-input" required
+                           inputmode="numeric" pattern="[0-9]*" maxlength="6"
+                           autocomplete="one-time-code" placeholder="000000">
+                </div>
+                <div class="flex justify-end">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.twofa_disable") }}</button>
+                </div>
+            </div>
+        </form>
+
+        {% elif twofa.pending %}
+        {# ── Mid-enrolment: the secret is on screen, 2FA is still off ── #}
+        <div style="display:flex; flex-wrap:wrap; align-items:center; gap:1.25rem">
+            {# White tile: the QR must stay dark-on-light whatever the theme. #}
+            <div style="flex:none; padding:.5rem; background:#FFFFFF;
+                        border-radius:var(--radius-sm); line-height:0">{{ twofa_qr|safe }}</div>
+            <div style="flex:1; min-width:11rem; display:flex; flex-direction:column;
+                        align-items:flex-start; gap:.625rem">
+                <span id="s-2fa-secret" class="v-text-body" data-secret="{{ twofa.secret }}"
+                      style="color:var(--muted); letter-spacing:.06em;
+                             font-variant-numeric:tabular-nums; word-break:break-all;
+                             user-select:all">{{ twofa_secret_display }}</span>
+                <div class="flex flex-wrap gap-2">
+                    <button type="button" class="v-btn-ghost text-xs" data-2fa-copy>{{ t("settings.twofa_copy") }}</button>
+                    {# Same enrolment, handed to an authenticator on *this* device
+                       — the QR above is for a second one. #}
+                    <a class="v-btn-ghost text-xs" href="{{ twofa_uri }}">{{ t("settings.twofa_open_app") }}</a>
+                </div>
+            </div>
+        </div>
+
+        <form action="/settings/2fa/enable" method="POST" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+                <div class="space-y-1.5">
+                    <label for="s-2fa-code" class="v-label">{{ t("settings.twofa_code") }}</label>
+                    <input id="s-2fa-code" name="code" class="v-input" required autofocus
+                           inputmode="numeric" pattern="[0-9]*" maxlength="6"
+                           autocomplete="one-time-code" placeholder="000000">
+                </div>
+                <div class="flex justify-end gap-2">
+                    <button type="submit" form="s-2fa-cancel" class="v-btn-ghost text-xs">{{ t("settings.twofa_cancel") }}</button>
+                    <button type="submit" class="v-btn text-xs">{{ t("settings.twofa_confirm") }}</button>
+                </div>
+            </div>
+        </form>
+        {# Outside the form above so its submit button can't post the code here. #}
+        <form action="/settings/2fa/disable" method="POST" id="s-2fa-cancel" class="hidden"></form>
+
+        {% else %}
+        {# ── Off ── #}
+        <form action="/settings/2fa/start" method="POST" class="flex justify-end">
+            <button type="submit" class="v-btn text-xs">{{ t("settings.twofa_enable") }}</button>
+        </form>
+        {% endif %}
+    </div>
     </div>
 
 </div>
 
 <script>
+(function () {
+    // Copy the 2FA secret. Only on screen mid-enrolment, and only useful on
+    // desktop — on a phone the otpauth:// link next to it hands the secret
+    // straight to the authenticator app.
+    var btn = document.querySelector('[data-2fa-copy]');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        var el = document.getElementById('s-2fa-secret');
+        // The grouped-in-fours rendering is for reading; the app wants the raw
+        // string, so copy the unspaced original off the data attribute.
+        navigator.clipboard.writeText(el ? el.dataset.secret : '').then(function () {
+            if (window.vitalsToast) window.vitalsToast({{ t("settings.twofa_copied")|tojson }}, 'success');
+        });
+    });
+})();
+
 async function triggerRestart() {
     if (!(await window.vitalsConfirm({{ t("settings.restart_confirm") | tojson | safe }}, {{ t("settings.restart_btn") | tojson | safe }}))) {
         return;

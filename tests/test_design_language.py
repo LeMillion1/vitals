@@ -325,8 +325,10 @@ async def test_the_modal_heading_is_a_valid_alpine_expression(auth_client, route
 
 
 def test_the_login_page_is_sized_in_dvh_like_the_app_frame():
-    login = (ROOT / "web/templates/login.html").read_text(encoding="utf-8")
-    assert "85dvh" in login and "85vh" not in login
+    # The sign-in styles are shared by /login and the 2FA code step, so they live
+    # in a partial both include rather than in login.html itself.
+    styles = (ROOT / "web/templates/partials/login_styles.html").read_text(encoding="utf-8")
+    assert "85dvh" in styles and "85vh" not in styles
 
 
 def test_a_sideways_ribbon_says_it_scrolls():

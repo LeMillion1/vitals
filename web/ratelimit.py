@@ -53,7 +53,9 @@ def rate_limit(bucket: str, *, limit: int, window: int) -> Callable:
     return _dep
 
 
-def login_rate_limit(*, limit: int, window: int, bucket: str = "login") -> Callable:
+def login_rate_limit(
+    *, limit: int, window: int, bucket: str = "login", per_ip: bool = True
+) -> Callable:
     """Build a dependency throttling repeated requests **by client IP**.
 
     Unlike :func:`rate_limit`, this must NOT depend on ``require_auth`` — the whole
@@ -63,14 +65,23 @@ def login_rate_limit(*, limit: int, window: int, bucket: str = "login") -> Calla
     counters apart so webhook traffic can't exhaust the login allowance. Keyed by
     the caller's IP. Fail-open like ``rate_limit`` — a missing Redis must never
     lock the owner out of their own app.
+
+    ``per_ip=False`` shares one counter across every caller. That is the right
+    shape for the 2FA code step and the wrong one everywhere else: a six-digit
+    code is guessable in bulk, and an IP-keyed budget hands a fresh allowance out
+    with every rotated address. Vitals has exactly one user, so a global budget
+    costs no legitimate traffic anything.
     """
 
     async def _dep(
         request: Request,
         redis: Redis = Depends(get_redis),
     ) -> None:
-        ip = request.client.host if request.client else "unknown"
-        key = f"ratelimit:{bucket}:{ip}"
+        if per_ip:
+            scope = request.client.host if request.client else "unknown"
+        else:
+            scope = "all"
+        key = f"ratelimit:{bucket}:{scope}"
         try:
             count = await redis.incr(key)
             if count == 1:

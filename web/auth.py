@@ -7,13 +7,18 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from web.config import SESSION_COOKIE, get_web_config
+from vitals.i18n import t
+from vitals.services import twofa_service
+from web.config import PENDING_2FA_COOKIE, PENDING_2FA_TTL, SESSION_COOKIE, get_web_config
+from web.deps import get_redis, get_session
 from web.ratelimit import login_rate_limit
 from web.security import verify_password, verify_password_dummy
 from web.templating import templates
@@ -35,6 +40,49 @@ def _get_mcp_serializer() -> URLSafeTimedSerializer:
     """
     cfg = get_web_config()
     return URLSafeTimedSerializer(cfg.session_secret, salt="vitals-mcp")
+
+
+def _get_pending_2fa_serializer() -> URLSafeTimedSerializer:
+    """A third salt, for the handle issued between the password step and the code
+    step. Same reasoning as the MCP salt above: this token must be worthless if
+    presented anywhere a real session is expected, and signature verification
+    across salts fails by construction.
+    """
+    cfg = get_web_config()
+    return URLSafeTimedSerializer(cfg.session_secret, salt="vitals-2fa")
+
+
+def create_pending_2fa(username: str) -> str:
+    """Sign a handle saying "this username just passed the password check"."""
+    return _get_pending_2fa_serializer().dumps(username)
+
+
+def read_pending_2fa(token: str | None) -> Optional[str]:
+    """The username behind a live pending handle, or None if absent/expired."""
+    if not token:
+        return None
+    try:
+        payload = _get_pending_2fa_serializer().loads(token, max_age=PENDING_2FA_TTL)
+    except (SignatureExpired, BadSignature):
+        return None
+    return payload if isinstance(payload, str) else None
+
+
+def set_pending_2fa_cookie(response: Response, token: str) -> None:
+    cfg = get_web_config()
+    response.set_cookie(
+        key=PENDING_2FA_COOKIE,
+        value=token,
+        max_age=PENDING_2FA_TTL,
+        path="/",
+        secure=cfg.cookie_secure,
+        httponly=True,
+        samesite=cfg.cookie_samesite,
+    )
+
+
+def clear_pending_2fa_cookie(response: Response) -> None:
+    response.delete_cookie(key=PENDING_2FA_COOKIE, path="/")
 
 
 def safe_next(next: str | None) -> str:
@@ -134,9 +182,21 @@ async def login(
     # an authenticated username for its key), so `/login` gets a dedicated IP-based
     # limiter — this is the only pre-auth entry point and the one that needs it most.
     _rl: None = Depends(login_rate_limit(limit=10, window=300)),
+    db: AsyncSession = Depends(get_session),
 ):
     next_url = safe_next(next)
     if authenticate(username, password):
+        # 2FA on → the password alone completes nothing. Hand over only the
+        # short-lived pending handle and send the browser to the code step; the
+        # real session is minted there and nowhere else.
+        if (await twofa_service.get_state(db)).enabled:
+            response = RedirectResponse(
+                url=f"/login/2fa?next={quote(next_url, safe='')}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+            set_pending_2fa_cookie(response, create_pending_2fa(username))
+            return response
+
         token = create_session(username)
         response = RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
         set_session_cookie(response, token)
@@ -145,8 +205,56 @@ async def login(
     return templates.TemplateResponse(
         request,
         "login.html",
-        {"error": "Неверное имя пользователя или пароль", "next": next_url},
+        {"error": t("login.error.bad_credentials"), "next": next_url},
     )
+
+
+# ── Second factor (step 2 of login, only when 2FA is switched on) ─────────────
+
+
+@router.get("/login/2fa", response_class=HTMLResponse)
+async def login_2fa_page(request: Request, next: Optional[str] = None):
+    # Reachable only with a live pending handle, so the page can't be used to
+    # probe whether 2FA is on for this install.
+    if read_pending_2fa(request.cookies.get(PENDING_2FA_COOKIE)) is None:
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    return templates.TemplateResponse(request, "login_2fa.html", {"next": safe_next(next)})
+
+
+@router.post("/login/2fa")
+async def login_2fa(
+    request: Request,
+    code: str = Form(...),
+    next: Optional[str] = Form(None),
+    # Global, not per-IP: six digits are guessable in bulk and rotating the
+    # source address must not buy a fresh allowance. See ``login_rate_limit``.
+    _rl: None = Depends(
+        login_rate_limit(limit=10, window=300, bucket="login_2fa", per_ip=False)
+    ),
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+):
+    next_url = safe_next(next)
+    token = request.cookies.get(PENDING_2FA_COOKIE)
+    username = read_pending_2fa(token)
+    if username is None:
+        # Nothing to complete — five minutes ran out, or there was never a
+        # password step. Start over rather than hint at which.
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+
+    state = await twofa_service.get_state(db)
+    step = twofa_service.verify_code(state.secret, code) if state.enabled else None
+    if step is None or not await twofa_service.consume_step(redis, step):
+        return templates.TemplateResponse(
+            request,
+            "login_2fa.html",
+            {"error": t("login.error.bad_code"), "next": next_url},
+        )
+
+    response = RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
+    set_session_cookie(response, create_session(username))
+    clear_pending_2fa_cookie(response)
+    return response
 
 
 @router.get("/logout")
@@ -154,4 +262,5 @@ async def login(
 async def logout(request: Request):
     response = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     clear_session_cookie(response)
+    clear_pending_2fa_cookie(response)
     return response
