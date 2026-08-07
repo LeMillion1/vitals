@@ -345,12 +345,7 @@ async def _glp1_block(session, ctx, stats, start, end, flagged_only) -> dict:
     return {
         "current": current,
         "doses": [
-            {
-                "date": i.date.isoformat(),
-                "drug": i.drug,
-                "dose_mg": i.dose_mg,
-                "site": i.site,
-            }
+            {"date": i.date.isoformat(), "drug": i.drug, "dose_mg": i.dose_mg}
             for i in sorted(injections, key=lambda x: x.date)
         ],
         "side_effects": [
@@ -365,6 +360,7 @@ async def _glp1_block(session, ctx, stats, start, end, flagged_only) -> dict:
 
 
 async def _hrt_block(session, ctx, stats, start, end, flagged_only) -> dict:
+    from vitals.i18n import current_lang
     from vitals.services import hrt_service
 
     hrt = ctx.get("hrt") or {}
@@ -375,15 +371,33 @@ async def _hrt_block(session, ctx, stats, start, end, flagged_only) -> dict:
     cycle = hrt.get("cycle")
     if not cycle and not doses and not effects:
         return {}
+
+    # A doctor gets the molecule's name, not the catalog slug ("test_enanthate").
+    lang = current_lang.get()
+    compounds = await hrt_service.list_compounds(session, active_only=False)
+    names = {
+        c.key: ((c.name_ru or c.name) if lang == "ru" else (c.name or c.name_ru))
+        for c in compounds
+    }
     return {
-        "cycle": cycle,
+        "cycle": (
+            {
+                "name": cycle.get("name"),
+                "start_date": cycle.get("start_date"),
+                "end_date": cycle.get("end_date"),
+                "compounds": [
+                    names.get(k, k) for k in cycle.get("compounds") or ()
+                ],
+            }
+            if cycle
+            else None
+        ),
         "doses": [
             {
                 "date": d.date.isoformat(),
-                "compound": d.compound_key,
+                "compound": names.get(d.compound_key, d.compound_key),
                 "dose": d.dose,
                 "unit": d.unit,
-                "site": d.site,
             }
             for d in sorted(doses, key=lambda x: x.date)
         ],

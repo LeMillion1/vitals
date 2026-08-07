@@ -119,6 +119,15 @@ def meal_word(n: Any) -> str:
     return plural_ru(n, "приём", "приёма", "приёмов")
 
 
+def format_domain(value: Any) -> str:
+    """A domain key as a section name a reader outside the app would use.
+
+    "body_comp" and "signals" are Vitals' words for things; the doctor document
+    lists the sections it contains, so it needs the human ones.
+    """
+    return t("enum.domain." + str(value))
+
+
 def format_unit(value: Any) -> Markup:
     """Escape a lab unit string, then render '10^9' as a safe superscript.
     Escaping happens first so any HTML that ended up in the raw value
@@ -135,6 +144,7 @@ templates.env.filters["plural_ru"] = plural_ru
 templates.env.filters["plural"] = lambda n, *args: plural(n, *args)
 templates.env.filters["meal_word"] = meal_word
 templates.env.filters["format_unit"] = format_unit
+templates.env.filters["format_domain"] = format_domain
 templates.env.filters["timing_bucket"] = timing_bucket
 templates.env.globals["static_version"] = static_version
 templates.env.globals["t"] = t

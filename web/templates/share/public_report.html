@@ -1,0 +1,449 @@
+{# The document a doctor reads. Standalone on purpose: no base.html, no Tailwind,
+   no Alpine, no HTMX, no /static, no script of any kind.
+
+   The reason is the download button. This same markup is saved to disk and has
+   to open offline from a double-click, and `tailwind.css` is a 300 KB link to
+   /static that would be a dead reference the moment the file leaves the server.
+   A side benefit is that the "a new arbitrary Tailwind class renders unstyled
+   until the bundle is rebuilt" trap cannot reach this page.
+
+   No dark theme, deliberately. This is a document that gets printed; a dark
+   background looks broken on paper and in a PDF, and maintaining two themes
+   inside inline CSS that also travels into a downloaded file is work with no
+   reader on the other end of it.
+
+   Fonts are system stacks only. The project's display faces carry no Cyrillic,
+   and an offline file has nowhere to load a webfont from anyway. #}
+<!doctype html>
+<html lang="{{ snapshot.lang or 'en' }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{ t("doc.page_title") }}</title>
+<style>
+:root {
+  color-scheme: light;
+  --ink: #1c1917;
+  --muted: #57534e;
+  --faint: #a8a29e;
+  --line: #e7e5e4;
+  --accent: #b45309;
+  --bad: #b91c1c;
+  --paper: #f7f6f4;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  padding: 0 16px 48px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Nothing may push the page sideways on a phone; wide content scrolls inside
+     its own container instead (.scroll below). */
+  overflow-x: hidden;
+}
+.doc { max-width: 46rem; margin: 0 auto; }
+
+/* ── Head ─────────────────────────────────────────────────────────────── */
+.doc-head { padding: 32px 0 20px; border-bottom: 2px solid var(--ink); }
+.doc-head h1 { margin: 0 0 10px; font-size: 1.5rem; font-weight: 650; letter-spacing: -0.02em; }
+.meta { margin: 0; padding: 0; list-style: none; font-size: 0.875rem; color: var(--muted); }
+.meta li { margin-top: 3px; }
+.meta b { font-weight: 600; color: var(--ink); }
+
+/* ── Sections ─────────────────────────────────────────────────────────── */
+section { margin-top: 28px; page-break-inside: avoid; break-inside: avoid; }
+section > h2 {
+  margin: 0 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+  font-size: 1.0rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+section > h3 {
+  margin: 18px 0 8px;
+  font-size: 0.875rem;
+  font-weight: 650;
+  color: var(--muted);
+}
+p { margin: 0 0 10px; }
+p:last-child { margin-bottom: 0; }
+.hint { font-size: 0.8rem; color: var(--faint); }
+.lede { font-size: 1.0625rem; }
+ul.plain { margin: 0; padding-left: 1.1rem; }
+ul.plain li { margin-bottom: 4px; }
+
+.card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.quote {
+  background: #fff;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  padding: 14px 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────────── */
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { width: 100%; min-width: 22rem; border-collapse: collapse; font-size: 0.875rem; }
+th, td { padding: 7px 10px 7px 0; text-align: left; vertical-align: top; }
+th {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+td { border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; padding-right: 0; white-space: nowrap; }
+td.name { overflow-wrap: anywhere; }
+.flag { color: var(--bad); font-weight: 600; white-space: nowrap; }
+.was { color: var(--faint); font-size: 0.8125rem; white-space: nowrap; }
+
+/* ── Figures (one metric per row, label left, number right) ───────────── */
+.rows { margin: 0; }
+.rows div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9375rem;
+}
+.rows div:last-child { border-bottom: 0; }
+.rows span:first-child { color: var(--muted); }
+.rows span:last-child { font-variant-numeric: tabular-nums; text-align: right; }
+.prev { color: var(--faint); font-weight: 400; }
+
+.doc-chart { display: block; width: 100%; height: auto; margin: 4px 0 12px; }
+
+footer {
+  margin-top: 40px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 0.75rem;
+  color: var(--faint);
+}
+
+/* ── Print ────────────────────────────────────────────────────────────── */
+@media print {
+  body { background: #fff; padding: 0; font-size: 11pt; }
+  .doc { max-width: none; }
+  .card, .quote { border-color: #ccc; background: #fff; }
+  .scroll { overflow: visible; }
+  table { min-width: 0; }
+  section { page-break-inside: avoid; }
+  h1, h2, h3 { page-break-after: avoid; }
+  /* No anchors exist on this page, so nothing drags a URL into the margin —
+     this rule is here so it stays that way if one is ever added. */
+  a[href]::after { content: none !important; }
+}
+</style>
+</head>
+<body>
+<main class="doc">
+
+{# ── 1. Head ─────────────────────────────────────────────────────────── #}
+<header class="doc-head">
+  <h1>{{ t("doc.heading") }}</h1>
+  <ul class="meta">
+    <li><b>{{ t("doc.patient") }}:</b>
+      {%- set bits = [] %}
+      {%- if snapshot.profile and snapshot.profile.age %}{% set _ = bits.append(t("doc.years", n=snapshot.profile.age)) %}{% endif %}
+      {%- if snapshot.profile and snapshot.profile.sex %}{% set _ = bits.append(t("doc.sex." ~ snapshot.profile.sex)) %}{% endif %}
+      {%- if snapshot.profile and snapshot.profile.height_cm %}{% set _ = bits.append(t("doc.height", n=snapshot.profile.height_cm)) %}{% endif %}
+      {{ bits | join(", ") }}</li>
+    <li><b>{{ t("doc.period") }}:</b> {{ snapshot.period.start | format_date }} — {{ snapshot.period.end | format_date }}</li>
+    <li><b>{{ t("doc.generated") }}:</b> {{ snapshot.generated_at[:10] | format_date }}</li>
+    {% if snapshot.domains %}
+    <li><b>{{ t("doc.includes") }}:</b>
+      {{ snapshot.domains | map("format_domain") | join(" · ") }}</li>
+    {% endif %}
+  </ul>
+</header>
+
+{# ── 2. In short — deterministic, assembled from the blocks below. No model
+       wrote a word of it. ────────────────────────────────────────────── #}
+{% set w = blocks.weight %}
+{% set flagged = (blocks.labs.markers if blocks.labs else []) | selectattr("flag", "ne", "normal") | list %}
+{% set taking = [] %}
+{% if blocks.glp1 and blocks.glp1.current and blocks.glp1.current.drug %}
+  {% set _ = taking.append(t("enum.drug." ~ blocks.glp1.current.drug) ~ (" " ~ (blocks.glp1.current.dose_mg | format_number) ~ " " ~ t("common.mg") if blocks.glp1.current.dose_mg else "")) %}
+{% endif %}
+{% if blocks.hrt and blocks.hrt.cycle and blocks.hrt.cycle.compounds %}
+  {% set _ = taking.append(blocks.hrt.cycle.compounds | join(", ")) %}
+{% endif %}
+{% if blocks.supplements %}
+  {% for s in blocks.supplements['items'] %}{% set _ = taking.append(s.name) %}{% endfor %}
+{% endif %}
+{% if w or taking or blocks.labs %}
+<section>
+  <h2>{{ t("doc.summary") }}</h2>
+  {% if w %}
+  <p class="lede">{{ t("doc.summary_weight",
+      from_kg=(w.first.kg | format_number), to_kg=(w.last.kg | format_number),
+      delta=("%+.1f" | format(w.delta_kg)) | replace(".", t("common.decimal_sep"))) }}</p>
+  {% endif %}
+  {% if taking %}
+  <p><b>{{ t("doc.summary_taking") }}:</b> {{ taking | join(" · ") }}</p>
+  {% endif %}
+  {% if flagged %}
+  <p><b>{{ t("doc.summary_flagged") }}:</b>
+    {% for m in flagged %}{{ m.marker }} {{ m.value | format_number }}{% if m.unit %} {{ m.unit | format_unit }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% elif blocks.labs %}
+  <p>{{ t("doc.summary_all_normal") }}</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ── 3. The patient's own words. Signed as his, never as the system's. ── #}
+{% if report.note %}
+<section>
+  <h2>{{ t("doc.note") }}</h2>
+  <div class="quote">{{ report.note }}</div>
+</section>
+{% endif %}
+
+{# ── 4. Medication and protocols — line by line, this is what a doctor
+       came for. ──────────────────────────────────────────────────────── #}
+{% if blocks.glp1 or blocks.hrt or blocks.supplements %}
+<section>
+  <h2>{{ t("doc.meds") }}</h2>
+
+  {% if blocks.glp1 %}
+  <h3>{{ t("doc.meds_glp1") }}</h3>
+  {% if blocks.glp1.current and blocks.glp1.current.drug %}
+  <p>{{ t("enum.drug." ~ blocks.glp1.current.drug) }}{% if blocks.glp1.current.dose_mg %},
+     {{ blocks.glp1.current.dose_mg | format_number }} {{ t("common.mg") }}{% endif %}
+     <span class="hint">({{ t("doc.meds_now") }})</span></p>
+  {% endif %}
+  {% if blocks.glp1.doses %}
+  <div class="scroll"><table>
+    <thead><tr><th>{{ t("doc.col_date") }}</th><th>{{ t("doc.col_what") }}</th><th class="num">{{ t("doc.col_dose") }}</th></tr></thead>
+    <tbody>
+    {% for d in blocks.glp1.doses %}
+      <tr><td>{{ d.date | format_date }}</td>
+          <td class="name">{{ t("enum.drug." ~ d.drug) }}</td>
+          <td class="num">{{ d.dose_mg | format_number }} {{ t("common.mg") }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+  {% endif %}
+
+  {% if blocks.hrt %}
+  <h3>{{ t("doc.meds_hrt") }}</h3>
+  {% if blocks.hrt.cycle and blocks.hrt.cycle.compounds %}
+  <p>{{ blocks.hrt.cycle.compounds | join(", ") }}
+     <span class="hint">({{ t("doc.meds_now") }}{% if blocks.hrt.cycle.start_date %}, {{ blocks.hrt.cycle.start_date | format_date }}{% endif %})</span></p>
+  {% endif %}
+  {% if blocks.hrt.doses %}
+  <div class="scroll"><table>
+    <thead><tr><th>{{ t("doc.col_date") }}</th><th>{{ t("doc.col_what") }}</th><th class="num">{{ t("doc.col_dose") }}</th></tr></thead>
+    <tbody>
+    {% for d in blocks.hrt.doses %}
+      <tr><td>{{ d.date | format_date }}</td>
+          <td class="name">{{ d.compound }}</td>
+          <td class="num">{{ d.dose | format_number }} {{ d.unit or "" }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+  {% endif %}
+
+  {% if blocks.supplements %}
+  <h3>{{ t("doc.meds_supplements") }}</h3>
+  <ul class="plain">
+    {% for s in blocks.supplements['items'] %}
+    <li>{{ s.name }}{% if s.dose %} — {{ s.dose }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ── 5. Labs — value, reference range, direction, and where it came from. #}
+{% if blocks.labs %}
+<section>
+  <h2>{{ t("doc.labs") }}</h2>
+  {% if snapshot.labs_flagged_only %}<p class="hint">{{ t("doc.labs_flagged_note") }}</p>{% endif %}
+  <div class="scroll"><table>
+    <thead><tr>
+      <th>{{ t("doc.col_marker") }}</th>
+      <th class="num">{{ t("doc.col_value") }}</th>
+      <th>{{ t("doc.col_range") }}</th>
+      <th>{{ t("doc.col_previous") }}</th>
+      <th>{{ t("doc.col_date") }}</th>
+    </tr></thead>
+    <tbody>
+    {% for m in blocks.labs.markers %}
+      <tr>
+        <td class="name">{{ m.marker }}</td>
+        <td class="num">
+          {{ m.value | format_number }}{% if m.unit %} {{ m.unit | format_unit }}{% endif %}
+          {%- if m.flag and m.flag != "normal" %}
+          <span class="flag">{{ "↓" if "low" in m.flag else "↑" }} {{ t("enum.flag." ~ m.flag) }}</span>
+          {%- endif %}
+        </td>
+        <td class="was">
+          {%- if m.ref_low is not none or m.ref_high is not none -%}
+            {{ m.ref_low | format_number if m.ref_low is not none else "" }}–{{ m.ref_high | format_number if m.ref_high is not none else "" }}
+          {%- else -%}{{ t("doc.no_range") }}{%- endif -%}
+        </td>
+        <td class="was">{% for p in m.history %}{{ p.value | format_number }}{% if not loop.last %} → {% endif %}{% endfor %}</td>
+        <td class="was">{{ m.date | format_date }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+
+{# ── 6. Weight and body composition. ──────────────────────────────────── #}
+{% if w or blocks.body_comp %}
+<section>
+  <h2>{{ t("doc.weight") }}</h2>
+  {% if w %}
+  <p>{{ t("doc.weight_line",
+      from_kg=(w.first.kg | format_number), to_kg=(w.last.kg | format_number),
+      delta=("%+.1f" | format(w.delta_kg)) | replace(".", t("common.decimal_sep")),
+      n=w.readings) }} <span class="hint">({{ t("common.kg") }})</span></p>
+  {{ weight_svg(w.points, w.ma) | safe }}
+  {% endif %}
+  {% if blocks.body_comp %}
+  <h3>{{ t("doc.body_comp") }}</h3>
+  {% for scan in blocks.body_comp.scans %}
+  <div class="card" style="margin-bottom:10px">
+    <p class="hint" style="margin-bottom:6px">{{ scan.date | format_date }}{% if scan.device %} · {{ scan.device }}{% endif %}</p>
+    <div class="rows">
+      {% for m in scan.metrics %}
+      <div><span>{{ m.label }}</span><span>{{ m.value | format_number }}{% if m.unit %} {{ m.unit }}{% endif %}</span></div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+  {% endif %}
+</section>
+{% endif %}
+
+{# ── 7. Side effects and symptoms — three sources, one list, in date order.
+       Merged here rather than in the snapshot: which sources exist depends on
+       which sections were ticked, and that is already decided above. ───── #}
+{% set effects = [] %}
+{% if blocks.glp1 %}{% for e in blocks.glp1.side_effects %}{% set _ = effects.append({"date": e.date, "what": e.effect_type, "severity": e.severity}) %}{% endfor %}{% endif %}
+{% if blocks.hrt %}{% for e in blocks.hrt.side_effects %}{% set _ = effects.append({"date": e.date, "what": e.effect_type, "severity": e.severity}) %}{% endfor %}{% endif %}
+{% if blocks.signals %}{% for s in blocks.signals.symptoms %}{% set _ = effects.append({"date": s.date, "what": s.note or s.key, "severity": s.severity}) %}{% endfor %}{% endif %}
+{% if effects %}
+<section>
+  <h2>{{ t("doc.effects") }}</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>{{ t("doc.col_date") }}</th><th>{{ t("doc.col_what") }}</th><th>{{ t("doc.col_severity") }}</th></tr></thead>
+    <tbody>
+    {% for e in effects | sort(attribute="date") %}
+      <tr><td class="was">{{ e.date | format_date }}</td>
+          <td class="name">{{ e.what }}</td>
+          <td class="was">{% if e.severity %}{{ t("doc.severity_of", n=e.severity) }}{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+
+{# ── 8. Sleep and daily activity — averages, never a table of nights. ──── #}
+{% if blocks.garmin %}
+{% set g = blocks.garmin %}
+<section>
+  <h2>{{ t("doc.garmin") }}</h2>
+  <div class="rows">
+    {% for key, unit in [("sleep_hours", t("doc.unit.hours")), ("sleep_score", ""),
+                         ("resting_hr", t("doc.unit.bpm")), ("hrv_avg", t("doc.unit.ms")),
+                         ("steps", "")] %}
+    {% if g.current[key] is not none %}
+    <div>
+      <span>{{ t("doc.metric." ~ key) }}</span>
+      <span>{{ g.current[key] | format_number }}{% if unit %} {{ unit }}{% endif %}
+        {%- if g.previous[key] is not none %} <span class="prev">({{ g.previous[key] | format_number }})</span>{% endif %}
+      </span>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  <p class="hint" style="margin-top:10px">{{ t("doc.days_covered", n=g.days) }}. {{ t("doc.garmin_hint") }}</p>
+</section>
+{% endif %}
+
+{# ── 9. Training. ─────────────────────────────────────────────────────── #}
+{% if blocks.workouts %}
+{% set tr = blocks.workouts %}
+<section>
+  <h2>{{ t("doc.workouts") }}</h2>
+  <p>{{ t("doc.workouts_sessions", n=tr.sessions) }}{% if tr.mean_gap_days %}, {{ t("doc.workouts_gap", n=(tr.mean_gap_days | format_number)) }}{% endif %}.</p>
+  {% if tr.volume_per_session_kg %}<p>{{ t("doc.workouts_volume", n=(tr.volume_per_session_kg | format_number)) }}.</p>{% endif %}
+</section>
+{% endif %}
+
+{# ── 10. Nutrition. ───────────────────────────────────────────────────── #}
+{% if blocks.nutrition %}
+{% set n = blocks.nutrition %}
+<section>
+  <h2>{{ t("doc.nutrition") }}</h2>
+  <p>{{ t("doc.nutrition_line",
+       cal=(n.calories_per_day | format_number), protein=(n.protein_per_day_g | format_number)) }}.
+     <span class="hint">{{ t("doc.nutrition_days", n=n.days_logged) }}.</span></p>
+</section>
+{% endif %}
+
+{# ── 11. Skin. ────────────────────────────────────────────────────────── #}
+{% if blocks.skincare %}
+<section>
+  <h2>{{ t("doc.skin") }}</h2>
+  {% if blocks.skincare.active_products %}
+  <p>{{ t("doc.skin_products", n=blocks.skincare.active_products) }}.</p>
+  {% endif %}
+  {% if blocks.skincare.observations %}
+  <div class="scroll"><table>
+    <thead><tr><th>{{ t("doc.col_date") }}</th><th>{{ t("doc.skin_inflammation") }}</th><th>{{ t("doc.skin_pih") }}</th></tr></thead>
+    <tbody>
+    {% for o in blocks.skincare.observations %}
+      <tr><td class="was">{{ o.date | format_date }}</td>
+          <td>{{ o.inflammation if o.inflammation is not none else "" }}</td>
+          <td>{{ o.pih if o.pih is not none else "" }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ── 12. Genetics. ────────────────────────────────────────────────────── #}
+{% if blocks.genetics %}
+<section>
+  <h2>{{ t("doc.genetics") }}</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>{{ t("doc.col_gene") }}</th><th>{{ t("doc.col_genotype") }}</th><th>{{ t("doc.col_meaning") }}</th></tr></thead>
+    <tbody>
+    {% for v in blocks.genetics.variants %}
+      <tr><td class="name">{{ v.gene }}{% if v.rsid %} <span class="was">{{ v.rsid }}</span>{% endif %}</td>
+          <td>{{ v.genotype or "" }}</td>
+          <td class="name">{{ v.interpretation }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+
+<footer>{{ t("doc.footer") }}</footer>
+</main>
+</body>
+</html>

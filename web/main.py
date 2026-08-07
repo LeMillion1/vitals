@@ -316,6 +316,7 @@ from web.routers.timeline import router as timeline_router  # noqa: E402
 from web.routers.signals import router as signals_router  # noqa: E402
 from web.routers.external_api import router as external_api_router  # noqa: E402
 from web.routers.telegram import router as telegram_router  # noqa: E402
+from web.routers.public_report import router as public_report_router  # noqa: E402
 
 # Core modules — always reachable. /today is the landing page and composes every
 # enabled domain, so it can never be gated behind one of them.
@@ -334,6 +335,11 @@ app.include_router(charts_router)
 app.include_router(external_api_router)
 # Telegram webhook — its own secret path + header, no session auth.
 app.include_router(telegram_router)
+# The published doctor document. The ONE anonymous route in the app: no
+# require_auth (the visitor has no account) and no require_module gate (the
+# module set is already baked into the frozen snapshot). Its own, stricter CSP
+# is set per response — see web/routers/public_report.py.
+app.include_router(public_report_router)
 
 # Optional modules — guarded: a disabled module's routes 404 → redirect to /weight.
 app.include_router(glp1_router, dependencies=[Depends(require_module("glp1"))])

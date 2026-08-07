@@ -1,0 +1,9 @@
+{% extends "share/_notice.html" %}
+{% block title %}{{ t("doc.gone_title") }}{% endblock %}
+{% block body %}
+{# The identical page for a token that never existed, one that was revoked and
+   one that expired. Saying which would report on the owner's behaviour to
+   whoever happened to try the URL. #}
+<h1>{{ t("doc.gone_title") }}</h1>
+<p style="margin-bottom:0">{{ t("doc.gone_text") }}</p>
+{% endblock %}
