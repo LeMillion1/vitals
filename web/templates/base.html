@@ -643,7 +643,12 @@
                 const message = el && el.getAttribute ? el.getAttribute('data-confirm') : null;
                 if (!message) return;
                 e.preventDefault();
-                window.vitalsConfirm(message).then((ok) => {
+                // Optional per-form verb. Every caller but one is a delete form, so
+                // "Delete" stays the default — but a dialog that asks "Revoke this
+                // link?" and answers itself with "Delete" is naming a different act
+                // than the one about to happen.
+                const label = el.getAttribute('data-confirm-label') || undefined;
+                window.vitalsConfirm(message, label).then((ok) => {
                     if (ok) e.detail.issueRequest(true);
                 });
             });

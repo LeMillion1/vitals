@@ -122,10 +122,11 @@ def meal_word(n: Any) -> str:
 def format_domain(value: Any) -> str:
     """A domain key as a section name a reader outside the app would use.
 
-    "body_comp" and "signals" are Vitals' words for things; the doctor document
-    lists the sections it contains, so it needs the human ones.
+    Its own namespace rather than ``enum.domain.*``: that one is the charts
+    vocabulary ("Signals", "All charts"), and this list is read by a doctor who
+    has never seen the app.
     """
-    return t("enum.domain." + str(value))
+    return t("share.section." + str(value))
 
 
 def format_unit(value: Any) -> Markup:

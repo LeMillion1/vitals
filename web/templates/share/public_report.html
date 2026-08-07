@@ -93,8 +93,11 @@ ul.plain li { margin-bottom: 4px; }
 
 /* ── Tables ───────────────────────────────────────────────────────────── */
 .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-table { width: 100%; min-width: 22rem; border-collapse: collapse; font-size: 0.875rem; }
-th, td { padding: 7px 10px 7px 0; text-align: left; vertical-align: top; }
+table { width: 100%; min-width: 20rem; border-collapse: collapse; font-size: 0.875rem; }
+/* Gutter on the right of every cell but the last. A right-aligned number sitting
+   flush against the next column reads as one string: "28 ng/mL ↓ low30–100". */
+th, td { padding: 7px 14px 7px 0; text-align: left; vertical-align: top; }
+tr > *:last-child { padding-right: 0; }
 th {
   font-size: 0.6875rem;
   font-weight: 600;
@@ -106,10 +109,14 @@ th {
 }
 td { border-bottom: 1px solid var(--line); }
 tr:last-child td { border-bottom: 0; }
-td.num, th.num { text-align: right; padding-right: 0; white-space: nowrap; }
-td.name { overflow-wrap: anywhere; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+/* break-word, not anywhere: "Тестостерон общий" split into "Тестостеро / н
+   общий" — a marker name has to break at the space first and mid-word only when
+   one word genuinely cannot fit. */
+td.name { overflow-wrap: break-word; }
 .flag { color: var(--bad); font-weight: 600; white-space: nowrap; }
 .was { color: var(--faint); font-size: 0.8125rem; white-space: nowrap; }
+.sub { display: block; margin-top: 2px; color: var(--faint); font-size: 0.75rem; }
 
 /* ── Figures (one metric per row, label left, number right) ───────────── */
 .rows { margin: 0; }
@@ -162,7 +169,7 @@ footer {
       {%- set bits = [] %}
       {%- if snapshot.profile and snapshot.profile.age %}{% set _ = bits.append(t("doc.years", n=snapshot.profile.age)) %}{% endif %}
       {%- if snapshot.profile and snapshot.profile.sex %}{% set _ = bits.append(t("doc.sex." ~ snapshot.profile.sex)) %}{% endif %}
-      {%- if snapshot.profile and snapshot.profile.height_cm %}{% set _ = bits.append(t("doc.height", n=snapshot.profile.height_cm)) %}{% endif %}
+      {%- if snapshot.profile and snapshot.profile.height_cm %}{% set _ = bits.append(t("doc.height", n=(snapshot.profile.height_cm | format_number))) %}{% endif %}
       {{ bits | join(", ") }}</li>
     <li><b>{{ t("doc.period") }}:</b> {{ snapshot.period.start | format_date }} — {{ snapshot.period.end | format_date }}</li>
     <li><b>{{ t("doc.generated") }}:</b> {{ snapshot.generated_at[:10] | format_date }}</li>
@@ -278,18 +285,21 @@ footer {
 <section>
   <h2>{{ t("doc.labs") }}</h2>
   {% if snapshot.labs_flagged_only %}<p class="hint">{{ t("doc.labs_flagged_note") }}</p>{% endif %}
+  {# Four columns, with the draw date tucked under the marker name. As a fifth
+     column it pushed the table past a phone's width, so the dates were the part
+     that ended up behind a sideways scroll — and a lab value with no date on it
+     is the one thing here nobody can interpret. #}
   <div class="scroll"><table>
     <thead><tr>
       <th>{{ t("doc.col_marker") }}</th>
       <th class="num">{{ t("doc.col_value") }}</th>
       <th>{{ t("doc.col_range") }}</th>
       <th>{{ t("doc.col_previous") }}</th>
-      <th>{{ t("doc.col_date") }}</th>
     </tr></thead>
     <tbody>
     {% for m in blocks.labs.markers %}
       <tr>
-        <td class="name">{{ m.marker }}</td>
+        <td class="name">{{ m.marker }}<span class="sub">{{ m.date | format_date }}</span></td>
         <td class="num">
           {{ m.value | format_number }}{% if m.unit %} {{ m.unit | format_unit }}{% endif %}
           {%- if m.flag and m.flag != "normal" %}
@@ -302,7 +312,6 @@ footer {
           {%- else -%}{{ t("doc.no_range") }}{%- endif -%}
         </td>
         <td class="was">{% for p in m.history %}{{ p.value | format_number }}{% if not loop.last %} → {% endif %}{% endfor %}</td>
-        <td class="was">{{ m.date | format_date }}</td>
       </tr>
     {% endfor %}
     </tbody>

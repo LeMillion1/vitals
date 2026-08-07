@@ -91,10 +91,23 @@ def grant_access(response: Response, report_id: int) -> None:
 
 
 def harden(response: Response) -> Response:
-    """Headers every public response carries, document or not."""
+    """Headers every public response carries, document or not.
+
+    ``strict-origin`` rather than ``no-referrer``, which is what you reach for
+    first and which breaks the page outright. Per Fetch, a document whose
+    referrer policy is ``no-referrer`` sends ``Origin: null`` on a form POST —
+    so the app's own origin check 403s the password form, from the very page
+    that rendered it. (Nothing catches this without a real browser: an HTTP
+    client sends no Origin at all, and the check only fires when one is present.)
+
+    ``strict-origin`` protects the same thing. The token lives in the URL, and
+    this says: send the bare origin to another site, nothing at all on a
+    downgrade, and the full URL only back to us — which is exactly the one
+    request that has to work.
+    """
     response.headers["Content-Security-Policy"] = _DOC_CSP
     response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
-    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Referrer-Policy"] = "strict-origin"
     response.headers["Cache-Control"] = "no-store"
     return response
 

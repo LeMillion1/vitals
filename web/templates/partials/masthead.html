@@ -140,7 +140,12 @@
        actually gone quiet. #}
     {% if request.state.nav_status %}<div class="mh-rail-stats">{{ mh_stat_rows() }}</div>{% endif %}
     <div class="mh-rail-foot">
-        <a href="/settings" class="mh-rail-foot-link {% if current_path.startswith('/settings') %}is-active{% endif %}">{{ t('nav.settings') }}</a>
+        {# Two destinations, stacked: the rail has no "More" screen to hide them
+           behind, and /share is otherwise reachable only by typing the URL. #}
+        <div class="mh-rail-foot-links">
+            <a href="/share" class="mh-rail-foot-link {% if current_path.startswith('/share') %}is-active{% endif %}">{{ t('share.heading') }}</a>
+            <a href="/settings" class="mh-rail-foot-link {% if current_path.startswith('/settings') %}is-active{% endif %}">{{ t('nav.settings') }}</a>
+        </div>
         <form action="/logout" method="POST" hx-boost="false" class="contents">
             <button type="submit" class="mh-rail-foot-out" title="{{ t('nav.logout') }}" aria-label="{{ t('nav.logout') }}">{{ mh_icon('logout') }}</button>
         </form>

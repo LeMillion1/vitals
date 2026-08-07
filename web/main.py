@@ -317,6 +317,7 @@ from web.routers.signals import router as signals_router  # noqa: E402
 from web.routers.external_api import router as external_api_router  # noqa: E402
 from web.routers.telegram import router as telegram_router  # noqa: E402
 from web.routers.public_report import router as public_report_router  # noqa: E402
+from web.routers.share import router as share_router  # noqa: E402
 
 # Core modules — always reachable. /today is the landing page and composes every
 # enabled domain, so it can never be gated behind one of them.
@@ -329,6 +330,9 @@ app.include_router(weight_router)
 app.include_router(garmin_router)
 app.include_router(labs_router)
 app.include_router(reports_router)
+# Doctor reports — the owner's side. Not gated on a module: it publishes whatever
+# modules happen to be on, and gating it would hide the revoke button with them.
+app.include_router(share_router)
 app.include_router(settings_router)
 app.include_router(charts_router)
 # Read-only JSON API for an external personal dashboard (Bearer-token guarded, not session auth).

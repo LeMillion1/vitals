@@ -162,8 +162,29 @@ async def test_public_pages_are_hardened(client, db_session):
         assert "unsafe-eval" not in csp and "script-src" not in csp
         assert csp.startswith("default-src 'none'")
         assert response.headers["x-robots-tag"].startswith("noindex")
-        assert response.headers["referrer-policy"] == "no-referrer"
         assert "no-store" in response.headers["cache-control"]
+        # NOT "no-referrer": per Fetch, a document with that policy sends
+        # `Origin: null` on a form POST, and the app's origin check then 403s the
+        # password form from the page that rendered it. See harden().
+        assert response.headers["referrer-policy"] == "strict-origin"
+
+
+@pytest.mark.asyncio
+async def test_the_password_form_survives_the_origin_check(client, db_session):
+    """The regression the header bug above actually caused.
+
+    Every other test here posts without an Origin header, which the CSRF
+    middleware skips — so the whole feature could 403 in a browser with the suite
+    fully green. This one sends the header a browser sends.
+    """
+    row, password = await _make_report(db_session)
+
+    r = await client.post(
+        f"/r/{row.token}",
+        data={"password": password},
+        headers={"origin": "http://test", "host": "test"},
+    )
+    assert r.status_code == 303, r.text[:200]
 
 
 @pytest.mark.asyncio

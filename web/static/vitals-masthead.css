@@ -297,6 +297,13 @@ body.ui-masthead .mh-rail-foot {
     border-top: 1px solid var(--line);
 }
 
+body.ui-masthead .mh-rail-foot-links {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
 body.ui-masthead .mh-rail-foot-link {
     font: 500 var(--text-label) 'Inter', sans-serif;
     color: var(--muted);

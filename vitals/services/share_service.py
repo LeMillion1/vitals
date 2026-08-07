@@ -180,24 +180,21 @@ async def build_snapshot(
 ) -> dict[str, Any]:
     """Assemble the document's data for one window. No DB writes.
 
-    The window handed back in ``period`` is the one that was actually read, not
-    the one that was asked for: ``assemble_context`` ends its window on the last
-    *closed* day, so a report requested through today covers through yesterday.
-    The row stores what came back, so the header can never claim a day the
-    numbers don't cover.
+    A report covers days that are **over**. Today is still being lived — it has
+    no sleep in it yet and possibly no meals — so a window asked for "through
+    today" is read through yesterday and the row stores that, rather than a
+    header claiming a day the numbers don't cover.
     """
     from vitals.config import load_config
     from vitals.i18n import current_lang
     from vitals.services import digest_service
 
     chosen = resolve_domains(domains, enabled)
-    span_days = max((period_end - period_start).days + 1, 1)
+    start, end = clamp_window(period_start, period_end)
+    span_days = max((end - start).days + 1, 1)
     ctx = await digest_service.assemble_context(
-        session, on_date=period_end, period_days=span_days
+        session, on_date=end, period_days=span_days
     )
-    meta = ctx["report_meta"]
-    start = date_type.fromisoformat(meta["period_start"])
-    end = date_type.fromisoformat(meta["period_end"])
     stats = ctx.get("period_stats") or {}
     cfg = load_config()
 
@@ -676,7 +673,52 @@ async def purge_job(session_factory, redis=None) -> None:
         logger.info("shared reports: cleared %s expired snapshot(s)", purged)
 
 
+def window_for(days: int) -> tuple[date_type, date_type]:
+    """``days`` **complete** days, ending yesterday.
+
+    Counting back from today would hand the document a day with no sleep in it
+    and, before dinner, no food either — and then average over it.
+    """
+    end = today_local() - timedelta(days=1)
+    return end - timedelta(days=max(days, 1) - 1), end
+
+
+def clamp_window(start: date_type, end: date_type) -> tuple[date_type, date_type]:
+    """A window the reader picked, trimmed to days that are actually over."""
+    yesterday = today_local() - timedelta(days=1)
+    end = min(end, yesterday)
+    return min(start, end), end
+
+
 def default_period(days: int = 90) -> tuple[date_type, date_type]:
-    """The form's starting window: ``days`` back from today."""
-    end = today_local()
-    return end - timedelta(days=days - 1), end
+    """What the custom-range inputs open on."""
+    return window_for(days)
+
+
+async def earliest_data_date(session: AsyncSession) -> Optional[date_type]:
+    """The oldest dated row in any domain a report can carry — what "all time"
+    means. Nine cheap ``MIN()`` reads on one form submit, so a report that says
+    it covers everything starts where the record actually starts rather than at
+    some round number of years ago."""
+    from sqlalchemy import func
+
+    from vitals.models.body_scan import BodyScan
+    from vitals.models.garmin import GarminDaily
+    from vitals.models.glp1 import Injection
+    from vitals.models.hevy import HevyWorkout
+    from vitals.models.hrt import HrtDose
+    from vitals.models.labs import LabResult
+    from vitals.models.nutrition import MealLog
+    from vitals.models.signals import Signal
+    from vitals.models.weight import WeightLog
+
+    columns = (
+        WeightLog.date, LabResult.date, GarminDaily.date, HevyWorkout.date,
+        MealLog.date, HrtDose.date, Injection.date, BodyScan.date, Signal.date,
+    )
+    found = []
+    for column in columns:
+        value = (await session.execute(select(func.min(column)))).scalar()
+        if value is not None:
+            found.append(value)
+    return min(found) if found else None
