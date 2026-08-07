@@ -206,6 +206,61 @@ async def test_empty_domain_draws_no_section(db_session):
     assert snap["blocks"] == {}
 
 
+@pytest.mark.asyncio
+async def test_contents_line_names_only_the_sections_that_exist(db_session):
+    """The header lists what the document holds, not what was ticked.
+
+    A doctor who reads "Labs" in the contents and finds no such section
+    concludes none were taken — when they were, just outside this window.
+    """
+    await _seed_weights(db_session)
+    snap = await share_service.build_snapshot(
+        db_session, domains=[Domain.WEIGHT.value, Domain.LABS.value],
+        period_start=START, period_end=END, enabled=ALL_ON,
+    )
+    assert Domain.LABS.value not in snap["blocks"]
+    assert snap["domains"] == [Domain.WEIGHT.value]
+
+
+@pytest.mark.asyncio
+async def test_body_metrics_carry_the_catalogue_unit_not_the_sheets(db_session):
+    """An InBody printout is in English; the document is not."""
+    from vitals.models.body_scan import BodyScan, BodyScanMetric
+
+    scan = BodyScan(
+        date=date(2026, 3, 10), domain=Domain.BODY_COMPOSITION.value,
+        source="manual", device="InBody",
+    )
+    db_session.add(scan)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            BodyScanMetric(
+                scan_id=scan.id, metric_key="skeletal_muscle_mass",
+                label="Skeletal Muscle Mass", value=41.7, unit="kg",
+            ),
+            # Unitless in the registry — the sheet's own unit is all there is.
+            BodyScanMetric(
+                scan_id=scan.id, metric_key="inbody_score",
+                label="InBody Score", value=64.0, unit="/100",
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    snap = await share_service.build_snapshot(
+        db_session, domains=[Domain.BODY_COMPOSITION.value],
+        period_start=START, period_end=END, enabled=ALL_ON,
+    )
+    units = {
+        m["label"]: m["unit"]
+        for m in snap["blocks"][Domain.BODY_COMPOSITION.value]["scans"][0]["metrics"]
+    }
+    assert "kg" not in units.values()
+    assert "кг" in units.values()
+    assert "/100" in units.values()
+
+
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 

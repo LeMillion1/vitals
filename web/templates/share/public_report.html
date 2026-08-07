@@ -394,7 +394,7 @@ footer {
     {% endif %}
     {% endfor %}
   </div>
-  <p class="hint" style="margin-top:10px">{{ t("doc.days_covered", n=g.days) }}. {{ t("doc.garmin_hint") }}</p>
+  <p class="hint" style="margin-top:10px">{{ t("doc.days_covered", n=g.days, d=(g.days | days_word)) }}. {{ t("doc.garmin_hint") }}</p>
 </section>
 {% endif %}
 
@@ -415,7 +415,7 @@ footer {
   <h2>{{ t("doc.nutrition") }}</h2>
   <p>{{ t("doc.nutrition_line",
        cal=(n.calories_per_day | format_number), protein=(n.protein_per_day_g | format_number)) }}.
-     <span class="hint">{{ t("doc.nutrition_days", n=n.days_logged) }}.</span></p>
+     <span class="hint">{{ t("doc.nutrition_days", n=n.days_logged, d=(n.days_logged | days_word)) }}.</span></p>
 </section>
 {% endif %}
 

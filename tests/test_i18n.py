@@ -64,6 +64,22 @@ def test_body_metrics_count_plural():
     assert plural(5, *words) == "metrics"
 
 
+def test_days_word_agrees_with_the_count():
+    # The doctor document counts days out loud ("Еда записана за 42 дня"), and
+    # 42 takes a different form from 41 and from 45.
+    from web.templating import days_word
+
+    current_lang.set("ru")
+    assert days_word(1) == "день"
+    assert days_word(42) == "дня"
+    assert days_word(5) == "дней"
+    assert days_word(11) == "дней"
+
+    current_lang.set("en")
+    assert days_word(1) == "day"
+    assert days_word(42) == "days"
+
+
 def test_digest_build_prompt():
     context = {"test": "data"}
     

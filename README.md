@@ -7,7 +7,7 @@
 
 <p align="center">
   <strong>Self-hosted personal health data lake & dashboard with 75 MCP tools for Claude.ai</strong><br>
-  <sub>Masthead UI · EN/RU interface · 15 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · Signals & Telegram · AI Digests</sub>
+  <sub>Masthead UI · EN/RU interface · 15 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · Signals & Telegram · AI Digests · Doctor Report</sub>
 </p>
 
 <p align="center">
@@ -109,6 +109,7 @@ Vitals написан с Claude в качестве основного инст�
 - CSRF + Origin Guard + CSP
 - Модульный дашборд — включай/выключай домены в настройках
 - Никаких внешних CDN — шрифты и стили полностью локальные
+- Отчёт для врача: снимок за период по ссылке с паролем и сроком жизни
 
 </td>
 </tr>
@@ -152,6 +153,8 @@ Vitals написан с Claude в качестве основного инст�
 > [!TIP]
 > **5. Полная переносимость данных (Data Portability)**
 > Система не запирает данные. Полная резервная копия БД (включая сырые ответы API) для миграции. Компактный текстовый экспорт (LLM-ready) для вставки в чат с Claude/ChatGPT. Атомарное восстановление из бэкапа в одной транзакции.
+>
+> Отдельная дорога наружу — **отчёт для врача** (`/share`): выбираешь разделы и период, приложение замораживает снимок и отдаёт ссылку с паролем. Ссылка живёт заданное число дней, отзывается в один клик, считает открытия и в бэкап не попадает. Тот же документ скачивается одним самодостаточным HTML-файлом — без скриптов и внешних запросов, открывается офлайн двойным кликом и печатается. Снимок неизменяемый: данные поменялись — создаёшь новый отчёт, а не подменяешь тот, что уже у врача на руках.
 
 ---
 
@@ -871,6 +874,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 - CSRF + Origin Guard + CSP
 - Modular dashboard — toggle domains on/off in Settings
 - No external CDNs — fonts and assets are hosted locally
+- Doctor report: a snapshot for a period, behind a password-protected link that expires
 
 </td>
 </tr>
@@ -914,6 +918,8 @@ Built with Claude as the primary coding tool — but the data model, architectur
 > [!TIP]
 > **5. End-to-End Data Portability**
 > Full database backup (including raw API payloads) for migration. Curated, secret-free text export designed for pasting into LLM chats (Claude, ChatGPT). Atomic restore within a single database transaction.
+>
+> A separate way out is the **doctor report** (`/share`): pick the sections and the period, and the app freezes a snapshot behind a password-protected link. The link expires on a schedule you set, is revocable in one click, counts its openings, and never reaches a backup. The same document downloads as a single self-contained HTML file — no scripts, no outside requests — which opens offline on a double-click and prints. The snapshot is immutable: when the data changes you create a new report rather than swapping the one already in a doctor's hands.
 
 ---
 

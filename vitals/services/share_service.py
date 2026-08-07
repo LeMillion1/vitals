@@ -221,7 +221,11 @@ async def build_snapshot(
             "sex": cfg.sex,
             "height_cm": cfg.height_cm,
         },
-        "domains": chosen,
+        # What the document actually holds, not what was ticked. An empty domain
+        # draws no section, so a contents line naming one sends a doctor looking
+        # for labs that never arrived — and a missing section reads as "nothing
+        # to report" when it means "nothing in this window".
+        "domains": [d for d in chosen if d in blocks],
         "labs_flagged_only": bool(labs_flagged_only),
         "blocks": blocks,
     }
@@ -273,7 +277,11 @@ async def _body_comp_block(session, ctx, stats, start, end, flagged_only) -> dic
                 {
                     "label": display_name(m.metric_key, lang) or m.metric_key,
                     "value": m.value,
-                    "unit": m.unit or spec.unit,
+                    # The registry's unit wins over the one read off the sheet:
+                    # an InBody printout is in English, and "41,7 kg" sitting
+                    # next to "33,7 %" is the document speaking two languages.
+                    # Falls back for metrics the registry leaves unitless.
+                    "unit": spec.unit or m.unit,
                 }
             )
         if metrics:

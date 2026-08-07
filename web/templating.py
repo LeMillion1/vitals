@@ -119,6 +119,14 @@ def meal_word(n: Any) -> str:
     return plural_ru(n, "приём", "приёма", "приёмов")
 
 
+def days_word(n: Any) -> str:
+    """The word for "day" agreeing with ``n``, in the catalogue's language.
+    Words come from the catalogue rather than this file so the doctor document
+    doesn't read "за 42 дней" — a counted noun in Russian has three forms and a
+    hardcoded one is wrong for two thirds of the numbers."""
+    return plural(n, t("common.day_one"), t("common.day_few"), t("common.day_many"))
+
+
 def format_domain(value: Any) -> str:
     """A domain key as a section name a reader outside the app would use.
 
@@ -144,6 +152,7 @@ templates.env.filters["format_hm"] = format_hm
 templates.env.filters["plural_ru"] = plural_ru
 templates.env.filters["plural"] = lambda n, *args: plural(n, *args)
 templates.env.filters["meal_word"] = meal_word
+templates.env.filters["days_word"] = days_word
 templates.env.filters["format_unit"] = format_unit
 templates.env.filters["format_domain"] = format_domain
 templates.env.filters["timing_bucket"] = timing_bucket

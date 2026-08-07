@@ -60,6 +60,36 @@ async def _make_report(db_session, **kwargs):
 
 
 @pytest.mark.asyncio
+async def test_counted_days_agree_with_the_number(client, db_session):
+    """"Еда записана за 2 дня", not "за 2 дней" — the one place the document
+    counts out loud, and the form changes with the number."""
+    from vitals.i18n import current_lang
+    from vitals.models.nutrition import MealLog
+
+    db_session.add_all(
+        [
+            MealLog(date=START, domain="nutrition", source="manual",
+                    name="Овсянка", calories=400.0, protein_g=20.0),
+            MealLog(date=START + timedelta(days=1), domain="nutrition",
+                    source="manual", name="Курица", calories=600.0, protein_g=50.0),
+        ]
+    )
+    previous = current_lang.get()
+    current_lang.set("ru")
+    try:
+        row, password = await _make_report(
+            db_session, domains=[Domain.WEIGHT.value, Domain.NUTRITION.value]
+        )
+        await client.post(f"/r/{row.token}", data={"password": password})
+        doc = (await client.get(f"/r/{row.token}")).text
+    finally:
+        current_lang.set(previous)
+
+    assert "за 2 дня" in doc
+    assert "за 2 дней" not in doc
+
+
+@pytest.mark.asyncio
 async def test_locked_page_shows_a_form_and_leaks_nothing(client, db_session):
     row, _ = await _make_report(db_session)
 
