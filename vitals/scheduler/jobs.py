@@ -39,6 +39,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.proactive.day_plan import evening_job
     from vitals.services.proactive.nudges import nudges_job
     from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
+    from vitals.services.share_service import purge_job as share_purge_job
 
     # GLP-1 plateau check — once a day at 06:00 local. Cheap read; raises/clears a
     # passive warn alert so it's fresh even on days the dashboard isn't opened.
@@ -83,6 +84,17 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         trigger="cron",
         hour=3,
         minute=30,
+    )
+
+    # Doctor-report cleanup — nightly at 04:00 local, right after the raw-payload
+    # sweep. Empties the frozen snapshot of every link whose lifetime has run out;
+    # the row stays so /share can still show what was shared and when.
+    register_job(
+        "share_purge",
+        share_purge_job,
+        trigger="cron",
+        hour=4,
+        minute=0,
     )
 
     # Hevy sync — every 6h. No-ops when Hevy isn't configured.

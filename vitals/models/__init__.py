@@ -68,6 +68,9 @@ from vitals.models.signals import DayContext, Signal
 # Proactive layer — journal of every message the app sent out.
 from vitals.models.proactive import Notification
 
+# Doctor reports — frozen snapshots published behind a password.
+from vitals.models.share import SharedReport
+
 __all__ = [
     "Base",
     "TimestampMixin",
@@ -114,4 +117,5 @@ __all__ = [
     "Signal",
     "DayContext",
     "Notification",
+    "SharedReport",
 ]

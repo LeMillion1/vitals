@@ -41,6 +41,13 @@
 
     <section class="mh-more-group">
         <div class="mh-more-group-label">{{ t("more.account") }}</div>
+        {# Deliberately here and not under Health with /reports: that section
+           holds goals and AI digests, which are the app talking to its owner.
+           This is the one door data leaves through, and it should stand alone. #}
+        <a href="/share" class="mh-more-row">
+            <span class="mh-more-ico">{{ mh_icon('reports') }}</span>
+            <span class="mh-more-name">{{ t('share.heading') }}</span>
+        </a>
         {# One row, not two: a separate "Modules" row led to the same page and
            read as a second destination. The count is the only thing it added, so
            it moved here as this row's note. #}
