@@ -7,7 +7,7 @@ Postgres sequence-reset behaviour is an ``@pytest.mark.integration`` test (SQLit
 can't exercise it).
 """
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -622,3 +622,53 @@ def test_import_summary_labels_signals_and_friends():
     for table in ("signals", "day_context", "body_scans", "milestones", "noise_markers"):
         assert t("import.label." + table) in summary
     assert t("import.summary_extra", n=15) not in summary
+
+
+@pytest.mark.asyncio
+async def test_backup_neither_carries_nor_resurrects_shared_reports(db_session):
+    """A published doctor report is an outward-facing artifact, not data to
+    round-trip. The export must not carry its password hash and its full copy of
+    the record, and — the half that is easy to forget — the import must not wipe
+    or recreate one, or restoring a backup would republish links the owner had
+    already revoked."""
+    from sqlalchemy import select as sa_select
+
+    from vitals.models.share import SharedReport
+    from vitals.utils.timeutils import now_local
+
+    db_session.add(
+        SharedReport(
+            token="tok-abc", password_hash="$2b$04$hash", title="Endocrinologist",
+            domains=["labs"], period_start=date(2026, 3, 1), period_end=date(2026, 3, 30),
+            snapshot={"blocks": {"labs": {"markers": [{"marker": "Ферритин"}]}}},
+            expires_at=now_local() + timedelta(days=30),
+        )
+    )
+    await db_session.commit()
+
+    snapshot = await export_full(db_session)
+    assert "shared_reports" not in snapshot
+    assert "$2b$04$hash" not in json.dumps(snapshot, ensure_ascii=False)
+
+    # An import wipes everything else; this row survives untouched.
+    await import_full(db_session, snapshot)
+    await db_session.commit()
+    rows = (await db_session.execute(sa_select(SharedReport))).scalars().all()
+    assert len(rows) == 1 and rows[0].token == "tok-abc"
+
+    # And a file that *claims* to carry one plants nothing.
+    forged = dict(snapshot)
+    forged["shared_reports"] = [
+        {
+            "id": 999, "token": "planted", "password_hash": "x", "title": "planted",
+            "domains": [], "period_start": "2026-01-01", "period_end": "2026-01-02",
+            "labs_flagged_only": False, "snapshot": None,
+            "expires_at": "2030-01-01T00:00:00", "opened_count": 0,
+        }
+    ]
+    await import_full(db_session, forged)
+    await db_session.commit()
+    tokens = {
+        r.token for r in (await db_session.execute(sa_select(SharedReport))).scalars().all()
+    }
+    assert tokens == {"tok-abc"}

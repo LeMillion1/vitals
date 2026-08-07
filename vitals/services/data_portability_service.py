@@ -30,6 +30,12 @@ Design notes:
   * Photo binaries are *not* in the backup — ``progress_photos`` rows carry only the
     ``file_key`` reference (files live on disk). Restore brings back the rows, not
     the images.
+  * ``shared_reports`` is skipped by both halves. The generic table walk would
+    otherwise sweep bcrypt password hashes and full copies of the medical record
+    into every backup file, and a restore would *resurrect published links* —
+    including ones that had been revoked or had expired — with live snapshots
+    behind them. Same mirror rule as the secret settings: what the export won't
+    write, the import won't delete or accept.
 """
 from __future__ import annotations
 
@@ -74,6 +80,11 @@ KIND_LLM = "llm_export"
 # An ``app_settings`` key is treated as a secret (and dropped from the backup) when
 # it contains any of these substrings — forward-looking guard for token rows.
 _SECRET_KEY_MARKERS = ("token", "secret", "password", "api_key", "apikey", "credential")
+
+# Tables the generic walk must not touch, in either direction (see module
+# docstring). Published doctor reports are outward-facing artifacts with their
+# own lifecycle, not data to round-trip.
+_EXCLUDED_TABLES = frozenset({"shared_reports"})
 
 _LABELED_TABLES = (
     "weight_logs", "body_measurements", "progress_photos", "hevy_workouts",
@@ -183,6 +194,8 @@ async def export_full(session: AsyncSession) -> dict[str, Any]:
     }
 
     for table in Base.metadata.sorted_tables:
+        if table.name in _EXCLUDED_TABLES:
+            continue
         result = await session.execute(select(table))
         column_names = list(table.columns.keys())
         rows: list[dict[str, Any]] = []
@@ -255,6 +268,10 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     nothing on screen to say so. Those rows are therefore carried across the wipe,
     and rows with the same keys arriving *in* the file are ignored: a backup must
     not be a way to plant a credential either.
+
+    ``_EXCLUDED_TABLES`` follows the same rule from the other side: those tables
+    are neither wiped nor loaded, so a restore can't republish a doctor link the
+    owner revoked six months ago.
     """
     _validate_payload(payload)
 
@@ -263,11 +280,15 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
 
         # Wipe in reverse FK order so child rows go before the parents they reference.
         for table in reversed(Base.metadata.sorted_tables):
+            if table.name in _EXCLUDED_TABLES:
+                continue
             await session.execute(table.delete())
 
         counts: dict[str, int] = {}
         # Reload in FK order, preserving ids and all columns.
         for table in Base.metadata.sorted_tables:
+            if table.name in _EXCLUDED_TABLES:
+                continue
             rows = payload.get(table.name)
             if table.name == "app_settings":
                 rows = [r for r in rows or () if not _is_secret_setting_key(r.get("key"))]
