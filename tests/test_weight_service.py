@@ -87,6 +87,39 @@ async def test_same_source_reentry_supersedes_not_overwrites(db_session):
     assert old.superseded is True and old.weight_kg == 88.0
 
 
+async def test_repeated_identical_import_does_not_pile_up_rows(db_session):
+    """Re-importing the same weigh-in must not append a clone. Garmin's daily
+    bundle repeats today's weight on every poll; each poll used to add a row and
+    supersede the last, so a day grew a stack of identical rows and deleting the
+    visible one just promoted the next."""
+    from sqlalchemy import select
+
+    from vitals.models.weight import WeightLog
+
+    d = date(2026, 6, 6)
+    for _ in range(3):
+        await weight_service.log_weight(
+            db_session, on_date=d, weight_kg=105.0, source=Source.GARMIN_API.value
+        )
+    await db_session.commit()
+
+    rows = (
+        await db_session.execute(select(WeightLog).where(WeightLog.date == d))
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].superseded is False
+
+    # A genuinely different reading from the same source still lands as its own row.
+    await weight_service.log_weight(
+        db_session, on_date=d, weight_kg=104.6, source=Source.GARMIN_API.value
+    )
+    await db_session.commit()
+    rows = (
+        await db_session.execute(select(WeightLog).where(WeightLog.date == d))
+    ).scalars().all()
+    assert len(rows) == 2
+
+
 async def test_body_measurement_computes_navy_and_lbm(db_session):
     d = date(2026, 6, 5)
     await weight_service.log_weight(db_session, on_date=d, weight_kg=88.0)

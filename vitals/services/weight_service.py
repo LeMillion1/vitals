@@ -131,6 +131,17 @@ async def log_weight(
 
     existing = await get_active_weight(session, on_date)
 
+    # A re-import of a fact we already hold is not a new reading. Garmin's daily
+    # bundle carries the same weigh-in on every poll, so without this each sync
+    # appended another identical row and superseded the last — a day accumulated
+    # a dozen clones, and deleting the visible one just promoted its twin.
+    if (
+        existing is not None
+        and existing.source == source
+        and existing.weight_kg == weight_kg
+    ):
+        return existing
+
     insert_as_active = True
     if existing is not None:
         if _source_priority(source) >= _source_priority(existing.source):
