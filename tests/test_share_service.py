@@ -304,3 +304,43 @@ async def test_delete_removes_the_row(db_session):
     assert await share_service.delete_report(db_session, row.id) is True
     await db_session.commit()
     assert await share_service.list_reports(db_session) == []
+
+
+@pytest.mark.asyncio
+async def test_symptoms_carry_the_patients_words_not_the_apps(db_session):
+    """Two things a doctor must never be handed: this app's normalized key for a
+    symptom ("low_heart_rate"), and a raw measurement dressed up as a 1-5
+    severity ("40 of 5")."""
+    from vitals.enums import SignalKind
+    from vitals.models.signals import Signal
+
+    db_session.add_all(
+        [
+            Signal(
+                date=date(2026, 3, 12), domain="signals", source="telegram",
+                kind=SignalKind.SYMPTOM.value, key="headache", batch_id="b1",
+                note="голова раскалывается", value_num=4.0,
+            ),
+            # No wording of his own — nothing but the slug, so nothing to print.
+            Signal(
+                date=date(2026, 3, 13), domain="signals", source="telegram",
+                kind=SignalKind.SYMPTOM.value, key="low_heart_rate", batch_id="b2", value_num=40.0,
+            ),
+            # A measurement the parser filed under a symptom: not a severity.
+            Signal(
+                date=date(2026, 3, 14), domain="signals", source="telegram",
+                kind=SignalKind.SYMPTOM.value, key="pulse", batch_id="b3", note="пульс низкий",
+                value_num=40.0,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    snap = await share_service.build_snapshot(
+        db_session, domains=[Domain.SIGNALS.value],
+        period_start=START, period_end=END, enabled=ALL_ON,
+    )
+    symptoms = snap["blocks"][Domain.SIGNALS.value]["symptoms"]
+    assert [s["what"] for s in symptoms] == ["голова раскалывается", "пульс низкий"]
+    assert [s["severity"] for s in symptoms] == [4, None]
+    assert "low_heart_rate" not in json.dumps(snap, ensure_ascii=False)

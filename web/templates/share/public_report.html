@@ -152,6 +152,12 @@ footer {
   table { min-width: 0; }
   section { page-break-inside: avoid; }
   h1, h2, h3 { page-break-after: avoid; }
+  /* The two big sections (a season of doses, three body scans) are taller than a
+     page, so they *will* be split however hard the rule above asks. What matters
+     then is where: the column headers repeat on each new page, and a row never
+     breaks across the fold. */
+  thead { display: table-header-group; }
+  tr, .card { page-break-inside: avoid; break-inside: avoid; }
   /* No anchors exist on this page, so nothing drags a URL into the margin —
      this rule is here so it stays that way if one is ever added. */
   a[href]::after { content: none !important; }
@@ -352,7 +358,7 @@ footer {
 {% set effects = [] %}
 {% if blocks.glp1 %}{% for e in blocks.glp1.side_effects %}{% set _ = effects.append({"date": e.date, "what": e.effect_type, "severity": e.severity}) %}{% endfor %}{% endif %}
 {% if blocks.hrt %}{% for e in blocks.hrt.side_effects %}{% set _ = effects.append({"date": e.date, "what": e.effect_type, "severity": e.severity}) %}{% endfor %}{% endif %}
-{% if blocks.signals %}{% for s in blocks.signals.symptoms %}{% set _ = effects.append({"date": s.date, "what": s.note or s.key, "severity": s.severity}) %}{% endfor %}{% endif %}
+{% if blocks.signals %}{% for s in blocks.signals.symptoms %}{% set _ = effects.append({"date": s.date, "what": s.what, "severity": s.severity}) %}{% endfor %}{% endif %}
 {% if effects %}
 <section>
   <h2>{{ t("doc.effects") }}</h2>
@@ -362,7 +368,7 @@ footer {
     {% for e in effects | sort(attribute="date") %}
       <tr><td class="was">{{ e.date | format_date }}</td>
           <td class="name">{{ e.what }}</td>
-          <td class="was">{% if e.severity %}{{ t("doc.severity_of", n=e.severity) }}{% endif %}</td></tr>
+          <td class="was">{% if e.severity %}{{ t("doc.severity_of", n=(e.severity | format_number)) }}{% endif %}</td></tr>
     {% endfor %}
     </tbody>
   </table></div>

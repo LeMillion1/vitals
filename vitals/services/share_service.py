@@ -495,10 +495,17 @@ async def _genetics_block(session, ctx, stats, start, end, flagged_only) -> dict
 
 
 async def _signals_block(session, ctx, stats, start, end, flagged_only) -> dict:
-    """What the patient said about how he felt — symptoms only.
+    """What the patient said about how he felt — symptoms, in his own words.
 
     ``state`` rows are a daily mood/energy score he keeps for himself; on a
     clinical document they are noise between the symptoms that matter.
+
+    Two filters that only a real document makes obvious. A row with no note
+    carries nothing but its normalized key — "low_heart_rate" is this app's
+    vocabulary, not a complaint, and a doctor reading it learns nothing. And
+    ``value_num`` is a 1-5 severity for a symptom but a raw measurement for
+    anything the parser tagged loosely, which is how "40 of 5" ends up on a
+    clinical document; outside that range it is not a severity and is dropped.
     """
     from vitals.enums import SignalKind
     from vitals.services import signals_service
@@ -509,11 +516,15 @@ async def _signals_block(session, ctx, stats, start, end, flagged_only) -> dict:
     items = [
         {
             "date": s.date.isoformat(),
-            "key": s.key,
-            "severity": s.value_num,
-            "note": s.note,
+            "what": (s.note or "").strip(),
+            "severity": (
+                int(s.value_num)
+                if s.value_num is not None and 1 <= s.value_num <= 5
+                else None
+            ),
         }
         for s in rows
+        if (s.note or "").strip()
     ]
     items.sort(key=lambda x: x["date"])
     return {"symptoms": items} if items else {}
