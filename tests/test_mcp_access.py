@@ -1,10 +1,10 @@
-"""MCP "full access" tools (Run 1):
-  * B1 — override plumbing: a hard-block conflict returns a structured
+"""MCP "full access" tools:
+  * Override plumbing: a hard-block conflict returns a structured
     ``{"blocked": true, ...}`` payload instead of a 500, and ``override=True``
     saves anyway.
-  * A1 — get_full_snapshot (cross-domain context).
-  * A2 — export_everything (whole-lake LLM export).
-  * A4 — get_data_overview (per-domain coverage map).
+  * get_full_snapshot (cross-domain context).
+  * export_everything (whole-lake LLM export).
+  * get_data_overview (per-domain coverage map).
 
 Same import-skip guard as the other MCP tool tests."""
 from __future__ import annotations
@@ -50,7 +50,7 @@ async def _seed_meal_block(db_session):
     await db_session.commit()
 
 
-# ── B1 override plumbing ──────────────────────────────────────────────────────
+# ── Override plumbing ─────────────────────────────────────────────────────────
 async def test_log_meal_blocked_returns_payload_not_500(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     conflict_registrations.register_all_resolvers()
@@ -77,7 +77,7 @@ async def test_log_meal_override_saves_through_block(db_session, session_factory
     assert len(rows) == 1
 
 
-# ── A1 get_full_snapshot ──────────────────────────────────────────────────────
+# ── get_full_snapshot ─────────────────────────────────────────────────────────
 async def test_get_full_snapshot_returns_cross_domain_context(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import date
@@ -91,7 +91,7 @@ async def test_get_full_snapshot_returns_cross_domain_context(db_session, sessio
     assert "weight" in snap
 
 
-# ── A2 export_everything ──────────────────────────────────────────────────────
+# ── export_everything ─────────────────────────────────────────────────────────
 async def test_export_everything_includes_history(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import timedelta
@@ -156,7 +156,7 @@ async def test_export_everything_narrows_to_named_domains(
     assert "biomarkers" in err["error"]  # the valid names come back with the refusal
 
 
-# ── A4 get_data_overview ──────────────────────────────────────────────────────
+# ── get_data_overview ─────────────────────────────────────────────────────────
 async def test_get_data_overview_reports_counts_and_range(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import date

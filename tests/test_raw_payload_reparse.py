@@ -1,4 +1,4 @@
-"""Raw-payload reparse sweep (прогон 1).
+"""Raw-payload reparse sweep.
 
 ``upsert_raw_payload`` leaves ``processed_at = None`` whenever it refreshes an
 existing row ("re-parse pending"). ``raw_payload_service.sweep_domain`` is the

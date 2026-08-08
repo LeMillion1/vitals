@@ -2,7 +2,7 @@
 
 Both surfaces read the same two services (modules_service for what to list,
 nav_status_service for today's numbers), so these cover the pieces the static
-template contracts in test_review_run3.py can't see.
+template contracts in test_ui_static_contracts.py can't see.
 """
 from __future__ import annotations
 

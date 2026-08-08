@@ -1,7 +1,7 @@
-"""MCP write-completeness tools (Run 2) — the second half of the write surface:
-GLP-1 edit/delete + side effects + dose phases (A5), skincare observations (A6),
-supplements catalog CRUD (A7), measurement edit/delete (A8), noise markers (A9),
-module toggles (A10), digest trigger (A11), and get_trend analytics (A12).
+"""MCP write-completeness tools — the second half of the write surface: GLP-1
+edit/delete + side effects + dose phases, skincare observations, supplements
+catalog CRUD, measurement edit/delete, noise markers, module toggles, digest
+trigger, and get_trend analytics.
 
 Same import-skip guard as the other MCP tool tests; all run on the fast SQLite path."""
 from __future__ import annotations
@@ -32,7 +32,7 @@ async def _optional_modules_on(session_factory):
         await session.commit()
 
 
-# ── A5 GLP-1 ──────────────────────────────────────────────────────────────────
+# ── GLP-1 ─────────────────────────────────────────────────────────────────────
 async def test_glp1_injection_update_and_delete():
     created = await mcp_router.log_glp1(drug="semaglutide", dose_mg=1.0, on_date="2026-07-01")
     iid = created["id"]
@@ -66,7 +66,7 @@ async def test_dose_phase_add_and_delete():
     }
 
 
-# ── A6 skincare observation ───────────────────────────────────────────────────
+# ── skincare observation ──────────────────────────────────────────────────────
 async def test_skincare_observation_log_and_delete():
     row = await mcp_router.log_skincare_observation(on_date="2026-07-03", inflammation=2, pih=1, zone="cheeks")
     assert row["inflammation"] == 2
@@ -76,7 +76,7 @@ async def test_skincare_observation_log_and_delete():
     }
 
 
-# ── A7 supplements CRUD ───────────────────────────────────────────────────────
+# ── supplements CRUD ──────────────────────────────────────────────────────────
 async def test_supplement_crud():
     created = await mcp_router.add_supplement(name="Creatine", dose="5 g", evidence="A")
     sid = created["id"]
@@ -95,7 +95,7 @@ async def test_supplement_crud():
     }
 
 
-# ── A8 measurement edit/delete ────────────────────────────────────────────────
+# ── measurement edit/delete ───────────────────────────────────────────────────
 async def test_measurement_update_and_delete():
     created = await mcp_router.log_measurement(on_date="2026-07-04", waist_cm=85.0)
     mid = created["id"]
@@ -109,7 +109,7 @@ async def test_measurement_update_and_delete():
     }
 
 
-# ── A9 noise markers ──────────────────────────────────────────────────────────
+# ── noise markers ─────────────────────────────────────────────────────────────
 async def test_noise_marker_add_and_delete():
     row = await mcp_router.add_noise_marker(start_date="2026-06-10", end_date="2026-06-12", reason="sick", direction="down")
     mid = row["id"]
@@ -122,7 +122,7 @@ async def test_noise_marker_add_and_delete():
     }
 
 
-# ── A10 modules ───────────────────────────────────────────────────────────────
+# ── modules ───────────────────────────────────────────────────────────────────
 async def test_modules_get_and_toggle():
     state = await mcp_router.get_modules()
     assert "weight" in state["core"]
@@ -141,7 +141,7 @@ async def test_modules_get_and_toggle():
     assert "error" in err
 
 
-# ── A11 digest trigger ────────────────────────────────────────────────────────
+# ── digest trigger ────────────────────────────────────────────────────────────
 async def test_generate_digest_without_llm_key_errors():
     # Test env clears VITALS_OPENROUTER_API_KEY, so the LLM is not configured.
     result = await mcp_router.generate_digest_now()
@@ -149,7 +149,7 @@ async def test_generate_digest_without_llm_key_errors():
     assert "LLM not configured" in result["error"]
 
 
-# ── A12 get_trend ─────────────────────────────────────────────────────────────
+# ── get_trend ─────────────────────────────────────────────────────────────────
 async def test_get_trend_weight_slope_and_projection(db_session):
     await weight_service.log_weight(db_session, on_date=date(2026, 6, 1), weight_kg=92.0)
     await weight_service.log_weight(db_session, on_date=date(2026, 6, 8), weight_kg=91.0)

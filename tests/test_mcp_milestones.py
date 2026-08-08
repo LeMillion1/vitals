@@ -1,4 +1,4 @@
-"""MCP milestones tools (A3) — get/create/update/delete goal cards through the
+"""MCP milestones tools — get/create/update/delete goal cards through the
 MCP surface. Same import-skip guard as the other MCP tool tests."""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""T3 — the morning brief: the numbers, the fallback, and the silence.
+"""The morning brief: the numbers, the fallback, and the silence.
 
 Each of these guards something that fails quietly. A header that drifts from the
 database is worse than no brief at all; a dead model that takes the whole message
@@ -184,7 +184,7 @@ async def test_the_brief_sees_yesterdays_signals(db_session):
 
 # ── The fallback ──────────────────────────────────────────────────────────────
 async def test_brief_survives_a_dead_model(db_session):
-    """B4: no narrative is a missing block, not a missing brief."""
+    """No narrative is a missing block, not a missing brief."""
     await _seed_day(db_session)
 
     row = await brief.generate_brief(db_session, BoomLLM(), on_date=DAY)
@@ -209,7 +209,7 @@ async def test_narrative_uses_the_brief_model_and_is_told_to_be_short(db_session
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 async def test_brief_is_stored_as_its_own_kind(db_session):
-    """B5: one table, two kinds — and a brief must never surface where a weekly
+    """One table, two kinds — and a brief must never surface where a weekly
     digest is expected (the /reports card, the MCP resource)."""
     await _seed_day(db_session)
 
@@ -225,7 +225,7 @@ async def test_brief_is_stored_as_its_own_kind(db_session):
 
 
 async def test_protocol_never_reaches_the_brief(db_session):
-    """B2: no doses, no compounds, no injection schedule, no supplements — not in
+    """No doses, no compounds, no injection schedule, no supplements — not in
     the stored context and not in the prompt. The weekly digest still sees it all."""
     from vitals.services import glp1_service, supplements_service
 
@@ -364,7 +364,7 @@ async def test_empty_day_builds_nothing(db_session, raw, when):
 
 
 async def test_a_day_without_garmin_is_not_an_empty_day(db_session):
-    """B7: the watch on the charger used to silence the brief outright, even with
+    """The watch on the charger used to silence the brief outright, even with
     the scale, the food log and his own words all filling normally."""
     from vitals.services import signals_service
 
@@ -384,7 +384,7 @@ async def test_a_day_without_garmin_is_not_an_empty_day(db_session):
 
 
 async def test_a_weight_from_months_ago_does_not_keep_the_brief_talking(db_session):
-    """B7's other edge: ``latest_kg`` is the newest weigh-in *ever*, so counting it
+    """The other edge: ``latest_kg`` is the newest weigh-in *ever*, so counting it
     without a date would mean one trip to the scale in March buys a brief every
     morning after — including mornings where nothing at all happened."""
     await weight_service.log_weight(db_session, on_date=DAY - timedelta(days=90), weight_kg=88.0)
@@ -396,7 +396,7 @@ async def test_a_weight_from_months_ago_does_not_keep_the_brief_talking(db_sessi
 async def test_job_stays_quiet_on_an_empty_day_and_says_so_in_the_web(
     db_session, session_factory, monkeypatch
 ):
-    """B7: silence beats "нет данных" three mornings running — but the gap still
+    """Silence beats "нет данных" three mornings running — but the gap still
     has to be visible somewhere, so it becomes a passive info alert."""
     notifier = FakeNotifier()
     _patch_job(monkeypatch, notifier, FakeLLM())
@@ -516,7 +516,7 @@ def _patch_job(monkeypatch, notifier, llm):
     monkeypatch.setattr(llm_client, "LLMClient", lambda *a, **kw: llm)
 
 
-# ── The two buttons (B8) ──────────────────────────────────────────────────────
+# ── The two buttons ───────────────────────────────────────────────────────────
 async def test_build_button_shows_the_brief_and_sends_nothing(
     auth_client, db_session, monkeypatch
 ):

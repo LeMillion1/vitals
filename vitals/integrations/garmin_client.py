@@ -95,7 +95,7 @@ class GarminLoginThrottled(GarminAuthError):
 
 async def login_breaker_state(redis: Any) -> dict:
     """What the credential-login breaker has spent — read-only, for the settings
-    card (U4). Without it the poll-frequency fields would be set blind: the whole
+    card. Without it the poll-frequency fields would be set blind: the whole
     reason a higher frequency is safe is that logins stay rationed.
 
     Unreadable state reports as ``paused=None`` rather than as "fine": a breaker

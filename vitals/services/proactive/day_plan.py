@@ -4,15 +4,15 @@ Vitals knows everything about the body and nothing about the **day**. Without
 "remote / gym / heavy day" every piece of advice collapses into "спал плохо —
 отдохни". This module is that missing half, and it is deliberately cheap:
 
-  * **The week template** (E1) is one ``app_settings`` row, exactly like
+  * **The week template** is one ``app_settings`` row, exactly like
     ``enabled_modules``: weekday → the answers a weekday can actually predict. It
     is a *guess*, never a fact — it fills in the day until the owner says
     otherwise. Questions a calendar cannot know (how heavy the day is) are marked
     ``in_template=False`` and only ever asked.
-  * **The evening block** (E2) runs at **23:45**, not at midnight: past 00:00
+  * **The evening block** runs at **23:45**, not at midnight: past 00:00
     "tomorrow" means a different day than the one being planned, and the message
     would silently ask about the wrong date.
-  * **Every button carries its own date** (E3), so a tap that lands after midnight
+  * **Every button carries its own date**, so a tap that lands after midnight
     still answers the day it was asked about. That is why the callback payload is
     ``ctx:<iso date>:<key>:<value>`` and not "today".
 
@@ -107,7 +107,7 @@ WEEKEND: tuple[str, ...] = ("sat", "sun")
 
 # Neutral except for the one thing the calendar does know: Saturday and Sunday
 # are not office days. Guessing a gym schedule from nothing would just be a wrong
-# answer pre-filled. The owner edits this in Settings (прогон 6), and until then
+# answer pre-filled. The owner edits this in Settings, and until then
 # the exception buttons are one tap away.
 DEFAULT_DAY: dict[str, Any] = {q.key: q.default for q in TEMPLATE_QUESTIONS}
 DEFAULT_TEMPLATE: dict[str, dict] = {
@@ -116,7 +116,7 @@ DEFAULT_TEMPLATE: dict[str, dict] = {
 }
 
 
-# ── The template (E1) ─────────────────────────────────────────────────────────
+# ── The template ──────────────────────────────────────────────────────────────
 def _sanitize_day(raw: Any, weekday: str) -> dict[str, Any]:
     """One weekday's answers, projected onto the template questions.
 
@@ -175,14 +175,14 @@ def guess_for(template: dict[str, dict], on_date: date_type) -> dict[str, Any]:
     return dict(template.get(WEEKDAYS[on_date.weekday()], DEFAULT_DAY))
 
 
-# ── The day's answers (E3/E4) ─────────────────────────────────────────────────
+# ── The day's answers ─────────────────────────────────────────────────────────
 async def resolve(
     session: AsyncSession, on_date: date_type
 ) -> tuple[dict[str, Any], set[str]]:
     """``(answers, answered)`` — his answer if there is one, else the guess, plus
     the set of questions he *actually* answered.
 
-    Answered is per question, not per day (B6). One tap says nothing about the
+    Answered is per question, not per day. One tap says nothing about the
     other two questions, and a single flag for the whole day made "иду в зал"
     look like an answer to "где ты" and "как день" as well — which is how the
     keyboard used to disappear after the first tap.
@@ -315,7 +315,7 @@ def exception_buttons(
     case zero taps. A question with no answer at all (``load``, which no weekday
     predicts) has no "other" to be — so every one of its options is offered.
 
-    ``answered`` drops the questions he has already spoken for (B6). Only those:
+    ``answered`` drops the questions he has already spoken for. Only those:
     the keyboard used to vanish whole on the first tap, which left the other two
     questions with no way to be answered at all.
 
@@ -335,7 +335,7 @@ def exception_buttons(
 
 
 def day_block(day: Optional[dict]) -> Optional[compose.Block]:
-    """The brief's one line about today (E4). ``None`` when there is nothing to say."""
+    """The brief's one line about today. ``None`` when there is nothing to say."""
     if not day:
         return None
     line = describe(day.get("answers") or {})
@@ -346,7 +346,7 @@ def day_block(day: Optional[dict]) -> Optional[compose.Block]:
 
 
 def buttons_from_context(day: Optional[dict], on_date: date_type):
-    """Exception buttons for a brief — one per plan question still unanswered (B6).
+    """Exception buttons for a brief — one per plan question still unanswered.
 
     ``answered`` is stored alongside the answers in the brief's ``context_json``
     precisely so this can be rebuilt later from the stored row, without a second
@@ -367,7 +367,7 @@ def buttons_from_context(day: Optional[dict], on_date: date_type):
 
 
 def redraw(text: str, answers: dict, *, has_buttons: bool) -> str:
-    """An already-sent message, with its day line telling the truth again (U3).
+    """An already-sent message, with its day line telling the truth again.
 
     Only that one line is touched. A tap changes what the day *is*, not the step
     count or the «Как день?» above it, and rebuilding the whole message would mean
@@ -387,7 +387,7 @@ def redraw(text: str, answers: dict, *, has_buttons: bool) -> str:
 
 
 def summary_line(garmin) -> str:
-    """The day in the numbers that are actually about *today* (E2).
+    """The day in the numbers that are actually about *today*.
 
     Recovery numbers belong to the morning brief; what closes a day is what was
     done in it. Missing metrics are simply absent — the 22:00 Garmin poll is the
@@ -419,14 +419,14 @@ def plan_dedupe_key(on_date: date_type) -> str:
     return f"evening-plan:{on_date.isoformat()}"
 
 
-# ── The 23:45 job (E2) ────────────────────────────────────────────────────────
+# ── The 23:45 job ─────────────────────────────────────────────────────────────
 async def evening_job(session_factory, redis=None) -> None:
     """Close today, then ask about tomorrow — in that order, as two messages.
 
     Two, not one, because the two halves ask about different days and Telegram
     attaches a keyboard to a *message*, not to a line. Merged, «тяжёлый день» and
     «удалёнка» sit in one flat list and nothing can say which question either
-    answers — the wording fix U2 shipped papered over exactly this. The price is
+    answers — the earlier wording fix papered over exactly this. The price is
     one more slot of the daily budget; the budget is a knob in Settings, and a
     message nobody can answer is worth less than the slot it costs.
 

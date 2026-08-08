@@ -403,7 +403,7 @@ async def test_delete_progress_photo(db_session):
 
 
 
-# ── Write-path validation (S2) ────────────────────────────────────────────────
+# ── Write-path validation ─────────────────────────────────────────────────────
 # The MCP tools reach these services directly, with no HTML form to bound the
 # numbers, so the service itself has to reject nonsense.
 @pytest.mark.parametrize("bad_kg", [0, -5, 900, float("nan")])
@@ -447,7 +447,7 @@ async def test_plausible_measurement_still_saves(db_session):
     assert row.neck_cm == 39.0 and row.waist_cm == 86.0
 
 
-# ── Editing a measurement's date keeps the fields not passed (D1) ─────────────
+# ── Editing a measurement's date keeps the fields not passed ─────────────────
 async def test_update_measurement_date_change_keeps_untouched_fields(db_session):
     """Moving a measurement to another date used to blank every field the caller
     didn't repeat: the row was deleted first, so the partial merge on the new date

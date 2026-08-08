@@ -1,9 +1,10 @@
-"""Contracts for review run 3 — one module registry, Cyrillic-safe display
-fonts, the masthead type scale and the accessibility pass.
+"""UI contracts — one module registry, Cyrillic-safe display fonts, the
+masthead type scale and the accessibility pass.
 
 Static contracts in the style of ``test_design_handoff_vitals.py``: each one
-fails if the specific defect the review found comes back. The rendering side of
-A1/U3 is covered by ``tests/test_web.py`` (nav + module-toggle tests).
+fails if the specific defect it guards against comes back. The rendering side
+of the module registry is covered by ``tests/test_web.py`` (nav + module-toggle
+tests).
 """
 
 import re
@@ -31,7 +32,7 @@ APP_CSS = {"vitals.css": VITALS_CSS, "vitals-masthead.css": MASTHEAD_CSS}
 PAGES = sorted(TEMPLATES.rglob("*.html"))
 
 
-# ── A1 — one registry ────────────────────────────────────────────────────────
+# ── One registry ─────────────────────────────────────────────────────────────
 
 def test_every_nav_module_has_a_known_rubric():
     for spec in MODULE_REGISTRY.values():
@@ -103,7 +104,7 @@ def test_disabled_optional_module_leaves_every_nav_surface(key):
     }
 
 
-# ── U3 — the toggle updates the phone too ────────────────────────────────────
+# ── The toggle updates the phone too ─────────────────────────────────────────
 
 def test_bottom_bar_grid_is_fixed_at_five_columns():
     """The regression this whole rework exists for: the grid used to be
@@ -126,7 +127,7 @@ def test_module_toggle_response_refreshes_the_phone_bar():
     assert mobile.count('hx-swap-oob="true"') == 1
 
 
-# ── U1 / U12 — display fonts and Cyrillic ────────────────────────────────────
+# ── Display fonts and Cyrillic ───────────────────────────────────────────────
 
 FONT_FAMILY = re.compile(r"font-family:\s*([^;}]+)", re.I)
 FONT_SHORTHAND = re.compile(r"(?<!-)\bfont:\s*([^;}]+)", re.I)
@@ -167,7 +168,7 @@ def test_cyrillic_woff2_files_referenced_by_fonts_css_exist():
     assert "U+0400-045F" in FONTS_CSS      # Inter still carries the Cyrillic range
 
 
-# ── U6 — masthead sizes come from tokens ─────────────────────────────────────
+# ── Masthead sizes come from tokens ──────────────────────────────────────────
 
 def test_masthead_css_declares_no_raw_font_size():
     raw = re.findall(r"font-size:\s*(\d+(?:\.\d+)?)(px|rem|em)", MASTHEAD_CSS)
@@ -187,14 +188,14 @@ def test_masthead_type_tokens_are_declared_once():
     assert declared <= used, declared - used        # no dead tokens either
 
 
-# ── U13 — no `transition: all` ───────────────────────────────────────────────
+# ── No `transition: all` ─────────────────────────────────────────────────────
 
 def test_no_transition_all_outside_the_tailwind_bundle():
     for css in (VITALS_CSS, MASTHEAD_CSS, FONTS_CSS):
         assert "transition: all" not in css
 
 
-# ── U2 — tappable surfaces have a pressed state ──────────────────────────────
+# ── Tappable surfaces have a pressed state ───────────────────────────────────
 
 @pytest.mark.parametrize(
     "selector", [".v-btn", ".v-btn-ghost", ".v-icon-btn", ".v-pill", ".v-bnav-link"]
@@ -209,7 +210,7 @@ def test_rail_tabs_and_chips_have_an_active_state():
     assert ".v-today-chips .v-chip:active" in VITALS_CSS
 
 
-# ── U5 / U9 / U11 — form and icon-button accessibility ───────────────────────
+# ── Form and icon-button accessibility ───────────────────────────────────────
 
 TAG = re.compile(r"<(input|button|a|label)\b", re.I)
 

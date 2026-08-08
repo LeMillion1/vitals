@@ -17,10 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import t
 from vitals.services import twofa_service
+from vitals.utils.passwords import verify_password, verify_password_dummy
 from web.config import PENDING_2FA_COOKIE, PENDING_2FA_TTL, SESSION_COOKIE, get_web_config
 from web.deps import get_redis, get_session
 from web.ratelimit import login_rate_limit
-from web.security import verify_password, verify_password_dummy
 from web.templating import templates
 
 logger = logging.getLogger(__name__)

@@ -6,12 +6,12 @@ worth saying.
 
   * **The model can fail and the brief still arrives.** Any exception from the LLM
     (no key, no balance, upstream down, blank completion) drops the narrative
-    block and nothing else. B4.
+    block and nothing else.
   * **An empty day is silence, not a brief.** No fresh Garmin row and no recovery
     numbers → nothing is sent and a passive ``info`` alert shows the gap in the
-    web instead. B7.
+    web instead.
 
-The brief is stored in ``weekly_digests`` with ``kind='daily_brief'`` (B5), so
+The brief is stored in ``weekly_digests`` with ``kind='daily_brief'``, so
 /reports shows it and MCP can read the history, without a second table.
 
 Sending is deliberately *not* done here: :func:`generate_brief` builds and
@@ -113,7 +113,7 @@ state (состояние, 1-5), symptom (симптом, 1-5), exposure (сде
 async def build_context(
     session: AsyncSession, *, on_date: Optional[date_type] = None
 ) -> dict:
-    """Today's cross-domain snapshot, minus the protocol (B2), plus the day (E4).
+    """Today's cross-domain snapshot, minus the protocol, plus the day context.
 
     The day context is the difference between "спал плохо — отдохни" and advice
     that knows there is a gym session and a heavy workday ahead, so it goes into
@@ -126,7 +126,7 @@ async def build_context(
     # than in ``assemble_context`` because nothing else in the brief wants two
     # days — the header is strictly about today.
     #
-    # Deliberately after ``strip_protocol``: B2 keeps the *stored* protocol out of
+    # Deliberately after ``strip_protocol``: that keeps the *stored* protocol out of
     # Telegram, and a signal is not stored protocol — it is a sentence he typed
     # into this very chat. Stripping it here would hide his own words from him.
     ctx["signals"] = await _signals_since_yesterday(session, on_date or today_local())
@@ -151,7 +151,7 @@ async def build_context(
         "answers": answers,
         # Which of them are his words rather than the template's guess. Stored as
         # a sorted list because this dict is persisted as JSON — and it is what
-        # the brief's buttons read to re-ask only the questions still open (B6).
+        # the brief's buttons read to re-ask only the questions still open.
         "answered": sorted(answered),
         # His answer or the template's guess — the model is told which, so it can
         # hedge on a guess instead of asserting it.
@@ -204,7 +204,7 @@ def build_prompt(ctx: dict) -> str:
 
 
 async def narrative(llm: Any, ctx: dict) -> str:
-    """The model's one block. Returns "" on any failure — never raises (B4)."""
+    """The model's one block. Returns "" on any failure — never raises."""
     try:
         return await llm.complete_text(
             build_prompt(ctx),
@@ -224,7 +224,7 @@ async def generate_brief(
     on_date: Optional[date_type] = None,
     source: str = Source.MANUAL.value,
 ) -> Optional[WeeklyDigest]:
-    """Build the brief and store it. ``None`` = empty day, nothing built (B7)."""
+    """Build the brief and store it. ``None`` = empty day, nothing built."""
     on_date = on_date or today_local()
     ctx = await build_context(session, on_date=on_date)
     if compose.is_empty_day(ctx, on_date=on_date):
@@ -287,7 +287,7 @@ async def night_scored(session: AsyncSession, on_date: date_type) -> bool:
 
 # ── Scheduler job ─────────────────────────────────────────────────────────────
 async def brief_job(session_factory, redis=None) -> None:
-    """The 11:00 brief (B6) — fired hourly across the wait window, sent once.
+    """The 11:00 brief — fired hourly across the wait window, sent once.
 
     Pulls Garmin first, on its own, instead of hoping the poll schedule happened
     to run this morning — last night's sleep is the whole point of the message.
@@ -360,7 +360,7 @@ async def brief_job(session_factory, redis=None) -> None:
             return
 
         # Nothing answered for today → the header shows the template's guess and
-        # the buttons are how it gets corrected in one tap (E4).
+        # the buttons are how it gets corrected in one tap.
         buttons = day_plan.buttons_from_context((row.context_json or {}).get("day"), today)
         # The hint rides on the *sent* message, not on the stored brief: /reports
         # shows the same content with no keyboard under it, and a line pointing at

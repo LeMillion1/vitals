@@ -109,7 +109,7 @@ RAW_DAY = {
         # dailySleepDTO (verified against real nights 2026-07-16/17) — unlike
         # awakeCount, which does live in dailySleepDTO.
         "restlessMomentsCount": 8,
-        # ── The night's minute-level arrays (run 5) ───────────────────────────
+        # ── The night's minute-level arrays ───────────────────────────────────
         # Shapes verified against real responses from the watch: most arrays are
         # [{value, startGMT: epoch_ms}], but respiration renames both keys, SpO2
         # ships an ISO GMT string, and movement is ISO + its own value key.
@@ -449,7 +449,7 @@ def test_intraday_series_absent_is_empty():
     assert series[SERIES_HEART_RATE] == []
 
 
-# ── Nightly sleep series parsing (run 5) ──────────────────────────────────────
+# ── Nightly sleep series parsing ──────────────────────────────────────────────
 def test_sleep_series_parse_epoch_ms_arrays():
     series = garmin_service._intraday_series(RAW_DAY)
     assert [v for _, v in series[SERIES_SLEEP_HR]] == [69.0, 58.0, 54.0]

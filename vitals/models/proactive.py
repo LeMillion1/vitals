@@ -12,8 +12,8 @@ without a written record:
   * **Idempotency / reply context.** ``external_id`` is the channel's own message
     id, which is how an incoming reply is matched back to the message it answers.
 
-``channel`` keeps the table honest about шов 1: a second delivery channel adds
-rows here, not a second table.
+``channel`` keeps the table honest about the delivery seam: a second delivery
+channel adds rows here, not a second table.
 """
 from __future__ import annotations
 

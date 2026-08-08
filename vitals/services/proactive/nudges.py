@@ -34,7 +34,7 @@ from vitals.utils.timeutils import now_local
 
 logger = logging.getLogger(__name__)
 
-# Categories = the toggles the settings card renders (прогон 6). They are defined
+# Categories = the toggles the settings card renders. They are defined
 # in ``prefs`` — a category is a setting first — and re-exported here so a nudge
 # spec reads as one thing.
 CATEGORY_ACTIVITY = prefs.CATEGORY_ACTIVITY
@@ -116,7 +116,7 @@ async def _garmin_silent(session: AsyncSession, ctx: dict) -> bool:
     Never fires when there is no Garmin data at all: that's an integration that
     was never set up, not one that broke.
 
-    Once per episode of silence, not once a day (B9). The 24-hour cooldown alone
+    Once per episode of silence, not once a day. The 24-hour cooldown alone
     re-sent the same sentence every morning for as long as the watch stayed on
     the charger, and there is nothing new to say until it syncs again. The
     episode is identified by the last row's date: a send that landed on or after

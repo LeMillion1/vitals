@@ -1,4 +1,4 @@
-"""Static contracts for the fixes in review run 1.
+"""Static contracts for the shipped frontend assets.
 
 Same shape as ``test_design_handoff_vitals.py``: these assert facts about the
 shipped static assets and templates, which is where this batch of bugs lived —
@@ -27,7 +27,7 @@ DISABLED_ELT_FORMS = (
 
 
 def test_service_worker_never_caches_uploads():
-    """S1 — /static/uploads/* is lab sheets, InBody printouts and body photos.
+    """/static/uploads/* is lab sheets, InBody printouts and body photos.
 
     Cache Storage outlives the session and logout doesn't clear it, so caching
     those would leave medical images on disk for anyone with the device.
@@ -39,7 +39,7 @@ def test_service_worker_never_caches_uploads():
 
 
 def test_response_error_handler_reads_every_error_shape():
-    """B2 — routers answer with ``error``/``message``, not only FastAPI's ``detail``."""
+    """Routers answer with ``error``/``message``, not only FastAPI's ``detail``."""
     handler = BASE_HTML[BASE_HTML.index("addEventListener('htmx:responseError'"):]
     handler = handler[: handler.index("});")]
     for field in ("data.detail", "data.error", "data.message"):
@@ -47,7 +47,7 @@ def test_response_error_handler_reads_every_error_shape():
 
 
 def test_no_template_disables_a_submit_button_by_hand():
-    """B3 — inline ``onsubmit`` disabling never re-enabled the button on an error."""
+    """Inline ``onsubmit`` disabling never re-enabled the button on an error."""
     offenders = [
         path.relative_to(ROOT).as_posix()
         for path in TEMPLATES.rglob("*.html")
@@ -57,7 +57,7 @@ def test_no_template_disables_a_submit_button_by_hand():
 
 
 def test_navigating_forms_use_hx_disabled_elt():
-    """B3 — htmx disables *and re-enables* the button on every response code."""
+    """htmx disables *and re-enables* the button on every response code."""
     for name in DISABLED_ELT_FORMS:
         text = (TEMPLATES / name).read_text(encoding="utf-8")
         assert "hx-disabled-elt=" in text, f"{name} has no double-submit guard"

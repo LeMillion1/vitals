@@ -46,7 +46,7 @@ async def test_create_and_progress_weight_goal(db_session):
 
 
 async def test_progress_guards_against_unit_domain_mismatch(db_session):
-    """T1: a goal filed under domain="weight" but with a "%" target_unit (e.g.
+    """A goal filed under domain="weight" but with a "%" target_unit (e.g.
     copy-pasted from a body-fat goal) must not compute current/remaining — on the
     old code this compared a percentage target against a kilogram reading and
     printed a nonsense "remaining"."""
@@ -226,7 +226,7 @@ async def test_assemble_context_pulls_each_domain(db_session):
 
 
 async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db_session):
-    """B5: the weekly digest must see supplements, skincare, genetics and active
+    """The weekly digest must see supplements, skincare, genetics and active
     alerts — previously these enabled domains were absent, so cross-domain
     reasoning (e.g. 'started a supplement → sleep shifted', 'introduced a retinoid
     → skin reacted') had no data to work with."""
@@ -266,7 +266,7 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
 
 
 async def test_assemble_context_includes_body_comp(db_session):
-    """B3: the weekly digest must see the latest BIA/InBody scan (headline metrics
+    """The weekly digest must see the latest BIA/InBody scan (headline metrics
     + derived LBM) — previously body composition was absent from the analysis."""
     from vitals.models.body_scan import BodyScan, BodyScanMetric
 
@@ -337,7 +337,7 @@ async def test_assemble_context_with_custom_period_days(db_session):
 
 
 async def test_assemble_context_includes_hrt_and_timeline(db_session):
-    """B1: hormones and the timeline must reach the digest. Without them the
+    """Hormones and the timeline must reach the digest. Without them the
     strongest intervention in the lake (a compound change) and the ready-made
     explanation for a dip (illness, travel) were invisible to the narrative."""
     from vitals.services import hrt_cycle_service, hrt_service, timeline_service
@@ -403,7 +403,7 @@ DIGEST_DOMAIN_KEYS: dict[Domain, tuple[str, ...]] = {
     Domain.TIMELINE: ("timeline",),
     # Signals reach Claude.ai through the LLM export (DOMAIN_EXPORT_KEYS) — that's
     # where the deep cross-domain analysis lives. The weekly digest's context stays
-    # exactly as it was; the composer that reads signals is прогон 3's block layer,
+    # exactly as it was; the composer that reads signals is the block layer,
     # not this domain's.
     Domain.SIGNALS: (),
     # Infra rows reach the digest as the active-alert list, not as their own block.

@@ -19,7 +19,7 @@ from vitals.models.weight import ProgressPhoto, WeightLog
 from vitals.services import share_service
 from vitals.services.modules_service import MODULE_REGISTRY
 from vitals.utils.timeutils import now_local
-from web.security import verify_password
+from vitals.utils.passwords import verify_password
 
 ALL_ON = {k: True for k in MODULE_REGISTRY}
 

@@ -31,7 +31,7 @@ KIND_DAY = "day"        # what kind of day it is — see ``day_plan``
 KIND_ASK = "ask"        # a question to the owner, answered in free text
 KIND_NARRATIVE = "narrative"
 
-# Protocol stays out of the brief entirely (B2): no doses, no compounds, no
+# Protocol stays out of the brief entirely: no doses, no compounds, no
 # injection schedule, no supplements. Nothing here is advisable day-to-day, it
 # would fight the weekly digest for the same conclusions, and the most sensitive
 # rows in the lake have no business travelling through Telegram. The digest still
@@ -101,7 +101,7 @@ def strip_protocol(ctx: dict) -> dict:
 
 
 def is_empty_day(ctx: dict, *, on_date: date_type) -> bool:
-    """Nothing anywhere → there is no brief worth sending (B7).
+    """Nothing anywhere → there is no brief worth sending.
 
     Silence is more honest than "нет данных" three mornings in a row; the web
     gets a passive ``info`` alert instead so the gap is still visible.
@@ -171,7 +171,7 @@ def _is_fresh(value, on_date: date_type) -> bool:
 
 
 def header_blocks(ctx: dict) -> list[Block]:
-    """The deterministic header (B2): recovery numbers, then weight and its trend.
+    """The deterministic header: recovery numbers, then weight and its trend.
 
     Each number carries his own norm when today is far enough off it to matter.
     Four bare absolutes are the same line every morning — whether they are good or

@@ -1,9 +1,9 @@
-"""Run 5 — the domains Claude could only ever half-use.
+"""The domains Claude could only ever half-use.
 
 Genetics was readable a hundred alphabetical rows at a time, so "посмотри мой
 rs1801133" was unanswerable and a fresh interpretation had nowhere to go. HRT
 could be written but never corrected: no edit, no delete, no side effect, no way
-to close a finished cycle — the parity GLP-1 has had since run 2.
+to close a finished cycle — the parity GLP-1 has had all along.
 
 Same import-skip guard as the other MCP tool tests; all on the fast SQLite path.
 """
@@ -29,7 +29,7 @@ async def _optional_modules_on(session_factory):
         await session.commit()
 
 
-# ── A5 genetics ───────────────────────────────────────────────────────────────
+# ── genetics ──────────────────────────────────────────────────────────────────
 async def test_genetics_filters_by_gene_and_rsid():
     await mcp_router.upsert_genetic_variant(gene="MTHFR", rsid="rs1801133", genotype="CT")
     await mcp_router.upsert_genetic_variant(gene="COMT", rsid="rs4680", genotype="AA")
@@ -70,7 +70,7 @@ async def test_delete_genetic_variant():
     assert await mcp_router.get_genetics_snps() == []
 
 
-# ── A6 HRT parity ─────────────────────────────────────────────────────────────
+# ── HRT parity ────────────────────────────────────────────────────────────────
 async def test_update_hrt_dose_keeps_the_fields_the_call_left_out():
     created = await mcp_router.log_hrt_dose(
         compound_key="testosterone_enanthate",

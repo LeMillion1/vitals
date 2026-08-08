@@ -1,4 +1,4 @@
-"""T4 — the evening block, the week template, and whose answer wins.
+"""The evening block, the week template, and whose answer wins.
 
 Three things here fail *silently* if they regress, which is why each gets a test:
 
@@ -76,7 +76,7 @@ def _patch_evening(monkeypatch, notifier):
     monkeypatch.setattr(day_plan, "today_local", lambda: DAY)
 
 
-# ── The 23:45 job (E2) ────────────────────────────────────────────────────────
+# ── The 23:45 job ─────────────────────────────────────────────────────────────
 async def test_evening_block_asks_about_calendar_tomorrow(
     db_session, session_factory, monkeypatch
 ):
@@ -160,7 +160,7 @@ async def test_evening_block_keeps_asking_what_is_still_unanswered(
 async def test_the_evening_buttons_say_they_are_about_tomorrow(
     db_session, session_factory, monkeypatch
 ):
-    """U2: a keyboard belongs to a message, not to a line. Merged, «тяжёлый день»
+    """A keyboard belongs to a message, not to a line. Merged, «тяжёлый день»
     sat two lines under «Как день?» and read as the answer to it while writing into
     tomorrow. Split, each question owns the buttons directly beneath it."""
     notifier = FakeNotifier()
@@ -196,7 +196,7 @@ async def test_evening_block_drops_the_summary_when_garmin_has_nothing(
     assert "Завтра:" in notifier.sent[1]["text"]
 
 
-# ── Taps (E3) ─────────────────────────────────────────────────────────────────
+# ── Taps ──────────────────────────────────────────────────────────────────────
 async def test_tap_overwrites_the_answer_and_keeps_the_guess(db_session):
     await day_plan.record_plan(db_session, TOMORROW, {"where": "office", "gym": False})
 
@@ -254,7 +254,7 @@ def test_an_unanswered_question_is_left_unsaid():
     assert day_plan.describe({"where": "off"}) == "выходной"
 
 
-# ── The template (E1) ─────────────────────────────────────────────────────────
+# ── The template ──────────────────────────────────────────────────────────────
 async def test_template_is_stored_per_weekday_and_sanitized(db_session):
     await day_plan.set_week_template(
         db_session,
@@ -312,7 +312,7 @@ async def test_an_out_of_registry_value_falls_back_instead_of_reaching_the_messa
     assert template["sun"]["where"] == "off"  # Sunday's default, not the garbage
 
 
-# ── The brief (E4) ────────────────────────────────────────────────────────────
+# ── The brief ─────────────────────────────────────────────────────────────────
 async def _seed_brief_day(db_session):
     await garmin_service.ingest_daily(db_session, DAY, GARMIN_RAW)
     await db_session.commit()

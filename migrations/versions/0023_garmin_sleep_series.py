@@ -1,7 +1,7 @@
 """garmin sleep detail, level B — the night's interval series
 
 The night's *point* series (heart rate, SpO2, respiration, stress, Body Battery,
-HRV, movement) need no schema at all: they reuse run 4's generic
+HRV, movement) need no schema at all: they reuse the generic
 ``garmin_intraday`` table as new ``series_type`` values. Only the two *interval*
 series have nowhere to go — a hypnogram entry is a span (start/end/stage), not a
 sample — so they land here as JSONB on the night's own daily row rather than in a

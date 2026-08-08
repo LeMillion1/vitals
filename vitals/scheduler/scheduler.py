@@ -207,7 +207,7 @@ def apply_registry(
 ) -> None:
     """(Re)attach the registry to a scheduler — including a *running* one.
 
-    This is what makes a settings save take effect without a restart (U5):
+    This is what makes a settings save take effect without a restart:
     ``register_all_jobs`` rebuilds the registry from the new settings and this
     replaces the live jobs with it. Removing what is no longer registered matters
     just as much as adding — switch the Garmin pulse off and the old interval job

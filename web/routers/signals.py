@@ -5,7 +5,7 @@ typed here (the plan's product boundary — the bot is not a second input form, 
 the app is not a second bot). What this page is for is seeing what the parser
 actually recorded, and fixing it when it got a row wrong.
 
-The key-frequency table is the raw material for прогон 7: it is what a closed key
+The key-frequency table is the raw material for consolidation: it is what a closed key
 registry gets built from, which is why it counts misparsed rows too.
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ async def signals_feed(
             "frequency": frequency,
             "kinds": [k.value for k in SignalKind],
             "misparse_count": sum(1 for s in signals if s.misparse),
-            # What the row was stored as vs what it folds to on read (шов 4) —
+            # What the row was stored as vs what it folds to on read —
             # the alias table is invisible everywhere else.
             "normalize_key": signals_service.normalize_key,
         },

@@ -11,7 +11,7 @@ that **never raises**. A settings row edited into nonsense must degrade to the
 defaults, not take the scheduler down with it.
 
 **Why the DB and not ``.env``:** these are exactly the settings that have to take
-effect without a container restart (U5) — a save re-registers the jobs on the
+effect without a container restart — a save re-registers the jobs on the
 running scheduler. The ``.env`` path (``web/services/env_writer``) is for secrets
 and startup-time values, and it costs a restart every time.
 
@@ -52,7 +52,7 @@ SYNC_HOURS_RANGE = (1, 24)
 # 60 s floor / 3600 s ceiling: the Home Assistant Garmin integration — same
 # library author, thousands of users — polls every 300 s and refuses to go below
 # 60. A *read* costs nothing; it is the credential *login* Garmin rate-limits,
-# and прогон 0's breaker is what rations those.
+# and the login breaker is what rations those.
 PULSE_SECONDS_RANGE = (60, 3600)
 
 DEFAULTS: dict[str, Any] = {
@@ -155,7 +155,7 @@ async def set_prefs(session: AsyncSession, raw: Any) -> dict[str, Any]:
 
 
 async def bot_enabled(session: AsyncSession) -> bool:
-    """Is the proactive layer switched on at all (U1's emergency switch)?
+    """Is the proactive layer switched on at all (the emergency switch)?
 
     Deliberately reads the module registry rather than a setting of its own:
     "выключить модуль signals" is one action in the UI and must silence the bot,

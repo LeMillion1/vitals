@@ -147,7 +147,7 @@ def test_display_type_is_set_through_the_one_token():
         assert spelled == [], name
 
 
-# ── D11 — two icon sizes ─────────────────────────────────────────────────────
+# ── Two icon sizes ───────────────────────────────────────────────────────────
 
 def test_icons_come_in_two_sizes():
     """Six were in use — 15/16/17/20/22/24 — with nothing saying which belonged
@@ -209,7 +209,7 @@ def test_a_checkbox_is_not_a_13px_glyph():
     assert "width: 22px" in _rule(PHONE_APP, 'input[type="checkbox"]:not([role="switch"])')
 
 
-# ── D6 / D13 — a filter is not a place, a sub-tab is not a switch ────────────
+# ── A filter is not a place, a sub-tab is not a switch ───────────────────────
 
 def test_a_filter_pill_cannot_be_mistaken_for_a_section_chip():
     """/genetics stacked a row of filters straight under the row of section
@@ -236,7 +236,7 @@ def test_route_sub_tabs_are_chips_not_a_segmented_control():
     assert "position: static;" in _rule(PHONE_MH, "body.ui-masthead .mh-subtabs")
 
 
-# ── D2 — a card inside a card is raised, not sunk ────────────────────────────
+# ── A card inside a card is raised, not sunk ─────────────────────────────────
 
 def test_a_nested_card_is_lighter_than_the_one_it_sits_in():
     """/skincare read as four frames deep with a hole in the middle: the tile's
@@ -247,7 +247,7 @@ def test_a_nested_card_is_lighter_than_the_one_it_sits_in():
     assert "bg-[var(--bg-inset)] border border-[var(--line)]" not in skincare
 
 
-# ── D14 / M10 — copy and formats ─────────────────────────────────────────────
+# ── Copy and formats ─────────────────────────────────────────────────────────
 
 def test_one_decimal_mark_per_language():
     """A number input is drawn by the browser in the user's own locale — Chrome
@@ -307,7 +307,7 @@ def test_a_noise_marker_is_not_good_news():
             assert "var(--good)" not in line and "var(--bad)" not in line, line
 
 
-# ── M3 / V9 — the last two ───────────────────────────────────────────────────
+# ── The last two ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["/skincare", "/supplements"])

@@ -34,7 +34,7 @@ async def _optional_modules_on(session_factory):
         await session.commit()
 
 
-# ── B1 partial updates ────────────────────────────────────────────────────────
+# ── Partial updates ───────────────────────────────────────────────────────────
 async def test_meal_rename_keeps_date_macros_and_note():
     created = await mcp_router.log_meal(
         name="Ужин", calories=700, protein_g=40, fat_g=20, carbs_g=60,
@@ -87,7 +87,7 @@ async def test_partial_update_can_still_clear_by_passing_a_value():
     assert updated["name"] == "Обед"
 
 
-# ── Q1 readable date errors ───────────────────────────────────────────────────
+# ── Readable date errors ──────────────────────────────────────────────────────
 async def test_bad_date_names_the_argument_and_the_shape():
     with pytest.raises(ValueError, match="on_date must be a YYYY-MM-DD date"):
         await mcp_router.log_meal(name="Ужин", on_date="вчера")
@@ -99,7 +99,7 @@ async def test_bad_date_names_the_argument_and_the_shape():
         await mcp_router.log_meal(name="Ужин", eaten_at="вечером")
 
 
-# ── B2 the overview covers every domain ───────────────────────────────────────
+# ── The overview covers every domain ──────────────────────────────────────────
 #
 # Same guard as ``DOMAIN_EXPORT_KEYS`` in test_data_portability: the failure mode
 # isn't a bug in the tool, it's a new domain nobody remembers to add — and a model

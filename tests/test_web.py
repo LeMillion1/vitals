@@ -469,7 +469,7 @@ async def test_genetics_vcf_upload(auth_client, db_session):
 
 
 async def test_genetics_save_dedupes_by_rsid(auth_client, db_session):
-    """D2: saving the same rsID twice from the manual form updates in place — never
+    """Saving the same rsID twice from the manual form updates in place — never
     a duplicate row or a 500 from the uq_genetic_variant_rsid constraint."""
     from vitals.models.genetics import GeneticVariant
 
@@ -891,7 +891,7 @@ async def test_garmin_dashboard_day_strip_renders_in_masthead(auth_client, db_se
 
 
 async def test_garmin_dashboard_no_longer_lists_activities(auth_client, db_session):
-    """Activities moved to their own tab (run 2) — the overview page must not
+    """Activities moved to their own tab — the overview page must not
     render them a second time."""
     from datetime import date, datetime
 
@@ -980,7 +980,7 @@ async def test_labs_dashboard_renders(auth_client, monkeypatch):
 
 
 async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_session):
-    """U4: four delete routes existed with no button anywhere — a mis-parsed lab
+    """Four delete routes existed with no button anywhere — a mis-parsed lab
     result, a diary entry, an observation and a whole cycle could only be removed
     through the API. Also covers the diary/observation lists themselves, which the
     skincare page never rendered."""
@@ -1051,7 +1051,7 @@ async def test_labs_manual_add_with_a_cyrillic_marker_over_fetch(auth_client, db
 
 
 async def test_labs_unit_html_is_escaped_in_render(auth_client):
-    """S3: a unit value containing HTML must render escaped, never as live markup —
+    """A unit value containing HTML must render escaped, never as live markup —
     labs.unit can come from a mis-parsed photo import, so it isn't trusted input."""
     r = await auth_client.post(
         "/labs/result",
@@ -1068,7 +1068,7 @@ async def test_labs_unit_html_is_escaped_in_render(auth_client):
 
 async def test_labs_unit_superscript_still_renders(auth_client):
     """Regression guard: the 10^9 -> <sup>9</sup> substitution must survive the
-    S3 escaping fix (applied to the already-escaped string, not via | safe)."""
+    escaping fix (applied to the already-escaped string, not via | safe)."""
     r = await auth_client.post(
         "/labs/result",
         data={"date": "2026-06-10", "marker": "Neutrophils", "value": 4.2,
@@ -1083,7 +1083,7 @@ async def test_labs_unit_superscript_still_renders(auth_client):
 
 async def test_labs_upload_without_llm_returns_json(auth_client):
     """Uploading with no OpenRouter key configured surfaces a JSON flag rather
-    than erroring (LLM is optional). B2 turned /labs/upload from a redirecting
+    than erroring (LLM is optional). A later change turned /labs/upload from a redirecting
     form endpoint into a single-file JSON preview endpoint (upload -> preview ->
     confirm), so this no longer redirects — the client shows the flag and moves
     on to the next queued file."""
@@ -1100,8 +1100,8 @@ async def test_labs_upload_without_llm_returns_json(auth_client):
 
 async def test_labs_upload_extraction_failure_returns_error_json(auth_client, monkeypatch):
     """A file that fails vision extraction surfaces ok:false/reason:error in the
-    JSON response (B1's failure-signalling intent, now at single-file
-    granularity — B2 moved multi-file batching into a client-side queue)."""
+    JSON response (the original failure-signalling intent, now at single-file
+    granularity — multi-file batching moved into a client-side queue)."""
     from vitals.services import labs_service
 
     async def fake_extract(contents, *, llm, content_type, filename=None):
@@ -1147,7 +1147,7 @@ async def test_failed_extraction_leaves_no_orphan_file(auth_client, monkeypatch)
 
 
 async def test_labs_upload_returns_preview_without_persisting_results(auth_client, db_session, monkeypatch):
-    """B2 regression: /labs/upload must extract and return an editable preview
+    """Regression: /labs/upload must extract and return an editable preview
     without writing any LabResult — the whole point of the preview step is that
     a misread value never reaches the DB until the owner confirms it."""
     from vitals.services import labs_service
@@ -1184,7 +1184,7 @@ async def test_labs_upload_returns_preview_without_persisting_results(auth_clien
 
 
 async def test_labs_confirm_persists_edited_markers(auth_client, db_session, monkeypatch):
-    """B2 regression: /labs/confirm must save the owner's edits, not the raw OCR
+    """Regression: /labs/confirm must save the owner's edits, not the raw OCR
     values — proves the edit-before-save step actually takes effect."""
     from vitals.services import labs_service
 
@@ -1338,7 +1338,7 @@ async def test_mobile_navigation_rendering_auth(auth_client):
 
 
 async def test_alerts_with_same_text_are_distinct_and_resolve_all(auth_client, db_session):
-    """Regression (B1): alerts are identified by (alert_key, entity_ref), NOT by
+    """Regression: alerts are identified by (alert_key, entity_ref), NOT by
     message text. Two alerts for different entities that happen to share wording
     are both kept, and resolving one must not silently resolve the other. The
     old fuzzy message-text dedup collapsed them (and could even resolve an
@@ -1658,7 +1658,7 @@ async def test_modules_endpoint_rate_limited(auth_client):
     assert 429 in statuses             # limiter eventually trips
 
 
-# ── Security perimeter (post-review run 1) ────────────────────────────────────
+# ── Security perimeter ────────────────────────────────────────────────────────
 async def test_safe_next_rejects_offsite_targets():
     """safe_next confines the post-login redirect to a same-site path, including
     the backslash trick browsers normalise into a protocol-relative off-site URL."""

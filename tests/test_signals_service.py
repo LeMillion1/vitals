@@ -1,4 +1,4 @@
-"""T1 — the signals capture domain.
+"""The signals capture domain.
 
 The invariants worth guarding here are the ones that are expensive to discover
 later: the raw text surviving a broken parse, one phrase producing several rows,
@@ -83,7 +83,7 @@ async def test_bad_kind_or_missing_key_is_dropped_not_guessed(db_session):
     assert rows[0].value_num is None      # unparseable number dropped, row kept
 
 
-# ── D6: raw survives a broken parse ───────────────────────────────────────────
+# ── Raw survives a broken parse ───────────────────────────────────────────────
 async def test_raw_is_stored_even_when_the_parser_blows_up(db_session):
     def _explode(_text):
         raise RuntimeError("model timed out")
@@ -125,7 +125,7 @@ async def test_same_external_id_refreshes_one_raw_row(db_session):
     assert len(raws) == 1
 
 
-# ── D5 / шов 4: aliases fold on read ──────────────────────────────────────────
+# ── Aliases fold on read ──────────────────────────────────────────────────────
 async def test_alias_folds_on_read_without_touching_stored_rows(db_session):
     await svc.create_signals(
         db_session,
@@ -134,7 +134,7 @@ async def test_alias_folds_on_read_without_touching_stored_rows(db_session):
     )
     await db_session.commit()
 
-    # Stored exactly as written — the drift stays visible for прогон 7.
+    # Stored exactly as written — the drift stays visible for consolidation.
     stored = {r.key for r in (await db_session.execute(select(Signal))).scalars().all()}
     assert stored == {"sleepy", "sleepiness"}
 
@@ -184,7 +184,7 @@ async def test_misparse_leaves_charts_but_not_the_table(db_session):
     # Gone from the analysis reads…
     assert await svc.list_signals(db_session) == []
     assert await svc.key_frequency(db_session, include_misparse=False) == []
-    # …still on disk, with the raw text, as прогон-7 material.
+    # …still on disk, with the raw text, as material for consolidation.
     assert len((await db_session.execute(select(Signal))).scalars().all()) == 2
     assert len(await svc.key_frequency(db_session)) == 2
     assert len(await svc.list_signals(db_session, include_misparse=True)) == 2
@@ -297,7 +297,7 @@ async def test_a_parsed_message_is_marked_done_a_failed_one_stays_pending(db_ses
     assert done.processed_at is not None
 
 
-# ── B1: the parser-outage alert raises and clears (mirrors weight_service's
+# ── The parser-outage alert raises and clears (mirrors weight_service's
 # noise-alert raise/resolve — an alert that never clears itself just trains the
 # owner to ignore it) ───────────────────────────────────────────────────────────
 async def test_parser_failure_alert_raises_and_clears_on_recovery(db_session):

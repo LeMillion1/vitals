@@ -573,7 +573,7 @@ async def assemble_context(
     # before the HRV dip, a headache running through a week of bad sleep. Read
     # chronologically, because a narrative reads a period forward. Rows tapped
     # "не то" are excluded by the service — a misparse is not evidence, even
-    # though it stays on the table as material for the key revision (прогон 7).
+    # though it stays on the table as material for the key revision.
     from vitals.services import signals_service
 
     signals = await signals_service.list_signals(

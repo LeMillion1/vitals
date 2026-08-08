@@ -1,4 +1,4 @@
-"""MCP resources + canonical prompt (A13): vitals://profile,
+"""MCP resources + canonical prompt: vitals://profile,
 vitals://digest/latest, and the weekly_review prompt."""
 from __future__ import annotations
 

@@ -102,7 +102,7 @@ async def test_refresh_alerts_raises_and_resolves(db_session):
 
 async def test_out_of_range_alert_message_uses_localized_flag(db_session):
     """Regression: the raw ``critical_high`` enum must not leak into the alert
-    copy — the localized flag label is shown instead (U19)."""
+    copy — the localized flag label is shown instead."""
     # 700 in a [30, 400] range → critical_high (see compute_flag tests above).
     await labs_service.add_result(db_session, on_date=DAY, marker="Ferritin", value=700, ref_low=30, ref_high=400)
     await db_session.commit()
@@ -371,7 +371,7 @@ async def test_add_result_normalizes_marker_name(db_session):
 
 
 
-# ── Write-path validation (S2) ────────────────────────────────────────────────
+# ── Write-path validation ─────────────────────────────────────────────────────
 async def test_add_result_rejects_nameless_marker(db_session):
     with pytest.raises(ValueError):
         await labs_service.add_result(
@@ -415,7 +415,7 @@ async def test_ingest_skips_bad_row_and_keeps_the_rest(db_session):
     assert summary["created"] == 1 and summary["skipped"] == 1
 
 
-# ── An unparsed model reply still reaches raw_payloads (D2) ───────────────────
+# ── An unparsed model reply still reaches raw_payloads ───────────────────────
 async def test_unparsed_llm_reply_is_kept_verbatim():
     """``extract_json`` used to swallow a non-JSON reply and hand back ``{}``, so
     the row written to ``raw_payloads`` — advertised as the verbatim payload —

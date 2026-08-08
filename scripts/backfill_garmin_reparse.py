@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """Re-parse already-stored Garmin raw payloads with the current parser.
 
-Runs 1/4/5 of the Garmin capture expansion (sleep detail, intraday stress/
-Body Battery, minute-level sleep series) all read fields out of
+The Garmin capture expansion (sleep detail, intraday stress/Body Battery,
+minute-level sleep series) reads fields out of
 get_sleep_data/get_stress_data responses that Garmin was already sending in
 full — the old parser just discarded most of it. That means every day ever
 synced already has the raw JSON these fields need, sitting untouched in
-raw_payloads. Same story for an activity's elevation/power/training-effect
-(run 3): those are on the activity summary Garmin always returns, not the new
+raw_payloads. Same story for an activity's elevation/power/training-effect:
+those are on the activity summary Garmin always returns, not the new
 per-activity detail call. So all of that is recoverable for the *entire*
 history with zero new Garmin API calls — this script just re-runs
 ingest_daily/ingest_activities against the payload already on disk.
 
 NOT recovered here (need a live Garmin call, not just a reparse):
-  - training_status (run 2) — get_training_status was never fetched before
+  - training_status — get_training_status was never fetched before
     today, so it's simply absent from old raw payloads.
-  - per-activity hr_zone_seconds/splits (run 3) — need
+  - per-activity hr_zone_seconds/splits — need
     fetch_activity_details(activity_id), one call per historical activity.
 Backfilling those means a real resync (garmin_service.sync(days=N), or a
 purpose-built loop over historical activity ids) with the rate-limit caution

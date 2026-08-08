@@ -150,7 +150,7 @@ class TelegramNotifier:
 
 
 def build_notifier(config: Optional[Config] = None) -> Optional[Notifier]:
-    """The factory (шов 1). ``None`` = no channel configured — callers treat that
+    """The factory. ``None`` = no channel configured — callers treat that
     as "stay quiet", which is how the app behaves before the bot exists."""
     config = config or load_config()
     if config.telegram_bot_token and config.telegram_chat_id:

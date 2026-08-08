@@ -1,5 +1,5 @@
 {% from "partials/masthead.html" import card_header with context %}
-{# Proactive layer (прогон 6) — one card, one form, one save.
+{# Proactive layer — one card, one form, one save.
 
    Unlike every other card on this page these settings go to the DB, not .env:
    saving re-registers the scheduler jobs on the spot, so no restart banner and
@@ -8,7 +8,7 @@
 {% set p = proactive %}
 <div class="v-card v-setting-row p-6 space-y-5">
     {% call card_header(t("settings.proactive_title")) %}
-    {# U10: always-present id so the toggle_module OOB fragment (modules_oob.html)
+    {# Always-present id so the toggle_module OOB fragment (modules_oob.html)
        has something to swap into — an OOB target that doesn't already exist in the
        DOM is silently dropped by htmx, so the conditional lives inside the span,
        not around it. #}
@@ -95,7 +95,7 @@
             </div>
         </div>
 
-        <!-- ── Garmin poll schedule (U4) ───────────────────────────────── -->
+        <!-- ── Garmin poll schedule ──────────────────────────────────────── -->
         <div class="pt-4 space-y-2.5" style="border-top: 1px solid var(--line)">
             <span class="v-label">{{ t("settings.garmin_schedule_label") }}</span>
             <p class="v-text-micro" style="color: var(--muted)">{{ t("settings.garmin_schedule_hint") }}</p>
@@ -125,7 +125,7 @@
                 </div>
             </div>
 
-            {# The breaker from прогон 0 — the reason a tighter interval is safe. #}
+            {# The login breaker — the reason a tighter interval is safe. #}
             <div class="v-alert {% if breaker.paused %}warn{% else %}info{% endif %}">
                 {% if breaker.paused is none %}
                 {{ t("settings.breaker_unknown") }}

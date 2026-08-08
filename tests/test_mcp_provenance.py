@@ -1,4 +1,4 @@
-"""Rows written through the connector say so (D1).
+"""Rows written through the connector say so.
 
 Everything a conversation saved used to land as ``manual``, indistinguishable
 from a row typed into the web form — so "where did this come from?" had no

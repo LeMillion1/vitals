@@ -1,4 +1,4 @@
-"""T6 — the module switch and the settings that rebuild the schedule.
+"""The module switch and the settings that rebuild the schedule.
 
 Two guarantees, both invisible when they break:
 
@@ -34,7 +34,7 @@ class FakeNotifier:
         pass
 
 
-# ── U1: the module ────────────────────────────────────────────────────────────
+# ── The module ────────────────────────────────────────────────────────────────
 def test_signals_is_optional_and_off_by_default():
     spec = modules_service.MODULE_REGISTRY.get("signals")
     assert spec is not None
@@ -79,7 +79,7 @@ async def test_disabled_module_hides_the_page(client):
     assert r.headers.get("location", "") != "/signals"
 
 
-# ── U6: the page ──────────────────────────────────────────────────────────────
+# ── The page ──────────────────────────────────────────────────────────────────
 async def test_feed_shows_captured_rows_and_deletes_one(auth_client, db_session):
     rows = await signals_service.create_signals(
         db_session,
@@ -92,7 +92,7 @@ async def test_feed_shows_captured_rows_and_deletes_one(auth_client, db_session)
 
     page = (await auth_client.get("/signals")).text
     assert "headache" in page
-    # Stored as an alias, shown folded (шов 4).
+    # Stored as an alias, shown folded.
     assert "caffeine_late" in page
 
     r = await auth_client.post(f"/signals/{rows[0].id}/delete")
@@ -101,7 +101,7 @@ async def test_feed_shows_captured_rows_and_deletes_one(auth_client, db_session)
     assert all(s.id != rows[0].id for s in await signals_service.list_signals(db_session))
 
 
-# ── U2/U4: the settings ───────────────────────────────────────────────────────
+# ── The settings ──────────────────────────────────────────────────────────────
 def test_sanitize_clamps_whatever_arrives():
     """The HTML min/max are a courtesy; this is the guard."""
     clean = prefs.sanitize(
@@ -145,7 +145,7 @@ def test_switching_the_pulse_off_removes_the_job():
 
 
 async def test_saving_reschedules_without_a_restart(auth_client, db_session):
-    """The whole point of U5: the live scheduler is rebuilt in the same request."""
+    """The whole point: the live scheduler is rebuilt in the same request."""
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
     from web.main import app

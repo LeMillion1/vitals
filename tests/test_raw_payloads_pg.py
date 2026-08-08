@@ -93,7 +93,7 @@ async def test_structure_survives_the_roundtrip(db_session):
 
 
 async def test_unparsed_text_payload_is_storable(db_session):
-    """D2 (run 2) parks an unreadable model answer as ``{"_unparsed": raw}``;
+    """An unreadable model answer is parked as ``{"_unparsed": raw}``;
     JSONB must accept that shape and hand the text back intact."""
     raw = 'Не JSON: модель ответила текстом {"почти": '
     db_session.add(

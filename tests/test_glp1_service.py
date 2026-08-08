@@ -202,7 +202,7 @@ async def test_weight_chart_series_includes_glp1_phases(db_session):
     assert series["phases"][0]["dose_mg"] == 0.25
 
 
-# ── Write-path input validation (post-review run 1) ───────────────────────────
+# ── Write-path input validation ───────────────────────────────────────────────
 async def test_log_injection_rejects_nonpositive_dose(db_session):
     """A hallucinated non-positive dose from an MCP call is rejected cleanly at the
     service boundary, not left to surface as a raw DB IntegrityError."""

@@ -53,7 +53,7 @@ SERIES_STRESS = "stress"
 SERIES_BODY_BATTERY = "body_battery"
 SERIES_HEART_RATE = "heart_rate"
 
-# The night's series (run 5) — all seven ride in the one ``get_sleep_data``
+# The night's series — all seven ride in the one ``get_sleep_data``
 # payload the daily sync already downloads. Deliberately distinct from the
 # whole-day ``stress`` / ``body_battery`` curves above even where they overlap in
 # time: these come from a different endpoint at a different cadence, and a night
@@ -113,7 +113,7 @@ class GarminDaily(Base, InsightsMixin, TimestampMixin):
     body_battery_change: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     breathing_disruption: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     sleep_need_actual: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    # The night's two *interval* series (run 5). Unlike the point series in
+    # The night's two *interval* series. Unlike the point series in
     # ``garmin_intraday``, these are spans (start/end/what) — a couple of dozen a
     # night — so a JSONB column keeps them on the night's own row instead of
     # inventing a second tall table for ~20 rows.
@@ -178,7 +178,7 @@ class GarminActivity(Base, InsightsMixin, TimestampMixin):
     avg_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     max_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    # ── Per-activity detail (run 3) ───────────────────────────────────────────
+    # ── Per-activity detail ───────────────────────────────────────────────────
     # Scalars read from the activity summary; the two JSONB arrays come from the
     # best-effort per-activity detail calls (HR zones + splits). All nullable —
     # a strength session has no elevation/power/splits, an outdoor run does.
@@ -202,7 +202,7 @@ class GarminIntraday(Base, InsightsMixin, TimestampMixin):
     all.
 
     Deliberately tall/generic (``series_type`` + ``ts`` + ``value``) rather than a
-    wide row, which is what let run 5's nightly series join run 4's whole-day ones
+    wide row, which is what let the nightly series join the whole-day ones
     with no schema change at all. A day+series is rebuilt wholesale on re-import
     (delete then insert), which is why there's no unique constraint to upsert
     against.

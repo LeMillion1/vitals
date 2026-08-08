@@ -13,7 +13,7 @@ Three things this module is responsible for, in the order they matter:
    and picking one row out of three inside Telegram is misery. Pinpoint edits
    live on the ``/signals`` page instead.
 3. **Keys stay free — for now.** The owner's call: collect a month of real
-   phrasings, then consolidate (прогон 7). ``KEY_ALIASES`` is what keeps that
+   phrasings, then consolidate. ``KEY_ALIASES`` is what keeps that
    from being a migration: keys are stored as the parser wrote them and folded to
    a canonical name **on read**, so adding an alias silently fixes every chart and
    export at once. Nothing here needs to know the final registry.
@@ -49,9 +49,9 @@ PARSER_FAILED_ALERT_KEY = "signal_parser_failed"
 
 _VALID_KINDS = {k.value for k in SignalKind}
 
-# ── Шов 4: key aliases ────────────────────────────────────────────────────────
+# ── Key aliases ───────────────────────────────────────────────────────────────
 # alias (as some parse once wrote it) → canonical key. Applied on **read** only.
-# Grow this dict during the shake-out month; at the end of прогон 7 the registry
+# Grow this dict during the shake-out month; once consolidation happens the registry
 # gets closed and the parser is forbidden from inventing new keys. Until then the
 # stored value is left exactly as written so the drift stays visible.
 KEY_ALIASES: dict[str, str] = {
@@ -122,7 +122,7 @@ async def store_raw_text(
     parser. Stamped here rather than by the caller because it has to land in the
     same commit as the row itself.
 
-    Committed here rather than at the end of the request (B10), which is the only
+    Committed here rather than at the end of the request, which is the only
     thing that makes "parked" true: the very next step is a model call of 5-20
     seconds, and Telegram re-sends an update it hasn't been answered about. An
     uncommitted row is invisible to that retry, so it finds no trace of the first
@@ -223,7 +223,7 @@ async def ingest_text(
     on_date: Optional[date_type] = None,
     source: str = Source.TELEGRAM.value,
 ) -> list[Signal]:
-    """The one entry point for incoming free text (D6 + D7).
+    """The one entry point for incoming free text.
 
     Raw first, parse second — deliberately in that order and in *this* function
     rather than at the call site, so no future caller can get the order wrong.
@@ -426,7 +426,7 @@ async def key_frequency(
     end: Optional[date_type] = None,
     include_misparse: bool = True,
 ) -> list[KeyStat]:
-    """Canonical keys, most-used first — the прогон-7 raw material.
+    """Canonical keys, most-used first — the raw material for consolidating them.
 
     Counts default to **including** misparses: the point of this list is to see
     what the parser actually emits, mistakes included.

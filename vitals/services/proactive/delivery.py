@@ -65,7 +65,7 @@ def in_quiet_hours(
     at: time_type, *, start: time_type = QUIET_START, end: time_type = QUIET_END
 ) -> bool:
     """Is ``at`` inside the quiet window? Handles a window that wraps midnight,
-    because the settings card (прогон 6) lets the owner set exactly that."""
+    because the settings card lets the owner set exactly that."""
     if start == end:
         return False
     if start < end:
@@ -138,7 +138,7 @@ async def send(
         return None
     if not text.strip():
         return None
-    # The emergency switch (U1). Checked here because *every* outgoing message —
+    # The emergency switch. Checked here because *every* outgoing message —
     # brief, evening block, nudge, echo, reply, the test send from /reports —
     # passes through this one function; a guard per job would leak the ones that
     # aren't jobs.

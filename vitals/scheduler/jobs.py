@@ -18,7 +18,7 @@ from vitals.services.proactive import prefs
 
 
 def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
-    """Register every module's scheduled jobs from ``settings`` (прогон 6).
+    """Register every module's scheduled jobs from ``settings``.
 
     ``None`` → the defaults, which is what the app used before the settings card
     existed. Called at startup *and* on every settings save, so it clears the

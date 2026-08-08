@@ -134,7 +134,7 @@ async def _page(
         "nutrition_calories_max": read_key("VITALS_NUTRITION_CALORIES_MAX") or "1700",
         # Dashboard modules — ``module_registry`` is a Jinja global (templating.py).
         "enabled_modules": getattr(request.state, "enabled_modules", {}) or {},
-        # Proactive layer (прогон 6) — DB-backed, unlike everything above.
+        # Proactive layer — DB-backed, unlike everything above.
         "proactive": proactive,
         "week_template": await day_plan.get_week_template(db),
         "weekdays": day_plan.WEEKDAYS,
@@ -145,7 +145,7 @@ async def _page(
         "budget_range": prefs.BUDGET_RANGE,
         "sync_hours_range": prefs.SYNC_HOURS_RANGE,
         "pulse_range": prefs.PULSE_SECONDS_RANGE,
-        # The прогон-0 login breaker: how many credential logins today's poll
+        # The login breaker: how many credential logins today's poll
         # frequency has actually cost, right next to the field that sets it.
         "breaker": await login_breaker_state(redis),
     }
@@ -395,7 +395,7 @@ async def save_proactive(
     pulse_end_hour: int = Form(prefs.DEFAULTS["pulse_end_hour"]),
     nudges: list[str] = Form([]),
 ):
-    """Save the proactive settings **and rebuild the schedule on the spot** (U5).
+    """Save the proactive settings **and rebuild the schedule on the spot**.
 
     Everything else on this page writes ``.env`` and needs a restart; these are in
     the DB precisely so they don't. ``prefs.sanitize`` clamps whatever arrives —
@@ -434,7 +434,7 @@ async def save_proactive(
     # prefs.sanitize() (called inside set_prefs) silently clamps out-of-range
     # input — compare what was submitted to what actually got stored so the
     # user can be told, instead of seeing a plain "saved" while their number
-    # was quietly changed underneath them (U11).
+    # was quietly changed underneath them.
     adjusted = raw_prefs != settings
     return _redirect("?saved=proactive&adjusted=1" if adjusted else "?saved=proactive")
 
@@ -490,7 +490,7 @@ async def change_password(
 ):
     from web.auth import authenticate, clear_session_cookie, create_session, set_session_cookie
     from web.config import get_web_config
-    from web.security import hash_password
+    from vitals.utils.passwords import hash_password
 
     cfg = get_web_config()
 

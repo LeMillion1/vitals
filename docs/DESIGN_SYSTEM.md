@@ -163,7 +163,7 @@ upstream at all, so **`--display` names `'Inter'` immediately after it** — Lat
 and digits render in Bricolage, Russian falls to a font we actually ship instead
 of an arbitrary system font that differs per device. Never write a stack that
 goes straight from a display family to a generic (`sans-serif`, `system-ui`);
-`tests/test_review_run3.py` enforces it.
+`tests/test_ui_static_contracts.py` enforces it.
 
 No monospace typeface is loaded or used. `.font-mono` / `.tnum` force Inter with
 `font-variant-numeric: tabular-nums` and `cv01`/`ss01` feature settings, so

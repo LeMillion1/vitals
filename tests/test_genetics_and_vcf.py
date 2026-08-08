@@ -37,7 +37,7 @@ async def test_upsert_by_rsid_updates(db_session):
 
 
 async def test_duplicate_rsid_rejected(db_session):
-    """D2: the partial-unique index forbids two rows sharing a non-null rsID, so a
+    """The partial-unique index forbids two rows sharing a non-null rsID, so a
     re-import/re-add can't silently duplicate a variant."""
     from sqlalchemy.exc import IntegrityError
 
@@ -48,7 +48,7 @@ async def test_duplicate_rsid_rejected(db_session):
 
 
 async def test_null_rsid_rows_coexist(db_session):
-    """D2: the uniqueness is partial (WHERE rsid IS NOT NULL), so multiple manual
+    """The uniqueness is partial (WHERE rsid IS NOT NULL), so multiple manual
     rows without an rsID are still allowed."""
     await genetics_service.add_variant(db_session, gene="GeneA", rsid=None)
     await genetics_service.add_variant(db_session, gene="GeneB", rsid=None)

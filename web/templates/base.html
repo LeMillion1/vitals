@@ -51,7 +51,7 @@
         window.__LANG__ = "{{ request.state.lang|default('en') }}";
         window.t = function (key) { return window.__STRINGS__[key] || key; };
     </script>
-    <!-- In-place refresh after a save (U9). submitForm() in app/glp1/nutrition/
+    <!-- In-place refresh after a save. submitForm() in app/glp1/nutrition/
          protocol/labs_upload.js used to finish with window.location.href — a full
          document reload that always paints at the top, so the page visibly jumped
          up and then snapped back down once a load-time handler reapplied the saved
@@ -120,7 +120,7 @@
             });
         })();
     </script>
-    <!-- Chart palette bridge (U7): a <canvas> can't resolve CSS var(), so expose the
+    <!-- Chart palette bridge: a <canvas> can't resolve CSS var(), so expose the
          design-system tokens — read from :root at call time, after the stylesheet is
          applied — as resolved values every chart script shares. One source of truth,
          so app.js / labs.js / hevy.js / charts.js never drift from the palette. -->
@@ -330,7 +330,7 @@
          The position:fixed app shell (vitals.css) already removes the scrollable
          document, so iOS simply scrolls the inner <main> natively — no JS needed. -->
 
-    <!-- Render diagnostics (B2): a lightweight ring buffer of htmx lifecycle +
+    <!-- Render diagnostics: a lightweight ring buffer of htmx lifecycle +
          page-render state, kept in <head> so it survives hx-boost body swaps.
          The "tables/charts sometimes don't load, only a reload helps" bug could
          not be reproduced locally; this captures the real case in prod. When it
@@ -372,7 +372,7 @@
         })();
     </script>
 
-    <!-- Swap watchdog + self-heal (B2 follow-up): the belt-and-suspenders half of
+    <!-- Swap watchdog + self-heal: the belt-and-suspenders half of
          the "blank page until reload" fix. Turning off globalViewTransitions removes
          the main trigger, but a boosted swap can still be interrupted by other means
          (a JS error mid-settle, the tab going hidden). htmx:afterSwap is the earliest
@@ -574,7 +574,7 @@
             }, 5000);
         };
 
-        // Themed replacement for the native confirm() dialog (U11) — reuses the
+        // Themed replacement for the native confirm() dialog — reuses the
         // .v-backdrop/.v-modal/.v-btn-danger/.v-btn-ghost shell from
         // partials/conflict_modal.html so destructive confirms stay in the design
         // system. Modelled on vitalsToast above: look the element up fresh by id

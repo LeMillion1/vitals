@@ -1,4 +1,4 @@
-"""T5 — the nudge engine and the Garmin light pulse.
+"""The nudge engine and the Garmin light pulse.
 
 Three things here fail silently if nobody watches them:
 
@@ -141,7 +141,7 @@ async def test_garmin_silence_fires_after_two_days(db_session):
 
 
 async def test_garmin_silence_is_announced_once_per_episode(db_session):
-    """B9: the 24-hour cooldown alone re-sends the same sentence every morning for
+    """The 24-hour cooldown alone re-sends the same sentence every morning for
     as long as the watch stays unworn. It is only news once."""
     await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2))
     notifier = FakeNotifier()

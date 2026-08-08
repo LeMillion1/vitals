@@ -1,7 +1,7 @@
 """garmin_intraday — within-day stress / Body Battery sample series
 
 The first minute-level table in the project: everything Garmin until now was a
-day-level scalar. Tall and generic (series_type + ts + value) so run 5's sleep
+day-level scalar. Tall and generic (series_type + ts + value) so the sleep
 series (sleep_hr, sleep_spo2, …) reuse it by adding series_type values only,
 with no further migration. A day+series is rebuilt wholesale on re-import, so
 there is no unique constraint — the two extra indexes cover the read paths

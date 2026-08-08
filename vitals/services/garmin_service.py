@@ -588,7 +588,7 @@ async def ingest_activities(session: AsyncSession, activities: Sequence[dict]) -
         row.calories = _intish(raw.get("calories"))
         row.avg_hr = _intish(raw.get("averageHR"))
         row.max_hr = _intish(raw.get("maxHR"))
-        # Per-activity detail (run 3). Scalars are already on the summary; the two
+        # Per-activity detail. Scalars are already on the summary; the two
         # arrays come from the best-effort detail bundle merged under ``_details``.
         row.elevation_gain_m = _num(raw.get("elevationGain"))
         row.avg_power = _intish(raw.get("avgPower"))

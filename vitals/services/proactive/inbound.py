@@ -3,7 +3,7 @@
 Three inbound shapes, deliberately three code paths:
 
   * **a tap** (``callback_query``) — the "не то" undo, and the day-context answers
-    the evening block will ask for (прогон 4). Stateless: the button carries
+    the evening block will ask for. Stateless: the button carries
     everything needed in its payload, so a tap works days later.
   * **a question** — either a reply to one of our messages or a plain «почему hrv
     просел?». Answered from the message replied to — or, when nothing was
@@ -64,7 +64,7 @@ COMMAND_REPLY = (
 
 # How many already-used keys the parser is shown. Reusing an existing key is the
 # only thing keeping the open registry from drifting into 60 near-synonyms before
-# прогон 7 can consolidate it; the cap keeps the prompt small.
+# the registry can be consolidated; the cap keeps the prompt small.
 _KNOWN_KEYS_LIMIT = 40
 
 _PARSER_SYSTEM = """\
@@ -195,7 +195,7 @@ async def handle_update(
         logger.info("ignoring repeated update %s", external_id)
         return
 
-    # The emergency switch (U1) stops the expensive and the outgoing half — the
+    # The emergency switch stops the expensive and the outgoing half — the
     # model call and every reply — but not the ears. A message written while the
     # module is off still lands in the lake: "выключено" must not read as
     # "потерял", and the re-parse sweep picks the text up whenever it comes back
@@ -221,7 +221,7 @@ async def handle_update(
 
     if not enabled:
         # A slash command is addressed to the bot, not a fact about the day —
-        # same call B4 makes on the enabled path. Left unstamped it would sit in
+        # same call the enabled path makes. Left unstamped it would sit in
         # the queue until the module came back on and then cost a model call to
         # learn that «/start» holds no signals.
         await signals_service.store_raw_text(
@@ -268,8 +268,8 @@ async def _handle_callback(
     if data.startswith(CB_MISPARSE):
         batch_id = data[len(CB_MISPARSE):]
         changed = await signals_service.mark_misparse(session, batch_id)
-        # The rows stay, flagged: they are the material прогон 7 builds the key
-        # registry from — real mistakes, not remembered ones.
+        # The rows stay, flagged: they are the material the key registry gets
+        # built from — real mistakes, not remembered ones.
         toast = "Убрал из графиков" if changed else "Уже убрано"
     elif data.startswith(CB_CONTEXT):
         answered = await _apply_context(session, data)
@@ -295,7 +295,7 @@ async def _redraw(
     *,
     notifier: Notifier,
 ) -> None:
-    """The message that asked now says what was answered (U3).
+    """The message that asked now says what was answered.
 
     Without it a tap leaves nothing but a grey toast: the line still reads out the
     template's guess and the same keyboard still sits under it, which looks like

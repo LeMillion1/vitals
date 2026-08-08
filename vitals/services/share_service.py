@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain
 from vitals.models.share import SharedReport
+from vitals.utils.passwords import hash_password
 from vitals.utils.timeutils import now_local, today_local
 
 logger = logging.getLogger(__name__)
@@ -580,8 +581,6 @@ async def create_report(
     Returns the row **and the plaintext password**, which exists only in this
     return value — after this call there is nothing but the bcrypt hash.
     """
-    from web.security import hash_password
-
     snapshot = await build_snapshot(
         session,
         domains=domains,

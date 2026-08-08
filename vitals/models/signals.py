@@ -56,7 +56,7 @@ class Signal(Base, InsightsMixin, TimestampMixin):
         insights_index(__tablename__),
         # The undo unit: one incoming message → N rows → one "не то" tap.
         Index("ix_signals_batch", "batch_id"),
-        # Frequency screen (прогон 7) and per-key chart series.
+        # The key-frequency screen and per-key chart series.
         Index("ix_signals_key_date", "key", "date"),
     )
 
@@ -103,6 +103,6 @@ class DayContext(Base, InsightsMixin, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # e.g. {"remote": true, "gym": false, "load": "heavy"} — free-form on purpose,
-    # the question set is owner-editable in settings (прогон 6).
+    # the question set is owner-editable in settings.
     answers: Mapped[Any] = mapped_column(_JSON_TYPE, nullable=False, server_default=text("'{}'"))
     planned: Mapped[Optional[Any]] = mapped_column(_JSON_TYPE, nullable=True)

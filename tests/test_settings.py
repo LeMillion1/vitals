@@ -320,7 +320,7 @@ async def test_settings_change_password_takes_effect_live(auth_client, tmp_path,
     """After a password change the new password authenticates and the old one no
     longer does — in the same process, without a container restart."""
     from web.auth import authenticate
-    from web.security import hash_password
+    from vitals.utils.passwords import hash_password
 
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_AUTH_PASSWORD_HASH=old_hash\n", encoding="utf-8")
@@ -365,11 +365,11 @@ async def test_settings_restart_endpoint(auth_client, monkeypatch):
     assert killed[0] == (os.getpid(), 15)  # 15 is signal.SIGTERM
 
 
-# ── proactive settings — U10/U11 regressions ──────────────────────────────────
+# ── proactive settings regressions ────────────────────────────────────────────
 
 
 async def test_settings_save_proactive_flags_adjusted_values(auth_client):
-    """U11: prefs.sanitize() (called inside prefs.set_prefs) silently clamps
+    """prefs.sanitize() (called inside prefs.set_prefs) silently clamps
     out-of-range input. The redirect must say so instead of a bare "saved",
     or the user has no way to know their number was changed underneath them."""
     r = await auth_client.post(
@@ -411,7 +411,7 @@ async def test_settings_save_proactive_no_adjusted_flag_in_range(auth_client):
 
 
 async def test_settings_modules_toggle_updates_proactive_chip_oob(auth_client):
-    """U10: the proactive card's "module off" chip is populated once at the
+    """The proactive card's "module off" chip is populated once at the
     initial page load; toggling `signals` via /settings/modules (hx-swap="none"
     + OOB) must carry a fresh copy of the chip, or it goes stale until reload."""
     r = await auth_client.post("/settings/modules", data={"module": "signals", "enabled": "false"})

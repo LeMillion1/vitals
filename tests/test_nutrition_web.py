@@ -34,7 +34,7 @@ async def test_nutrition_dashboard_by_date_shows_that_days_meals_only(auth_clien
     # The day-specific table is empty (the meal only shows up in the unfiltered
     # "full history" list further down the page, which stays unaffected by ?date=).
     # empty_day isn't today, so the empty-state copy is the date-aware variant,
-    # not "no meals today" — in either UI shell (classic gained day-nav in Run 4).
+    # not "no meals today" — in either UI shell (the classic one has day-nav too).
     assert "В этот день приёмов нет." in r_empty.text
 
 

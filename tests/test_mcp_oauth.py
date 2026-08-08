@@ -363,7 +363,7 @@ async def test_session_token_rejected_as_mcp_bearer(client):
 
 async def test_mcp_middleware_typeerror_returns_500_not_hang():
     """A TypeError from the wrapped MCP app must produce a 500 JSON response, not a
-    silent no-response that leaves the client hanging (B3)."""
+    silent no-response that leaves the client hanging."""
     from web.routers.mcp import MCPAuthMiddleware
 
     async def _raising_app(scope, receive, send):
@@ -578,7 +578,7 @@ async def test_mcp_read_only_tools_execution(db_session, session_factory):
         assert garmin_data["daily_recovery"][0]["spo2_lowest"] == 91
         # New training-status column reflected automatically via serialize_row.
         assert garmin_data["daily_recovery"][0]["training_status"] == "PRODUCTIVE"
-        # Per-activity detail (run 3): scalar + JSONB columns serialize through.
+        # Per-activity detail: scalar + JSONB columns serialize through.
         assert len(garmin_data["activities"]) == 1
         act = garmin_data["activities"][0]
         assert act["training_effect_aerobic"] == 3.4
@@ -600,7 +600,7 @@ async def test_mcp_read_only_tools_execution(db_session, session_factory):
         mcp_router.get_session_factory = original_factory
 
 
-# ── Security hardening (post-review run 1) ────────────────────────────────────
+# ── Security hardening ────────────────────────────────────────────────────────
 async def test_oauth_code_single_use_rejects_reuse(auth_client, redis):
     """An authorization code is consumed atomically on first exchange; a second
     exchange with the same code is rejected (invalid_grant)."""

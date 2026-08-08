@@ -49,7 +49,7 @@ def test_handoff_uses_exact_surface_and_accent_tokens():
         # --surface (4.27 -> 4.70), same call as --violet below.
         "--bad: #EE7A60",
         "--cool: #6FB6C9",
-        # Lightened from the handoff's #B093D6 for AA text contrast (U2) —
+        # Lightened from the handoff's #B093D6 for AA text contrast —
         # the accessibility pass wins over the exact swatch.
         "--violet: #BCA4DC",
     ):
@@ -74,7 +74,7 @@ def test_masthead_title_and_metrics_share_one_hero_row():
     assert ".mh-hero-row" not in MASTHEAD_TEMPLATE
     assert '"title   metrics"' in MASTHEAD_CSS
     # The desktop H1 is the top step of the app's one type ladder. The masthead
-    # used to own a parallel --mh-text-* set; run 5 folded it in, so the size is
+    # used to own a parallel --mh-text-* set; that was folded in, so the size is
     # declared in vitals.css and only referenced here.
     assert "--text-hero: 36px" in TOKENS_CSS
     assert "font: 800 var(--text-hero)/.95" in MASTHEAD_CSS
@@ -177,7 +177,7 @@ def test_page_contracts_have_responsive_layout_rules():
     ):
         assert selector in TOKENS_CSS
     # Three rebuild points, not eight. 480/560/640/900/1024/1200 all folded into
-    # phone / tablet / desktop in run 5.
+    # phone / tablet / desktop.
     assert "@media (max-width: 1199px)" in TOKENS_CSS
     assert "@media (max-width: 767px)" in TOKENS_CSS
 

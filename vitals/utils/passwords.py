@@ -1,7 +1,9 @@
-"""Password hashing (bcrypt) — ported from Boxly's ``web/security.py``.
+"""Password hashing (bcrypt).
 
-Kept free of FastAPI imports so it is trivially unit-testable. Single-user app, so
-there's no JWT/typ machinery here — sessions are signed cookies (see ``auth.py``).
+Lives in the core because both the web layer (login, shared-report access) and
+``share_service`` need it — the core must never import ``web``. No FastAPI
+imports here, so it is trivially unit-testable. Single-user app, so there's no
+JWT/typ machinery — sessions are signed cookies (see ``web/auth.py``).
 """
 from __future__ import annotations
 

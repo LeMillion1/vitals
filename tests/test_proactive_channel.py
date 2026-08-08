@@ -1,4 +1,4 @@
-"""T2 — the delivery channel: the webhook door, the budget, and the echo loop.
+"""The delivery channel: the webhook door, the budget, and the echo loop.
 
 What's guarded here is everything that is silent when it breaks. A webhook that
 accepts a forged call, a retry that logs the same evening twice, a budget that
@@ -34,7 +34,7 @@ MORNING = datetime(2026, 7, 26, 9, 0)
 
 
 class FakeNotifier:
-    """A channel that records instead of sending (шов 1 in one screenful)."""
+    """A channel that records instead of sending — the seam in one screenful."""
 
     channel = "telegram"
 
@@ -844,7 +844,7 @@ async def test_quiet_hours_hold_nudges_but_not_the_times_he_set_himself(db_sessi
 
 
 def test_quiet_window_can_wrap_past_midnight():
-    """прогон 6 lets the owner set the window; 23:00–07:00 must not mean "never"."""
+    """Settings let the owner set the window; 23:00–07:00 must not mean "never"."""
     from datetime import time
 
     assert delivery.in_quiet_hours(time(23, 30), start=time(23, 0), end=time(7, 0))
