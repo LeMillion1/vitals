@@ -257,7 +257,8 @@ async def login_2fa(
     return response
 
 
-@router.get("/logout")
+# POST only: a GET logout is a link, and any page (or prefetcher) can point at it.
+# Both templates already submit a form — masthead.html and more.html.
 @router.post("/logout")
 async def logout(request: Request):
     response = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)

@@ -119,7 +119,9 @@ async def test_budget_matches_each_job_schedule():
     assert budgets["weekly_digest"] == 7 * 86400 + slack
 
 
-async def test_health_red_when_any_job_heartbeat_is_overdue(client, redis):
+# These read the job names out of /health, which only the owner is shown — hence
+# auth_client. The anonymous shape is checked in tests/test_web.py.
+async def test_health_red_when_any_job_heartbeat_is_overdue(auth_client, redis):
     async def noop(_factory, _redis):
         return None
 
@@ -130,18 +132,18 @@ async def test_health_red_when_any_job_heartbeat_is_overdue(client, redis):
     # keepalive and stayed green while every module job was dead.
     scheduler_mod.register_job("hevy_sync", noop, trigger="interval", hours=6)
 
-    body = (await client.get("/health")).json()
+    body = (await auth_client.get("/health")).json()
     assert body["status"] == "error"
     assert body["stale_jobs"] == ["hevy_sync"]
 
     # A fresh stamp for that job brings it back.
     await redis.set("scheduler:last_run:hevy_sync", str(now))
-    body = (await client.get("/health")).json()
+    body = (await auth_client.get("/health")).json()
     assert body["status"] == "ok"
     assert body["stale_jobs"] == []
 
 
-async def test_health_red_when_job_heartbeat_is_older_than_its_budget(client, redis):
+async def test_health_red_when_job_heartbeat_is_older_than_its_budget(auth_client, redis):
     async def noop(_factory, _redis):
         return None
 
@@ -151,6 +153,6 @@ async def test_health_red_when_job_heartbeat_is_older_than_its_budget(client, re
     # Last seen 9 hours ago — past the 6h schedule plus slack.
     await redis.set("scheduler:last_run:hevy_sync", str(now - 9 * 3600))
 
-    body = (await client.get("/health")).json()
+    body = (await auth_client.get("/health")).json()
     assert body["status"] == "error"
     assert "hevy_sync" in body["stale_jobs"]

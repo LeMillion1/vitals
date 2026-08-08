@@ -31,6 +31,11 @@ async def test_health_endpoint(client, redis):
     assert res_data["status"] == "ok"
     assert res_data["database"] == "ok"
     assert res_data["redis"] == "ok"
+    assert res_data["scheduler"] == "ok"
+    # Job ids name the modules this install runs — a stranger gets the verdict,
+    # not the diagnosis.
+    assert "stale_jobs" not in res_data
+    assert "scheduler_heartbeat_age_seconds" not in res_data
 
 
 async def test_unauthorized_redirects(client):

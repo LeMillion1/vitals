@@ -96,6 +96,11 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
+    # The third door, and the one that stayed open while the other two were shut:
+    # an anonymous GET /openapi.json listed every path in the app, which tells a
+    # stranger exactly which health modules this install runs. Nothing here is a
+    # public API — the schema has no audience.
+    openapi_url=None,
     # Resolve the enabled-module map once per request → request.state (read by
     # base.html nav and the require_module guards below).
     dependencies=[
@@ -235,6 +240,7 @@ async def module_disabled_handler(request: Request, exc: ModuleDisabled):
 
 @app.get("/health")
 async def health(
+    request: Request,
     db_session: AsyncSession = Depends(get_session),
     redis_client = Depends(get_redis)
 ):
@@ -272,13 +278,26 @@ async def health(
     scheduler_ok = stale_jobs is not None and not stale_jobs
     status_str = "ok" if (db_ok and redis_ok and scheduler_ok) else "error"
 
-    return {
+    body = {
         "status": status_str,
         "database": "ok" if db_ok else "down",
         "redis": "ok" if redis_ok else "down",
-        "scheduler_heartbeat_age_seconds": heartbeat_age,
-        "stale_jobs": stale_jobs or [],
+        "scheduler": "ok" if scheduler_ok else "stale",
     }
+
+    # Job ids name the modules this install runs (``hrt_reminders``,
+    # ``glp1_plateau``, ...), so a stranger must not read them. The endpoint still
+    # answers anonymously — hiding it behind require_auth would make external
+    # monitoring go quietly red — but the diagnosis is for the owner only. Read the
+    # cookie by hand rather than via Depends: absence must not raise.
+    from web.auth import read_session
+    from web.config import SESSION_COOKIE
+
+    if read_session(request.cookies.get(SESSION_COOKIE)) is not None:
+        body["scheduler_heartbeat_age_seconds"] = heartbeat_age
+        body["stale_jobs"] = stale_jobs or []
+
+    return body
 
 
 # ── Base redirection ──────────────────────────────────────────────────────────
