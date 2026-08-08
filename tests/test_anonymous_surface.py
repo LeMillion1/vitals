@@ -7,10 +7,14 @@ anything else joins it — which is how ``GET /openapi.json`` (122 paths, includ
 ``/glp1/injection`` and ``/hrt/*``, served to anyone who asked) stayed open for
 months while ``/docs`` and ``/redoc`` were shut.
 """
+import os
+
+import pytest
+from fastapi import HTTPException
 from fastapi.routing import APIRoute, iter_route_contexts
 
 from web.deps import require_auth
-from web.main import app
+from web.main import UPLOADS_DIR, app, serve_upload
 
 # (method, path) pairs that answer without a session cookie, each with the reason
 # it may. Anything not here MUST depend on require_auth.
@@ -43,6 +47,9 @@ ANONYMOUS_BY_DESIGN = {
 
 # Mounts and plain Starlette routes, which carry no FastAPI dependency chain to
 # inspect. ``/mcp`` authenticates every call itself (Bearer access token).
+# ``/static`` is site furniture the login page needs before anyone has a session;
+# the uploaded medical files that used to sit inside it are carved out by a real
+# guarded route above the mount — see ``serve_upload`` below.
 NON_API_BY_DESIGN = {"/static", "/mcp"}
 
 
@@ -83,3 +90,56 @@ async def test_the_schema_is_not_published(client):
     assert app.openapi_url is None
     for path in ("/openapi.json", "/docs", "/redoc"):
         assert (await client.get(path)).status_code == 404, path
+
+
+# ── Uploaded files ────────────────────────────────────────────────────────────
+# Lab sheets, InBody printouts and progress photos live under ``static/uploads``.
+# A random file name is not an access control, and the URL outlives the session.
+
+
+@pytest.fixture
+def an_uploaded_file():
+    """A real file in the uploads tree, removed again afterwards."""
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    name = "test_anonymous_surface_probe.txt"
+    path = os.path.join(UPLOADS_DIR, name)
+    with open(path, "wb") as fh:
+        fh.write(b"lab sheet bytes")
+    yield name
+    os.remove(path)
+
+
+async def test_an_uploaded_file_is_not_public(client, an_uploaded_file):
+    """No session, no file — whoever holds the link included."""
+    r = await client.get(f"/static/uploads/{an_uploaded_file}")
+    assert r.status_code == 401
+    assert b"lab sheet bytes" not in r.content
+
+    # Typed into a browser it lands on the login form, like any other page.
+    r = await client.get(
+        f"/static/uploads/{an_uploaded_file}", headers={"Accept": "text/html"}
+    )
+    assert r.status_code == 302
+    assert r.headers["location"].startswith("/login")
+
+
+async def test_the_owner_still_gets_the_file(auth_client, an_uploaded_file):
+    r = await auth_client.get(f"/static/uploads/{an_uploaded_file}")
+    assert r.status_code == 200
+    assert r.content == b"lab sheet bytes"
+    # Nothing left in the disk cache for the next person holding the device.
+    assert "no-store" in r.headers["cache-control"]
+
+
+async def test_the_route_is_matched_before_the_static_mount():
+    """Routes match in registration order: below the mount this guard is dead code."""
+    paths = [getattr(route, "path", None) for route in app.routes]
+    assert paths.index("/static/uploads/{key:path}") < paths.index("/static")
+
+
+async def test_climbing_out_of_the_uploads_tree_is_a_miss():
+    """``..`` in the key must not reach the rest of the filesystem."""
+    for key in ("../app.js", "../../main.py", "body/../../app.js"):
+        with pytest.raises(HTTPException) as excinfo:
+            await serve_upload(key)
+        assert excinfo.value.status_code == 404, key

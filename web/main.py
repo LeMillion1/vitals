@@ -6,12 +6,13 @@ Redis cache connection, and background APScheduler thread.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import AsyncExitStack, asynccontextmanager
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
@@ -27,6 +28,7 @@ from web.deps import (
     load_enabled_modules,
     load_language,
     load_nav_status,
+    require_auth,
     require_module,
 )
 from web.templating import STATIC_DIR, templates
@@ -115,7 +117,34 @@ app = FastAPI(
 add_csrf_origin_check(app)
 add_security_headers(app)
 
-# Mount static files
+# ── Uploaded files ───────────────────────────────────────────────────────────
+# Lab sheets, InBody printouts and progress photos are written under
+# ``static/uploads`` so they survive a rebuild on the same bind mount as the rest
+# of the assets — but they are the owner's medical records, not site furniture,
+# and the mount below hands anything in ``static`` to whoever asks. A random file
+# name is not an access control: the URL never expires, logging out does not
+# revoke it, and it outlives the session in history, caches and proxy logs.
+#
+# So this route claims the subtree ahead of the mount and puts the same session
+# guard on it as every page. It MUST stay above ``app.mount`` — routes match in
+# registration order, and the mount would swallow the prefix first.
+UPLOADS_DIR = os.path.realpath(os.path.join(STATIC_DIR, "uploads"))
+
+
+@app.get("/static/uploads/{key:path}", dependencies=[Depends(require_auth)])
+async def serve_upload(key: str):
+    path = os.path.realpath(os.path.join(UPLOADS_DIR, key))
+    # ``..`` (and any symlink out) resolves to somewhere else: a miss, not a read.
+    if not path.startswith(UPLOADS_DIR + os.sep) or not os.path.isfile(path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    # Never written to disk cache: the file is readable again on the next request,
+    # and a logged-out browser should keep nothing. Matches the service worker,
+    # which already refuses to cache this prefix.
+    return FileResponse(path, headers={"Cache-Control": "private, no-store"})
+
+
+# Mount static files — everything else under /static is public site furniture
+# (CSS, JS, fonts, icons), reachable before login because the login page needs it.
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
