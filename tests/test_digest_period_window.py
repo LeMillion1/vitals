@@ -267,6 +267,41 @@ async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session):
     assert trends["Ферритин"]["ref_low"] == 30.0
 
 
+async def test_a_long_window_carries_all_of_its_signals(db_session):
+    """The signals block is handed to the narrative as "the period, chronologically".
+    Read with the service's screen-sized default, a long window lost everything past
+    the 200th newest row — and the days it lost were the oldest ones, so the period
+    silently started later than its own header said."""
+    from vitals.models.signals import Signal
+
+    days, per_day = 30, 10
+    db_session.add_all(
+        [
+            Signal(
+                date=DAY - timedelta(days=i),
+                domain="signals",
+                source=Source.TELEGRAM.value,
+                kind="symptom",
+                key="headache",
+                batch_id=f"b{i}_{n}",
+                note=f"день {i}",
+            )
+            for i in range(days)
+            for n in range(per_day)
+        ]
+    )
+    await db_session.commit()
+
+    ctx = await digest_service.assemble_context(
+        db_session, on_date=DAY, period_days=days
+    )
+
+    assert len(ctx["signals"]) == days * per_day
+    assert ctx["signals"][0]["date"] == (DAY - timedelta(days=days - 1)).isoformat(), (
+        "the first day of the window, not the first day that survived the cut"
+    )
+
+
 async def test_brief_context_stays_a_single_day(db_session):
     """period_days=1 is the morning brief: no per-day series bolted onto it."""
     db_session.add(

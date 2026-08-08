@@ -297,14 +297,19 @@ async def _labs_block(session, ctx, stats, start, end, flagged_only) -> dict:
     a doctor has to go and look up."""
     from vitals.services import labs_service
 
-    rows = await labs_service.list_results(session, limit=2000)  # newest first
+    # Anchored at the window's end, not at "the newest results in the table": read
+    # the other way round, a report about last spring is filled by every draw taken
+    # since, and the markers it is actually about fall off the bottom of the cap.
+    # ponytail: the cap now limits how far *back* history reaches, which is all the
+    # two previous readings need.
+    rows = await labs_service.list_results(session, end=end, limit=2000)  # newest first
     by_marker: dict[str, list] = {}
     for r in rows:
         by_marker.setdefault(r.marker, []).append(r)
 
     markers = []
     for marker, history in by_marker.items():
-        current = next((r for r in history if start <= r.date <= end), None)
+        current = next((r for r in history if r.date >= start), None)
         if current is None:
             continue
         if flagged_only and not labs_service.is_out_of_range(current.flag):

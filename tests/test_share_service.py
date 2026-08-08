@@ -198,6 +198,50 @@ async def test_labs_carry_range_and_history_and_honour_flagged_only(db_session):
 
 
 @pytest.mark.asyncio
+async def test_labs_of_the_window_survive_a_bigger_history_after_it(db_session):
+    """The block read the newest results in the table and filtered by date after the
+    fact, so a report about a past window competed with everything drawn since. Past
+    a couple of thousand later results the section came back empty — a document that
+    says "every marker measured in the window" and carries none of them."""
+    db_session.add_all(
+        [
+            LabResult(
+                date=date(2026, 1, 5), domain="labs", source="manual",
+                marker="Ферритин", value=31.0, unit="нг/мл", ref_low=30, ref_high=400,
+                flag="normal",
+            ),
+            LabResult(
+                date=date(2026, 3, 10), domain="labs", source="manual",
+                marker="Ферритин", value=18.0, unit="нг/мл", ref_low=30, ref_high=400,
+                flag="low",
+            ),
+        ]
+    )
+    db_session.add_all(
+        [
+            LabResult(
+                date=END + timedelta(days=1 + i // 40), domain="labs", source="manual",
+                marker=f"Маркер {i:04d}", value=1.0, flag="normal",
+            )
+            for i in range(2000)
+        ]
+    )
+    await db_session.flush()
+
+    snap = await share_service.build_snapshot(
+        db_session, domains=[Domain.LABS.value],
+        period_start=START, period_end=END, enabled=ALL_ON,
+    )
+
+    markers = {m["marker"]: m for m in snap["blocks"]["labs"]["markers"]}
+    assert list(markers) == ["Ферритин"], "the window's marker, and nothing from after it"
+    assert markers["Ферритин"]["value"] == 18.0
+    assert [p["value"] for p in markers["Ферритин"]["history"]] == [31.0], (
+        "the earlier reading is still found behind the window"
+    )
+
+
+@pytest.mark.asyncio
 async def test_empty_domain_draws_no_section(db_session):
     snap = await share_service.build_snapshot(
         db_session, domains=[Domain.WEIGHT.value, Domain.LABS.value],

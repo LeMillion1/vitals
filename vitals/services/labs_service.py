@@ -373,12 +373,20 @@ async def update_result(
 
 
 async def list_results(
-    session: AsyncSession, *, marker: Optional[str] = None, limit: int = 200
+    session: AsyncSession,
+    *,
+    marker: Optional[str] = None,
+    end: Optional[date_type] = None,
+    limit: int = 200,
 ) -> Sequence[LabResult]:
+    """Newest first. ``end`` anchors the read at a date instead of at "now", so a
+    report about a past window is not filled by results drawn after it."""
     stmt = select(LabResult)
     if marker is not None:
         marker = normalize_marker(marker)
         stmt = stmt.where(LabResult.marker == marker)
+    if end is not None:
+        stmt = stmt.where(LabResult.date <= end)
     stmt = stmt.order_by(LabResult.date.desc(), LabResult.id.desc()).limit(limit)
     result = await session.execute(stmt)
     return result.scalars().all()

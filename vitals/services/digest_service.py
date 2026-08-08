@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 # cross-domain digest runs 8-10k chars, so leave headroom for both.
 _DIGEST_MAX_TOKENS = 16000
 
+# Row budget per day of window for the signals block. The service's own default
+# (200) is a screen's worth; a 90-day window quietly lost everything older than
+# the 200th newest row while the block still read as the whole period.
+# ponytail: a budget, not "all rows" — raise it if a day ever produces more.
+_SIGNALS_PER_DAY = 50
+
 DIGEST_SYSTEM = """\
 Ты пишешь периодический разбор для пользователя дашборда здоровья Vitals.
 
@@ -395,7 +401,9 @@ async def assemble_context(
     # exists to say out loud. One query, grouped in memory — the per-marker history
     # read is a query each and there are dozens of markers.
     marker_rows: dict[str, list] = {}
-    for r in await labs_service.list_results(session, limit=1000):  # newest first
+    # Same anchoring as the doctor report: a trend for this period is drawn from
+    # results that existed by its end, not from whatever is newest in the table.
+    for r in await labs_service.list_results(session, end=period_end, limit=1000):
         marker_rows.setdefault(r.marker, []).append(r)
     ctx["labs"]["trends"] = [
         {
@@ -568,7 +576,9 @@ async def assemble_context(
     # though it stays on the table as material for the key revision (прогон 7).
     from vitals.services import signals_service
 
-    signals = await signals_service.list_signals(session, start=since, end=period_end)
+    signals = await signals_service.list_signals(
+        session, start=since, end=period_end, limit=period_days * _SIGNALS_PER_DAY
+    )
     ctx["signals"] = [signal_row(s) for s in reversed(signals)] or None
 
     from vitals.services import milestones_service
@@ -613,6 +623,7 @@ async def assemble_context(
     if period_days > 1:
         by_date_workout = {s["date"]: s for s in sessions if s["in_period"]}
         by_date_day = {r.date: r for r in day_rows}
+        by_date_garmin = {r.date: r for r in garmin_rows}  # one row per date
         by_date_weight = {x.date: x for x in weights}
         meals_by_date: dict = {}
         for meal in all_meals:
@@ -624,7 +635,7 @@ async def assemble_context(
         ctx["days"] = []
         for i in range(period_days):
             d = period_start + timedelta(days=i)
-            g_row = next((r for r in garmin_rows if r.date == d), None)
+            g_row = by_date_garmin.get(d)
             meals = meals_by_date.get(d) or []
             day_row = by_date_day.get(d)
             workout = by_date_workout.get(d.isoformat())
