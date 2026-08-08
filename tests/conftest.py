@@ -134,16 +134,38 @@ def _reset_engine_registries():
     scheduler_mod.clear_jobs()
 
 
+_SQLITE_SCHEMA_READY = False
+
+
+def _empty_every_table(conn) -> None:
+    """Delete all rows, children first — the cheap way back to a blank database.
+
+    Dropping and recreating 42 tables costs ~160 ms per test, which was most of
+    this suite's wall time. Emptying them is ~15 ms and isolates tests just as
+    well: no model uses ``AUTOINCREMENT``, so SQLite hands out ids from 1 again
+    once a table is empty.
+    """
+    for table in reversed(Base.metadata.sorted_tables):
+        conn.execute(table.delete())
+
+
 @pytest_asyncio.fixture
 async def db_session():
+    global _SQLITE_SCHEMA_READY
     async with TEST_ENGINE.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        if "sqlite" not in TEST_DATABASE_URL:
+            # Postgres runs one connection per test (NullPool), so the schema does
+            # not survive between them — keep recreating it there.
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        elif _SQLITE_SCHEMA_READY:
+            await conn.run_sync(_empty_every_table)
+        else:
+            await conn.run_sync(Base.metadata.create_all)
+            _SQLITE_SCHEMA_READY = True
     factory = async_sessionmaker(TEST_ENGINE, expire_on_commit=False, class_=AsyncSession)
     async with factory() as session:
         yield session
-    async with TEST_ENGINE.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
 
 
 @pytest_asyncio.fixture

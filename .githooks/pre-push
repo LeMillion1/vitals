@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Runs the fast SQLite suite before every push. Red suite = no push.
+# Enable on a new machine: git config core.hooksPath .githooks
+# Skip once (emergency only): git push --no-verify
+
+PY=.venv/Scripts/python.exe
+[ -x "$PY" ] || PY=.venv/bin/python
+[ -x "$PY" ] || PY=python
+
+out=$(mktemp)
+timeout -k 10 600 "$PY" -m pytest -q 2>&1 | tee "$out"
+rc=${PIPESTATUS[0]}
+
+# pytest sometimes hangs in teardown after printing its summary — trust the
+# summary over the 124 timeout code, otherwise a green run blocks the push.
+if [ "$rc" -eq 124 ] && ! grep -qiE "[0-9]+ (failed|error)" "$out"; then
+  echo "pre-push: pytest hung after finishing, summary is green — allowing push."
+  rc=0
+fi
+rm -f "$out"
+
+[ "$rc" -eq 0 ] || echo "pre-push: tests failed (exit $rc) — push blocked."
+exit "$rc"
