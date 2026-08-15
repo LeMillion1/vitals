@@ -28,7 +28,6 @@ from vitals.i18n import t
 from vitals.integrations.garmin_client import login_breaker_state
 from vitals.services import (
     data_portability_service,
-    garmin_weight_service,
     language_service,
     modules_service,
     twofa_service,
@@ -124,7 +123,6 @@ async def _page(
         # Garmin
         "garmin_email": read_key("VITALS_GARMIN_EMAIL"),
         "garmin_password_set": bool(read_key("VITALS_GARMIN_PASSWORD")),
-        "garmin_weight_export": await garmin_weight_service.get_status(db),
         # MCP
         "mcp_client_id": read_key("VITALS_MCP_CLIENT_ID") or "vitals-claude-connector",
         "mcp_client_secret_set": bool(read_key("VITALS_MCP_CLIENT_SECRET")),
@@ -260,10 +258,8 @@ async def save_hevy(
 async def save_garmin(
     request: Request,
     username: str = Depends(require_auth),
-    db: AsyncSession = Depends(get_session),
     garmin_email: str = Form(""),
     garmin_password: str = Form(""),
-    garmin_weight_export_enabled: bool = Form(False),
 ):
     updates: dict[str, str] = {}
     if garmin_email.strip():
@@ -273,8 +269,6 @@ async def save_garmin(
 
     if updates:
         write_keys(updates)
-    await garmin_weight_service.set_enabled(db, garmin_weight_export_enabled)
-    await db.commit()
     return _redirect("?saved=garmin")
 
 
@@ -619,3 +613,4 @@ async def restart_container(
 
     asyncio.create_task(shutdown())
     return JSONResponse(content={"status": "restarting"})
+

@@ -35,9 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date as date_type
-from datetime import datetime
 from typing import Any, Optional
-from zoneinfo import ZoneInfo
 
 from vitals.config import Config, load_config
 
@@ -322,44 +320,6 @@ class GarminClient:
                 return {}
 
         return await asyncio.to_thread(_blocking)
-
-    # ── Weight writes ──────────────────────────────────────────────────────────
-    # Unlike the broad daily fetch above, these calls intentionally propagate
-    # upstream failures.  The outbox service needs to distinguish a confirmed
-    # write from one it must reconcile on the next attempt.
-    async def fetch_daily_weigh_ins(self, on_date: date_type) -> dict:
-        """Individual weigh-ins Garmin currently stores for ``on_date``."""
-        garmin = await self._ensure_login()
-        result = await asyncio.to_thread(garmin.get_daily_weigh_ins, on_date.isoformat())
-        return result or {}
-
-    async def add_weigh_in(self, weight_kg: float, measured_at: datetime) -> Any:
-        """Create a manual Garmin weigh-in at a local wall-clock moment.
-
-        ``garminconnect`` accepts an ISO timestamp and performs the web request;
-        attaching the configured zone here prevents a UTC container from moving
-        a late-evening measurement onto the wrong Garmin calendar day.
-        """
-        garmin = await self._ensure_login()
-        zone = ZoneInfo(self._config.timezone)
-        if measured_at.tzinfo is None:
-            measured_at = measured_at.replace(tzinfo=zone)
-        else:
-            measured_at = measured_at.astimezone(zone)
-        timestamp = measured_at.isoformat(timespec="seconds")
-        return await asyncio.to_thread(
-            garmin.add_weigh_in,
-            float(weight_kg),
-            unitKey="kg",
-            timestamp=timestamp,
-        )
-
-    async def delete_weigh_in(self, sample_pk: str, on_date: date_type) -> Any:
-        """Delete one known Garmin weigh-in by its opaque ``samplePk``."""
-        garmin = await self._ensure_login()
-        return await asyncio.to_thread(
-            garmin.delete_weigh_in, sample_pk, on_date.isoformat()
-        )
 
     async def fetch_activities(self, start: date_type, end: date_type) -> list[dict]:
         """Recorded activities between ``start`` and ``end`` (inclusive)."""

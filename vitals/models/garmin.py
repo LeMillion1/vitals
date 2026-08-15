@@ -1,6 +1,6 @@
 """Module 6 — Garmin activity & recovery.
 
-The three metric tables carry ``domain='garmin'`` via ``InsightsMixin``:
+Three tables, all ``domain='garmin'`` via ``InsightsMixin``:
 
   * ``garmin_daily`` — one wide row per calendar date holding the day's recovery
     and activity metrics (sleep, HRV, RHR, stress, Body Battery, steps, calories,
@@ -16,22 +16,13 @@ The three metric tables carry ``domain='garmin'`` via ``InsightsMixin``:
     respiration, stress, Body Battery, HRV and movement. One row per sample, tall
     and generic rather than a column per series, so a new series is a new
     ``series_type`` value and never a migration.
-
-``garmin_weight_exports`` is deliberately separate from the metric lake.  It is
-an outbox: one row per local calendar date records the desired weight and the
-remote Garmin record (if this app created one), making outbound writes
-retryable and corrections safe.
 """
 from __future__ import annotations
 
-from datetime import date as date_type
 from datetime import datetime
 from typing import Any, Optional
 
 from sqlalchemy import (
-    Boolean,
-    CheckConstraint,
-    Date,
     JSON,
     DateTime,
     Float,
@@ -39,9 +30,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
-    Text,
     UniqueConstraint,
-    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -88,11 +77,6 @@ SLEEP_SERIES_TYPES = (
     SERIES_SLEEP_HRV,
     SERIES_SLEEP_MOVEMENT,
 )
-
-WEIGHT_EXPORT_PENDING = "pending"
-WEIGHT_EXPORT_SENT = "sent"
-WEIGHT_EXPORT_FAILED = "failed"
-WEIGHT_EXPORT_SKIPPED = "skipped"
 
 
 class GarminDaily(Base, InsightsMixin, TimestampMixin):
@@ -248,48 +232,3 @@ class GarminIntraday(Base, InsightsMixin, TimestampMixin):
     # Local naive wall-clock moment of the sample (Garmin ships epoch ms).
     ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     value: Mapped[float] = mapped_column(Float, nullable=False)
-
-
-class GarminWeightExport(Base, TimestampMixin):
-    """Transactional outbox for local weight writes to Garmin Connect.
-
-    There is one row per date rather than per ``WeightLog`` revision.  When the
-    active local value for a date changes, the same outbox row retains the
-    ``remote_sample_pk`` needed to replace only a Garmin entry that Vitals owns.
-    """
-
-    __tablename__ = "garmin_weight_exports"
-    __table_args__ = (
-        UniqueConstraint("date", name="uq_garmin_weight_exports_date"),
-        CheckConstraint(
-            "weight_kg > 0", name="ck_garmin_weight_exports_weight_positive"
-        ),
-        Index("ix_garmin_weight_exports_status_next", "status", "next_attempt_at"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    date: Mapped[date_type] = mapped_column(Date, nullable=False)
-    weight_log_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("weight_logs.id", ondelete="SET NULL"), nullable=True, index=True
-    )
-    weight_kg: Mapped[float] = mapped_column(Float, nullable=False)
-    # Local naive wall-clock time; Garmin's client converts it with Config.timezone.
-    measured_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, server_default=WEIGHT_EXPORT_PENDING
-    )
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    exported_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-
-    # ``samplePk`` is opaque in our code even when Garmin currently emits a number.
-    remote_sample_pk: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    remote_weight_kg: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    # True only when the record was observed after our own POST.  Corrections may
-    # delete an owned record, but never a pre-existing/manual Garmin record.
-    remote_owned: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("false")
-    )
-    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

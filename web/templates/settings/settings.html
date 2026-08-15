@@ -287,38 +287,6 @@
                            autocomplete="new-password">
                 </div>
             </div>
-
-            <div class="pt-4 space-y-3" style="border-top: 1px solid var(--line)">
-                <div class="v-module-row">
-                    <div class="space-y-1" style="padding-right: 1rem">
-                        <label for="s-garmin-weight-export" class="v-label">
-                            {{ t("settings.garmin_weight_export_label") }}
-                        </label>
-                        <p class="v-text-micro" style="color: var(--muted)">
-                            {{ t("settings.garmin_weight_export_hint") }}
-                        </p>
-                    </div>
-                    <label class="v-switch">
-                        <input id="s-garmin-weight-export" type="checkbox" role="switch"
-                               name="garmin_weight_export_enabled"
-                               {% if garmin_weight_export.enabled %}checked{% endif %}>
-                        <span class="v-switch-track"><span class="v-switch-thumb"></span></span>
-                    </label>
-                </div>
-
-                {% if garmin_weight_export.enabled %}
-                <div class="v-alert {% if garmin_weight_export.status == 'failed' %}warn{% else %}info{% endif %}"
-                     {% if garmin_weight_export.status == 'sent' %}style="background: var(--good-soft); border-color: var(--good); color: var(--good-strong)"{% endif %}>
-                    {% if garmin_weight_export.status %}
-                    {{ t("settings.garmin_weight_status." + garmin_weight_export.status,
-                         date=garmin_weight_export.date,
-                         weight="%.1f"|format(garmin_weight_export.weight_kg)) }}
-                    {% else %}
-                    {{ t("settings.garmin_weight_status.empty") }}
-                    {% endif %}
-                </div>
-                {% endif %}
-            </div>
             <div class="flex justify-end pt-1">
                 <button type="submit" class="v-btn text-xs">{{ t("settings.save_garmin") }}</button>
             </div>

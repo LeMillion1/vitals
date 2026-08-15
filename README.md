@@ -207,12 +207,11 @@ Vitals написан с Claude в качестве основного инст�
 <details>
 <summary><strong>⌚ 5. Garmin Connect</strong></summary>
 
-- **Модели**: `GarminDaily`, `GarminActivity`, `GarminIntraday`, `GarminWeightExport`
+- **Модели**: `GarminDaily`, `GarminActivity`, `GarminIntraday`
 - Автосинк: сон, фазы сна, HRV (вариабельность пульса), пульс покоя, стресс, Body Battery, Training Readiness + внутридневные кривые стресса и Body Battery
 - Сессия `garminconnect` (библиотека пиновая — 0.3.7): токены в Redis + бэкап на диск, том с токенами попадает в `backup.sh` рядом с дампом БД
 - **Предохранитель логина**: вход по паролю рационируется (3 раза в 24 ч, потом пауза 6 ч, счётчики в Redis) — Garmin блокирует аккаунт за частые попытки, и каждый ретрай продлевает блок. Живой токен предохранителя не касается; MFA и «залогинились слишком часто» различаются в алертах
 - Расписание опроса — не в `.env`, а на карточке «Проактивный слой» в `/settings`: интервал полного синка + лёгкий пульс (шаги за сегодня) между ними, применяется без перезапуска контейнера
-- **Вес обратно в Garmin (opt-in)** — переключатель на карточке Garmin раз в 15 минут отправляет только самое свежее прямое измерение за последние 30 дней. Перед записью Vitals сверяет отдельные взвешивания, поэтому повторный запуск и потерянный ответ не создают дубль; при коррекции удаляется только запись, ранее созданная самим Vitals. История не переносится, импорт Garmin обратно не отправляется. Запись идёт через неофициальный web API `garminconnect`, поэтому функция по умолчанию выключена
 - Полностью переработанный раздел сна с детализированной страницей каждой ночи
 - Резервный канал: импорт JSON-экспортов из Health Auto Export
 </details>
@@ -973,12 +972,11 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 <details>
 <summary><strong>⌚ 5. Garmin Connect</strong></summary>
 
-- **Models**: `GarminDaily`, `GarminActivity`, `GarminIntraday`, `GarminWeightExport`
+- **Models**: `GarminDaily`, `GarminActivity`, `GarminIntraday`
 - Auto-sync: sleep, sleep stages, HRV, resting HR, stress, Body Battery, Training Readiness + intraday stress / Body Battery curves
 - `garminconnect` session (pinned to 0.3.7): tokens cached in Redis + disk backup, and the token volume is archived by `backup.sh` next to the SQL dump
 - **Login breaker**: credential logins are rationed (3 per 24h, then a 6h pause, both in Redis) — Garmin rate-limits logins per account and every retry extends the block. A healthy token never touches it; MFA and "throttled" are reported apart from bad credentials
 - The poll schedule is not an env var: the full-sync interval and the light pulse (today's steps) between syncs live on the "Proactive layer" card in `/settings` and apply without a container restart
-- **Weight back to Garmin (opt-in)** — a switch on the Garmin card sends only the latest direct measurement from the last 30 days every 15 minutes. Vitals reads individual weigh-ins before writing, so reruns and lost responses do not blindly duplicate a value; a correction deletes only a record previously created by Vitals. History is not backfilled and Garmin imports are never echoed. The write path uses `garminconnect`'s unofficial web API, so it is off by default
 - Fully reworked sleep analysis with detailed individual night pages
 - Fallback: direct Health Auto Export JSON import
 </details>
