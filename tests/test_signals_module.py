@@ -133,6 +133,7 @@ def test_settings_rebuild_the_job_triggers():
     assert registry["daily_brief"].trigger_kwargs == {"hour": "7-12", "minute": 30}
     assert registry["evening_block"].trigger_kwargs == {"hour": 22, "minute": 15}
     assert registry["garmin_sync"].trigger_kwargs == {"hour": "*/4", "minute": 0}
+    assert registry["garmin_weight_export"].trigger_kwargs == {"minutes": 15}
 
 
 def test_switching_the_pulse_off_removes_the_job():

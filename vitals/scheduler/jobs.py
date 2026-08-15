@@ -31,6 +31,10 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.glp1_service import plateau_job
     from vitals.services.hevy_service import sync_job as hevy_sync_job
     from vitals.services.garmin_service import sync_job as garmin_sync_job
+    from vitals.services.garmin_weight_service import (
+        EXPORT_INTERVAL_MINUTES,
+        export_job as garmin_weight_export_job,
+    )
     from vitals.services.digest_service import digest_job
     from vitals.services.nutrition_service import day_end_job as nutrition_day_end_job
     from vitals.services.hrt_reminders import reminders_job as hrt_reminders_job
@@ -115,6 +119,17 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         trigger="cron",
         hour=f"*/{settings['garmin_sync_hours']}",
         minute=0,
+    )
+
+    # Outbound weight sync is a separate opt-in outbox. The job always exists so
+    # the DB-backed switch applies without rebuilding the schedule; while off it
+    # returns before constructing a Garmin client or touching the network.
+    register_job(
+        "garmin_weight_export",
+        garmin_weight_export_job,
+        trigger="interval",
+        minutes=EXPORT_INTERVAL_MINUTES,
+        lock_ttl=180,
     )
 
     # Morning brief — 11:00 local by default. Syncs Garmin itself first (last

@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — outbound Garmin weight sync
+
+- **Explicit opt-in in Settings** — Vitals can now send the latest direct local weight (manual, MCP, or body-composition scan) to Garmin Connect every 15 minutes. It never echoes a Garmin import and never backfills the full history; only a measurement from the last 30 days is eligible.
+- **Transactional outbox** (`GarminWeightExport`, migration `0033`) — local saves remain independent of Garmin availability. Failed writes retry with exponential backoff, while the Settings card shows queued/sent/failed state and a persistent warning surfaces integration errors.
+- **Read-before-write idempotency** — individual Garmin weigh-ins are checked before every POST, including after an ambiguous timeout, so an accepted request is not blindly repeated. Same-day corrections replace only a remote `samplePk` that Vitals observed after its own POST; pre-existing Garmin entries are never deleted.
+- This uses the same pinned, **unofficial** `garminconnect` web session as inbound sync. Garmin can change that private endpoint; the feature is off by default and has no official API guarantee.
+
 ### Added — Optional two-factor sign-in (TOTP)
 
 - **Two-step login** (`web/auth.py`) — with 2FA on, a correct password no longer completes anything: it hands the browser a short-lived pending handle that grants no access, and the session is minted only at `/login/2fa` after a valid code. The handle is signed with its own salt (`vitals-2fa`), alongside the session and MCP salts, so it can never be presented where a real session is expected. The code field auto-submits at six digits.

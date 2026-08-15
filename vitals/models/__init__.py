@@ -36,7 +36,12 @@ from vitals.models.skincare import SkincareLog, SkincareObservation, SkincarePro
 from vitals.models.hevy import HevyWorkout, HevyExercise, HevySet
 
 # Module 6 — Garmin activity & recovery.
-from vitals.models.garmin import GarminDaily, GarminActivity, GarminIntraday
+from vitals.models.garmin import (
+    GarminActivity,
+    GarminDaily,
+    GarminIntraday,
+    GarminWeightExport,
+)
 
 # Module 7 — Lab results & parser.
 from vitals.models.labs import LabResult, LabMarker
@@ -100,6 +105,7 @@ __all__ = [
     "GarminDaily",
     "GarminActivity",
     "GarminIntraday",
+    "GarminWeightExport",
     "LabResult",
     "LabMarker",
     "MealLog",

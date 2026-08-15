@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -208,15 +209,19 @@ async def test_settings_save_hevy(auth_client, tmp_path, monkeypatch):
     assert "VITALS_HEVY_API_KEY=hevy_abc123" in content
 
 
-async def test_settings_save_garmin(auth_client, tmp_path, monkeypatch):
-    """POST /settings/garmin writes email and password."""
+async def test_settings_save_garmin(auth_client, db_session, tmp_path, monkeypatch):
+    """POST /settings/garmin writes credentials and the runtime export opt-in."""
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_GARMIN_EMAIL=\nVITALS_GARMIN_PASSWORD=\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
 
     r = await auth_client.post(
         "/settings/garmin",
-        data={"garmin_email": "user@example.com", "garmin_password": "hunter2"},
+        data={
+            "garmin_email": "user@example.com",
+            "garmin_password": "hunter2",
+            "garmin_weight_export_enabled": "on",
+        },
     )
     assert r.status_code == 303
     assert "saved=garmin" in r.headers["location"]
@@ -224,6 +229,14 @@ async def test_settings_save_garmin(auth_client, tmp_path, monkeypatch):
     content = env_file.read_text(encoding="utf-8")
     assert "VITALS_GARMIN_EMAIL=user@example.com" in content
     assert "VITALS_GARMIN_PASSWORD=hunter2" in content
+
+    from vitals.services import garmin_weight_service
+
+    assert await garmin_weight_service.is_enabled(db_session) is True
+
+    page = await auth_client.get("/settings", headers={"Accept": "text/html"})
+    assert 'name="garmin_weight_export_enabled"' in page.text
+    assert re.search(r'name="garmin_weight_export_enabled"\s+checked', page.text)
 
 
 async def test_settings_save_mcp(auth_client, tmp_path, monkeypatch):
@@ -423,4 +436,3 @@ async def test_settings_modules_toggle_updates_proactive_chip_oob(auth_client):
     r = await auth_client.post("/settings/modules", data={"module": "signals", "enabled": "true"})
     assert r.status_code == 200
     assert '<span id="proactive-off-chip" hx-swap-oob="true"></span>' in r.text
-
