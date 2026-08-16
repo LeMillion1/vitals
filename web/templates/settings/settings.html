@@ -32,7 +32,7 @@
     {% elif saved == 'password' %}
     <div class="v-alert info">{{ t("settings.saved.password") }}</div>
     {% elif saved == 'restart' %}
-    <div class="v-alert info" style="background: var(--good-soft); border-color: rgba(111,197,142,0.3); color: var(--good);">{{ t("settings.saved.restart") }}</div>
+    <div class="v-alert good">{{ t("settings.saved.restart") }}</div>
     {% elif saved == 'language' %}
     <div class="v-alert info">{{ t("settings.saved.language") }}</div>
     {% elif saved == 'proactive' %}
@@ -269,7 +269,7 @@
         <form action="/settings/garmin" method="POST" class="space-y-4">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div class="space-y-1.5">
-                    <label for="s-garmin-email" class="v-label">Email</label>
+                    <label for="s-garmin-email" class="v-label">{{ t("settings.garmin_email") }}</label>
                     <input id="s-garmin-email" name="garmin_email" type="email"
                            value="{{ garmin_email }}" class="v-input"
                            placeholder="you@example.com" autocomplete="email">
@@ -291,6 +291,7 @@
                 <button type="submit" class="v-btn text-xs">{{ t("settings.save_garmin") }}</button>
             </div>
         </form>
+        {% include "partials/garmin_weight_export.html" %}
     </div>
 
     <!-- ─── PROACTIVE LAYER (bot schedule, nudges, Garmin polling) ─────────── -->

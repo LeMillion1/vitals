@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
@@ -28,6 +29,7 @@ from vitals.i18n import t
 from vitals.integrations.garmin_client import login_breaker_state
 from vitals.services import (
     data_portability_service,
+    garmin_weight_service,
     language_service,
     modules_service,
     twofa_service,
@@ -64,6 +66,39 @@ def _masked(key: str) -> str:
 
 def _is_sentinel(value: str) -> bool:
     return value.strip() == _SENTINEL
+
+
+def _garmin_credentials() -> tuple[str, str]:
+    """Return the persisted Garmin credentials without ever logging them."""
+    return (
+        read_key("VITALS_GARMIN_EMAIL").strip(),
+        read_key("VITALS_GARMIN_PASSWORD").strip(),
+    )
+
+
+def _activate_garmin_credentials(email: str, password: str) -> None:
+    """Make persisted credentials visible to clients created in this process."""
+    os.environ["VITALS_GARMIN_EMAIL"] = email
+    os.environ["VITALS_GARMIN_PASSWORD"] = password
+
+
+async def _garmin_weight_control(
+    request: Request,
+    *,
+    db: AsyncSession,
+    action: Optional[str] = None,
+) -> HTMLResponse:
+    """Render the self-contained HTMX control after a live action."""
+    email, password = _garmin_credentials()
+    return templates.TemplateResponse(
+        request,
+        "partials/garmin_weight_export.html",
+        {
+            "garmin_credentials_configured": bool(email and password),
+            "garmin_weight_export": await garmin_weight_service.get_status(db),
+            "garmin_weight_action": action,
+        },
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -123,6 +158,8 @@ async def _page(
         # Garmin
         "garmin_email": read_key("VITALS_GARMIN_EMAIL"),
         "garmin_password_set": bool(read_key("VITALS_GARMIN_PASSWORD")),
+        "garmin_credentials_configured": bool(all(_garmin_credentials())),
+        "garmin_weight_export": await garmin_weight_service.get_status(db),
         # MCP
         "mcp_client_id": read_key("VITALS_MCP_CLIENT_ID") or "vitals-claude-connector",
         "mcp_client_secret_set": bool(read_key("VITALS_MCP_CLIENT_SECRET")),
@@ -145,6 +182,8 @@ async def _page(
         "budget_range": prefs.BUDGET_RANGE,
         "sync_hours_range": prefs.SYNC_HOURS_RANGE,
         "pulse_range": prefs.PULSE_SECONDS_RANGE,
+        "weight_export_minutes_range": prefs.WEIGHT_EXPORT_MINUTES_RANGE,
+        "weight_max_age_days_range": prefs.WEIGHT_MAX_AGE_DAYS_RANGE,
         # The login breaker: how many credential logins today's poll
         # frequency has actually cost, right next to the field that sets it.
         "breaker": await login_breaker_state(redis),
@@ -261,15 +300,85 @@ async def save_garmin(
     garmin_email: str = Form(""),
     garmin_password: str = Form(""),
 ):
+    stored_email, stored_password = _garmin_credentials()
+    submitted_email = garmin_email.strip()
+    submitted_password = garmin_password.strip()
+    effective_email = submitted_email or stored_email
+    effective_password = (
+        submitted_password
+        if submitted_password and not _is_sentinel(submitted_password)
+        else stored_password
+    )
+
     updates: dict[str, str] = {}
-    if garmin_email.strip():
-        updates["VITALS_GARMIN_EMAIL"] = garmin_email.strip()
-    if garmin_password.strip() and not _is_sentinel(garmin_password):
-        updates["VITALS_GARMIN_PASSWORD"] = garmin_password.strip()
+    if submitted_email:
+        updates["VITALS_GARMIN_EMAIL"] = submitted_email
+    if submitted_password and not _is_sentinel(submitted_password):
+        updates["VITALS_GARMIN_PASSWORD"] = submitted_password
 
     if updates:
         write_keys(updates)
+    # GarminClient reads load_config() for every new client. Updating the process
+    # environment here makes newly saved credentials effective immediately while
+    # preserving blank/sentinel fields as "keep the current value".
+    _activate_garmin_credentials(effective_email, effective_password)
     return _redirect("?saved=garmin")
+
+
+@router.post("/garmin/weight-toggle", response_class=HTMLResponse)
+async def toggle_garmin_weight_export(
+    request: Request,
+    enabled: bool = Form(False),
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    _rl: None = Depends(rate_limit("garmin_weight_toggle", limit=20, window=60)),
+):
+    """Apply the outbound-weight opt-in immediately, without a page reload."""
+    email, password = _garmin_credentials()
+    if enabled and not (email and password):
+        # Never persist a fail-open opt-in. The scheduled job also guards this,
+        # but the settings boundary should make the rejected state explicit.
+        return await _garmin_weight_control(
+            request,
+            db=db,
+            action="credentials_required",
+        )
+
+    try:
+        if enabled:
+            _activate_garmin_credentials(email, password)
+        await garmin_weight_service.set_enabled(db, enabled)
+        await db.commit()
+    except Exception:  # noqa: BLE001 — return a safe localized fragment.
+        await db.rollback()
+        logger.exception("Could not update Garmin weight export opt-in")
+        return await _garmin_weight_control(request, db=db, action="error")
+
+    return await _garmin_weight_control(
+        request,
+        db=db,
+        action="toggle_enabled" if enabled else "toggle_disabled",
+    )
+
+
+@router.post("/garmin/weight/send-now", response_class=HTMLResponse)
+async def send_garmin_weight_now(
+    request: Request,
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+    _rl: None = Depends(rate_limit("garmin_weight_send_now", limit=6, window=3600)),
+):
+    """Run one explicit safe reconciliation and return the refreshed control."""
+    try:
+        result = await garmin_weight_service.send_now(db, redis=redis)
+        await db.commit()
+        action = str(result.get("status") or "done")
+    except Exception:  # noqa: BLE001 — upstream details belong in logs/outbox.
+        await db.rollback()
+        logger.exception("Could not run Garmin weight reconciliation")
+        action = "error"
+    return await _garmin_weight_control(request, db=db, action=action)
 
 
 @router.post("/mcp")
@@ -390,6 +499,12 @@ async def save_proactive(
     quiet_end: str = Form(prefs.DEFAULTS["quiet_end"]),
     daily_budget: int = Form(prefs.DEFAULTS["daily_budget"]),
     garmin_sync_hours: int = Form(prefs.DEFAULTS["garmin_sync_hours"]),
+    garmin_weight_export_minutes: int = Form(
+        prefs.DEFAULTS["garmin_weight_export_minutes"]
+    ),
+    garmin_weight_max_age_days: int = Form(
+        prefs.DEFAULTS["garmin_weight_max_age_days"]
+    ),
     pulse_seconds: int = Form(prefs.DEFAULTS["pulse_seconds"]),
     pulse_start_hour: int = Form(prefs.DEFAULTS["pulse_start_hour"]),
     pulse_end_hour: int = Form(prefs.DEFAULTS["pulse_end_hour"]),
@@ -420,6 +535,8 @@ async def save_proactive(
         "quiet_end": quiet_end,
         "daily_budget": daily_budget,
         "garmin_sync_hours": garmin_sync_hours,
+        "garmin_weight_export_minutes": garmin_weight_export_minutes,
+        "garmin_weight_max_age_days": garmin_weight_max_age_days,
         "pulse_seconds": pulse_seconds,
         "pulse_start_hour": pulse_start_hour,
         "pulse_end_hour": pulse_end_hour,
@@ -613,4 +730,3 @@ async def restart_container(
 
     asyncio.create_task(shutdown())
     return JSONResponse(content={"status": "restarting"})
-

@@ -115,6 +115,19 @@ def test_every_semantic_tone_has_the_same_three_parts():
             assert f"--{tone}{part}:" in APP_CSS, f"--{tone}{part}"
 
 
+def test_success_alert_uses_the_shared_good_tone_without_inline_overrides():
+    rule = _rule(APP_CSS, ".v-alert.good")
+    assert "background: var(--good-soft);" in rule
+    assert "border-color: var(--good-line);" in rule
+    assert "color: var(--good);" in rule
+
+    partial = (ROOT / "web/templates/partials/garmin_weight_export.html").read_text(
+        encoding="utf-8"
+    )
+    assert "style=" not in partial
+    assert "--good-strong" not in partial
+
+
 # ── C7 — three rebuild points ────────────────────────────────────────────────
 
 def test_the_layout_rebuilds_at_three_widths():

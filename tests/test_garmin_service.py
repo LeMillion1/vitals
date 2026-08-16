@@ -4,10 +4,12 @@ the nightly sleep series + hypnogram, recovery advice, the MFA alert path, the
 Health Auto Export backup channel, and the client's credential-login breaker."""
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timezone
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.config import Config
 from vitals.integrations.garmin_client import (
@@ -873,6 +875,100 @@ async def test_healthy_token_store_resolves_the_alert(db_session):
 
     active = await alerts_service.list_active(db_session, domain="garmin")
     assert not [a for a in active if a.alert_key == garmin_service.TOKEN_ALERT_KEY]
+
+
+@pytest.mark.integration
+async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(db_session):
+    """A second Garmin fetch must not block a concurrent local weight save."""
+    factory = async_sessionmaker(
+        db_session.bind, expire_on_commit=False, class_=AsyncSession
+    )
+    second_fetch_started = asyncio.Event()
+    resume_fetch = asyncio.Event()
+
+    class PausingSecondDayClient(FakeGarminClient):
+        def __init__(self):
+            super().__init__()
+            self.fetch_count = 0
+
+        async def fetch_daily(self, on_date):
+            self.fetch_count += 1
+            if self.fetch_count == 2:
+                second_fetch_started.set()
+                await resume_fetch.wait()
+            return RAW_DAY
+
+        async def fetch_activities(self, start, end):
+            return []
+
+    client = PausingSecondDayClient()
+
+    async def syncing():
+        async with factory() as session:
+            result = await garmin_service.sync(
+                session, client, days=2, on_date=DAY
+            )
+            await session.commit()
+            return result
+
+    sync_task = asyncio.create_task(syncing())
+    await asyncio.wait_for(second_fetch_started.wait(), timeout=2)
+
+    async with factory() as session:
+        await weight_service.log_weight(session, on_date=DAY, weight_kg=84.0)
+        await asyncio.wait_for(session.commit(), timeout=2)
+
+    resume_fetch.set()
+    summary = await asyncio.wait_for(sync_task, timeout=2)
+    assert summary["days"] == 2
+
+    async with factory() as session:
+        active = await weight_service.get_active_weight(session, DAY)
+        assert active is not None
+        assert active.weight_kg == 84.0
+
+
+@pytest.mark.integration
+async def test_concurrent_daily_ingests_take_advisory_before_raw_rows(
+    db_session, monkeypatch
+):
+    """Regression for the former raw/day→advisory versus advisory→raw deadlock."""
+    from vitals.services import garmin_weight_service
+
+    factory = async_sessionmaker(
+        db_session.bind, expire_on_commit=False, class_=AsyncSession
+    )
+    async with factory() as first_session, factory() as second_session:
+        # Hold the transaction-scoped advisory in A before B begins.
+        await garmin_service.ingest_daily(
+            first_session, DAY.replace(day=DAY.day - 1), RAW_DAY
+        )
+        second_reached_lock = asyncio.Event()
+        original_lock = garmin_weight_service.lock_active_weight_change
+
+        async def signaling_lock(session):
+            if session is second_session:
+                second_reached_lock.set()
+            await original_lock(session)
+
+        monkeypatch.setattr(
+            garmin_weight_service,
+            "lock_active_weight_change",
+            signaling_lock,
+        )
+        second_task = asyncio.create_task(
+            garmin_service.ingest_daily(second_session, DAY, RAW_DAY)
+        )
+        await asyncio.wait_for(second_reached_lock.wait(), timeout=2)
+
+        # B must still be waiting before it owns any raw/day row, so A can ingest
+        # the same date and commit without forming the old lock-order cycle.
+        await asyncio.wait_for(
+            garmin_service.ingest_daily(first_session, DAY, RAW_DAY), timeout=2
+        )
+        await first_session.commit()
+        await asyncio.wait_for(second_task, timeout=2)
+        await second_session.commit()
 
 
 # ── Credential-login breaker (the account-block guard) ────────────────────────

@@ -10,7 +10,7 @@ DB="vitals_test"
 cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-echo "→ starting throwaway Postgres ($CONTAINER) on host port $PORT…"
+echo "→ starting throwaway Postgres ($CONTAINER) on host port ${PORT}…"
 docker run -d --rm --name "$CONTAINER" \
   -e POSTGRES_PASSWORD="$PASSWORD" \
   -e POSTGRES_DB="$DB" \

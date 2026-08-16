@@ -97,9 +97,9 @@ def _check_range(name: str, value: Optional[float], bounds: tuple[float, float])
 # ── Weight logs ───────────────────────────────────────────────────────────────
 async def get_active_weight(session: AsyncSession, on_date: date_type) -> Optional[WeightLog]:
     result = await session.execute(
-        select(WeightLog).where(
-            WeightLog.date == on_date, WeightLog.superseded.is_(False)
-        )
+        select(WeightLog)
+        .where(WeightLog.date == on_date, WeightLog.superseded.is_(False))
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 
@@ -121,6 +121,13 @@ async def log_weight(
     without ``override``, or ``ValueError`` on an implausible weight.
     """
     _check_range("weight_kg", weight_kg, _WEIGHT_KG_RANGE)
+
+    # Every active-weight writer participates in the Garmin outbox lock before
+    # it changes local truth (including conflict-alert writes). The hook below
+    # only reconciles local DB state and never performs network I/O.
+    from vitals.services import garmin_weight_service
+
+    await garmin_weight_service.lock_active_weight_change(session)
     await conflict_engine.enforce(
         session,
         Domain.WEIGHT.value,
@@ -159,6 +166,7 @@ async def log_weight(
                     WeightLog.weight_kg == weight_kg,
                 )
                 .order_by(WeightLog.id.desc())
+                .execution_options(populate_existing=True)
                 .limit(1)
             )
         ).scalar_one_or_none()
@@ -197,6 +205,8 @@ async def log_weight(
     )
     if active_weight is not None:
         await _recompute_lbm_for_date(session, on_date, active_weight)
+    if insert_as_active:
+        await garmin_weight_service.handle_active_weight_changed(session)
     return row
 
 
@@ -539,12 +549,26 @@ async def _glp1_phase_overlays(session: AsyncSession) -> list[dict]:
 async def delete_weight_log(session: AsyncSession, log_id: int) -> bool:
     """Delete a weight log by ID. If it was active, reactivate the next highest
     priority log for that date (e.g. a Garmin import) and recompute LBM."""
-    result = await session.execute(select(WeightLog).where(WeightLog.id == log_id))
+    # Classify active/superseded only after joining the shared outbox lock. A
+    # concurrent deletion can reactivate a row that this reusable session loaded
+    # earlier; populate_existing prevents the identity map from preserving that
+    # stale classification. The lock also precedes any FK ``SET NULL`` flush,
+    # keeping the global advisory→weight→outbox order consistent.
+    from vitals.services import garmin_weight_service
+
+    await garmin_weight_service.lock_active_weight_change(session)
+    result = await session.execute(
+        select(WeightLog)
+        .where(WeightLog.id == log_id)
+        .execution_options(populate_existing=True)
+    )
     row = result.scalar_one_or_none()
     if not row:
         return False
     was_active = not row.superseded
     target_date = row.date
+    deleted_id = row.id
+    deleted_weight_kg = row.weight_kg
     await session.delete(row)
     await session.flush()
 
@@ -553,6 +577,7 @@ async def delete_weight_log(session: AsyncSession, log_id: int) -> bool:
             select(WeightLog)
             .where(WeightLog.date == target_date)
             .order_by(WeightLog.id.desc())
+            .execution_options(populate_existing=True)
         )
         rows = remaining.scalars().all()
         # Reactivate the highest-priority source (manual/scan beat Garmin), and
@@ -566,6 +591,18 @@ async def delete_weight_log(session: AsyncSession, log_id: int) -> bool:
             await _recompute_lbm_for_date(session, target_date, next_row.weight_kg)
         else:
             await _recompute_lbm_for_date_null(session, target_date)
+
+        # Keep Garmin cleanup inside the same local transaction, but never make a
+        # network call here. The export job will delete only a remote sample that
+        # Vitals owns, and its monotonic cursor prevents an older date surfacing as
+        # an accidental backfill after this row disappears.
+        await garmin_weight_service.handle_active_weight_deleted(
+            session,
+            deleted_id=deleted_id,
+            on_date=target_date,
+            deleted_weight_kg=deleted_weight_kg,
+            replacement=next_row,
+        )
     return True
 
 
@@ -632,22 +669,34 @@ async def update_weight_log(
     """Edit an existing weight log. If the date has changed, delete the old row
     (triggering reactivation of other rows) and insert a new log."""
     _check_range("weight_kg", weight_kg, _WEIGHT_KG_RANGE)
-    result = await session.execute(select(WeightLog).where(WeightLog.id == log_id))
+    from vitals.services import garmin_weight_service
+
+    await garmin_weight_service.lock_active_weight_change(session)
+    result = await session.execute(
+        select(WeightLog)
+        .where(WeightLog.id == log_id)
+        .execution_options(populate_existing=True)
+    )
     row = result.scalar_one_or_none()
     if not row:
         return None
 
     if row.date != on_date:
         source = row.source
-        await delete_weight_log(session, log_id)
-        return await log_weight(
-            session,
-            on_date=on_date,
-            weight_kg=weight_kg,
-            source=source,
-            note=note,
-            override=override,
-        )
+        # The insert can be rejected by the cross-domain conflict engine.  Keep
+        # the destructive half of the move in a savepoint so callers that turn
+        # ConflictBlocked into a 409 cannot accidentally commit the deletion.
+        async with session.begin_nested():
+            await delete_weight_log(session, log_id)
+            moved = await log_weight(
+                session,
+                on_date=on_date,
+                weight_kg=weight_kg,
+                source=source,
+                note=note,
+                override=override,
+            )
+        return moved
     else:
         await conflict_engine.enforce(
             session,
@@ -659,7 +708,11 @@ async def update_weight_log(
         row.weight_kg = weight_kg
         row.note = note
         await session.flush()
-        await _recompute_lbm_for_date(session, on_date, weight_kg)
+        # Editing a retained, superseded fact must not change body composition:
+        # LBM is derived from the one active weight for the date.
+        if not row.superseded:
+            await _recompute_lbm_for_date(session, on_date, weight_kg)
+            await garmin_weight_service.handle_active_weight_changed(session)
         return row
 
 

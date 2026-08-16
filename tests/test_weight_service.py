@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 
 from vitals.enums import Source
 from vitals.models.weight import WeightLog
-from vitals.services import alerts_service, weight_service
+from vitals.services import alerts_service, conflict_engine, weight_service
 from vitals.utils.timeutils import today_local
 
 
@@ -461,6 +461,74 @@ async def test_update_weight_log_rejects_implausible_weight(db_session):
         await weight_service.update_weight_log(
             db_session, row.id, on_date=date(2026, 6, 21), weight_kg=900.0
         )
+
+
+async def test_editing_superseded_weight_does_not_change_lbm(db_session):
+    """A retained Garmin fact is not the weight used for body composition."""
+    on_date = date(2026, 6, 24)
+    inactive = await weight_service.log_weight(
+        db_session,
+        on_date=on_date,
+        weight_kg=90.0,
+        source=Source.GARMIN_API.value,
+    )
+    await weight_service.log_weight(
+        db_session,
+        on_date=on_date,
+        weight_kg=80.0,
+        source=Source.MANUAL.value,
+    )
+    measurement = await weight_service.upsert_body_measurement(
+        db_session, on_date=on_date, neck_cm=39.0, waist_cm=86.0
+    )
+    await db_session.commit()
+    lbm_before = measurement.lbm_kg
+
+    edited = await weight_service.update_weight_log(
+        db_session,
+        inactive.id,
+        on_date=on_date,
+        weight_kg=100.0,
+    )
+    await db_session.flush()
+
+    active = await weight_service.get_active_weight(db_session, on_date)
+    await db_session.refresh(measurement)
+    assert edited is not None and edited.superseded is True
+    assert active is not None and active.weight_kg == 80.0
+    assert measurement.lbm_kg == lbm_before
+
+
+async def test_blocked_weight_date_move_keeps_original_row(db_session, monkeypatch):
+    """A router may commit after rendering 409; the move must still be atomic."""
+    original_date = date(2026, 6, 25)
+    target_date = date(2026, 6, 26)
+    original = await weight_service.log_weight(
+        db_session, on_date=original_date, weight_kg=81.0
+    )
+    original_id = original.id
+    await db_session.commit()
+
+    async def block(*args, **kwargs):
+        raise conflict_engine.ConflictBlocked([])
+
+    monkeypatch.setattr(weight_service.conflict_engine, "enforce", block)
+    with pytest.raises(conflict_engine.ConflictBlocked):
+        await weight_service.update_weight_log(
+            db_session,
+            original_id,
+            on_date=target_date,
+            weight_kg=80.5,
+        )
+
+    # Match the web route's caught-409 lifecycle: committing the outer
+    # transaction must not make the savepoint's DELETE permanent.
+    await db_session.commit()
+    preserved = await db_session.get(WeightLog, original_id)
+    assert preserved is not None
+    assert preserved.date == original_date
+    assert preserved.weight_kg == 81.0
+    assert await weight_service.get_active_weight(db_session, target_date) is None
 
 
 @pytest.mark.parametrize(

@@ -49,6 +49,10 @@ NUDGE_CATEGORIES: tuple[str, ...] = (CATEGORY_ACTIVITY, CATEGORY_NUTRITION, CATE
 # ── Hard bounds (the UI shows them, the sanitizer enforces them) ─────────────
 BUDGET_RANGE = (1, 12)
 SYNC_HOURS_RANGE = (1, 24)
+WEIGHT_EXPORT_MINUTES_RANGE = (5, 1440)
+# Thirty days is a hard safety ceiling: increasing it would turn the latest-only
+# export into a progressively deeper history backfill.
+WEIGHT_MAX_AGE_DAYS_RANGE = (1, 30)
 # 60 s floor / 3600 s ceiling: the Home Assistant Garmin integration — same
 # library author, thousands of users — polls every 300 s and refuses to go below
 # 60. A *read* costs nothing; it is the credential *login* Garmin rate-limits,
@@ -63,6 +67,8 @@ DEFAULTS: dict[str, Any] = {
     "daily_budget": 4,
     # Every 6h = the same four polls a day the fixed 3/11/16/22 cron did.
     "garmin_sync_hours": 6,
+    "garmin_weight_export_minutes": 15,
+    "garmin_weight_max_age_days": 30,
     "pulse_seconds": 900,  # 0 = the light pulse is off entirely
     "pulse_start_hour": 8,
     "pulse_end_hour": 24,
@@ -113,6 +119,16 @@ def sanitize(raw: Any) -> dict[str, Any]:
         "daily_budget": _int(src.get("daily_budget"), DEFAULTS["daily_budget"], *BUDGET_RANGE),
         "garmin_sync_hours": _int(
             src.get("garmin_sync_hours"), DEFAULTS["garmin_sync_hours"], *SYNC_HOURS_RANGE
+        ),
+        "garmin_weight_export_minutes": _int(
+            src.get("garmin_weight_export_minutes"),
+            DEFAULTS["garmin_weight_export_minutes"],
+            *WEIGHT_EXPORT_MINUTES_RANGE,
+        ),
+        "garmin_weight_max_age_days": _int(
+            src.get("garmin_weight_max_age_days"),
+            DEFAULTS["garmin_weight_max_age_days"],
+            *WEIGHT_MAX_AGE_DAYS_RANGE,
         ),
         "pulse_seconds": pulse,
         "pulse_start_hour": start_hour,
