@@ -142,6 +142,29 @@ async def log_weight(
     ):
         return existing
 
+    # The active row can be a higher-priority manual measurement while an
+    # identical Garmin import already sits underneath it.  Daily Garmin polls
+    # must reuse that inactive fact too; otherwise each poll appends another
+    # superseded clone even though the visible manual row never changes.
+    if (
+        existing is not None
+        and _source_priority(source) < _source_priority(existing.source)
+    ):
+        duplicate = (
+            await session.execute(
+                select(WeightLog)
+                .where(
+                    WeightLog.date == on_date,
+                    WeightLog.source == source,
+                    WeightLog.weight_kg == weight_kg,
+                )
+                .order_by(WeightLog.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            return duplicate
+
     insert_as_active = True
     if existing is not None:
         if _source_priority(source) >= _source_priority(existing.source):

@@ -6,8 +6,10 @@ from datetime import date
 
 import pytest
 from freezegun import freeze_time
+from sqlalchemy import func, select
 
 from vitals.enums import Source
+from vitals.models.weight import WeightLog
 from vitals.services import alerts_service, weight_service
 from vitals.utils.timeutils import today_local
 
@@ -54,6 +56,42 @@ async def test_garmin_does_not_override_existing_manual(db_session):
     active = await weight_service.get_active_weight(db_session, d)
     assert active.source == Source.MANUAL.value
     assert active.weight_kg == 88.0
+
+
+async def test_repeated_garmin_import_under_manual_weight_is_deduplicated(db_session):
+    d = date(2026, 6, 3)
+    await weight_service.log_weight(
+        db_session, on_date=d, weight_kg=84.0, source=Source.MANUAL.value
+    )
+    for _ in range(2):
+        await weight_service.log_weight(
+            db_session,
+            on_date=d,
+            weight_kg=85.0,
+            source=Source.GARMIN_API.value,
+        )
+
+    rows = (
+        await db_session.execute(select(WeightLog).where(WeightLog.date == d))
+    ).scalars().all()
+    assert len(rows) == 2
+    assert len([row for row in rows if row.source == Source.GARMIN_API.value]) == 1
+
+
+async def test_inbound_dedupe_does_not_swallow_a_manual_reentry(db_session):
+    d = date(2026, 6, 3)
+    await weight_service.log_weight(db_session, on_date=d, weight_kg=85.0)
+    await weight_service.log_weight(db_session, on_date=d, weight_kg=84.0)
+    newest = await weight_service.log_weight(db_session, on_date=d, weight_kg=85.0)
+
+    active = await weight_service.get_active_weight(db_session, d)
+    assert active is newest
+    assert active.weight_kg == 85.0
+    assert (
+        await db_session.execute(
+            select(func.count()).select_from(WeightLog).where(WeightLog.date == d)
+        )
+    ).scalar_one() == 3
 
 
 async def test_same_source_reentry_supersedes_not_overwrites(db_session):
