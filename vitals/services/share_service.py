@@ -194,7 +194,12 @@ async def build_snapshot(
     start, end = clamp_window(period_start, period_end)
     span_days = max((end - start).days + 1, 1)
     ctx = await digest_service.assemble_context(
-        session, on_date=end, period_days=span_days
+        session,
+        on_date=end,
+        period_days=span_days,
+        mode=digest_service.REPORT_MODE_CLOSED,
+        enabled_modules=enabled,
+        max_period_days=max(PERIOD_CHOICES),
     )
     stats = ctx.get("period_stats") or {}
     cfg = load_config()

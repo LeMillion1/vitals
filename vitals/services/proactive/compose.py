@@ -97,7 +97,31 @@ def render(blocks: Iterable[Block]) -> str:
 
 def strip_protocol(ctx: dict) -> dict:
     """The brief's view of the context — everything except the protocol."""
-    return {k: v for k, v in ctx.items() if k not in PROTOCOL_KEYS}
+    out = {k: v for k, v in ctx.items() if k not in PROTOCOL_KEYS}
+    # Context v2 also carries domain metadata and cross-domain lists. Removing
+    # only the first-class block would still disclose that a protocol exists —
+    # or even repeat an HRT alert message — through those secondary surfaces.
+    if isinstance(out.get("coverage"), dict):
+        out["coverage"] = {
+            key: value
+            for key, value in out["coverage"].items()
+            if key not in PROTOCOL_KEYS
+        }
+    if isinstance(out.get("alerts"), list):
+        out["alerts"] = [
+            row for row in out["alerts"] if row.get("domain") not in PROTOCOL_KEYS
+        ] or None
+    if isinstance(out.get("timeline"), list):
+        out["timeline"] = [
+            row for row in out["timeline"] if row.get("domain") not in PROTOCOL_KEYS
+        ] or None
+    if isinstance(out.get("milestones"), list):
+        out["milestones"] = [
+            row
+            for row in out["milestones"]
+            if row.get("domain") not in PROTOCOL_KEYS
+        ]
+    return out
 
 
 def is_empty_day(ctx: dict, *, on_date: date_type) -> bool:

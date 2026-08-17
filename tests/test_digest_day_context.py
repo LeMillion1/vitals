@@ -7,10 +7,14 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pytest
+
 from vitals.enums import Source
 from vitals.services import digest_service, signals_service
 
 DAY = date(2026, 6, 10)
+
+pytestmark = pytest.mark.usefixtures("all_modules_on")
 
 
 class FakeLLM:

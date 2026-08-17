@@ -119,7 +119,12 @@ async def build_context(
     that knows there is a gym session and a heavy workday ahead, so it goes into
     the model's JSON as well as onto the header line.
     """
-    ctx = await digest_service.assemble_context(session, on_date=on_date, period_days=1)
+    ctx = await digest_service.assemble_context(
+        session,
+        on_date=on_date,
+        period_days=1,
+        mode=digest_service.REPORT_MODE_BRIEF,
+    )
     ctx = compose.strip_protocol(ctx)
     # One-day window would cut the signals in half: "кофе в 22" is *yesterday's*
     # row and this morning's HRV is the thing it explains. Widened here rather

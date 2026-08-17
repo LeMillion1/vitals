@@ -20,7 +20,7 @@ from vitals.services.proactive import brief, compose, day_plan, delivery
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
 # owner flips in Settings, and it defaults off.
-pytestmark = pytest.mark.usefixtures("signals_module_on")
+pytestmark = pytest.mark.usefixtures("all_modules_on")
 
 DAY = date(2026, 7, 26)
 
@@ -251,6 +251,37 @@ async def test_protocol_never_reaches_the_brief(db_session):
     full = await digest_service.assemble_context(db_session, on_date=DAY)
     assert full["glp1"]["drug"] == "semaglutide"
     assert full["supplements"][0]["name"] == "Ашваганда"
+
+
+def test_protocol_is_removed_from_secondary_context_surfaces():
+    stripped = compose.strip_protocol(
+        {
+            "glp1": {"drug": "private"},
+            "hrt": {"cycle": "private"},
+            "coverage": {"glp1": {}, "hrt": {}, "weight": {}},
+            "alerts": [
+                {"domain": "hrt", "message": "private"},
+                {"domain": "labs", "message": "visible"},
+            ],
+            "timeline": [
+                {"domain": "glp1", "title": "private"},
+                {"domain": "timeline", "title": "visible"},
+            ],
+            "milestones": [
+                {"domain": "hrt", "name": "private"},
+                {"domain": "weight", "name": "visible"},
+            ],
+        }
+    )
+
+    assert set(stripped["coverage"]) == {"weight"}
+    assert stripped["alerts"] == [{"domain": "labs", "message": "visible"}]
+    assert stripped["timeline"] == [
+        {"domain": "timeline", "title": "visible"}
+    ]
+    assert stripped["milestones"] == [
+        {"domain": "weight", "name": "visible"}
+    ]
 
 
 # ── The night that hasn't ended yet ───────────────────────────────────────────

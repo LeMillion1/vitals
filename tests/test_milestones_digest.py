@@ -2,7 +2,7 @@
 context assembly + LLM narrative generation (with a fake LLM, no network)."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -18,6 +18,8 @@ from vitals.services import (
 )
 
 DAY = date(2026, 6, 10)
+
+pytestmark = pytest.mark.usefixtures("all_modules_on")
 
 
 # ── Milestones ────────────────────────────────────────────────────────────────
@@ -246,10 +248,11 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
     await genetics_service.add_variant(
         db_session, gene="HFE", rsid="rs1800562", genotype="GG", marker="hemochromatosis_carrier"
     )
-    await alerts_service.raise_alert(
+    alert = await alerts_service.raise_alert(
         db_session, domain="labs", severity="warn", message="Ferritin high",
         alert_key="ferritin_high", entity_ref="labs:ferritin",
     )
+    alert.created_at = datetime.combine(DAY, datetime.min.time())
     await db_session.commit()
 
     ctx = await digest_service.assemble_context(db_session, on_date=DAY)
@@ -387,43 +390,73 @@ async def test_assemble_context_includes_hrt_and_timeline(db_session):
 # added and nobody remembering to give it a block — the AI report then silently
 # loses a whole module (which is exactly how hrt and timeline went missing).
 
-DIGEST_DOMAIN_KEYS: dict[Domain, tuple[str, ...]] = {
-    Domain.WEIGHT: ("weight",),
-    Domain.BODY_COMPOSITION: ("body_comp",),
-    Domain.GLP1: ("glp1",),
-    Domain.HRT: ("hrt",),
-    Domain.LABS: ("labs",),
-    Domain.WORKOUTS: ("hevy",),
-    Domain.GARMIN: ("garmin",),
-    Domain.NUTRITION: ("nutrition",),
-    Domain.SUPPLEMENTS: ("supplements",),
-    Domain.GENETICS: ("genetics",),
-    Domain.SKINCARE: ("skincare",),
-    Domain.MILESTONES: ("milestones",),
-    Domain.TIMELINE: ("timeline",),
-    # Signals reach Claude.ai through the LLM export (DOMAIN_EXPORT_KEYS) — that's
-    # where the deep cross-domain analysis lives. The weekly digest's context stays
-    # exactly as it was; the composer that reads signals is the block layer,
-    # not this domain's.
-    Domain.SIGNALS: (),
+DIGEST_DOMAIN_PATHS: dict[Domain, tuple[str, ...]] = {
+    Domain.WEIGHT: ("weight", "weight.measurements", "coverage.weight"),
+    Domain.BODY_COMPOSITION: (
+        "body_comp",
+        "body_comp.scans",
+        "body_comp.deltas_from_previous_scan",
+        "coverage.body_comp",
+    ),
+    Domain.GLP1: (
+        "glp1.active_phase",
+        "glp1.phases",
+        "glp1.injections",
+        "glp1.side_effects",
+        "coverage.glp1",
+    ),
+    Domain.HRT: (
+        "hrt.cycle.items",
+        "hrt.planned_administrations",
+        "hrt.doses",
+        "hrt.side_effects",
+        "coverage.hrt",
+    ),
+    Domain.LABS: (
+        "labs.results_in_period",
+        "labs.trends",
+        "labs.retest",
+        "coverage.labs",
+    ),
+    Domain.WORKOUTS: ("hevy.sessions", "training", "coverage.hevy"),
+    Domain.GARMIN: ("garmin.activities", "training", "coverage.garmin"),
+    Domain.NUTRITION: ("nutrition", "period_stats", "coverage.nutrition"),
+    Domain.SUPPLEMENTS: ("supplements", "coverage.supplements"),
+    Domain.GENETICS: ("genetics", "coverage.genetics"),
+    Domain.SKINCARE: (
+        "skincare.logs",
+        "skincare.products",
+        "skincare.recent_observations",
+        "coverage.skincare",
+    ),
+    Domain.MILESTONES: ("milestones", "coverage.milestones"),
+    Domain.TIMELINE: ("timeline", "coverage.timeline"),
+    Domain.SIGNALS: (
+        "signals",
+        "day_context",
+        "coverage.signals",
+        "coverage.day_context",
+    ),
     # Infra rows reach the digest as the active-alert list, not as their own block.
     Domain.SYSTEM: ("alerts",),
 }
 
 
 def test_every_domain_is_mapped_to_digest_keys():
-    """A new Domain member must be given a digest block (or an explicit empty
-    tuple saying it deliberately stays out of the report)."""
-    assert set(DIGEST_DOMAIN_KEYS) == set(Domain)
+    """A new domain needs an explicit subtable-level context contract."""
+    assert set(DIGEST_DOMAIN_PATHS) == set(Domain)
+    assert all(DIGEST_DOMAIN_PATHS.values())
+    assert set(digest_service._DOMAIN_MODULE) == {domain.value for domain in Domain}
 
 
 async def test_assemble_context_has_a_key_for_every_domain(db_session):
     """Every mapped key is actually assembled — on an empty database too, so a
     domain can't be "present" only when it happens to have rows."""
     ctx = await digest_service.assemble_context(db_session, on_date=DAY)
-    for keys in DIGEST_DOMAIN_KEYS.values():
-        for key in keys:
-            assert key in ctx, f"digest context is missing {key!r}"
+    for paths in DIGEST_DOMAIN_PATHS.values():
+        for path in paths:
+            key = path.split(".", 1)[0]
+            assert key in ctx, f"digest context is missing root for {path!r}"
 
 
 # ── Digest generation ─────────────────────────────────────────────────────────
@@ -559,7 +592,7 @@ async def test_generate_digest_retries_once_and_recovers_from_a_blank_response(d
 
 async def test_assemble_context_includes_intersecting_noise_markers(db_session):
     # Add noise markers: some overlapping, some not.
-    # DAY is 2026-06-10. 7-day period is [2026-06-04, 2026-06-10]
+    # DAY is 2026-06-10. Current is [06-04, 06-10], previous [05-28, 06-03].
     
     # 1. Overlapping noise marker (ends during the period)
     await weight_service.add_noise_marker(
@@ -582,7 +615,7 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session):
         end_date=date(2026, 6, 15),
         reason="future noise"
     )
-    # 4. Non-overlapping noise marker in the past
+    # 4. Marker in the comparison window
     await weight_service.add_noise_marker(
         db_session,
         start_date=date(2026, 5, 20),
@@ -594,22 +627,27 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session):
     ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
     markers = ctx["weight"]["noise_markers"]
     
-    # Only overlapping/ongoing markers must be present
+    # Both sides of the comparison must carry their overlapping noise context.
     reasons = [m["reason"] for m in markers]
     assert "sodium spike" in reasons
     assert "creatine load" in reasons
+    assert "past noise" in reasons
     assert "future noise" not in reasons
-    assert "past noise" not in reasons
-    assert len(reasons) == 2
+    assert len(reasons) == 3
 
     # Check structure of the returned markers
     sodium_marker = next(m for m in markers if m["reason"] == "sodium spike")
     assert sodium_marker["start"] == "2026-06-01"
     assert sodium_marker["end"] == "2026-06-05"
+    assert sodium_marker["periods"] == ["current", "previous"]
 
     creatine_marker = next(m for m in markers if m["reason"] == "creatine load")
     assert creatine_marker["start"] == "2026-06-08"
     assert creatine_marker["end"] is None
+    assert creatine_marker["periods"] == ["current"]
+
+    past_marker = next(m for m in markers if m["reason"] == "past noise")
+    assert past_marker["periods"] == ["previous"]
 
     # Check that system prompt mentions noise_markers
     llm = FakeLLM()
@@ -646,4 +684,3 @@ async def test_assemble_context_trend_excludes_noise(db_session):
     )
     # Clean −1kg/day line → ≈ −7kg/week, undistorted by the +20kg spike.
     assert ctx["weight"]["trend_kg_per_week"] == pytest.approx(-7.0, abs=0.1)
-

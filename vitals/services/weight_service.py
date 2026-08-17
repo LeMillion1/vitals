@@ -426,6 +426,8 @@ async def chart_series(
     goal_kg: Optional[float] = None,
     include_bia: bool = False,
     include_timeline: bool = False,
+    include_glp1: bool = True,
+    end: Optional[date_type] = None,
 ) -> dict:
     """Assemble everything the weight dashboard chart needs.
 
@@ -447,17 +449,25 @@ async def chart_series(
                          flags for this domain (+ global ones), only when
                          ``include_timeline`` (the timeline module is on).
     """
-    weights = await list_active_weights(session)
+    weights = await list_active_weights(session, end=end)
     raw_points = [(w.date, w.weight_kg) for w in weights]
 
     # Noise ranges fully drop out of the MA / regression / projection (a core
     # invariant): the trend must reflect real trajectory, not water-weight spikes.
     # The raw scatter keeps every point (shown under the noise overlay).
-    ranges = await _noise_ranges(session)
+    ranges = [
+        (start, range_end)
+        for start, range_end in await _noise_ranges(session)
+        if end is None or start <= end
+    ]
     clean_points = exclude_ranges(raw_points, ranges)
     ma = rolling_mean_by_date(clean_points, window_days=7)
 
-    measurements = await list_body_measurements(session)
+    measurements = [
+        row
+        for row in await list_body_measurements(session)
+        if end is None or row.date <= end
+    ]
     lbm_points = [
         {"date": m.date.isoformat(), "lbm_kg": m.lbm_kg}
         for m in measurements
@@ -483,7 +493,7 @@ async def chart_series(
         if proj_date is not None:
             projection = {"target_kg": goal_kg, "date": proj_date.isoformat()}
 
-    phases = await _glp1_phase_overlays(session)
+    phases = await _glp1_phase_overlays(session) if include_glp1 else []
 
     # BIA overlay (InBody/МедАсс) — a second source for body-fat % / LBM shown
     # alongside the Navy series. Lazily imported so the weight module never hard-
