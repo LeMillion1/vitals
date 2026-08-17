@@ -109,6 +109,8 @@ def test_sanitize_clamps_whatever_arrives():
             "brief_time": "nonsense",
             "daily_budget": 9000,
             "garmin_sync_hours": 0,
+            "garmin_weight_export_minutes": 1,
+            "garmin_weight_max_age_days": 9000,
             "pulse_seconds": 5,          # below the floor, but not "off"
             "pulse_start_hour": 20,
             "pulse_end_hour": 20,        # a window nothing could ever run in
@@ -118,6 +120,8 @@ def test_sanitize_clamps_whatever_arrives():
     assert clean["brief_time"] == prefs.DEFAULTS["brief_time"]
     assert clean["daily_budget"] == prefs.BUDGET_RANGE[1]
     assert clean["garmin_sync_hours"] == prefs.SYNC_HOURS_RANGE[0]
+    assert clean["garmin_weight_export_minutes"] == prefs.WEIGHT_EXPORT_MINUTES_RANGE[0]
+    assert clean["garmin_weight_max_age_days"] == prefs.WEIGHT_MAX_AGE_DAYS_RANGE[1]
     assert clean["pulse_seconds"] == prefs.PULSE_SECONDS_RANGE[0]
     assert clean["pulse_end_hour"] > clean["pulse_start_hour"]
     assert clean["nudges"] == {"activity": False, "nutrition": True, "data": True}
@@ -126,13 +130,21 @@ def test_sanitize_clamps_whatever_arrives():
 
 
 def test_settings_rebuild_the_job_triggers():
-    register_all_jobs({"brief_time": "07:30", "evening_time": "22:15", "garmin_sync_hours": 4})
+    register_all_jobs(
+        {
+            "brief_time": "07:30",
+            "evening_time": "22:15",
+            "garmin_sync_hours": 4,
+            "garmin_weight_export_minutes": 45,
+        }
+    )
     registry = scheduler_mod._registry
 
     # A window, not one fire: the brief waits out a night that isn't scored yet.
     assert registry["daily_brief"].trigger_kwargs == {"hour": "7-12", "minute": 30}
     assert registry["evening_block"].trigger_kwargs == {"hour": 22, "minute": 15}
     assert registry["garmin_sync"].trigger_kwargs == {"hour": "*/4", "minute": 0}
+    assert registry["garmin_weight_export"].trigger_kwargs == {"minutes": 45}
 
 
 def test_switching_the_pulse_off_removes_the_job():
@@ -171,6 +183,8 @@ async def test_saving_reschedules_without_a_restart(auth_client, db_session):
                 "quiet_end": "08:00",
                 "daily_budget": "6",
                 "garmin_sync_hours": "3",
+                "garmin_weight_export_minutes": "20",
+                "garmin_weight_max_age_days": "14",
                 "pulse_seconds": "0",
                 "pulse_start_hour": "9",
                 "pulse_end_hour": "22",
@@ -185,9 +199,12 @@ async def test_saving_reschedules_without_a_restart(auth_client, db_session):
         assert "minute='5'" in str(after.trigger)
         # Pulse switched off → gone from the running scheduler too.
         assert scheduler.get_job("garmin_pulse") is None
+        assert scheduler.get_job("garmin_weight_export").trigger.interval.total_seconds() == 1200
 
         stored = await prefs.get_prefs(db_session)
         assert stored["daily_budget"] == 6
+        assert stored["garmin_weight_export_minutes"] == 20
+        assert stored["garmin_weight_max_age_days"] == 14
         assert stored["nudges"] == {"activity": True, "nutrition": False, "data": False}
 
         from vitals.services.proactive import day_plan

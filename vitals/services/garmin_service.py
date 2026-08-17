@@ -505,6 +505,13 @@ async def ingest_daily(
     """Store the raw bundle, upsert the normalized daily row, rebuild the day's
     intraday series, and bridge any weigh-in into the weight domain. Does not
     commit."""
+    # A daily bundle may contain a weight. Take the shared operation lock before
+    # touching raw/daily rows so every overlapping sync follows one lock order:
+    # advisory → raw/day → weight/outbox. Acquiring it later inside log_weight
+    # allows the inverse order and a real PostgreSQL deadlock.
+    from vitals.services import garmin_weight_service
+
+    await garmin_weight_service.lock_active_weight_change(session)
     raw_row = await raw_payload_service.upsert_raw_payload(
         session,
         domain=DOMAIN,
@@ -730,6 +737,26 @@ def _parse_activity_start(raw: dict) -> Optional[datetime]:
 
 
 # ── Sync orchestration ────────────────────────────────────────────────────────
+async def refresh_token_cache_alert(
+    session: AsyncSession,
+    client: Any,
+    *,
+    resolve_if_clear: bool = True,
+) -> None:
+    """Surface token-store failures collected by any Garmin client operation."""
+    warnings = list(getattr(client, "token_warnings", None) or ())
+    if warnings:
+        await alerts_service.raise_alert(
+            session,
+            domain=DOMAIN,
+            severity=Severity.WARN.value,
+            message=t("alert.garmin_token_cache", error=warnings[0]),
+            alert_key=TOKEN_ALERT_KEY,
+        )
+    elif resolve_if_clear:
+        await alerts_service.resolve_by_key(session, alert_key=TOKEN_ALERT_KEY)
+
+
 async def sync(
     session: AsyncSession,
     client: Any,
@@ -744,20 +771,38 @@ async def sync(
     today = on_date or now_local().date()
     start = today - timedelta(days=days - 1)
     summary = {"days": 0, "activities": 0, "error": None}
+    daily_payloads: list[tuple[date_type, dict]] = []
+    activities: Optional[Sequence[dict]] = None
+    auth_error: Optional[GarminAuthError] = None
 
+    # Finish the complete vendor-I/O phase before ingesting anything. Weight
+    # ingestion participates in the outbound outbox advisory lock; interleaving
+    # it with later Garmin calls would hold that DB lock across network latency
+    # and could make an otherwise-local save/delete time out.
     try:
         for offset in range(days):
             day = start + timedelta(days=offset)
             raw = await client.fetch_daily(day)
-            await ingest_daily(session, day, raw)
-            summary["days"] += 1
+            daily_payloads.append((day, raw))
 
         activities = await client.fetch_activities(start, today)
         await _enrich_activity_details(client, activities)
+    except GarminAuthError as e:  # MFA and throttling are subclasses
+        auth_error = e
+
+    # Preserve the previous partial-progress contract for handled auth failures:
+    # days fetched before MFA/throttling are still ingested and committed by the
+    # caller, but there are no remaining vendor awaits after this point.
+    for day, raw in daily_payloads:
+        await ingest_daily(session, day, raw)
+        summary["days"] += 1
+    if activities is not None:
         summary["activities"] = await ingest_activities(session, activities)
 
+    if auth_error is None:
         await alerts_service.resolve_by_key(session, alert_key=AUTH_ALERT_KEY)
-    except GarminAuthError as e:  # MFA and throttling are subclasses
+    else:
+        e = auth_error
         if isinstance(e, GarminMFARequired):
             summary["error"], message = "mfa", t("alert.garmin_mfa")
         elif isinstance(e, GarminLoginThrottled):
@@ -776,17 +821,7 @@ async def sync(
     # A token store that can't be written is silent until the day it isn't: the
     # session keeps working in memory, then every poll after the next restart
     # logs in again. Surface it while it's still only a warning.
-    warnings = list(getattr(client, "token_warnings", None) or ())
-    if warnings:
-        await alerts_service.raise_alert(
-            session,
-            domain=DOMAIN,
-            severity=Severity.WARN.value,
-            message=t("alert.garmin_token_cache", error=warnings[0]),
-            alert_key=TOKEN_ALERT_KEY,
-        )
-    else:
-        await alerts_service.resolve_by_key(session, alert_key=TOKEN_ALERT_KEY)
+    await refresh_token_cache_alert(session, client)
     return summary
 
 

@@ -207,11 +207,14 @@ Vitals написан с Claude в качестве основного инст�
 <details>
 <summary><strong>⌚ 5. Garmin Connect</strong></summary>
 
-- **Модели**: `GarminDaily`, `GarminActivity`, `GarminIntraday`
+- **Модели**: `GarminDaily`, `GarminActivity`, `GarminIntraday`, `GarminWeightExport`
 - Автосинк: сон, фазы сна, HRV (вариабельность пульса), пульс покоя, стресс, Body Battery, Training Readiness + внутридневные кривые стресса и Body Battery
 - Сессия `garminconnect` (библиотека пиновая — 0.3.7): токены в Redis + бэкап на диск, том с токенами попадает в `backup.sh` рядом с дампом БД
 - **Предохранитель логина**: вход по паролю рационируется (3 раза в 24 ч, потом пауза 6 ч, счётчики в Redis) — Garmin блокирует аккаунт за частые попытки, и каждый ретрай продлевает блок. Живой токен предохранителя не касается; MFA и «залогинились слишком часто» различаются в алертах
 - Расписание опроса — не в `.env`, а на карточке «Проактивный слой» в `/settings`: интервал полного синка + лёгкий пульс (шаги за сегодня) между ними, применяется без перезапуска контейнера
+- **Вес обратно в Garmin (opt-in)** — карточка Garmin отправляет только самое свежее прямое измерение (ручное, MCP или BIA), никогда не возвращает импорт Garmin обратно и не переносит историю. Интервал (по умолчанию 15 минут) и окно свежести (не больше 30 дней) настраиваются на живом планировщике без перезапуска; кнопка **«Отправить сейчас»** запускает явную сверку. Новые логин и пароль начинают действовать в текущем процессе, а без реквизитов фоновая задача тихо ничего не делает
+- **Консервативная запись веса** — перед каждым POST Vitals заново читает день Garmin и пишет только в пустой день. Одна уже существующая запись с тем же весом отмечается как внешнее совпадение, а не как принадлежащая Vitals; другой вес, несколько записей или неполный ответ Garmin дают видимый конфликт без добавления дубля и без удаления чужих данных. Коррекция заменяет только точный `samplePk`, подтверждённый для POST Vitals, и лишь после проверки, что день снова пуст
+- **Неопределённость и удаление** — до сетевого POST Vitals фиксирует в БД durable-маркер «не проверено» с зарезервированной миллисекундной меткой, поэтому crash/rollback не возвращает операцию в очередь на повторную отправку. Обычно Garmin отвечает `204` без `samplePk`; тогда владение подтверждается только одной-единственной read-back записью с точным совпадением этой метки, источника `MANUAL` и веса. Совпадения только по весу недостаточно: планировщик и кнопка «Отправить сейчас» продолжают безопасную сверку и никогда не повторяют неопределённый POST. Удаление локального веса ставит в очередь удаление только подтверждённой записи Garmin, а монотонный курсор не позволяет после удаления или повторного включения выгрузить более старое измерение. Запись идёт через неофициальный web API `garminconnect`, поэтому функция по умолчанию выключена
 - Полностью переработанный раздел сна с детализированной страницей каждой ночи
 - Резервный канал: импорт JSON-экспортов из Health Auto Export
 </details>
@@ -308,7 +311,7 @@ Vitals написан с Claude в качестве основного инст�
 - Единые ворота отправки: выключенный модуль, дедуп, тихие часы (только для нудджей) и дневной бюджет сообщений; ответы на вопросы владельца из бюджета исключены
 - Ответы на вопросы: реплай на сообщение бота или просто «почему hrv просел?» — модель видит то сообщение, на которое отвечают, и контекст последнего брифа, и ничего больше. Глубокие разборы — в Claude.ai через MCP, там 75 инструментов и модель получше
 - Сигналы и `day_context` попадают в контекст и недельного дайджеста, и брифа — с временем суток, потому что «кофе в 22» и «кофе в 9» это разные факты с одним ключом
-- Канал — за протоколом `Notifier`, выше него никто не знает про Telegram. Модуль `signals` по умолчанию **выключен** и работает как рубильник всего проактивного слоя: выключен — бот молчит совсем. Настройки (время брифа и вечернего блока, тихие часы, бюджет, категории нуджей, частота опроса Garmin, шаблон недели) — на карточке в `/settings`, сохранение перевешивает задачи на живом планировщике **без перезапуска**
+- Канал — за протоколом `Notifier`, выше него никто не знает про Telegram. Модуль `signals` по умолчанию **выключен** и работает как рубильник всего проактивного слоя: выключен — бот молчит совсем. Настройки (время брифа и вечернего блока, тихие часы, бюджет, категории нуджей, частота опроса Garmin, интервал и окно свежести экспорта веса, шаблон недели) — на карточке в `/settings`, сохранение перевешивает задачи на живом планировщике **без перезапуска**
 - MCP: `get_signals`, `log_signal`, `get_day_context` — Клод видит то, что владелец сказал боту
 - Настройка: `VITALS_TELEGRAM_BOT_TOKEN`, `VITALS_TELEGRAM_CHAT_ID`, `VITALS_TELEGRAM_WEBHOOK_PATH`, `VITALS_TELEGRAM_WEBHOOK_SECRET` (см. `.env.example`) — слушается **единственный** chat id, вебхук проверяется по секретному заголовку
 </details>
@@ -366,12 +369,13 @@ graph TD
 | `hevy_sync` | каждые 6 ч | Синк тренировок |
 | `garmin_sync` | каждые N ч (настройка, по умолчанию 6) | Полный синк Garmin |
 | `garmin_pulse` | интервал в активные часы (настройка) | Лёгкий пульс: шаги за сегодня, один запрос без логина |
+| `garmin_weight_export` | каждые N мин (настройка, по умолчанию 15) | Безопасная сверка последнего подходящего локального веса с Garmin; выключенная или ненастроенная интеграция ничего не делает |
 | `daily_brief` | время из настроек (по умолчанию 11:00) | Синк Garmin → сборка брифа → отправка под бюджетом |
 | `evening_block` | время из настроек (по умолчанию 23:45) | Итог дня + вопросы про завтра |
 | `nudges` | ежечасно в :05 | Обход реестра подсказок: условие, кулдаун, категория |
 | `weekly_digest` | понедельник, 08:00 | AI-дайджест |
 
-Время брифа, вечернего блока и частота Garmin живут в БД (карточка в `/settings`), а не в `.env` — сохранение перерегистрирует задачи на работающем планировщике, перезапуск не нужен.
+Время брифа, вечернего блока, частота опроса Garmin, интервал экспорта веса и его окно свежести живут в БД (карточка в `/settings`), а не в `.env` — сохранение перерегистрирует задачи на работающем планировщике, перезапуск не нужен.
 
 ---
 
@@ -735,7 +739,7 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_TELEGRAM_WEBHOOK_PATH` | Секретный сегмент URL вебхука (`/tg/<path>`) | *Опционально* |
 | `VITALS_TELEGRAM_WEBHOOK_SECRET` | Секрет из заголовка `X-Telegram-Bot-Api-Secret-Token` | *Опционально* |
 
-> Расписаний здесь нет намеренно: время брифа и вечернего блока, тихие часы, дневной бюджет сообщений, категории нуджей и частота опроса Garmin живут в БД и правятся на карточке «Проактивный слой» в `/settings` — эти настройки должны применяться без перезапуска контейнера.
+> Расписаний здесь нет намеренно: время брифа и вечернего блока, тихие часы, дневной бюджет сообщений, категории нуджей, частота опроса Garmin, интервал и окно свежести экспорта веса живут в БД и правятся на карточке «Проактивный слой» в `/settings` — эти настройки должны применяться без перезапуска контейнера.
 </details>
 
 ---
@@ -972,11 +976,14 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 <details>
 <summary><strong>⌚ 5. Garmin Connect</strong></summary>
 
-- **Models**: `GarminDaily`, `GarminActivity`, `GarminIntraday`
+- **Models**: `GarminDaily`, `GarminActivity`, `GarminIntraday`, `GarminWeightExport`
 - Auto-sync: sleep, sleep stages, HRV, resting HR, stress, Body Battery, Training Readiness + intraday stress / Body Battery curves
 - `garminconnect` session (pinned to 0.3.7): tokens cached in Redis + disk backup, and the token volume is archived by `backup.sh` next to the SQL dump
 - **Login breaker**: credential logins are rationed (3 per 24h, then a 6h pause, both in Redis) — Garmin rate-limits logins per account and every retry extends the block. A healthy token never touches it; MFA and "throttled" are reported apart from bad credentials
 - The poll schedule is not an env var: the full-sync interval and the light pulse (today's steps) between syncs live on the "Proactive layer" card in `/settings` and apply without a container restart
+- **Weight back to Garmin (opt-in)** — the Garmin card sends only the latest direct measurement (manual, MCP, or BIA), never echoes a Garmin import, and never backfills history. Its interval (15 minutes by default) and freshness window (at most 30 days) update the running scheduler without a restart; **Send now** starts an explicit reconciliation. Newly saved credentials take effect in the current process, while the background job quietly no-ops when credentials are absent
+- **Conservative weight writes** — before every POST, Vitals freshly reads the Garmin day and writes only when that day is empty. One equal pre-existing entry is recorded as an external match, not as Vitals-owned; a different value, multiple entries, or an incomplete Garmin response becomes a visible conflict without adding a duplicate or deleting external data. A correction replaces only the exact `samplePk` confirmed for Vitals' own POST, and only after confirming that the day is empty again
+- **Ambiguity and deletion** — before the network POST, Vitals commits a durable unverified marker with a reserved millisecond timestamp, so a crash or rollback cannot put the request back into the send queue. Garmin normally answers with `204` and no `samplePk`; ownership is then established only from one sole read-back record matching that timestamp, the `MANUAL` source, and the exact weight. Weight equality alone is insufficient: scheduled runs and **Send now** continue safe reconciliation and never repeat an unverified POST. Deleting a local weight queues removal only for a confirmed Vitals-owned Garmin record, while a monotonic cursor prevents deletion or re-enabling from exposing an older measurement for export. The write path uses `garminconnect`'s unofficial web API, so it is off by default
 - Fully reworked sleep analysis with detailed individual night pages
 - Fallback: direct Health Auto Export JSON import
 </details>
@@ -1073,7 +1080,7 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 - One gate for everything outgoing: module off, dedupe, quiet hours (nudges only) and a daily message budget; replies to the owner are deliberately exempt from the budget
 - Answering questions: a reply to one of the bot's messages, or just "why is my hrv down?" — the model sees the message being replied to plus the context the last brief was built on, and nothing else. Deep analysis belongs in Claude.ai over MCP, which has 75 tools and a better model
 - Signals and `day_context` reach both the weekly digest and the brief, with the hour attached — "coffee at 22:00" and "coffee at 09:00" are opposite facts wearing the same key
-- The channel sits behind a `Notifier` protocol — nothing above it knows about Telegram. The `signals` module is **off by default** and doubles as the master switch for the whole proactive layer: off means the bot says nothing at all. Brief and evening times, quiet hours, budget, nudge categories, the Garmin poll rate and the week template live on a card in `/settings`, and saving re-registers the jobs on the running scheduler **without a restart**
+- The channel sits behind a `Notifier` protocol — nothing above it knows about Telegram. The `signals` module is **off by default** and doubles as the master switch for the whole proactive layer: off means the bot says nothing at all. Brief and evening times, quiet hours, budget, nudge categories, the Garmin poll rate, the weight-export interval and freshness window, and the week template live on a card in `/settings`, and saving re-registers the jobs on the running scheduler **without a restart**
 - MCP: `get_signals`, `log_signal`, `get_day_context` — Claude can see what the owner told the bot
 - Setup: `VITALS_TELEGRAM_BOT_TOKEN`, `VITALS_TELEGRAM_CHAT_ID`, `VITALS_TELEGRAM_WEBHOOK_PATH`, `VITALS_TELEGRAM_WEBHOOK_SECRET` (see `.env.example`) — exactly **one** chat id is listened to, and the webhook is verified by a secret header
 </details>
@@ -1131,12 +1138,13 @@ Every job runs under a Redis lock (one runner across workers) and stamps a heart
 | `hevy_sync` | every 6h | Workout sync |
 | `garmin_sync` | every N hours (setting, default 6) | Full Garmin sync |
 | `garmin_pulse` | interval, active hours (setting) | Light pulse: today's steps, one request, no login |
+| `garmin_weight_export` | every N minutes (setting, default 15) | Safely reconcile the latest eligible local weight with Garmin; no-op while disabled or unconfigured |
 | `daily_brief` | from settings (default 11:00) | Garmin sync → assemble the brief → send under budget |
 | `evening_block` | from settings (default 23:45) | Day summary + questions about tomorrow |
 | `nudges` | hourly at :05 | Walks the nudge registry: condition, cooldown, category |
 | `weekly_digest` | Mondays, 08:00 | AI digest |
 
-Brief time, evening time and the Garmin poll rate live in the database (the `/settings` card), not in `.env` — saving re-registers the jobs on the running scheduler, no restart needed.
+Brief time, evening time, the Garmin poll rate, the weight-export interval and its freshness window live in the database (the `/settings` card), not in `.env` — saving re-registers the jobs on the running scheduler, no restart needed.
 
 ---
 
@@ -1502,7 +1510,7 @@ Two-factor sign-in has no variable: it is off by default and switched on in the 
 | `VITALS_TELEGRAM_WEBHOOK_PATH` | Secret segment of the webhook URL (`/tg/<path>`) | *Optional* |
 | `VITALS_TELEGRAM_WEBHOOK_SECRET` | Secret in the `X-Telegram-Bot-Api-Secret-Token` header | *Optional* |
 
-> No schedules here, on purpose: brief and evening times, quiet hours, the daily message budget, nudge categories and the Garmin poll rate live in the database and are edited on the "Proactive layer" card in `/settings` — those settings have to apply without restarting the container.
+> No schedules here, on purpose: brief and evening times, quiet hours, the daily message budget, nudge categories, the Garmin poll rate, and the weight-export interval and freshness window live in the database and are edited on the "Proactive layer" card in `/settings` — those settings have to apply without restarting the container.
 </details>
 
 ---

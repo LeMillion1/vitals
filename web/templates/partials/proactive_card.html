@@ -107,6 +107,24 @@
                            value="{{ p.garmin_sync_hours }}" class="v-input">
                 </div>
                 <div class="space-y-1.5">
+                    <label for="s-weight-export-minutes" class="v-label">{{ t("settings.weight_export_minutes") }}</label>
+                    <input inputmode="numeric" id="s-weight-export-minutes"
+                           name="garmin_weight_export_minutes" type="number"
+                           min="{{ weight_export_minutes_range[0] }}"
+                           max="{{ weight_export_minutes_range[1] }}" step="1"
+                           value="{{ p.garmin_weight_export_minutes }}" class="v-input">
+                    <p class="v-text-micro mt-1">{{ t("settings.weight_export_minutes_hint") }}</p>
+                </div>
+                <div class="space-y-1.5">
+                    <label for="s-weight-max-age" class="v-label">{{ t("settings.weight_max_age_days") }}</label>
+                    <input inputmode="numeric" id="s-weight-max-age"
+                           name="garmin_weight_max_age_days" type="number"
+                           min="{{ weight_max_age_days_range[0] }}"
+                           max="{{ weight_max_age_days_range[1] }}" step="1"
+                           value="{{ p.garmin_weight_max_age_days }}" class="v-input">
+                    <p class="v-text-micro mt-1">{{ t("settings.weight_max_age_days_hint") }}</p>
+                </div>
+                <div class="space-y-1.5">
                     <label for="s-pulse" class="v-label">{{ t("settings.pulse_seconds") }}</label>
                     <input inputmode="numeric" id="s-pulse" name="pulse_seconds" type="number"
                            min="0" max="{{ pulse_range[1] }}" step="1"

@@ -1543,6 +1543,14 @@ a.v-seg-btn {
     color: var(--accent-2);
 }
 
+/* Confirmed successful operation. This is separate from the alert severity
+   ladder: green reports an outcome and never marks navigation or a primary CTA. */
+.v-alert.good {
+    background: var(--good-soft);
+    border-color: var(--good-line);
+    color: var(--good);
+}
+
 .v-alert.warn {
     background: var(--warn-soft);
     border-color: var(--warn-line);

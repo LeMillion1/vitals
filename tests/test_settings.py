@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -112,6 +113,8 @@ async def test_settings_page_renders(auth_client):
     # that both talk about the same door.
     assert "Вход в Vitals" in r.text
     assert "Двухфакторная защита" in r.text
+    assert 'name="garmin_weight_export_minutes"' in r.text
+    assert 'name="garmin_weight_max_age_days"' in r.text
     # Verify download links have hx-boost="false" to bypass HTMX boosting
     assert 'href="/settings/export" class="v-btn text-xs text-center" download hx-boost="false"' in r.text
     assert 'href="/settings/export-llm" class="v-btn-ghost text-xs text-center" download hx-boost="false"' in r.text
@@ -208,15 +211,20 @@ async def test_settings_save_hevy(auth_client, tmp_path, monkeypatch):
     assert "VITALS_HEVY_API_KEY=hevy_abc123" in content
 
 
-async def test_settings_save_garmin(auth_client, tmp_path, monkeypatch):
-    """POST /settings/garmin writes email and password."""
+async def test_settings_save_garmin(auth_client, db_session, tmp_path, monkeypatch):
+    """Credential saves are live, while export remains a separate explicit opt-in."""
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_GARMIN_EMAIL=\nVITALS_GARMIN_PASSWORD=\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_GARMIN_EMAIL", "")
+    monkeypatch.setenv("VITALS_GARMIN_PASSWORD", "")
 
     r = await auth_client.post(
         "/settings/garmin",
-        data={"garmin_email": "user@example.com", "garmin_password": "hunter2"},
+        data={
+            "garmin_email": "user@example.com",
+            "garmin_password": "hunter2",
+        },
     )
     assert r.status_code == 303
     assert "saved=garmin" in r.headers["location"]
@@ -224,6 +232,165 @@ async def test_settings_save_garmin(auth_client, tmp_path, monkeypatch):
     content = env_file.read_text(encoding="utf-8")
     assert "VITALS_GARMIN_EMAIL=user@example.com" in content
     assert "VITALS_GARMIN_PASSWORD=hunter2" in content
+
+    from vitals.services import garmin_weight_service
+
+    assert os.environ["VITALS_GARMIN_EMAIL"] == "user@example.com"
+    assert os.environ["VITALS_GARMIN_PASSWORD"] == "hunter2"
+    assert await garmin_weight_service.is_enabled(db_session) is False
+
+    page = await auth_client.get("/settings", headers={"Accept": "text/html"})
+    assert 'hx-post="/settings/garmin/weight-toggle"' in page.text
+    assert 'hx-post="/settings/garmin/weight/send-now"' not in page.text
+
+
+async def test_garmin_weight_toggle_refuses_missing_credentials(
+    auth_client, db_session, tmp_path, monkeypatch
+):
+    env_file = tmp_path / "test.env"
+    env_file.write_text("VITALS_GARMIN_EMAIL=\nVITALS_GARMIN_PASSWORD=\n", encoding="utf-8")
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+
+    r = await auth_client.post(
+        "/settings/garmin/weight-toggle",
+        data={"enabled": "true"},
+        headers={"HX-Request": "true"},
+    )
+
+    assert r.status_code == 200
+    assert "Экспорт остался выключен" in r.text
+    from vitals.services import garmin_weight_service
+
+    assert await garmin_weight_service.is_enabled(db_session) is False
+    assert not re.search(
+        r'id="s-garmin-weight-export"[^>]*\schecked(?:\s|>)', r.text
+    )
+
+
+async def test_garmin_weight_toggle_applies_live_and_can_turn_off(
+    auth_client, db_session, tmp_path, monkeypatch
+):
+    env_file = tmp_path / "test.env"
+    env_file.write_text(
+        "VITALS_GARMIN_EMAIL=user@example.com\nVITALS_GARMIN_PASSWORD=hunter2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_GARMIN_EMAIL", "")
+    monkeypatch.setenv("VITALS_GARMIN_PASSWORD", "")
+
+    enabled = await auth_client.post(
+        "/settings/garmin/weight-toggle",
+        data={"enabled": "true"},
+        headers={"HX-Request": "true"},
+    )
+
+    assert enabled.status_code == 200
+    assert "Экспорт веса включён" in enabled.text
+    assert re.search(
+        r'id="s-garmin-weight-export"[^>]*\schecked(?:\s|>)', enabled.text
+    )
+    assert os.environ["VITALS_GARMIN_EMAIL"] == "user@example.com"
+    assert os.environ["VITALS_GARMIN_PASSWORD"] == "hunter2"
+
+    from vitals.services import garmin_weight_service
+
+    assert await garmin_weight_service.is_enabled(db_session) is True
+
+    disabled = await auth_client.post(
+        "/settings/garmin/weight-toggle",
+        data={"enabled": "false"},
+        headers={"HX-Request": "true"},
+    )
+    assert disabled.status_code == 200
+    assert "Экспорт веса выключен" in disabled.text
+    assert await garmin_weight_service.is_enabled(db_session) is False
+    assert not re.search(
+        r'id="s-garmin-weight-export"[^>]*\schecked(?:\s|>)', disabled.text
+    )
+
+
+async def test_garmin_weight_send_now_calls_safe_service(
+    auth_client, monkeypatch
+):
+    from vitals.services import garmin_weight_service
+
+    called = {}
+
+    async def _send_now(session, *, redis=None):
+        called["session"] = session
+        called["redis"] = redis
+        return {"status": "sent", "sent": True}
+
+    monkeypatch.setattr(garmin_weight_service, "send_now", _send_now)
+    r = await auth_client.post(
+        "/settings/garmin/weight/send-now",
+        headers={"HX-Request": "true"},
+    )
+
+    assert r.status_code == 200
+    assert "Последний подходящий вес безопасно сверен с Garmin" in r.text
+    assert called["session"] is not None
+    assert called["redis"] is not None
+
+
+@pytest.mark.parametrize(
+    "export_status",
+    [
+        "pending",
+        "checking",
+        "sent",
+        "matched",
+        "failed",
+        "skipped",
+        "conflict",
+        "unverified",
+        "delete_pending",
+        "delete_checking",
+        "delete_failed",
+        "deleted",
+    ],
+)
+@pytest.mark.parametrize("lang", ["en", "ru"])
+def test_garmin_weight_partial_renders_every_status_and_escapes_error(
+    export_status, lang
+):
+    from datetime import date, datetime
+
+    from vitals.i18n import current_lang, t
+    from web.templating import format_number, templates
+
+    token = current_lang.set(lang)
+    try:
+        expected = t(
+            f"settings.garmin_weight_status.{export_status}",
+            date="17-08-2026",
+            weight=format_number(84.5),
+        )
+        expected_next = t(
+            "settings.garmin_weight_next_attempt", at="17-08-2026 10:30"
+        )
+        html = templates.get_template("partials/garmin_weight_export.html").render(
+            {
+                "garmin_credentials_configured": True,
+                "garmin_weight_action": None,
+                "garmin_weight_export": {
+                    "enabled": True,
+                    "status": export_status,
+                    "date": date(2026, 8, 17),
+                    "weight_kg": 84.5,
+                    "last_error": "<script>alert('secret')</script>",
+                    "next_attempt_at": datetime(2026, 8, 17, 10, 30),
+                },
+            }
+        )
+    finally:
+        current_lang.reset(token)
+
+    assert expected in html
+    assert expected_next in html
+    assert "<script>alert('secret')</script>" not in html
+    assert "&lt;script&gt;" in html
 
 
 async def test_settings_save_mcp(auth_client, tmp_path, monkeypatch):
@@ -423,4 +590,3 @@ async def test_settings_modules_toggle_updates_proactive_chip_oob(auth_client):
     r = await auth_client.post("/settings/modules", data={"module": "signals", "enabled": "true"})
     assert r.status_code == 200
     assert '<span id="proactive-off-chip" hx-swap-oob="true"></span>' in r.text
-
