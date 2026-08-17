@@ -1816,20 +1816,22 @@ async def get_full_snapshot(
     on_date: Optional[str] = None,
     period_days: int = 7,
 ) -> dict:
-    """Returns one structured cross-domain snapshot for a point in time — the same
-    context the weekly digest is built from: profile, weight trend (noise-excluded
-    MA7 + slope), GLP-1 state, recent labs, activity/recovery, workouts, nutrition,
-    skincare and active goals, all aligned to ``on_date`` (default today) over a
-    ``period_days`` window. Use this instead of calling each per-domain read tool
-    separately when you want the whole picture / cross-domain correlations."""
+    """Returns context-v2 for a closed period (1..90 days): profile, coverage,
+    weight/body composition, GLP-1/HRT plans and facts, every lab result in the
+    period, Garmin recovery and activities, Hevy, nutrition, skincare, signals,
+    timeline and active goals. Every dated fact is bounded by the effective
+    period end. When ``on_date`` is today the closed period ends yesterday."""
     from vitals.services import digest_service
 
     session_factory = get_session_factory()
     parsed_date = _parse_date(on_date, field="on_date")
     async with session_factory() as session:
-        return await digest_service.assemble_context(
-            session, on_date=parsed_date, period_days=period_days
-        )
+        try:
+            return await digest_service.assemble_context(
+                session, on_date=parsed_date, period_days=period_days
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
 
 
 EXPORT_DEFAULT_DAYS = 90
@@ -2343,6 +2345,8 @@ async def generate_digest_now(period_days: int = 7) -> dict:
             )
         except LLMNotConfigured:
             return {"error": "LLM not configured — set VITALS_OPENROUTER_API_KEY"}
+        except ValueError as exc:
+            return {"error": str(exc)}
         await session.commit()
         return await serialize_written(session, row)
 
@@ -2941,4 +2945,3 @@ def get_mcp_app() -> tuple[object, object]:
     # rather than /mcp/mcp — the library's own default path would be appended.
     raw_app = mcp.http_app(transport="http", path="/")
     return MCPAuthMiddleware(raw_app, client_id=cfg.mcp_client_id), raw_app.router.lifespan_context
-

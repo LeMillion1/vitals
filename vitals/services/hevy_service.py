@@ -258,22 +258,50 @@ def workout_summary(workout: HevyWorkout) -> dict:
     """
     volume = 0.0
     working_sets = 0
+    exercise_details = []
     for exercise in workout.exercises:
+        exercise_volume = 0.0
+        exercise_sets = 0
+        weights: list[float] = []
+        reps: list[int] = []
+        rpes: list[float] = []
         for s in exercise.sets:
             if s.set_type not in _WORKING_SET_TYPES:
                 continue
             working_sets += 1
+            exercise_sets += 1
             if s.weight_kg and s.reps:
-                volume += s.weight_kg * s.reps
+                set_volume = s.weight_kg * s.reps
+                volume += set_volume
+                exercise_volume += set_volume
+            if s.weight_kg is not None:
+                weights.append(s.weight_kg)
+            if s.reps is not None:
+                reps.append(s.reps)
+            if s.rpe is not None:
+                rpes.append(s.rpe)
+        exercise_details.append(
+            {
+                "title": exercise.title,
+                "working_sets": exercise_sets,
+                "volume_kg": round(exercise_volume) or None,
+                "top_weight_kg": max(weights) if weights else None,
+                "total_reps": sum(reps) if reps else None,
+                "mean_rpe": round(sum(rpes) / len(rpes), 1) if rpes else None,
+            }
+        )
     return {
         "date": workout.date.isoformat(),
         "title": workout.title,
+        "program": workout.program,
+        "start_time": workout.start_time.isoformat() if workout.start_time else None,
         "duration_min": (
             round(workout.duration_seconds / 60) if workout.duration_seconds else None
         ),
         "working_sets": working_sets,
         "volume_kg": round(volume) or None,
         "exercises": [e.title for e in workout.exercises],
+        "exercise_details": exercise_details,
     }
 
 

@@ -87,8 +87,19 @@ async def test_get_full_snapshot_returns_cross_domain_context(db_session, sessio
 
     snap = await mcp_router.get_full_snapshot()
     assert "user_profile" in snap
+    assert snap["schema_version"] == 2
     assert snap["report_meta"]["period_days"] == 7
     assert "weight" in snap
+
+
+async def test_get_full_snapshot_rejects_unbounded_period(
+    db_session, session_factory, monkeypatch
+):
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+
+    result = await mcp_router.get_full_snapshot(period_days=91)
+
+    assert result == {"error": "period_days must be between 1 and 90"}
 
 
 # ── export_everything ─────────────────────────────────────────────────────────

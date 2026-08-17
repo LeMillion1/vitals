@@ -78,7 +78,7 @@ Vitals написан с Claude в качестве основного инст�
 <td width="50%">
 
 **🤖 AI и интеграции**
-- Еженедельные AI-дайджесты (Claude / GPT)
+- Еженедельные AI-дайджесты (Claude / GPT) из версионированного контекста за закрытый период: Garmin и Hevy, GLP-1 и ГЗТ, состав тела, анализы, питание и остальные включённые домены
 - Проактивный канал в Telegram: утренний бриф, вечерний блок, подсказки по условию
 - 75 MCP-инструментов для Claude.ai (чтение + запись + override)
 - OAuth 2.0 + PKCE авторизация MCP
@@ -847,7 +847,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 <td width="50%">
 
 **🤖 AI & Integrations**
-- Weekly AI digests (Claude / GPT via OpenRouter)
+- Weekly AI digests (Claude / GPT via OpenRouter) from versioned closed-period context: Garmin and Hevy, GLP-1 and HRT, body composition, labs, nutrition, and the other enabled domains
 - Proactive Telegram channel: morning brief, evening block, condition-driven nudges
 - 75 MCP tools for Claude.ai (read + write + override)
 - OAuth 2.0 + PKCE authorization for MCP

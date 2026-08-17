@@ -202,6 +202,23 @@ async def signals_module_on(db_session):
 
 
 @pytest_asyncio.fixture
+async def all_modules_on(db_session):
+    """Mirror the migration seed for service tests that exercise the full lake.
+
+    Bare ``create_all`` databases intentionally use the fail-safe optional-off
+    default. Cross-domain context tests opt into the production-like all-on
+    state explicitly so module-gating behavior remains testable elsewhere.
+    """
+    from vitals.models.app_settings import AppSetting
+    from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY
+
+    await db_session.merge(
+        AppSetting(key=SETTINGS_KEY, value={key: True for key in MODULE_REGISTRY})
+    )
+    await db_session.commit()
+
+
+@pytest_asyncio.fixture
 async def redis():
     """In-memory fakeredis client (async)."""
     import fakeredis.aioredis
@@ -256,4 +273,3 @@ async def auth_client(client):
     r = await client.post("/login", data={"username": TEST_USERNAME, "password": TEST_PASSWORD})
     assert r.status_code == 303
     return client
-

@@ -19,6 +19,8 @@ from vitals.services import digest_service
 # A Tuesday, like the day the complaint came from.
 DAY = date(2026, 8, 4)
 
+pytestmark = pytest.mark.usefixtures("all_modules_on")
+
 
 @pytest.fixture(autouse=True)
 def _now_is_the_morning_after(monkeypatch):
@@ -303,7 +305,7 @@ async def test_a_long_window_carries_all_of_its_signals(db_session):
 
 
 async def test_brief_context_stays_a_single_day(db_session):
-    """period_days=1 is the morning brief: no per-day series bolted onto it."""
+    """The explicit brief mode stays compact even though a 1-day report does not."""
     db_session.add(
         GarminDaily(
             domain="garmin",
@@ -315,6 +317,11 @@ async def test_brief_context_stays_a_single_day(db_session):
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=1)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        on_date=DAY,
+        period_days=1,
+        mode=digest_service.REPORT_MODE_BRIEF,
+    )
     assert "days" not in ctx["garmin"]
     assert "period_stats" not in ctx
