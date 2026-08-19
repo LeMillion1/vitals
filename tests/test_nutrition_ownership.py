@@ -9,7 +9,7 @@ from vitals.enums import UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.nutrition import MealLog
 from vitals.ownership import WriteIdentity
-from vitals.services import nutrition_service
+from vitals.services import conflict_engine, nutrition_service
 
 
 async def _identity(session, slug: str) -> WriteIdentity:
@@ -27,22 +27,34 @@ async def _identity(session, slug: str) -> WriteIdentity:
     return WriteIdentity(subject_id=subject.id, actor_user_id=user.id)
 
 
+async def _prepared(session, identity: WriteIdentity, on_date: date):
+    context = conflict_engine.ConflictWriteContext(
+        identity=identity,
+        evaluation_date=on_date,
+    )
+    return await conflict_engine.prepare_scoped_write(session, context=context)
+
+
 async def test_owned_create_and_reads_are_subject_isolated(db_session):
     first = await _identity(db_session, "nutrition-first")
     second = await _identity(db_session, "nutrition-second")
     on_date = date(2026, 8, 19)
+    first_prepared = await _prepared(db_session, first, on_date)
+    second_prepared = await _prepared(db_session, second, on_date)
 
     first_row = await nutrition_service.log_meal(
         db_session,
         on_date=on_date,
         name="first breakfast",
         identity=first,
+        prepared_conflict_write=first_prepared,
     )
     second_row = await nutrition_service.log_meal(
         db_session,
         on_date=on_date,
         name="second breakfast",
         identity=second,
+        prepared_conflict_write=second_prepared,
     )
 
     assert first_row.subject_id == first.subject_id
@@ -69,12 +81,15 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
     first = await _identity(db_session, "nutrition-first")
     second = await _identity(db_session, "nutrition-second")
     on_date = date(2026, 8, 19)
+    first_prepared = await _prepared(db_session, first, on_date)
+    second_prepared = await _prepared(db_session, second, on_date)
     row = await nutrition_service.log_meal(
         db_session,
         on_date=on_date,
         name="private meal",
         note="original",
         identity=first,
+        prepared_conflict_write=first_prepared,
     )
 
     assert (
@@ -85,6 +100,7 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
             name="forged update",
             note="forged",
             identity=second,
+            prepared_conflict_write=second_prepared,
         )
         is None
     )
@@ -92,6 +108,7 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
         db_session,
         row.id,
         identity=second,
+        prepared_conflict_write=second_prepared,
     ) is False
     assert row.name == "private meal"
     assert row.note == "original"
@@ -103,6 +120,7 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
         name="owner update",
         note="changed",
         identity=first,
+        prepared_conflict_write=first_prepared,
     )
     assert updated is row
     assert row.actor_user_id == first.actor_user_id
@@ -110,6 +128,7 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
         db_session,
         row.id,
         identity=first,
+        prepared_conflict_write=first_prepared,
     ) is True
     assert await db_session.get(MealLog, row.id) is None
 

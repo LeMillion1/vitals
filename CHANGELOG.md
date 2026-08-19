@@ -86,6 +86,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   budgets/dedupe across connection rotation, and the Signals module gate use the
   resolved subject. Registration remains closed while global conflict/alert,
   composition/export, provider credential, and scoped-unique cutovers remain.
+- Nutrition web/MCP writes now bind the authenticated legacy owner to an opaque
+  conflict capability before locking a meal. Create and update checks evaluate
+  the projected subject-day macro total, updates replace the prior day aggregate
+  without double counting, deletes share the same subject lock, and the day-end
+  job reconciles actorless subject alerts. Direct Nutrition summaries and search
+  are subject-scoped, while pre-backfill rows require the exact-one compatibility
+  bridge and partial-root rows remain hidden.
 - System alerts now have typed health-subject, provider-connection, and platform
   contexts backed by an exhaustive key/domain registry. The legacy owner sees
   health alerts plus current and retired provider alerts through one fail-closed

@@ -148,3 +148,12 @@ async def test_gated_write_tool_works_once_the_module_is_on():
     await mcp_router.set_module("nutrition", True)
     row = await mcp_router.log_meal(name="Обед", calories=500, on_date="2026-07-01")
     assert row["calories"] == 500
+
+
+async def test_nutrition_reads_and_generic_notes_refuse_when_module_is_off():
+    error = {"error": "module 'nutrition' is disabled"}
+
+    assert await mcp_router.get_nutrition_summary() == error
+    assert await mcp_router.search_meals() == error
+    assert await mcp_router.log_note("nutrition", 1, "hidden") == error
+    assert await mcp_router.get_notes(domain="nutrition") == [error]

@@ -233,13 +233,15 @@ async def _mcp_v1_conflict_scope(session) -> conflict_engine.ConflictScope:
 
 async def _mcp_v1_conflict_write_context(
     session,
+    *,
+    evaluation_date: date_type | None = None,
 ) -> conflict_engine.ConflictWriteContext:
     """Authenticate the configured owner for a scoped MCP v1 conflict write."""
 
     return await conflict_engine.resolve_legacy_conflict_write_context(
         session,
         actor_username=get_web_config().auth_username,
-        evaluation_date=today_local(),
+        evaluation_date=evaluation_date or today_local(),
     )
 
 
@@ -247,8 +249,8 @@ async def _mcp_v1_conflict_write_context(
 # ``gated``; the reads of those same domains are listed below. Used only to hide a
 # switched-off module's tools from ``tools/list`` — the surface is 75 tools and
 # their schemas are re-sent with every message of every conversation, so a domain
-# the owner does not track is pure weight. Reads stay callable if invoked directly:
-# hiding them is a budget decision, not a permission one.
+# the owner does not track is pure weight. Reads are classified separately below;
+# ownership-sensitive reads may also use this decorator to reject direct calls.
 TOOL_MODULES: dict[str, str] = {}
 
 
@@ -836,6 +838,14 @@ async def log_meal(
     parsed_time = _parse_time(eaten_at, field="eaten_at")
 
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
             row = await nutrition_service.log_meal(
                 session,
@@ -849,14 +859,18 @@ async def log_meal(
                 note=note,
                 source=Source.MCP.value,
                 override=override,
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         await session.commit()
         return await serialize_written(session, row)
 
 
 @mcp.tool()
+@gated("nutrition")
 async def get_nutrition_summary(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -875,10 +889,25 @@ async def get_nutrition_summary(
 
     if start == end:
         async with session_factory() as session:
-            return await nutrition_service.daily_summary(session, start, cfg)
+            scope = await _mcp_v1_conflict_scope(session)
+            return await nutrition_service.daily_summary(
+                session,
+                start,
+                cfg,
+                subject_id=scope.subject_id,
+                include_unowned_legacy=scope.include_legacy_unowned,
+            )
     else:
         async with session_factory() as session:
-            return await nutrition_service.nutrition_summary(session, start, end, cfg)
+            scope = await _mcp_v1_conflict_scope(session)
+            return await nutrition_service.nutrition_summary(
+                session,
+                start,
+                end,
+                cfg,
+                subject_id=scope.subject_id,
+                include_unowned_legacy=scope.include_legacy_unowned,
+            )
 
 
 # ── Meal CRUD tools ─────────────────────────────────────────────────────────
@@ -895,6 +924,7 @@ async def update_meal(
     eaten_at: Optional[str] = None,
     note: Optional[str] = None,
     on_date: Optional[str] = None,
+    override: bool = False,
 ) -> dict:
     """Updates an existing meal by ID. Returns the updated meal or an error.
 
@@ -909,29 +939,63 @@ async def update_meal(
     parsed_time = _parse_time(eaten_at, field="eaten_at")
 
     async with session_factory() as session:
-        merged = await _merged(
+        conflict_context = await _mcp_v1_conflict_write_context(
             session,
-            MealLog,
+            evaluation_date=parsed_date or today_local(),
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
+        current = await nutrition_service.get_meal_for_update(
+            session,
             meal_id,
-            date=parsed_date,
-            name=name,
-            eaten_at=parsed_time,
-            calories=calories,
-            protein_g=protein_g,
-            fat_g=fat_g,
-            carbs_g=carbs_g,
-            note=note,
+            identity=conflict_context.identity,
+            include_unowned_legacy=True,
+            prepared_conflict_write=prepared,
         )
-        if merged is None:
+        if current is None:
             return {"error": f"Meal {meal_id} not found"}
-        row = await nutrition_service.update_meal(
-            session, meal_id, on_date=merged.pop("date"), **merged
-        )
+        final_date = current.date if parsed_date is None else parsed_date
+        if conflict_context.evaluation_date != final_date:
+            conflict_context = conflict_engine.ConflictWriteContext(
+                identity=conflict_context.identity,
+                evaluation_date=final_date,
+                legacy_bridge=conflict_context.legacy_bridge,
+            )
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+        merged = {
+            "name": current.name if name is None else name,
+            "eaten_at": current.eaten_at if eaten_at is None else parsed_time,
+            "calories": current.calories if calories is None else calories,
+            "protein_g": current.protein_g if protein_g is None else protein_g,
+            "fat_g": current.fat_g if fat_g is None else fat_g,
+            "carbs_g": current.carbs_g if carbs_g is None else carbs_g,
+            "note": current.note if note is None else note,
+        }
+        try:
+            row = await nutrition_service.update_meal(
+                session,
+                meal_id,
+                on_date=final_date,
+                override=override,
+                identity=conflict_context.identity,
+                include_unowned_legacy=True,
+                prepared_conflict_write=prepared,
+                **merged,
+            )
+        except ConflictBlocked as e:
+            await session.rollback()
+            return _conflict_payload(e)
         await session.commit()
         return await serialize_written(session, row)
 
 
 @mcp.tool()
+@gated("nutrition")
 async def search_meals(
     query: Optional[str] = None,
     start_date: Optional[str] = None,
@@ -940,21 +1004,23 @@ async def search_meals(
 ) -> list[dict]:
     """Searches meals by name substring and/or date range. Returns matching meals
     ordered by date descending."""
+    from vitals.services import nutrition_service
+
     session_factory = get_session_factory()
     start = _parse_date(start_date, field="start_date")
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        stmt = select(MealLog)
-        if query:
-            stmt = stmt.where(MealLog.name.ilike(f"%{query}%"))
-        if start:
-            stmt = stmt.where(MealLog.date >= start)
-        if end:
-            stmt = stmt.where(MealLog.date <= end)
-        stmt = stmt.order_by(MealLog.date.desc(), MealLog.eaten_at.desc().nulls_last())
-        stmt = stmt.limit(limit)
-        rows = (await session.execute(stmt)).scalars().all()
+        scope = await _mcp_v1_conflict_scope(session)
+        rows = await nutrition_service.list_meals(
+            session,
+            start=start,
+            end=end,
+            subject_id=scope.subject_id,
+            include_unowned_legacy=scope.include_legacy_unowned,
+            name_query=query,
+            limit=limit,
+        )
         return [serialize_row(r) for r in rows]
 
 
@@ -1445,6 +1511,28 @@ async def log_note(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        if domain == "nutrition":
+            if not await _module_enabled(session, "nutrition"):
+                return {"error": "module 'nutrition' is disabled"}
+            from vitals.services import nutrition_service
+
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            row = await nutrition_service.update_meal_note(
+                session,
+                record_id,
+                note=note,
+                identity=conflict_context.identity,
+                include_unowned_legacy=True,
+                prepared_conflict_write=prepared,
+            )
+            if row is None:
+                return {"error": f"{domain} record {record_id} not found"}
+            await session.commit()
+            return await serialize_written(session, row)
         row = await session.get(model, record_id)
         if row is None:
             return {"error": f"{domain} record {record_id} not found"}
@@ -1467,14 +1555,46 @@ async def get_notes(
     if domain and domain not in _NOTE_MODELS:
         return [{"error": f"Unknown domain '{domain}'. Use: {', '.join(_NOTE_MODELS)}"}]
 
-    targets = {domain: _NOTE_MODELS[domain]} if domain else _NOTE_MODELS
+    targets = (
+        {domain: _NOTE_MODELS[domain]}
+        if domain
+        else dict(_NOTE_MODELS)
+    )
     session_factory = get_session_factory()
     start = _parse_date(start_date, field="start_date")
     end = _parse_date(end_date, field="end_date")
 
     results = []
     async with session_factory() as session:
+        nutrition_scope = None
+        if "nutrition" in targets:
+            if not await _module_enabled(session, "nutrition"):
+                if domain == "nutrition":
+                    return [{"error": "module 'nutrition' is disabled"}]
+                targets.pop("nutrition")
+            else:
+                nutrition_scope = await _mcp_v1_conflict_scope(session)
         for d_name, model in targets.items():
+            if d_name == "nutrition":
+                assert nutrition_scope is not None
+                from vitals.services import nutrition_service
+
+                rows = await nutrition_service.list_meals(
+                    session,
+                    start=start,
+                    end=end,
+                    subject_id=nutrition_scope.subject_id,
+                    include_unowned_legacy=(
+                        nutrition_scope.include_legacy_unowned
+                    ),
+                    has_note=True,
+                    limit=limit,
+                )
+                for row in rows:
+                    entry = serialize_row(row)
+                    entry["_domain"] = d_name
+                    results.append(entry)
+                continue
             stmt = select(model).where(model.note.isnot(None), model.note != "")
             if start:
                 stmt = stmt.where(model.date >= start)
@@ -1552,6 +1672,17 @@ async def delete_record(domain: str, record_id: int) -> dict:
             owned_kwargs = {
                 "identity": ownership.owner_action(),
                 "include_legacy_unowned": True,
+            }
+        elif domain == "nutrition":
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            owned_kwargs = {
+                "identity": conflict_context.identity,
+                "include_unowned_legacy": True,
+                "prepared_conflict_write": prepared,
             }
         elif domain == "signals":
             ownership = await _mcp_v1_legacy_owner(session)
@@ -3041,11 +3172,11 @@ TOOL_MODULES.update({
 class ModuleVisibilityMiddleware(Middleware):
     """Hide a switched-off module's tools from ``tools/list``.
 
-    They already refuse the call ("module '<key>' is disabled") — listing them only
-    spends the conversation's budget on schemas for domains the owner does not
-    track, and invites the model to try them. Resolved per request rather than
+    Writes and ownership-sensitive reads refuse disabled modules. Hiding every
+    classified tool also saves the conversation budget and avoids inviting the
+    model into a domain the owner does not track. Resolved per request rather than
     latched at import, so flipping a toggle in Settings takes effect on the next
-    reconnect without a restart. Fails open: if the module state can't be read, the
+    reconnect without a restart. Fails open: if module state cannot be read, the
     full surface is listed rather than an empty one.
     """
 

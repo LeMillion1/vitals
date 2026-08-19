@@ -214,8 +214,11 @@ Implementation progress on `commercial/main`:
   current and retired provider roots, and provider/scheduler writers use an exact
   reviewed scope. Conflict reads and all seven resolver domains use one subject
   and date. Curated conflict-rule activation is stored per subject, and the
-  Supplements web/MCP create, update, and activation paths use an opaque prepared
-  writer capability, locked target rows, and exact-row replacement semantics.
+  Supplements and Nutrition web/MCP create/update paths use an opaque prepared
+  writer capability and locked target rows. Supplements replace one catalog row;
+  Nutrition replaces the subject-day aggregate and evaluates projected totals so
+  concurrent meals cannot bypass a cumulative rule. Nutrition deletes share the
+  same subject lock, and its actorless day-end job uses scoped reconciliation.
   These paths resolve the verified legacy owner at their web, scheduler, or MCP
   boundary and fail closed if a second subject makes the compatibility bridge
   ambiguous.

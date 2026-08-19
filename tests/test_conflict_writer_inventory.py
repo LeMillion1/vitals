@@ -29,11 +29,6 @@ _EXPECTED_LEGACY_CALLS = Counter(
         ("vitals/services/hrt_service.py", "update_dose", "enforce"): 1,
         ("vitals/services/labs_service.py", "add_result", "enforce"): 1,
         ("vitals/services/nutrition_service.py", "log_meal", "enforce"): 1,
-        (
-            "vitals/services/nutrition_service.py",
-            "day_end_job",
-            "enforce_day_end",
-        ): 1,
         ("vitals/services/skincare_service.py", "upsert_log", "enforce"): 1,
         (
             "vitals/services/supplements_service.py",
@@ -464,7 +459,7 @@ def test_legacy_conflict_writer_inventory_is_exact() -> None:
             for (*_, api), count in actual.items()
             if api == "enforce_day_end"
         )
-        == 1
+        == 0
     )
 
 

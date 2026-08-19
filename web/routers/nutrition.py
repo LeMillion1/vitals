@@ -10,9 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
 from vitals.enums import Domain
-from vitals.services import alerts_service, nutrition_service
+from vitals.services import alerts_service, conflict_engine, nutrition_service
 from vitals.services.conflict_engine import ConflictBlocked
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -41,38 +40,39 @@ async def nutrition_dashboard(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
-        db,
-        actor_username=username,
-    )
-    cfg = load_config()
     today = today_local()
     selected_date = date or today
+    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=selected_date,
+    )
+    cfg = load_config()
     # This resolver proves there is exactly one subject, which is the only
     # state where pre-backfill NULL-subject rows may be shown safely.
     day_meals = await nutrition_service.list_meals_for_date(
         db,
         selected_date,
-        subject_id=ownership.subject_id,
+        subject_id=conflict_context.identity.subject_id,
         include_unowned_legacy=True,
     )
     summary = await nutrition_service.daily_summary(
         db,
         selected_date,
         cfg,
-        subject_id=ownership.subject_id,
+        subject_id=conflict_context.identity.subject_id,
         include_unowned_legacy=True,
     )
     history = await nutrition_service.list_meals(
         db,
         start=None,
         end=None,
-        subject_id=ownership.subject_id,
+        subject_id=conflict_context.identity.subject_id,
         include_unowned_legacy=True,
     )
     alerts = await alerts_service.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        context=alerts_service.HealthAlertContext(conflict_context.identity),
         domain=Domain.NUTRITION,
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
@@ -117,14 +117,20 @@ async def add_meal(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
-        db,
-        actor_username=username,
-    )
-    identity = ownership.owner_action()
     on_date = date_type.fromisoformat(date)
     parsed_time = time_type.fromisoformat(eaten_at) if eaten_at and eaten_at.strip() else None
     try:
+        conflict_context = (
+            await conflict_engine.resolve_legacy_conflict_write_context(
+                db,
+                actor_username=username,
+                evaluation_date=on_date,
+            )
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            db,
+            context=conflict_context,
+        )
         if id is not None:
             await nutrition_service.update_meal(
                 db, id,
@@ -136,7 +142,10 @@ async def add_meal(
                 fat_g=fat_g,
                 carbs_g=carbs_g,
                 note=note,
-                identity=identity,
+                override=override,
+                identity=conflict_context.identity,
+                include_unowned_legacy=True,
+                prepared_conflict_write=prepared,
             )
         else:
             await nutrition_service.log_meal(
@@ -150,7 +159,8 @@ async def add_meal(
                 carbs_g=carbs_g,
                 note=note,
                 override=override,
-                identity=identity,
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
             )
         await db.commit()
     except ConflictBlocked as e:
@@ -169,14 +179,20 @@ async def delete_meal(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
+    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        db,
+        context=conflict_context,
     )
     await nutrition_service.delete_meal(
         db,
         id,
-        identity=ownership.owner_action(),
+        identity=conflict_context.identity,
+        include_unowned_legacy=True,
+        prepared_conflict_write=prepared,
     )
     await db.commit()
     return _redirect(request)

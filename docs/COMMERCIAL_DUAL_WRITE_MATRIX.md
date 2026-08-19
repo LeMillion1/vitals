@@ -169,8 +169,12 @@ The scoped writer core binds an opaque capability to the validated identity,
 session, transaction/savepoint, and evaluation date. Supplements create, update,
 and activation use that capability; updates lock and refresh the target and
 exclude exactly that row from the resolver snapshot before applying the proposed
-state. Other domain writers and the transitional legacy service fallback remain
-on the reviewed inventory. Their cutover must preserve the canonical governance
+state. Nutrition web/MCP create and update paths use the same proof, evaluate the
+post-write subject-day aggregate, and preserve meal-level name predicates. Meal
+deletion joins the subject-lock order, direct MCP Nutrition reads are scoped, and
+the day-end job reconciles actorless subject alerts. Other domain writers and the
+transitional legacy service fallbacks remain on the reviewed inventory. Their
+cutover must preserve the canonical governance
 -> provider/outbox advisory -> subject/domain-row -> alert order;
 in particular, weight conflict enforcement cannot acquire governance after the
 existing active-weight advisory lock. These remaining surfaces are explicit
