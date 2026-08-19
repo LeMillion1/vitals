@@ -317,12 +317,13 @@ async def test_garmin_weight_send_now_calls_safe_service(
 
     called = {}
 
-    async def _send_now(session, *, redis=None):
+    async def _send_now(session, *, prepared, redis=None):
         called["session"] = session
+        called["prepared"] = prepared
         called["redis"] = redis
         return {"status": "sent", "sent": True}
 
-    monkeypatch.setattr(garmin_weight_service, "send_now", _send_now)
+    monkeypatch.setattr(garmin_weight_service, "send_now_scoped", _send_now)
     r = await auth_client.post(
         "/settings/garmin/weight/send-now",
         headers={"HX-Request": "true"},
@@ -331,6 +332,10 @@ async def test_garmin_weight_send_now_calls_safe_service(
     assert r.status_code == 200
     assert "Последний подходящий вес безопасно сверен с Garmin" in r.text
     assert called["session"] is not None
+    assert isinstance(
+        called["prepared"],
+        garmin_weight_service.PreparedGarminWeightExport,
+    )
     assert called["redis"] is not None
 
 

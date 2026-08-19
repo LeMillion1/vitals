@@ -1276,6 +1276,15 @@ async def ingest_owned_daily(
                 identity=identity,
                 on_date=on_date,
             ),
+            garmin_weight_export_context=(
+                garmin_weight_service.GarminWeightExportContext(
+                    identity=identity,
+                    integration_connection_id=integration_connection_id,
+                    legacy_bridge=(
+                        conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                    ),
+                )
+            ),
         )
     elif prepared_weight_write is not None:
         prepared_context = weight_service.require_prepared_weight_identity(
@@ -1293,6 +1302,14 @@ async def ingest_owned_daily(
         ):
             raise GarminOwnershipValidationError(
                 "owned Garmin ingest requires a fully-unowned Weight bridge"
+            )
+        if (
+            prepared_weight_write.garmin_weight_export is None
+            or prepared_weight_write.garmin_weight_export.context.integration_connection_id
+            != integration_connection_id
+        ):
+            raise GarminOwnershipValidationError(
+                "owned Garmin ingest requires its prepared export destination"
             )
     else:
         await acquire_identity_governance_lock(session)
@@ -1407,11 +1424,26 @@ async def reparse_owned_daily_from_raw(
         raw_row.subject_id,
         raw_row.actor_user_id,
     )
+    from vitals.services import garmin_weight_service
+
+    resolved_export = await garmin_weight_service.resolve_optional_legacy_export_context(
+        session,
+        actor_username=None,
+    )
     prepared_weight_write = await weight_service.prepare_weight_write(
         session,
         context=_owned_weight_write_context(
             identity=preliminary_identity,
             on_date=on_date_hint,
+        ),
+        garmin_weight_export_context=(
+            garmin_weight_service.GarminWeightExportContext(
+                identity=preliminary_identity,
+                integration_connection_id=resolved_export.integration_connection_id,
+                legacy_bridge=resolved_export.legacy_bridge,
+            )
+            if resolved_export is not None
+            else None
         ),
     )
     persisted, identity, connection_id = await _locked_owned_raw_context(
@@ -2411,11 +2443,22 @@ async def pulse_owned(
     # Fetch first, then serialize and read the latest stored bundle. Reading the
     # base before the await lets a concurrent full sync commit newer sleep/HRV
     # data which this lightweight pulse would subsequently overwrite as stale.
+    from vitals.services import garmin_weight_service
+
     prepared_weight_write = await weight_service.prepare_weight_write(
         session,
         context=_owned_weight_write_context(
             identity=identity,
             on_date=day,
+        ),
+        garmin_weight_export_context=(
+            garmin_weight_service.GarminWeightExportContext(
+                identity=identity,
+                integration_connection_id=integration_connection_id,
+                legacy_bridge=(
+                    conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                ),
+            )
         ),
     )
     await _lock_owned_garmin_scope(

@@ -50,7 +50,7 @@ or multi-subject reads are enabled.
 | `conflict_rules` | curated catalog sync and subject toggle | Curated rows stay global. Subject activation moves to `SubjectSetting` with temporary legacy dual-write. |
 | `signals`, `day_context` | Telegram, MCP, evening plan, raw reparse | Telegram facts get S+A+Telegram C; MCP gets S+A; planned/system rows have A/C null; reparse copies raw ownership. |
 | `garmin_daily`, `garmin_activities`, `garmin_intraday` | scheduler, on-demand sync, HAE import, raw reparse | S+Garmin C required. Human-triggered runs get A; scheduler runs do not. Intraday replacement deletes only inside S+C. |
-| `garmin_weight_exports` | Core upsert and outbox lifecycle | S comes from the weight, C is the Garmin destination, and requester records the human who initiated it. Lifecycle updates never erase requester. |
+| `garmin_weight_exports` | Core upsert and outbox lifecycle | S matches the validated Weight subject; C is the distinct Garmin destination. Q records the human requester and stays NULL for scheduler work. Linked Weight provenance keeps its own origin C/raw roots, and lifecycle updates never erase Q. |
 | `genetic_variants` | VCF/manual/MCP | Raw-first, then S+A and raw link on interpreted variants. Upsert keys are S-scoped. |
 | `raw_payloads` | all imports/connectors/uploads/Telegram | Raw ownership is written before normalized rows. Lookup is S/C scoped; refresh preserves historical A and rejects cross-S/C/F conflicts. |
 | `glp1_*` | web/MCP | Human rows get S+A; automatic phase close is S-scoped and preserves A. MCP retains `Source.MCP`. |
@@ -101,7 +101,7 @@ The first reviewed mappings are deliberately small:
 - `ui_language` -> `UserSetting`;
 - `enabled_modules`, `custom_charts`, `week_template` -> `SubjectSetting`;
 - `garmin_weight_export_enabled` -> Garmin `IntegrationConnectionSetting`
-  (target mapping only; its product-path dual-write is still pending).
+  with exact-connection reads and temporary exact-one legacy dual-write.
 
 Reads are new-first with legacy fallback. Writes update both rows in one caller-
 owned transaction. `twofa_secret`, credentials, token material, unknown keys, and
@@ -110,13 +110,15 @@ object must first be split into subject, Telegram-connection, and Garmin-
 connection fields. Redis keys must include the corresponding user/S/C UUID before
 a second subject exists.
 
-The language, module-toggle, custom-chart, and week-template product paths now
+The language, module-toggle, custom-chart, week-template, and Garmin Weight export
+product paths now
 use that bridge. Week-template partial MCP updates use a locked atomic transform.
 Authenticated web chrome resolves the sole owner once per request; writes use an
 atomic locked transform for JSON collections and prime only UUID-namespaced
 Redis entries after commit. Anonymous compatibility pages may still read the
-legacy installation value while registration is closed. The Garmin connection
-setting remains pending at this stage.
+legacy installation value while registration is closed. A strict Garmin scope
+never falls back to the installation setting, and a retired historical connection
+can be disabled without mutating the current installation-wide compatibility row.
 
 ## File transition
 
@@ -200,8 +202,13 @@ replay, and body-scan-derived weights reuse a Weight capability acquired in the
 canonical governance -> active-weight advisory -> subject/domain-row -> alert
 order; provider facts require an exact matching raw/connection chain. A delete or
 date move evaluates the historical replacement before promotion and leaves an
-unsafe candidate superseded. The global active-weight-per-date key, Garmin export
-outbox/date key, direct BodyMeasurement and NoiseMarker paths, and unscoped chart,
+unsafe candidate superseded. The Garmin Weight outbox now validates the exact
+S+destination-C scope, preserves human Q while scheduler projections keep Q NULL,
+uses the scoped opt-in, and rejects partial/foreign outbox or linked-Weight roots
+before a remote mutation. Durable leases are followed by fresh lifecycle/root
+validation before network activity; unavailable Garmin export never blocks the
+local health write. The global active-weight-per-date and outbox/date keys, direct
+BodyMeasurement and NoiseMarker paths, and unscoped chart,
 share, digest, overview, and export consumers remain explicit release blockers.
 Other domain writers and transitional legacy fallbacks stay on the reviewed
 inventory, so registration and every path to a second writable subject remain
@@ -237,10 +244,10 @@ Garmin and Hevy runtime ingestion now resolves S plus the provider C before
 network persistence, copies raw provenance into normalized parents and children,
 and rejects cross-S/C refresh, ambiguous legacy adoption, and invalid lifecycle
 state. Subject->connection lock order is shared across sync and reparse paths.
-Garmin auth/token alerts, Hevy sync alerts, and scheduler provider failures now
+Garmin auth/token/weight-export alerts, Hevy sync alerts, and scheduler provider failures now
 use exact provider roots; scheduler subject and platform jobs are classified by
 an exhaustive registry. Global provider credentials, Redis namespaces, Garmin
-weight outbox alerts, upstream natural-key uniqueness, and the read transaction
+Weight outbox/date uniqueness, upstream natural-key uniqueness, and the read transaction
 spanning vendor I/O remain PR-09/cutover work; registration therefore remains
 disabled.
 

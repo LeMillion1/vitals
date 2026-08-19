@@ -24,6 +24,7 @@ from vitals.services import (
     body_scan_service,
     conflict_engine,
     file_asset_service,
+    garmin_weight_service,
     raw_payload_service,
     weight_service,
 )
@@ -54,6 +55,31 @@ SECTION_PAGES = ("/weight", "/weight/measures", "/today")
 
 # Render order of metric categories in the body-composition detail view.
 BODY_CAT_ORDER = ["composition", "water", "segmental", "score", "derived", "other"]
+
+
+async def _prepare_weight_write(
+    db: AsyncSession,
+    *,
+    username: str,
+    on_date: date_type,
+) -> tuple[conflict_engine.ConflictWriteContext, weight_service.PreparedWeightWrite]:
+    """Resolve the legacy owner and Garmin destination under one governance lock."""
+
+    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=on_date,
+    )
+    export_context = await garmin_weight_service.resolve_optional_legacy_export_context(
+        db,
+        actor_username=username,
+    )
+    prepared = await weight_service.prepare_weight_write(
+        db,
+        context=conflict_context,
+        garmin_weight_export_context=export_context,
+    )
+    return conflict_context, prepared
 
 
 def _back(request: Request, default: str = "/weight"):
@@ -277,16 +303,10 @@ async def log_weight_entry(
     """Logs or edits a weight, returning 409 JSON on rule violation for override confirmation."""
     on_date = date_type.fromisoformat(date)
     try:
-        conflict_context = (
-            await conflict_engine.resolve_legacy_conflict_write_context(
-                db,
-                actor_username=username,
-                evaluation_date=on_date,
-            )
-        )
-        prepared = await weight_service.prepare_weight_write(
+        conflict_context, prepared = await _prepare_weight_write(
             db,
-            context=conflict_context,
+            username=username,
+            on_date=on_date,
         )
         if id is not None:
             await weight_service.update_weight_log(
@@ -673,14 +693,10 @@ async def body_scan_confirm(
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date")
 
-    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+    conflict_context, prepared_weight_write = await _prepare_weight_write(
         db,
-        actor_username=username,
-        evaluation_date=on_date,
-    )
-    prepared_weight_write = await weight_service.prepare_weight_write(
-        db,
-        context=conflict_context,
+        username=username,
+        on_date=on_date,
     )
     identity = conflict_context.identity
     try:
@@ -784,14 +800,10 @@ async def delete_weight_entry(
 ):
     from vitals.utils.timeutils import today_local
 
-    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+    conflict_context, prepared = await _prepare_weight_write(
         db,
-        actor_username=username,
-        evaluation_date=today_local(),
-    )
-    prepared = await weight_service.prepare_weight_write(
-        db,
-        context=conflict_context,
+        username=username,
+        on_date=today_local(),
     )
     await weight_service.delete_weight_log(
         db,

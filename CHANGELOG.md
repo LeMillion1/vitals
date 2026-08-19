@@ -128,8 +128,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   order. Provider-derived weights require a matching owned raw payload and
   connection, direct reads/notes reject foreign or partial roots, and deleting or
   moving an active row never silently reactivates a safety-blocked historical
-  value. The global active-date key, Garmin export outbox, BodyMeasurement/noise
+  value. The global active-date and Garmin outbox-date keys, BodyMeasurement/noise
   paths, and cross-domain chart/share/export readers remain registration blockers.
+- The Garmin Weight export outbox now projects only the prepared subject and Garmin
+  account, validates every linked Weight fact before using remote-delete authority,
+  and records the human requester while scheduled work remains actorless. Settings,
+  manual/MCP Weight writes, Garmin ingestion, body-scan derivation, and the scheduler
+  use the scoped connection setting and transaction-bound outbox capability. Each
+  vendor mutation revalidates live account roots after durable intent commits; a
+  disabled or retired Garmin account stops new network activity without blocking a
+  local health correction. The global outbox date key, provider credentials, and
+  Redis/provider scheduling namespaces still block multi-subject registration.
 - System alerts now have typed health-subject, provider-connection, and platform
   contexts backed by an exhaustive key/domain registry. The legacy owner sees
   health alerts plus current and retired provider alerts through one fail-closed

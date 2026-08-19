@@ -246,6 +246,31 @@ async def _mcp_v1_conflict_write_context(
     )
 
 
+async def _mcp_v1_weight_write(
+    session,
+    *,
+    evaluation_date: date_type | None = None,
+):
+    """Prepare Weight plus its distinct Garmin destination outbox."""
+
+    from vitals.services import garmin_weight_service, weight_service
+
+    conflict_context = await _mcp_v1_conflict_write_context(
+        session,
+        evaluation_date=evaluation_date,
+    )
+    export_context = await garmin_weight_service.resolve_optional_legacy_export_context(
+        session,
+        actor_username=get_web_config().auth_username,
+    )
+    prepared = await weight_service.prepare_weight_write(
+        session,
+        context=conflict_context,
+        garmin_weight_export_context=export_context,
+    )
+    return conflict_context, prepared
+
+
 # tool name → the optional module it belongs to. Writes register themselves through
 # ``gated``; the reads of those same domains are listed below. Used only to hide a
 # switched-off module's tools from ``tools/list`` — the surface is 75 tools and
@@ -1062,13 +1087,9 @@ async def log_weight(
 
     async with session_factory() as session:
         try:
-            conflict_context = await _mcp_v1_conflict_write_context(
+            conflict_context, prepared = await _mcp_v1_weight_write(
                 session,
                 evaluation_date=parsed_date,
-            )
-            prepared = await weight_service.prepare_weight_write(
-                session,
-                context=conflict_context,
             )
             row = await weight_service.log_weight(
                 session,
@@ -1688,11 +1709,7 @@ async def log_note(
         if domain == "weight":
             from vitals.services import weight_service
 
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await weight_service.prepare_weight_write(
-                session,
-                context=conflict_context,
-            )
+            conflict_context, prepared = await _mcp_v1_weight_write(session)
             row = await weight_service.update_weight_note(
                 session,
                 record_id,
@@ -2030,11 +2047,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
         if domain == "weight":
             from vitals.services import weight_service
 
-            conflict_context = await _mcp_v1_conflict_write_context(session)
-            prepared = await weight_service.prepare_weight_write(
-                session,
-                context=conflict_context,
-            )
+            conflict_context, prepared = await _mcp_v1_weight_write(session)
             owned_kwargs = {
                 "identity": conflict_context.identity,
                 "include_legacy_unowned": True,
@@ -2205,13 +2218,9 @@ async def log_body_scan(
 
     async with session_factory() as session:
         try:
-            conflict_context = await _mcp_v1_conflict_write_context(
+            conflict_context, prepared_weight_write = await _mcp_v1_weight_write(
                 session,
                 evaluation_date=parsed_date,
-            )
-            prepared_weight_write = await weight_service.prepare_weight_write(
-                session,
-                context=conflict_context,
             )
             scan = await body_scan_service.save_scan(
                 session,

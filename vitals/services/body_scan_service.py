@@ -326,12 +326,29 @@ async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
     if raw_row.subject_id is not None and raw_row.file_asset_id is not None:
         on_date = _parse_date(extracted.get("date")) or today_local()
         identity = WriteIdentity(raw_row.subject_id, raw_row.actor_user_id)
+        from vitals.services import garmin_weight_service
+
+        resolved_export = await garmin_weight_service.resolve_optional_legacy_export_context(
+            session,
+            actor_username=None,
+        )
         prepared_weight_write = await weight_service.prepare_weight_write(
             session,
             context=conflict_engine.ConflictWriteContext(
                 identity=identity,
                 evaluation_date=on_date,
                 legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            ),
+            garmin_weight_export_context=(
+                garmin_weight_service.GarminWeightExportContext(
+                    identity=identity,
+                    integration_connection_id=(
+                        resolved_export.integration_connection_id
+                    ),
+                    legacy_bridge=resolved_export.legacy_bridge,
+                )
+                if resolved_export is not None
+                else None
             ),
         )
         await save_scan(

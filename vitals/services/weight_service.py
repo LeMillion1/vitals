@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import uuid
 from datetime import date as date_type, timedelta
-from typing import Optional, Sequence
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +56,12 @@ from vitals.services.analytics.regression import fit_trend, project_date_for_val
 from vitals.services.analytics.rolling import rolling_mean_by_date
 from vitals.utils.timeutils import today_local
 
+if TYPE_CHECKING:
+    from vitals.services.garmin_weight_service import (
+        GarminWeightExportContext,
+        PreparedGarminWeightExport,
+    )
+
 NOISE_ALERT_KEY = "weight.noisy_period_active"
 
 
@@ -80,7 +86,7 @@ class PreparedWeightWrite:
     issues this wrapper.
     """
 
-    __slots__ = ("_prepared", "_seal", "_session")
+    __slots__ = ("_garmin_export", "_prepared", "_seal", "_session")
 
     def __new__(cls, *args, **kwargs):
         del args, kwargs
@@ -94,11 +100,13 @@ class PreparedWeightWrite:
         *,
         session: AsyncSession,
         prepared: conflict_engine.PreparedConflictWrite,
+        garmin_export: "PreparedGarminWeightExport | None",
     ) -> PreparedWeightWrite:
         token = object.__new__(cls)
         object.__setattr__(token, "_prepared", prepared)
         object.__setattr__(token, "_session", session)
         object.__setattr__(token, "_seal", _PREPARED_WEIGHT_WRITE_SEAL)
+        object.__setattr__(token, "_garmin_export", garmin_export)
         return token
 
     def __setattr__(self, name, value) -> None:
@@ -113,11 +121,18 @@ class PreparedWeightWrite:
     def conflict_write(self) -> conflict_engine.PreparedConflictWrite:
         return self._prepared
 
+    @property
+    def garmin_weight_export(self) -> "PreparedGarminWeightExport | None":
+        """Prepared destination outbox, distinct from the Weight origin roots."""
+
+        return self._garmin_export
+
 
 async def prepare_weight_write(
     session: AsyncSession,
     *,
     context: conflict_engine.ConflictWriteContext,
+    garmin_weight_export_context: "GarminWeightExportContext | None" = None,
 ) -> PreparedWeightWrite:
     """Prepare a scoped Weight mutation in the canonical lock order.
 
@@ -133,7 +148,30 @@ async def prepare_weight_write(
         session,
         context=context,
     )
-    return PreparedWeightWrite._issue(session=session, prepared=prepared)
+    prepared_export = None
+    if garmin_weight_export_context is not None:
+        if garmin_weight_export_context.identity != context.identity:
+            raise conflict_engine.ConflictPreparedWriteError(
+                "Garmin Weight export identity does not match Weight identity"
+            )
+        if garmin_weight_export_context.legacy_bridge is not context.legacy_bridge:
+            raise conflict_engine.ConflictPreparedWriteError(
+                "Garmin Weight export bridge does not match Weight bridge"
+            )
+        try:
+            prepared_export = await garmin_weight_service.prepare_scoped_export(
+                session,
+                context=garmin_weight_export_context,
+            )
+        except garmin_weight_service.GarminWeightExportConnectionInactiveError:
+            # Garmin is an optional destination. A disabled/retired account must
+            # stop outbox projection, not block the local health correction.
+            prepared_export = None
+    return PreparedWeightWrite._issue(
+        session=session,
+        prepared=prepared,
+        garmin_export=prepared_export,
+    )
 
 
 def _require_scoped_prepared_write(
@@ -861,6 +899,11 @@ async def _prepared_weight_write_for_date(
             evaluation_date=on_date,
             legacy_bridge=context.legacy_bridge,
         ),
+        garmin_weight_export_context=(
+            prepared.garmin_weight_export.context
+            if prepared.garmin_weight_export is not None
+            else None
+        ),
     )
 
 
@@ -1101,7 +1144,13 @@ async def log_weight(
             include_legacy_unowned=include_legacy_unowned,
         )
     if insert_as_active:
-        await garmin_weight_service.handle_active_weight_changed(session)
+        if context is None:
+            await garmin_weight_service.handle_legacy_active_weight_changed(session)
+        elif prepared_weight_write.garmin_weight_export is not None:
+            await garmin_weight_service.handle_active_weight_changed_scoped(
+                session,
+                prepared=prepared_weight_write.garmin_weight_export,
+            )
     return row
 
 
@@ -1987,13 +2036,23 @@ async def delete_weight_log(
         # network call here. The export job will delete only a remote sample that
         # Vitals owns, and its monotonic cursor prevents an older date surfacing as
         # an accidental backfill after this row disappears.
-        await garmin_weight_service.handle_active_weight_deleted(
-            session,
-            deleted_id=deleted_id,
-            on_date=target_date,
-            deleted_weight_kg=deleted_weight_kg,
-            replacement=next_row,
-        )
+        if context is None:
+            await garmin_weight_service.handle_legacy_active_weight_deleted(
+                session,
+                deleted_id=deleted_id,
+                on_date=target_date,
+                deleted_weight_kg=deleted_weight_kg,
+                replacement=next_row,
+            )
+        elif effective_prepared.garmin_weight_export is not None:
+            await garmin_weight_service.handle_active_weight_deleted_scoped(
+                session,
+                prepared=effective_prepared.garmin_weight_export,
+                deleted_id=deleted_id,
+                on_date=target_date,
+                deleted_weight_kg=deleted_weight_kg,
+                replacement=next_row,
+            )
     return True
 
 
@@ -2243,7 +2302,13 @@ async def update_weight_log(
             subject_id=identity.subject_id if identity is not None else None,
             include_legacy_unowned=include_legacy_unowned,
         )
-        await garmin_weight_service.handle_active_weight_changed(session)
+        if context is None:
+            await garmin_weight_service.handle_legacy_active_weight_changed(session)
+        elif prepared_weight_write.garmin_weight_export is not None:
+            await garmin_weight_service.handle_active_weight_changed_scoped(
+                session,
+                prepared=prepared_weight_write.garmin_weight_export,
+            )
     return row
 
 

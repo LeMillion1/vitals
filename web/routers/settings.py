@@ -87,16 +87,29 @@ async def _garmin_weight_control(
     request: Request,
     *,
     db: AsyncSession,
+    username: str,
     action: Optional[str] = None,
 ) -> HTMLResponse:
     """Render the self-contained HTMX control after a live action."""
     email, password = _garmin_credentials()
+    export_context = await garmin_weight_service.resolve_legacy_export_context(
+        db,
+        actor_username=username,
+    )
+    prepared_export = await garmin_weight_service.prepare_scoped_export(
+        db,
+        context=export_context,
+        historical=True,
+    )
     return templates.TemplateResponse(
         request,
         "partials/garmin_weight_export.html",
         {
             "garmin_credentials_configured": bool(email and password),
-            "garmin_weight_export": await garmin_weight_service.get_status(db),
+            "garmin_weight_export": await garmin_weight_service.get_status_scoped(
+                db,
+                prepared=prepared_export,
+            ),
             "garmin_weight_action": action,
         },
     )
@@ -121,11 +134,23 @@ async def _page(
     adjusted: Optional[str] = None,
 ) -> HTMLResponse:
     """Build the template context and render settings.html."""
+    # Redis is external I/O. Read it before any database preparation can acquire
+    # transaction-lifetime identity/outbox locks.
+    breaker = await login_breaker_state(redis)
     ownership = await resolve_legacy_ownership_context(
         db,
         actor_username=username,
     )
     proactive = await prefs.get_prefs(db)
+    export_context = await garmin_weight_service.resolve_legacy_export_context(
+        db,
+        actor_username=username,
+    )
+    prepared_export = await garmin_weight_service.prepare_scoped_export(
+        db,
+        context=export_context,
+        historical=True,
+    )
     twofa = await twofa_service.get_state(db)
     _twofa_uri = (
         twofa_service.provisioning_uri(twofa.secret, account=username) if twofa.pending else ""
@@ -164,7 +189,10 @@ async def _page(
         "garmin_email": read_key("VITALS_GARMIN_EMAIL"),
         "garmin_password_set": bool(read_key("VITALS_GARMIN_PASSWORD")),
         "garmin_credentials_configured": bool(all(_garmin_credentials())),
-        "garmin_weight_export": await garmin_weight_service.get_status(db),
+        "garmin_weight_export": await garmin_weight_service.get_status_scoped(
+            db,
+            prepared=prepared_export,
+        ),
         # MCP
         "mcp_client_id": read_key("VITALS_MCP_CLIENT_ID") or "vitals-claude-connector",
         "mcp_client_secret_set": bool(read_key("VITALS_MCP_CLIENT_SECRET")),
@@ -194,7 +222,7 @@ async def _page(
         "weight_max_age_days_range": prefs.WEIGHT_MAX_AGE_DAYS_RANGE,
         # The login breaker: how many credential logins today's poll
         # frequency has actually cost, right next to the field that sets it.
-        "breaker": await login_breaker_state(redis),
+        "breaker": breaker,
     }
     return templates.TemplateResponse(request, "settings/settings.html", ctx)
 
@@ -349,22 +377,42 @@ async def toggle_garmin_weight_export(
         return await _garmin_weight_control(
             request,
             db=db,
+            username=username,
             action="credentials_required",
         )
 
     try:
         if enabled:
             _activate_garmin_credentials(email, password)
-        await garmin_weight_service.set_enabled(db, enabled)
+        export_context = await garmin_weight_service.resolve_legacy_export_context(
+            db,
+            actor_username=username,
+        )
+        prepared_export = await garmin_weight_service.prepare_scoped_export(
+            db,
+            context=export_context,
+            historical=not enabled,
+        )
+        await garmin_weight_service.set_enabled_scoped(
+            db,
+            enabled,
+            prepared=prepared_export,
+        )
         await db.commit()
     except Exception:  # noqa: BLE001 — return a safe localized fragment.
         await db.rollback()
         logger.exception("Could not update Garmin weight export opt-in")
-        return await _garmin_weight_control(request, db=db, action="error")
+        return await _garmin_weight_control(
+            request,
+            db=db,
+            username=username,
+            action="error",
+        )
 
     return await _garmin_weight_control(
         request,
         db=db,
+        username=username,
         action="toggle_enabled" if enabled else "toggle_disabled",
     )
 
@@ -379,14 +427,31 @@ async def send_garmin_weight_now(
 ):
     """Run one explicit safe reconciliation and return the refreshed control."""
     try:
-        result = await garmin_weight_service.send_now(db, redis=redis)
+        export_context = await garmin_weight_service.resolve_legacy_export_context(
+            db,
+            actor_username=username,
+        )
+        prepared_export = await garmin_weight_service.prepare_scoped_export(
+            db,
+            context=export_context,
+        )
+        result = await garmin_weight_service.send_now_scoped(
+            db,
+            prepared=prepared_export,
+            redis=redis,
+        )
         await db.commit()
         action = str(result.get("status") or "done")
     except Exception:  # noqa: BLE001 — upstream details belong in logs/outbox.
         await db.rollback()
         logger.exception("Could not run Garmin weight reconciliation")
         action = "error"
-    return await _garmin_weight_control(request, db=db, action=action)
+    return await _garmin_weight_control(
+        request,
+        db=db,
+        username=username,
+        action=action,
+    )
 
 
 @router.post("/mcp")

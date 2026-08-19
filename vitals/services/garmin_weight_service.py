@@ -18,18 +18,29 @@ from __future__ import annotations
 
 import logging
 import math
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date as date_type
 from datetime import datetime, time, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Severity, Source
+from vitals.enums import (
+    Domain,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Severity,
+    Source,
+    UserStatus,
+)
 from vitals.config import load_config
 from vitals.i18n import t
 from vitals.models.app_settings import AppSetting
@@ -50,7 +61,12 @@ from vitals.models.garmin import (
     GarminWeightExport,
 )
 from vitals.models.weight import WeightLog
-from vitals.services import alerts_service
+from vitals.models.identity import HealthSubject, User
+from vitals.models.scoped_settings import IntegrationConnectionSetting
+from vitals.models.tenancy import IntegrationConnection
+from vitals.ownership import WriteIdentity
+from vitals.services import alerts_service, conflict_engine, scoped_settings_service
+from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.proactive import prefs as proactive_prefs
 from vitals.utils.timeutils import now_local
 
@@ -104,6 +120,495 @@ class GarminWeightConflict(RuntimeError):
     """The remote day is non-empty but unsafe to mutate automatically."""
 
 
+class GarminWeightExportOwnershipError(RuntimeError):
+    """A scoped outbox operation cannot prove its complete ownership graph."""
+
+
+class GarminWeightExportScopedUniqueCutoverRequiredError(
+    GarminWeightExportOwnershipError
+):
+    """The legacy global date key is occupied by another ownership scope."""
+
+
+class GarminWeightExportPreparedError(GarminWeightExportOwnershipError):
+    """A scoped outbox capability is forged, stale, or used in another scope."""
+
+
+class GarminWeightExportConnectionInactiveError(GarminWeightExportOwnershipError):
+    """The Garmin account lifecycle cannot authorize the requested transition."""
+
+
+@dataclass(frozen=True, slots=True)
+class GarminWeightExportContext:
+    """Immutable S+A+C authority for one Garmin account outbox."""
+
+    identity: WriteIdentity
+    integration_connection_id: uuid.UUID
+    legacy_bridge: conflict_engine.LegacyConflictBridge = (
+        conflict_engine.LegacyConflictBridge.REJECT
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, WriteIdentity):
+            raise TypeError("identity must be a WriteIdentity")
+        if not isinstance(self.integration_connection_id, uuid.UUID):
+            raise TypeError("integration_connection_id must be a UUID")
+        if not isinstance(
+            self.legacy_bridge, conflict_engine.LegacyConflictBridge
+        ):
+            raise TypeError("legacy_bridge must be a LegacyConflictBridge")
+
+
+_PREPARED_EXPORT_SEAL = object()
+
+
+class PreparedGarminWeightExport:
+    """Opaque proof of governance -> advisory -> S/A -> Garmin C locking."""
+
+    __slots__ = (
+        "_context",
+        "_historical",
+        "_nested_transaction",
+        "_seal",
+        "_session",
+        "_transaction",
+    )
+
+    def __new__(cls, *args, **kwargs):
+        del args, kwargs
+        raise GarminWeightExportPreparedError(
+            "prepared Garmin Weight export capabilities are service-issued only"
+        )
+
+    @classmethod
+    def _issue(
+        cls,
+        *,
+        session: AsyncSession,
+        context: GarminWeightExportContext,
+        historical: bool,
+    ) -> "PreparedGarminWeightExport":
+        token = object.__new__(cls)
+        object.__setattr__(token, "_context", context)
+        object.__setattr__(token, "_historical", historical)
+        object.__setattr__(token, "_session", session)
+        object.__setattr__(token, "_transaction", session.sync_session.get_transaction())
+        object.__setattr__(
+            token,
+            "_nested_transaction",
+            session.sync_session.get_nested_transaction(),
+        )
+        object.__setattr__(token, "_seal", _PREPARED_EXPORT_SEAL)
+        return token
+
+    def __setattr__(self, name, value) -> None:
+        del name, value
+        raise AttributeError("PreparedGarminWeightExport is immutable")
+
+    @property
+    def context(self) -> GarminWeightExportContext:
+        return self._context
+
+    @property
+    def historical(self) -> bool:
+        return self._historical
+
+
+def _require_prepared_export(
+    session: AsyncSession,
+    prepared: PreparedGarminWeightExport,
+    *,
+    historical_ok: bool = True,
+) -> GarminWeightExportContext:
+    if (
+        not isinstance(prepared, PreparedGarminWeightExport)
+        or prepared._seal is not _PREPARED_EXPORT_SEAL
+        or prepared._session is not session
+    ):
+        raise GarminWeightExportPreparedError(
+            "prepared Garmin Weight export belongs to another session"
+        )
+    if session.sync_session.get_transaction() is not prepared._transaction:
+        raise GarminWeightExportPreparedError(
+            "prepared Garmin Weight export transaction is no longer active"
+        )
+    if (
+        session.sync_session.get_nested_transaction()
+        is not prepared._nested_transaction
+    ):
+        raise GarminWeightExportPreparedError(
+            "prepared Garmin Weight export savepoint is no longer active"
+        )
+    if prepared.historical and not historical_ok:
+        raise GarminWeightExportPreparedError(
+            "historical capability cannot authorize fresh provider activity"
+        )
+    return prepared.context
+
+
+async def prepare_scoped_export(
+    session: AsyncSession,
+    *,
+    context: GarminWeightExportContext,
+    historical: bool = False,
+) -> PreparedGarminWeightExport:
+    """Prepare one scoped outbox transaction in the canonical global order."""
+
+    if not isinstance(context, GarminWeightExportContext):
+        raise TypeError("context must be a GarminWeightExportContext")
+    if not isinstance(historical, bool):
+        raise TypeError("historical must be a boolean")
+    await acquire_identity_governance_lock(session)
+    await _acquire_operation_lock(session)
+    with session.no_autoflush:
+        if (
+            context.legacy_bridge
+            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        ):
+            subject_ids = list(
+                await session.scalars(
+                    select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+                )
+            )
+            if subject_ids != [context.identity.subject_id]:
+                raise GarminWeightExportOwnershipError(
+                    "fully-unowned outbox bridge requires exactly one subject"
+                )
+        subject = await session.scalar(
+            select(HealthSubject)
+            .where(HealthSubject.id == context.identity.subject_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if subject is None:
+            raise GarminWeightExportOwnershipError("health subject does not exist")
+        user_ids = {subject.owner_user_id}
+        if context.identity.actor_user_id is not None:
+            user_ids.add(context.identity.actor_user_id)
+        users = {
+            row.id: row
+            for row in await session.scalars(
+                select(User)
+                .where(User.id.in_(tuple(user_ids)))
+                .order_by(User.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        }
+        owner = users.get(subject.owner_user_id)
+        if owner is None or owner.status != UserStatus.ACTIVE.value:
+            raise GarminWeightExportOwnershipError(
+                "Garmin Weight export requires an active subject owner"
+            )
+        actor_id = context.identity.actor_user_id
+        if actor_id is not None:
+            actor = users.get(actor_id)
+            if actor is None or actor.status != UserStatus.ACTIVE.value:
+                raise GarminWeightExportOwnershipError(
+                    "Garmin Weight export actor is not active"
+                )
+            if actor_id != subject.owner_user_id:
+                raise GarminWeightExportOwnershipError(
+                    "Garmin Weight export actor must own the subject"
+                )
+        connection = await session.scalar(
+            select(IntegrationConnection)
+            .where(IntegrationConnection.id == context.integration_connection_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if (
+            connection is None
+            or connection.subject_id != context.identity.subject_id
+            or connection.provider != IntegrationProvider.GARMIN.value
+            or connection.connection_type
+            != IntegrationConnectionType.ACCOUNT.value
+        ):
+            raise GarminWeightExportOwnershipError(
+                "outbox connection is not this subject's Garmin account"
+            )
+        allowed = {
+            IntegrationConnectionStatus.LEGACY.value,
+            IntegrationConnectionStatus.ACTIVE.value,
+        }
+        if historical:
+            allowed.update(
+                {
+                    IntegrationConnectionStatus.DISABLED.value,
+                    IntegrationConnectionStatus.RETIRED.value,
+                }
+            )
+        if connection.status not in allowed:
+            raise GarminWeightExportConnectionInactiveError(
+                "Garmin account lifecycle cannot authorize this operation"
+            )
+    return PreparedGarminWeightExport._issue(
+        session=session,
+        context=context,
+        historical=historical,
+    )
+
+
+async def resolve_legacy_export_context(
+    session: AsyncSession,
+    *,
+    actor_username: str | None,
+) -> GarminWeightExportContext:
+    """Resolve the registration-off S+A+Garmin-C graph under governance."""
+
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+
+    await acquire_identity_governance_lock(session)
+    ownership = await resolve_legacy_ownership_context(
+        session,
+        actor_username=actor_username,
+        required_connections=(IntegrationProvider.GARMIN,),
+    )
+    identity = (
+        ownership.system_action()
+        if actor_username is None
+        else ownership.owner_action()
+    )
+    return GarminWeightExportContext(
+        identity=identity,
+        integration_connection_id=ownership.connection_id(
+            IntegrationProvider.GARMIN
+        ),
+        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+    )
+
+
+async def resolve_optional_legacy_export_context(
+    session: AsyncSession,
+    *,
+    actor_username: str | None,
+) -> GarminWeightExportContext | None:
+    """Resolve the optional Garmin destination without weakening owner proof.
+
+    Local Weight and body-scan writes must remain available when no usable
+    Garmin account exists. Only provider-connection resolution failures are
+    converted to ``None``; subject and actor ambiguity still fail closed.
+    """
+
+    from vitals.services.legacy_ownership import LegacyConnectionResolutionError
+
+    try:
+        return await resolve_legacy_export_context(
+            session,
+            actor_username=actor_username,
+        )
+    except LegacyConnectionResolutionError:
+        return None
+
+
+_SCOPED_EXPORT: ContextVar[PreparedGarminWeightExport | None] = ContextVar(
+    "garmin_weight_scoped_export",
+    default=None,
+)
+
+
+@contextmanager
+def _activate_scoped_export(prepared: PreparedGarminWeightExport):
+    token = _SCOPED_EXPORT.set(prepared)
+    try:
+        yield
+    finally:
+        _SCOPED_EXPORT.reset(token)
+
+
+def _active_export_context() -> GarminWeightExportContext | None:
+    prepared = _SCOPED_EXPORT.get()
+    return prepared.context if prepared is not None else None
+
+
+async def _reprepare_active_export(
+    session: AsyncSession,
+    *,
+    historical: bool,
+) -> PreparedGarminWeightExport | None:
+    """Reissue the active immutable context after an internal commit."""
+
+    current = _SCOPED_EXPORT.get()
+    if current is None:
+        return None
+    prepared = await prepare_scoped_export(
+        session,
+        context=current.context,
+        historical=historical,
+    )
+    _SCOPED_EXPORT.set(prepared)
+    return prepared
+
+
+def _outbox_exact_scope(context: GarminWeightExportContext):
+    return and_(
+        GarminWeightExport.subject_id == context.identity.subject_id,
+        GarminWeightExport.integration_connection_id
+        == context.integration_connection_id,
+    )
+
+
+def _outbox_legacy_scope():
+    return and_(
+        GarminWeightExport.subject_id.is_(None),
+        GarminWeightExport.integration_connection_id.is_(None),
+        GarminWeightExport.requested_by_user_id.is_(None),
+    )
+
+
+def _outbox_visible_scope(context: GarminWeightExportContext):
+    exact = _outbox_exact_scope(context)
+    if (
+        context.legacy_bridge
+        is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+    ):
+        return or_(exact, _outbox_legacy_scope())
+    return exact
+
+
+async def _validate_requested_by(
+    session: AsyncSession,
+    row: GarminWeightExport,
+    context: GarminWeightExportContext,
+) -> None:
+    if row.requested_by_user_id is None:
+        return
+    owner_id = await session.scalar(
+        select(HealthSubject.owner_user_id).where(
+            HealthSubject.id == context.identity.subject_id
+        )
+    )
+    if row.requested_by_user_id != owner_id:
+        raise GarminWeightExportOwnershipError(
+            "outbox requester does not own the prepared subject"
+        )
+
+
+async def _validate_linked_weight(
+    session: AsyncSession,
+    row: GarminWeightExport,
+    context: GarminWeightExportContext,
+) -> WeightLog | None:
+    if row.weight_log_id is None:
+        return None
+    from vitals.services import weight_service
+
+    weight = await session.scalar(
+        select(WeightLog)
+        .where(WeightLog.id == row.weight_log_id)
+        .execution_options(populate_existing=True)
+    )
+    if weight is None:
+        # ON DELETE SET NULL is authoritative after flush. A dangling reference
+        # means constraints were bypassed or this transaction has stale state.
+        raise GarminWeightExportOwnershipError(
+            "outbox references a missing Weight fact"
+        )
+    await weight_service._validate_persisted_weight_provenance(
+        session,
+        weight,
+        subject_id=context.identity.subject_id,
+        include_legacy_unowned=(
+            context.legacy_bridge
+            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        ),
+    )
+    if weight.date != row.date:
+        raise GarminWeightExportOwnershipError(
+            "outbox and linked Weight fact belong to different dates"
+        )
+    return weight
+
+
+async def _validate_scoped_outbox_row(
+    session: AsyncSession,
+    row: GarminWeightExport,
+    context: GarminWeightExportContext,
+    *,
+    adopt_legacy: bool,
+) -> None:
+    exact = (
+        row.subject_id == context.identity.subject_id
+        and row.integration_connection_id == context.integration_connection_id
+    )
+    legacy = (
+        row.subject_id is None
+        and row.integration_connection_id is None
+        and row.requested_by_user_id is None
+    )
+    if not exact:
+        if not (
+            legacy
+            and context.legacy_bridge
+            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        ):
+            raise GarminWeightExportOwnershipError(
+                "outbox has partial or foreign ownership roots"
+            )
+    await _validate_requested_by(session, row, context)
+    await _validate_linked_weight(session, row, context)
+    if legacy and adopt_legacy:
+        row.subject_id = context.identity.subject_id
+        row.integration_connection_id = context.integration_connection_id
+        # Unknown historical request attribution remains unknown. Never stamp
+        # the actor who merely caused compatibility adoption.
+        await session.flush()
+
+
+async def _scoped_rows(
+    session: AsyncSession,
+    *,
+    filters: tuple = (),
+    for_update: bool = False,
+) -> list[GarminWeightExport]:
+    prepared = _SCOPED_EXPORT.get()
+    if prepared is None:
+        raise GarminWeightExportPreparedError("no scoped outbox capability is active")
+    context = _require_prepared_export(session, prepared)
+    await _assert_outbox_scope_integrity(session, context, filters=filters)
+    stmt = select(GarminWeightExport).where(
+        *filters,
+        _outbox_visible_scope(context),
+    )
+    if for_update:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    rows = list(await session.scalars(stmt))
+    for row in rows:
+        await _validate_scoped_outbox_row(
+            session,
+            row,
+            context,
+            adopt_legacy=for_update,
+        )
+    return rows
+
+
+async def _assert_outbox_scope_integrity(
+    session: AsyncSession,
+    context: GarminWeightExportContext,
+    *,
+    filters: tuple = (),
+) -> None:
+    invalid = await session.scalar(
+        select(GarminWeightExport.id)
+        .where(
+            *filters,
+            or_(
+                GarminWeightExport.subject_id == context.identity.subject_id,
+                GarminWeightExport.subject_id.is_(None),
+                GarminWeightExport.integration_connection_id
+                == context.integration_connection_id,
+            ),
+            _outbox_visible_scope(context).is_not(True),
+        )
+        .limit(1)
+    )
+    if invalid is not None:
+        raise GarminWeightExportOwnershipError(
+            "outbox has partial or conflicting ownership roots"
+        )
+
+
 async def _acquire_operation_lock(session: AsyncSession) -> None:
     """Serialize every production outbox transition for the transaction lifetime."""
     if session.get_bind().dialect.name == "postgresql":
@@ -136,6 +641,38 @@ async def handle_active_weight_changed(
     await _acquire_operation_lock(session)
     if await is_enabled(session):
         await reconcile_latest(session, now=now)
+
+
+async def handle_legacy_active_weight_changed(
+    session: AsyncSession,
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Quarantine the pre-identity compatibility hook.
+
+    A database with identity roots must use the prepared scoped hook. Returning
+    ``False`` keeps a local health write available when an old caller has not
+    yet supplied the destination context, without permitting a global outbox
+    mutation. Only a genuinely pre-identity schema may enter the legacy path.
+    """
+
+    await acquire_identity_governance_lock(session)
+    subject_id = await session.scalar(select(HealthSubject.id).limit(1))
+    if subject_id is not None:
+        return False
+    await handle_active_weight_changed(session, now=now)
+    return True
+
+
+async def handle_active_weight_changed_scoped(
+    session: AsyncSession,
+    *,
+    prepared: PreparedGarminWeightExport,
+    now: Optional[datetime] = None,
+) -> None:
+    _require_prepared_export(session, prepared, historical_ok=False)
+    with _activate_scoped_export(prepared):
+        await handle_active_weight_changed(session, now=now)
 
 
 @dataclass(frozen=True)
@@ -421,6 +958,39 @@ def _response_sample_pk(payload: Any) -> Optional[str]:
 
 
 async def is_enabled(session: AsyncSession) -> bool:
+    active = _SCOPED_EXPORT.get()
+    if active is not None:
+        context = _require_prepared_export(session, active)
+        scoped = await session.scalar(
+            select(IntegrationConnectionSetting).where(
+                IntegrationConnectionSetting.integration_connection_id
+                == context.integration_connection_id,
+                IntegrationConnectionSetting.key == SETTING_KEY,
+            )
+        )
+        if scoped is not None:
+            return scoped.value is True
+        if (
+            context.legacy_bridge
+            is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        ):
+            return False
+        connection_status = await session.scalar(
+            select(IntegrationConnection.status).where(
+                IntegrationConnection.id == context.integration_connection_id
+            )
+        )
+        if connection_status == IntegrationConnectionStatus.RETIRED.value:
+            return False
+        value = await scoped_settings_service.get_scoped_setting(
+            session,
+            scope=scoped_settings_service.SettingScope.INTEGRATION_CONNECTION,
+            key=scoped_settings_service.ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
+            subject_id=context.identity.subject_id,
+            integration_connection_id=context.integration_connection_id,
+            default=False,
+        )
+        return value is True
     # ``expire_on_commit=False`` keeps objects in the identity map. Always force
     # a SELECT here so a long-running exporter observes an opt-out committed by
     # another session before it performs a vendor mutation.
@@ -432,6 +1002,16 @@ async def is_enabled(session: AsyncSession) -> bool:
         )
     ).scalar_one_or_none()
     return row is not None and row.value is True
+
+
+async def is_enabled_scoped(
+    session: AsyncSession,
+    *,
+    prepared: PreparedGarminWeightExport,
+) -> bool:
+    _require_prepared_export(session, prepared)
+    with _activate_scoped_export(prepared):
+        return await is_enabled(session)
 
 
 async def set_enabled(
@@ -470,6 +1050,83 @@ async def set_enabled(
     return clean
 
 
+async def set_enabled_scoped(
+    session: AsyncSession,
+    enabled: bool,
+    *,
+    prepared: PreparedGarminWeightExport,
+    now: Optional[datetime] = None,
+) -> bool:
+    clean = bool(enabled)
+    context = _require_prepared_export(
+        session,
+        prepared,
+        historical_ok=not clean,
+    )
+    with _activate_scoped_export(prepared):
+        connection_status = await session.scalar(
+            select(IntegrationConnection.status).where(
+                IntegrationConnection.id == context.integration_connection_id
+            )
+        )
+        bridge_is_open = (
+            context.legacy_bridge
+            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            and connection_status != IntegrationConnectionStatus.RETIRED.value
+        )
+        if bridge_is_open:
+            await scoped_settings_service.set_scoped_setting(
+                session,
+                scope=scoped_settings_service.SettingScope.INTEGRATION_CONNECTION,
+                key=(
+                    scoped_settings_service.ScopedSettingKey
+                    .GARMIN_WEIGHT_EXPORT_ENABLED
+                ),
+                value=clean,
+                subject_id=context.identity.subject_id,
+                integration_connection_id=context.integration_connection_id,
+            )
+        else:
+            scoped = await session.scalar(
+                select(IntegrationConnectionSetting)
+                .where(
+                    IntegrationConnectionSetting.integration_connection_id
+                    == context.integration_connection_id,
+                    IntegrationConnectionSetting.key == SETTING_KEY,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if scoped is None:
+                session.add(
+                    IntegrationConnectionSetting(
+                        integration_connection_id=(
+                            context.integration_connection_id
+                        ),
+                        key=SETTING_KEY,
+                        value=clean,
+                    )
+                )
+            else:
+                scoped.value = clean
+        if clean:
+            await reconcile_latest(session, now=now)
+        else:
+            await _skip_actionable_except(session, keep_date=None)
+            for outbox in await _scoped_rows(
+                session,
+                filters=(
+                    GarminWeightExport.status == WEIGHT_EXPORT_DELETE_CHECKING,
+                ),
+                for_update=True,
+            ):
+                outbox.status = WEIGHT_EXPORT_DELETE_PENDING
+                _reset_retry(outbox)
+            await _resolve_alert_if_clear(session)
+        await session.flush()
+        return clean
+
+
 def _measurement_time(on_date: date_type, now: datetime) -> datetime:
     # Date-only local records have no honest historical time. Noon avoids moving
     # the calendar date across practically every timezone boundary.
@@ -479,12 +1136,20 @@ def _measurement_time(on_date: date_type, now: datetime) -> datetime:
 async def _skip_actionable_except(
     session: AsyncSession, *, keep_date: Optional[date_type]
 ) -> None:
-    result = await session.execute(
-        select(GarminWeightExport).where(
-            GarminWeightExport.status.in_(SUPERSEDEABLE_STATUSES)
+    if _active_export_context() is not None:
+        rows = await _scoped_rows(
+            session,
+            filters=(GarminWeightExport.status.in_(SUPERSEDEABLE_STATUSES),),
+            for_update=True,
         )
-    )
-    for row in result.scalars().all():
+    else:
+        result = await session.execute(
+            select(GarminWeightExport).where(
+                GarminWeightExport.status.in_(SUPERSEDEABLE_STATUSES)
+            )
+        )
+        rows = list(result.scalars().all())
+    for row in rows:
         if keep_date is not None and row.date == keep_date:
             continue
         row.status = WEIGHT_EXPORT_SKIPPED
@@ -499,6 +1164,19 @@ async def _watermark_date(
 ) -> Optional[date_type]:
     """Newest date ever observed by the append-only outbox."""
     statement = select(func.max(GarminWeightExport.date))
+    context = _active_export_context()
+    if context is not None:
+        filters = (
+            (GarminWeightExport.date <= through_date,)
+            if through_date is not None
+            else ()
+        )
+        await _assert_outbox_scope_integrity(
+            session,
+            context,
+            filters=filters,
+        )
+        statement = statement.where(_outbox_visible_scope(context))
     if through_date is not None:
         statement = statement.where(GarminWeightExport.date <= through_date)
     return (await session.execute(statement)).scalar_one_or_none()
@@ -512,8 +1190,62 @@ async def _ensure_outbox_row(
     weight_kg: float,
     measured_at: datetime,
     status: str,
+    requested_by_user_id: uuid.UUID | None = None,
 ) -> GarminWeightExport:
     """Insert one date intent without racing scheduler and manual reconciliation."""
+    context = _active_export_context()
+    if context is not None:
+        prepared = _SCOPED_EXPORT.get()
+        assert prepared is not None
+        _require_prepared_export(session, prepared, historical_ok=False)
+        existing = await session.scalar(
+            select(GarminWeightExport)
+            .where(GarminWeightExport.date == on_date)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if existing is not None:
+            exact_or_legacy = (
+                existing.subject_id == context.identity.subject_id
+                and existing.integration_connection_id
+                == context.integration_connection_id
+            ) or (
+                existing.subject_id is None
+                and existing.integration_connection_id is None
+                and existing.requested_by_user_id is None
+                and context.legacy_bridge
+                is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            )
+            if not exact_or_legacy:
+                raise GarminWeightExportScopedUniqueCutoverRequiredError(
+                    "global Garmin Weight export date is occupied by another scope"
+                )
+            await _validate_scoped_outbox_row(
+                session,
+                existing,
+                context,
+                adopt_legacy=True,
+            )
+            return existing
+        row = GarminWeightExport(
+            subject_id=context.identity.subject_id,
+            integration_connection_id=context.integration_connection_id,
+            requested_by_user_id=requested_by_user_id,
+            date=on_date,
+            weight_log_id=weight_log_id,
+            weight_kg=weight_kg,
+            measured_at=measured_at,
+            status=status,
+        )
+        session.add(row)
+        await session.flush()
+        await _validate_scoped_outbox_row(
+            session,
+            row,
+            context,
+            adopt_legacy=False,
+        )
+        return row
     values = {
         "date": on_date,
         "weight_log_id": weight_log_id,
@@ -570,17 +1302,39 @@ async def reconcile_latest(
     if max_age_days is None:
         settings = await proactive_prefs.get_prefs(session)
         max_age_days = settings["garmin_weight_max_age_days"]
-    result = await session.execute(
-        select(WeightLog)
-        .where(
-            WeightLog.superseded.is_(False),
-            WeightLog.date <= clock.date(),
+    context = _active_export_context()
+    if context is None:
+        result = await session.execute(
+            select(WeightLog)
+            .where(
+                WeightLog.superseded.is_(False),
+                WeightLog.date <= clock.date(),
+            )
+            .order_by(WeightLog.date.desc(), WeightLog.id.desc())
+            .execution_options(populate_existing=True)
+            .limit(1)
         )
-        .order_by(WeightLog.date.desc(), WeightLog.id.desc())
-        .execution_options(populate_existing=True)
-        .limit(1)
+        local = result.scalar_one_or_none()
+    else:
+        from vitals.services import weight_service
+
+        rows = await weight_service.list_active_weights(
+            session,
+            end=clock.date(),
+            subject_id=context.identity.subject_id,
+            include_legacy_unowned=(
+                context.legacy_bridge
+                is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            ),
+        )
+        local = max(rows, key=lambda row: (row.date, row.id), default=None)
+    requested_by_user_id = (
+        local.actor_user_id
+        if context is None and local is not None
+        else context.identity.actor_user_id
+        if context is not None
+        else None
     )
-    local = result.scalar_one_or_none()
     watermark = await _watermark_date(session, through_date=clock.date())
 
     # Once a newer local fact has been observed, deleting it must never expose an
@@ -614,6 +1368,7 @@ async def reconcile_latest(
                 weight_kg=local.weight_kg,
                 measured_at=_measurement_time(local.date, clock),
                 status=WEIGHT_EXPORT_SKIPPED,
+                requested_by_user_id=requested_by_user_id,
             )
         await _skip_actionable_except(session, keep_date=None)
         await _resolve_alert_if_clear(session)
@@ -627,6 +1382,7 @@ async def reconcile_latest(
         weight_kg=local.weight_kg,
         measured_at=_measurement_time(local.date, clock),
         status=WEIGHT_EXPORT_PENDING,
+        requested_by_user_id=requested_by_user_id,
     )
     if outbox is not None:
         # ``sent`` used to include both an equal external record and a POST whose
@@ -670,6 +1426,22 @@ async def reconcile_latest(
     return outbox
 
 
+async def reconcile_latest_scoped(
+    session: AsyncSession,
+    *,
+    prepared: PreparedGarminWeightExport,
+    now: Optional[datetime] = None,
+    max_age_days: Optional[int] = None,
+) -> Optional[GarminWeightExport]:
+    _require_prepared_export(session, prepared, historical_ok=False)
+    with _activate_scoped_export(prepared):
+        return await reconcile_latest(
+            session,
+            now=now,
+            max_age_days=max_age_days,
+        )
+
+
 async def handle_active_weight_deleted(
     session: AsyncSession,
     *,
@@ -682,6 +1454,7 @@ async def handle_active_weight_deleted(
     """Update the local outbox after an active weight is deleted; never networks."""
     await _acquire_operation_lock(session)
     clock = now or now_local()
+    context = _active_export_context()
     result = await session.execute(
         select(GarminWeightExport)
         .where(GarminWeightExport.date == on_date)
@@ -689,6 +1462,28 @@ async def handle_active_weight_deleted(
         .execution_options(populate_existing=True)
     )
     outbox = result.scalar_one_or_none()
+    if outbox is not None and context is not None:
+        exact_or_legacy = (
+            outbox.subject_id == context.identity.subject_id
+            and outbox.integration_connection_id
+            == context.integration_connection_id
+        ) or (
+            outbox.subject_id is None
+            and outbox.integration_connection_id is None
+            and outbox.requested_by_user_id is None
+            and context.legacy_bridge
+            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        )
+        if not exact_or_legacy:
+            raise GarminWeightExportScopedUniqueCutoverRequiredError(
+                "global Garmin Weight export date is occupied by another scope"
+            )
+        await _validate_scoped_outbox_row(
+            session,
+            outbox,
+            context,
+            adopt_legacy=True,
+        )
     if outbox is None:
         # A value created and deleted between scheduler ticks still advances the
         # append-only watermark while export is enabled. If another newer outbox
@@ -720,6 +1515,13 @@ async def handle_active_weight_deleted(
                 WEIGHT_EXPORT_PENDING
                 if replacement_is_eligible
                 else WEIGHT_EXPORT_DELETED
+            ),
+            requested_by_user_id=(
+                context.identity.actor_user_id
+                if context is not None
+                else replacement.actor_user_id
+                if replacement is not None
+                else None
             ),
         )
     elif outbox.weight_log_id not in (None, deleted_id):
@@ -768,6 +1570,54 @@ async def handle_active_weight_deleted(
         _mark_deleted(outbox, now=clock)
     await _resolve_alert_if_clear(session)
     await session.flush()
+
+
+async def handle_active_weight_deleted_scoped(
+    session: AsyncSession,
+    *,
+    prepared: PreparedGarminWeightExport,
+    deleted_id: int,
+    on_date: date_type,
+    deleted_weight_kg: float,
+    replacement: Optional[WeightLog],
+    now: Optional[datetime] = None,
+) -> None:
+    _require_prepared_export(session, prepared, historical_ok=False)
+    with _activate_scoped_export(prepared):
+        await handle_active_weight_deleted(
+            session,
+            deleted_id=deleted_id,
+            on_date=on_date,
+            deleted_weight_kg=deleted_weight_kg,
+            replacement=replacement,
+            now=now,
+        )
+
+
+async def handle_legacy_active_weight_deleted(
+    session: AsyncSession,
+    *,
+    deleted_id: int,
+    on_date: date_type,
+    deleted_weight_kg: float,
+    replacement: Optional[WeightLog],
+    now: Optional[datetime] = None,
+) -> bool:
+    """Quarantine deletion projection for databases without identity roots."""
+
+    await acquire_identity_governance_lock(session)
+    subject_id = await session.scalar(select(HealthSubject.id).limit(1))
+    if subject_id is not None:
+        return False
+    await handle_active_weight_deleted(
+        session,
+        deleted_id=deleted_id,
+        on_date=on_date,
+        deleted_weight_kg=deleted_weight_kg,
+        replacement=replacement,
+        now=now,
+    )
+    return True
 
 
 def _due(row: GarminWeightExport, now: datetime, *, force: bool = False) -> bool:
@@ -865,31 +1715,94 @@ async def _raise_failure_alert(
         WEIGHT_EXPORT_UNVERIFIED: "alert.garmin_weight_unverified",
         WEIGHT_EXPORT_DELETE_FAILED: "alert.garmin_weight_delete",
     }.get(row.status, "alert.garmin_weight_export")
-    await alerts_service.raise_alert(
+    context = _active_export_context()
+    message = t(
+        message_key,
+        date=row.date.isoformat(),
+        error=error,
+    )
+    if context is None:
+        await alerts_service.raise_alert(
+            session,
+            domain=DOMAIN,
+            severity=Severity.WARN.value,
+            message=message,
+            alert_key=ALERT_KEY,
+            entity_ref=ALERT_ENTITY,
+        )
+        return
+    active_prepared = _SCOPED_EXPORT.get()
+    if active_prepared is not None and active_prepared.historical:
+        connection_status = await session.scalar(
+            select(IntegrationConnection.status).where(
+                IntegrationConnection.id == context.integration_connection_id
+            )
+        )
+        if connection_status not in {
+            IntegrationConnectionStatus.LEGACY.value,
+            IntegrationConnectionStatus.ACTIVE.value,
+        }:
+            # The outcome is still durable on the outbox row, but a disabled or
+            # retired provider cannot authorize a fresh provider alert write.
+            return
+    await alerts_service.raise_scoped_alert(
         session,
-        domain=DOMAIN,
-        severity=Severity.WARN.value,
-        message=t(
-            message_key,
-            date=row.date.isoformat(),
-            error=error,
+        context=alerts_service.ProviderAlertContext(
+            identity=context.identity,
+            provider=IntegrationProvider.GARMIN,
+            integration_connection_id=context.integration_connection_id,
         ),
+        domain=Domain.GARMIN,
+        severity=Severity.WARN,
+        message=message,
         alert_key=ALERT_KEY,
         entity_ref=ALERT_ENTITY,
+        legacy_bridge=(
+            alerts_service.LegacyAlertBridge.FULLY_UNOWNED
+            if context.legacy_bridge
+            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            else alerts_service.LegacyAlertBridge.REJECT
+        ),
     )
 
 
 async def _resolve_alert_if_clear(session: AsyncSession) -> None:
-    result = await session.execute(
-        select(GarminWeightExport)
-        .where(GarminWeightExport.status.in_(ISSUE_STATUSES))
-        .order_by(GarminWeightExport.date.desc(), GarminWeightExport.id.desc())
-    )
-    issues = result.scalars().all()
-    if not issues:
-        await alerts_service.resolve_by_key(
-            session, alert_key=ALERT_KEY, entity_ref=ALERT_ENTITY
+    context = _active_export_context()
+    if context is None:
+        result = await session.execute(
+            select(GarminWeightExport)
+            .where(GarminWeightExport.status.in_(ISSUE_STATUSES))
+            .order_by(GarminWeightExport.date.desc(), GarminWeightExport.id.desc())
         )
+        issues = list(result.scalars().all())
+    else:
+        issues = await _scoped_rows(
+            session,
+            filters=(GarminWeightExport.status.in_(ISSUE_STATUSES),),
+            for_update=True,
+        )
+    if not issues:
+        if context is None:
+            await alerts_service.resolve_by_key(
+                session, alert_key=ALERT_KEY, entity_ref=ALERT_ENTITY
+            )
+        else:
+            await alerts_service.resolve_scoped_by_key(
+                session,
+                context=alerts_service.ProviderAlertContext(
+                    identity=context.identity,
+                    provider=IntegrationProvider.GARMIN,
+                    integration_connection_id=context.integration_connection_id,
+                ),
+                alert_key=ALERT_KEY,
+                entity_ref=ALERT_ENTITY,
+                legacy_bridge=(
+                    alerts_service.LegacyAlertBridge.FULLY_UNOWNED
+                    if context.legacy_bridge
+                    is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                    else alerts_service.LegacyAlertBridge.REJECT
+                ),
+            )
         return
     priority = {
         WEIGHT_EXPORT_DELETE_FAILED: 0,
@@ -1058,8 +1971,12 @@ async def _finalize_response_identity(
     now: datetime,
 ) -> dict[str, Any]:
     """Record a POST response token unless that dispatch was already superseded."""
-    await _acquire_operation_lock(session)
-    await session.refresh(row)
+    if _active_export_context() is None:
+        await _acquire_operation_lock(session)
+        await session.refresh(row)
+    else:
+        await _reprepare_active_export(session, historical=True)
+        row = await _refresh_operation(session, row)
     if row.remote_owned and row.remote_sample_pk == sample_pk:
         return _current_result(row)
     if not _dispatch_identity_matches(row, dispatch):
@@ -1079,8 +1996,12 @@ async def _revalidate_dispatch_identity(
     dispatch: DispatchIdentity,
 ) -> bool:
     """Refresh a dispatched POST marker while allowing local intent to evolve."""
-    await _acquire_operation_lock(session)
-    await session.refresh(row)
+    if _active_export_context() is None:
+        await _acquire_operation_lock(session)
+        await session.refresh(row)
+    else:
+        await _reprepare_active_export(session, historical=True)
+        row = await _refresh_operation(session, row)
     return _dispatch_identity_matches(row, dispatch)
 
 
@@ -1109,6 +2030,13 @@ async def _post_weight(
     dispatch = _dispatch_identity(row)
     if dispatch is None:  # Defensive: the durable marker always records a weight.
         raise RuntimeError("Garmin POST dispatch marker has no attempted weight")
+    if not await _authorize_scoped_vendor_dispatch(
+        session,
+        row,
+        dispatch,
+        require_enabled=require_enabled,
+    ):
+        return _current_result(row)
     try:
         response = await client.add_weigh_in(
             dispatch.remote_weight_kg, dispatch.measured_at
@@ -1225,6 +2153,13 @@ async def _process_remote_export(
             # applying the result or dispatching another mutation.
             sample_pk = row.remote_sample_pk
             await session.commit()
+            if not await _authorize_scoped_vendor_lease(
+                session,
+                row,
+                lease,
+                require_enabled=require_enabled,
+            ):
+                return _current_result(row)
             await client.delete_weigh_in(sample_pk, row.date)
             after_delete = await _fetch_remote(client, row.date)
             if not await _revalidate_network_attempt(
@@ -1232,6 +2167,7 @@ async def _process_remote_export(
                 row,
                 lease,
                 require_enabled=require_enabled,
+                historical=True,
             ):
                 return _current_result(row)
             if any(item.sample_pk == sample_pk for item in after_delete):
@@ -1376,6 +2312,13 @@ async def _process_delete(
     # transition from a concurrent correction/delete. Never hold the advisory
     # lock while Garmin is on the wire.
     await session.commit()
+    if not await _authorize_scoped_vendor_lease(
+        session,
+        row,
+        lease,
+        require_enabled=require_enabled,
+    ):
+        return _current_result(row)
     await client.delete_weigh_in(sample_pk, row.date)
     after_delete = await _fetch_remote(client, row.date)
     if not await _revalidate_network_attempt(
@@ -1383,6 +2326,7 @@ async def _process_delete(
         row,
         lease,
         require_enabled=require_enabled,
+        historical=True,
     ):
         return _current_result(row)
     if any(item.sample_pk == sample_pk for item in after_delete):
@@ -1396,14 +2340,26 @@ async def _process_delete(
 async def _next_protected_operation(
     session: AsyncSession, *, now: datetime, force: bool
 ) -> Optional[GarminWeightExport]:
-    result = await session.execute(
-        select(GarminWeightExport).where(
-            GarminWeightExport.status.in_(
-                (*DELETE_STATUSES, WEIGHT_EXPORT_UNVERIFIED)
+    if _active_export_context() is None:
+        result = await session.execute(
+            select(GarminWeightExport).where(
+                GarminWeightExport.status.in_(
+                    (*DELETE_STATUSES, WEIGHT_EXPORT_UNVERIFIED)
+                )
             )
         )
-    )
-    rows = [row for row in result.scalars().all() if _due(row, now, force=force)]
+        candidates = list(result.scalars().all())
+    else:
+        candidates = await _scoped_rows(
+            session,
+            filters=(
+                GarminWeightExport.status.in_(
+                    (*DELETE_STATUSES, WEIGHT_EXPORT_UNVERIFIED)
+                ),
+            ),
+            for_update=True,
+        )
+    rows = [row for row in candidates if _due(row, now, force=force)]
     priority = {
         WEIGHT_EXPORT_DELETE_FAILED: 0,
         WEIGHT_EXPORT_DELETE_PENDING: 1,
@@ -1416,12 +2372,23 @@ async def _next_protected_operation(
 async def _refresh_operation(
     session: AsyncSession, row: GarminWeightExport
 ) -> GarminWeightExport:
-    result = await session.execute(
-        select(GarminWeightExport)
-        .where(GarminWeightExport.id == row.id)
-        .execution_options(populate_existing=True)
+    if _active_export_context() is None:
+        result = await session.execute(
+            select(GarminWeightExport)
+            .where(GarminWeightExport.id == row.id)
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one()
+    rows = await _scoped_rows(
+        session,
+        filters=(GarminWeightExport.id == row.id,),
+        for_update=True,
     )
-    return result.scalar_one()
+    if len(rows) != 1:
+        raise GarminWeightExportOwnershipError(
+            "leased outbox row left its prepared ownership scope"
+        )
+    return rows[0]
 
 
 def _current_result(row: GarminWeightExport) -> dict[str, Any]:
@@ -1434,13 +2401,65 @@ async def _revalidate_network_attempt(
     lease: OperationLease,
     *,
     require_enabled: bool,
+    historical: bool = False,
 ) -> bool:
     """Re-read a committed lease after vendor I/O, under the shared DB lock."""
-    await _acquire_operation_lock(session)
-    await session.refresh(row)
+    if _active_export_context() is None:
+        await _acquire_operation_lock(session)
+        await session.refresh(row)
+    else:
+        await _reprepare_active_export(session, historical=historical)
+        row = await _refresh_operation(session, row)
     if require_enabled and not await is_enabled(session):
         return False
     return _lease_matches(row, lease)
+
+
+async def _authorize_scoped_vendor_lease(
+    session: AsyncSession,
+    row: GarminWeightExport,
+    lease: OperationLease,
+    *,
+    require_enabled: bool,
+) -> bool:
+    """Freshly validate roots immediately before a scoped vendor request."""
+
+    if _active_export_context() is None:
+        return True
+    try:
+        await _reprepare_active_export(session, historical=False)
+    except GarminWeightExportConnectionInactiveError:
+        await session.rollback()
+        return False
+    row = await _refresh_operation(session, row)
+    allowed = _lease_matches(row, lease) and (
+        not require_enabled or await is_enabled(session)
+    )
+    # Never retain identity/outbox row locks across vendor I/O.
+    await session.commit()
+    return allowed
+
+
+async def _authorize_scoped_vendor_dispatch(
+    session: AsyncSession,
+    row: GarminWeightExport,
+    dispatch: DispatchIdentity,
+    *,
+    require_enabled: bool,
+) -> bool:
+    if _active_export_context() is None:
+        return True
+    try:
+        await _reprepare_active_export(session, historical=False)
+    except GarminWeightExportConnectionInactiveError:
+        await session.rollback()
+        return False
+    row = await _refresh_operation(session, row)
+    allowed = _dispatch_identity_matches(row, dispatch) and (
+        not require_enabled or await is_enabled(session)
+    )
+    await session.commit()
+    return allowed
 
 
 async def export_latest(
@@ -1493,6 +2512,14 @@ async def export_latest(
     # Release the short DB/advisory lock before touching Garmin. Local saves and
     # delete hooks remain independent of a slow upstream preflight request.
     await session.commit()
+
+    if not await _authorize_scoped_vendor_lease(
+        session,
+        row,
+        lease,
+        require_enabled=require_enabled,
+    ):
+        return _current_result(row)
 
     try:
         remote = await _fetch_remote(client, row.date)
@@ -1581,6 +2608,7 @@ async def export_latest(
             row,
             lease,
             require_enabled=require_enabled,
+            historical=True,
         ):
             return _current_result(row)
         status = (
@@ -1604,6 +2632,7 @@ async def export_latest(
             row,
             lease,
             require_enabled=require_enabled,
+            historical=True,
         ):
             return _current_result(row)
         status = (
@@ -1623,14 +2652,37 @@ async def export_latest(
         )
 
 
+async def export_latest_scoped(
+    session: AsyncSession,
+    client: Any,
+    *,
+    prepared: PreparedGarminWeightExport,
+    now: Optional[datetime] = None,
+    force: bool = False,
+    require_enabled: bool = False,
+) -> dict[str, Any]:
+    _require_prepared_export(session, prepared, historical_ok=False)
+    with _activate_scoped_export(prepared):
+        return await export_latest(
+            session,
+            client,
+            now=now,
+            force=force,
+            require_enabled=require_enabled,
+        )
+
+
 async def get_status(session: AsyncSession) -> dict[str, Any]:
     """Small settings-card projection, prioritising unresolved safety states."""
     enabled = await is_enabled(session)
-    result = await session.execute(
-        select(GarminWeightExport)
-        .order_by(GarminWeightExport.date.desc(), GarminWeightExport.id.desc())
-    )
-    rows = result.scalars().all()
+    if _active_export_context() is None:
+        result = await session.execute(
+            select(GarminWeightExport)
+            .order_by(GarminWeightExport.date.desc(), GarminWeightExport.id.desc())
+        )
+        rows = list(result.scalars().all())
+    else:
+        rows = await _scoped_rows(session, for_update=False)
     priority = {
         WEIGHT_EXPORT_DELETE_FAILED: 0,
         WEIGHT_EXPORT_UNVERIFIED: 1,
@@ -1655,6 +2707,16 @@ async def get_status(session: AsyncSession) -> dict[str, Any]:
         "next_attempt_at": row.next_attempt_at if row is not None else None,
         "last_error": row.last_error if row is not None else None,
     }
+
+
+async def get_status_scoped(
+    session: AsyncSession,
+    *,
+    prepared: PreparedGarminWeightExport,
+) -> dict[str, Any]:
+    _require_prepared_export(session, prepared)
+    with _activate_scoped_export(prepared):
+        return await get_status(session)
 
 
 async def send_now(session: AsyncSession, *, redis=None) -> dict[str, Any]:
@@ -1690,20 +2752,212 @@ async def send_now(session: AsyncSession, *, redis=None) -> dict[str, Any]:
     return result
 
 
-async def export_job(session_factory, redis=None) -> None:
-    """Scheduled entry point; no network while opt-in is off or unconfigured."""
+async def send_now_scoped(
+    session: AsyncSession,
+    *,
+    prepared: PreparedGarminWeightExport,
+    redis=None,
+) -> dict[str, Any]:
+    """Scoped explicit reconciliation; suitable for the Settings boundary."""
+
+    context = _require_prepared_export(
+        session,
+        prepared,
+        historical_ok=False,
+    )
+    with _activate_scoped_export(prepared):
+        enabled = await is_enabled(session)
+    if not enabled:
+        return {"status": "disabled", "sent": False}
+    from vitals.integrations.garmin_client import GarminClient
+
+    client = GarminClient.from_config(redis=redis)
+    if not client.is_configured:
+        return {"status": "unconfigured", "sent": False}
+
+    # The Settings request prepared governance, advisory, identity, and account
+    # locks before reaching this boundary. Release all of them before waiting on
+    # Redis. Only the immutable context may cross the commit; the callback gets
+    # a capability issued in its own current transaction.
+    await session.commit()
+
+    async def run_scoped_export() -> dict[str, Any]:
+        try:
+            fresh = await prepare_scoped_export(
+                session,
+                context=context,
+                historical=False,
+            )
+            result = await export_latest_scoped(
+                session,
+                client,
+                prepared=fresh,
+                force=True,
+                require_enabled=True,
+            )
+            # Every return path must release transaction-scoped DB locks before
+            # with_scheduler_lock performs its external Redis unlock.
+            await session.commit()
+            return result
+        except BaseException:
+            await session.rollback()
+            raise
+
+    if redis is not None:
+        from vitals.scheduler.scheduler_lock import with_scheduler_lock
+
+        result = await with_scheduler_lock(
+            redis,
+            "garmin_weight_export",
+            OPERATION_LOCK_TTL_SECONDS,
+            run_scoped_export,
+        )
+        result = result or {"status": "busy", "sent": False}
+    else:
+        result = await run_scoped_export()
+    # export_latest may commit more than once; only immutable context crosses
+    # that boundary and a fresh capability authorizes the provider alert.
+    try:
+        alert_prepared = await prepare_scoped_export(
+            session,
+            context=context,
+            historical=False,
+        )
+    except GarminWeightExportConnectionInactiveError:
+        return result
+    from vitals.services import garmin_service
+
+    with _activate_scoped_export(alert_prepared):
+        await garmin_service._refresh_owned_token_cache_alert(
+            session,
+            client,
+            context=alerts_service.ProviderAlertContext(
+                identity=context.identity,
+                provider=IntegrationProvider.GARMIN,
+                integration_connection_id=context.integration_connection_id,
+            ),
+            resolve_if_clear=False,
+        )
+    return result
+
+
+async def _export_job_pre_identity_legacy(session, *, redis=None) -> None:
+    """Compatibility job used only while the database has zero subjects."""
+
     from vitals.i18n import current_lang
     from vitals.integrations.garmin_client import GarminClient
     from vitals.services.garmin_service import refresh_token_cache_alert
     from vitals.services.language_service import get_language
 
+    if not await is_enabled(session):
+        return
+    # Governance is already held by export_job. Release it before Redis or the
+    # provider client boundary; export_latest acquires its own advisory lease.
+    await session.commit()
+    current_lang.set(await get_language(session, redis))
+    client = GarminClient.from_config(redis=redis)
+    if not client.is_configured:
+        return
+    await export_latest(session, client, require_enabled=True)
+    await refresh_token_cache_alert(session, client, resolve_if_clear=False)
+    await session.commit()
+
+
+async def export_job(session_factory, redis=None) -> None:
+    """Scheduled scoped entry point for the sole registration-off owner graph."""
+    from vitals.i18n import current_lang
+    from vitals.integrations.garmin_client import GarminClient
+    from vitals.services.language_service import get_language
+    from vitals.services.legacy_ownership import LegacyOwnershipError
+
     async with session_factory() as session:
-        if not await is_enabled(session):
+        await acquire_identity_governance_lock(session)
+        subject_ids = list(
+            await session.scalars(
+                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+            )
+        )
+        if not subject_ids:
+            await _export_job_pre_identity_legacy(session, redis=redis)
             return
-        current_lang.set(await get_language(session, redis))
+        if len(subject_ids) != 1:
+            logger.warning(
+                "Garmin Weight export ownership is unavailable: "
+                "expected exactly one health subject"
+            )
+            return
+        try:
+            context = await resolve_legacy_export_context(
+                session,
+                actor_username=None,
+            )
+            prepared = await prepare_scoped_export(
+                session,
+                context=context,
+                historical=False,
+            )
+        except (LegacyOwnershipError, GarminWeightExportOwnershipError) as exc:
+            logger.warning("Garmin Weight export ownership is unavailable: %s", exc)
+            return
+        with _activate_scoped_export(prepared):
+            enabled = await is_enabled(session)
+        if not enabled:
+            return
+        owner_user_id = await session.scalar(
+            select(HealthSubject.owner_user_id).where(
+                HealthSubject.id == context.identity.subject_id
+            )
+        )
+        # Do not carry governance/account/outbox locks into client construction
+        # or any external Redis/vendor request. Re-prepare below in the
+        # transaction that performs the scoped reconciliation.
+        await session.commit()
+        current_lang.set(
+            await get_language(session, redis, user_id=owner_user_id)
+        )
         client = GarminClient.from_config(redis=redis)
         if not client.is_configured:
             return
-        await export_latest(session, client, require_enabled=True)
-        await refresh_token_cache_alert(session, client, resolve_if_clear=False)
+        try:
+            prepared = await prepare_scoped_export(
+                session,
+                context=context,
+                historical=False,
+            )
+        except GarminWeightExportConnectionInactiveError:
+            await session.rollback()
+            return
+        await export_latest_scoped(
+            session,
+            client,
+            prepared=prepared,
+            require_enabled=True,
+        )
+
+        # export_latest may have committed one or more durable leases. Prepare
+        # again before writing the provider-scoped token-cache alert.
+        try:
+            alert_prepared = await prepare_scoped_export(
+                session,
+                context=context,
+                historical=False,
+            )
+        except GarminWeightExportConnectionInactiveError:
+            await session.rollback()
+            return
+        from vitals.services import garmin_service
+
+        with _activate_scoped_export(alert_prepared):
+            await garmin_service._refresh_owned_token_cache_alert(
+                session,
+                client,
+                context=alerts_service.ProviderAlertContext(
+                    identity=context.identity,
+                    provider=IntegrationProvider.GARMIN,
+                    integration_connection_id=(
+                        context.integration_connection_id
+                    ),
+                ),
+                resolve_if_clear=False,
+            )
         await session.commit()

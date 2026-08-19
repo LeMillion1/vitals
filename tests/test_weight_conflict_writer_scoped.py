@@ -1017,9 +1017,14 @@ async def test_postgres_owned_reparse_candidate_does_not_lock_raw_before_prepare
     class _PreparationProbeComplete(Exception):
         pass
 
-    async def probe_prepare(session, *, context):
+    async def probe_prepare(
+        session,
+        *,
+        context,
+        garmin_weight_export_context=None,
+    ):
         nonlocal probe_acquired_raw
-        del session, context
+        del session, context, garmin_weight_export_context
         async with factory() as probe:
             locked = await probe.scalar(
                 select(RawPayload)
