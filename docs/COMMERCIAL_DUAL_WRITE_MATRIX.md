@@ -172,8 +172,11 @@ exclude exactly that row from the resolver snapshot before applying the proposed
 state. Nutrition web/MCP create and update paths use the same proof, evaluate the
 post-write subject-day aggregate, and preserve meal-level name predicates. Meal
 deletion joins the subject-lock order, direct MCP Nutrition reads are scoped, and
-the day-end job reconciles actorless subject alerts. Other domain writers and the
-transitional legacy service fallbacks remain on the reviewed inventory. Their
+the day-end job reconciles actorless subject alerts. Skincare checklist replacement
+uses a subject-day marker so old actives do not false-block a corrected routine;
+its observations and personal product catalog stamp S+A, and direct web/MCP reads,
+notes, and deletes are subject-scoped. Other domain writers and the transitional
+legacy service fallbacks remain on the reviewed inventory. Their
 cutover must preserve the canonical governance
 -> provider/outbox advisory -> subject/domain-row -> alert order;
 in particular, weight conflict enforcement cannot acquire governance after the
@@ -186,6 +189,10 @@ utility: it deletes and recreates domain rows without S/A. It must fail closed o
 a commercial identity database or be rewritten around an explicit disposable
 demo subject before registration can open; it is not a supported Stage-2 write
 boundary.
+
+The older `scripts/seed_skincare.py` utility now fails closed as soon as a
+commercial `HealthSubject` exists; it cannot globally erase and rebuild real
+Skincare history after identity bootstrap.
 
 Signals and proactive delivery now use a channel-neutral ownership context.
 Telegram capture writes S+A+Telegram C, MCP writes S+A with C null, and planned

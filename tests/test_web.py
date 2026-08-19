@@ -394,6 +394,9 @@ async def test_skincare_retinoid_peel_block_and_override(auth_client, db_session
     """retinoid+peel in one evening is blocked (409) then saved on override."""
     from vitals.models.conflict_rule import ConflictRule
     from vitals.models.skincare import SkincareLog
+    from vitals.services import conflict_registrations
+
+    conflict_registrations.register_all_resolvers()
 
     db_session.add(
         ConflictRule(

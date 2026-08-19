@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Domain
 from vitals.services import alerts_service, conflict_engine, skincare_service
 from vitals.services.conflict_engine import ConflictBlocked
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -26,37 +25,71 @@ def _redirect(request: Request) -> RedirectResponse:
     return response
 
 
+async def _prepared_owner_write(
+    db: AsyncSession,
+    *,
+    username: str,
+    evaluation_date: date_type,
+):
+    context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=evaluation_date,
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        db,
+        context=context,
+    )
+    return context, prepared
+
+
 @router.get("", response_class=HTMLResponse)
 async def skincare_dashboard(
     request: Request,
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
+    today = today_local()
+    context = await conflict_engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
+        evaluation_date=today,
     )
-    logs = await skincare_service.list_logs(db)
-    observations = await skincare_service.list_observations(db)
+    identity = context.identity
+    logs = await skincare_service.list_logs(
+        db,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
+    observations = await skincare_service.list_observations(
+        db,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
     alerts = await alerts_service.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        context=alerts_service.HealthAlertContext(identity),
         domain=Domain.SKINCARE,
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
-    today_log = await skincare_service.get_log(db, today_local())
+    today_log = await skincare_service.get_log(
+        db,
+        today,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
     
     # Load products dynamically
-    products = await skincare_service.list_products(db)
+    products = await skincare_service.list_products(
+        db,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
     
     # Load active skincare rules inside the same proved legacy-owner boundary.
     conflict_rules = await conflict_engine.load_scoped_rules(
         db,
-        scope=await conflict_engine.resolve_legacy_conflict_scope(
-            db,
-            actor_username=username,
-            evaluation_date=today_local(),
-        ),
+        scope=context.scope,
         domain=Domain.SKINCARE,
     )
     
@@ -69,7 +102,7 @@ async def skincare_dashboard(
             "observations": observations,
             "alerts": alerts,
             "today_log": today_log,
-            "today": today_local().isoformat(),
+            "today": today.isoformat(),
             "products": products,
             "conflict_rules": conflict_rules,
         },
@@ -93,6 +126,11 @@ async def save_log(
     username: str = Depends(require_auth),
 ):
     on_date = date_type.fromisoformat(date)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=on_date,
+    )
     try:
         await skincare_service.upsert_log(
             db,
@@ -106,9 +144,13 @@ async def save_log(
             benzoyl_peroxide=benzoyl_peroxide,
             note=note,
             override=override,
+            identity=context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
         )
         await db.commit()
     except ConflictBlocked as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [v.to_dict() for v in e.violations]},
@@ -128,8 +170,20 @@ async def save_observation(
     username: str = Depends(require_auth),
 ):
     on_date = date_type.fromisoformat(date)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=on_date,
+    )
     await skincare_service.add_observation(
-        db, on_date=on_date, inflammation=inflammation, pih=pih, zone=zone, note=note
+        db,
+        on_date=on_date,
+        inflammation=inflammation,
+        pih=pih,
+        zone=zone,
+        note=note,
+        identity=context.identity,
+        prepared_conflict_write=prepared,
     )
     await db.commit()
     return _redirect(request)
@@ -142,7 +196,18 @@ async def delete_log(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await skincare_service.delete_log(db, id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await skincare_service.delete_log(
+        db,
+        id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)
 
@@ -154,7 +219,18 @@ async def delete_observation(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await skincare_service.delete_observation(db, id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await skincare_service.delete_observation(
+        db,
+        id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)
 
@@ -175,6 +251,11 @@ async def save_product(
     username: str = Depends(require_auth),
 ):
     days = [int(x) for x in schedule_days if x.isdigit()]
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
     if id is not None:
         await skincare_service.update_product(
             db,
@@ -187,6 +268,9 @@ async def save_product(
             default_time=default_time,
             schedule_days=days,
             active=active,
+            identity=context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
         )
     else:
         await skincare_service.add_product(
@@ -199,6 +283,8 @@ async def save_product(
             default_time=default_time,
             schedule_days=days,
             active=active,
+            identity=context.identity,
+            prepared_conflict_write=prepared,
         )
     await db.commit()
     return _redirect(request)
@@ -211,6 +297,17 @@ async def delete_product(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await skincare_service.delete_product(db, id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await skincare_service.delete_product(
+        db,
+        id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)

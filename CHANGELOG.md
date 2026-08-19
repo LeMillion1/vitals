@@ -93,6 +93,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   job reconciles actorless subject alerts. Direct Nutrition summaries and search
   are subject-scoped, while pre-backfill rows require the exact-one compatibility
   bridge and partial-root rows remain hidden.
+- Skincare checklist, observation, and personal-product web paths now stamp and
+  filter the selected subject, and direct MCP Skincare reads/writes preserve MCP
+  source provenance. Checklist replacement is serialized under the prepared
+  conflict capability and excludes the prior subject-day state before evaluating
+  retinoid/peel rules; note and delete paths reject foreign or partial legacy
+  rows. The destructive historical Skincare seed script now refuses to run once
+  commercial identity bootstrap exists.
 - System alerts now have typed health-subject, provider-connection, and platform
   contexts backed by an exhaustive key/domain registry. The legacy owner sees
   health alerts plus current and retired provider alerts through one fail-closed

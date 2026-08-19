@@ -537,6 +537,7 @@ async def get_supplements_catalog() -> list[dict]:
 
 
 @mcp.tool()
+@gated("skincare")
 async def get_skincare_logs(
     start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
 ) -> dict:
@@ -547,23 +548,25 @@ async def get_skincare_logs(
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        # Routine logs
-        l_stmt = select(SkincareLog)
-        if start:
-            l_stmt = l_stmt.where(SkincareLog.date >= start)
-        if end:
-            l_stmt = l_stmt.where(SkincareLog.date <= end)
-        l_stmt = l_stmt.order_by(SkincareLog.date.desc()).limit(limit)
-        logs = (await session.execute(l_stmt)).scalars().all()
+        scope = await _mcp_v1_conflict_scope(session)
+        from vitals.services import skincare_service
 
-        # Observations
-        o_stmt = select(SkincareObservation)
-        if start:
-            o_stmt = o_stmt.where(SkincareObservation.date >= start)
-        if end:
-            o_stmt = o_stmt.where(SkincareObservation.date <= end)
-        o_stmt = o_stmt.order_by(SkincareObservation.date.desc()).limit(limit)
-        observations = (await session.execute(o_stmt)).scalars().all()
+        logs = await skincare_service.list_logs(
+            session,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+            start=start,
+            end=end,
+            limit=limit,
+        )
+        observations = await skincare_service.list_observations(
+            session,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+            start=start,
+            end=end,
+            limit=limit,
+        )
 
         return {
             "logs": [serialize_row(l) for l in logs],
@@ -1409,14 +1412,26 @@ async def log_skincare(
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
             row = await skincare_service.upsert_log(
                 session, on_date=parsed_date, retinoid=retinoid, azelaic=azelaic,
                 peel=peel, niacinamide_spf=niacinamide_spf, moisturizer=moisturizer,
                 vitamin_c=vitamin_c, benzoyl_peroxide=benzoyl_peroxide,
-                note=note, override=override,
+                note=note, source=Source.MCP.value, override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         await session.commit()
         return await serialize_written(session, row)
@@ -1533,6 +1548,28 @@ async def log_note(
                 return {"error": f"{domain} record {record_id} not found"}
             await session.commit()
             return await serialize_written(session, row)
+        if domain == "skincare":
+            if not await _module_enabled(session, "skincare"):
+                return {"error": "module 'skincare' is disabled"}
+            from vitals.services import skincare_service
+
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            row = await skincare_service.update_log_note(
+                session,
+                record_id,
+                note=note,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
+            )
+            if row is None:
+                return {"error": f"{domain} record {record_id} not found"}
+            await session.commit()
+            return await serialize_written(session, row)
         row = await session.get(model, record_id)
         if row is None:
             return {"error": f"{domain} record {record_id} not found"}
@@ -1567,6 +1604,7 @@ async def get_notes(
     results = []
     async with session_factory() as session:
         nutrition_scope = None
+        skincare_scope = None
         if "nutrition" in targets:
             if not await _module_enabled(session, "nutrition"):
                 if domain == "nutrition":
@@ -1574,6 +1612,13 @@ async def get_notes(
                 targets.pop("nutrition")
             else:
                 nutrition_scope = await _mcp_v1_conflict_scope(session)
+        if "skincare" in targets:
+            if not await _module_enabled(session, "skincare"):
+                if domain == "skincare":
+                    return [{"error": "module 'skincare' is disabled"}]
+                targets.pop("skincare")
+            else:
+                skincare_scope = await _mcp_v1_conflict_scope(session)
         for d_name, model in targets.items():
             if d_name == "nutrition":
                 assert nutrition_scope is not None
@@ -1587,6 +1632,26 @@ async def get_notes(
                     include_unowned_legacy=(
                         nutrition_scope.include_legacy_unowned
                     ),
+                    has_note=True,
+                    limit=limit,
+                )
+                for row in rows:
+                    entry = serialize_row(row)
+                    entry["_domain"] = d_name
+                    results.append(entry)
+                continue
+            if d_name == "skincare":
+                assert skincare_scope is not None
+                from vitals.services import skincare_service
+
+                rows = await skincare_service.list_logs(
+                    session,
+                    subject_id=skincare_scope.subject_id,
+                    include_legacy_unowned=(
+                        skincare_scope.include_legacy_unowned
+                    ),
+                    start=start,
+                    end=end,
                     has_note=True,
                     limit=limit,
                 )
@@ -1682,6 +1747,17 @@ async def delete_record(domain: str, record_id: int) -> dict:
             owned_kwargs = {
                 "identity": conflict_context.identity,
                 "include_unowned_legacy": True,
+                "prepared_conflict_write": prepared,
+            }
+        elif domain == "skincare_observation":
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            owned_kwargs = {
+                "identity": conflict_context.identity,
+                "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
         elif domain == "signals":
@@ -2407,9 +2483,19 @@ async def log_skincare_observation(
     session_factory = get_session_factory()
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         row = await skincare_service.add_observation(
             session, on_date=parsed_date, inflammation=inflammation,
-            pih=pih, zone=zone, note=note,
+            pih=pih, zone=zone, note=note, source=Source.MCP.value,
+            identity=conflict_context.identity,
+            prepared_conflict_write=prepared,
         )
         await session.commit()
         return await serialize_written(session, row)

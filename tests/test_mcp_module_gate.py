@@ -157,3 +157,11 @@ async def test_nutrition_reads_and_generic_notes_refuse_when_module_is_off():
     assert await mcp_router.search_meals() == error
     assert await mcp_router.log_note("nutrition", 1, "hidden") == error
     assert await mcp_router.get_notes(domain="nutrition") == [error]
+
+
+async def test_skincare_reads_and_generic_notes_refuse_when_module_is_off():
+    error = {"error": "module 'skincare' is disabled"}
+
+    assert await mcp_router.get_skincare_logs() == error
+    assert await mcp_router.log_note("skincare", 1, "hidden") == error
+    assert await mcp_router.get_notes(domain="skincare") == [error]
