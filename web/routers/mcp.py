@@ -271,6 +271,24 @@ async def _mcp_v1_weight_write(
     return conflict_context, prepared
 
 
+async def _mcp_v1_aux_weight_write(
+    session,
+    *,
+    evaluation_date: date_type | None = None,
+):
+    """Prepare a BodyMeasurement/NoiseMarker write without the outbox advisory."""
+
+    conflict_context = await _mcp_v1_conflict_write_context(
+        session,
+        evaluation_date=evaluation_date,
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        session,
+        context=conflict_context,
+    )
+    return conflict_context, prepared
+
+
 # tool name → the optional module it belongs to. Writes register themselves through
 # ``gated``; the reads of those same domains are listed below. Used only to hide a
 # switched-off module's tools from ``tools/list`` — the surface is 75 tools and
@@ -348,18 +366,25 @@ async def get_weight_logs(
         )
         weights = sorted(weights, key=lambda w: w.date, reverse=True)[:limit]
 
-        # Body measurements
-        m_stmt = select(BodyMeasurement)
-        if start:
-            m_stmt = m_stmt.where(BodyMeasurement.date >= start)
-        if end:
-            m_stmt = m_stmt.where(BodyMeasurement.date <= end)
-        m_stmt = m_stmt.order_by(BodyMeasurement.date.desc()).limit(limit)
-        measurements = (await session.execute(m_stmt)).scalars().all()
+        measurements = await weight_service.list_body_measurements(
+            session,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+            start=start,
+            end=end,
+        )
+        measurements = sorted(
+            measurements, key=lambda row: row.date, reverse=True
+        )[:limit]
 
-        # Noise markers
-        n_stmt = select(NoiseMarker).order_by(NoiseMarker.start_date.desc())
-        noise = (await session.execute(n_stmt)).scalars().all()
+        noise = await weight_service.list_noise_markers(
+            session,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+            start=start,
+            end=end,
+        )
+        noise = sorted(noise, key=lambda row: row.start_date, reverse=True)
 
         return {
             "weights": [serialize_row(w) for w in weights],
@@ -1639,14 +1664,22 @@ async def log_measurement(
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
+        conflict_context, prepared = await _mcp_v1_aux_weight_write(
+            session,
+            evaluation_date=parsed_date,
+        )
         try:
             row = await weight_service.upsert_body_measurement(
                 session, on_date=parsed_date, neck_cm=neck_cm, waist_cm=waist_cm,
-                hips_cm=hips_cm, note=note, override=override,
+                hips_cm=hips_cm, note=note, source=Source.MCP.value,
+                override=override, identity=conflict_context.identity,
+                include_legacy_unowned=True, prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, row)
@@ -1665,13 +1698,15 @@ async def get_measurements(
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        stmt = select(BodyMeasurement)
-        if start:
-            stmt = stmt.where(BodyMeasurement.date >= start)
-        if end:
-            stmt = stmt.where(BodyMeasurement.date <= end)
-        stmt = stmt.order_by(BodyMeasurement.date.desc()).limit(limit)
-        rows = (await session.execute(stmt)).scalars().all()
+        scope = await _mcp_v1_conflict_scope(session)
+        rows = await weight_service.list_body_measurements(
+            session,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+            start=start,
+            end=end,
+        )
+        rows = sorted(rows, key=lambda row: row.date, reverse=True)[:limit]
         return [serialize_row(r) for r in rows]
 
 
@@ -1717,6 +1752,22 @@ async def log_note(
                 identity=conflict_context.identity,
                 include_legacy_unowned=True,
                 prepared_weight_write=prepared,
+            )
+            if row is None:
+                return {"error": f"{domain} record {record_id} not found"}
+            await session.commit()
+            return await serialize_written(session, row)
+        if domain == "measurement":
+            from vitals.services import weight_service
+
+            conflict_context, prepared = await _mcp_v1_aux_weight_write(session)
+            row = await weight_service.update_body_measurement_note(
+                session,
+                record_id,
+                note=note,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
             if row is None:
                 return {"error": f"{domain} record {record_id} not found"}
@@ -1842,12 +1893,15 @@ async def get_notes(
     results = []
     async with session_factory() as session:
         weight_scope = None
+        measurement_scope = None
         nutrition_scope = None
         skincare_scope = None
         glp1_scope = None
         labs_scope = None
         if "weight" in targets:
             weight_scope = await _mcp_v1_conflict_scope(session)
+        if "measurement" in targets:
+            measurement_scope = weight_scope or await _mcp_v1_conflict_scope(session)
         if "nutrition" in targets:
             if not await _module_enabled(session, "nutrition"):
                 if domain == "nutrition":
@@ -1905,6 +1959,25 @@ async def get_notes(
                     ),
                     has_note=True,
                     limit=limit,
+                )
+                for row in rows:
+                    entry = serialize_row(row)
+                    entry["_domain"] = d_name
+                    results.append(entry)
+                continue
+            if d_name == "measurement":
+                assert measurement_scope is not None
+                from vitals.services import weight_service
+
+                rows = await weight_service.list_body_measurements(
+                    session,
+                    subject_id=measurement_scope.subject_id,
+                    include_legacy_unowned=(
+                        measurement_scope.include_legacy_unowned
+                    ),
+                    start=start,
+                    end=end,
+                    has_note=True,
                 )
                 for row in rows:
                     entry = serialize_row(row)
@@ -2052,6 +2125,13 @@ async def delete_record(domain: str, record_id: int) -> dict:
                 "identity": conflict_context.identity,
                 "include_legacy_unowned": True,
                 "prepared_weight_write": prepared,
+            }
+        elif domain in {"measurement", "noise_marker"}:
+            conflict_context, prepared = await _mcp_v1_aux_weight_write(session)
+            owned_kwargs = {
+                "identity": conflict_context.identity,
+                "include_legacy_unowned": True,
+                "prepared_conflict_write": prepared,
             }
         elif domain in {"timeline", "supplements"}:
             ownership = await _mcp_v1_legacy_owner(session)
@@ -3211,14 +3291,23 @@ async def update_measurement(
     session_factory = get_session_factory()
     parsed_date = _parse_date(on_date, field="on_date")
     async with session_factory() as session:
+        conflict_context, prepared = await _mcp_v1_aux_weight_write(
+            session,
+            evaluation_date=parsed_date,
+        )
         try:
             row = await weight_service.update_body_measurement(
                 session, measurement_id, on_date=parsed_date, neck_cm=neck_cm,
                 waist_cm=waist_cm, hips_cm=hips_cm, note=note, override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         if row is None:
             return {"error": f"Measurement {measurement_id} not found"}
@@ -3235,18 +3324,29 @@ async def add_noise_marker(
 ) -> dict:
     """Marks a date range as noisy so it's excluded from the weight moving average
     and trend (e.g. "sick week", "creatine loading"). ``direction`` is up (scale
-    inflated), down (scale deflated), or neutral. Omit ``end_date`` for a single
-    day. WRITE tool — the weight trend recomputes without this range."""
+    inflated), down (scale deflated), or neutral. Omit ``end_date`` for an open
+    period. WRITE tool — the weight trend recomputes without this range."""
     from vitals.services import weight_service
 
     session_factory = get_session_factory()
     parsed_start = _parse_date(start_date, field="start_date")
     parsed_end = _parse_date(end_date, field="end_date")
     async with session_factory() as session:
-        row = await weight_service.add_noise_marker(
-            session, start_date=parsed_start, end_date=parsed_end,
-            reason=reason, direction=direction,
+        conflict_context, prepared = await _mcp_v1_aux_weight_write(
+            session,
+            evaluation_date=today_local(),
         )
+        try:
+            row = await weight_service.add_noise_marker(
+                session, start_date=parsed_start, end_date=parsed_end,
+                reason=reason, direction=direction, source=Source.MCP.value,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
+            )
+        except ValueError as exc:
+            await session.rollback()
+            return {"error": str(exc)}
         await session.commit()
         return await serialize_written(session, row)
 
@@ -3366,7 +3466,12 @@ async def get_trend(
 
         noise_applied = False
         if exclude_noise and field.domain == "weight":
-            markers = await weight_service.list_noise_markers(session)
+            scope = await _mcp_v1_conflict_scope(session)
+            markers = await weight_service.list_noise_markers(
+                session,
+                subject_id=scope.subject_id,
+                include_legacy_unowned=scope.include_legacy_unowned,
+            )
             ranges = [(m.start_date, m.end_date) for m in markers]
             if ranges:
                 points = exclude_ranges(points, ranges)

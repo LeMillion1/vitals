@@ -44,7 +44,7 @@ _EXPECTED_LEGACY_CALLS = Counter(
         ("vitals/services/weight_service.py", "log_weight", "enforce"): 1,
         (
             "vitals/services/weight_service.py",
-            "upsert_body_measurement",
+            "_enforce_body_measurement_write",
             "enforce",
         ): 1,
         ("vitals/services/weight_service.py", "update_weight_log", "enforce"): 1,

@@ -128,8 +128,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   order. Provider-derived weights require a matching owned raw payload and
   connection, direct reads/notes reject foreign or partial roots, and deleting or
   moving an active row never silently reactivates a safety-blocked historical
-  value. The global active-date and Garmin outbox-date keys, BodyMeasurement/noise
-  paths, and cross-domain chart/share/export readers remain registration blockers.
+  value. The global active-date and Garmin outbox-date keys and cross-domain
+  chart/share/export readers remain registration blockers.
+- BodyMeasurement and NoiseMarker direct web/MCP paths now use the selected
+  subject and transaction-bound conflict capability before any target-row read.
+  New rows retain manual versus MCP source and human actor provenance; edits,
+  notes, date moves, and legacy adoption preserve their original attribution.
+  Partial NULL roots fail closed, foreign IDs are non-enumerating, the Weight page
+  composes its Weight/measurement/noise/GLP-1/Timeline series inside one subject,
+  and the noisy-period alert is an actorless typed health alert. The global
+  BodyMeasurement date key, BodyScan provenance, and whole-lake composition remain
+  explicit registration blockers.
 - The Garmin Weight export outbox now projects only the prepared subject and Garmin
   account, validates every linked Weight fact before using remote-delete authority,
   and records the human requester while scheduled work remains actorless. Settings,

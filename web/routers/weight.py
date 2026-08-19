@@ -31,6 +31,7 @@ from vitals.services import (
 from vitals.services.analytics import body_metrics
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth, require_module
 from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
@@ -82,6 +83,26 @@ async def _prepare_weight_write(
     return conflict_context, prepared
 
 
+async def _prepare_aux_write(
+    db: AsyncSession,
+    *,
+    username: str,
+    on_date: date_type,
+) -> tuple[
+    conflict_engine.ConflictWriteContext,
+    conflict_engine.PreparedConflictWrite,
+]:
+    """Prepare a subject-scoped measurement/noise write without the outbox lock."""
+
+    context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=on_date,
+    )
+    prepared = await conflict_engine.prepare_scoped_write(db, context=context)
+    return context, prepared
+
+
 def _back(request: Request, default: str = "/weight"):
     """POST → 303 back to the page the form was posted from.
 
@@ -111,10 +132,13 @@ async def _section_context(
     7-day mean, body fat, weekly delta) are identical on both, and computing
     them twice is how the two headers would drift apart.
     """
-    ownership = await resolve_legacy_ownership_context(
+    today = today_local()
+    conflict_context, prepared = await _prepare_aux_write(
         db,
-        actor_username=username,
+        username=username,
+        on_date=today,
     )
+    identity = conflict_context.identity
 
     # Is the optional body-composition module on? Gates the tab, the BIA chart
     # overlay, and the scan section — disabled behaves as if it isn't there.
@@ -123,11 +147,16 @@ async def _section_context(
     timeline_enabled = bool(em.get("timeline"))
 
     # Refresh noise alerts for today (+ body-scan alerts when the module is on)
-    await weight_service.refresh_noise_alert(db)
+    await weight_service.refresh_noise_alert(
+        db,
+        on_date=today,
+        identity=identity,
+        prepared_conflict_write=prepared,
+    )
     if body_comp_enabled:
         await body_scan_service.refresh_alerts(
             db,
-            subject_id=ownership.subject_id,
+            subject_id=identity.subject_id,
             include_legacy_unowned=True,
         )
     await db.commit()
@@ -135,31 +164,43 @@ async def _section_context(
     # Load data
     weights = await weight_service.list_active_weights(
         db,
-        subject_id=ownership.subject_id,
+        subject_id=identity.subject_id,
         include_legacy_unowned=True,
     )
-    measurements = await weight_service.list_body_measurements(db)
-    noise_markers = await weight_service.list_noise_markers(db)
+    measurements = await weight_service.list_body_measurements(
+        db,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
+    noise_markers = await weight_service.list_noise_markers(
+        db,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
     photos = await weight_service.list_progress_photos(
         db,
-        subject_id=ownership.subject_id,
+        subject_id=identity.subject_id,
         include_legacy_unowned=True,
     )
     alerts = await alerts_service.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        context=alerts_service.HealthAlertContext(identity),
         domain=Domain.WEIGHT,
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
     series = await weight_service.chart_series(
-        db, include_bia=body_comp_enabled, include_timeline=timeline_enabled
+        db,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+        include_bia=body_comp_enabled,
+        include_timeline=timeline_enabled,
     )
 
     # Body-composition scans + the compact summary chips for the latest one.
     bc_scans = (
         await body_scan_service.list_scans(
             db,
-            subject_id=ownership.subject_id,
+            subject_id=identity.subject_id,
             include_legacy_unowned=True,
         )
         if body_comp_enabled
@@ -236,8 +277,7 @@ async def _section_context(
     latest_bf_source = latest_bf_row["source_label"] if latest_bf_row else None
 
     # Default today's date for forms
-    from vitals.utils.timeutils import today_local
-    today_str = today_local().isoformat()
+    today_str = today.isoformat()
 
     return {
         "username": username,
@@ -365,6 +405,11 @@ async def log_measurement_entry(
     """Upserts or edits a body measurement log, returning 409 JSON on rule violation."""
     on_date = date_type.fromisoformat(date)
     try:
+        conflict_context, prepared = await _prepare_aux_write(
+            db,
+            username=username,
+            on_date=on_date,
+        )
         if id is not None:
             # partial=False: this form renders every field it edits and posts
             # them all, so an empty one is the owner deleting a value, not an
@@ -381,7 +426,10 @@ async def log_measurement_entry(
                 note=note,
                 override=override,
                 partial=False,
-              )
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
+            )
         else:
             await weight_service.upsert_body_measurement(
                 db,
@@ -390,15 +438,21 @@ async def log_measurement_entry(
                 waist_cm=waist_cm,
                 hips_cm=hips_cm,
                 note=note,
+                source=Source.MANUAL.value,
                 override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
         await db.commit()
     except ConflictBlocked as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [v.to_dict() for v in e.violations]},
         )
     except ValueError as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST, content={"error": str(e)}
         )
@@ -422,10 +476,30 @@ async def add_noise_entry(
     # Normalise: empty string → None
     dir_value = direction.strip() if direction and direction.strip() else None
 
-    await weight_service.add_noise_marker(
-        db, start_date=start, end_date=end, reason=reason, direction=dir_value
-    )
-    await db.commit()
+    try:
+        conflict_context, prepared = await _prepare_aux_write(
+            db,
+            username=username,
+            on_date=today_local(),
+        )
+        await weight_service.add_noise_marker(
+            db,
+            start_date=start,
+            end_date=end,
+            reason=reason,
+            direction=dir_value,
+            source=Source.MANUAL.value,
+            identity=conflict_context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
+        await db.commit()
+    except ValueError as exc:
+        await db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": str(exc)},
+        )
 
     return _back(request)
 
@@ -824,7 +898,18 @@ async def delete_measurement_entry(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await weight_service.delete_body_measurement(db, id)
+    conflict_context, prepared = await _prepare_aux_write(
+        db,
+        username=username,
+        on_date=today_local(),
+    )
+    await weight_service.delete_body_measurement(
+        db,
+        id,
+        identity=conflict_context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
 
     return _back(request)
@@ -837,7 +922,18 @@ async def delete_noise_marker_entry(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await weight_service.delete_noise_marker(db, id)
+    conflict_context, prepared = await _prepare_aux_write(
+        db,
+        username=username,
+        on_date=today_local(),
+    )
+    await weight_service.delete_noise_marker(
+        db,
+        id,
+        identity=conflict_context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
 
     return _back(request)

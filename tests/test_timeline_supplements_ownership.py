@@ -933,7 +933,6 @@ _KNOWN_LEGACY_READERS = {
     ("vitals/services/today_service.py", "build", "list_events"),
     ("vitals/services/digest_service.py", "assemble_context", "list_supplements"),
     ("vitals/services/digest_service.py", "assemble_context", "list_annotations"),
-    ("vitals/services/weight_service.py", "chart_series", "overlays_for"),
     ("vitals/services/share_service.py", "_supplements_block", "list_supplements"),
 }
 

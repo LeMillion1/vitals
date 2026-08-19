@@ -238,6 +238,13 @@ Implementation progress on `commercial/main`:
   combine only that subject's cycle, dose, and Labs state and reconcile actorless
   alerts. Curated compounds remain global; their per-subject activation setting is
   still a required cutover before registration.
+  Direct WeightLog writes and Garmin/body-scan bridges now use the canonical
+  governance -> outbox advisory -> subject capability, while the Garmin Weight
+  outbox validates one S+destination-C scope and rechecks lifecycle before network
+  activity. BodyMeasurement and NoiseMarker direct web/MCP paths now dual-write
+  S+A with manual/MCP source provenance, reject partial roots and foreign IDs,
+  and reconcile the noisy-period health alert actorlessly. The authenticated
+  Weight chart propagates the selected subject through its direct series.
   These paths resolve the verified legacy owner at their web, scheduler, or MCP
   boundary and fail closed if a second subject makes the compatibility bridge
   ambiguous.
@@ -245,8 +252,8 @@ Implementation progress on `commercial/main`:
   migration/foreign-key tests. Direct interactive selectors are covered for all
   current Timeline event types, and provider ingestion preserves raw-first
   provenance with subject/connection ownership.
-- Bounded data backfill and validation, scoped natural-key/alert-unique cutover,
-  remaining health-alert and conflict writers, outbox scoping, subject-aware
+- Bounded data backfill and validation, scoped natural-key/alert/outbox-unique
+  cutover, remaining health-alert and conflict writers, subject-aware
   composition/reporting (including Labs charts, shares, digests, overview, and
   export), full MCP principal propagation, and RLS remain pending.
   Registration stays disabled; the current code is a safe single-subject

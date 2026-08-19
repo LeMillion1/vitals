@@ -524,16 +524,23 @@ async def available_metrics(session: AsyncSession) -> list[dict]:
     return out
 
 
-async def bia_chart_points(session: AsyncSession) -> dict:
+async def bia_chart_points(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> dict:
     """BIA body-fat % and LBM series (latest scan per date) for the weight chart.
     Coexists with the Navy series — both are drawn."""
-    scans = (
-        await session.execute(
-            select(BodyScan)
-            .options(selectinload(BodyScan.metrics))
-            .order_by(BodyScan.date, BodyScan.id)
+    scans = list(
+        reversed(
+            await list_scans(
+                session,
+                subject_id=subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
         )
-    ).scalars().all()
+    )
 
     by_date: dict[date_type, BodyScan] = {}
     for s in scans:

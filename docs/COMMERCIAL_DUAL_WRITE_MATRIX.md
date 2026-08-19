@@ -207,9 +207,15 @@ S+destination-C scope, preserves human Q while scheduler projections keep Q NULL
 uses the scoped opt-in, and rejects partial/foreign outbox or linked-Weight roots
 before a remote mutation. Durable leases are followed by fresh lifecycle/root
 validation before network activity; unavailable Garmin export never blocks the
-local health write. The global active-weight-per-date and outbox/date keys, direct
-BodyMeasurement and NoiseMarker paths, and unscoped chart,
-share, digest, overview, and export consumers remain explicit release blockers.
+local health write. Direct BodyMeasurement and NoiseMarker web/MCP reads and
+mutations now validate the selected subject before target reads, preserve the
+original actor/source on correction, and allow only a fully NULL S/A legacy row
+through the exact-one bridge. Measurement writes use the scoped conflict proof;
+noise reconciliation writes an actorless health alert. The authenticated Weight
+page propagates S through Weight, measurement, noise, GLP-1, Timeline, and BIA
+selectors. The global active-weight/body-measurement/outbox date keys, the pending
+BodyScan root-integrity cutover, and unscoped chart, share, digest, overview, and
+export consumers remain explicit release blockers.
 Other domain writers and transitional legacy fallbacks stay on the reviewed
 inventory, so registration and every path to a second writable subject remain
 disabled until those cutovers land.
