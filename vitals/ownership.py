@@ -11,6 +11,7 @@ the eventual cutover, not necessarily non-null in the first migration revision.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -41,6 +42,26 @@ class TargetColumn(StrEnum):
     REQUIRED = "required"
     INHERITED = "inherited"
     MIXED = "mixed"
+
+
+@dataclass(frozen=True, slots=True)
+class WriteIdentity:
+    """Stable subject/actor attribution passed to domain write services.
+
+    ``actor_user_id=None`` is reserved for an authenticated system/job boundary;
+    it is not an instruction to infer the owner inside a domain service.
+    """
+
+    subject_id: uuid.UUID
+    actor_user_id: uuid.UUID | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.subject_id, uuid.UUID):
+            raise TypeError("subject_id must be a UUID")
+        if self.actor_user_id is not None and not isinstance(
+            self.actor_user_id, uuid.UUID
+        ):
+            raise TypeError("actor_user_id must be a UUID or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,5 +311,6 @@ __all__ = [
     "OwnershipClass",
     "OwnershipSpec",
     "TargetColumn",
+    "WriteIdentity",
     "ownership_for",
 ]

@@ -7,7 +7,9 @@ provider client, or perform network I/O.  The caller owns commit or rollback.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,11 +26,15 @@ from vitals.services.identity_service import acquire_identity_governance_lock
 
 LEGACY_ACCOUNT_DISCRIMINATOR = "legacy_singleton_v1"
 
-_LEGACY_CONNECTION_ROOTS = (
-    (IntegrationProvider.GARMIN, IntegrationConnectionType.ACCOUNT),
-    (IntegrationProvider.HEVY, IntegrationConnectionType.ACCOUNT),
-    (IntegrationProvider.OPENROUTER, IntegrationConnectionType.AI_GATEWAY),
-    (IntegrationProvider.TELEGRAM, IntegrationConnectionType.RECIPIENT),
+LEGACY_CONNECTION_TYPES: Mapping[
+    IntegrationProvider, IntegrationConnectionType
+] = MappingProxyType(
+    {
+        IntegrationProvider.GARMIN: IntegrationConnectionType.ACCOUNT,
+        IntegrationProvider.HEVY: IntegrationConnectionType.ACCOUNT,
+        IntegrationProvider.OPENROUTER: IntegrationConnectionType.AI_GATEWAY,
+        IntegrationProvider.TELEGRAM: IntegrationConnectionType.RECIPIENT,
+    }
 )
 
 
@@ -96,7 +102,7 @@ async def bootstrap_legacy_resource_roots(
     created_connections: list[IntegrationConnection] = []
     created_providers: set[IntegrationProvider] = set()
     skipped_providers: set[IntegrationProvider] = set()
-    for provider, connection_type in _LEGACY_CONNECTION_ROOTS:
+    for provider, connection_type in LEGACY_CONNECTION_TYPES.items():
         pair = (provider.value, connection_type.value)
         if pair in existing_pairs:
             skipped_providers.add(provider)
@@ -130,7 +136,7 @@ async def bootstrap_legacy_resource_roots(
                 "result_code": "legacy_connection_roots_created",
                 "changed_fields": [
                     f"integration_connections.{provider.value}"
-                    for provider, _connection_type in _LEGACY_CONNECTION_ROOTS
+                    for provider, _connection_type in LEGACY_CONNECTION_TYPES.items()
                     if provider in created_providers
                 ],
                 "record_count": len(created_connections),
@@ -151,6 +157,7 @@ async def bootstrap_legacy_resource_roots(
 
 __all__ = [
     "LEGACY_ACCOUNT_DISCRIMINATOR",
+    "LEGACY_CONNECTION_TYPES",
     "LegacyResourceRootsBootstrapError",
     "LegacyResourceRootsBootstrapResult",
     "LegacySubjectNotFoundError",
