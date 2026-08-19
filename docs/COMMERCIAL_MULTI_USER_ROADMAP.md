@@ -125,7 +125,11 @@ Each PR must be independently reviewable, include a real downgrade while the
 schema remains reversible, and preserve the single-owner production path until
 the corresponding cutover gate passes.
 
-### PR 01 — Identity and controlled-support foundation — **in progress**
+### PR 01 — Identity and controlled-support foundation — **merged**
+
+Merged into `commercial/main` on 2026-08-19. SQLite model, constraint,
+upgrade/downgrade, and full fast-suite checks passed. The PostgreSQL integration
+gate remains pending because the local Docker check did not complete.
 
 Scope:
 
@@ -483,7 +487,7 @@ Additional gates:
   exports, MCP, and existing tests for single-user assumptions.
 - [x] Select isolated commercial fork and current upstream base without rewriting
   historical fork branches.
-- [ ] Merge PR 01 identity/support foundation.
+- [x] Merge PR 01 identity/support foundation.
 - [ ] Bootstrap current owner and introduce `AccessContext`.
 - [ ] Backfill subject ownership across the lake.
 - [ ] Pass cross-subject service isolation and PostgreSQL RLS gates.
