@@ -67,7 +67,12 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.identity import HealthSubject
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, raw_payload_service, weight_service
+from vitals.services import (
+    alerts_service,
+    conflict_engine,
+    raw_payload_service,
+    weight_service,
+)
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.utils.timeutils import now_local, to_local_naive
 
@@ -115,6 +120,18 @@ def _validate_owned_context(
         raise GarminOwnershipValidationError(
             "integration_connection_id must be a UUID"
         )
+
+
+def _owned_weight_write_context(
+    *,
+    identity: WriteIdentity,
+    on_date: date_type,
+) -> conflict_engine.ConflictWriteContext:
+    return conflict_engine.ConflictWriteContext(
+        identity=identity,
+        evaluation_date=on_date,
+        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+    )
 
 
 async def _load_owned_garmin_connection(
@@ -1090,6 +1107,7 @@ async def _apply_owned_daily_raw(
     integration_connection_id: uuid.UUID,
     source: str,
     candidate: GarminDaily | None,
+    prepared_weight_write: weight_service.PreparedWeightWrite | None,
 ) -> GarminDaily:
     """Apply one complete Garmin API bundle to its owned daily projection."""
 
@@ -1098,11 +1116,6 @@ async def _apply_owned_daily_raw(
             "complete Garmin daily projection requires Garmin API provenance"
         )
     fields = _normalize_daily(raw_row.payload)
-    raw_identity = WriteIdentity(
-        subject_id=identity.subject_id,
-        actor_user_id=raw_row.actor_user_id,
-    )
-
     row = candidate
     if row is None:
         row = GarminDaily(
@@ -1139,13 +1152,21 @@ async def _apply_owned_daily_raw(
 
     weight_kg = _extract_weight_kg(raw_row.payload)
     if weight_kg is not None:
+        if prepared_weight_write is None:
+            raise GarminOwnershipValidationError(
+                "owned Garmin weight requires a prepared Weight capability"
+            )
         weight_row = await weight_service.log_weight(
             session,
             on_date=on_date,
             weight_kg=weight_kg,
             source=Source.GARMIN_API.value,
             raw_payload_id=raw_row.id,
-            identity=raw_identity,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            include_legacy_unowned=True,
+            prepared_weight_write=prepared_weight_write,
+            origin_actor_user_id=raw_row.actor_user_id,
         )
         if weight_row.subject_id not in {None, identity.subject_id}:
             raise GarminOwnershipConflictError(
@@ -1162,13 +1183,6 @@ async def _apply_owned_daily_raw(
             raise GarminRawPayloadInvariantError(
                 "Garmin weight fact references a different raw payload"
             )
-        if weight_row.subject_id is None:
-            weight_row.subject_id = identity.subject_id
-        if weight_row.integration_connection_id is None:
-            weight_row.integration_connection_id = integration_connection_id
-        if weight_row.raw_payload_id is None:
-            weight_row.raw_payload_id = raw_row.id
-        await session.flush()
     raw_row.processed_at = now_local()
     return row
 
@@ -1226,6 +1240,7 @@ async def ingest_owned_daily(
     identity: WriteIdentity,
     integration_connection_id: uuid.UUID,
     source: str = Source.GARMIN_API.value,
+    prepared_weight_write: weight_service.PreparedWeightWrite | None = None,
 ) -> GarminDaily:
     """Owned raw-first daily ingest with scoped normalized replacement."""
 
@@ -1243,23 +1258,51 @@ async def ingest_owned_daily(
         integration_connection_id=integration_connection_id,
     )
 
-    # Preserve the established advisory -> normalized/raw -> weight/outbox order.
+    # Establish governance -> active-weight advisory -> subject/user before the
+    # provider's S/C/raw locks. A supplied capability comes from an outer caller
+    # (notably pulse) that already established the same order.
     from vitals.services import garmin_weight_service
 
-    await garmin_weight_service.lock_active_weight_change(session)
+    weight_kg = _extract_weight_kg(raw)
+    if prepared_weight_write is None and weight_kg is not None:
+        await acquire_identity_governance_lock(session)
+        await _require_legacy_adoption_subject(
+            session,
+            subject_id=identity.subject_id,
+        )
+        prepared_weight_write = await weight_service.prepare_weight_write(
+            session,
+            context=_owned_weight_write_context(
+                identity=identity,
+                on_date=on_date,
+            ),
+        )
+    elif prepared_weight_write is not None:
+        prepared_context = weight_service.require_prepared_weight_identity(
+            session,
+            prepared=prepared_weight_write,
+            identity=identity,
+        )
+        if prepared_context.evaluation_date != on_date:
+            raise GarminOwnershipValidationError(
+                "prepared Weight capability belongs to another date"
+            )
+        if (
+            prepared_context.legacy_bridge
+            is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        ):
+            raise GarminOwnershipValidationError(
+                "owned Garmin ingest requires a fully-unowned Weight bridge"
+            )
+    else:
+        await acquire_identity_governance_lock(session)
+        await garmin_weight_service.lock_active_weight_change(session)
+
     await _lock_owned_garmin_scope(
         session,
         identity=identity,
         integration_connection_id=integration_connection_id,
     )
-    if _extract_weight_kg(raw) is not None:
-        # The weight domain still has a global active-date invariant. Keep its
-        # bridge behind the registration-disabled stage gate so it can never
-        # supersede another subject before the scoped weight cutover lands.
-        await _require_legacy_adoption_subject(
-            session,
-            subject_id=identity.subject_id,
-        )
     candidate = await _owned_single_row_candidate(
         session,
         model=GarminDaily,
@@ -1305,6 +1348,7 @@ async def ingest_owned_daily(
         integration_connection_id=integration_connection_id,
         source=source,
         candidate=candidate,
+        prepared_weight_write=prepared_weight_write,
     )
 
 
@@ -1354,13 +1398,30 @@ async def reparse_owned_daily_from_raw(
     unchanged.
     """
 
-    from vitals.services import garmin_weight_service
-
-    await garmin_weight_service.lock_active_weight_change(session)
+    on_date_hint = _owned_daily_date(raw_row)
+    if raw_row.subject_id is None:
+        raise GarminRawPayloadInvariantError(
+            "owned daily reparse requires a subject root"
+        )
+    preliminary_identity = WriteIdentity(
+        raw_row.subject_id,
+        raw_row.actor_user_id,
+    )
+    prepared_weight_write = await weight_service.prepare_weight_write(
+        session,
+        context=_owned_weight_write_context(
+            identity=preliminary_identity,
+            on_date=on_date_hint,
+        ),
+    )
     persisted, identity, connection_id = await _locked_owned_raw_context(
         session, raw_row
     )
     on_date = _owned_daily_date(persisted)
+    if identity != preliminary_identity or on_date != on_date_hint:
+        raise GarminRawPayloadInvariantError(
+            "daily raw ownership changed during prepared reparse"
+        )
     if persisted.source != Source.GARMIN_API.value:
         raise GarminRawPayloadInvariantError(
             "daily raw payload must use Garmin API provenance"
@@ -1385,11 +1446,6 @@ async def reparse_owned_daily_from_raw(
             candidate,
             raw_payload_id=persisted.id,
         )
-    if _extract_weight_kg(persisted.payload) is not None:
-        await _require_legacy_adoption_subject(
-            session,
-            subject_id=identity.subject_id,
-        )
     return await _apply_owned_daily_raw(
         session,
         on_date,
@@ -1398,6 +1454,7 @@ async def reparse_owned_daily_from_raw(
         integration_connection_id=connection_id,
         source=Source.GARMIN_API.value,
         candidate=candidate,
+        prepared_weight_write=prepared_weight_write,
     )
 
 
@@ -1815,7 +1872,7 @@ async def reparse_owned_pending(
     )
     cutoff = now_local() - timedelta(days=since_days)
     stmt = (
-        select(RawPayload)
+        select(RawPayload.id)
         .where(
             RawPayload.subject_id == identity.subject_id,
             RawPayload.integration_connection_id == integration_connection_id,
@@ -1832,14 +1889,26 @@ async def reparse_owned_pending(
         )
         .order_by(RawPayload.id)
         .limit(limit)
-        .with_for_update()
     )
-    rows = list(await session.scalars(stmt))
+    raw_ids = list(await session.scalars(stmt))
     done = 0
-    for raw_row in rows:
-        raw_row_id = raw_row.id
+    for raw_row_id in raw_ids:
         try:
             async with session.begin_nested():
+                # Candidate discovery must not retain a raw-row lock before the
+                # callback establishes its domain lock order. In particular, a
+                # daily payload may contain Weight and therefore has to acquire
+                # governance -> active-weight advisory -> subject/connection
+                # before it authoritatively reloads and locks this raw row.
+                raw_row = await session.scalar(
+                    select(RawPayload)
+                    .where(RawPayload.id == raw_row_id)
+                    .execution_options(populate_existing=True)
+                )
+                if raw_row is None:
+                    raise GarminRawPayloadInvariantError(
+                        "raw payload disappeared during reparse sweep"
+                    )
                 # The query scopes candidates, and the reparse callback reloads the
                 # durable row and derives its historical actor. Check the supplied
                 # boundary too so a stale/mutated ORM object cannot switch targets.
@@ -2342,9 +2411,13 @@ async def pulse_owned(
     # Fetch first, then serialize and read the latest stored bundle. Reading the
     # base before the await lets a concurrent full sync commit newer sleep/HRV
     # data which this lightweight pulse would subsequently overwrite as stale.
-    from vitals.services import garmin_weight_service
-
-    await garmin_weight_service.lock_active_weight_change(session)
+    prepared_weight_write = await weight_service.prepare_weight_write(
+        session,
+        context=_owned_weight_write_context(
+            identity=identity,
+            on_date=day,
+        ),
+    )
     await _lock_owned_garmin_scope(
         session,
         identity=identity,
@@ -2363,6 +2436,7 @@ async def pulse_owned(
         raw,
         identity=identity,
         integration_connection_id=integration_connection_id,
+        prepared_weight_write=prepared_weight_write,
     )
     out["steps"] = row.steps
     return out

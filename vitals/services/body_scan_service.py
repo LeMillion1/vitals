@@ -147,12 +147,40 @@ async def save_scan(
     override: bool = False,
     identity: WriteIdentity | None = None,
     file_asset_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_weight_write: weight_service.PreparedWeightWrite | None = None,
 ) -> BodyScan:
     """Persist a scan and its metrics (owner-edited rows), stamp the raw payload
     processed, and bridge weight into the weight domain. Does not commit.
 
     May raise ``ConflictBlocked`` if a cross-domain block rule fires without
     ``override`` (override plumbing kept consistent with the weight domain)."""
+    weight_context = None
+    if identity is not None or prepared_weight_write is not None:
+        if identity is None or prepared_weight_write is None:
+            raise conflict_engine.ConflictPreparedWriteError(
+                "owned body-scan weight bridge requires identity and Weight capability"
+            )
+        weight_context = weight_service.require_prepared_weight_identity(
+            session,
+            prepared=prepared_weight_write,
+            identity=identity,
+        )
+        if weight_context.evaluation_date != on_date:
+            raise conflict_engine.ConflictPreparedWriteError(
+                "body-scan date does not match prepared Weight capability"
+            )
+        if (
+            include_legacy_unowned
+            and weight_context.legacy_bridge
+            is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        ):
+            raise conflict_engine.ConflictPreparedWriteError(
+                "legacy body-scan bridge requires fully-unowned compatibility"
+            )
+    elif include_legacy_unowned:
+        raise ValueError("legacy body-scan bridge requires a scoped writer")
+
     owned_raw: RawPayload | None = None
     authoritative_file_key = file_key
     authoritative_file_asset_id = file_asset_id
@@ -227,6 +255,11 @@ async def save_scan(
     # supersedes a scan). Enforced in weight_service.
     w = weight_from_scan(normalized)
     if w is not None and w > 0:
+        origin_actor_user_id = (
+            owned_raw.actor_user_id
+            if owned_raw is not None
+            else (identity.actor_user_id if identity is not None else None)
+        )
         await weight_service.log_weight(
             session,
             on_date=on_date,
@@ -234,6 +267,15 @@ async def save_scan(
             source=Source.BODY_SCAN.value,
             override=override,
             identity=identity,
+            integration_connection_id=(
+                owned_raw.integration_connection_id
+                if owned_raw is not None
+                else None
+            ),
+            raw_payload_id=(owned_raw.id if owned_raw is not None else None),
+            include_legacy_unowned=include_legacy_unowned,
+            prepared_weight_write=prepared_weight_write,
+            origin_actor_user_id=origin_actor_user_id,
         )
     await session.flush()
     return scan
@@ -283,6 +325,15 @@ async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
     original_fetched_at = raw_row.fetched_at
     if raw_row.subject_id is not None and raw_row.file_asset_id is not None:
         on_date = _parse_date(extracted.get("date")) or today_local()
+        identity = WriteIdentity(raw_row.subject_id, raw_row.actor_user_id)
+        prepared_weight_write = await weight_service.prepare_weight_write(
+            session,
+            context=conflict_engine.ConflictWriteContext(
+                identity=identity,
+                evaluation_date=on_date,
+                legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            ),
+        )
         await save_scan(
             session,
             on_date=on_date,
@@ -290,7 +341,9 @@ async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
             file_key=raw_row.external_id,
             raw_payload_id=raw_row.id,
             metrics=normalize_extracted(extracted),
-            identity=WriteIdentity(raw_row.subject_id, raw_row.actor_user_id),
+            identity=identity,
+            include_legacy_unowned=True,
+            prepared_weight_write=prepared_weight_write,
         )
     else:
         await ingest_extracted(session, extracted, file_key=raw_row.external_id)

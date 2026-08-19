@@ -118,6 +118,20 @@ async def _prepared(
     return await conflict_engine.prepare_scoped_write(session, context=context)
 
 
+async def _prepared_weight(
+    session: AsyncSession,
+    identity: WriteIdentity,
+    *,
+    on_date: date = date(2026, 8, 19),
+):
+    context = conflict_engine.ConflictWriteContext(
+        identity=identity,
+        evaluation_date=on_date,
+        legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
+    )
+    return await weight_service.prepare_weight_write(session, context=context)
+
+
 async def test_body_upload_confirm_copies_subject_actor_and_file_to_all_facts(
     db_session,
 ):
@@ -133,6 +147,7 @@ async def test_body_upload_confirm_copies_subject_actor_and_file_to_all_facts(
         source=Source.BODY_SCAN.value,
         payload={"metrics": [{"label": "Вес", "value": 81.2}]},
     )
+    prepared_weight = await _prepared_weight(db_session, identity)
 
     scan = await body_scan_service.save_scan(
         db_session,
@@ -141,6 +156,7 @@ async def test_body_upload_confirm_copies_subject_actor_and_file_to_all_facts(
         raw_payload_id=raw.id,
         metrics=[{"label": "Вес", "value": 81.2}],
         identity=identity,
+        prepared_weight_write=prepared_weight,
     )
 
     assert (scan.subject_id, scan.actor_user_id, scan.file_asset_id) == (
@@ -241,6 +257,7 @@ async def test_foreign_raw_id_cannot_authorize_upload_confirmation(
         source=raw_source,
         payload={},
     )
+    prepared_weight = await _prepared_weight(db_session, owner_identity)
     prepared = await _prepared(db_session, owner_identity)
 
     with pytest.raises(UploadOwnershipError, match="subject scope"):
@@ -252,6 +269,7 @@ async def test_foreign_raw_id_cannot_authorize_upload_confirmation(
                 raw_payload_id=raw.id,
                 metrics=[],
                 identity=owner_identity,
+                prepared_weight_write=prepared_weight,
             )
         else:
             await labs_service.confirm_extracted(

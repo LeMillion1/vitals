@@ -20,6 +20,7 @@ from vitals.services import (
     nutrition_service,
     skincare_service,
     supplements_service,
+    weight_service,
 )
 
 
@@ -60,4 +61,8 @@ def register_all_resolvers() -> None:
         Domain.HRT.value,
         hrt_service.resolve_active_scoped,
         legacy_resolver=hrt_service.resolve_active,
+    )
+    conflict_engine.register_domain_resolver(
+        Domain.WEIGHT.value,
+        weight_service.resolve_active_scoped,
     )

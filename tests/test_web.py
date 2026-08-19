@@ -13,6 +13,7 @@ from vitals.models.labs import LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.weight import WeightLog
+from vitals.services import conflict_engine, weight_service
 from vitals.services.modules_service import SETTINGS_KEY
 from vitals.utils.timeutils import today_local
 
@@ -254,6 +255,10 @@ async def test_log_weight_success(auth_client, db_session):
 
 async def test_conflict_engine_override_flow(auth_client, db_session):
     """Test conflict blocks trigger HTTP 409, and overrides save correctly."""
+    conflict_engine.register_domain_resolver(
+        "weight",
+        weight_service.resolve_active_scoped,
+    )
     # Seed a conflict rule
     rule = ConflictRule(
         domain_a="weight",

@@ -309,11 +309,18 @@ async def get_weight_logs(
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
+        scope = await _mcp_v1_conflict_scope(session)
         # Weight logs — the "active weight" invariant (superseded filter, source
         # priority) lives in weight_service; call it instead of re-encoding the
         # rule here, then apply this tool's newest-first, most-recent-`limit`
         # contract on top (the service returns all matching rows, ascending).
-        weights = await weight_service.list_active_weights(session, start=start, end=end)
+        weights = await weight_service.list_active_weights(
+            session,
+            start=start,
+            end=end,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+        )
         weights = sorted(weights, key=lambda w: w.date, reverse=True)[:limit]
 
         # Body measurements
@@ -1055,13 +1062,30 @@ async def log_weight(
 
     async with session_factory() as session:
         try:
+            conflict_context = await _mcp_v1_conflict_write_context(
+                session,
+                evaluation_date=parsed_date,
+            )
+            prepared = await weight_service.prepare_weight_write(
+                session,
+                context=conflict_context,
+            )
             row = await weight_service.log_weight(
-                session, on_date=parsed_date, weight_kg=weight_kg, note=note,
-                source=Source.MCP.value, override=override,
+                session,
+                on_date=parsed_date,
+                weight_kg=weight_kg,
+                note=note,
+                source=Source.MCP.value,
+                override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_weight_write=prepared,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, row)
@@ -1661,6 +1685,26 @@ async def log_note(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        if domain == "weight":
+            from vitals.services import weight_service
+
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await weight_service.prepare_weight_write(
+                session,
+                context=conflict_context,
+            )
+            row = await weight_service.update_weight_note(
+                session,
+                record_id,
+                note=note,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_weight_write=prepared,
+            )
+            if row is None:
+                return {"error": f"{domain} record {record_id} not found"}
+            await session.commit()
+            return await serialize_written(session, row)
         if domain == "nutrition":
             if not await _module_enabled(session, "nutrition"):
                 return {"error": "module 'nutrition' is disabled"}
@@ -1780,10 +1824,13 @@ async def get_notes(
 
     results = []
     async with session_factory() as session:
+        weight_scope = None
         nutrition_scope = None
         skincare_scope = None
         glp1_scope = None
         labs_scope = None
+        if "weight" in targets:
+            weight_scope = await _mcp_v1_conflict_scope(session)
         if "nutrition" in targets:
             if not await _module_enabled(session, "nutrition"):
                 if domain == "nutrition":
@@ -1808,6 +1855,25 @@ async def get_notes(
         if "labs" in targets:
             labs_scope = await _mcp_v1_conflict_scope(session)
         for d_name, model in targets.items():
+            if d_name == "weight":
+                assert weight_scope is not None
+                from vitals.services import weight_service
+
+                rows = await weight_service.list_weight_notes(
+                    session,
+                    subject_id=weight_scope.subject_id,
+                    include_legacy_unowned=(
+                        weight_scope.include_legacy_unowned
+                    ),
+                    start=start,
+                    end=end,
+                    limit=limit,
+                )
+                for row in rows:
+                    entry = serialize_row(row)
+                    entry["_domain"] = d_name
+                    results.append(entry)
+                continue
             if d_name == "nutrition":
                 assert nutrition_scope is not None
                 from vitals.services import nutrition_service
@@ -1961,7 +2027,20 @@ async def delete_record(domain: str, record_id: int) -> dict:
             return {"error": f"module '{module_key}' is disabled"}
         service = importlib.import_module(f"vitals.services.{service_name}")
         owned_kwargs = {}
-        if domain in {"timeline", "supplements"}:
+        if domain == "weight":
+            from vitals.services import weight_service
+
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await weight_service.prepare_weight_write(
+                session,
+                context=conflict_context,
+            )
+            owned_kwargs = {
+                "identity": conflict_context.identity,
+                "include_legacy_unowned": True,
+                "prepared_weight_write": prepared,
+            }
+        elif domain in {"timeline", "supplements"}:
             ownership = await _mcp_v1_legacy_owner(session)
             owned_kwargs = {
                 "identity": ownership.owner_action(),
@@ -2118,7 +2197,7 @@ async def log_body_scan(
     immediately. No-op with an error if the body_comp module is disabled. If a hard
     conflict rule blocks the save, returns ``{"blocked": true, ...}``; call again
     with ``override=True``."""
-    from vitals.services import body_scan_service
+    from vitals.services import body_scan_service, weight_service
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()
@@ -2126,18 +2205,31 @@ async def log_body_scan(
 
     async with session_factory() as session:
         try:
+            conflict_context = await _mcp_v1_conflict_write_context(
+                session,
+                evaluation_date=parsed_date,
+            )
+            prepared_weight_write = await weight_service.prepare_weight_write(
+                session,
+                context=conflict_context,
+            )
             scan = await body_scan_service.save_scan(
                 session,
                 on_date=parsed_date,
                 device=device,
                 metrics=metrics,
                 note=note,
-                source=Source.BODY_SCAN.value,
+                source=Source.MCP.value,
                 override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_weight_write=prepared_weight_write,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         await session.commit()
         full = await body_scan_service.get_scan(session, scan.id)

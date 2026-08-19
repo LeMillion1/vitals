@@ -123,6 +123,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   subject-scoped cycle, dose, compound-catalog, and Labs reads. The global compound
   activation flag is frozen on scoped paths until it receives a reviewed
   `SubjectSetting` mapping.
+- Direct WeightLog web/MCP writes and the Garmin/body-scan bridges now acquire one
+  transaction-bound capability in governance -> active-weight advisory -> subject
+  order. Provider-derived weights require a matching owned raw payload and
+  connection, direct reads/notes reject foreign or partial roots, and deleting or
+  moving an active row never silently reactivates a safety-blocked historical
+  value. The global active-date key, Garmin export outbox, BodyMeasurement/noise
+  paths, and cross-domain chart/share/export readers remain registration blockers.
 - System alerts now have typed health-subject, provider-connection, and platform
   contexts backed by an exhaustive key/domain registry. The legacy owner sees
   health alerts plus current and retired provider alerts through one fail-closed

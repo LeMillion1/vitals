@@ -22,6 +22,7 @@ from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import (
     alerts_service,
     body_scan_service,
+    conflict_engine,
     file_asset_service,
     raw_payload_service,
     weight_service,
@@ -106,7 +107,11 @@ async def _section_context(
     await db.commit()
 
     # Load data
-    weights = await weight_service.list_active_weights(db)
+    weights = await weight_service.list_active_weights(
+        db,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
     measurements = await weight_service.list_body_measurements(db)
     noise_markers = await weight_service.list_noise_markers(db)
     photos = await weight_service.list_progress_photos(
@@ -272,6 +277,17 @@ async def log_weight_entry(
     """Logs or edits a weight, returning 409 JSON on rule violation for override confirmation."""
     on_date = date_type.fromisoformat(date)
     try:
+        conflict_context = (
+            await conflict_engine.resolve_legacy_conflict_write_context(
+                db,
+                actor_username=username,
+                evaluation_date=on_date,
+            )
+        )
+        prepared = await weight_service.prepare_weight_write(
+            db,
+            context=conflict_context,
+        )
         if id is not None:
             await weight_service.update_weight_log(
                 db,
@@ -280,6 +296,9 @@ async def log_weight_entry(
                 weight_kg=weight_kg,
                 note=note,
                 override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_weight_write=prepared,
             )
         else:
             await weight_service.log_weight(
@@ -288,14 +307,19 @@ async def log_weight_entry(
                 weight_kg=weight_kg,
                 note=note,
                 override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_weight_write=prepared,
             )
         await db.commit()
     except ConflictBlocked as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [v.to_dict() for v in e.violations]},
         )
     except ValueError as e:
+        await db.rollback()
         # The service validates ranges for every caller (MCP included); the form
         # must surface that as a 400, not fall through to a 500.
         return JSONResponse(
@@ -649,11 +673,16 @@ async def body_scan_confirm(
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date")
 
-    ownership = await resolve_legacy_ownership_context(
+    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
+        evaluation_date=on_date,
     )
-    identity = ownership.owner_action()
+    prepared_weight_write = await weight_service.prepare_weight_write(
+        db,
+        context=conflict_context,
+    )
+    identity = conflict_context.identity
     try:
         await body_scan_service.save_scan(
             db,
@@ -665,6 +694,8 @@ async def body_scan_confirm(
             note=payload.note,
             override=payload.override,
             identity=identity,
+            include_legacy_unowned=True,
+            prepared_weight_write=prepared_weight_write,
         )
         await body_scan_service.refresh_alerts(
             db,
@@ -751,7 +782,24 @@ async def delete_weight_entry(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await weight_service.delete_weight_log(db, id)
+    from vitals.utils.timeutils import today_local
+
+    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=today_local(),
+    )
+    prepared = await weight_service.prepare_weight_write(
+        db,
+        context=conflict_context,
+    )
+    await weight_service.delete_weight_log(
+        db,
+        id,
+        identity=conflict_context.identity,
+        include_legacy_unowned=True,
+        prepared_weight_write=prepared,
+    )
     await db.commit()
 
     return _back(request)

@@ -194,14 +194,18 @@ parser replay validates S/A plus the historical OpenRouter C and LAB_DOCUMENT F
 chain. Labs out-of-range/retest reconciliation and the startup marker seed are
 actorless subject actions. Labs chart/share/digest/overview/export consumers still
 belong to the subject-aware composition cutover and cannot serve a second writable
-subject. Other domain writers and the transitional legacy service fallbacks remain
-on the reviewed inventory. Their
-cutover must preserve the canonical governance
--> provider/outbox advisory -> subject/domain-row -> alert order;
-in particular, weight conflict enforcement cannot acquire governance after the
-existing active-weight advisory lock. These remaining surfaces are explicit
-release blockers, so registration and every path to a second writable subject
-stay disabled until that cutover lands.
+subject. Direct WeightLog web/MCP create, edit, note, and delete paths now use the
+selected subject and prepared conflict proof. Garmin daily ingestion, owned
+replay, and body-scan-derived weights reuse a Weight capability acquired in the
+canonical governance -> active-weight advisory -> subject/domain-row -> alert
+order; provider facts require an exact matching raw/connection chain. A delete or
+date move evaluates the historical replacement before promotion and leaves an
+unsafe candidate superseded. The global active-weight-per-date key, Garmin export
+outbox/date key, direct BodyMeasurement and NoiseMarker paths, and unscoped chart,
+share, digest, overview, and export consumers remain explicit release blockers.
+Other domain writers and transitional legacy fallbacks stay on the reviewed
+inventory, so registration and every path to a second writable subject remain
+disabled until those cutovers land.
 
 `scripts/seed_demo.py` also remains an installation-wide destructive developer
 utility: it deletes and recreates domain rows without S/A. It must fail closed on

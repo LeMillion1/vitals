@@ -50,6 +50,7 @@ RESOLVER_DOMAINS = (
     Domain.NUTRITION.value,
     Domain.HRT.value,
 )
+REGISTERED_RESOLVER_DOMAINS = (*RESOLVER_DOMAINS, Domain.WEIGHT.value)
 
 FACT_CONDITIONS = {
     Domain.SUPPLEMENTS.value: {"key": "scope_probe", "active": True},
@@ -226,7 +227,7 @@ def test_registered_primary_resolvers_require_keyword_only_scope(monkeypatch):
     monkeypatch.setattr(conflict_engine, "register_domain_resolver", capture)
     conflict_registrations.register_all_resolvers()
 
-    assert set(captured) == set(RESOLVER_DOMAINS)
+    assert set(captured) == set(REGISTERED_RESOLVER_DOMAINS)
     for domain, resolver in captured.items():
         parameter = inspect.signature(resolver).parameters.get("scope")
         assert parameter is not None, f"{domain} resolver has no scope"
@@ -1145,7 +1146,7 @@ async def test_mcp_missing_resolver_returns_explicit_fail_closed_error(
             rule_type="hard_block",
             domain_a=Domain.SUPPLEMENTS.value,
             condition_a={"key": "iron", "active": True},
-            domain_b=Domain.WEIGHT.value,
+            domain_b=Domain.MILESTONES.value,
             condition_b={},
             severity="block",
             message="missing resolver",
@@ -1163,7 +1164,7 @@ async def test_mcp_missing_resolver_returns_explicit_fail_closed_error(
     assert supplement_result == [{"error": supplement_result[0]["error"]}]
     assert generic_result == [{"error": generic_result[0]["error"]}]
     assert "no scoped conflict resolver" in supplement_result[0]["error"]
-    assert "weight" in supplement_result[0]["error"]
+    assert "milestones" in supplement_result[0]["error"]
     assert generic_result == supplement_result
 
 

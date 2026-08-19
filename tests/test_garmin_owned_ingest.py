@@ -142,7 +142,7 @@ async def test_owned_daily_adopts_legacy_roots_without_rewriting_actor(db_sessio
     assert legacy_raw.integration_connection_id == connection.id
 
 
-async def test_owned_daily_adopts_legacy_weight_raw_link(db_session):
+async def test_owned_daily_preserves_legacy_weight_and_appends_exact_raw_link(db_session):
     owner, subject, connection = await _scope(db_session, "owner")
     legacy_weight = WeightLog(
         date=DAY,
@@ -163,10 +163,19 @@ async def test_owned_daily_adopts_legacy_weight_raw_link(db_session):
         integration_connection_id=connection.id,
     )
 
-    assert legacy_weight.subject_id == subject.id
+    owned_weight = await db_session.scalar(
+        select(WeightLog).where(WeightLog.id != legacy_weight.id)
+    )
+    assert owned_weight is not None
+    assert legacy_weight.subject_id is None
     assert legacy_weight.actor_user_id is None
-    assert legacy_weight.integration_connection_id == connection.id
-    assert legacy_weight.raw_payload_id == daily.raw_payload_id
+    assert legacy_weight.integration_connection_id is None
+    assert legacy_weight.raw_payload_id is None
+    assert legacy_weight.superseded is True
+    assert owned_weight.subject_id == subject.id
+    assert owned_weight.actor_user_id == owner.id
+    assert owned_weight.integration_connection_id == connection.id
+    assert owned_weight.raw_payload_id == daily.raw_payload_id
 
 
 async def test_foreign_global_daily_key_conflicts_before_raw_mutation(db_session):
