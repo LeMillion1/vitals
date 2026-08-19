@@ -10,10 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import timedelta
 
-from vitals.enums import CycleKind, Domain, DoseUnit, HrtInjectionSite
+from vitals.enums import CycleKind, Domain, DoseUnit, HrtInjectionSite, Source
 from vitals.i18n import current_lang
 from vitals.services import (
     alerts_service,
+    conflict_engine,
     hrt_cycle_service,
     hrt_reminders,
     hrt_service,
@@ -26,6 +27,24 @@ from web.deps import get_session, require_auth
 from web.templating import templates
 
 router = APIRouter(prefix="/hrt", tags=["hrt"])
+
+
+async def _prepared_owner_write(
+    db: AsyncSession,
+    *,
+    username: str,
+    evaluation_date: date_type,
+):
+    context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=evaluation_date,
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        db,
+        context=context,
+    )
+    return context, prepared
 
 
 def _redirect(request: Request) -> RedirectResponse:
@@ -83,50 +102,73 @@ async def hrt_dashboard(
     username: str = Depends(require_auth),
 ):
     """HRT dashboard: active cycle + release curve, compounds, dose log, side effects."""
-    ownership = await resolve_legacy_ownership_context(
-        db,
-        actor_username=username,
-    )
     today = today_local()
-    await hrt_reminders.refresh_all(db)
-    await db.commit()
-    compounds = await hrt_service.list_compounds(db, active_only=True)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today,
+    )
+    await hrt_reminders.refresh_all(
+        db,
+        identity=context.identity,
+        prepared_conflict_write=prepared,
+    )
+    scope_kwargs = {
+        "subject_id": context.identity.subject_id,
+        "include_legacy_unowned": True,
+    }
+    compounds = await hrt_service.list_compounds(
+        db,
+        subject_id=context.identity.subject_id,
+        active_only=True,
+    )
     # key → display name in the active language, so logs/plans show a human name
     # (e.g. "Тестостерон энантат") rather than the raw slug. Covers inactive rows
     # too, so a deactivated compound's history still reads nicely.
     lang = current_lang.get()
-    all_compounds = await hrt_service.list_compounds(db, active_only=False)
+    all_compounds = await hrt_service.list_compounds(
+        db,
+        subject_id=context.identity.subject_id,
+        active_only=False,
+    )
     compound_names = {
         c.key: ((c.name_ru or c.name) if lang == "ru" else (c.name or c.name_ru))
         for c in all_compounds
     }
-    doses = await hrt_service.list_doses(db, limit=200)
-    side_effects = await hrt_service.list_side_effects(db)
+    doses = await hrt_service.list_doses(db, limit=200, **scope_kwargs)
+    side_effects = await hrt_service.list_side_effects(db, **scope_kwargs)
     alerts = await alerts_service.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        context=alerts_service.HealthAlertContext(context.identity),
         domain=Domain.HRT,
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
-    last = await hrt_service.last_dose(db)
+    last = await hrt_service.last_dose(db, **scope_kwargs)
 
-    active_cycle = await hrt_cycle_service.active_cycle(db)
+    active_cycle = await hrt_cycle_service.active_cycle(db, **scope_kwargs)
     planned = await hrt_cycle_service.planned_administrations(
-        db, start=today, end=today + timedelta(days=21), cycle=active_cycle
+        db,
+        start=today,
+        end=today + timedelta(days=21),
+        cycle=active_cycle,
+        **scope_kwargs,
     )
     # A 90-day window (30 back, 60 forward) for the server-rendered release
     # sparkline — actual doses behind, planned projection ahead.
     release = await hrt_cycle_service.release_series(
         db, start=today - timedelta(days=30), end=today + timedelta(days=60),
-        cycle=active_cycle,
+        cycle=active_cycle, **scope_kwargs,
     )
 
-    cycle_templates = await hrt_template_service.list_templates(db)
+    cycle_templates = await hrt_template_service.list_templates(db, **scope_kwargs)
     # Pre-rendered share JSON per template — the UI shows it in a copyable
     # <textarea>, so sharing needs no JS beyond select-and-copy.
     template_exports = {
-        tp.id: hrt_template_service.export_template_json(tp) for tp in cycle_templates
+        tp.id: hrt_template_service.export_template_json(tp, **scope_kwargs)
+        for tp in cycle_templates
     }
+    cycles = await hrt_cycle_service.list_cycles(db, **scope_kwargs)
+    await db.commit()
 
     return templates.TemplateResponse(
         request,
@@ -140,7 +182,7 @@ async def hrt_dashboard(
             "alerts": alerts,
             "last_dose": last,
             "active_cycle": active_cycle,
-            "cycles": await hrt_cycle_service.list_cycles(db),
+            "cycles": cycles,
             "cycle_templates": cycle_templates,
             "template_exports": template_exports,
             "planned": planned[:12],
@@ -210,6 +252,11 @@ async def add_dose(
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"error": str(e)}
         )
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=on_date,
+    )
     kwargs = dict(
         compound_key=compound_key,
         on_date=on_date,
@@ -223,19 +270,32 @@ async def add_dose(
         site=site,
         note=note,
         override=override,
+        identity=context.identity,
+        prepared_conflict_write=prepared,
     )
     try:
         if id is not None:
-            await hrt_service.update_dose(db, id, **kwargs)
+            await hrt_service.update_dose(
+                db,
+                id,
+                include_legacy_unowned=True,
+                **kwargs,
+            )
         else:
-            await hrt_service.log_dose(db, **kwargs)
+            await hrt_service.log_dose(
+                db,
+                source=Source.MANUAL.value,
+                **kwargs,
+            )
         await db.commit()
     except ConflictBlocked as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [v.to_dict() for v in e.violations]},
         )
     except ValueError as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={"error": str(e)},
@@ -257,11 +317,26 @@ async def add_cycle(
     try:
         start = _parse_date(start_date)
         end = _parse_date(end_date) if end_date else None
+        context, prepared = await _prepared_owner_write(
+            db,
+            username=username,
+            evaluation_date=start,
+        )
         await hrt_cycle_service.add_cycle(
-            db, kind=kind, start_date=start, name=name, end_date=end, note=note
+            db,
+            kind=kind,
+            start_date=start,
+            name=name,
+            end_date=end,
+            note=note,
+            source=Source.MANUAL.value,
+            identity=context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
         )
         await db.commit()
     except ValueError as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"error": str(e)}
         )
@@ -284,10 +359,6 @@ async def add_cycle_item(
 ):
     # The form captures a single flat segment; ramps / multi-segment schedules go
     # through the API/MCP where the full JSON schedule can be supplied.
-    segment: dict = {"dose": dose, "interval_days": interval_days}
-    dur = _optional_float(duration_days)
-    if dur:
-        segment["duration_days"] = int(dur)
     try:
         # The form speaks weeks (week 1 = the cycle start); the model stores
         # days. Whole weeks only — silently flooring 2.5 to 10 days would give
@@ -296,12 +367,30 @@ async def add_cycle_item(
         if week is not None and (week < 1 or week != int(week)):
             raise ValueError("start_week must be a whole number >= 1")
         offset_days = int((week - 1) * 7) if week else 0
+        segment: dict = {"dose": dose, "interval_days": interval_days}
+        dur = _optional_float(duration_days)
+        if dur:
+            segment["duration_days"] = int(dur)
+    except ValueError as e:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"error": str(e)}
+        )
+
+    try:
+        context, prepared = await _prepared_owner_write(
+            db,
+            username=username,
+            evaluation_date=today_local(),
+        )
         await hrt_cycle_service.add_cycle_item(
             db, cycle_id, compound_key=compound_key, schedule=[segment],
             unit=unit or None, start_offset_days=offset_days, note=note,
+            identity=context.identity, include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
         )
         await db.commit()
     except ValueError as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"error": str(e)}
         )
@@ -318,9 +407,22 @@ async def close_cycle(
 ):
     try:
         end = _parse_date(end_date) if end_date else today_local()
-        await hrt_cycle_service.close_cycle(db, cycle_id, end_date=end)
+        context, prepared = await _prepared_owner_write(
+            db,
+            username=username,
+            evaluation_date=end,
+        )
+        await hrt_cycle_service.close_cycle(
+            db,
+            cycle_id,
+            end_date=end,
+            identity=context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
         await db.commit()
     except ValueError as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"error": str(e)}
         )
@@ -334,7 +436,18 @@ async def delete_cycle(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await hrt_cycle_service.delete_cycle(db, cycle_id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await hrt_cycle_service.delete_cycle(
+        db,
+        cycle_id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)
 
@@ -370,8 +483,19 @@ async def edit_cycle_item(
                 segment["duration_days"] = int(dur)
             schedule = [segment]
 
+        context, prepared = await _prepared_owner_write(
+            db,
+            username=username,
+            evaluation_date=today_local(),
+        )
         item = await hrt_cycle_service.update_cycle_item(
-            db, item_id, schedule=schedule, start_offset_days=offset,
+            db,
+            item_id,
+            schedule=schedule,
+            start_offset_days=offset,
+            identity=context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
         )
         if item is None:
             return JSONResponse(
@@ -379,6 +503,7 @@ async def edit_cycle_item(
             )
         await db.commit()
     except ValueError as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"error": str(e)}
         )
@@ -392,7 +517,18 @@ async def delete_cycle_item(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await hrt_cycle_service.delete_cycle_item(db, item_id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await hrt_cycle_service.delete_cycle_item(
+        db,
+        item_id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)
 
@@ -406,9 +542,23 @@ async def save_cycle_template(
     username: str = Depends(require_auth),
 ):
     try:
-        await hrt_template_service.save_cycle_as_template(db, cycle_id, name=name)
+        context, prepared = await _prepared_owner_write(
+            db,
+            username=username,
+            evaluation_date=today_local(),
+        )
+        await hrt_template_service.save_cycle_as_template(
+            db,
+            cycle_id,
+            name=name,
+            source=Source.MANUAL.value,
+            identity=context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
         await db.commit()
     except ValueError as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"error": str(e)}
         )
@@ -426,11 +576,24 @@ async def create_cycle_from_template(
 ):
     try:
         start = _parse_date(start_date)
+        context, prepared = await _prepared_owner_write(
+            db,
+            username=username,
+            evaluation_date=start,
+        )
         await hrt_template_service.create_cycle_from_template(
-            db, template_id, start_date=start, name=name
+            db,
+            template_id,
+            start_date=start,
+            name=name,
+            source=Source.MANUAL.value,
+            identity=context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
         )
         await db.commit()
     except ValueError as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"error": str(e)}
         )
@@ -444,7 +607,18 @@ async def delete_template(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await hrt_template_service.delete_template(db, template_id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await hrt_template_service.delete_template(
+        db,
+        template_id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)
 
@@ -456,10 +630,22 @@ async def export_template(
     username: str = Depends(require_auth),
 ):
     """The portable share payload as a .json download."""
-    template = await hrt_template_service.get_template(db, template_id)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    scope_kwargs = {
+        "subject_id": ownership.subject_id,
+        "include_legacy_unowned": True,
+    }
+    template = await hrt_template_service.get_template(
+        db,
+        template_id,
+        **scope_kwargs,
+    )
     if template is None:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"error": "not found"})
-    payload = hrt_template_service.export_template(template)
+    payload = hrt_template_service.export_template(template, **scope_kwargs)
     safe_name = "".join(
         ch if ch.isalnum() or ch in "-_" else "_" for ch in template.name
     )[:64] or "template"
@@ -479,9 +665,22 @@ async def import_template(
     username: str = Depends(require_auth),
 ):
     try:
-        await hrt_template_service.import_template(db, payload)
+        context, prepared = await _prepared_owner_write(
+            db,
+            username=username,
+            evaluation_date=today_local(),
+        )
+        await hrt_template_service.import_template(
+            db,
+            payload,
+            source=Source.MANUAL.value,
+            identity=context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
         await db.commit()
     except ValueError as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"error": str(e)}
         )
@@ -496,9 +695,15 @@ async def release_json(
     username: str = Depends(require_auth),
 ):
     today = today_local()
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     series = await hrt_cycle_service.release_series(
         db, start=today - timedelta(days=days_back),
         end=today + timedelta(days=days_forward),
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
     )
     return JSONResponse(content={"series": series, "today": today.isoformat()})
 
@@ -515,11 +720,24 @@ async def add_side_effect(
 ):
     try:
         on_date = _parse_date(date)
+        context, prepared = await _prepared_owner_write(
+            db,
+            username=username,
+            evaluation_date=on_date,
+        )
         await hrt_service.log_side_effect(
-            db, on_date=on_date, effect_type=effect_type, severity=severity, note=note
+            db,
+            on_date=on_date,
+            effect_type=effect_type,
+            severity=severity,
+            note=note,
+            source=Source.MANUAL.value,
+            identity=context.identity,
+            prepared_conflict_write=prepared,
         )
         await db.commit()
     except ValueError as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={"error": str(e)},
@@ -534,7 +752,18 @@ async def delete_dose(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await hrt_service.delete_dose(db, id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await hrt_service.delete_dose(
+        db,
+        id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)
 
@@ -546,6 +775,17 @@ async def delete_side_effect(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await hrt_service.delete_side_effect(db, id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await hrt_service.delete_side_effect(
+        db,
+        id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)

@@ -114,6 +114,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Labs reads, edits, notes, deferrals, and deletes reject foreign or partial roots,
   while the nightly replay and startup hormone-marker seed use actorless scoped
   boundaries. Out-of-range and retest alerts reconcile only within that subject.
+- HRT dose, side-effect, cycle, cycle-item, and cycle-template web/MCP paths now
+  stamp and filter the selected subject while preserving manual versus MCP
+  provenance. Dose corrections replace only the edited administration in safety
+  evaluation; cycle/template children inherit and validate their parent's scope,
+  legacy partial graphs fail closed, and template import/export remains parse-only.
+  Protocol and Labs-due reminders now reconcile actorless subject alerts from
+  subject-scoped cycle, dose, compound-catalog, and Labs reads. The global compound
+  activation flag is frozen on scoped paths until it receives a reviewed
+  `SubjectSetting` mapping.
 - System alerts now have typed health-subject, provider-connection, and platform
   contexts backed by an exhaustive key/domain registry. The legacy owner sees
   health alerts plus current and retired provider alerts through one fail-closed

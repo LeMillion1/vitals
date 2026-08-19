@@ -1119,32 +1119,40 @@ async def log_glp1(
 # ── HRT / TRT tools ─────────────────────────────────────────────────────────
 
 @mcp.tool()
+@gated("hrt")
 async def get_hrt_logs(
     start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
 ) -> dict:
     """Retrieves HRT/TRT dose administrations, side effects, and the active cycle
     with its per-compound plan. Doses/side effects default to the most recent 100.
     READ tool."""
-    from vitals.models.hrt import HrtDose, HrtSideEffect
-    from vitals.services import hrt_cycle_service
+    from vitals.services import hrt_cycle_service, hrt_service
 
     session_factory = get_session_factory()
     start = _parse_date(start_date, field="start_date")
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        d_stmt = select(HrtDose)
-        if start:
-            d_stmt = d_stmt.where(HrtDose.date >= start)
-        if end:
-            d_stmt = d_stmt.where(HrtDose.date <= end)
-        d_stmt = d_stmt.order_by(HrtDose.date.desc()).limit(limit)
-        doses = (await session.execute(d_stmt)).scalars().all()
-
-        s_stmt = select(HrtSideEffect).order_by(HrtSideEffect.date.desc()).limit(limit)
-        effects = (await session.execute(s_stmt)).scalars().all()
-
-        active = await hrt_cycle_service.active_cycle(session)
+        scope = await _mcp_v1_conflict_scope(session)
+        scope_kwargs = {
+            "subject_id": scope.subject_id,
+            "include_legacy_unowned": scope.include_legacy_unowned,
+        }
+        doses = await hrt_service.list_doses(
+            session,
+            start=start,
+            end=end,
+            limit=limit,
+            **scope_kwargs,
+        )
+        effects = await hrt_service.list_side_effects(
+            session,
+            start=start,
+            end=end,
+            limit=limit,
+            **scope_kwargs,
+        )
+        active = await hrt_cycle_service.active_cycle(session, **scope_kwargs)
         active_cycle = None
         if active is not None:
             active_cycle = serialize_row(active)
@@ -1186,15 +1194,28 @@ async def log_hrt_dose(
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
             row = await hrt_service.log_dose(
                 session, compound_key=compound_key, on_date=parsed_date, dose=dose,
                 unit=unit, volume_ml=volume_ml, concentration_mg_ml=concentration_mg_ml,
                 brand=brand, lab=lab, batch=batch, site=site, note=note, override=override,
+                source=Source.MCP.value,
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, row)
@@ -1220,11 +1241,24 @@ async def add_hrt_cycle(
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=start,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
             cycle = await hrt_cycle_service.add_cycle(
                 session, kind=kind, start_date=start, name=name, end_date=end, note=note,
+                source=Source.MCP.value,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, cycle)
@@ -1261,12 +1295,24 @@ async def add_hrt_cycle_item(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=today_local(),
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
             item = await hrt_cycle_service.add_cycle_item(
                 session, cycle_id, compound_key=compound_key, schedule=schedule,
                 unit=unit, start_offset_days=int(start_offset_days or 0), note=note,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         if item is None:
             return {"error": f"cycle {cycle_id} not found"}
@@ -1302,24 +1348,52 @@ async def update_hrt_dose(
     parsed_date = _parse_date(on_date, field="on_date")
 
     async with session_factory() as session:
-        merged = await _merged(
+        conflict_context = await _mcp_v1_conflict_write_context(
             session,
-            HrtDose,
-            dose_id,
-            compound_key=compound_key,
-            date=parsed_date,
-            dose=dose,
-            unit=unit,
-            volume_ml=volume_ml,
-            concentration_mg_ml=concentration_mg_ml,
-            brand=brand,
-            lab=lab,
-            batch=batch,
-            site=site,
-            note=note,
+            evaluation_date=parsed_date or today_local(),
         )
-        if merged is None:
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
+        current = await hrt_service.get_dose_for_update(
+            session,
+            dose_id,
+            identity=conflict_context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
+        if current is None:
             return {"error": f"HRT dose {dose_id} not found"}
+        final_date = current.date if parsed_date is None else parsed_date
+        if conflict_context.evaluation_date != final_date:
+            conflict_context = conflict_engine.ConflictWriteContext(
+                identity=conflict_context.identity,
+                evaluation_date=final_date,
+                legacy_bridge=conflict_context.legacy_bridge,
+            )
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+        merged = {
+            "compound_key": (
+                current.compound_key if compound_key is None else compound_key
+            ),
+            "dose": current.dose if dose is None else dose,
+            "unit": current.unit if unit is None else unit,
+            "volume_ml": current.volume_ml if volume_ml is None else volume_ml,
+            "concentration_mg_ml": (
+                current.concentration_mg_ml
+                if concentration_mg_ml is None
+                else concentration_mg_ml
+            ),
+            "brand": current.brand if brand is None else brand,
+            "lab": current.lab if lab is None else lab,
+            "batch": current.batch if batch is None else batch,
+            "site": current.site if site is None else site,
+            "note": current.note if note is None else note,
+        }
         # A new volume or concentration is a request to recompute the mg, and an
         # explicit dose wins over both — so carrying the stored one forward here
         # would silently ignore what the call actually changed.
@@ -1327,11 +1401,20 @@ async def update_hrt_dose(
             merged["dose"] = None
         try:
             row = await hrt_service.update_dose(
-                session, dose_id, on_date=merged.pop("date"), override=override, **merged
+                session,
+                dose_id,
+                on_date=final_date,
+                override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
+                **merged,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, row)
@@ -1355,12 +1438,24 @@ async def log_hrt_side_effect(
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
             row = await hrt_service.log_side_effect(
                 session, on_date=parsed_date, effect_type=effect_type,
                 severity=severity, note=note,
+                source=Source.MCP.value,
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
             )
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, row)
@@ -1377,9 +1472,25 @@ async def close_hrt_cycle(cycle_id: int, end_date: Optional[str] = None) -> dict
     end = _parse_date(end_date, today_local(), field="end_date")
 
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=end,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
-            cycle = await hrt_cycle_service.close_cycle(session, cycle_id, end_date=end)
+            cycle = await hrt_cycle_service.close_cycle(
+                session,
+                cycle_id,
+                end_date=end,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
+            )
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         if cycle is None:
             return {"error": f"cycle {cycle_id} not found"}
@@ -1388,13 +1499,19 @@ async def close_hrt_cycle(cycle_id: int, end_date: Optional[str] = None) -> dict
 
 
 @mcp.tool()
+@gated("hrt")
 async def get_hrt_cycles() -> dict:
     """Lists all HRT cycles (newest first) with their per-compound plans. READ tool."""
     from vitals.services import hrt_cycle_service
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        cycles = await hrt_cycle_service.list_cycles(session)
+        scope = await _mcp_v1_conflict_scope(session)
+        cycles = await hrt_cycle_service.list_cycles(
+            session,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+        )
         out = []
         for c in cycles:
             row = serialize_row(c)
@@ -1806,6 +1923,7 @@ _DELETE_TARGETS: dict[str, tuple[Optional[str], str, str]] = {
     "glp1_side_effect": ("glp1", "glp1_service", "delete_side_effect"),
     "glp1_dose_phase": ("glp1", "glp1_service", "delete_dose_phase"),
     "hrt_dose": ("hrt", "hrt_service", "delete_dose"),
+    "hrt_side_effect": ("hrt", "hrt_service", "delete_side_effect"),
     "hrt_cycle": ("hrt", "hrt_cycle_service", "delete_cycle"),
     "hrt_cycle_item": ("hrt", "hrt_cycle_service", "delete_cycle_item"),
     "body_comp": ("body_comp", "body_scan_service", "delete_scan"),
@@ -1823,12 +1941,12 @@ async def delete_record(domain: str, record_id: int) -> dict:
 
     ``domain`` is one of: weight, measurement (body tape), noise_marker, labs (one
     result), milestones (a goal card), nutrition (a meal), glp1 (an injection),
-    glp1_side_effect, glp1_dose_phase, hrt_dose, hrt_cycle (with its compound
-    plans), hrt_cycle_item (one plan, cycle kept), body_comp (a scan with its
-    metrics), timeline (a manual event), skincare_observation, supplements (a
-    catalog entry), genetics (a variant), signals (one parsed signal — the raw
-    message stays in the lake; for a whole batch parsed wrongly out of one message
-    use ``mark_signal_misparse`` instead).
+    glp1_side_effect, glp1_dose_phase, hrt_dose, hrt_side_effect, hrt_cycle
+    (with its compound plans), hrt_cycle_item (one plan, cycle kept), body_comp
+    (a scan with its metrics), timeline (a manual event), skincare_observation,
+    supplements (a catalog entry), genetics (a variant), signals (one parsed
+    signal — the raw message stays in the lake; for a whole batch parsed wrongly
+    out of one message use ``mark_signal_misparse`` instead).
 
     Deleting a weight log reactivates the next-highest-priority log for that date.
     Returns ``{"deleted": false, ...}`` when nothing has that id."""
@@ -1883,6 +2001,22 @@ async def delete_record(domain: str, record_id: int) -> dict:
                 "prepared_conflict_write": prepared,
             }
         elif domain in {"glp1", "glp1_side_effect", "glp1_dose_phase"}:
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            owned_kwargs = {
+                "identity": conflict_context.identity,
+                "include_legacy_unowned": True,
+                "prepared_conflict_write": prepared,
+            }
+        elif domain in {
+            "hrt_dose",
+            "hrt_side_effect",
+            "hrt_cycle",
+            "hrt_cycle_item",
+        }:
             conflict_context = await _mcp_v1_conflict_write_context(session)
             prepared = await conflict_engine.prepare_scoped_write(
                 session,

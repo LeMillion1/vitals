@@ -231,6 +231,13 @@ Implementation progress on `commercial/main`:
   historical OpenRouter C, and lab-document F chain. Direct Labs reads and
   mutations, derived alerts, startup marker seeding, and nightly replay use the
   same exact-one subject boundary.
+  HRT doses, side effects, cycles, child plans, and templates now use the same
+  prepared owner boundary across direct web/MCP reads and mutations. Root creates
+  retain manual/MCP provenance, child graphs validate and inherit S, edits preserve
+  historical actor/source, and template JSON stays parse-only. Protocol reminders
+  combine only that subject's cycle, dose, and Labs state and reconcile actorless
+  alerts. Curated compounds remain global; their per-subject activation setting is
+  still a required cutover before registration.
   These paths resolve the verified legacy owner at their web, scheduler, or MCP
   boundary and fail closed if a second subject makes the compatibility bridge
   ambiguous.

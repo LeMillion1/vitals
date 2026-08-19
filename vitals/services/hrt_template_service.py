@@ -21,15 +21,17 @@ never ships built-in dose protocols and never recommends one.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import date as date_type
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import CycleKind, DoseUnit, Source
 from vitals.models.hrt import DOMAIN, HrtCycle, HrtCycleTemplate, HrtCycleTemplateItem
-from vitals.services import hrt_cycle_service, hrt_service
+from vitals.ownership import WriteIdentity
+from vitals.services import conflict_engine, hrt_cycle_service
 
 # Portable-JSON envelope. Bump the version if the item shape ever changes so an
 # importer can tell an old payload from a malformed one.
@@ -41,28 +43,245 @@ _VALID_UNITS = {u.value for u in DoseUnit}
 _MAX_ITEMS = 50  # no real protocol stacks this many compounds
 
 
-# ── CRUD ──────────────────────────────────────────────────────────────────────
-async def list_templates(session: AsyncSession) -> Sequence[HrtCycleTemplate]:
-    result = await session.execute(
-        select(HrtCycleTemplate)
-        .where(HrtCycleTemplate.domain == DOMAIN)
-        .order_by(HrtCycleTemplate.name)
+def _require_scoped_prepared_write(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity | None,
+    prepared: conflict_engine.PreparedConflictWrite | None,
+    include_legacy_unowned: bool,
+) -> conflict_engine.ConflictWriteContext | None:
+    """Prove the session/transaction/identity before any target lookup.
+
+    Templates are date-free, so the prepared context's evaluation date is a
+    governance serialization token rather than a semantic template field.
+    """
+
+    if identity is None and prepared is None:
+        if include_legacy_unowned:
+            raise ValueError("legacy HRT template compatibility requires a WriteIdentity")
+        return None
+    if identity is None or prepared is None:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "scoped HRT template writes require identity and a prepared conflict write"
+        )
+    context = conflict_engine.require_prepared_identity(
+        session,
+        prepared=prepared,
+        identity=identity,
     )
-    return result.scalars().all()
+    if (
+        include_legacy_unowned
+        and context.legacy_bridge
+        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+    ):
+        raise conflict_engine.ConflictPreparedWriteError(
+            "legacy HRT template access requires a fully-unowned bridge"
+        )
+    return context
+
+
+def _subject_scope(model, subject_id: uuid.UUID, *, include_legacy_unowned: bool):
+    exact = model.subject_id == subject_id
+    if not include_legacy_unowned:
+        return exact
+    legacy = model.subject_id.is_(None)
+    if hasattr(model, "actor_user_id"):
+        legacy = and_(legacy, model.actor_user_id.is_(None))
+    return or_(exact, legacy)
+
+
+def _row_in_scope(
+    row,
+    *,
+    subject_id: uuid.UUID,
+    include_legacy_unowned: bool,
+) -> bool:
+    if row.subject_id == subject_id:
+        return True
+    if not include_legacy_unowned or row.subject_id is not None:
+        return False
+    return not hasattr(row, "actor_user_id") or row.actor_user_id is None
+
+
+def _validate_template_graph(
+    template: HrtCycleTemplate,
+    items: Sequence[HrtCycleTemplateItem],
+    *,
+    subject_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+) -> None:
+    if subject_id is None:
+        return
+    if not _row_in_scope(
+        template,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    ):
+        raise conflict_engine.ConflictScopeError(
+            "HRT template is outside the requested subject scope"
+        )
+    for item in items:
+        if not _row_in_scope(
+            item,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        ):
+            raise conflict_engine.ConflictScopeError(
+                "HRT template contains an item outside the requested subject scope"
+            )
+
+
+async def _lock_template_graph(
+    session: AsyncSession,
+    template_id: int,
+    *,
+    subject_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+) -> tuple[HrtCycleTemplate, list[HrtCycleTemplateItem]] | None:
+    stmt = select(HrtCycleTemplate).where(
+        HrtCycleTemplate.id == template_id,
+        HrtCycleTemplate.domain == DOMAIN,
+    )
+    if subject_id is not None:
+        stmt = stmt.where(
+            _subject_scope(
+                HrtCycleTemplate,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy HRT template compatibility requires a subject_id")
+    template = await session.scalar(
+        stmt.with_for_update().execution_options(populate_existing=True)
+    )
+    if template is None:
+        return None
+    items = list(
+        await session.scalars(
+            select(HrtCycleTemplateItem)
+            .where(HrtCycleTemplateItem.template_id == template.id)
+            .order_by(HrtCycleTemplateItem.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+    _validate_template_graph(
+        template,
+        items,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    return template, items
+
+
+def _validate_export_scope(
+    template: HrtCycleTemplate,
+    *,
+    subject_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+) -> None:
+    if subject_id is None and include_legacy_unowned:
+        raise ValueError("legacy HRT template compatibility requires a subject_id")
+    _validate_template_graph(
+        template,
+        template.items,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+
+
+# ── CRUD ──────────────────────────────────────────────────────────────────────
+async def list_templates(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Sequence[HrtCycleTemplate]:
+    stmt = select(HrtCycleTemplate).where(HrtCycleTemplate.domain == DOMAIN)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _subject_scope(
+                HrtCycleTemplate,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy HRT template compatibility requires a subject_id")
+    templates = list(
+        await session.scalars(
+            stmt.order_by(HrtCycleTemplate.name, HrtCycleTemplate.id)
+            .execution_options(populate_existing=True)
+        )
+    )
+    for template in templates:
+        _validate_template_graph(
+            template,
+            template.items,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    return templates
 
 
 async def get_template(
-    session: AsyncSession, template_id: int
+    session: AsyncSession,
+    template_id: int,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Optional[HrtCycleTemplate]:
     # populate_existing: the instance may sit expired in the identity map after
     # a commit — a lazy .items load on it would MissingGreenlet under asyncio.
-    return await session.get(HrtCycleTemplate, template_id, populate_existing=True)
+    stmt = select(HrtCycleTemplate).where(
+        HrtCycleTemplate.id == template_id,
+        HrtCycleTemplate.domain == DOMAIN,
+    )
+    if subject_id is not None:
+        stmt = stmt.where(
+            _subject_scope(
+                HrtCycleTemplate,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy HRT template compatibility requires a subject_id")
+    template = await session.scalar(stmt.execution_options(populate_existing=True))
+    if template is not None:
+        _validate_template_graph(
+            template,
+            template.items,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    return template
 
 
-async def delete_template(session: AsyncSession, template_id: int) -> bool:
-    template = await session.get(HrtCycleTemplate, template_id)
-    if template is None:
+async def delete_template(
+    session: AsyncSession,
+    template_id: int,
+    *,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+) -> bool:
+    _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    graph = await _lock_template_graph(
+        session,
+        template_id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    if graph is None:
         return False
+    template, _items = graph
     await session.delete(template)
     await session.flush()
     return True
@@ -75,30 +294,49 @@ async def save_cycle_as_template(
     *,
     name: str,
     note: Optional[str] = None,
+    source: str | Source = Source.MANUAL.value,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> Optional[HrtCycleTemplate]:
     """Snapshot a cycle's plan into a new template. The snapshot is by value —
     later edits to the cycle don't touch the template."""
-    cycle = await session.get(HrtCycle, cycle_id, populate_existing=True)
-    if cycle is None:
+    _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    graph = await hrt_cycle_service._lock_cycle_graph(
+        session,
+        cycle_id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    if graph is None:
         return None
+    cycle, cycle_items = graph
     name = (name or "").strip()
     if not name:
         raise ValueError("template name is required")
-    if not cycle.items:
+    if not cycle_items:
         raise ValueError("cycle has no compounds to save")
     template = HrtCycleTemplate(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         domain=DOMAIN,
-        source=Source.MANUAL.value,
+        source=hrt_cycle_service._source_value(source),
         name=name,
         kind=cycle.kind,
         note=note,
     )
     session.add(template)
     await session.flush()
-    for item in cycle.items:
+    for item in cycle_items:
         session.add(
             HrtCycleTemplateItem(
-                template_id=template.id,
+                subject_id=template.subject_id,
+                template=template,
                 compound_key=item.compound_key,
                 unit=item.unit,
                 start_offset_days=item.start_offset_days or 0,
@@ -107,7 +345,14 @@ async def save_cycle_as_template(
             )
         )
     await session.flush()
-    return template
+    locked = await _lock_template_graph(
+        session,
+        template.id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=False,
+    )
+    assert locked is not None
+    return locked[0]
 
 
 async def create_cycle_from_template(
@@ -116,21 +361,41 @@ async def create_cycle_from_template(
     *,
     start_date: date_type,
     name: Optional[str] = None,
+    source: str | Source = Source.MANUAL.value,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> Optional[HrtCycle]:
     """Materialize a template into a real cycle starting on ``start_date``.
     Goes through ``hrt_cycle_service`` item-by-item so compound resolution and
     the open-cycle auto-close behave exactly as if built by hand."""
-    template = await session.get(HrtCycleTemplate, template_id, populate_existing=True)
-    if template is None:
+    _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    graph = await _lock_template_graph(
+        session,
+        template_id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    if graph is None:
         return None
+    template, template_items = graph
     cycle = await hrt_cycle_service.add_cycle(
         session,
         kind=template.kind,
         start_date=start_date,
         name=(name or "").strip() or template.name,
         note=template.note,
+        source=source,
+        identity=identity,
+        include_legacy_unowned=include_legacy_unowned,
+        prepared_conflict_write=prepared_conflict_write,
     )
-    for item in template.items:
+    for item in template_items:
         await hrt_cycle_service.add_cycle_item(
             session,
             cycle.id,
@@ -139,6 +404,9 @@ async def create_cycle_from_template(
             unit=item.unit,
             start_offset_days=item.start_offset_days or 0,
             note=item.note,
+            identity=identity,
+            include_legacy_unowned=include_legacy_unowned,
+            prepared_conflict_write=prepared_conflict_write,
         )
     await session.flush()
     return cycle
@@ -161,10 +429,20 @@ def _signature(kind: str, items: Sequence[HrtCycleTemplateItem]) -> tuple:
 
 
 # ── Share: portable JSON ──────────────────────────────────────────────────────
-def export_template(template: HrtCycleTemplate) -> dict:
+def export_template(
+    template: HrtCycleTemplate,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> dict:
     """A template as a portable dict — self-describing envelope, relative items
     only. ``json.dumps(..., ensure_ascii=False, indent=2)`` of this is the
     copy-paste share payload."""
+    _validate_export_scope(
+        template,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     return {
         "format": EXPORT_FORMAT,
         "version": EXPORT_VERSION,
@@ -184,17 +462,42 @@ def export_template(template: HrtCycleTemplate) -> dict:
     }
 
 
-def export_template_json(template: HrtCycleTemplate) -> str:
-    return json.dumps(export_template(template), ensure_ascii=False, indent=2)
+def export_template_json(
+    template: HrtCycleTemplate,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> str:
+    return json.dumps(
+        export_template(
+            template,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 async def import_template(
-    session: AsyncSession, payload: dict | str
+    session: AsyncSession,
+    payload: dict | str,
+    *,
+    source: str | Source = Source.MANUAL.value,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> HrtCycleTemplate:
     """Validate a pasted share payload and save it as a new local template.
     Rejects (with a message naming the problem) rather than half-importing:
     unknown envelope, bad kind/unit/offset, malformed schedule, or a compound
     key missing from the local catalog."""
+    _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if isinstance(payload, str):
         try:
             payload = json.loads(payload)
@@ -232,7 +535,12 @@ async def import_template(
         key = str(raw.get("compound_key") or "").strip()
         if not key:
             raise ValueError(f"{where}: compound_key is required")
-        compound = await hrt_service.get_compound(session, key)
+        compound = await hrt_cycle_service._resolve_scoped_compound(
+            session,
+            key,
+            subject_id=identity.subject_id if identity is not None else None,
+            include_legacy_unowned=include_legacy_unowned,
+        )
         if compound is None:
             missing.append(key)
             continue
@@ -252,6 +560,7 @@ async def import_template(
         note = raw.get("note")
         clean_items.append(
             HrtCycleTemplateItem(
+                subject_id=identity.subject_id if identity is not None else None,
                 compound_key=key,
                 unit=unit,
                 start_offset_days=offset,
@@ -267,7 +576,35 @@ async def import_template(
     # Duplicate handling: pasting the same share code twice is a mistake, not a
     # request for a copy — reject an exact duplicate. A mere name clash with
     # different content gets a numbered name instead of silently shadowing.
-    existing = await list_templates(session)
+    existing_stmt = (
+        select(HrtCycleTemplate)
+        .where(HrtCycleTemplate.domain == DOMAIN)
+    )
+    if identity is not None:
+        existing_stmt = existing_stmt.where(
+            _subject_scope(
+                HrtCycleTemplate,
+                identity.subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    existing_roots = list(
+        await session.scalars(
+            existing_stmt.order_by(HrtCycleTemplate.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+    existing: list[HrtCycleTemplate] = []
+    for root in existing_roots:
+        graph = await _lock_template_graph(
+            session,
+            root.id,
+            subject_id=identity.subject_id if identity is not None else None,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+        assert graph is not None
+        existing.append(graph[0])
     new_sig = _signature(kind, clean_items)
     for tp in existing:
         if tp.name == name and _signature(tp.kind, tp.items) == new_sig:
@@ -282,8 +619,10 @@ async def import_template(
 
     note = payload.get("note")
     template = HrtCycleTemplate(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         domain=DOMAIN,
-        source=Source.MANUAL.value,
+        source=hrt_cycle_service._source_value(source),
         name=name,
         kind=kind,
         note=str(note) if note is not None else None,
@@ -291,7 +630,14 @@ async def import_template(
     session.add(template)
     await session.flush()
     for item in clean_items:
-        item.template_id = template.id
+        item.template = template
         session.add(item)
     await session.flush()
-    return template
+    locked = await _lock_template_graph(
+        session,
+        template.id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=False,
+    )
+    assert locked is not None
+    return locked[0]

@@ -2,7 +2,7 @@
 
 Status: PR-03 Stage-2 implementation source of truth
 
-Last reviewed: 2026-08-19
+Last reviewed: 2026-08-20
 
 This document records every compatibility write boundary that must populate the
 nullable ownership columns introduced by revisions `0037` and `0038`. It is the
@@ -70,6 +70,13 @@ or multi-subject reads are enabled.
 Direct MCP note updates to weight, meals, GLP-1, skincare, body measurements,
 body scans, and labs must go through owned services or perform an explicit
 same-subject assertion. A bare primary key is never a write authority.
+
+The HRT web and direct MCP boundaries now apply the table contract above to
+doses, side effects, cycles, child items, templates, import/materialization,
+reads, edits, and deletes. Dose safety evaluation replaces the exact edited fact;
+automatic reminder alerts use S with a null actor. Curated compound definitions
+remain global and catalog-authenticated. Per-subject compound activation remains
+pending and the scoped service refuses to mutate the global `active` flag.
 
 ## Raw-first provider matrix
 
