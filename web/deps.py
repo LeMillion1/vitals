@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import AsyncIterator, Callable, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from redis.asyncio import Redis
@@ -18,6 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from web.config import SESSION_COOKIE
 
 from vitals.i18n import current_lang
+
+if TYPE_CHECKING:
+    from vitals.services.legacy_ownership import LegacyOwnershipContext
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +93,41 @@ async def require_auth(request: Request) -> str:
     return username
 
 
+async def get_request_legacy_ownership(
+    request: Request,
+    session: AsyncSession,
+) -> LegacyOwnershipContext | None:
+    """Resolve and memoize the authenticated Stage-2 ownership context.
+
+    Global page-chrome dependencies also run for anonymous pages, so absence of
+    a valid browser session returns ``None``.  A present session is resolved
+    through the same fail-closed sole-owner adapter as write routers; identity
+    errors are deliberately not converted into a legacy/global read.
+    """
+
+    cache_marker = "_legacy_ownership_resolved"
+    if getattr(request.state, cache_marker, False):
+        return getattr(request.state, "legacy_ownership", None)
+
+    from web.auth import read_session
+
+    username = read_session(request.cookies.get(SESSION_COOKIE))
+    if username is None:
+        setattr(request.state, cache_marker, True)
+        request.state.legacy_ownership = None
+        return None
+
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+
+    ownership = await resolve_legacy_ownership_context(
+        session,
+        actor_username=username,
+    )
+    request.state.legacy_ownership = ownership
+    setattr(request.state, cache_marker, True)
+    return ownership
+
+
 # ── Dashboard modules ──────────────────────────────────────────────────────────
 class ModuleDisabled(HTTPException):
     """Raised when an Optional module's route is hit while the module is off.
@@ -117,7 +155,12 @@ async def load_enabled_modules(
     from vitals.services import modules_service
 
     try:
-        request.state.enabled_modules = await modules_service.get_enabled_modules(db, redis)
+        ownership = await get_request_legacy_ownership(request, db)
+        request.state.enabled_modules = await modules_service.get_enabled_modules(
+            db,
+            redis,
+            subject_id=(ownership.subject_id if ownership is not None else None),
+        )
     except Exception:
         logger.exception("module-state load failed; using safe defaults")
         request.state.enabled_modules = dict(modules_service.DEFAULT_STATE)
@@ -174,7 +217,12 @@ async def load_language(
     from vitals.services import language_service
 
     try:
-        lang = await language_service.get_language(db, redis)
+        ownership = await get_request_legacy_ownership(request, db)
+        lang = await language_service.get_language(
+            db,
+            redis,
+            user_id=(ownership.owner_user_id if ownership is not None else None),
+        )
     except Exception:
         logger.exception("language load failed; defaulting to 'en'")
         lang = "en"

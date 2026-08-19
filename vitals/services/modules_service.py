@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -24,12 +25,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.app_settings import AppSetting
+from vitals.services.scoped_settings_service import (
+    ScopedSettingKey,
+    SettingScope,
+    get_scoped_setting,
+    update_scoped_setting,
+)
 
 logger = logging.getLogger(__name__)
 
 SETTINGS_KEY = "enabled_modules"          # app_settings.key
 REDIS_KEY = "settings:enabled_modules"    # cache key
 REDIS_TTL = 300                           # seconds
+
+
+def cache_key(subject_id: uuid.UUID | None = None) -> str:
+    """Return the legacy or UUID-namespaced cache key."""
+
+    return REDIS_KEY if subject_id is None else f"{REDIS_KEY}:{subject_id}"
 
 
 class ModuleToggleError(ValueError):
@@ -242,16 +255,20 @@ def _sanitize(raw: Any) -> dict[str, bool]:
 
 
 async def get_enabled_modules(
-    session: AsyncSession, redis: Optional[Redis] = None
+    session: AsyncSession,
+    redis: Optional[Redis] = None,
+    *,
+    subject_id: uuid.UUID | None = None,
 ) -> dict[str, bool]:
     """Resolve the enabled-module map. Never raises — falls back to safe defaults.
 
     Order: Redis cache → DB (``app_settings``) → ``DEFAULT_STATE``.
     """
+    redis_key = cache_key(subject_id)
     # 1) Redis read-through cache.
     if redis is not None:
         try:
-            cached = await redis.get(REDIS_KEY)
+            cached = await redis.get(redis_key)
             if cached:
                 return _sanitize(json.loads(cached))
         except Exception:
@@ -261,6 +278,23 @@ async def get_enabled_modules(
 
     # 2) Database (source of truth).
     try:
+        if subject_id is not None:
+            raw = await get_scoped_setting(
+                session,
+                scope=SettingScope.SUBJECT,
+                key=ScopedSettingKey.ENABLED_MODULES,
+                subject_id=subject_id,
+                default=dict(DEFAULT_STATE),
+            )
+            if isinstance(raw, dict):
+                state = _sanitize(raw)
+                await prime_cache(redis, state, subject_id=subject_id)
+                return state
+            logger.warning(
+                "modules: subject setting is not an object (%s); using defaults",
+                type(raw).__name__,
+            )
+            return dict(DEFAULT_STATE)
         row = await session.get(AppSetting, SETTINGS_KEY)
         if row is not None:
             if isinstance(row.value, dict):
@@ -285,7 +319,11 @@ async def get_enabled_modules(
 
 
 async def set_module_enabled(
-    session: AsyncSession, *, key: str, enabled: bool
+    session: AsyncSession,
+    *,
+    key: str,
+    enabled: bool,
+    subject_id: uuid.UUID | None = None,
 ) -> dict[str, bool]:
     """Toggle an Optional module. Flushes (caller commits). Returns the new state.
 
@@ -295,6 +333,20 @@ async def set_module_enabled(
         raise ModuleToggleError(f"unknown module '{key}'")
     if key in CORE_KEYS:
         raise ModuleToggleError(f"module '{key}' is core and cannot be disabled")
+
+    if subject_id is not None:
+        def _toggle(raw: Any) -> dict[str, bool]:
+            return {**_sanitize(raw), key: bool(enabled)}
+
+        updated = await update_scoped_setting(
+            session,
+            scope=SettingScope.SUBJECT,
+            key=ScopedSettingKey.ENABLED_MODULES,
+            subject_id=subject_id,
+            default=dict(DEFAULT_STATE),
+            update=_toggle,
+        )
+        return _sanitize(updated)
 
     # Lock the settings row FOR UPDATE so concurrent toggles serialize on it.
     # This is a read-modify-write (read the JSON map, flip one key, write it back);
@@ -324,11 +376,20 @@ async def set_module_enabled(
     return _sanitize(new_state.value if new_state else None)
 
 
-async def prime_cache(redis: Optional[Redis], state: dict[str, bool]) -> None:
+async def prime_cache(
+    redis: Optional[Redis],
+    state: dict[str, bool],
+    *,
+    subject_id: uuid.UUID | None = None,
+) -> None:
     """Write-through the resolved state into Redis. Best-effort (logged on fail)."""
     if redis is None:
         return
     try:
-        await redis.set(REDIS_KEY, json.dumps(_sanitize(state)), ex=REDIS_TTL)
+        await redis.set(
+            cache_key(subject_id),
+            json.dumps(_sanitize(state)),
+            ex=REDIS_TTL,
+        )
     except Exception:
         logger.warning("modules: Redis prime failed", exc_info=True)

@@ -1,8 +1,8 @@
 """Allowlisted bridge between legacy and explicitly scoped settings.
 
 This module is the low-level Stage-2 compatibility boundary.  It deliberately
-has no cache integration and no current callers: product services keep their
-legacy behavior until each call site is migrated and tested separately.
+has no cache integration: product services own UUID-namespaced caching and move
+onto this bridge one reviewed call site at a time.
 
 Only the reviewed non-secret mappings below are accepted.  Reads prefer the
 scoped row and fall back to ``app_settings``.  Writes replace the JSON value in
@@ -15,7 +15,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -396,6 +396,32 @@ def _new_scoped_row(
     )
 
 
+def _replace_rows(
+    session: AsyncSession,
+    request: _ValidatedRequest,
+    *,
+    scoped: UserSetting | SubjectSetting | IntegrationConnectionSetting | None,
+    legacy: AppSetting | None,
+    value: Any,
+) -> None:
+    """Replace both compatibility representations without flushing."""
+
+    if scoped is None:
+        session.add(_new_scoped_row(request, value=value))
+    else:
+        scoped.value = deepcopy(value)
+
+    if legacy is None:
+        session.add(
+            AppSetting(
+                key=request.route.legacy_key,
+                value=deepcopy(value),
+            )
+        )
+    else:
+        legacy.value = deepcopy(value)
+
+
 async def get_scoped_setting(
     session: AsyncSession,
     *,
@@ -472,21 +498,70 @@ async def set_scoped_setting(
     scoped = await _scoped_row(session, request, for_update=True)
     legacy = await _legacy_row(session, request, for_update=True)
 
-    if scoped is None:
-        session.add(_new_scoped_row(request, value=value))
-    else:
-        scoped.value = deepcopy(value)
+    _replace_rows(
+        session,
+        request,
+        scoped=scoped,
+        legacy=legacy,
+        value=value,
+    )
 
-    if legacy is None:
-        session.add(
-            AppSetting(
-                key=request.route.legacy_key,
-                value=deepcopy(value),
-            )
-        )
-    else:
-        legacy.value = deepcopy(value)
+    await session.flush()
+    return deepcopy(value)
 
+
+async def update_scoped_setting(
+    session: AsyncSession,
+    *,
+    scope: SettingScope | str,
+    key: ScopedSettingKey | str,
+    update: Callable[[Any], Any],
+    user_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID | None = None,
+    integration_connection_id: uuid.UUID | None = None,
+    default: Any = None,
+) -> Any:
+    """Atomically read, transform, and dual-write one scoped setting.
+
+    ``update`` runs synchronously after the scope root and both representations
+    are locked.  It receives a detached copy of the new-first value, or of
+    ``default`` when neither row exists.  This is the safe boundary for product
+    settings stored as one JSON collection: callers cannot lose a concurrent
+    toggle, append, or removal by reading before the row lock is acquired.
+    """
+
+    if not callable(update):
+        raise ScopedSettingValidationError("update must be callable")
+    request = _validate_request(
+        scope=scope,
+        key=key,
+        user_id=user_id,
+        subject_id=subject_id,
+        integration_connection_id=integration_connection_id,
+    )
+    await acquire_identity_governance_lock(session)
+    connection = await _require_scope_target(session, request, for_update=True)
+    await _require_legacy_bridge_open(
+        session,
+        request,
+        connection=connection,
+    )
+    scoped = await _scoped_row(session, request, for_update=True)
+    legacy = await _legacy_row(session, request, for_update=True)
+    if scoped is not None:
+        current = deepcopy(scoped.value)
+    elif legacy is not None:
+        current = deepcopy(legacy.value)
+    else:
+        current = deepcopy(default)
+    value = update(current)
+    _replace_rows(
+        session,
+        request,
+        scoped=scoped,
+        legacy=legacy,
+        value=value,
+    )
     await session.flush()
     return deepcopy(value)
 
@@ -554,4 +629,5 @@ __all__ = [
     "get_scoped_setting",
     "mirror_legacy_setting",
     "set_scoped_setting",
+    "update_scoped_setting",
 ]

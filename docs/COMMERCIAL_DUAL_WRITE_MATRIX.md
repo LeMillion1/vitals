@@ -94,6 +94,13 @@ object must first be split into subject, Telegram-connection, and Garmin-
 connection fields. Redis keys must include the corresponding user/S/C UUID before
 a second subject exists.
 
+The language, module-toggle, and custom-chart product paths now use that bridge.
+Authenticated web chrome resolves the sole owner once per request; writes use an
+atomic locked transform for JSON collections and prime only UUID-namespaced
+Redis entries after commit. Anonymous compatibility pages may still read the
+legacy installation value while registration is closed. `week_template` and the
+Garmin connection setting remain pending at this stage.
+
 ## File transition
 
 `FileAsset` registration is metadata-only and must not read or move bytes. The

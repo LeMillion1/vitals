@@ -270,20 +270,51 @@ async def _populate_state_for_error_page(request: Request) -> None:
     """
     from vitals.i18n import current_lang
     from vitals.services import language_service, modules_service
+    from web.deps import get_request_legacy_ownership
 
     lang = "en"
     enabled = dict(modules_service.DEFAULT_STATE)
     try:
         redis = get_redis_client()
         async with get_session_factory()() as db:
+            ownership = None
+            ownership_failed = False
             try:
-                lang = await language_service.get_language(db, redis)
+                ownership = await get_request_legacy_ownership(request, db)
             except Exception:
-                logger.exception("404 page: language load failed; defaulting to 'en'")
-            try:
-                enabled = await modules_service.get_enabled_modules(db, redis)
-            except Exception:
-                logger.exception("404 page: module-state load failed; using defaults")
+                ownership_failed = True
+                logger.exception(
+                    "404 page: ownership resolution failed; using safe defaults"
+                )
+            if not ownership_failed:
+                try:
+                    lang = await language_service.get_language(
+                        db,
+                        redis,
+                        user_id=(
+                            ownership.owner_user_id
+                            if ownership is not None
+                            else None
+                        ),
+                    )
+                except Exception:
+                    logger.exception(
+                        "404 page: language load failed; defaulting to 'en'"
+                    )
+                try:
+                    enabled = await modules_service.get_enabled_modules(
+                        db,
+                        redis,
+                        subject_id=(
+                            ownership.subject_id
+                            if ownership is not None
+                            else None
+                        ),
+                    )
+                except Exception:
+                    logger.exception(
+                        "404 page: module-state load failed; using defaults"
+                    )
     except Exception:
         logger.exception("404 page: could not open db/redis; using all defaults")
 

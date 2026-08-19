@@ -32,6 +32,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.app_settings import AppSetting
 from vitals.services.analytics import chart_registry
+from vitals.services.scoped_settings_service import (
+    ScopedSettingKey,
+    SettingScope,
+    get_scoped_setting,
+    update_scoped_setting,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +47,12 @@ REDIS_TTL = 300
 
 MAX_SERIES_PER_CHART = 8   # matches the 8-slot categorical palette
 MAX_CHARTS = 50
+
+
+def cache_key(subject_id: uuid.UUID | None = None) -> str:
+    """Return the legacy or UUID-namespaced cache key."""
+
+    return REDIS_KEY if subject_id is None else f"{REDIS_KEY}:{subject_id}"
 
 
 class ChartConfigError(ValueError):
@@ -92,14 +104,20 @@ def _sanitize(raw: Any) -> list[dict]:
     return out
 
 
-async def list_charts(session: AsyncSession, redis: Optional[Redis] = None) -> list[dict]:
+async def list_charts(
+    session: AsyncSession,
+    redis: Optional[Redis] = None,
+    *,
+    subject_id: uuid.UUID | None = None,
+) -> list[dict]:
     """Resolve the saved chart list. Never raises — falls back to ``[]``.
 
     Order: Redis cache → DB (``app_settings``) → ``[]``.
     """
+    redis_key = cache_key(subject_id)
     if redis is not None:
         try:
-            cached = await redis.get(REDIS_KEY)
+            cached = await redis.get(redis_key)
             if cached:
                 return _sanitize(json.loads(cached))
         except Exception:
@@ -108,6 +126,23 @@ async def list_charts(session: AsyncSession, redis: Optional[Redis] = None) -> l
             )
 
     try:
+        if subject_id is not None:
+            raw = await get_scoped_setting(
+                session,
+                scope=SettingScope.SUBJECT,
+                key=ScopedSettingKey.CUSTOM_CHARTS,
+                subject_id=subject_id,
+                default=[],
+            )
+            if isinstance(raw, list):
+                charts = _sanitize(raw)
+                await prime_cache(redis, charts, subject_id=subject_id)
+                return charts
+            logger.warning(
+                "custom_charts: subject setting is not an array (%s); using []",
+                type(raw).__name__,
+            )
+            return []
         row = await session.get(AppSetting, SETTINGS_KEY)
         if row is not None:
             if isinstance(row.value, list):
@@ -128,9 +163,13 @@ async def list_charts(session: AsyncSession, redis: Optional[Redis] = None) -> l
 
 
 async def get_chart(
-    session: AsyncSession, chart_id: str, redis: Optional[Redis] = None
+    session: AsyncSession,
+    chart_id: str,
+    redis: Optional[Redis] = None,
+    *,
+    subject_id: uuid.UUID | None = None,
 ) -> Optional[dict]:
-    charts = await list_charts(session, redis)
+    charts = await list_charts(session, redis, subject_id=subject_id)
     for c in charts:
         if c["id"] == chart_id:
             return c
@@ -164,6 +203,7 @@ async def create_chart(
     series: list[dict],
     normalize: bool = False,
     redis: Optional[Redis] = None,
+    subject_id: uuid.UUID | None = None,
 ) -> dict:
     """Validate and append a new chart config. Flushes (caller commits).
 
@@ -175,11 +215,6 @@ async def create_chart(
     if len(name) > 80:
         raise ChartConfigError("chart name must be at most 80 characters")
     _validate_series(series)
-
-    row = await session.get(AppSetting, SETTINGS_KEY)
-    current = _sanitize(row.value) if row is not None else []
-    if len(current) >= MAX_CHARTS:
-        raise ChartConfigError(f"at most {MAX_CHARTS} custom charts are allowed")
 
     new_chart = {
         "id": uuid.uuid4().hex[:12],
@@ -196,24 +231,72 @@ async def create_chart(
             for idx, s in enumerate(series[:MAX_SERIES_PER_CHART])
         ],
     }
-    updated = [*current, new_chart]
+    if subject_id is not None:
+        def _append(raw: Any) -> list[dict]:
+            current = _sanitize(raw)
+            if len(current) >= MAX_CHARTS:
+                raise ChartConfigError(
+                    f"at most {MAX_CHARTS} custom charts are allowed"
+                )
+            return [*current, new_chart]
 
-    if row is None:
-        session.add(AppSetting(key=SETTINGS_KEY, value=updated))
+        updated = await update_scoped_setting(
+            session,
+            scope=SettingScope.SUBJECT,
+            key=ScopedSettingKey.CUSTOM_CHARTS,
+            subject_id=subject_id,
+            default=[],
+            update=_append,
+        )
     else:
-        # Reassign a NEW list so SQLAlchemy detects the change (plain JSON/JSONB
-        # column, not a MutableList).
-        row.value = updated
-
-    await session.flush()
-    await prime_cache(redis, updated)
+        row = await session.get(AppSetting, SETTINGS_KEY)
+        current = _sanitize(row.value) if row is not None else []
+        if len(current) >= MAX_CHARTS:
+            raise ChartConfigError(
+                f"at most {MAX_CHARTS} custom charts are allowed"
+            )
+        updated = [*current, new_chart]
+        if row is None:
+            session.add(AppSetting(key=SETTINGS_KEY, value=updated))
+        else:
+            # Reassign a NEW list so SQLAlchemy detects the change (plain
+            # JSON/JSONB column, not a MutableList).
+            row.value = updated
+        await session.flush()
+    await prime_cache(redis, updated, subject_id=subject_id)
     return new_chart
 
 
 async def delete_chart(
-    session: AsyncSession, chart_id: str, redis: Optional[Redis] = None
+    session: AsyncSession,
+    chart_id: str,
+    redis: Optional[Redis] = None,
+    *,
+    subject_id: uuid.UUID | None = None,
 ) -> bool:
     """Remove one chart by id. Returns False if it wasn't found."""
+    if subject_id is not None:
+        removed = False
+
+        def _remove(raw: Any) -> list[dict]:
+            nonlocal removed
+            current = _sanitize(raw)
+            remaining = [c for c in current if c["id"] != chart_id]
+            removed = len(remaining) != len(current)
+            return remaining
+
+        remaining = await update_scoped_setting(
+            session,
+            scope=SettingScope.SUBJECT,
+            key=ScopedSettingKey.CUSTOM_CHARTS,
+            subject_id=subject_id,
+            default=[],
+            update=_remove,
+        )
+        if removed:
+            await prime_cache(redis, remaining, subject_id=subject_id)
+        return removed
+
     row = await session.get(AppSetting, SETTINGS_KEY)
     if row is None:
         return False
@@ -227,11 +310,20 @@ async def delete_chart(
     return True
 
 
-async def prime_cache(redis: Optional[Redis], charts: list[dict]) -> None:
+async def prime_cache(
+    redis: Optional[Redis],
+    charts: list[dict],
+    *,
+    subject_id: uuid.UUID | None = None,
+) -> None:
     """Write-through the resolved list into Redis. Best-effort (logged on fail)."""
     if redis is None:
         return
     try:
-        await redis.set(REDIS_KEY, json.dumps(_sanitize(charts)), ex=REDIS_TTL)
+        await redis.set(
+            cache_key(subject_id),
+            json.dumps(_sanitize(charts)),
+            ex=REDIS_TTL,
+        )
     except Exception:
         logger.warning("custom_charts: Redis prime failed", exc_info=True)

@@ -62,6 +62,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   legacy download and delete paths enforce subject scope and file lifecycle, and
   failed pre-commit writes remove orphan bytes while ambiguous commits preserve
   them for reconciliation rather than risking medical-file loss.
+- UI language, enabled modules, and custom chart definitions now read their
+  user/subject setting first and dual-write the temporary legacy setting in the
+  same transaction. Their Redis cache keys include the owning UUID, collection
+  updates are serialized on PostgreSQL, and web writes publish cache state only
+  after the database commit succeeds.
 
 ### Fixed — AI period-report context
 

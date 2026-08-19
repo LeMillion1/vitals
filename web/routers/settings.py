@@ -35,6 +35,7 @@ from vitals.services import (
     twofa_service,
 )
 from vitals.services.modules_service import ModuleToggleError
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.services.proactive import day_plan, prefs
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
@@ -420,14 +421,27 @@ async def toggle_module(
     returns an OOB fragment that re-renders the header nav so it updates live —
     no page reload.
     """
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     try:
-        state = await modules_service.set_module_enabled(db, key=module, enabled=enabled)
+        state = await modules_service.set_module_enabled(
+            db,
+            key=module,
+            enabled=enabled,
+            subject_id=ownership.subject_id,
+        )
     except ModuleToggleError as e:
         # Core/unknown module — reject loudly (Zero Silent Errors).
         return JSONResponse({"error": str(e)}, status_code=status.HTTP_400_BAD_REQUEST)
 
     await db.commit()
-    await modules_service.prime_cache(redis, state)
+    await modules_service.prime_cache(
+        redis,
+        state,
+        subject_id=ownership.subject_id,
+    )
     # Reflect the new state for the OOB nav render in *this* response.
     request.state.enabled_modules = state
     return templates.TemplateResponse(
@@ -586,8 +600,22 @@ async def save_language(
     db: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ):
-    lang = await language_service.set_language(db, language, redis)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    lang = await language_service.set_language(
+        db,
+        language,
+        redis=None,
+        user_id=ownership.owner_user_id,
+    )
     await db.commit()
+    await language_service.prime_cache(
+        redis,
+        lang,
+        user_id=ownership.owner_user_id,
+    )
     return RedirectResponse(
         url="/settings?saved=language",
         status_code=status.HTTP_303_SEE_OTHER,

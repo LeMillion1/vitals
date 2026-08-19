@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.services import chart_data_service, custom_charts_service
 from vitals.services.custom_charts_service import ChartConfigError
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates
 
@@ -27,11 +28,19 @@ async def charts_dashboard(
     redis: Redis = Depends(get_redis),
     username: str = Depends(require_auth),
 ):
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     lang = getattr(request.state, "lang", "ru")
     enabled = getattr(request.state, "enabled_modules", None) or {}
 
     catalog = await chart_data_service.build_catalog(db, enabled, lang=lang)
-    charts = await custom_charts_service.list_charts(db, redis)
+    charts = await custom_charts_service.list_charts(
+        db,
+        redis,
+        subject_id=ownership.subject_id,
+    )
     resolved = {
         c["id"]: await chart_data_service.resolve_chart_series(db, c, lang=lang)
         for c in charts
@@ -54,7 +63,10 @@ async def charts_dashboard(
     )
 
 
-async def _overlays_by_chart(db: AsyncSession, charts: list[dict]) -> dict[str, list[dict]]:
+async def _overlays_by_chart(
+    db: AsyncSession,
+    charts: list[dict],
+) -> dict[str, list[dict]]:
     """Manual Timeline flags for each saved chart — the union of its series'
     domains, deduped (a global flag would otherwise repeat once per domain)."""
     from vitals.services import timeline_service
@@ -87,6 +99,10 @@ async def create_chart(
     redis: Redis = Depends(get_redis),
     username: str = Depends(require_auth),
 ):
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     series = [
         {"domain": d, "metric_key": mk, "param": (p.strip() or None)}
         for d, mk, p in zip(domain, metric_key, param)
@@ -94,12 +110,27 @@ async def create_chart(
     ]
     try:
         await custom_charts_service.create_chart(
-            db, name=name.strip(), series=series, normalize=normalize, redis=redis
+            db,
+            name=name.strip(),
+            series=series,
+            normalize=normalize,
+            redis=None,
+            subject_id=ownership.subject_id,
         )
         await db.commit()
     except ChartConfigError as e:
         logger.warning("custom chart rejected: %s", e)
         return _redirect(request, "?error=invalid")
+    charts = await custom_charts_service.list_charts(
+        db,
+        redis=None,
+        subject_id=ownership.subject_id,
+    )
+    await custom_charts_service.prime_cache(
+        redis,
+        charts,
+        subject_id=ownership.subject_id,
+    )
     return _redirect(request)
 
 
@@ -111,8 +142,27 @@ async def delete_chart_entry(
     redis: Redis = Depends(get_redis),
     username: str = Depends(require_auth),
 ):
-    await custom_charts_service.delete_chart(db, chart_id, redis=redis)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    await custom_charts_service.delete_chart(
+        db,
+        chart_id,
+        redis=None,
+        subject_id=ownership.subject_id,
+    )
     await db.commit()
+    charts = await custom_charts_service.list_charts(
+        db,
+        redis=None,
+        subject_id=ownership.subject_id,
+    )
+    await custom_charts_service.prime_cache(
+        redis,
+        charts,
+        subject_id=ownership.subject_id,
+    )
     return _redirect(request)
 
 
