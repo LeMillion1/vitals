@@ -122,6 +122,96 @@ def _supplement_subject_scope(
     return scope
 
 
+def _require_scoped_prepared_write(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity | None,
+    prepared: conflict_engine.PreparedConflictWrite | None,
+) -> conflict_engine.ConflictWriteContext | None:
+    """Separate legacy calls from the explicit subject-aware write contract."""
+
+    if identity is None and prepared is None:
+        return None
+    if identity is None or prepared is None:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "scoped supplement writes require identity and a prepared conflict write"
+        )
+    return conflict_engine.require_prepared_identity(
+        session,
+        prepared=prepared,
+        identity=identity,
+    )
+
+
+def _supplement_by_id_stmt(
+    supplement_id: int,
+    *,
+    subject_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+):
+    stmt = select(Supplement).where(Supplement.id == supplement_id)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _supplement_subject_scope(
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy supplement compatibility requires a subject_id")
+    return stmt
+
+
+async def _get_supplement_for_update(
+    session: AsyncSession,
+    supplement_id: int,
+    *,
+    subject_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+) -> Optional[Supplement]:
+    return await session.scalar(
+        _supplement_by_id_stmt(
+            supplement_id,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+async def get_supplement_for_update(
+    session: AsyncSession,
+    supplement_id: int,
+    *,
+    identity: WriteIdentity,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+) -> Optional[Supplement]:
+    """Lock and refresh one scoped row for a caller-side partial update merge."""
+
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    assert context is not None
+    if (
+        include_legacy_unowned
+        and context.legacy_bridge
+        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+    ):
+        raise conflict_engine.ConflictPreparedWriteError(
+            "legacy supplement adoption requires a fully-unowned bridge"
+        )
+    return await _get_supplement_for_update(
+        session,
+        supplement_id,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+
+
 async def list_supplements(
     session: AsyncSession,
     *,
@@ -160,7 +250,13 @@ async def add_supplement(
     override: bool = False,
     source: str = Source.MANUAL.value,
     identity: WriteIdentity | None = None,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> Supplement:
+    scoped_context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
     if key:
         resolved_key = key
     else:
@@ -170,13 +266,25 @@ async def add_supplement(
         from vitals.services import conflict_catalog
 
         resolved_key = conflict_catalog.normalize_ingredient(name)
-    await conflict_engine.enforce(
-        session,
-        Domain.SUPPLEMENTS.value,
-        _proposed(resolved_key, active, _parse_slot(timing)),
-        override=override,
-        entity_ref=f"supplement:{resolved_key}",
-    )
+    proposed = _proposed(resolved_key, active, _parse_slot(timing))
+    if scoped_context is None:
+        await conflict_engine.enforce(
+            session,
+            Domain.SUPPLEMENTS.value,
+            proposed,
+            override=override,
+            entity_ref=f"supplement:{resolved_key}",
+        )
+    else:
+        assert prepared_conflict_write is not None
+        await conflict_engine.enforce_prepared(
+            session,
+            prepared=prepared_conflict_write,
+            domain=Domain.SUPPLEMENTS,
+            proposed_state=proposed,
+            override=override,
+            entity_ref=f"supplement:{resolved_key}",
+        )
     row = Supplement(
         subject_id=identity.subject_id if identity is not None else None,
         actor_user_id=identity.actor_user_id if identity is not None else None,
@@ -211,8 +319,23 @@ async def update_supplement(
     override: bool = False,
     identity: WriteIdentity | None = None,
     include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> Optional[Supplement]:
-    row = await get_supplement(
+    scoped_context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    if (
+        include_legacy_unowned
+        and scoped_context is not None
+        and scoped_context.legacy_bridge
+        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+    ):
+        raise conflict_engine.ConflictPreparedWriteError(
+            "legacy supplement adoption requires a fully-unowned bridge"
+        )
+    row = await _get_supplement_for_update(
         session,
         supplement_id,
         subject_id=identity.subject_id if identity is not None else None,
@@ -229,13 +352,26 @@ async def update_supplement(
         from vitals.services import conflict_catalog
 
         resolved_key = conflict_catalog.normalize_ingredient(name)
-    await conflict_engine.enforce(
-        session,
-        Domain.SUPPLEMENTS.value,
-        _proposed(resolved_key, active, _parse_slot(timing)),
-        override=override,
-        entity_ref=f"supplement:{resolved_key}",
-    )
+    proposed = _proposed(resolved_key, active, _parse_slot(timing))
+    if scoped_context is None:
+        await conflict_engine.enforce(
+            session,
+            Domain.SUPPLEMENTS.value,
+            proposed,
+            override=override,
+            entity_ref=f"supplement:{resolved_key}",
+        )
+    else:
+        assert prepared_conflict_write is not None
+        await conflict_engine.enforce_prepared(
+            session,
+            prepared=prepared_conflict_write,
+            domain=Domain.SUPPLEMENTS,
+            proposed_state=proposed,
+            override=override,
+            entity_ref=f"supplement:{resolved_key}",
+            replace_entity_key=str(row.id),
+        )
     if row.subject_id is None and identity is not None:
         # Allowed only behind the sole-subject compatibility resolver. Preserve
         # the original (unknown) actor rather than rewriting history. Do this
@@ -261,10 +397,25 @@ async def set_active(
     override: bool = False,
     identity: WriteIdentity | None = None,
     include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> Optional[Supplement]:
     """Toggle a catalog row's active flag — runs the conflict check so activating
     a contraindicated supplement surfaces the block/override flow."""
-    row = await get_supplement(
+    scoped_context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    if (
+        include_legacy_unowned
+        and scoped_context is not None
+        and scoped_context.legacy_bridge
+        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+    ):
+        raise conflict_engine.ConflictPreparedWriteError(
+            "legacy supplement adoption requires a fully-unowned bridge"
+        )
+    row = await _get_supplement_for_update(
         session,
         supplement_id,
         subject_id=identity.subject_id if identity is not None else None,
@@ -273,13 +424,26 @@ async def set_active(
     if row is None:
         return None
     if active:
-        await conflict_engine.enforce(
-            session,
-            Domain.SUPPLEMENTS.value,
-            _proposed(row.key, True, _parse_slot(row.timing)),
-            override=override,
-            entity_ref=f"supplement:{row.key}",
-        )
+        proposed = _proposed(row.key, True, _parse_slot(row.timing))
+        if scoped_context is None:
+            await conflict_engine.enforce(
+                session,
+                Domain.SUPPLEMENTS.value,
+                proposed,
+                override=override,
+                entity_ref=f"supplement:{row.key}",
+            )
+        else:
+            assert prepared_conflict_write is not None
+            await conflict_engine.enforce_prepared(
+                session,
+                prepared=prepared_conflict_write,
+                domain=Domain.SUPPLEMENTS,
+                proposed_state=proposed,
+                override=override,
+                entity_ref=f"supplement:{row.key}",
+                replace_entity_key=str(row.id),
+            )
     if row.subject_id is None and identity is not None:
         row.subject_id = identity.subject_id
     row.active = active
@@ -294,17 +458,13 @@ async def get_supplement(
     subject_id: uuid.UUID | None = None,
     include_legacy_unowned: bool = False,
 ) -> Optional[Supplement]:
-    stmt = select(Supplement).where(Supplement.id == supplement_id)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _supplement_subject_scope(
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
+    return await session.scalar(
+        _supplement_by_id_stmt(
+            supplement_id,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
         )
-    elif include_legacy_unowned:
-        raise ValueError("legacy supplement compatibility requires a subject_id")
-    return await session.scalar(stmt)
+    )
 
 
 async def delete_supplement(
@@ -332,6 +492,7 @@ async def resolve_active(
     *,
     subject_id: uuid.UUID | None = None,
     include_legacy_unowned: bool = False,
+    _include_conflict_entity_key: bool = False,
 ) -> list[dict]:
     """Conflict-engine resolver: the catalog as match items (key + active flag +
     parsed timing slot, used by timing_separation rules)."""
@@ -348,6 +509,11 @@ async def resolve_active(
     result = await session.execute(stmt)
     return [
         {
+            **(
+                {conflict_engine.CONFLICT_ENTITY_KEY: str(s.id)}
+                if _include_conflict_entity_key
+                else {}
+            ),
             "key": s.key,
             "active": s.active,
             "name": s.name,
@@ -368,4 +534,5 @@ async def resolve_active_scoped(
         session,
         subject_id=scope.subject_id,
         include_legacy_unowned=scope.include_legacy_unowned,
+        _include_conflict_entity_key=True,
     )

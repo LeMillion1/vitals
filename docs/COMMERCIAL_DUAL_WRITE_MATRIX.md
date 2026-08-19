@@ -163,9 +163,15 @@ series resolution, and whole-lake MCP exports still await the PR-04/PR-10
 AccessContext cutover. Conflict-rule reads now select one subject and evaluation
 date across all seven resolver domains; curated definitions remain global,
 subject/custom rows are exact-S, and ambiguous or partial legacy roots fail
-closed. Conflict writer enforcement and the per-subject rule toggle still use
-their legacy mutation paths. The writer cutover must preserve the canonical
-governance -> provider/outbox advisory -> subject/domain-row -> alert order;
+closed. Curated activation now lives in the subject setting with a temporary
+exact-one legacy mirror, so UI, MCP, and evaluation share one effective state.
+The scoped writer core binds an opaque capability to the validated identity,
+session, transaction/savepoint, and evaluation date. Supplements create, update,
+and activation use that capability; updates lock and refresh the target and
+exclude exactly that row from the resolver snapshot before applying the proposed
+state. Other domain writers and the transitional legacy service fallback remain
+on the reviewed inventory. Their cutover must preserve the canonical governance
+-> provider/outbox advisory -> subject/domain-row -> alert order;
 in particular, weight conflict enforcement cannot acquire governance after the
 existing active-weight advisory lock. These remaining surfaces are explicit
 release blockers, so registration and every path to a second writable subject

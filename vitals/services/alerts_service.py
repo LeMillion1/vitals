@@ -1146,11 +1146,14 @@ async def raise_scoped_alert(
     alert_key: str,
     entity_ref: str = "",
     legacy_bridge: LegacyAlertBridge = LegacyAlertBridge.REJECT,
+    overridden: bool = False,
 ) -> SystemAlert:
     """Raise or refresh one alert in an explicit S/C/platform scope.
 
     Provider refreshes are fresh operational writes and therefore require a
-    legacy or active connection.  The function flushes but never commits.
+    legacy or active connection. ``overridden`` is a human-only transition: its
+    timestamp and actor are stamped together without replacing an earlier
+    override attribution. The function flushes but never commits.
     """
 
     _require_domain(domain)
@@ -1158,6 +1161,12 @@ async def raise_scoped_alert(
     _require_message(message)
     _require_key(alert_key)
     _require_entity_ref(entity_ref)
+    _require_context(context)
+    if not isinstance(overridden, bool):
+        raise AlertValidationError("overridden must be a boolean")
+    actor_user_id = _actor_user_id(context)
+    if overridden and actor_user_id is None:
+        raise AlertActorRequiredError("override requires an active human actor")
     await _prepare_context(
         session,
         context=context,
@@ -1191,15 +1200,21 @@ async def raise_scoped_alert(
         _adopt_legacy_row(row, context, legacy_bridge)
         row.severity = severity.value
         row.message = message
+        if overridden:
+            assert actor_user_id is not None
+            _stamp_override(row, actor_user_id)
         await session.flush()
         return row
 
+    override_at = now_local() if overridden else None
     row = SystemAlert(
         domain=domain.value,
         severity=severity.value,
         message=message,
         alert_key=alert_key,
         entity_ref=entity_ref,
+        override_at=override_at,
+        overridden_by_user_id=(actor_user_id if overridden else None),
         **_ownership_values(context),
     )
     session.add(row)

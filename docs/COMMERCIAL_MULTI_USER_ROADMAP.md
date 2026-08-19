@@ -213,9 +213,12 @@ Implementation progress on `commercial/main`:
   provider, and platform namespaces; generic web/MCP lifecycle actions aggregate
   current and retired provider roots, and provider/scheduler writers use an exact
   reviewed scope. Conflict reads and all seven resolver domains use one subject
-  and date. These paths resolve the verified legacy owner at their web, scheduler,
-  or MCP boundary and fail closed if a second subject makes the compatibility
-  bridge ambiguous.
+  and date. Curated conflict-rule activation is stored per subject, and the
+  Supplements web/MCP create, update, and activation paths use an opaque prepared
+  writer capability, locked target rows, and exact-row replacement semantics.
+  These paths resolve the verified legacy owner at their web, scheduler, or MCP
+  boundary and fail closed if a second subject makes the compatibility bridge
+  ambiguous.
 - The completed Stage 2 slices include SQLite isolation tests and PostgreSQL 15
   migration/foreign-key tests. Direct interactive selectors are covered for all
   current Timeline event types, and provider ingestion preserves raw-first
@@ -570,7 +573,7 @@ Additional gates:
 
 | Date | Decision | Rationale |
 | --- | --- | --- |
-| 2026-08-19 | Build commercialization in `vlakimov/vitals`, not upstream `ilodezis/vitals`. | The upstream product and security model explicitly promise a single-user self-hosted service. |
+| 2026-08-19 | Build commercialization in `LeMillion1/vitals`, not upstream `ilodezis/vitals`. | The upstream product and security model explicitly promise a single-user self-hosted service. |
 | 2026-08-19 | Base commercial work on current `origin/master`; do not rewrite fork `master`. | The fork is behind, and its divergent patches are already represented upstream. A separate commercial base keeps history recoverable. |
 | 2026-08-19 | Use actor + health subject, not a single `user_id`, as the core boundary. | Professionals act on another person's data; identity ownership and data subject are not interchangeable. |
 | 2026-08-19 | Roles are additive; professional access requires relationship + consent. | A doctor/trainer may also be a member, and self-asserted roles must not expose PHI. |

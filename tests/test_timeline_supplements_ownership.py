@@ -31,7 +31,7 @@ from vitals.models.tenancy import FileAsset
 from vitals.models.timeline import Annotation
 from vitals.models.weight import NoiseMarker, ProgressPhoto
 from vitals.ownership import WriteIdentity
-from vitals.services import supplements_service, timeline_service
+from vitals.services import conflict_engine, supplements_service, timeline_service
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 
 mcp_router = pytest.importorskip("web.routers.mcp")
@@ -228,6 +228,34 @@ async def _identity(session, slug: str) -> WriteIdentity:
     session.add(subject)
     await session.flush()
     return WriteIdentity(subject_id=subject.id, actor_user_id=user.id)
+
+
+async def _prepared_supplement_write(
+    session,
+    identity: WriteIdentity,
+    *,
+    legacy_bridge: bool = False,
+):
+    context = conflict_engine.ConflictWriteContext(
+        identity=identity,
+        evaluation_date=date(2026, 8, 19),
+        legacy_bridge=(
+            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            if legacy_bridge
+            else conflict_engine.LegacyConflictBridge.REJECT
+        ),
+    )
+    return await conflict_engine.prepare_scoped_write(session, context=context)
+
+
+async def _add_owned_supplement(session, identity: WriteIdentity, **kwargs):
+    prepared = await _prepared_supplement_write(session, identity)
+    return await supplements_service.add_supplement(
+        session,
+        identity=identity,
+        prepared_conflict_write=prepared,
+        **kwargs,
+    )
 
 
 def test_derived_timeline_legacy_root_registry_is_exhaustive():
@@ -490,13 +518,16 @@ async def test_direct_legacy_bridge_rejects_partial_actor_roots(db_session):
         subject_id=owner.subject_id,
         include_legacy_unowned=True,
     ) is None
-    assert await supplements_service.set_active(
-        db_session,
-        supplement.id,
-        False,
-        identity=owner,
-        include_legacy_unowned=True,
-    ) is None
+    partial_prepared = await _prepared_supplement_write(db_session, owner)
+    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+        await supplements_service.set_active(
+            db_session,
+            supplement.id,
+            False,
+            identity=owner,
+            include_legacy_unowned=True,
+            prepared_conflict_write=partial_prepared,
+        )
     assert await supplements_service.delete_supplement(
         db_session,
         supplement.id,
@@ -517,11 +548,11 @@ async def test_owned_creates_and_updates_preserve_provenance(db_session):
         source=Source.MCP.value,
         identity=identity,
     )
-    supplement = await supplements_service.add_supplement(
+    supplement = await _add_owned_supplement(
         db_session,
+        identity,
         name="Creatine",
         source=Source.MCP.value,
-        identity=identity,
     )
 
     assert (annotation.subject_id, annotation.actor_user_id, annotation.source) == (
@@ -536,6 +567,10 @@ async def test_owned_creates_and_updates_preserve_provenance(db_session):
     )
 
     system_identity = WriteIdentity(identity.subject_id, None)
+    system_prepared = await _prepared_supplement_write(
+        db_session,
+        system_identity,
+    )
     await timeline_service.update_annotation(
         db_session,
         annotation.id,
@@ -556,6 +591,7 @@ async def test_owned_creates_and_updates_preserve_provenance(db_session):
         contraindications=supplement.contraindications,
         note=supplement.note,
         identity=system_identity,
+        prepared_conflict_write=system_prepared,
     )
 
     assert annotation.actor_user_id == identity.actor_user_id
@@ -573,10 +609,10 @@ async def test_crud_and_timeline_feed_reject_cross_subject_ids(db_session):
         on_date=date(2026, 8, 19),
         identity=first,
     )
-    supplement = await supplements_service.add_supplement(
+    supplement = await _add_owned_supplement(
         db_session,
+        first,
         name="First subject supplement",
-        identity=first,
     )
 
     assert await timeline_service.get_annotation(
@@ -598,15 +634,21 @@ async def test_crud_and_timeline_feed_reject_cross_subject_ids(db_session):
     assert await supplements_service.get_supplement(
         db_session, supplement.id, subject_id=second.subject_id
     ) is None
+    second_prepared = await _prepared_supplement_write(db_session, second)
     assert await supplements_service.update_supplement(
         db_session,
         supplement.id,
         name="Forged",
         active=False,
         identity=second,
+        prepared_conflict_write=second_prepared,
     ) is None
     assert await supplements_service.set_active(
-        db_session, supplement.id, False, identity=second
+        db_session,
+        supplement.id,
+        False,
+        identity=second,
+        prepared_conflict_write=second_prepared,
     ) is None
     assert await supplements_service.delete_supplement(
         db_session, supplement.id, identity=second
@@ -682,12 +724,18 @@ async def test_legacy_null_rows_need_explicit_sole_subject_bridge(db_session):
         identity=identity,
         include_legacy_unowned=True,
     )
+    legacy_prepared = await _prepared_supplement_write(
+        db_session,
+        identity,
+        legacy_bridge=True,
+    )
     await supplements_service.set_active(
         db_session,
         legacy_supplement.id,
         False,
         identity=identity,
         include_legacy_unowned=True,
+        prepared_conflict_write=legacy_prepared,
     )
     assert legacy_annotation.subject_id == identity.subject_id
     assert legacy_supplement.subject_id == identity.subject_id
@@ -777,10 +825,10 @@ async def test_web_legacy_owner_bridge_closes_with_second_subject(
     auth_client, db_session
 ):
     second = await _identity(db_session, "web-second-subject")
-    foreign = await supplements_service.add_supplement(
+    foreign = await _add_owned_supplement(
         db_session,
+        second,
         name="Foreign supplement",
-        identity=second,
     )
     await db_session.commit()
 
@@ -845,10 +893,10 @@ async def test_mcp_v1_fails_closed_before_cross_subject_id_use(
     for key in ("timeline", "supplements"):
         await modules_service.set_module_enabled(db_session, key=key, enabled=True)
     second = await _identity(db_session, "mcp-second-subject")
-    foreign = await supplements_service.add_supplement(
+    foreign = await _add_owned_supplement(
         db_session,
+        second,
         name="MCP foreign supplement",
-        identity=second,
     )
     await db_session.commit()
 

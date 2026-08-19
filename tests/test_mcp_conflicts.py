@@ -4,9 +4,16 @@ can't import, same constraint as the other MCP tool tests."""
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import conflict_registrations, genetics_service
+from vitals.models.identity import HealthSubject
+from vitals.services import (
+    conflict_activation_service,
+    conflict_registrations,
+    genetics_service,
+)
+from vitals.services.conflict_engine import LegacyConflictBridge
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
@@ -69,6 +76,36 @@ async def test_list_conflict_rules_filters_by_domain_and_category(db_session, se
     derm_rules = await mcp_router.list_conflict_rules(category="dermatology")
     assert len(derm_rules) > 0
     assert all(r["category"] == "dermatology" for r in derm_rules)
+
+
+async def test_list_conflict_rules_returns_subject_activation_not_global_flag(
+    db_session,
+    session_factory,
+    monkeypatch,
+):
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+    from vitals.services import conflict_catalog
+
+    await conflict_catalog.sync_catalog(db_session)
+    await db_session.commit()
+    rule = await db_session.scalar(
+        select(ConflictRule).where(ConflictRule.code.is_not(None)).limit(1)
+    )
+    subject_id = await db_session.scalar(select(HealthSubject.id))
+    await conflict_activation_service.set_rule_activation(
+        db_session,
+        subject_id=subject_id,
+        rule_id=rule.id,
+        active=False,
+        legacy_bridge=LegacyConflictBridge.FULLY_UNOWNED,
+    )
+    # Deliberately drift the compatibility mirror after the scoped write.
+    rule.active = True
+    await db_session.commit()
+
+    rows = await mcp_router.list_conflict_rules()
+    payload = next(row for row in rows if row["id"] == rule.id)
+    assert payload["active"] is False
 
 
 async def test_check_conflicts_generic_domain_payload(db_session, session_factory, monkeypatch):

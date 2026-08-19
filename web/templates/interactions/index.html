@@ -56,7 +56,7 @@
                         {% endif %}
                     </div>
                     <label class="v-switch shrink-0" title="{{ r.code or '' }}">
-                        <input type="checkbox" role="switch" {% if r.active %}checked{% endif %}
+                        <input type="checkbox" role="switch" {% if rule_activation[r.id] %}checked{% endif %}
                                hx-post="/interactions/{{ r.id }}/toggle"
                                hx-vals='js:{active: event.target.checked}'
                                hx-trigger="change"

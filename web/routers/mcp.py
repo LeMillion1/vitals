@@ -231,6 +231,18 @@ async def _mcp_v1_conflict_scope(session) -> conflict_engine.ConflictScope:
     )
 
 
+async def _mcp_v1_conflict_write_context(
+    session,
+) -> conflict_engine.ConflictWriteContext:
+    """Authenticate the configured owner for a scoped MCP v1 conflict write."""
+
+    return await conflict_engine.resolve_legacy_conflict_write_context(
+        session,
+        actor_username=get_web_config().auth_username,
+        evaluation_date=today_local(),
+    )
+
+
 # tool name → the optional module it belongs to. Writes register themselves through
 # ``gated``; the reads of those same domains are listed below. Used only to hide a
 # switched-off module's tools from ``tools/list`` — the surface is 75 tools and
@@ -736,6 +748,8 @@ async def list_conflict_rules(
     ``category`` (absorption, pharmacogenomics, dermatology, lab_safety, glp1,
     contraindication). Only ``active`` rules are meaningful for evaluation, but
     inactive ones are included too so a caller can see the full catalog."""
+    from vitals.services import conflict_activation_service
+
     session_factory = get_session_factory()
     async with session_factory() as session:
         scope = await _mcp_v1_conflict_scope(session)
@@ -745,9 +759,23 @@ async def list_conflict_rules(
             domain=domain,
             active_only=False,
         )
+        activation_state = await conflict_activation_service.read_activation_state(
+            session,
+            subject_id=scope.subject_id,
+            legacy_bridge=scope.legacy_bridge,
+        )
+        activation = conflict_activation_service.effective_rule_activation(
+            rows,
+            activation_state,
+        )
         if category:
             rows = [row for row in rows if row.category == category]
-        return [serialize_row(r) for r in rows]
+        payloads = []
+        for row in rows:
+            payload = serialize_row(row)
+            payload["active"] = activation[row.id]
+            payloads.append(payload)
+        return payloads
 
 
 @mcp.tool()
@@ -2278,14 +2306,19 @@ async def add_supplement(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
+        conflict_context = await _mcp_v1_conflict_write_context(session)
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
             row = await supplements_service.add_supplement(
                 session, name=name, key=key, dose=dose, timing=timing,
                 evidence=evidence, active=active,
                 contraindications=contraindications, note=note, override=override,
                 source=Source.MCP.value,
-                identity=ownership.owner_action(),
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
@@ -2316,12 +2349,17 @@ async def update_supplement(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        current = await supplements_service.get_supplement(
+        conflict_context = await _mcp_v1_conflict_write_context(session)
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
+        current = await supplements_service.get_supplement_for_update(
             session,
             supplement_id,
-            subject_id=ownership.subject_id,
+            identity=conflict_context.identity,
             include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
         )
         if current is None:
             return {"error": f"Supplement {supplement_id} not found"}
@@ -2342,8 +2380,9 @@ async def update_supplement(
         try:
             row = await supplements_service.update_supplement(
                 session, supplement_id, override=override, **merged,
-                identity=ownership.owner_action(),
+                identity=conflict_context.identity,
                 include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
@@ -2362,15 +2401,20 @@ async def set_supplement_active(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
+        conflict_context = await _mcp_v1_conflict_write_context(session)
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
             row = await supplements_service.set_active(
                 session,
                 supplement_id,
                 active,
                 override=override,
-                identity=ownership.owner_action(),
+                identity=conflict_context.identity,
                 include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)

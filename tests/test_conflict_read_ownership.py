@@ -26,7 +26,12 @@ from vitals.models.nutrition import MealLog
 from vitals.models.raw_payload import RawPayload
 from vitals.models.skincare import SkincareLog
 from vitals.models.supplements import Supplement
-from vitals.services import conflict_catalog, conflict_engine, conflict_registrations
+from vitals.services import (
+    conflict_activation_service,
+    conflict_catalog,
+    conflict_engine,
+    conflict_registrations,
+)
 from vitals.services.legacy_ownership import (
     LegacyOwnerResolutionError,
     LegacySubjectResolutionError,
@@ -327,7 +332,7 @@ async def test_rule_loader_includes_global_and_same_subject_but_not_foreign_cust
     }
 
 
-async def test_unclassified_global_rule_requires_exact_one_legacy_bridge(
+async def test_unclassified_global_rule_blocks_legacy_activation_bridge(
     db_session,
     legacy_owner_roots,
 ):
@@ -375,19 +380,18 @@ async def test_unclassified_global_rule_requires_exact_one_legacy_bridge(
     assert "legacy custom" not in strict_messages
     assert "forged portable" not in strict_messages
 
-    bridged = await conflict_engine.load_scoped_rules(
-        db_session,
-        scope=conflict_engine.ConflictScope(
-            subject_id=legacy_owner_roots.subject_id,
-            evaluation_date=EVALUATION_DATE,
-            legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
-        ),
-        active_only=False,
-    )
-    bridged_messages = {row.message for row in bridged}
-    assert "subject custom" in bridged_messages
-    assert "legacy custom" in bridged_messages
-    assert "forged portable" not in bridged_messages
+    with pytest.raises(
+        conflict_activation_service.ConflictActivationCatalogIntegrityError
+    ):
+        await conflict_engine.load_scoped_rules(
+            db_session,
+            scope=conflict_engine.ConflictScope(
+                subject_id=legacy_owner_roots.subject_id,
+                evaluation_date=EVALUATION_DATE,
+                legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+            ),
+            active_only=False,
+        )
 
 
 async def test_forged_known_catalog_rule_fails_integrity_check(

@@ -101,6 +101,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Today and digest/brief composition readers. Operational exception text can no
   longer appear in a health card or be forwarded to the external LLM while the
   full subject-aware composition cutover is still in progress.
+- Conflict-rule activation now belongs to the selected health subject while the
+  curated definitions remain global. UI, MCP, and conflict evaluation use the
+  same fail-closed activation state, with an exact-one legacy mirror during the
+  closed-registration rollout. Supplements create, partial update, and activation
+  now use a transaction-bound scoped writer proof, lock and refresh update targets,
+  exclude the replaced row from safety evaluation, and attribute human overrides
+  to the authenticated owner without exposing internal ownership identifiers.
 
 ### Fixed — AI period-report context
 

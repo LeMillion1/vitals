@@ -9,12 +9,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Form, Request, status
+from fastapi import APIRouter, Depends, Form, Path, Request, status
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.services import alerts_service, conflict_engine
+from vitals.services import (
+    alerts_service,
+    conflict_activation_service,
+    conflict_engine,
+)
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
@@ -76,6 +80,15 @@ async def interactions_dashboard(
             active_only=False,
         )
     )
+    activation_state = await conflict_activation_service.read_activation_state(
+        db,
+        subject_id=conflict_scope.subject_id,
+        legacy_bridge=conflict_scope.legacy_bridge,
+    )
+    rule_activation = conflict_activation_service.effective_rule_activation(
+        catalog_rules,
+        activation_state,
+    )
     catalog_rules.sort(key=lambda row: (row.category or "", row.code or ""))
     rules = list(catalog_rules)
 
@@ -85,6 +98,9 @@ async def interactions_dashboard(
         rules = [r for r in rules if r.severity == severity]
 
     firing_ids = await _firing_rule_ids(db, context=alert_context)
+    firing_ids &= {
+        rule_id for rule_id, is_active in rule_activation.items() if is_active
+    }
 
     by_category: dict[str, list[ConflictRule]] = {}
     for r in rules:
@@ -110,6 +126,7 @@ async def interactions_dashboard(
             "by_category": by_category,
             "ordered_categories": ordered_categories,
             "firing_ids": firing_ids,
+            "rule_activation": rule_activation,
             "domain_filter": domain or "",
             "severity_filter": severity or "",
             "all_domains": all_domains,
@@ -120,14 +137,41 @@ async def interactions_dashboard(
 
 @router.post("/{rule_id}/toggle")
 async def toggle_rule(
-    rule_id: int,
+    rule_id: int = Path(..., gt=0),
     active: bool = Form(...),
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    row = await db.get(ConflictRule, rule_id)
-    if row is None:
+    conflict_scope = await conflict_engine.resolve_legacy_conflict_scope(
+        db,
+        actor_username=username,
+        evaluation_date=today_local(),
+    )
+    try:
+        await conflict_activation_service.set_rule_activation(
+            db,
+            subject_id=conflict_scope.subject_id,
+            rule_id=rule_id,
+            active=active,
+            legacy_bridge=conflict_scope.legacy_bridge,
+        )
+    except (
+        conflict_activation_service.ConflictActivationRuleNotFoundError,
+        conflict_activation_service.ConflictActivationOwnershipError,
+    ):
         return Response(status_code=status.HTTP_404_NOT_FOUND)
-    row.active = active
+
+    if not active:
+        ownership = await resolve_legacy_ownership_context(
+            db,
+            actor_username=username,
+        )
+        await alerts_service.resolve_scoped_superseded(
+            db,
+            context=alerts_service.HealthAlertContext(ownership.owner_action()),
+            alert_key=f"conflict:{rule_id}",
+            keep_entity=None,
+            legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        )
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

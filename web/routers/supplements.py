@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Evidence
-from vitals.services import alerts_service, supplements_service
+from vitals.services import alerts_service, conflict_engine, supplements_service
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_session, require_auth
@@ -72,12 +72,17 @@ async def save_supplement(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
-        db,
-        actor_username=username,
-    )
-    identity = ownership.owner_action()
     try:
+        conflict_context = (
+            await conflict_engine.resolve_legacy_conflict_write_context(
+                db,
+                actor_username=username,
+            )
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            db,
+            context=conflict_context,
+        )
         if id is not None:
             await supplements_service.update_supplement(
                 db,
@@ -90,8 +95,9 @@ async def save_supplement(
                 contraindications=contraindications,
                 note=note,
                 override=override,
-                identity=identity,
+                identity=conflict_context.identity,
                 include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
         else:
             await supplements_service.add_supplement(
@@ -104,7 +110,8 @@ async def save_supplement(
                 contraindications=contraindications,
                 note=note,
                 override=override,
-                identity=identity,
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
             )
         await db.commit()
     except ConflictBlocked as e:
@@ -124,9 +131,13 @@ async def toggle_supplement(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
+    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        db,
+        context=conflict_context,
     )
     try:
         await supplements_service.set_active(
@@ -134,8 +145,9 @@ async def toggle_supplement(
             id,
             active,
             override=override,
-            identity=ownership.owner_action(),
+            identity=conflict_context.identity,
             include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
         )
         await db.commit()
     except ConflictBlocked as e:
