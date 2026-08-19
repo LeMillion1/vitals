@@ -12,6 +12,7 @@ from vitals.config import load_config
 from vitals.enums import Domain
 from vitals.services import alerts_service, nutrition_service
 from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -40,12 +41,35 @@ async def nutrition_dashboard(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     cfg = load_config()
     today = today_local()
     selected_date = date or today
-    day_meals = await nutrition_service.list_meals_for_date(db, selected_date)
-    summary = await nutrition_service.daily_summary(db, selected_date, cfg)
-    history = await nutrition_service.list_meals(db, start=None, end=None)
+    # This resolver proves there is exactly one subject, which is the only
+    # state where pre-backfill NULL-subject rows may be shown safely.
+    day_meals = await nutrition_service.list_meals_for_date(
+        db,
+        selected_date,
+        subject_id=ownership.subject_id,
+        include_unowned_legacy=True,
+    )
+    summary = await nutrition_service.daily_summary(
+        db,
+        selected_date,
+        cfg,
+        subject_id=ownership.subject_id,
+        include_unowned_legacy=True,
+    )
+    history = await nutrition_service.list_meals(
+        db,
+        start=None,
+        end=None,
+        subject_id=ownership.subject_id,
+        include_unowned_legacy=True,
+    )
     alerts = await alerts_service.list_active(db, domain=Domain.NUTRITION.value)
     goals = nutrition_service.get_goals(cfg)
 
@@ -88,6 +112,11 @@ async def add_meal(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    identity = ownership.owner_action()
     on_date = date_type.fromisoformat(date)
     parsed_time = time_type.fromisoformat(eaten_at) if eaten_at and eaten_at.strip() else None
     try:
@@ -102,6 +131,7 @@ async def add_meal(
                 fat_g=fat_g,
                 carbs_g=carbs_g,
                 note=note,
+                identity=identity,
             )
         else:
             await nutrition_service.log_meal(
@@ -115,9 +145,11 @@ async def add_meal(
                 carbs_g=carbs_g,
                 note=note,
                 override=override,
+                identity=identity,
             )
         await db.commit()
     except ConflictBlocked as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [v.to_dict() for v in e.violations]},
@@ -132,6 +164,14 @@ async def delete_meal(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await nutrition_service.delete_meal(db, id)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    await nutrition_service.delete_meal(
+        db,
+        id,
+        identity=ownership.owner_action(),
+    )
     await db.commit()
     return _redirect(request)

@@ -5,15 +5,17 @@ with on-track checks against configurable protein/calorie goals.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date as date_type, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import Config
 from vitals.enums import Domain, Source
 from vitals.models.nutrition import DOMAIN, MealLog
+from vitals.ownership import WriteIdentity
 from vitals.services import conflict_engine
 from vitals.utils.timeutils import now_local, today_local
 
@@ -43,6 +45,7 @@ async def log_meal(
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
     override: bool = False,
+    identity: WriteIdentity | None = None,
 ) -> MealLog:
     await conflict_engine.enforce(
         session,
@@ -54,6 +57,8 @@ async def log_meal(
     if eaten_at is None:
         eaten_at = now_local().time()
     row = MealLog(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         date=on_date,
         domain=DOMAIN,
         source=source,
@@ -82,8 +87,12 @@ async def update_meal(
     fat_g: Optional[float] = None,
     carbs_g: Optional[float] = None,
     note: Optional[str] = None,
+    identity: WriteIdentity | None = None,
 ) -> Optional[MealLog]:
-    row = await session.get(MealLog, meal_id)
+    stmt = select(MealLog).where(MealLog.id == meal_id)
+    if identity is not None:
+        stmt = stmt.where(MealLog.subject_id == identity.subject_id)
+    row = await session.scalar(stmt.with_for_update())
     if row is None:
         return None
     row.date = on_date
@@ -98,8 +107,16 @@ async def update_meal(
     return row
 
 
-async def delete_meal(session: AsyncSession, meal_id: int) -> bool:
-    row = await session.get(MealLog, meal_id)
+async def delete_meal(
+    session: AsyncSession,
+    meal_id: int,
+    *,
+    identity: WriteIdentity | None = None,
+) -> bool:
+    stmt = select(MealLog).where(MealLog.id == meal_id)
+    if identity is not None:
+        stmt = stmt.where(MealLog.subject_id == identity.subject_id)
+    row = await session.scalar(stmt.with_for_update())
     if row is None:
         return False
     await session.delete(row)
@@ -110,12 +127,26 @@ async def delete_meal(session: AsyncSession, meal_id: int) -> bool:
 # ── Queries ──────────────────────────────────────────────────────────────────
 
 async def list_meals_for_date(
-    session: AsyncSession, on_date: date_type
+    session: AsyncSession,
+    on_date: date_type,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_unowned_legacy: bool = False,
 ) -> Sequence[MealLog]:
+    """List one day's meals inside an exact subject boundary.
+
+    ``include_unowned_legacy`` is a temporary pre-backfill bridge. It may be
+    enabled only by a boundary that has independently proved the installation
+    still contains exactly one health subject.
+    """
+    stmt = select(MealLog).where(MealLog.date == on_date)
+    if subject_id is not None:
+        subject_scope = MealLog.subject_id == subject_id
+        if include_unowned_legacy:
+            subject_scope = or_(subject_scope, MealLog.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
     result = await session.execute(
-        select(MealLog)
-        .where(MealLog.date == on_date)
-        .order_by(MealLog.eaten_at.asc().nulls_last(), MealLog.id)
+        stmt.order_by(MealLog.eaten_at.asc().nulls_last(), MealLog.id)
     )
     return result.scalars().all()
 
@@ -125,8 +156,20 @@ async def list_meals(
     *,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
+    subject_id: uuid.UUID | None = None,
+    include_unowned_legacy: bool = False,
 ) -> Sequence[MealLog]:
+    """List meals, optionally in one exact subject scope.
+
+    The unowned-row bridge has the same sole-subject precondition as
+    :func:`list_meals_for_date` and must disappear after ownership backfill.
+    """
     stmt = select(MealLog)
+    if subject_id is not None:
+        subject_scope = MealLog.subject_id == subject_id
+        if include_unowned_legacy:
+            subject_scope = or_(subject_scope, MealLog.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
     if start is not None:
         stmt = stmt.where(MealLog.date >= start)
     if end is not None:
@@ -172,11 +215,21 @@ def macro_energy_shares(totals: dict[str, float]) -> dict[str, float]:
 
 # ── Conflict-engine resolver ──────────────────────────────────────────────────
 
-async def resolve_today(session: AsyncSession) -> list[dict]:
+async def resolve_today(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_unowned_legacy: bool = False,
+) -> list[dict]:
     """Conflict-engine resolver: today's macro totals as a single match item —
     lets a rule reference e.g. {"calories": {"$gt": 4000}} against the running
     daily total, not just the one meal being logged right now."""
-    meals = await list_meals_for_date(session, today_local())
+    meals = await list_meals_for_date(
+        session,
+        today_local(),
+        subject_id=subject_id,
+        include_unowned_legacy=include_unowned_legacy,
+    )
     return [_sum_macros(meals)]
 
 
@@ -211,9 +264,19 @@ def _on_track(totals: dict[str, float], goals: dict[str, Any]) -> dict[str, bool
 
 
 async def daily_summary(
-    session: AsyncSession, on_date: date_type, cfg: Config
+    session: AsyncSession,
+    on_date: date_type,
+    cfg: Config,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_unowned_legacy: bool = False,
 ) -> dict[str, Any]:
-    meals = await list_meals_for_date(session, on_date)
+    meals = await list_meals_for_date(
+        session,
+        on_date,
+        subject_id=subject_id,
+        include_unowned_legacy=include_unowned_legacy,
+    )
     totals = _sum_macros(meals)
     goals = get_goals(cfg)
     return {
@@ -230,8 +293,17 @@ async def nutrition_summary(
     start: date_type,
     end: date_type,
     cfg: Config,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_unowned_legacy: bool = False,
 ) -> dict[str, Any]:
-    meals = await list_meals(session, start=start, end=end)
+    meals = await list_meals(
+        session,
+        start=start,
+        end=end,
+        subject_id=subject_id,
+        include_unowned_legacy=include_unowned_legacy,
+    )
     totals = _sum_macros(meals)
     goals = get_goals(cfg)
 
