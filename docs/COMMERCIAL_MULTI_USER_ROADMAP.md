@@ -4,7 +4,8 @@ Status: active design and implementation plan
 
 Last reviewed: 2026-08-19
 
-Current implementation branch: `commercial/pr-02-legacy-bootstrap`
+Current implementation branch: `commercial/main` (next:
+`commercial/pr-03-subject-ownership`)
 
 Commercial base: current `origin/master`; publish it as a separate branch in
 `vlakimov/vitals` instead of rewriting the fork's historical `master`
@@ -128,8 +129,9 @@ the corresponding cutover gate passes.
 ### PR 01 — Identity and controlled-support foundation — **merged**
 
 Merged into `commercial/main` on 2026-08-19. SQLite model, constraint,
-upgrade/downgrade, and full fast-suite checks passed. The PostgreSQL integration
-gate remains pending because the local Docker check did not complete.
+upgrade/downgrade, and full fast-suite checks passed. The PostgreSQL 15 gate was
+subsequently completed with the PR-02 validation: the full migration chain,
+identity downgrade/re-upgrade, production constraints, and FK behavior passed.
 
 Scope:
 
@@ -151,7 +153,14 @@ Exit criteria:
 Rollback: downgrade drops only the new empty foundation tables. No legacy row is
 changed in this PR.
 
-### PR 02 — Legacy owner bootstrap and access context — **in review**
+### PR 02 — Legacy owner bootstrap and access context — **merged**
+
+Merged into `commercial/main` as `1ecbacf` on 2026-08-19. The final fast suite
+passed with `1739 passed, 32 skipped`; the skips are production-only integration
+cases. A throwaway PostgreSQL 15 run passed all 65 focused foundation/bootstrap
+tests, including concurrent bootstrap and last-admin revocation, after a real
+Alembic `upgrade head → downgrade 0034 → upgrade head` round trip. Ruff was not
+available in the project virtualenv and was not claimed as passed.
 
 Scope:
 

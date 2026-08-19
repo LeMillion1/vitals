@@ -68,6 +68,17 @@ bare-username cookies remain accepted only for their configured lifetime. The
 current version marker prepares the later database-session cutover; it does not
 yet make legacy cookies individually revocable.
 
+The legacy password bridge writes `.env` and PostgreSQL as one logical change,
+but no filesystem/database transaction can make them physically atomic. An
+ordinary commit error or request cancellation restores the previous environment
+hash. A hard process stop or ambiguous database commit can still leave the two
+copies different; startup then deliberately refuses to choose one. Recovery is
+an operator action: restore the intended bcrypt hash from a trusted secret backup
+to both stores (without printing it to logs), bump `users.session_version`, and
+restart. Until database sessions land, rotate `VITALS_SESSION_SECRET` as a
+separate step when already issued browser/MCP credentials must be invalidated.
+Never make bootstrap overwrite one side automatically.
+
 ## The Telegram Webhook
 
 The proactive layer adds the only endpoint that is reachable without a session:

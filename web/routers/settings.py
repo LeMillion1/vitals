@@ -693,7 +693,7 @@ async def export_backup(
     db: AsyncSession = Depends(get_session),
     _rl: None = Depends(rate_limit("data_export", limit=2, window=60)),
 ):
-    """Download a full machine-readable backup of every table (one JSON file)."""
+    """Download portable health data without identity/control-plane state."""
     snapshot = await data_portability_service.export_full(db)
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_backup_{today_local().strftime('%Y%m%d')}.json"
