@@ -10,6 +10,60 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class UserStatus(StrEnum):
+    """Lifecycle state of an application identity."""
+
+    PENDING = "pending"
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+
+
+class UserRoleName(StrEnum):
+    """Additive application roles.
+
+    Roles describe product capabilities only. In particular,
+    ``PLATFORM_SUPERADMIN`` never grants access to a health subject by itself;
+    support access additionally requires a live, explicitly scoped grant.
+    """
+
+    MEMBER = "member"
+    DOCTOR = "doctor"
+    TRAINER = "trainer"
+    PLATFORM_SUPERADMIN = "platform_superadmin"
+
+
+class SupportAccessMode(StrEnum):
+    """Maximum purpose approved for one time-limited support grant."""
+
+    READ = "read"
+    REPAIR = "repair"
+    EXPORT = "export"
+
+
+class SupportAccessStatus(StrEnum):
+    """Persisted lifecycle marker for a support-access grant."""
+
+    ACTIVE = "active"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
+class SupportScopeResourceType(StrEnum):
+    """Kind of resource named by an explicit support-access scope."""
+
+    DOMAIN = "domain"
+    ARTIFACT = "artifact"
+    OPERATION = "operation"
+
+
+class AuditOutcome(StrEnum):
+    """Result recorded by an immutable audit event."""
+
+    SUCCESS = "success"
+    DENIED = "denied"
+    FAILED = "failed"
+
+
 class Severity(StrEnum):
     """system_alerts ladder (see services/alerts_service.py).
 

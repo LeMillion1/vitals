@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — commercial multi-user foundation
+
+- Added the first isolated commercial-fork schema slice: stable users, additive
+  member/doctor/trainer/platform-superadmin roles, self-owned health subjects,
+  explicit time-limited support grants and scopes, and append-only audit events.
+  The superadmin role alone grants no health-data access; a support investigation
+  must be bound to one subject, reason, expiry, mode, approver, and concrete scope.
+- Added reversible migration `0035`, synthetic constraint/security tests, and a
+  durable PR-by-PR implementation and validation roadmap in
+  `docs/COMMERCIAL_MULTI_USER_ROADMAP.md`. Existing environment-backed login and
+  the single-user runtime remain unchanged; registration stays closed until the
+  subject-isolation and authorization gates are complete.
+
 ### Fixed — AI period-report context
 
 - **Stored Garmin and treatment data now reaches the report** — context schema v2 includes bounded Garmin activities and expanded daily metrics, every same-day Hevy session, GLP-1 phases/injections/effects, and HRT plans/actual doses/effects. Garmin and Hevy remain separate sources so a synchronized session is not counted twice.

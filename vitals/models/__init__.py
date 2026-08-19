@@ -8,6 +8,14 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.app_settings import AppSetting
+from vitals.models.identity import (
+    AuditEvent,
+    HealthSubject,
+    SupportAccessGrant,
+    SupportAccessScope,
+    User,
+    UserRole,
+)
 
 # Phase 1 — Weight & Body Composition.
 from vitals.models.weight import (
@@ -85,6 +93,12 @@ __all__ = [
     "SystemAlert",
     "ConflictRule",
     "AppSetting",
+    "User",
+    "UserRole",
+    "HealthSubject",
+    "SupportAccessGrant",
+    "SupportAccessScope",
+    "AuditEvent",
     "WeightLog",
     "BodyMeasurement",
     "ProgressPhoto",
