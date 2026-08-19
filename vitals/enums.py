@@ -64,6 +64,64 @@ class AuditOutcome(StrEnum):
     FAILED = "failed"
 
 
+class IntegrationProvider(StrEnum):
+    """External systems represented by a subject-bound connection root."""
+
+    GARMIN = "garmin"
+    HEVY = "hevy"
+    OPENROUTER = "openrouter"
+    TELEGRAM = "telegram"
+
+
+class IntegrationConnectionType(StrEnum):
+    """Stable purpose of an integration connection.
+
+    Sync/run state is deliberately not represented here. One account can later
+    have several independently scheduled operations without changing identity.
+    """
+
+    ACCOUNT = "account"
+    IMPORT = "import"
+    AI_GATEWAY = "ai_gateway"
+    RECIPIENT = "recipient"
+
+
+class IntegrationConnectionStatus(StrEnum):
+    """Lifecycle of an integration connection, not transient sync health."""
+
+    LEGACY = "legacy"
+    PENDING = "pending"
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    RETIRED = "retired"
+
+
+class FileStorageBackend(StrEnum):
+    """Physical storage class for a private file asset."""
+
+    LEGACY_LOCAL = "legacy_local"
+    PRIVATE_LOCAL = "private_local"
+    OBJECT_STORE = "object_store"
+
+
+class FileAssetStatus(StrEnum):
+    """Lifecycle of owned file metadata and its referenced bytes."""
+
+    LEGACY_PLACEHOLDER = "legacy_placeholder"
+    PENDING = "pending"
+    ACTIVE = "active"
+    DELETED = "deleted"
+    PURGED = "purged"
+
+
+class FileAssetPurpose(StrEnum):
+    """Persisted medical-file purposes that exist in Vitals today."""
+
+    PROGRESS_PHOTO = "progress_photo"
+    LAB_DOCUMENT = "lab_document"
+    BODY_SCAN_DOCUMENT = "body_scan_document"
+
+
 class Severity(StrEnum):
     """system_alerts ladder (see services/alerts_service.py).
 

@@ -111,6 +111,12 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         actor=TargetColumn.OPTIONAL,
         connection=TargetColumn.OPTIONAL,
     ),
+    "file_assets": OwnershipSpec(
+        OwnershipClass.SUBJECT_DATA,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.OPTIONAL,
+        user_portable=False,
+    ),
     "garmin_activities": OwnershipSpec(
         OwnershipClass.SUBJECT_DATA,
         subject=TargetColumn.REQUIRED,
@@ -173,6 +179,17 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
     "hrt_cycles": _SUBJECT,
     "hrt_doses": _SUBJECT,
     "hrt_side_effects": _SUBJECT,
+    "integration_connection_settings": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL_CHILD,
+        subject=TargetColumn.INHERITED,
+        connection=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
+    "integration_connections": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "lab_markers": _SUBJECT,
     "lab_results": _SUBJECT,
     "meal_logs": _SUBJECT,
@@ -183,6 +200,10 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         actor=TargetColumn.OPTIONAL,
         connection=TargetColumn.OPTIONAL,
+    ),
+    "platform_settings": OwnershipSpec(
+        OwnershipClass.ACCOUNT_CONTROL,
+        user_portable=False,
     ),
     "progress_photos": OwnershipSpec(
         OwnershipClass.SUBJECT_DATA,
@@ -223,6 +244,11 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.INHERITED,
         user_portable=False,
     ),
+    "subject_settings": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "system_alerts": OwnershipSpec(
         OwnershipClass.SUBJECT_OPTIONAL,
         subject=TargetColumn.OPTIONAL,
@@ -230,6 +256,7 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         connection=TargetColumn.OPTIONAL,
     ),
     "user_roles": _ACCOUNT,
+    "user_settings": _ACCOUNT,
     "users": _ACCOUNT,
     "weekly_digests": OwnershipSpec(
         OwnershipClass.SUBJECT_DATA,

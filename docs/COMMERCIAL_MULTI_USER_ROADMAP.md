@@ -188,7 +188,7 @@ mode. Never delete the copied password hash until the auth cutover is verified.
 ### PR 03 — Subject ownership expansion and backfill
 
 The canonical table-by-table contract is
-`docs/COMMERCIAL_OWNERSHIP_INVENTORY.md`. It classifies all 49 current tables,
+`docs/COMMERCIAL_OWNERSHIP_INVENTORY.md`. It classifies all 55 current tables,
 the missing ownership roots, natural keys, cross-surface dependencies, backfill
 order, and rollback boundary.
 

@@ -13,9 +13,9 @@ migration contract. The machine-readable companion in `vitals/ownership.py`
 owns the exact registry membership and target-column categories. Both forms
 must change together.
 
-The inventory contains 49 existing tables. `IntegrationConnection` and
-`FileAsset` are required target roots but do not exist yet and therefore are not
-part of that count.
+The inventory contains all 55 tables now registered in `Base.metadata`.
+Revision `0036` adds the six Stage-0 roots/scoped-setting tables without moving
+data, reading credentials, or touching file bytes.
 
 ## Legend and common rules
 
@@ -57,9 +57,12 @@ Expansion and backfill follow these shared rules:
 9. Health history, provenance, and frozen report content are never discarded by
    the ownership migration.
 
-## Required new roots
+## Stage-0 roots
 
-PR-03 needs minimal forms of these roots before it can add honest foreign keys:
+PR-03 needs minimal forms of these roots before it can add honest foreign keys.
+Revision `0036` creates their schema; runtime bootstrap/backfill remains a
+separate, idempotent application operation because Alembic can run before the
+legacy owner and subject exist.
 
 ### `IntegrationConnection`
 
@@ -135,6 +138,12 @@ remain PR-06 work.
 | 47 | `users` / `User` | Account control plane | No S. Keep outside ordinary user backup/import. |
 | 48 | `weekly_digests` / `WeeklyDigest` | S, optional A/system, optional AI C | Add `(S, kind, date)`. `content` and `context_json` are PHI. Retain model/provider provenance without putting prompts or content in audit metadata. |
 | 49 | `weight_logs` / `WeightLog` | S, A, optional C | Current partial unique active date becomes `(S, date) WHERE superseded = false`. Add a subject-safe raw link; direct C preserves provider provenance if the raw link is later absent. |
+| 50 | `integration_connections` / `IntegrationConnection` | S-bound connection root | Provider/type plus an opaque account discriminator is unique within S. `credential_ref` is a resolver handle only; secrets, tokens, PII, cursors, and transient sync state are forbidden. |
+| 51 | `file_assets` / `FileAsset` | S, optional uploader A | Opaque lookup key is separate from the private backend/storage reference. Legacy rows are placeholders registered from DB references without reading or moving bytes. |
+| 52 | `platform_settings` / `PlatformSetting` | Platform control plane | Non-secret installation settings only. No current legacy key is copied here automatically. |
+| 53 | `user_settings` / `UserSetting` | Account-scoped preference | Composite key `(user_id, key)`. MFA and credentials are forbidden. |
+| 54 | `subject_settings` / `SubjectSetting` | S-scoped preference | Composite key `(S, key)`. Excluded from legacy generic portability until selected-subject backup v2 exists. |
+| 55 | `integration_connection_settings` / `IntegrationConnectionSetting` | C-scoped option, S inherited from C | Composite key `(C, key)`. External-action settings are never restored blindly. |
 
 ## Critical cross-surface dependencies
 
@@ -255,7 +264,7 @@ and access-controlled product. It must not weaken the ordinary user contract.
 
 ### Stage 0 — Registry and roots
 
-- add a static ownership registry covering all 49 existing tables;
+- keep the static ownership registry exhaustive across all 55 current tables;
 - add minimal IntegrationConnection and FileAsset roots;
 - add scoped setting/preference tables;
 - keep provider clients, credentials, and files untouched;

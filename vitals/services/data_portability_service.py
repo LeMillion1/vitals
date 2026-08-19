@@ -55,6 +55,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+import vitals.models  # noqa: F401 -- register the complete generic backup graph
 from vitals.models.base import Base
 from vitals.models.body_scan import BodyScan
 from vitals.models.garmin import GarminActivity, GarminDaily

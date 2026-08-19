@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _bootstrap_legacy_identity(session_factory, *, timezone: str) -> None:
-    """Materialize the environment-backed owner before any background work.
+    """Materialize the environment-backed owner and safe resource roots.
 
     The compatibility login remains environment-backed in this rollout phase,
     but every deployment must have one durable owner/subject boundary before a
@@ -47,16 +47,21 @@ async def _bootstrap_legacy_identity(session_factory, *, timezone: str) -> None:
     """
 
     from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
     from web.config import get_web_config
 
     web_config = get_web_config()
     async with session_factory() as session:
         try:
-            await bootstrap_legacy_owner(
+            identity = await bootstrap_legacy_owner(
                 session,
                 username=web_config.auth_username,
                 password_hash=web_config.auth_password_hash,
                 timezone=timezone,
+            )
+            await bootstrap_legacy_resource_roots(
+                session,
+                subject_id=identity.subject_id,
             )
             await session.commit()
         except Exception:

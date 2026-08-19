@@ -16,7 +16,7 @@ from vitals.ownership import (
 
 def test_every_registered_table_has_exactly_one_ownership_contract():
     assert set(OWNERSHIP_REGISTRY) == set(Base.metadata.tables)
-    assert len(OWNERSHIP_REGISTRY) == 49
+    assert len(OWNERSHIP_REGISTRY) == 55
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -53,11 +53,17 @@ def test_subject_data_never_has_an_unscoped_target_contract():
 def test_control_plane_and_live_links_are_not_user_portable():
     expected = {
         "audit_events",
+        "file_assets",
         "health_subjects",
+        "integration_connection_settings",
+        "integration_connections",
+        "platform_settings",
         "shared_reports",
+        "subject_settings",
         "support_access_grants",
         "support_access_scopes",
         "user_roles",
+        "user_settings",
         "users",
     }
     assert {

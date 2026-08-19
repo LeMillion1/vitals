@@ -16,6 +16,13 @@ from vitals.models.identity import (
     User,
     UserRole,
 )
+from vitals.models.tenancy import FileAsset, IntegrationConnection
+from vitals.models.scoped_settings import (
+    IntegrationConnectionSetting,
+    PlatformSetting,
+    SubjectSetting,
+    UserSetting,
+)
 
 # Phase 1 — Weight & Body Composition.
 from vitals.models.weight import (
@@ -99,6 +106,12 @@ __all__ = [
     "SupportAccessGrant",
     "SupportAccessScope",
     "AuditEvent",
+    "IntegrationConnection",
+    "FileAsset",
+    "PlatformSetting",
+    "UserSetting",
+    "SubjectSetting",
+    "IntegrationConnectionSetting",
     "WeightLog",
     "BodyMeasurement",
     "ProgressPhoto",
