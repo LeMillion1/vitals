@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import date as date_type, timedelta
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, DoseUnit, HrtInjectionSite, Source
@@ -30,6 +30,7 @@ from vitals.models.hrt import (
     DOMAIN,
     HrtCompound,
     HrtCycle,
+    HrtCycleItem,
     HrtDose,
     HrtSideEffect,
 )
@@ -398,5 +399,233 @@ async def resolve_active(session: AsyncSession) -> list[dict]:
                 _add(item.compound_key, compound[0], compound[1], compound[2])
             else:
                 _add(item.compound_key, None, None, None)
+
+    return list(seen.values())
+
+
+def _scoped_compound_join(
+    *,
+    scope: conflict_engine.ConflictScope,
+    curated_keys: tuple[str, ...],
+):
+    same_subject = HrtCompound.subject_id == scope.subject_id
+    curated_global = and_(
+        HrtCompound.subject_id.is_(None),
+        HrtCompound.actor_user_id.is_(None),
+        HrtCompound.key.in_(curated_keys),
+    )
+    if not scope.include_legacy_unowned:
+        return or_(same_subject, curated_global), curated_global
+    return (
+        or_(
+            same_subject,
+            curated_global,
+            and_(
+                HrtCompound.subject_id.is_(None),
+                HrtCompound.actor_user_id.is_(None),
+            ),
+        ),
+        curated_global,
+    )
+
+
+async def resolve_active_scoped(
+    session: AsyncSession,
+    *,
+    scope: conflict_engine.ConflictScope,
+) -> list[dict]:
+    """Resolve one subject's current protocol with catalog-safe joins."""
+
+    from vitals.services.hrt_catalog import load_compound_catalog
+
+    on_date = scope.evaluation_date
+    curated_catalog = dict(load_compound_catalog())
+    permitted_compound, curated_global = _scoped_compound_join(
+        scope=scope,
+        curated_keys=tuple(curated_catalog),
+    )
+    seen: dict[str, dict] = {}
+
+    def _add(key, compound_class, route, aromatizes):
+        if key and key not in seen:
+            seen[key] = {
+                "compound_key": key,
+                "compound_class": compound_class,
+                "route": route,
+                "aromatizes": aromatizes,
+                "active": True,
+            }
+
+    def _add_linked_compound(
+        *,
+        snapshot_key: str,
+        linked_id: int | None,
+        row_id: int | None,
+        row_key: str | None,
+        row_subject_id,
+        compound_class,
+        route,
+        aromatizes,
+    ) -> None:
+        if linked_id is not None and row_id is None:
+            # The LEFT JOIN contains the ownership predicate. A miss therefore
+            # means missing, foreign, partial, or unclassified portable state;
+            # no foreign compound columns have been materialized.
+            raise conflict_engine.ConflictScopeError(
+                "HRT fact references an unavailable scoped compound"
+            )
+        if row_id is None:
+            _add(snapshot_key, None, None, None)
+            return
+        definition = (
+            curated_catalog.get(row_key or "")
+            if row_subject_id is None
+            else None
+        )
+        if definition is not None:
+            # Global safety metadata comes from the immutable checked-in
+            # catalog, never from portable DB fields claiming system provenance.
+            catalog_aromatizes = definition.get("aromatizes")
+            _add(
+                snapshot_key,
+                definition.get("compound_class"),
+                definition.get("route"),
+                (
+                    str(catalog_aromatizes).lower()
+                    if catalog_aromatizes is not None
+                    else None
+                ),
+            )
+            return
+        _add(snapshot_key, compound_class, route, aromatizes)
+
+    dose_scope = HrtDose.subject_id == scope.subject_id
+    if scope.include_legacy_unowned:
+        dose_scope = or_(
+            dose_scope,
+            and_(
+                HrtDose.subject_id.is_(None),
+                HrtDose.actor_user_id.is_(None),
+            ),
+        )
+    cutoff = on_date - timedelta(days=RECENT_WINDOW_DAYS)
+    dose_rows = await session.execute(
+        select(
+            HrtDose.compound_key,
+            HrtDose.compound_id,
+            HrtCompound.id,
+            HrtCompound.key,
+            HrtCompound.subject_id,
+            case(
+                (curated_global, None),
+                else_=HrtCompound.compound_class,
+            ),
+            case((curated_global, None), else_=HrtCompound.route),
+            case((curated_global, None), else_=HrtCompound.aromatizes),
+        )
+        .outerjoin(
+            HrtCompound,
+            and_(
+                HrtDose.compound_id == HrtCompound.id,
+                permitted_compound,
+            ),
+        )
+        .where(HrtDose.date >= cutoff, HrtDose.date <= on_date, dose_scope)
+    )
+    for row in dose_rows:
+        _add_linked_compound(
+            snapshot_key=row[0],
+            linked_id=row[1],
+            row_id=row[2],
+            row_key=row[3],
+            row_subject_id=row[4],
+            compound_class=row[5],
+            route=row[6],
+            aromatizes=row[7],
+        )
+
+    cycle_scope = HrtCycle.subject_id == scope.subject_id
+    if scope.include_legacy_unowned:
+        cycle_scope = or_(
+            cycle_scope,
+            and_(
+                HrtCycle.subject_id.is_(None),
+                HrtCycle.actor_user_id.is_(None),
+            ),
+        )
+    active_cycle_id = await session.scalar(
+        select(HrtCycle.id)
+        .where(
+            HrtCycle.domain == DOMAIN,
+            HrtCycle.start_date <= on_date,
+            or_(HrtCycle.end_date.is_(None), HrtCycle.end_date >= on_date),
+            cycle_scope,
+        )
+        .order_by(HrtCycle.start_date.desc(), HrtCycle.id.desc())
+        .limit(1)
+    )
+    if active_cycle_id is not None:
+        item_scope = HrtCycleItem.subject_id == scope.subject_id
+        if scope.include_legacy_unowned:
+            item_scope = or_(item_scope, HrtCycleItem.subject_id.is_(None))
+            invalid_item_scope = and_(
+                HrtCycleItem.subject_id.is_not(None),
+                HrtCycleItem.subject_id != scope.subject_id,
+            )
+        else:
+            invalid_item_scope = or_(
+                HrtCycleItem.subject_id.is_(None),
+                HrtCycleItem.subject_id != scope.subject_id,
+            )
+        invalid_item = await session.scalar(
+            select(1)
+            .select_from(HrtCycleItem)
+            .where(
+                HrtCycleItem.cycle_id == active_cycle_id,
+                invalid_item_scope,
+            )
+            .limit(1)
+        )
+        if invalid_item is not None:
+            raise conflict_engine.ConflictScopeError(
+                "HRT cycle contains an item outside the subject scope"
+            )
+        item_rows = await session.execute(
+            select(
+                HrtCycleItem.compound_key,
+                HrtCycleItem.compound_id,
+                HrtCompound.id,
+                HrtCompound.key,
+                HrtCompound.subject_id,
+                case(
+                    (curated_global, None),
+                    else_=HrtCompound.compound_class,
+                ),
+                case((curated_global, None), else_=HrtCompound.route),
+                case((curated_global, None), else_=HrtCompound.aromatizes),
+            )
+            .outerjoin(
+                HrtCompound,
+                and_(
+                    HrtCycleItem.compound_id == HrtCompound.id,
+                    permitted_compound,
+                ),
+            )
+            .where(
+                HrtCycleItem.cycle_id == active_cycle_id,
+                item_scope,
+            )
+        )
+        for row in item_rows:
+            _add_linked_compound(
+                snapshot_key=row[0],
+                linked_id=row[1],
+                row_id=row[2],
+                row_key=row[3],
+                row_subject_id=row[4],
+                compound_class=row[5],
+                route=row[6],
+                aromatizes=row[7],
+            )
 
     return list(seen.values())

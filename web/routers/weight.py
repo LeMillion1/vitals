@@ -114,7 +114,12 @@ async def _section_context(
         subject_id=ownership.subject_id,
         include_legacy_unowned=True,
     )
-    alerts = await alerts_service.list_active(db, domain=Domain.WEIGHT.value)
+    alerts = await alerts_service.list_active_scoped(
+        db,
+        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        domain=Domain.WEIGHT,
+        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+    )
     series = await weight_service.chart_series(
         db, include_bia=body_comp_enabled, include_timeline=timeline_enabled
     )

@@ -20,6 +20,7 @@ from vitals.services import (
     hrt_template_service,
 )
 from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -82,6 +83,10 @@ async def hrt_dashboard(
     username: str = Depends(require_auth),
 ):
     """HRT dashboard: active cycle + release curve, compounds, dose log, side effects."""
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     today = today_local()
     await hrt_reminders.refresh_all(db)
     await db.commit()
@@ -97,7 +102,12 @@ async def hrt_dashboard(
     }
     doses = await hrt_service.list_doses(db, limit=200)
     side_effects = await hrt_service.list_side_effects(db)
-    alerts = await alerts_service.list_active(db, domain=Domain.HRT.value)
+    alerts = await alerts_service.list_active_scoped(
+        db,
+        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        domain=Domain.HRT,
+        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+    )
     last = await hrt_service.last_dose(db)
 
     active_cycle = await hrt_cycle_service.active_cycle(db)

@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Source
 from vitals.models.genetics import DOMAIN, GeneticVariant
+from vitals.models.raw_payload import RawPayload
+from vitals.services import conflict_engine
 
 # How many parsed VCF rows one import keeps in the data lake.
 # ponytail: a consumer genome is ~600k rsID rows; storing all of them would put a
@@ -151,4 +153,69 @@ async def resolve_variants(session: AsyncSession) -> list[dict]:
         {"marker": v.marker, "gene": v.gene, "genotype": v.genotype}
         for v in result.scalars().all()
         if v.marker
+    ]
+
+
+async def resolve_variants_scoped(
+    session: AsyncSession,
+    *,
+    scope: conflict_engine.ConflictScope,
+) -> list[dict]:
+    """Conflict resolver restricted to one subject's genetic facts."""
+
+    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+        scope
+    )
+    fact_scope = GeneticVariant.subject_id == scope.subject_id
+    if scope.include_legacy_unowned:
+        fact_scope = or_(
+            fact_scope,
+            and_(
+                GeneticVariant.subject_id.is_(None),
+                GeneticVariant.actor_user_id.is_(None),
+            ),
+        )
+    allowed_linked_raw = exact_raw
+    if scope.include_legacy_unowned:
+        # Raw-first backfill may already have attached the exact subject root
+        # while its normalized genetics row is still fully legacy-owned.
+        allowed_linked_raw = or_(allowed_linked_raw, fully_unowned_raw)
+    invalid_raw_id = await session.scalar(
+        select(1)
+        .select_from(GeneticVariant)
+        .outerjoin(
+            RawPayload,
+            GeneticVariant.raw_payload_id == RawPayload.id,
+        )
+        .where(
+            fact_scope,
+            GeneticVariant.raw_payload_id.is_not(None),
+            allowed_linked_raw.is_not(True),
+        )
+        .limit(1)
+    )
+    if invalid_raw_id is not None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "genetic variant links to foreign or partial raw provenance"
+        )
+    variants = list(
+        await session.scalars(
+            select(GeneticVariant)
+            .outerjoin(
+                RawPayload,
+                GeneticVariant.raw_payload_id == RawPayload.id,
+            )
+            .where(
+                fact_scope,
+                or_(
+                    GeneticVariant.raw_payload_id.is_(None),
+                    allowed_linked_raw,
+                ),
+            )
+        )
+    )
+    return [
+        {"marker": row.marker, "gene": row.gene, "genotype": row.genotype}
+        for row in variants
+        if row.marker
     ]

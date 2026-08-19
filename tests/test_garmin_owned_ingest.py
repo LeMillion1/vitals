@@ -16,6 +16,7 @@ from vitals.enums import (
 from vitals.models.garmin import GarminActivity, GarminDaily, GarminIntraday
 from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
+from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
@@ -510,6 +511,97 @@ async def test_fresh_owned_sync_rejects_inactive_connection_before_network(
         )
 
     assert client.calls == 0
+
+
+async def test_owned_sync_attributes_auth_alert_and_auto_resolves_actorlessly(
+    db_session,
+):
+    from vitals.integrations.garmin_client import GarminMFARequired
+
+    owner, subject, connection = await _scope(db_session, "owner")
+    identity = _identity(owner, subject)
+
+    class _AuthFailureClient:
+        token_warnings = []
+
+        async def fetch_daily(self, on_date):
+            raise GarminMFARequired("synthetic MFA")
+
+        async def fetch_activities(self, start, end):
+            raise AssertionError("activities must not be fetched after auth failure")
+
+    summary = await garmin_service.sync_owned(
+        db_session,
+        _AuthFailureClient(),
+        identity=identity,
+        integration_connection_id=connection.id,
+        days=1,
+        on_date=DAY,
+    )
+    assert summary["error"] == "mfa"
+    row = await db_session.scalar(
+        select(SystemAlert).where(
+            SystemAlert.alert_key == garmin_service.AUTH_ALERT_KEY
+        )
+    )
+    assert row is not None
+    assert (row.subject_id, row.integration_connection_id) == (
+        subject.id,
+        connection.id,
+    )
+
+    class _HealthyClient:
+        token_warnings = []
+
+        async def fetch_daily(self, on_date):
+            return {"summary": {"totalSteps": 42}}
+
+        async def fetch_activities(self, start, end):
+            return []
+
+    await garmin_service.sync_owned(
+        db_session,
+        _HealthyClient(),
+        identity=identity,
+        integration_connection_id=connection.id,
+        days=1,
+        on_date=DAY,
+    )
+    assert row.resolved_at is not None
+    assert row.resolved_by_user_id is None
+
+
+async def test_owned_sync_attributes_token_cache_alert(db_session):
+    owner, subject, connection = await _scope(db_session, "owner")
+
+    class _TokenWarningClient:
+        token_warnings = ["synthetic token-store warning"]
+
+        async def fetch_daily(self, on_date):
+            return {"summary": {"totalSteps": 42}}
+
+        async def fetch_activities(self, start, end):
+            return []
+
+    await garmin_service.sync_owned(
+        db_session,
+        _TokenWarningClient(),
+        identity=_identity(owner, subject),
+        integration_connection_id=connection.id,
+        days=1,
+        on_date=DAY,
+    )
+
+    row = await db_session.scalar(
+        select(SystemAlert).where(
+            SystemAlert.alert_key == garmin_service.TOKEN_ALERT_KEY
+        )
+    )
+    assert row is not None
+    assert (row.subject_id, row.integration_connection_id) == (
+        subject.id,
+        connection.id,
+    )
 
 
 async def test_owned_pending_sweep_is_scoped_and_rolls_back_bad_row(db_session):

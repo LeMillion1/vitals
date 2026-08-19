@@ -1337,7 +1337,9 @@ async def test_mobile_navigation_rendering_auth(auth_client):
     assert "mobileMenuOpen" not in response.text
 
 
-async def test_alerts_with_same_text_are_distinct_and_resolve_all(auth_client, db_session):
+async def test_alerts_with_same_text_are_distinct_and_resolve_all(
+    auth_client, db_session, legacy_owner_roots
+):
     """Regression: alerts are identified by (alert_key, entity_ref), NOT by
     message text. Two alerts for different entities that happen to share wording
     are both kept, and resolving one must not silently resolve the other. The
@@ -1375,7 +1377,7 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(auth_client, d
         domain="weight",
         severity="info",
         message="Вес колеблется.",
-        alert_key="weight.noise",
+        alert_key="weight.noisy_period_active",
         entity_ref=""
     )
     db_session.add_all([alert1, alert2, alert3, alert4])
@@ -1393,6 +1395,8 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(auth_client, d
     await db_session.refresh(alert2)
     await db_session.refresh(alert3)
     assert alert1.resolved_at is not None
+    assert alert1.subject_id == legacy_owner_roots.subject_id
+    assert alert1.resolved_by_user_id == legacy_owner_roots.user_id
     assert alert2.resolved_at is None, "text-twin in the same domain must stay active"
     assert alert3.resolved_at is None
 
@@ -1403,6 +1407,8 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(auth_client, d
     await db_session.refresh(alert3)
     assert alert2.resolved_at is not None
     assert alert3.resolved_at is not None
+    assert alert2.resolved_by_user_id == legacy_owner_roots.user_id
+    assert alert3.resolved_by_user_id == legacy_owner_roots.user_id
     await db_session.refresh(alert4)
     assert alert4.resolved_at is None
 
@@ -1411,6 +1417,59 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(auth_client, d
     assert response.status_code == 303
     await db_session.refresh(alert4)
     assert alert4.resolved_at is not None
+    assert alert4.resolved_by_user_id == legacy_owner_roots.user_id
+
+
+async def test_generic_alert_routes_include_provider_but_exclude_platform(
+    auth_client, db_session, legacy_owner_roots
+):
+    from sqlalchemy import select
+
+    from vitals.enums import IntegrationConnectionType, IntegrationProvider
+    from vitals.models.system_alert import SystemAlert
+    from vitals.models.tenancy import IntegrationConnection
+
+    provider = SystemAlert(
+        domain="garmin",
+        severity="warning",
+        message="Garmin authentication failed",
+        alert_key="garmin.auth",
+        entity_ref="account",
+    )
+    platform = SystemAlert(
+        domain="system",
+        severity="warning",
+        message="Maintenance job failed",
+        alert_key="scheduler.job_failed:share_purge",
+        entity_ref="share-purge",
+    )
+    db_session.add_all([provider, platform])
+    await db_session.commit()
+
+    response = await auth_client.post(f"/alerts/{provider.id}/resolve")
+    assert response.status_code == 303
+    await db_session.refresh(provider)
+    connection_id = await db_session.scalar(
+        select(IntegrationConnection.id).where(
+            IntegrationConnection.subject_id == legacy_owner_roots.subject_id,
+            IntegrationConnection.provider == IntegrationProvider.GARMIN.value,
+            IntegrationConnection.connection_type
+            == IntegrationConnectionType.ACCOUNT.value,
+        )
+    )
+    assert provider.subject_id == legacy_owner_roots.subject_id
+    assert provider.integration_connection_id == connection_id
+    assert provider.resolved_by_user_id == legacy_owner_roots.user_id
+
+    response = await auth_client.post(f"/alerts/{platform.id}/resolve")
+    assert response.status_code == 303
+    await db_session.refresh(platform)
+    assert platform.resolved_at is None
+
+    response = await auth_client.post("/alerts/resolve-all")
+    assert response.status_code == 303
+    await db_session.refresh(platform)
+    assert platform.resolved_at is None
 
 
 async def test_progress_photo_upload_and_delete(auth_client, db_session):

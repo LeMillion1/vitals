@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.services.genetics_vcf import INTERPRETATIONS, interpret, parse_vcf_line
 from vitals.enums import Domain, Source
 from vitals.services import alerts_service, genetics_service
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_session, require_auth
 from web.templating import templates
 from web.uploads import VCF_EXTS, VCF_MAX_BYTES, iter_lines_capped, validate_extension
@@ -30,8 +31,17 @@ async def genetics_dashboard(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     variants = await genetics_service.list_variants(db)
-    alerts = await alerts_service.list_active(db, domain=Domain.GENETICS.value)
+    alerts = await alerts_service.list_active_scoped(
+        db,
+        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        domain=Domain.GENETICS,
+        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+    )
     return templates.TemplateResponse(
         request,
         "genetics/index.html",

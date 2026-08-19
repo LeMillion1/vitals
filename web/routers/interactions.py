@@ -11,11 +11,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, Response
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.conflict_rule import ConflictRule
-from vitals.models.system_alert import SystemAlert
+from vitals.services import alerts_service, conflict_engine
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
 
@@ -27,17 +28,23 @@ _CATEGORY_ORDER = (
 )
 
 
-async def _firing_rule_ids(db: AsyncSession) -> set[int]:
+async def _firing_rule_ids(
+    db: AsyncSession,
+    *,
+    context: alerts_service.HealthAlertContext,
+) -> set[int]:
     """Rule ids with an active (unresolved) alert right now — the conflict engine
     stamps ``alert_key = f"conflict:{rule_id}"`` (see conflict_engine.enforce)."""
-    result = await db.execute(
-        select(SystemAlert.alert_key).where(
-            SystemAlert.resolved_at.is_(None),
-            SystemAlert.alert_key.like("conflict:%"),
-        )
+    active = await alerts_service.list_active_scoped(
+        db,
+        context=context,
+        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
     ids: set[int] = set()
-    for (alert_key,) in result.all():
+    for row in active:
+        alert_key = row.alert_key
+        if not alert_key.startswith("conflict:"):
+            continue
         _, _, raw_id = alert_key.partition(":")
         if raw_id.isdigit():
             ids.add(int(raw_id))
@@ -52,15 +59,32 @@ async def interactions_dashboard(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    stmt = select(ConflictRule).order_by(ConflictRule.category, ConflictRule.code)
-    rules = list((await db.execute(stmt)).scalars().all())
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    alert_context = alerts_service.HealthAlertContext(ownership.owner_action())
+    conflict_scope = await conflict_engine.resolve_legacy_conflict_scope(
+        db,
+        actor_username=username,
+        evaluation_date=today_local(),
+    )
+    catalog_rules = list(
+        await conflict_engine.load_scoped_rules(
+            db,
+            scope=conflict_scope,
+            active_only=False,
+        )
+    )
+    catalog_rules.sort(key=lambda row: (row.category or "", row.code or ""))
+    rules = list(catalog_rules)
 
     if domain:
         rules = [r for r in rules if r.domain_a == domain or r.domain_b == domain]
     if severity:
         rules = [r for r in rules if r.severity == severity]
 
-    firing_ids = await _firing_rule_ids(db)
+    firing_ids = await _firing_rule_ids(db, context=alert_context)
 
     by_category: dict[str, list[ConflictRule]] = {}
     for r in rules:
@@ -70,8 +94,13 @@ async def interactions_dashboard(
 
     # Filter dropdown always lists every domain in the *unfiltered* catalog, so
     # switching away from the active filter is always possible.
-    all_rows = (await db.execute(select(ConflictRule.domain_a, ConflictRule.domain_b))).all()
-    all_domains = sorted({d for pair in all_rows for d in pair})
+    all_domains = sorted(
+        {
+            rule_domain
+            for row in catalog_rules
+            for rule_domain in (row.domain_a, row.domain_b)
+        }
+    )
 
     return templates.TemplateResponse(
         request,

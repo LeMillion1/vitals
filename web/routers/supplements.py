@@ -39,7 +39,12 @@ async def supplements_dashboard(
         subject_id=ownership.subject_id,
         include_legacy_unowned=True,
     )
-    alerts = await alerts_service.list_active(db, domain=Domain.SUPPLEMENTS.value)
+    alerts = await alerts_service.list_active_scoped(
+        db,
+        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        domain=Domain.SUPPLEMENTS,
+        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+    )
     return templates.TemplateResponse(
         request,
         "supplements/index.html",

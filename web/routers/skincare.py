@@ -6,13 +6,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain
-from vitals.models.conflict_rule import ConflictRule
-from vitals.services import alerts_service, skincare_service
+from vitals.services import alerts_service, conflict_engine, skincare_service
 from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -33,21 +32,33 @@ async def skincare_dashboard(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     logs = await skincare_service.list_logs(db)
     observations = await skincare_service.list_observations(db)
-    alerts = await alerts_service.list_active(db, domain=Domain.SKINCARE.value)
+    alerts = await alerts_service.list_active_scoped(
+        db,
+        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        domain=Domain.SKINCARE,
+        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+    )
     today_log = await skincare_service.get_log(db, today_local())
     
     # Load products dynamically
     products = await skincare_service.list_products(db)
     
-    # Load active skincare rules
-    rules_stmt = select(ConflictRule).where(
-        ConflictRule.active == True,
-        or_(ConflictRule.domain_a == "skincare", ConflictRule.domain_b == "skincare")
+    # Load active skincare rules inside the same proved legacy-owner boundary.
+    conflict_rules = await conflict_engine.load_scoped_rules(
+        db,
+        scope=await conflict_engine.resolve_legacy_conflict_scope(
+            db,
+            actor_username=username,
+            evaluation_date=today_local(),
+        ),
+        domain=Domain.SKINCARE,
     )
-    rules_result = await db.execute(rules_stmt)
-    conflict_rules = rules_result.scalars().all()
     
     return templates.TemplateResponse(
         request,

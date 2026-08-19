@@ -9,7 +9,7 @@ import uuid
 from datetime import date as date_type, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import Config
@@ -143,7 +143,13 @@ async def list_meals_for_date(
     if subject_id is not None:
         subject_scope = MealLog.subject_id == subject_id
         if include_unowned_legacy:
-            subject_scope = or_(subject_scope, MealLog.subject_id.is_(None))
+            subject_scope = or_(
+                subject_scope,
+                and_(
+                    MealLog.subject_id.is_(None),
+                    MealLog.actor_user_id.is_(None),
+                ),
+            )
         stmt = stmt.where(subject_scope)
     result = await session.execute(
         stmt.order_by(MealLog.eaten_at.asc().nulls_last(), MealLog.id)
@@ -229,6 +235,22 @@ async def resolve_today(
         today_local(),
         subject_id=subject_id,
         include_unowned_legacy=include_unowned_legacy,
+    )
+    return [_sum_macros(meals)]
+
+
+async def resolve_today_scoped(
+    session: AsyncSession,
+    *,
+    scope: conflict_engine.ConflictScope,
+) -> list[dict]:
+    """Conflict resolver for one subject and one subject-local calendar day."""
+
+    meals = await list_meals_for_date(
+        session,
+        scope.evaluation_date,
+        subject_id=scope.subject_id,
+        include_unowned_legacy=scope.include_legacy_unowned,
     )
     return [_sum_macros(meals)]
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date as date_type
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Source
@@ -146,6 +146,42 @@ async def resolve_today(session: AsyncSession) -> list[dict]:
     if row is None:
         return []
     return [{flag: getattr(row, flag) for flag in _FLAGS}]
+
+
+async def resolve_today_scoped(
+    session: AsyncSession,
+    *,
+    scope: conflict_engine.ConflictScope,
+) -> list[dict]:
+    """Resolve the selected subject's checklist on its evaluation day."""
+
+    subject_scope = SkincareLog.subject_id == scope.subject_id
+    if scope.include_legacy_unowned:
+        subject_scope = or_(
+            subject_scope,
+            and_(
+                SkincareLog.subject_id.is_(None),
+                SkincareLog.actor_user_id.is_(None),
+            ),
+        )
+    rows = list(
+        await session.scalars(
+            select(SkincareLog)
+            .where(
+                SkincareLog.date == scope.evaluation_date,
+                subject_scope,
+            )
+            .order_by(SkincareLog.id.desc())
+            .limit(2)
+        )
+    )
+    if len(rows) > 1:
+        raise conflict_engine.ConflictScopeError(
+            "multiple skincare logs match one subject and evaluation date"
+        )
+    if not rows:
+        return []
+    return [{flag: getattr(rows[0], flag) for flag in _FLAGS}]
 
 
 # ── Skincare Products CRUD ───────────────────────────────────────────────────

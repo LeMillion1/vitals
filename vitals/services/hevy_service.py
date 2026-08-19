@@ -40,6 +40,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import raw_payload_service
+from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.analytics.progression import (
     ProgressionConfig,
     ProgressionVerdict,
@@ -688,6 +689,9 @@ async def sync_owned(
         "updated": 0,
         "skipped": 0,
     }
+    # Keep alert legacy adoption and provider ingestion on one canonical lock
+    # order without holding the governance lock across vendor network latency.
+    await acquire_identity_governance_lock(session)
     await _lock_owned_hevy_scope(
         session,
         identity=identity,

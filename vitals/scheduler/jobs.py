@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from vitals.scheduler.scheduler import clear_jobs, register_job
+from vitals.scheduler.scheduler import JobFailureFamily, clear_jobs, register_job
 from vitals.services.proactive import prefs
 
 
@@ -51,6 +51,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "glp1_plateau",
         plateau_job,
         trigger="cron",
+        failure_family=JobFailureFamily.SUBJECT,
         hour=6,
         minute=0,
     )
@@ -61,6 +62,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "hrt_reminders",
         hrt_reminders_job,
         trigger="cron",
+        failure_family=JobFailureFamily.SUBJECT,
         hour=7,
         minute=0,
     )
@@ -72,6 +74,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "nutrition_day_end",
         nutrition_day_end_job,
         trigger="cron",
+        failure_family=JobFailureFamily.SUBJECT,
         hour=23,
         minute=0,
     )
@@ -86,6 +89,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "raw_payload_sweep",
         raw_payload_sweep_job,
         trigger="cron",
+        failure_family=JobFailureFamily.PLATFORM,
         hour=3,
         minute=30,
     )
@@ -97,6 +101,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "share_purge",
         share_purge_job,
         trigger="cron",
+        failure_family=JobFailureFamily.PLATFORM,
         hour=4,
         minute=0,
     )
@@ -106,6 +111,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "hevy_sync",
         hevy_sync_job,
         trigger="interval",
+        failure_family=JobFailureFamily.HEVY_ACCOUNT,
         hours=6,
     )
 
@@ -117,6 +123,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "garmin_sync",
         garmin_sync_job,
         trigger="cron",
+        failure_family=JobFailureFamily.GARMIN_ACCOUNT,
         hour=f"*/{settings['garmin_sync_hours']}",
         minute=0,
     )
@@ -128,6 +135,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "garmin_weight_export",
         garmin_weight_export_job,
         trigger="interval",
+        failure_family=JobFailureFamily.GARMIN_ACCOUNT,
         minutes=settings["garmin_weight_export_minutes"],
         lock_ttl=OPERATION_LOCK_TTL_SECONDS,
     )
@@ -147,6 +155,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "daily_brief",
         brief_job,
         trigger="cron",
+        failure_family=JobFailureFamily.SUBJECT,
         hour=f"{brief_hour}-{last_attempt_hour(brief_hour)}",
         minute=brief_minute,
         lock_ttl=900,
@@ -161,6 +170,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "evening_block",
         evening_job,
         trigger="cron",
+        failure_family=JobFailureFamily.SUBJECT,
         hour=evening_hour,
         minute=evening_minute,
     )
@@ -174,6 +184,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
             "garmin_pulse",
             garmin_pulse_job,
             trigger="interval",
+            failure_family=JobFailureFamily.GARMIN_ACCOUNT,
             seconds=settings["pulse_seconds"],
             lock_ttl=120,
             heartbeat=False,
@@ -186,6 +197,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "nudges",
         nudges_job,
         trigger="cron",
+        failure_family=JobFailureFamily.SUBJECT,
         minute=5,
     )
 
@@ -194,6 +206,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         "weekly_digest",
         digest_job,
         trigger="cron",
+        failure_family=JobFailureFamily.SUBJECT,
         day_of_week="mon",
         hour=8,
         minute=0,

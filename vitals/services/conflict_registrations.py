@@ -27,23 +27,37 @@ def register_all_resolvers() -> None:
     """Register every domain's conflict resolver. Idempotent (re-registering a
     domain replaces it), so safe to call once per startup."""
     conflict_engine.register_domain_resolver(
-        Domain.SUPPLEMENTS.value, supplements_service.resolve_active
+        Domain.SUPPLEMENTS.value,
+        supplements_service.resolve_active_scoped,
+        legacy_resolver=supplements_service.resolve_active,
     )
     conflict_engine.register_domain_resolver(
-        Domain.GENETICS.value, genetics_service.resolve_variants
+        Domain.GENETICS.value,
+        genetics_service.resolve_variants_scoped,
+        legacy_resolver=genetics_service.resolve_variants,
     )
     conflict_engine.register_domain_resolver(
-        Domain.SKINCARE.value, skincare_service.resolve_today
+        Domain.SKINCARE.value,
+        skincare_service.resolve_today_scoped,
+        legacy_resolver=skincare_service.resolve_today,
     )
     conflict_engine.register_domain_resolver(
-        Domain.GLP1.value, glp1_service.resolve_active
+        Domain.GLP1.value,
+        glp1_service.resolve_active_scoped,
+        legacy_resolver=glp1_service.resolve_active,
     )
     conflict_engine.register_domain_resolver(
-        Domain.LABS.value, labs_service.resolve_latest
+        Domain.LABS.value,
+        labs_service.resolve_latest_scoped,
+        legacy_resolver=labs_service.resolve_latest,
     )
     conflict_engine.register_domain_resolver(
-        Domain.NUTRITION.value, nutrition_service.resolve_today
+        Domain.NUTRITION.value,
+        nutrition_service.resolve_today_scoped,
+        legacy_resolver=nutrition_service.resolve_today,
     )
     conflict_engine.register_domain_resolver(
-        Domain.HRT.value, hrt_service.resolve_active
+        Domain.HRT.value,
+        hrt_service.resolve_active_scoped,
+        legacy_resolver=hrt_service.resolve_active,
     )

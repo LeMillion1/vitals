@@ -141,12 +141,16 @@ for pre-backfill files, but only while the fail-closed legacy resolver sees
 exactly one subject; a second subject closes it. Opaque asset URLs and complete
 file backfill remain cutover work.
 
-Upload-adjacent alert refreshes now select lab/body facts in the resolved subject
-scope, but `system_alerts` ownership and every alert lifecycle mutation are a
-separate matrix row and are not completed by this slice. The global lab-marker
-name key and the global active-weight-per-date key also still prevent a second
-writable subject. Registration must remain disabled until those scoped-key and
-alert ownership gates land.
+`system_alerts` now has typed health, provider, and platform contexts, an
+exhaustive key/domain registry, and a fail-closed exact-one legacy bridge.
+Generic web/MCP lifecycle actions aggregate the selected subject's health alerts
+with current and retired provider roots while excluding platform maintenance
+alerts. Garmin/Hevy operational alerts and scheduler failures dual-write their
+reviewed S/C scope. Upload-adjacent and several other health-domain writers still
+use the legacy alert API, and the global unresolved-alert unique key is not yet
+replaced. The global lab-marker name key and active-weight-per-date key also still
+prevent a second writable subject. Registration must remain disabled until those
+writer and scoped-key gates land.
 
 Timeline annotation and Supplements catalog CRUD now resolve the authenticated
 legacy owner at web/MCP transaction boundaries, stamp S+A on creates, retain the
@@ -154,11 +158,18 @@ original A on updates, and scope direct reads/mutations by S. The Timeline feed
 also scopes every derived event selector when a subject is supplied. Pre-backfill
 NULL rows are included only through an explicit compatibility flag after the
 sole-subject resolver succeeds. Cross-domain composition readers in Today,
-digest/report/share assembly, weight-chart overlays, custom-chart metric
-catalog/series resolution, whole-lake MCP exports, and the conflict resolver
-registry still await the PR-04/PR-10 AccessContext cutover;
-they remain explicit release blockers, so registration and every path to a
-second writable subject stay disabled until that cutover lands.
+digest/report/share assembly, weight-chart overlays, custom-chart metric catalog/
+series resolution, and whole-lake MCP exports still await the PR-04/PR-10
+AccessContext cutover. Conflict-rule reads now select one subject and evaluation
+date across all seven resolver domains; curated definitions remain global,
+subject/custom rows are exact-S, and ambiguous or partial legacy roots fail
+closed. Conflict writer enforcement and the per-subject rule toggle still use
+their legacy mutation paths. The writer cutover must preserve the canonical
+governance -> provider/outbox advisory -> subject/domain-row -> alert order;
+in particular, weight conflict enforcement cannot acquire governance after the
+existing active-weight advisory lock. These remaining surfaces are explicit
+release blockers, so registration and every path to a second writable subject
+stay disabled until that cutover lands.
 
 `scripts/seed_demo.py` also remains an installation-wide destructive developer
 utility: it deletes and recreates domain rows without S/A. It must fail closed on
@@ -186,9 +197,12 @@ Garmin and Hevy runtime ingestion now resolves S plus the provider C before
 network persistence, copies raw provenance into normalized parents and children,
 and rejects cross-S/C refresh, ambiguous legacy adoption, and invalid lifecycle
 state. Subject->connection lock order is shared across sync and reparse paths.
-Global provider credentials, Redis namespaces, alerts, Garmin weight outbox,
-upstream natural-key uniqueness, and the read transaction spanning vendor I/O
-remain PR-09/cutover work; registration therefore remains disabled.
+Garmin auth/token alerts, Hevy sync alerts, and scheduler provider failures now
+use exact provider roots; scheduler subject and platform jobs are classified by
+an exhaustive registry. Global provider credentials, Redis namespaces, Garmin
+weight outbox alerts, upstream natural-key uniqueness, and the read transaction
+spanning vendor I/O remain PR-09/cutover work; registration therefore remains
+disabled.
 
 ## Completion gates
 

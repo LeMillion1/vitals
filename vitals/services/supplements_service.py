@@ -355,3 +355,17 @@ async def resolve_active(
         }
         for s in result.scalars().all()
     ]
+
+
+async def resolve_active_scoped(
+    session: AsyncSession,
+    *,
+    scope: conflict_engine.ConflictScope,
+) -> list[dict]:
+    """Conflict resolver restricted to one explicit subject boundary."""
+
+    return await resolve_active(
+        session,
+        subject_id=scope.subject_id,
+        include_legacy_unowned=scope.include_legacy_unowned,
+    )

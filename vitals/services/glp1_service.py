@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import date as date_type, timedelta
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, InjectionSite, Severity, Source
@@ -196,6 +196,41 @@ async def resolve_active(session: AsyncSession) -> list[dict]:
     — lets a rule reference "on drug X at dose >= Y" against the ongoing phase,
     not just a one-off injection being logged right now."""
     phase = await active_dose_phase(session)
+    if phase is None:
+        return []
+    return [{"drug": phase.drug, "dose_mg": phase.dose_mg, "active": True}]
+
+
+async def resolve_active_scoped(
+    session: AsyncSession,
+    *,
+    scope: conflict_engine.ConflictScope,
+) -> list[dict]:
+    """Resolve the current dose phase inside one subject boundary."""
+
+    subject_scope = DosePhase.subject_id == scope.subject_id
+    if scope.include_legacy_unowned:
+        subject_scope = or_(
+            subject_scope,
+            and_(
+                DosePhase.subject_id.is_(None),
+                DosePhase.actor_user_id.is_(None),
+            ),
+        )
+    phase = await session.scalar(
+        select(DosePhase)
+        .where(
+            DosePhase.domain == DOMAIN,
+            DosePhase.start_date <= scope.evaluation_date,
+            or_(
+                DosePhase.end_date.is_(None),
+                DosePhase.end_date >= scope.evaluation_date,
+            ),
+            subject_scope,
+        )
+        .order_by(DosePhase.start_date.desc(), DosePhase.id.desc())
+        .limit(1)
+    )
     if phase is None:
         return []
     return [{"drug": phase.drug, "dose_mg": phase.dose_mg, "active": True}]

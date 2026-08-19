@@ -14,7 +14,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from functools import partial
+from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -37,11 +39,66 @@ KEEPALIVE_JOB_ID = "keepalive"
 JOB_FAILED_KEY_PREFIX = "scheduler.job_failed"
 
 
+class JobFailureFamily(StrEnum):
+    """Durable ownership boundary for one scheduler-failure alert."""
+
+    PLATFORM = "platform"
+    SUBJECT = "subject"
+    GARMIN_ACCOUNT = "garmin_account"
+    HEVY_ACCOUNT = "hevy_account"
+
+
+# Job ids are part of the persisted alert key, so classification is an exact,
+# reviewed registry rather than a prefix/default heuristic. Adding a job without
+# deciding who owns its failure must fail before APScheduler can attach it.
+JOB_FAILURE_FAMILY_BY_ID = MappingProxyType(
+    {
+        "raw_payload_sweep": JobFailureFamily.PLATFORM,
+        "share_purge": JobFailureFamily.PLATFORM,
+        "glp1_plateau": JobFailureFamily.SUBJECT,
+        "hrt_reminders": JobFailureFamily.SUBJECT,
+        "nutrition_day_end": JobFailureFamily.SUBJECT,
+        "daily_brief": JobFailureFamily.SUBJECT,
+        "evening_block": JobFailureFamily.SUBJECT,
+        "nudges": JobFailureFamily.SUBJECT,
+        "weekly_digest": JobFailureFamily.SUBJECT,
+        "garmin_sync": JobFailureFamily.GARMIN_ACCOUNT,
+        "garmin_weight_export": JobFailureFamily.GARMIN_ACCOUNT,
+        "garmin_pulse": JobFailureFamily.GARMIN_ACCOUNT,
+        "hevy_sync": JobFailureFamily.HEVY_ACCOUNT,
+    }
+)
+
+
+class JobFailureClassificationError(ValueError):
+    """A scheduled job has no exact, reviewed failure-alert ownership family."""
+
+
+def _require_failure_family(
+    job_id: str,
+    failure_family: JobFailureFamily,
+) -> None:
+    if not isinstance(failure_family, JobFailureFamily):
+        raise JobFailureClassificationError(
+            "failure_family must be a JobFailureFamily member"
+        )
+    expected = JOB_FAILURE_FAMILY_BY_ID.get(job_id)
+    if expected is None:
+        raise JobFailureClassificationError(
+            f"scheduled job {job_id!r} has no failure-alert classification"
+        )
+    if failure_family is not expected:
+        raise JobFailureClassificationError(
+            f"scheduled job {job_id!r} must use failure family {expected.value!r}"
+        )
+
+
 @dataclass
 class JobSpec:
     id: str
     func: JobFunc
     trigger: str  # "interval" | "cron"
+    failure_family: JobFailureFamily
     trigger_kwargs: dict = field(default_factory=dict)
     lock_ttl: int = 300
     heartbeat: bool = True
@@ -55,16 +112,19 @@ def register_job(
     func: JobFunc,
     *,
     trigger: str,
+    failure_family: JobFailureFamily,
     lock_ttl: int = 300,
     heartbeat: bool = True,
     **trigger_kwargs: Any,
 ) -> None:
     """Register a scheduled job. Modules call this at import/startup. Re-registering
     the same id replaces the previous spec."""
+    _require_failure_family(job_id, failure_family)
     _registry[job_id] = JobSpec(
         id=job_id,
         func=func,
         trigger=trigger,
+        failure_family=failure_family,
         trigger_kwargs=trigger_kwargs,
         lock_ttl=lock_ttl,
         heartbeat=heartbeat,
@@ -137,7 +197,9 @@ def heartbeat_budgets(timezone: str) -> dict[str, float]:
 
 
 async def _record_job_outcome(
-    session_factory: async_sessionmaker[AsyncSession], job_id: str, error: Optional[str]
+    session_factory: async_sessionmaker[AsyncSession],
+    spec: JobSpec,
+    error: Optional[str],
 ) -> None:
     """Raise a ``warn`` alert when a job run failed; clear it when one succeeds.
 
@@ -146,27 +208,66 @@ async def _record_job_outcome(
     One guard on the shared runner covers every registered job — ``hevy_service``
     handles no errors at all today and ``garmin_service`` only auth/MFA ones.
     """
-    from vitals.enums import Domain, Severity
+    from vitals.enums import Domain, IntegrationProvider, Severity
     from vitals.i18n import t
     from vitals.services import alerts_service
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 
-    alert_key = f"{JOB_FAILED_KEY_PREFIX}:{job_id}"
+    alert_key = f"{JOB_FAILED_KEY_PREFIX}:{spec.id}"
     try:
+        _require_failure_family(spec.id, spec.failure_family)
         async with session_factory() as session:
-            if error is None:
-                await alerts_service.resolve_by_key(session, alert_key=alert_key)
+            if spec.failure_family is JobFailureFamily.PLATFORM:
+                context: alerts_service.AlertContext = (
+                    alerts_service.PlatformAlertContext(
+                        namespace=alerts_service.PlatformAlertNamespace.SCHEDULER_JOB_FAILURE,
+                        actor_user_id=None,
+                    )
+                )
+                legacy_bridge = alerts_service.LegacyAlertBridge.REJECT
             else:
-                await alerts_service.raise_alert(
+                provider = {
+                    JobFailureFamily.GARMIN_ACCOUNT: IntegrationProvider.GARMIN,
+                    JobFailureFamily.HEVY_ACCOUNT: IntegrationProvider.HEVY,
+                }.get(spec.failure_family)
+                ownership = await resolve_legacy_ownership_context(
                     session,
-                    domain=Domain.SYSTEM.value,
-                    severity=Severity.WARN.value,
-                    message=t("alert.job_failed", job=job_id, error=error),
+                    actor_username=None,
+                    required_connections=((provider,) if provider is not None else ()),
+                )
+                if provider is None:
+                    context = alerts_service.HealthAlertContext(
+                        ownership.system_action()
+                    )
+                else:
+                    context = alerts_service.ProviderAlertContext(
+                        identity=ownership.system_action(),
+                        provider=provider,
+                        integration_connection_id=ownership.connection_id(provider),
+                    )
+                legacy_bridge = alerts_service.LegacyAlertBridge.FULLY_UNOWNED
+
+            if error is None:
+                await alerts_service.resolve_scoped_by_key(
+                    session,
+                    context=context,
                     alert_key=alert_key,
+                    legacy_bridge=legacy_bridge,
+                )
+            else:
+                await alerts_service.raise_scoped_alert(
+                    session,
+                    context=context,
+                    domain=Domain.SYSTEM,
+                    severity=Severity.WARN,
+                    message=t("alert.job_failed", job=spec.id, error=error),
+                    alert_key=alert_key,
+                    legacy_bridge=legacy_bridge,
                 )
             await session.commit()
     except Exception:
         # Alert bookkeeping must never break the tick that reported the failure.
-        logger.exception("Could not record outcome of scheduled job %s", job_id)
+        logger.exception("Could not record outcome of scheduled job %s", spec.id)
 
 
 def _make_runner(
@@ -174,23 +275,40 @@ def _make_runner(
     session_factory: async_sessionmaker[AsyncSession],
     redis: Optional[Redis],
 ) -> Callable[[], Awaitable[None]]:
+    _require_failure_family(spec.id, spec.failure_family)
+
     async def _run() -> None:
         # Liveness stamp first — recorded every tick even when the lock is busy.
         if redis is not None and spec.heartbeat:
             await record_scheduler_heartbeat(redis, spec.id)
+        executed = False
+
+        async def _execute_locked() -> None:
+            nonlocal executed
+            executed = True
+            await spec.func(session_factory, redis)
+
         try:
             if redis is None:
-                await spec.func(session_factory, redis)
+                await _execute_locked()
             else:
                 await with_scheduler_lock(
-                    redis, spec.id, spec.lock_ttl, spec.func, session_factory, redis
+                    redis,
+                    spec.id,
+                    spec.lock_ttl,
+                    _execute_locked,
                 )
         except Exception as exc:
             logger.exception("Scheduled job %s failed", spec.id)
             detail = str(exc)[:200] or exc.__class__.__name__
-            await _record_job_outcome(session_factory, spec.id, detail)
+            await _record_job_outcome(session_factory, spec, detail)
         else:
-            await _record_job_outcome(session_factory, spec.id, None)
+            # A busy distributed lock is a skipped tick, not proof that the
+            # previous failure recovered. Only an actually executed job may
+            # clear its failure alert.
+            if not executed:
+                return
+            await _record_job_outcome(session_factory, spec, None)
 
     return _run
 

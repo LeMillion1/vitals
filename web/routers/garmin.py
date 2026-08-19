@@ -19,7 +19,7 @@ from vitals.models.garmin import (
     SERIES_STRESS,
     SLEEP_SERIES_TYPES,
 )
-from vitals.services import alerts_service, garmin_service
+from vitals.services import alerts_service, garmin_service, legacy_subject_alerts
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
@@ -40,6 +40,11 @@ async def garmin_dashboard(
 ):
     """Recovery dashboard: latest day's metrics, recovery advice, and recent
     history. Activities live on their own tab (see ``activities_list``)."""
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+        required_connections=tuple(IntegrationProvider),
+    )
     latest = await garmin_service.latest_daily(db)
     history = await garmin_service.list_daily(db, limit=30)
     # The latest day's stress / Body Battery / heart-rate curves (empty dict on a
@@ -57,7 +62,11 @@ async def garmin_dashboard(
     )
     count = await garmin_service.daily_count(db)
     advice = garmin_service.recovery_advice(latest)
-    alerts = await alerts_service.list_active(db, domain=Domain.GARMIN.value)
+    alerts = await legacy_subject_alerts.list_active(
+        db,
+        ownership=ownership,
+        domain=Domain.GARMIN,
+    )
 
     client = GarminClient.from_config()
 

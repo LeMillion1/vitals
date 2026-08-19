@@ -70,7 +70,12 @@ async def nutrition_dashboard(
         subject_id=ownership.subject_id,
         include_unowned_legacy=True,
     )
-    alerts = await alerts_service.list_active(db, domain=Domain.NUTRITION.value)
+    alerts = await alerts_service.list_active_scoped(
+        db,
+        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        domain=Domain.NUTRITION,
+        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+    )
     goals = nutrition_service.get_goals(cfg)
 
     return templates.TemplateResponse(

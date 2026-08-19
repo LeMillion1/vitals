@@ -32,7 +32,7 @@ import uuid
 from datetime import date as date_type, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, FileAssetPurpose, LabFlag, Severity, Source
@@ -459,7 +459,13 @@ async def list_results(
     if subject_id is not None:
         subject_scope = LabResult.subject_id == subject_id
         if include_legacy_unowned:
-            subject_scope = or_(subject_scope, LabResult.subject_id.is_(None))
+            subject_scope = or_(
+                subject_scope,
+                and_(
+                    LabResult.subject_id.is_(None),
+                    LabResult.actor_user_id.is_(None),
+                ),
+            )
         stmt = stmt.where(subject_scope)
     if marker is not None:
         marker = normalize_marker(marker)
@@ -484,7 +490,13 @@ async def marker_history(
     if subject_id is not None:
         subject_scope = LabResult.subject_id == subject_id
         if include_legacy_unowned:
-            subject_scope = or_(subject_scope, LabResult.subject_id.is_(None))
+            subject_scope = or_(
+                subject_scope,
+                and_(
+                    LabResult.subject_id.is_(None),
+                    LabResult.actor_user_id.is_(None),
+                ),
+            )
         stmt = stmt.where(subject_scope)
     result = await session.execute(stmt.order_by(LabResult.date))
     return [
@@ -510,7 +522,13 @@ async def latest_per_marker(
     if subject_id is not None:
         subject_scope = LabResult.subject_id == subject_id
         if include_legacy_unowned:
-            subject_scope = or_(subject_scope, LabResult.subject_id.is_(None))
+            subject_scope = or_(
+                subject_scope,
+                and_(
+                    LabResult.subject_id.is_(None),
+                    LabResult.actor_user_id.is_(None),
+                ),
+            )
         stmt = stmt.where(subject_scope)
     result = await session.execute(
         stmt.order_by(LabResult.date.desc(), LabResult.id.desc())
@@ -526,6 +544,74 @@ async def resolve_latest(session: AsyncSession) -> list[dict]:
     — lets a lab_safety rule reference e.g. {"marker": "Калий", "value": {"$gt":
     5.0}} against the current panel, not just a freshly logged result."""
     latest = await latest_per_marker(session)
+    return [{"marker": r.marker, "value": r.value, "flag": r.flag} for r in latest]
+
+
+async def resolve_latest_scoped(
+    session: AsyncSession,
+    *,
+    scope: conflict_engine.ConflictScope,
+) -> list[dict]:
+    """Conflict resolver restricted to one explicit subject boundary."""
+
+    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+        scope
+    )
+    fact_scope = LabResult.subject_id == scope.subject_id
+    if scope.include_legacy_unowned:
+        fact_scope = or_(
+            fact_scope,
+            and_(
+                LabResult.subject_id.is_(None),
+                LabResult.actor_user_id.is_(None),
+            ),
+        )
+    allowed_linked_raw = exact_raw
+    if scope.include_legacy_unowned:
+        # Raw-first backfill may already have attached the exact subject root
+        # while its normalized lab row is still fully legacy-owned.
+        allowed_linked_raw = or_(allowed_linked_raw, fully_unowned_raw)
+    invalid_raw_id = await session.scalar(
+        select(1)
+        .select_from(LabResult)
+        .outerjoin(
+            RawPayload,
+            LabResult.raw_payload_id == RawPayload.id,
+        )
+        .where(
+            LabResult.date <= scope.evaluation_date,
+            fact_scope,
+            LabResult.raw_payload_id.is_not(None),
+            allowed_linked_raw.is_not(True),
+        )
+        .limit(1)
+    )
+    if invalid_raw_id is not None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "lab result links to foreign or partial raw provenance"
+        )
+    rows = list(
+        await session.scalars(
+            select(LabResult)
+            .outerjoin(
+                RawPayload,
+                LabResult.raw_payload_id == RawPayload.id,
+            )
+            .where(
+                LabResult.date <= scope.evaluation_date,
+                fact_scope,
+                or_(
+                    LabResult.raw_payload_id.is_(None),
+                    allowed_linked_raw,
+                ),
+            )
+            .order_by(LabResult.date.desc(), LabResult.id.desc())
+        )
+    )
+    latest_by_marker: dict[str, LabResult] = {}
+    for row in rows:
+        latest_by_marker.setdefault(row.marker, row)
+    latest = list(latest_by_marker.values())
     return [{"marker": r.marker, "value": r.value, "flag": r.flag} for r in latest]
 
 

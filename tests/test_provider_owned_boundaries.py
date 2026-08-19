@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import date
 
+import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.enums import IntegrationProvider, Source
 from vitals.models.garmin import GarminDaily
 from vitals.models.hevy import HevyWorkout
 from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
+from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
+from vitals.ownership import WriteIdentity
 from vitals.services import (
     body_scan_service,
     garmin_service,
@@ -206,6 +212,16 @@ async def test_hevy_sync_route_attributes_owner_subject_and_connection(
 
     from web.routers import hevy as hevy_router
 
+    legacy_alert = SystemAlert(
+        domain="workouts",
+        severity="warn",
+        message="legacy Hevy failure",
+        alert_key=hevy_router.SYNC_ALERT_KEY,
+        entity_ref="",
+    )
+    db_session.add(legacy_alert)
+    await db_session.flush()
+
     monkeypatch.setattr(hevy_router, "HevyClient", _Factory)
     response = await auth_client.post("/hevy/sync")
 
@@ -225,3 +241,249 @@ async def test_hevy_sync_route_attributes_owner_subject_and_connection(
         workout.actor_user_id,
         workout.integration_connection_id,
     ) == (subject.id, owner.id, hevy_connection.id)
+    assert (legacy_alert.subject_id, legacy_alert.integration_connection_id) == (
+        subject.id,
+        hevy_connection.id,
+    )
+    assert legacy_alert.resolved_at is not None
+    assert legacy_alert.resolved_by_user_id is None
+
+
+async def test_hevy_sync_failure_alert_is_provider_owned(
+    auth_client,
+    db_session,
+    monkeypatch,
+):
+    from vitals.integrations.hevy_client import HevyAPIError
+    from web.routers import hevy as hevy_router
+
+    _owner, subject, connections = await _legacy_roots(db_session)
+
+    class _Client:
+        is_configured = True
+
+        async def fetch_workouts(self, *, max_pages=50):
+            raise HevyAPIError(503, "synthetic outage")
+
+    class _Factory:
+        @classmethod
+        def from_config(cls):
+            return _Client()
+
+    monkeypatch.setattr(hevy_router, "HevyClient", _Factory)
+    response = await auth_client.post("/hevy/sync")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/hevy?sync=error"
+    row = await db_session.scalar(
+        select(SystemAlert).where(SystemAlert.alert_key == hevy_router.SYNC_ALERT_KEY)
+    )
+    hevy_connection = connections[IntegrationProvider.HEVY.value]
+    assert row is not None
+    assert (row.subject_id, row.integration_connection_id) == (
+        subject.id,
+        hevy_connection.id,
+    )
+
+
+async def test_garmin_sync_takes_governance_before_provider_row_locks(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    owner, subject, connections = await _legacy_roots(db_session)
+    events: list[str] = []
+    original_governance = garmin_service.acquire_identity_governance_lock
+    original_scope_lock = garmin_service._lock_owned_garmin_scope
+
+    async def _governance(session):
+        events.append("governance")
+        return await original_governance(session)
+
+    async def _scope_lock(*args, **kwargs):
+        events.append("provider-lock")
+        return await original_scope_lock(*args, **kwargs)
+
+    class _Client:
+        token_warnings = []
+
+        async def fetch_daily(self, on_date):
+            events.append("network")
+            return {"summary": {"totalSteps": 1000}}
+
+        async def fetch_activities(self, start, end):
+            events.append("network")
+            return []
+
+    monkeypatch.setattr(
+        garmin_service,
+        "acquire_identity_governance_lock",
+        _governance,
+    )
+    monkeypatch.setattr(
+        garmin_service,
+        "_lock_owned_garmin_scope",
+        _scope_lock,
+    )
+    await garmin_service.sync_owned(
+        db_session,
+        _Client(),
+        identity=WriteIdentity(subject.id, owner.id),
+        integration_connection_id=connections[
+            IntegrationProvider.GARMIN.value
+        ].id,
+        days=1,
+        on_date=date(2026, 8, 19),
+    )
+
+    assert max(i for i, item in enumerate(events) if item == "network") < events.index(
+        "governance"
+    )
+    assert events.index("governance") < events.index("provider-lock")
+
+
+async def test_hevy_sync_takes_governance_before_provider_row_locks(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    owner, subject, connections = await _legacy_roots(db_session)
+    events: list[str] = []
+    original_governance = hevy_service.acquire_identity_governance_lock
+    original_scope_lock = hevy_service._lock_owned_hevy_scope
+
+    async def _governance(session):
+        events.append("governance")
+        return await original_governance(session)
+
+    async def _scope_lock(*args, **kwargs):
+        events.append("provider-lock")
+        return await original_scope_lock(*args, **kwargs)
+
+    class _Client:
+        async def fetch_workouts(self, *, max_pages=50):
+            events.append("network")
+            return []
+
+    monkeypatch.setattr(
+        hevy_service,
+        "acquire_identity_governance_lock",
+        _governance,
+    )
+    monkeypatch.setattr(
+        hevy_service,
+        "_lock_owned_hevy_scope",
+        _scope_lock,
+    )
+    await hevy_service.sync_owned(
+        db_session,
+        _Client(),
+        identity=WriteIdentity(subject.id, owner.id),
+        integration_connection_id=connections[IntegrationProvider.HEVY.value].id,
+    )
+
+    assert events == ["network", "governance", "provider-lock"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("provider", ["garmin", "hevy"])
+async def test_postgres_provider_sync_waits_for_governance_before_root_lock(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    provider,
+):
+    from vitals.services.identity_service import acquire_identity_governance_lock
+
+    assert db_session.bind is not None
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    provider_enum = (
+        IntegrationProvider.GARMIN
+        if provider == "garmin"
+        else IntegrationProvider.HEVY
+    )
+    connection_id = await db_session.scalar(
+        select(IntegrationConnection.id).where(
+            IntegrationConnection.subject_id == legacy_owner_roots.subject_id,
+            IntegrationConnection.provider == provider_enum.value,
+        )
+    )
+    assert connection_id is not None
+    await db_session.commit()
+
+    governance_held = asyncio.Event()
+    probe_root_now = asyncio.Event()
+    sync_waiting_for_governance = asyncio.Event()
+
+    async def _signaled_governance(session):
+        sync_waiting_for_governance.set()
+        await acquire_identity_governance_lock(session)
+
+    service = garmin_service if provider == "garmin" else hevy_service
+    monkeypatch.setattr(
+        service,
+        "acquire_identity_governance_lock",
+        _signaled_governance,
+    )
+
+    async def _hold_governance_then_probe_root():
+        async with factory() as session:
+            await acquire_identity_governance_lock(session)
+            governance_held.set()
+            await probe_root_now.wait()
+            row = await session.scalar(
+                select(HealthSubject)
+                .where(HealthSubject.id == legacy_owner_roots.subject_id)
+                .with_for_update(nowait=True)
+            )
+            assert row is not None
+            await session.commit()
+
+    async def _run_sync():
+        async with factory() as session:
+            identity = WriteIdentity(
+                legacy_owner_roots.subject_id,
+                legacy_owner_roots.user_id,
+            )
+            if provider == "garmin":
+                class _GarminClient:
+                    token_warnings = []
+
+                    async def fetch_daily(self, on_date):
+                        return {"summary": {"totalSteps": 1000}}
+
+                    async def fetch_activities(self, start, end):
+                        return []
+
+                await garmin_service.sync_owned(
+                    session,
+                    _GarminClient(),
+                    identity=identity,
+                    integration_connection_id=connection_id,
+                    days=1,
+                    on_date=date(2026, 8, 19),
+                )
+            else:
+                class _HevyClient:
+                    async def fetch_workouts(self, *, max_pages=50):
+                        return []
+
+                await hevy_service.sync_owned(
+                    session,
+                    _HevyClient(),
+                    identity=identity,
+                    integration_connection_id=connection_id,
+                )
+            await session.commit()
+
+    holder = asyncio.create_task(_hold_governance_then_probe_root())
+    await asyncio.wait_for(governance_held.wait(), timeout=5)
+    sync = asyncio.create_task(_run_sync())
+    await asyncio.wait_for(sync_waiting_for_governance.wait(), timeout=5)
+    probe_root_now.set()
+    await asyncio.wait_for(holder, timeout=5)
+    await asyncio.wait_for(sync, timeout=5)

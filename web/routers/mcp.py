@@ -34,7 +34,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from vitals.config import load_config
-from vitals.enums import Domain, MilestoneStatus, Source
+from vitals.enums import Domain, IntegrationProvider, MilestoneStatus, Source
 from vitals.models import (
     Annotation,
     BodyMeasurement,
@@ -60,7 +60,6 @@ from vitals.models import (
     SkincareLog,
     SkincareObservation,
     Supplement,
-    SystemAlert,
     WeightLog,
     WeeklyDigest,
 )
@@ -209,6 +208,26 @@ async def _mcp_v1_legacy_owner(session):
     return await resolve_legacy_ownership_context(
         session,
         actor_username=get_web_config().auth_username,
+    )
+
+
+async def _mcp_v1_legacy_alert_owner(session):
+    """Resolve every current provider root needed by the alert aggregate."""
+
+    return await resolve_legacy_ownership_context(
+        session,
+        actor_username=get_web_config().auth_username,
+        required_connections=tuple(IntegrationProvider),
+    )
+
+
+async def _mcp_v1_conflict_scope(session) -> conflict_engine.ConflictScope:
+    """Authenticate and bind an MCP conflict read under governance lock."""
+
+    return await conflict_engine.resolve_legacy_conflict_scope(
+        session,
+        actor_username=get_web_config().auth_username,
+        evaluation_date=today_local(),
     )
 
 
@@ -608,10 +627,15 @@ async def upsert_genetic_variant(
 @mcp.tool()
 async def get_active_alerts() -> list[dict]:
     """Returns currently active warning alerts and conflict notifications."""
+    from vitals.services import legacy_subject_alerts
+
     session_factory = get_session_factory()
     async with session_factory() as session:
-        stmt = select(SystemAlert).where(SystemAlert.resolved_at.is_(None)).order_by(SystemAlert.created_at.desc())
-        alerts = (await session.execute(stmt)).scalars().all()
+        ownership = await _mcp_v1_legacy_alert_owner(session)
+        alerts = await legacy_subject_alerts.list_active(
+            session,
+            ownership=ownership,
+        )
         return [serialize_row(a) for a in alerts]
 
 
@@ -621,11 +645,16 @@ async def resolve_alert(alert_id: int) -> dict:
     from the dashboard. Use it once the thing the alert is about has actually been
     dealt with in the conversation, so the discussion and the closing are the same
     step instead of leaving the owner a button to press afterwards. WRITE tool."""
-    from vitals.services import alerts_service
+    from vitals.services import legacy_subject_alerts
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        row = await alerts_service.resolve_alert(session, alert_id)
+        ownership = await _mcp_v1_legacy_alert_owner(session)
+        row = await legacy_subject_alerts.resolve(
+            session,
+            alert_id,
+            ownership=ownership,
+        )
         if row is None:
             return {"error": f"Alert {alert_id} not found"}
         await session.commit()
@@ -637,11 +666,16 @@ async def override_alert(alert_id: int) -> dict:
     """Marks a blocking alert overridden — "noted, doing it anyway". The alert
     stays active and visible; only the block it represents stops being treated as
     unanswered. For resolving it instead, use ``resolve_alert``. WRITE tool."""
-    from vitals.services import alerts_service
+    from vitals.services import legacy_subject_alerts
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        row = await alerts_service.override_alert(session, alert_id)
+        ownership = await _mcp_v1_legacy_alert_owner(session)
+        row = await legacy_subject_alerts.override(
+            session,
+            alert_id,
+            ownership=ownership,
+        )
         if row is None:
             return {"error": f"Alert {alert_id} not found"}
         await session.commit()
@@ -673,15 +707,20 @@ async def check_supplement_conflicts(supplement_name: str) -> list[dict]:
     session_factory = get_session_factory()
     key = conflict_catalog.normalize_ingredient(supplement_name)
     async with session_factory() as session:
-        # Conflict resolvers remain legacy-global in Stage 2. Proving there is
-        # exactly one subject before evaluating keeps that compatibility path
-        # closed as soon as a second subject exists.
-        await _mcp_v1_legacy_owner(session)
-        violations = await conflict_engine.evaluate(
-            session,
-            Domain.SUPPLEMENTS.value,
-            {"key": key, "name": supplement_name, "active": True},
-        )
+        scope = await _mcp_v1_conflict_scope(session)
+        try:
+            violations = await conflict_engine.evaluate_scoped(
+                session,
+                scope=scope,
+                domain=Domain.SUPPLEMENTS,
+                proposed_state={
+                    "key": key,
+                    "name": supplement_name,
+                    "active": True,
+                },
+            )
+        except conflict_engine.ConflictResolverUnavailable as exc:
+            return [{"error": str(exc)}]
         return [v.to_dict() for v in violations]
 
 
@@ -697,16 +736,17 @@ async def list_conflict_rules(
     ``category`` (absorption, pharmacogenomics, dermatology, lab_safety, glp1,
     contraindication). Only ``active`` rules are meaningful for evaluation, but
     inactive ones are included too so a caller can see the full catalog."""
-    from vitals.models.conflict_rule import ConflictRule
-
     session_factory = get_session_factory()
     async with session_factory() as session:
-        stmt = select(ConflictRule)
+        scope = await _mcp_v1_conflict_scope(session)
+        rows = await conflict_engine.load_scoped_rules(
+            session,
+            scope=scope,
+            domain=domain,
+            active_only=False,
+        )
         if category:
-            stmt = stmt.where(ConflictRule.category == category)
-        rows = (await session.execute(stmt)).scalars().all()
-        if domain:
-            rows = [r for r in rows if r.domain_a == domain or r.domain_b == domain]
+            rows = [row for row in rows if row.category == category]
         return [serialize_row(r) for r in rows]
 
 
@@ -724,8 +764,16 @@ async def check_conflicts(domain: str, payload: dict) -> list[dict]:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        await _mcp_v1_legacy_owner(session)
-        violations = await conflict_engine.evaluate(session, domain, payload)
+        scope = await _mcp_v1_conflict_scope(session)
+        try:
+            violations = await conflict_engine.evaluate_scoped(
+                session,
+                scope=scope,
+                domain=domain,
+                proposed_state=payload,
+            )
+        except conflict_engine.ConflictResolverUnavailable as exc:
+            return [{"error": str(exc)}]
         return [v.to_dict() for v in violations]
 
 

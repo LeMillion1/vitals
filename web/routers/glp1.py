@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Domain, Drug, InjectionSite
 from vitals.services import alerts_service, glp1_service
 from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -32,13 +33,22 @@ async def glp1_dashboard(
     username: str = Depends(require_auth),
 ):
     """GLP-1 dashboard: current dose, body-map rotation, injections, side effects."""
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     await glp1_service.refresh_plateau_alert(db)
     await db.commit()
 
     injections = await glp1_service.list_injections(db)
     phases = await glp1_service.list_dose_phases(db)
     side_effects = await glp1_service.list_side_effects(db)
-    alerts = await alerts_service.list_active(db, domain=Domain.GLP1.value)
+    alerts = await alerts_service.list_active_scoped(
+        db,
+        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        domain=Domain.GLP1,
+        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+    )
 
     active_phase = await glp1_service.active_dose_phase(db)
     last_inj = await glp1_service.last_injection(db)

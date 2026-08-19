@@ -80,7 +80,12 @@ async def labs_dashboard(
         subject_id=ownership.subject_id,
         include_legacy_unowned=True,
     )
-    alerts = await alerts_service.list_active(db, domain=Domain.LABS.value)
+    alerts = await alerts_service.list_active_scoped(
+        db,
+        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        domain=Domain.LABS,
+        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+    )
 
     selected = marker or (latest[0].marker if latest else None)
     history = (

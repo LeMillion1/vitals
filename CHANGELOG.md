@@ -86,6 +86,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   budgets/dedupe across connection rotation, and the Signals module gate use the
   resolved subject. Registration remains closed while global conflict/alert,
   composition/export, provider credential, and scoped-unique cutovers remain.
+- System alerts now have typed health-subject, provider-connection, and platform
+  contexts backed by an exhaustive key/domain registry. The legacy owner sees
+  health alerts plus current and retired provider alerts through one fail-closed
+  aggregate, while maintenance alerts remain platform-only; web/MCP lifecycle
+  actions retain the human actor. Garmin/Hevy operational alerts and every
+  scheduler failure are stamped into an explicitly reviewed scope. Conflict-rule
+  reads and all seven domain resolvers use one subject and evaluation date,
+  distinguish curated global definitions from subject/custom rows, and serialize
+  the exact-one legacy bridge against concurrent subject creation. Registration
+  remains closed while the remaining alert writers, conflict mutations, global
+  uniqueness, and subject-aware composition are migrated.
 
 ### Fixed — AI period-report context
 

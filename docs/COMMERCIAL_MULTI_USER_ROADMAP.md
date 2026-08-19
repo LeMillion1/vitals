@@ -4,10 +4,10 @@ Status: active design and implementation plan
 
 Last reviewed: 2026-08-19
 
-Current implementation branch: `commercial/pr-03-subject-ownership`
+Current implementation branch: `commercial/main`
 
 Commercial base: current `origin/master`; publish it as a separate branch in
-`vlakimov/vitals` instead of rewriting the fork's historical `master`
+`LeMillion1/vitals` instead of rewriting the fork's historical `master`
 
 This document is the durable hand-off for turning Vitals from a single-user,
 self-hosted application into a commercial multi-user service. It records the PR
@@ -193,7 +193,7 @@ the missing ownership roots, natural keys, cross-surface dependencies, backfill
 order, and rollback boundary. The runtime write-path contract is maintained in
 `docs/COMMERCIAL_DUAL_WRITE_MATRIX.md`.
 
-Implementation progress on `commercial/pr-03-subject-ownership`:
+Implementation progress on `commercial/main`:
 
 - Stage 0 is complete in revisions `0036`: the exhaustive registry, subject-bound
   integration/file roots, scoped setting stores, and idempotent legacy resource
@@ -209,18 +209,22 @@ Implementation progress on `commercial/pr-03-subject-ownership`:
 - Stage 2 is in progress. Subject/actor/resource dual-write is implemented for
   persisted medical uploads, Garmin and Hevy ingestion, direct Timeline and
   Supplements CRUD, Signals and Day Context, proactive Telegram delivery, and
-  the subject-scoped week template. These paths resolve the verified legacy
-  owner at their web, scheduler, or MCP boundary and fail closed if a second
-  subject makes the compatibility bridge ambiguous.
+  the subject-scoped week template. Typed alert ownership now separates health,
+  provider, and platform namespaces; generic web/MCP lifecycle actions aggregate
+  current and retired provider roots, and provider/scheduler writers use an exact
+  reviewed scope. Conflict reads and all seven resolver domains use one subject
+  and date. These paths resolve the verified legacy owner at their web, scheduler,
+  or MCP boundary and fail closed if a second subject makes the compatibility
+  bridge ambiguous.
 - The completed Stage 2 slices include SQLite isolation tests and PostgreSQL 15
   migration/foreign-key tests. Direct interactive selectors are covered for all
   current Timeline event types, and provider ingestion preserves raw-first
   provenance with subject/connection ownership.
-- Bounded data backfill and validation, scoped natural-key cutover, global
-  conflict/alert/outbox scoping, subject-aware composition/reporting, full MCP
-  principal propagation, and RLS remain pending. Registration stays disabled;
-  the current code is a safe single-subject migration bridge, not a multi-user
-  release boundary.
+- Bounded data backfill and validation, scoped natural-key/alert-unique cutover,
+  remaining health-alert and conflict writers, outbox scoping, subject-aware
+  composition/reporting, full MCP principal propagation, and RLS remain pending.
+  Registration stays disabled; the current code is a safe single-subject
+  migration bridge, not a multi-user release boundary.
 
 Scope:
 

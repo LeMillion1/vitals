@@ -34,6 +34,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
+    Domain,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
@@ -67,6 +68,7 @@ from vitals.models.identity import HealthSubject
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, raw_payload_service, weight_service
+from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.utils.timeutils import now_local, to_local_naive
 
 logger = logging.getLogger(__name__)
@@ -1963,6 +1965,50 @@ async def refresh_token_cache_alert(
         await alerts_service.resolve_by_key(session, alert_key=TOKEN_ALERT_KEY)
 
 
+def _owned_provider_alert_context(
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+) -> alerts_service.ProviderAlertContext:
+    """Bind operational Garmin alerts to the account, never to a human actor."""
+
+    _validate_owned_context(identity, integration_connection_id)
+    return alerts_service.ProviderAlertContext(
+        identity=WriteIdentity(subject_id=identity.subject_id, actor_user_id=None),
+        provider=IntegrationProvider.GARMIN,
+        integration_connection_id=integration_connection_id,
+    )
+
+
+async def _refresh_owned_token_cache_alert(
+    session: AsyncSession,
+    client: Any,
+    *,
+    context: alerts_service.ProviderAlertContext,
+    resolve_if_clear: bool = True,
+) -> None:
+    """Owned counterpart of the legacy helper retained by weight-export code."""
+
+    warnings = list(getattr(client, "token_warnings", None) or ())
+    if warnings:
+        await alerts_service.raise_scoped_alert(
+            session,
+            context=context,
+            domain=Domain.GARMIN,
+            severity=Severity.WARN,
+            message=t("alert.garmin_token_cache", error=warnings[0]),
+            alert_key=TOKEN_ALERT_KEY,
+            legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        )
+    elif resolve_if_clear:
+        await alerts_service.resolve_scoped_by_key(
+            session,
+            context=context,
+            alert_key=TOKEN_ALERT_KEY,
+            legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        )
+
+
 async def sync(
     session: AsyncSession,
     client: Any,
@@ -2055,6 +2101,10 @@ async def sync_owned(
         identity=identity,
         integration_connection_id=integration_connection_id,
     )
+    alert_context = _owned_provider_alert_context(
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
 
     today = on_date or now_local().date()
     start = today - timedelta(days=days - 1)
@@ -2075,6 +2125,11 @@ async def sync_owned(
     except GarminAuthError as exc:
         auth_error = exc
 
+    # Alert legacy adoption and owned ingestion both lock identity/tenancy roots.
+    # Acquire the shared governance lock after vendor I/O but before either root
+    # lock so every path follows governance -> subject -> connection.
+    await acquire_identity_governance_lock(session)
+
     for day, raw in daily_payloads:
         await ingest_owned_daily(
             session,
@@ -2093,7 +2148,12 @@ async def sync_owned(
         )
 
     if auth_error is None:
-        await alerts_service.resolve_by_key(session, alert_key=AUTH_ALERT_KEY)
+        await alerts_service.resolve_scoped_by_key(
+            session,
+            context=alert_context,
+            alert_key=AUTH_ALERT_KEY,
+            legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        )
     else:
         if isinstance(auth_error, GarminMFARequired):
             summary["error"], message = "mfa", t("alert.garmin_mfa")
@@ -2104,15 +2164,21 @@ async def sync_owned(
         else:
             summary["error"] = "auth"
             message = t("alert.garmin_auth_fail", error=str(auth_error))
-        await alerts_service.raise_alert(
+        await alerts_service.raise_scoped_alert(
             session,
-            domain=DOMAIN,
-            severity=Severity.WARN.value,
+            context=alert_context,
+            domain=Domain.GARMIN,
+            severity=Severity.WARN,
             message=message,
             alert_key=AUTH_ALERT_KEY,
+            legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
         )
 
-    await refresh_token_cache_alert(session, client)
+    await _refresh_owned_token_cache_alert(
+        session,
+        client,
+        context=alert_context,
+    )
     return summary
 
 
