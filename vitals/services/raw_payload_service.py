@@ -588,17 +588,47 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
     back on failure) on its own so one domain's trouble can't lose or block
     another's completed work.
     """
+    from vitals.enums import IntegrationProvider
     from vitals.services import body_scan_service, garmin_service, hevy_service, labs_service
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 
     async with session_factory() as session:
+        async def _sweep_owned_garmin() -> int:
+            ownership = await resolve_legacy_ownership_context(
+                session,
+                actor_username=None,
+                required_connections=(IntegrationProvider.GARMIN,),
+            )
+            return await garmin_service.reparse_owned_pending(
+                session,
+                identity=ownership.system_action(),
+                integration_connection_id=ownership.connection_id(
+                    IntegrationProvider.GARMIN
+                ),
+            )
+
+        async def _sweep_owned_hevy() -> int:
+            ownership = await resolve_legacy_ownership_context(
+                session,
+                actor_username=None,
+                required_connections=(IntegrationProvider.HEVY,),
+            )
+            return await hevy_service.reparse_owned_pending(
+                session,
+                identity=ownership.system_action(),
+                integration_connection_id=ownership.connection_id(
+                    IntegrationProvider.HEVY
+                ),
+            )
+
         for name, sweep in (
-            ("garmin", garmin_service.reparse_pending),
-            ("hevy", hevy_service.reparse_pending),
-            ("labs", labs_service.reparse_pending),
-            ("body_comp", body_scan_service.reparse_pending),
+            ("garmin", _sweep_owned_garmin),
+            ("hevy", _sweep_owned_hevy),
+            ("labs", lambda: labs_service.reparse_pending(session)),
+            ("body_comp", lambda: body_scan_service.reparse_pending(session)),
         ):
             try:
-                await sweep(session)
+                await sweep()
                 await session.commit()
             except Exception:
                 logger.warning("raw payload sweep failed for domain %s", name, exc_info=True)

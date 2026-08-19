@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Domain
+from vitals.enums import Domain, IntegrationProvider
 from vitals.integrations.garmin_client import GarminClient
 from vitals.models.garmin import (
     SERIES_BODY_BATTERY,
@@ -20,6 +20,7 @@ from vitals.models.garmin import (
     SLEEP_SERIES_TYPES,
 )
 from vitals.services import alerts_service, garmin_service
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates
@@ -184,7 +185,23 @@ async def sync_now(
     if not client.is_configured:
         return _redirect(request, "?sync=not_configured")
 
-    summary = await garmin_service.sync(db, client)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+        required_connections=(IntegrationProvider.GARMIN,),
+    )
+    try:
+        summary = await garmin_service.sync_owned(
+            db,
+            client,
+            identity=ownership.owner_action(),
+            integration_connection_id=ownership.connection_id(
+                IntegrationProvider.GARMIN
+            ),
+        )
+    except garmin_service.GarminConnectionInactiveError:
+        await db.rollback()
+        return _redirect(request, "?sync=not_configured")
     await db.commit()
 
     if summary.get("error"):
@@ -217,7 +234,19 @@ async def import_health_auto_export(
             content={"error": "invalid JSON"},
         )
 
-    result = await garmin_service.ingest_health_auto_export(db, payload)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+        required_connections=(IntegrationProvider.GARMIN,),
+    )
+    result = await garmin_service.ingest_owned_health_auto_export(
+        db,
+        payload,
+        identity=ownership.owner_action(),
+        integration_connection_id=ownership.connection_id(
+            IntegrationProvider.GARMIN
+        ),
+    )
     await db.commit()
 
     if "application/json" in request.headers.get("accept", "") and file is None:

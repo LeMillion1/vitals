@@ -26,13 +26,20 @@ handed a client (tests pass a fake), never touching the network itself.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Severity, Source
+from vitals.enums import (
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Severity,
+    Source,
+)
 from vitals.i18n import t
 from vitals.integrations.garmin_client import (
     GarminAuthError,
@@ -56,6 +63,9 @@ from vitals.models.garmin import (
     GarminIntraday,
 )
 from vitals.models.raw_payload import RawPayload
+from vitals.models.identity import HealthSubject
+from vitals.models.tenancy import IntegrationConnection
+from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, raw_payload_service, weight_service
 from vitals.utils.timeutils import now_local, to_local_naive
 
@@ -67,6 +77,355 @@ TOKEN_ALERT_KEY = "garmin.token_cache"
 SLEEP_SCORE_FLOOR = 60
 BODY_BATTERY_FLOOR = 40
 SPO2_FLOOR = 90
+
+
+class GarminOwnershipError(Exception):
+    """Base class for fail-closed owned Garmin ingestion failures."""
+
+
+class GarminOwnershipValidationError(GarminOwnershipError):
+    """The caller did not provide the strict ownership contract."""
+
+
+class GarminConnectionInactiveError(GarminOwnershipValidationError):
+    """A non-active provenance root cannot authorize fresh provider work."""
+
+
+class GarminOwnershipConflictError(GarminOwnershipError):
+    """A legacy-global normalized key belongs to another ownership scope."""
+
+
+class GarminOwnershipAmbiguityError(GarminOwnershipConflictError):
+    """More than one normalized row can represent the requested owned fact."""
+
+
+class GarminRawPayloadInvariantError(GarminOwnershipError):
+    """A reparse root does not carry internally consistent Garmin provenance."""
+
+
+def _validate_owned_context(
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+) -> None:
+    if not isinstance(identity, WriteIdentity):
+        raise GarminOwnershipValidationError("identity must be a WriteIdentity")
+    if not isinstance(integration_connection_id, uuid.UUID):
+        raise GarminOwnershipValidationError(
+            "integration_connection_id must be a UUID"
+        )
+
+
+async def _load_owned_garmin_connection(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    allow_retired: bool = False,
+    for_update: bool = False,
+) -> IntegrationConnection:
+    """Validate the provider root independently of a raw-payload write."""
+
+    _validate_owned_context(identity, integration_connection_id)
+    statement = select(IntegrationConnection).where(
+        IntegrationConnection.id == integration_connection_id
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    with session.no_autoflush:
+        connection = await session.scalar(statement)
+    if connection is None:
+        raise GarminOwnershipValidationError(
+            "integration_connection_id does not exist"
+        )
+    if connection.subject_id != identity.subject_id:
+        raise GarminOwnershipConflictError(
+            "Garmin connection belongs to another subject"
+        )
+    if (
+        connection.provider != IntegrationProvider.GARMIN.value
+        or connection.connection_type != IntegrationConnectionType.ACCOUNT.value
+    ):
+        raise GarminOwnershipValidationError(
+            "integration_connection_id is not a Garmin account connection"
+        )
+    known_statuses = {status.value for status in IntegrationConnectionStatus}
+    if connection.status not in known_statuses:
+        raise GarminOwnershipValidationError(
+            "Garmin connection has an unknown lifecycle state"
+        )
+    allowed_statuses = {
+        IntegrationConnectionStatus.LEGACY.value,
+        IntegrationConnectionStatus.ACTIVE.value,
+    }
+    if allow_retired:
+        allowed_statuses.update(
+            {
+                IntegrationConnectionStatus.DISABLED.value,
+                IntegrationConnectionStatus.RETIRED.value,
+            }
+        )
+    if connection.status not in allowed_statuses:
+        raise GarminConnectionInactiveError(
+            f"Garmin connection status {connection.status!r} cannot authorize this operation"
+        )
+    return connection
+
+
+async def _lock_owned_garmin_scope(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    allow_retired: bool = False,
+) -> IntegrationConnection:
+    """Serialize owned writes in the shared Subject -> Connection lock order."""
+
+    _validate_owned_context(identity, integration_connection_id)
+    with session.no_autoflush:
+        subject_id = await session.scalar(
+            select(HealthSubject.id)
+            .where(HealthSubject.id == identity.subject_id)
+            .with_for_update()
+        )
+    if subject_id is None:
+        raise GarminOwnershipValidationError("identity subject does not exist")
+    return await _load_owned_garmin_connection(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        allow_retired=allow_retired,
+        for_update=True,
+    )
+
+
+async def _require_legacy_adoption_subject(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> None:
+    """Keep fully unscoped adoption behind the pre-registration invariant."""
+
+    subject_ids = list(
+        await session.scalars(
+            select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+        )
+    )
+    if subject_ids != [subject_id]:
+        raise GarminOwnershipConflictError(
+            "unscoped legacy Garmin row cannot be adopted after multi-subject "
+            "activation"
+        )
+
+
+def _row_scope_is_compatible(
+    row: GarminDaily | GarminActivity,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+) -> bool:
+    return (
+        row.subject_id in {None, identity.subject_id}
+        and row.integration_connection_id
+        in {None, integration_connection_id}
+    )
+
+
+async def _owned_single_row_candidate(
+    session: AsyncSession,
+    *,
+    model: type[GarminDaily] | type[GarminActivity],
+    natural_clause: Any,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    key_label: str,
+) -> GarminDaily | GarminActivity | None:
+    """Lock the legacy-global key before raw ingestion mutates anything.
+
+    Global unique constraints remain in force during the nullable expansion. A
+    foreign scoped row therefore cannot coexist yet; report a typed conflict
+    before the owned raw helper refreshes or inserts its side of the transaction.
+    """
+
+    rows = list(
+        await session.scalars(
+            select(model).where(natural_clause).with_for_update()
+        )
+    )
+    if len(rows) > 1:
+        raise GarminOwnershipAmbiguityError(
+            f"multiple Garmin rows match legacy-global key {key_label}"
+        )
+    if not rows:
+        return None
+    row = rows[0]
+    if not _row_scope_is_compatible(
+        row,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    ):
+        raise GarminOwnershipConflictError(
+            f"Garmin row for {key_label} belongs to another ownership scope"
+        )
+    if row.subject_id is None and row.integration_connection_id is None:
+        await _require_legacy_adoption_subject(
+            session, subject_id=identity.subject_id
+        )
+    return row
+
+
+def _adopt_owned_row(
+    row: GarminDaily | GarminActivity,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+) -> None:
+    """Fill nullable legacy roots without rewriting historical actor identity."""
+
+    if row.subject_id is None:
+        row.subject_id = identity.subject_id
+    if row.integration_connection_id is None:
+        row.integration_connection_id = integration_connection_id
+
+
+def _require_matching_normalized_raw_link(
+    row: GarminDaily | GarminActivity,
+    *,
+    raw_payload_id: int,
+) -> None:
+    """Never make a historical reparse silently replace another raw root."""
+
+    if row.raw_payload_id not in {None, raw_payload_id}:
+        raise GarminRawPayloadInvariantError(
+            "normalized Garmin row already references a different raw payload"
+        )
+
+
+def _validate_owned_raw_row(
+    raw_row: RawPayload,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    source: str,
+    external_id: str,
+) -> None:
+    expected = {
+        "subject_id": identity.subject_id,
+        "integration_connection_id": integration_connection_id,
+        "domain": DOMAIN,
+        "source": source,
+        "external_id": external_id,
+    }
+    for field_name, expected_value in expected.items():
+        if getattr(raw_row, field_name) != expected_value:
+            raise GarminRawPayloadInvariantError(
+                f"raw payload {field_name} does not match owned Garmin context"
+            )
+    if raw_row.file_asset_id is not None:
+        raise GarminRawPayloadInvariantError(
+            "Garmin account payload cannot reference a file asset"
+        )
+    if not isinstance(raw_row.payload, dict):
+        raise GarminRawPayloadInvariantError("Garmin raw payload must be a JSON object")
+
+
+async def _validate_intraday_raw_reference(
+    session: AsyncSession,
+    *,
+    raw_payload_id: int,
+    on_date: date_type,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    source: str,
+) -> None:
+    if not isinstance(raw_payload_id, int) or isinstance(raw_payload_id, bool):
+        raise GarminOwnershipValidationError("raw_payload_id must be an integer or None")
+    with session.no_autoflush:
+        raw_row = await session.scalar(
+            select(RawPayload)
+            .where(RawPayload.id == raw_payload_id)
+            .with_for_update()
+        )
+    if raw_row is None:
+        raise GarminRawPayloadInvariantError(
+            "intraday raw payload does not exist"
+        )
+    _validate_owned_raw_row(
+        raw_row,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        source=source,
+        external_id=f"daily:{on_date.isoformat()}",
+    )
+
+
+async def _locked_owned_raw_context(
+    session: AsyncSession,
+    raw_row: RawPayload,
+) -> tuple[RawPayload, WriteIdentity, uuid.UUID]:
+    """Reload and derive a reparse context from durable raw provenance."""
+
+    if (
+        not isinstance(raw_row, RawPayload)
+        or not isinstance(raw_row.id, int)
+        or isinstance(raw_row.id, bool)
+    ):
+        raise GarminOwnershipValidationError(
+            "raw_row must be a persisted RawPayload"
+        )
+    with session.no_autoflush:
+        preliminary = await session.scalar(
+            select(RawPayload)
+            .where(RawPayload.id == raw_row.id)
+            .execution_options(populate_existing=True)
+        )
+    if preliminary is None:
+        raise GarminRawPayloadInvariantError("raw payload no longer exists")
+    if not isinstance(preliminary.subject_id, uuid.UUID):
+        raise GarminRawPayloadInvariantError(
+            "raw payload has no subject ownership"
+        )
+    if not isinstance(preliminary.integration_connection_id, uuid.UUID):
+        raise GarminRawPayloadInvariantError(
+            "raw payload has no Garmin connection ownership"
+        )
+    scope_identity = WriteIdentity(
+        subject_id=preliminary.subject_id,
+        actor_user_id=None,
+    )
+    preliminary_connection_id = preliminary.integration_connection_id
+    await _lock_owned_garmin_scope(
+        session,
+        identity=scope_identity,
+        integration_connection_id=preliminary_connection_id,
+        allow_retired=True,
+    )
+    with session.no_autoflush:
+        persisted = await session.scalar(
+            select(RawPayload)
+            .where(RawPayload.id == raw_row.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    if persisted is None:
+        raise GarminRawPayloadInvariantError("raw payload no longer exists")
+    if (
+        persisted.subject_id != scope_identity.subject_id
+        or persisted.integration_connection_id
+        != preliminary_connection_id
+    ):
+        raise GarminRawPayloadInvariantError(
+            "raw payload ownership changed during reparse"
+        )
+    try:
+        identity = WriteIdentity(
+            subject_id=persisted.subject_id,
+            actor_user_id=persisted.actor_user_id,
+        )
+    except TypeError as exc:
+        raise GarminRawPayloadInvariantError(
+            "raw payload actor ownership is invalid"
+        ) from exc
+    return persisted, identity, persisted.integration_connection_id
 
 
 # ── Pure extraction helpers ───────────────────────────────────────────────────
@@ -401,6 +760,144 @@ async def ingest_intraday(
     return len(points)
 
 
+async def ingest_owned_intraday(
+    session: AsyncSession,
+    on_date: date_type,
+    series_type: str,
+    points: Sequence[tuple[datetime, float]],
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    raw_payload_id: Optional[int] = None,
+    source: str = Source.GARMIN_API.value,
+) -> int:
+    """Replace one subject+connection series without touching another scope.
+
+    Nullable rows in a compatible legacy scope are adopted immediately before
+    replacement so the delete itself remains exact ``S+C``. An empty series is
+    still a no-op and cannot erase prior samples.
+    """
+
+    if not points:
+        return 0
+    if source != Source.GARMIN_API.value:
+        raise GarminOwnershipValidationError(
+            "owned intraday ingestion accepts Garmin API provenance only"
+        )
+    await _lock_owned_garmin_scope(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+    if raw_payload_id is not None:
+        await _validate_intraday_raw_reference(
+            session,
+            raw_payload_id=raw_payload_id,
+            on_date=on_date,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            source=source,
+        )
+    return await _replace_owned_intraday(
+        session,
+        on_date,
+        series_type,
+        points,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        raw_payload_id=raw_payload_id,
+        source=source,
+    )
+
+
+async def _replace_owned_intraday(
+    session: AsyncSession,
+    on_date: date_type,
+    series_type: str,
+    points: Sequence[tuple[datetime, float]],
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    raw_payload_id: Optional[int],
+    source: str,
+) -> int:
+    """Validated implementation shared with historical reparse."""
+
+    if not points:
+        return 0
+
+    # SQL ``IN (value, NULL)`` never matches NULL, so spell nullable compatibility
+    # explicitly while keeping foreign rows outside the query entirely.
+    compatible_scope = and_(
+        or_(
+            GarminIntraday.subject_id == identity.subject_id,
+            GarminIntraday.subject_id.is_(None),
+        ),
+        or_(
+            GarminIntraday.integration_connection_id
+            == integration_connection_id,
+            GarminIntraday.integration_connection_id.is_(None),
+        ),
+    )
+    existing = list(
+        await session.scalars(
+            select(GarminIntraday)
+            .where(
+                GarminIntraday.date == on_date,
+                GarminIntraday.series_type == series_type,
+                compatible_scope,
+            )
+            .with_for_update()
+        )
+    )
+    scope_shapes = {
+        (row.subject_id, row.integration_connection_id) for row in existing
+    }
+    if len(scope_shapes) > 1:
+        raise GarminOwnershipAmbiguityError(
+            "owned and legacy Garmin intraday scopes coexist for one series"
+        )
+    if scope_shapes == {(None, None)}:
+        await _require_legacy_adoption_subject(
+            session, subject_id=identity.subject_id
+        )
+    for row in existing:
+        if row.subject_id is None:
+            row.subject_id = identity.subject_id
+        if row.integration_connection_id is None:
+            row.integration_connection_id = integration_connection_id
+    if existing:
+        await session.flush()
+
+    await session.execute(
+        GarminIntraday.__table__.delete().where(
+            GarminIntraday.subject_id == identity.subject_id,
+            GarminIntraday.integration_connection_id
+            == integration_connection_id,
+            GarminIntraday.date == on_date,
+            GarminIntraday.series_type == series_type,
+        )
+    )
+    session.add_all(
+        [
+            GarminIntraday(
+                subject_id=identity.subject_id,
+                integration_connection_id=integration_connection_id,
+                date=on_date,
+                domain=DOMAIN,
+                source=source,
+                raw_payload_id=raw_payload_id,
+                series_type=series_type,
+                ts=ts,
+                value=value,
+            )
+            for ts, value in points
+        ]
+    )
+    await session.flush()
+    return len(points)
+
+
 def _normalize_daily(raw: dict) -> dict:
     """Reduce the raw per-day sub-payload bundle to ``garmin_daily`` column values.
     Pure (no DB); every field defaults to None so a sparse day is fine."""
@@ -495,6 +992,41 @@ async def get_daily(session: AsyncSession, on_date: date_type) -> Optional[Garmi
     return result.scalars().first()
 
 
+async def get_owned_daily(
+    session: AsyncSession,
+    on_date: date_type,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+) -> Optional[GarminDaily]:
+    """Return exactly one daily row in an explicit ``S+C`` scope."""
+
+    await _load_owned_garmin_connection(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        # Reads and historical reparses retain provenance after retirement.
+        allow_retired=True,
+    )
+    rows = list(
+        await session.scalars(
+            select(GarminDaily)
+            .where(
+                GarminDaily.subject_id == identity.subject_id,
+                GarminDaily.integration_connection_id
+                == integration_connection_id,
+                GarminDaily.date == on_date,
+            )
+            .limit(2)
+        )
+    )
+    if len(rows) > 1:
+        raise GarminOwnershipAmbiguityError(
+            f"multiple owned Garmin daily rows exist for {on_date.isoformat()}"
+        )
+    return rows[0] if rows else None
+
+
 async def ingest_daily(
     session: AsyncSession,
     on_date: date_type,
@@ -547,6 +1079,233 @@ async def ingest_daily(
     return row
 
 
+async def _apply_owned_daily_raw(
+    session: AsyncSession,
+    on_date: date_type,
+    *,
+    raw_row: RawPayload,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    source: str,
+    candidate: GarminDaily | None,
+) -> GarminDaily:
+    """Apply one complete Garmin API bundle to its owned daily projection."""
+
+    if source != Source.GARMIN_API.value:
+        raise GarminRawPayloadInvariantError(
+            "complete Garmin daily projection requires Garmin API provenance"
+        )
+    fields = _normalize_daily(raw_row.payload)
+    raw_identity = WriteIdentity(
+        subject_id=identity.subject_id,
+        actor_user_id=raw_row.actor_user_id,
+    )
+
+    row = candidate
+    if row is None:
+        row = GarminDaily(
+            subject_id=identity.subject_id,
+            actor_user_id=raw_row.actor_user_id,
+            integration_connection_id=integration_connection_id,
+            date=on_date,
+            domain=DOMAIN,
+        )
+        session.add(row)
+    else:
+        _adopt_owned_row(
+            row,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+        )
+    row.source = source
+    row.raw_payload_id = raw_row.id
+    for key, value in fields.items():
+        setattr(row, key, value)
+    await session.flush()
+
+    for series_type, points in _intraday_series(raw_row.payload).items():
+        await _replace_owned_intraday(
+            session,
+            on_date,
+            series_type,
+            points,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            raw_payload_id=raw_row.id,
+            source=source,
+        )
+
+    weight_kg = _extract_weight_kg(raw_row.payload)
+    if weight_kg is not None:
+        weight_row = await weight_service.log_weight(
+            session,
+            on_date=on_date,
+            weight_kg=weight_kg,
+            source=Source.GARMIN_API.value,
+            raw_payload_id=raw_row.id,
+            identity=raw_identity,
+        )
+        if weight_row.subject_id not in {None, identity.subject_id}:
+            raise GarminOwnershipConflictError(
+                "Garmin weight fact belongs to another subject"
+            )
+        if weight_row.integration_connection_id not in {
+            None,
+            integration_connection_id,
+        }:
+            raise GarminOwnershipConflictError(
+                "Garmin weight fact belongs to another connection"
+            )
+        if weight_row.raw_payload_id not in {None, raw_row.id}:
+            raise GarminRawPayloadInvariantError(
+                "Garmin weight fact references a different raw payload"
+            )
+        if weight_row.subject_id is None:
+            weight_row.subject_id = identity.subject_id
+        if weight_row.integration_connection_id is None:
+            weight_row.integration_connection_id = integration_connection_id
+        if weight_row.raw_payload_id is None:
+            weight_row.raw_payload_id = raw_row.id
+        await session.flush()
+    raw_row.processed_at = now_local()
+    return row
+
+
+async def _apply_owned_hae_raw(
+    session: AsyncSession,
+    on_date: date_type,
+    *,
+    raw_row: RawPayload,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    candidate: GarminDaily | None,
+) -> GarminDaily:
+    """Apply only fields present in one owned Health Auto Export payload."""
+
+    raw_fields = raw_row.payload.get("metrics")
+    allowed_fields = {column for column, _convert in _HAE_METRIC_MAP.values()}
+    if not isinstance(raw_fields, dict) or any(
+        key not in allowed_fields for key in raw_fields
+    ):
+        raise GarminRawPayloadInvariantError(
+            "Health Auto Export raw payload has invalid normalized metrics"
+        )
+
+    row = candidate
+    if row is None:
+        row = GarminDaily(
+            subject_id=identity.subject_id,
+            actor_user_id=raw_row.actor_user_id,
+            integration_connection_id=integration_connection_id,
+            date=on_date,
+            domain=DOMAIN,
+        )
+        session.add(row)
+    else:
+        _adopt_owned_row(
+            row,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+        )
+    row.source = Source.HEALTH_AUTO_EXPORT.value
+    row.raw_payload_id = raw_row.id
+    for key, value in raw_fields.items():
+        setattr(row, key, value)
+    await session.flush()
+    raw_row.processed_at = now_local()
+    return row
+
+
+async def ingest_owned_daily(
+    session: AsyncSession,
+    on_date: date_type,
+    raw: dict,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    source: str = Source.GARMIN_API.value,
+) -> GarminDaily:
+    """Owned raw-first daily ingest with scoped normalized replacement."""
+
+    if not isinstance(on_date, date_type) or isinstance(on_date, datetime):
+        raise GarminOwnershipValidationError("on_date must be a date")
+    if not isinstance(raw, dict):
+        raise GarminOwnershipValidationError("raw must be a JSON object")
+    if source != Source.GARMIN_API.value:
+        raise GarminOwnershipValidationError(
+            "owned daily ingestion accepts Garmin API bundles only"
+        )
+    await _load_owned_garmin_connection(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+
+    # Preserve the established advisory -> normalized/raw -> weight/outbox order.
+    from vitals.services import garmin_weight_service
+
+    await garmin_weight_service.lock_active_weight_change(session)
+    await _lock_owned_garmin_scope(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+    if _extract_weight_kg(raw) is not None:
+        # The weight domain still has a global active-date invariant. Keep its
+        # bridge behind the registration-disabled stage gate so it can never
+        # supersede another subject before the scoped weight cutover lands.
+        await _require_legacy_adoption_subject(
+            session,
+            subject_id=identity.subject_id,
+        )
+    candidate = await _owned_single_row_candidate(
+        session,
+        model=GarminDaily,
+        natural_clause=GarminDaily.date == on_date,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        key_label=f"daily:{on_date.isoformat()}",
+    )
+    external_id = f"daily:{on_date.isoformat()}"
+    raw_row = await raw_payload_service.upsert_owned_raw_payload(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        domain=DOMAIN,
+        source=source,
+        external_id=external_id,
+        payload=raw,
+    )
+    _validate_owned_raw_row(
+        raw_row,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        source=source,
+        external_id=external_id,
+    )
+    if candidate is None:
+        # ``upsert_owned_raw_payload`` locks C. Re-read normalized absence after
+        # that serialization point so a concurrent writer cannot leave us with
+        # a stale ``None`` candidate and a duplicate insert.
+        candidate = await _owned_single_row_candidate(
+            session,
+            model=GarminDaily,
+            natural_clause=GarminDaily.date == on_date,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            key_label=external_id,
+        )
+    return await _apply_owned_daily_raw(
+        session,
+        on_date,
+        raw_row=raw_row,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        source=source,
+        candidate=candidate,
+    )
+
+
 async def reparse_daily_from_raw(session: AsyncSession, raw_row: RawPayload) -> GarminDaily:
     """Re-run the current parser against a daily payload already on disk — no
     Garmin call. Recovers columns/series the parser gained after this row was
@@ -559,6 +1318,145 @@ async def reparse_daily_from_raw(session: AsyncSession, raw_row: RawPayload) -> 
     row = await ingest_daily(session, on_date, raw=raw_row.payload)
     raw_row.fetched_at = original_fetched_at
     return row
+
+
+def _owned_daily_date(raw_row: RawPayload) -> date_type:
+    external_id = raw_row.external_id or ""
+    if not external_id.startswith("daily:"):
+        raise GarminRawPayloadInvariantError(
+            "daily reparse requires a daily: external_id"
+        )
+    value = external_id.removeprefix("daily:")
+    try:
+        on_date = date_type.fromisoformat(value)
+    except ValueError:
+        raise GarminRawPayloadInvariantError(
+            "daily raw payload has an invalid external date"
+        ) from None
+    if external_id != f"daily:{on_date.isoformat()}":
+        raise GarminRawPayloadInvariantError(
+            "daily raw payload external_id is not canonical"
+        )
+    return on_date
+
+
+async def reparse_owned_daily_from_raw(
+    session: AsyncSession,
+    raw_row: RawPayload,
+) -> GarminDaily:
+    """Reparse a daily row from its own durable ``S+C`` raw root.
+
+    Unlike fresh ingestion this accepts a retired connection: retirement closes
+    new provider activity, not the ability to recover historical normalized data.
+    The raw row is never re-upserted, so fetch time and historical actor remain
+    unchanged.
+    """
+
+    from vitals.services import garmin_weight_service
+
+    await garmin_weight_service.lock_active_weight_change(session)
+    persisted, identity, connection_id = await _locked_owned_raw_context(
+        session, raw_row
+    )
+    on_date = _owned_daily_date(persisted)
+    if persisted.source != Source.GARMIN_API.value:
+        raise GarminRawPayloadInvariantError(
+            "daily raw payload must use Garmin API provenance"
+        )
+    _validate_owned_raw_row(
+        persisted,
+        identity=identity,
+        integration_connection_id=connection_id,
+        source=Source.GARMIN_API.value,
+        external_id=f"daily:{on_date.isoformat()}",
+    )
+    candidate = await _owned_single_row_candidate(
+        session,
+        model=GarminDaily,
+        natural_clause=GarminDaily.date == on_date,
+        identity=identity,
+        integration_connection_id=connection_id,
+        key_label=persisted.external_id,
+    )
+    if candidate is not None:
+        _require_matching_normalized_raw_link(
+            candidate,
+            raw_payload_id=persisted.id,
+        )
+    if _extract_weight_kg(persisted.payload) is not None:
+        await _require_legacy_adoption_subject(
+            session,
+            subject_id=identity.subject_id,
+        )
+    return await _apply_owned_daily_raw(
+        session,
+        on_date,
+        raw_row=persisted,
+        identity=identity,
+        integration_connection_id=connection_id,
+        source=Source.GARMIN_API.value,
+        candidate=candidate,
+    )
+
+
+def _owned_hae_date(raw_row: RawPayload) -> date_type:
+    external_id = raw_row.external_id or ""
+    if not external_id.startswith("hae:"):
+        raise GarminRawPayloadInvariantError(
+            "Health Auto Export reparse requires a hae: external_id"
+        )
+    value = external_id.removeprefix("hae:")
+    try:
+        on_date = date_type.fromisoformat(value)
+    except ValueError:
+        raise GarminRawPayloadInvariantError(
+            "Health Auto Export raw payload has an invalid external date"
+        ) from None
+    if external_id != f"hae:{on_date.isoformat()}":
+        raise GarminRawPayloadInvariantError(
+            "Health Auto Export raw external_id is not canonical"
+        )
+    return on_date
+
+
+async def reparse_owned_health_auto_export_from_raw(
+    session: AsyncSession,
+    raw_row: RawPayload,
+) -> GarminDaily:
+    """Reapply one owned HAE partial payload without clobbering other columns."""
+
+    persisted, identity, connection_id = await _locked_owned_raw_context(
+        session, raw_row
+    )
+    on_date = _owned_hae_date(persisted)
+    _validate_owned_raw_row(
+        persisted,
+        identity=identity,
+        integration_connection_id=connection_id,
+        source=Source.HEALTH_AUTO_EXPORT.value,
+        external_id=f"hae:{on_date.isoformat()}",
+    )
+    candidate = await _owned_single_row_candidate(
+        session,
+        model=GarminDaily,
+        natural_clause=GarminDaily.date == on_date,
+        identity=identity,
+        integration_connection_id=connection_id,
+        key_label=f"daily:{on_date.isoformat()}",
+    )
+    if candidate is not None:
+        _require_matching_normalized_raw_link(
+            candidate,
+            raw_payload_id=persisted.id,
+        )
+    return await _apply_owned_hae_raw(
+        session,
+        on_date,
+        raw_row=persisted,
+        identity=identity,
+        integration_connection_id=connection_id,
+        candidate=candidate,
+    )
 
 
 # ── Activities ────────────────────────────────────────────────────────────────
@@ -609,6 +1507,139 @@ async def ingest_activities(session: AsyncSession, activities: Sequence[dict]) -
     return written
 
 
+def _activity_external_id(raw: dict) -> str:
+    return str(raw.get("activityId") or raw.get("activityid") or "").strip()
+
+
+async def _apply_owned_activity_raw(
+    session: AsyncSession,
+    *,
+    raw_row: RawPayload,
+    external_id: str,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    candidate: GarminActivity | None,
+) -> GarminActivity:
+    raw = raw_row.payload
+    start = _parse_activity_start(raw)
+    row = candidate
+    if row is None:
+        row = GarminActivity(
+            subject_id=identity.subject_id,
+            actor_user_id=raw_row.actor_user_id,
+            integration_connection_id=integration_connection_id,
+            external_id=external_id,
+            domain=DOMAIN,
+        )
+        session.add(row)
+    else:
+        _adopt_owned_row(
+            row,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+        )
+    row.source = Source.GARMIN_API.value
+    row.raw_payload_id = raw_row.id
+    row.date = (start or now_local()).date()
+    row.activity_type = _dig(raw, "activityType", "typeKey") or raw.get(
+        "activityType"
+    )
+    row.name = raw.get("activityName")
+    row.start_time = start
+    row.duration_seconds = _intish(raw.get("duration"))
+    row.distance_m = _num(raw.get("distance"))
+    row.calories = _intish(raw.get("calories"))
+    row.avg_hr = _intish(raw.get("averageHR"))
+    row.max_hr = _intish(raw.get("maxHR"))
+    row.elevation_gain_m = _num(raw.get("elevationGain"))
+    row.avg_power = _intish(raw.get("avgPower"))
+    row.training_effect_aerobic = _num(raw.get("aerobicTrainingEffect"))
+    row.training_effect_anaerobic = _num(raw.get("anaerobicTrainingEffect"))
+    row.hr_zone_seconds = _normalize_hr_zones(raw)
+    row.splits = _normalize_splits(raw)
+    await session.flush()
+    raw_row.processed_at = now_local()
+    return row
+
+
+async def ingest_owned_activities(
+    session: AsyncSession,
+    activities: Sequence[dict],
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+) -> int:
+    """Owned raw-first activity upsert, isolated by ``S+C+external_id``."""
+
+    await _lock_owned_garmin_scope(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+
+    prepared: list[tuple[dict, str]] = []
+    candidates: dict[str, GarminActivity | None] = {}
+    for raw in activities:
+        if not isinstance(raw, dict):
+            raise GarminOwnershipValidationError(
+                "each Garmin activity must be a JSON object"
+            )
+        external_id = _activity_external_id(raw)
+        if not external_id:
+            continue
+        if external_id not in candidates:
+            candidate = await _owned_single_row_candidate(
+                session,
+                model=GarminActivity,
+                natural_clause=GarminActivity.external_id == external_id,
+                identity=identity,
+                integration_connection_id=integration_connection_id,
+                key_label=f"activity:{external_id}",
+            )
+            candidates[external_id] = candidate  # type: ignore[assignment]
+        prepared.append((raw, external_id))
+
+    written = 0
+    for raw, external_id in prepared:
+        raw_external_id = f"activity:{external_id}"
+        raw_row = await raw_payload_service.upsert_owned_raw_payload(
+            session,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            domain=DOMAIN,
+            source=Source.GARMIN_API.value,
+            external_id=raw_external_id,
+            payload=raw,
+        )
+        _validate_owned_raw_row(
+            raw_row,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            source=Source.GARMIN_API.value,
+            external_id=raw_external_id,
+        )
+        if candidates[external_id] is None:
+            candidates[external_id] = await _owned_single_row_candidate(
+                session,
+                model=GarminActivity,
+                natural_clause=GarminActivity.external_id == external_id,
+                identity=identity,
+                integration_connection_id=integration_connection_id,
+                key_label=raw_external_id,
+            )  # type: ignore[assignment]
+        row = await _apply_owned_activity_raw(
+            session,
+            raw_row=raw_row,
+            external_id=external_id,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            candidate=candidates[external_id],
+        )
+        candidates[external_id] = row
+        written += 1
+    return written
+
+
 async def reparse_activity_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
     """Re-run the current parser against an activity payload already on disk —
     no Garmin call. Recovers the summary-level fields (elevation, power,
@@ -619,6 +1650,65 @@ async def reparse_activity_from_raw(session: AsyncSession, raw_row: RawPayload) 
     original_fetched_at = raw_row.fetched_at
     await ingest_activities(session, [raw_row.payload])
     raw_row.fetched_at = original_fetched_at
+
+
+def _owned_activity_id(raw_row: RawPayload) -> str:
+    external_id = raw_row.external_id or ""
+    if not external_id.startswith("activity:"):
+        raise GarminRawPayloadInvariantError(
+            "activity reparse requires an activity: external_id"
+        )
+    value = external_id.removeprefix("activity:")
+    if not value or external_id != f"activity:{value}":
+        raise GarminRawPayloadInvariantError(
+            "activity raw payload external_id is not canonical"
+        )
+    payload_id = _activity_external_id(raw_row.payload)
+    if payload_id != value:
+        raise GarminRawPayloadInvariantError(
+            "activity payload id does not match raw external_id"
+        )
+    return value
+
+
+async def reparse_owned_activity_from_raw(
+    session: AsyncSession,
+    raw_row: RawPayload,
+) -> GarminActivity:
+    """Reparse an activity without re-upserting or rebinding its raw root."""
+
+    persisted, identity, connection_id = await _locked_owned_raw_context(
+        session, raw_row
+    )
+    _validate_owned_raw_row(
+        persisted,
+        identity=identity,
+        integration_connection_id=connection_id,
+        source=Source.GARMIN_API.value,
+        external_id=persisted.external_id or "",
+    )
+    external_id = _owned_activity_id(persisted)
+    candidate = await _owned_single_row_candidate(
+        session,
+        model=GarminActivity,
+        natural_clause=GarminActivity.external_id == external_id,
+        identity=identity,
+        integration_connection_id=connection_id,
+        key_label=persisted.external_id,
+    )
+    if candidate is not None:
+        _require_matching_normalized_raw_link(
+            candidate,
+            raw_payload_id=persisted.id,
+        )
+    return await _apply_owned_activity_raw(
+        session,
+        raw_row=persisted,
+        external_id=external_id,
+        identity=identity,
+        integration_connection_id=connection_id,
+        candidate=candidate,
+    )
 
 
 async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
@@ -633,6 +1723,25 @@ async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
         await reparse_activity_from_raw(session, raw_row)
     else:
         raise ValueError(f"unrecognized garmin raw_payload external_id: {external_id!r}")
+
+
+async def reparse_owned_from_raw(
+    session: AsyncSession,
+    raw_row: RawPayload,
+) -> None:
+    """Dispatch a durable owned raw root without accepting caller-owned context."""
+
+    external_id = raw_row.external_id or ""
+    if external_id.startswith("daily:"):
+        await reparse_owned_daily_from_raw(session, raw_row)
+    elif external_id.startswith("hae:"):
+        await reparse_owned_health_auto_export_from_raw(session, raw_row)
+    elif external_id.startswith("activity:"):
+        await reparse_owned_activity_from_raw(session, raw_row)
+    else:
+        raise GarminRawPayloadInvariantError(
+            f"unrecognized owned Garmin raw external_id: {external_id!r}"
+        )
 
 
 async def reparse_pending(
@@ -655,6 +1764,103 @@ async def reparse_pending(
         limit=limit,
         since_days=since_days,
     )
+
+
+async def reparse_owned_pending(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    limit: int = raw_payload_service.REPARSE_BATCH,
+    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+) -> int:
+    """Sweep one explicit Garmin scope, isolating every reparse in a savepoint."""
+
+    await _load_owned_garmin_connection(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        allow_retired=True,
+    )
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise GarminOwnershipValidationError("limit must be a positive integer")
+    if (
+        not isinstance(since_days, int)
+        or isinstance(since_days, bool)
+        or since_days < 0
+    ):
+        raise GarminOwnershipValidationError(
+            "since_days must be a non-negative integer"
+        )
+
+    has_normalized = or_(
+        select(GarminDaily.id)
+        .where(
+            GarminDaily.raw_payload_id == RawPayload.id,
+            GarminDaily.subject_id == RawPayload.subject_id,
+            GarminDaily.integration_connection_id
+            == RawPayload.integration_connection_id,
+        )
+        .exists(),
+        select(GarminActivity.id)
+        .where(
+            GarminActivity.raw_payload_id == RawPayload.id,
+            GarminActivity.subject_id == RawPayload.subject_id,
+            GarminActivity.integration_connection_id
+            == RawPayload.integration_connection_id,
+        )
+        .exists(),
+    )
+    cutoff = now_local() - timedelta(days=since_days)
+    stmt = (
+        select(RawPayload)
+        .where(
+            RawPayload.subject_id == identity.subject_id,
+            RawPayload.integration_connection_id == integration_connection_id,
+            RawPayload.domain == DOMAIN,
+            RawPayload.source.in_(
+                [
+                    Source.GARMIN_API.value,
+                    Source.HEALTH_AUTO_EXPORT.value,
+                ]
+            ),
+            RawPayload.processed_at.is_(None),
+            RawPayload.fetched_at >= cutoff,
+            ~has_normalized,
+        )
+        .order_by(RawPayload.id)
+        .limit(limit)
+        .with_for_update()
+    )
+    rows = list(await session.scalars(stmt))
+    done = 0
+    for raw_row in rows:
+        raw_row_id = raw_row.id
+        try:
+            async with session.begin_nested():
+                # The query scopes candidates, and the reparse callback reloads the
+                # durable row and derives its historical actor. Check the supplied
+                # boundary too so a stale/mutated ORM object cannot switch targets.
+                if (
+                    raw_row.subject_id != identity.subject_id
+                    or raw_row.integration_connection_id
+                    != integration_connection_id
+                ):
+                    raise GarminRawPayloadInvariantError(
+                        "raw payload changed ownership during reparse sweep"
+                    )
+                await reparse_owned_from_raw(session, raw_row)
+                raw_row.processed_at = now_local()
+                await session.flush()
+        except Exception:
+            logger.warning(
+                "owned Garmin re-parse failed for raw payload %s",
+                raw_row_id,
+                exc_info=True,
+            )
+            continue
+        done += 1
+    return done
 
 
 def _normalize_hr_zones(raw: dict) -> Optional[list]:
@@ -825,6 +2031,91 @@ async def sync(
     return summary
 
 
+async def sync_owned(
+    session: AsyncSession,
+    client: Any,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    days: int = 2,
+    on_date: Optional[date_type] = None,
+) -> dict:
+    """Run a Garmin pull into one explicit subject/account scope.
+
+    The fail-closed connection preflight is a database read before vendor I/O,
+    so the caller's transaction remains open during the fetch. A later network /
+    persistence split should remove that pool-pressure tradeoff before broad
+    multi-user activation.
+    """
+
+    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+        raise GarminOwnershipValidationError("days must be a positive integer")
+    await _load_owned_garmin_connection(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+
+    today = on_date or now_local().date()
+    start = today - timedelta(days=days - 1)
+    summary = {"days": 0, "activities": 0, "error": None}
+    daily_payloads: list[tuple[date_type, dict]] = []
+    activities: Optional[Sequence[dict]] = None
+    auth_error: Optional[GarminAuthError] = None
+
+    # Resolve/validate ownership before this complete vendor-I/O phase. As in the
+    # legacy path, no database mutation or row/advisory lock spans network latency.
+    try:
+        for offset in range(days):
+            day = start + timedelta(days=offset)
+            raw = await client.fetch_daily(day)
+            daily_payloads.append((day, raw))
+        activities = await client.fetch_activities(start, today)
+        await _enrich_activity_details(client, activities)
+    except GarminAuthError as exc:
+        auth_error = exc
+
+    for day, raw in daily_payloads:
+        await ingest_owned_daily(
+            session,
+            day,
+            raw,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+        )
+        summary["days"] += 1
+    if activities is not None:
+        summary["activities"] = await ingest_owned_activities(
+            session,
+            activities,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+        )
+
+    if auth_error is None:
+        await alerts_service.resolve_by_key(session, alert_key=AUTH_ALERT_KEY)
+    else:
+        if isinstance(auth_error, GarminMFARequired):
+            summary["error"], message = "mfa", t("alert.garmin_mfa")
+        elif isinstance(auth_error, GarminLoginThrottled):
+            summary["error"], message = "throttled", t(
+                "alert.garmin_login_throttled"
+            )
+        else:
+            summary["error"] = "auth"
+            message = t("alert.garmin_auth_fail", error=str(auth_error))
+        await alerts_service.raise_alert(
+            session,
+            domain=DOMAIN,
+            severity=Severity.WARN.value,
+            message=message,
+            alert_key=AUTH_ALERT_KEY,
+        )
+
+    await refresh_token_cache_alert(session, client)
+    return summary
+
+
 # ── Light pulse (N3) ──────────────────────────────────────────────────────────
 # Outside the active hours on the settings card the pulse doesn't run: nothing it
 # reads (steps, active calories, intensity minutes) moves while he's asleep, and
@@ -871,7 +2162,152 @@ async def pulse(
     return out
 
 
-async def pulse_job(session_factory, redis=None) -> None:
+async def _pulse_base_payload(
+    session: AsyncSession,
+    *,
+    on_date: date_type,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+) -> dict:
+    """Read the latest compatible full bundle after pulse network I/O."""
+
+    daily_rows = list(
+        await session.scalars(
+            select(GarminDaily).where(GarminDaily.date == on_date).limit(2)
+        )
+    )
+    if len(daily_rows) > 1:
+        raise GarminOwnershipAmbiguityError(
+            f"multiple Garmin rows match legacy-global key daily:{on_date}"
+        )
+    if not daily_rows:
+        return {}
+    daily = daily_rows[0]
+    if not _row_scope_is_compatible(
+        daily,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    ):
+        raise GarminOwnershipConflictError(
+            "Garmin pulse day belongs to another ownership scope"
+        )
+    if daily.subject_id is None and daily.integration_connection_id is None:
+        await _require_legacy_adoption_subject(
+            session, subject_id=identity.subject_id
+        )
+    if daily.raw_payload_id is None:
+        raise GarminRawPayloadInvariantError(
+            "existing Garmin pulse day has no raw payload"
+        )
+    with session.no_autoflush:
+        raw_row = await session.scalar(
+            select(RawPayload).where(RawPayload.id == daily.raw_payload_id)
+        )
+    if raw_row is None:
+        raise GarminRawPayloadInvariantError(
+            "existing Garmin pulse raw payload no longer exists"
+        )
+    if raw_row.subject_id not in {None, identity.subject_id}:
+        raise GarminRawPayloadInvariantError(
+            "Garmin pulse raw payload belongs to another subject"
+        )
+    if raw_row.integration_connection_id not in {
+        None,
+        integration_connection_id,
+    }:
+        raise GarminRawPayloadInvariantError(
+            "Garmin pulse raw payload belongs to another connection"
+        )
+    if raw_row.subject_id is None and raw_row.integration_connection_id is None:
+        await _require_legacy_adoption_subject(
+            session, subject_id=identity.subject_id
+        )
+    if (
+        raw_row.domain != DOMAIN
+        or raw_row.source
+        not in {
+            Source.GARMIN_API.value,
+            Source.HEALTH_AUTO_EXPORT.value,
+        }
+        or raw_row.external_id
+        != (
+            f"hae:{on_date.isoformat()}"
+            if raw_row.source == Source.HEALTH_AUTO_EXPORT.value
+            else f"daily:{on_date.isoformat()}"
+        )
+        or raw_row.file_asset_id is not None
+        or not isinstance(raw_row.payload, dict)
+    ):
+        raise GarminRawPayloadInvariantError(
+            "existing Garmin pulse raw payload has incompatible provenance"
+        )
+    return dict(raw_row.payload)
+
+
+async def pulse_owned(
+    session: AsyncSession,
+    client: Any,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    on_date: Optional[date_type] = None,
+) -> dict:
+    """Refresh today's summary inside one owned daily/raw scope."""
+
+    await _load_owned_garmin_connection(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+    day = on_date or now_local().date()
+    out: dict = {"steps": None, "error": None}
+    try:
+        fresh = await client.fetch_summary(day)
+    except GarminAuthError as exc:
+        logger.warning("Garmin pulse skipped: %s", exc)
+        out["error"] = (
+            "throttled" if isinstance(exc, GarminLoginThrottled) else "auth"
+        )
+        return out
+    if not fresh:
+        out["error"] = "empty"
+        return out
+
+    # Fetch first, then serialize and read the latest stored bundle. Reading the
+    # base before the await lets a concurrent full sync commit newer sleep/HRV
+    # data which this lightweight pulse would subsequently overwrite as stale.
+    from vitals.services import garmin_weight_service
+
+    await garmin_weight_service.lock_active_weight_change(session)
+    await _lock_owned_garmin_scope(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+    raw = await _pulse_base_payload(
+        session,
+        on_date=day,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+    raw["summary"] = fresh
+    row = await ingest_owned_daily(
+        session,
+        day,
+        raw,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+    out["steps"] = row.steps
+    return out
+
+
+async def pulse_job(
+    session_factory,
+    redis=None,
+    *,
+    actor_username: str | None = None,
+) -> None:
     """The light pulse on its own interval (both from the settings card).
 
     Cheap by construction, but it still opens a Garmin session — which is safe
@@ -882,6 +2318,10 @@ async def pulse_job(session_factory, redis=None) -> None:
     intervals have no concept of a window, and because a saved setting must apply
     to the *next* tick without touching the job."""
     from vitals.integrations.garmin_client import GarminClient
+    from vitals.services.legacy_ownership import (
+        LegacyOwnershipError,
+        resolve_legacy_ownership_context,
+    )
     from vitals.services.proactive import prefs
 
     async with session_factory() as session:
@@ -894,7 +2334,31 @@ async def pulse_job(session_factory, redis=None) -> None:
         client = GarminClient.from_config(redis=redis)
         if not client.is_configured:
             return
-        await pulse(session, client)
+        try:
+            ownership = await resolve_legacy_ownership_context(
+                session,
+                actor_username=actor_username,
+                required_connections=(IntegrationProvider.GARMIN,),
+            )
+        except LegacyOwnershipError:
+            logger.warning(
+                "Garmin pulse skipped: legacy ownership is unavailable",
+                exc_info=True,
+            )
+            return
+        try:
+            await pulse_owned(
+                session,
+                client,
+                identity=ownership.write_identity,
+                integration_connection_id=ownership.connection_id(
+                    IntegrationProvider.GARMIN
+                ),
+            )
+        except GarminConnectionInactiveError:
+            logger.info("Garmin pulse skipped: connection is not active")
+            await session.rollback()
+            return
         await session.commit()
 
 
@@ -959,6 +2423,92 @@ async def ingest_health_auto_export(session: AsyncSession, payload: dict) -> dic
         written += 1
 
     return {"dates": written}
+
+
+async def ingest_owned_health_auto_export(
+    session: AsyncSession,
+    payload: dict,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+) -> dict:
+    """Owned HAE ingest with a distinct raw key and partial daily projection."""
+
+    if not isinstance(payload, dict):
+        raise GarminOwnershipValidationError("payload must be a JSON object")
+    await _lock_owned_garmin_scope(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+
+    metrics = _dig(payload, "data", "metrics") or payload.get("metrics") or []
+    by_date: dict[date_type, dict] = {}
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        mapping = _HAE_METRIC_MAP.get(metric.get("name"))
+        if not mapping:
+            continue
+        column, convert = mapping
+        for point in metric.get("data") or []:
+            if not isinstance(point, dict):
+                continue
+            day = _parse_hae_date(point.get("date"))
+            if day is None:
+                continue
+            value = convert(point.get("qty"))
+            if value is not None:
+                by_date.setdefault(day, {})[column] = value
+
+    prepared: list[tuple[date_type, dict, GarminDaily | None]] = []
+    for day, fields in sorted(by_date.items()):
+        candidate = await _owned_single_row_candidate(
+            session,
+            model=GarminDaily,
+            natural_clause=GarminDaily.date == day,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            key_label=f"daily:{day.isoformat()}",
+        )
+        prepared.append((day, fields, candidate))  # type: ignore[arg-type]
+
+    for day, fields, candidate in prepared:
+        external_id = f"hae:{day.isoformat()}"
+        raw_row = await raw_payload_service.upsert_owned_raw_payload(
+            session,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            domain=DOMAIN,
+            source=Source.HEALTH_AUTO_EXPORT.value,
+            external_id=external_id,
+            payload={"metrics": fields, "source_payload": payload},
+        )
+        _validate_owned_raw_row(
+            raw_row,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            source=Source.HEALTH_AUTO_EXPORT.value,
+            external_id=external_id,
+        )
+        if candidate is None:
+            candidate = await _owned_single_row_candidate(
+                session,
+                model=GarminDaily,
+                natural_clause=GarminDaily.date == day,
+                identity=identity,
+                integration_connection_id=integration_connection_id,
+                key_label=f"daily:{day.isoformat()}",
+            )  # type: ignore[assignment]
+        await _apply_owned_hae_raw(
+            session,
+            day,
+            raw_row=raw_row,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            candidate=candidate,
+        )
+    return {"dates": len(prepared)}
 
 
 def _parse_hae_date(value: Any) -> Optional[date_type]:
@@ -1153,11 +2703,18 @@ async def daily_count(session: AsyncSession) -> int:
 
 
 # ── Scheduler job ─────────────────────────────────────────────────────────────
-async def sync_job(session_factory, redis=None, *, days: int = 2) -> Optional[dict]:
+async def sync_job(
+    session_factory,
+    redis=None,
+    *,
+    days: int = 2,
+    actor_username: str | None = None,
+) -> Optional[dict]:
     """Garmin poll (registered in vitals/scheduler/jobs.py). No-ops cleanly when
     Garmin isn't configured — returns None in that case, else the sync summary
     (the MCP ``sync_garmin`` tool reports it back to the model)."""
     from vitals.integrations.garmin_client import GarminClient
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 
     client = GarminClient.from_config(redis=redis)
     if not client.is_configured:
@@ -1165,10 +2722,33 @@ async def sync_job(session_factory, redis=None, *, days: int = 2) -> Optional[di
     async with session_factory() as session:
         from vitals.services.language_service import get_language
         from vitals.i18n import current_lang
-        lang = await get_language(session, redis)
+
+        ownership = await resolve_legacy_ownership_context(
+            session,
+            actor_username=actor_username,
+            required_connections=(IntegrationProvider.GARMIN,),
+        )
+        lang = await get_language(
+            session,
+            redis,
+            user_id=ownership.owner_user_id,
+        )
         current_lang.set(lang)
 
-        summary = await sync(session, client, days=days)
+        try:
+            summary = await sync_owned(
+                session,
+                client,
+                identity=ownership.write_identity,
+                integration_connection_id=ownership.connection_id(
+                    IntegrationProvider.GARMIN
+                ),
+                days=days,
+            )
+        except GarminConnectionInactiveError:
+            logger.info("Garmin sync skipped: connection is not active")
+            await session.rollback()
+            return None
         await session.commit()
         if redis is not None and summary.get("error") is None:
             import time

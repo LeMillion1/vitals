@@ -9,9 +9,10 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Domain, Severity
+from vitals.enums import Domain, IntegrationProvider, Severity
 from vitals.integrations.hevy_client import HevyAPIError, HevyClient, HevyNotConfigured
 from vitals.services import alerts_service, hevy_service
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates
 
@@ -105,12 +106,27 @@ async def sync_now(
         return _redirect(request, "?sync=not_configured")
 
     try:
-        summary = await hevy_service.sync(db, client)
+        ownership = await resolve_legacy_ownership_context(
+            db,
+            actor_username=username,
+            required_connections=(IntegrationProvider.HEVY,),
+        )
+        summary = await hevy_service.sync_owned(
+            db,
+            client,
+            identity=ownership.owner_action(),
+            integration_connection_id=ownership.connection_id(
+                IntegrationProvider.HEVY
+            ),
+        )
         await alerts_service.resolve_by_key(db, alert_key=SYNC_ALERT_KEY)
         await db.commit()
         
         import time
         await redis.set("sync:last_success:hevy", str(int(time.time())))
+    except hevy_service.HevyOwnershipInactiveConnectionError:
+        await db.rollback()
+        return _redirect(request, "?sync=not_configured")
     except (HevyNotConfigured, HevyAPIError) as e:
         logger.warning("Hevy sync failed: %s", e)
         await alerts_service.raise_alert(
