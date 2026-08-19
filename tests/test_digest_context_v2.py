@@ -24,6 +24,7 @@ from vitals.models.milestones import Milestone
 from vitals.models.nutrition import MealLog
 from vitals.models.signals import DayContext, Signal
 from vitals.models.skincare import SkincareLog, SkincareObservation, SkincareProduct
+from vitals.models.system_alert import SystemAlert
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, WeightLog
 from vitals.services import (
@@ -60,6 +61,63 @@ async def test_report_window_separates_closed_day_and_brief(monkeypatch):
         )
     with pytest.raises(ValueError, match="future"):
         digest_service.report_window(on_date=DAY + timedelta(days=1))
+
+
+async def test_platform_scheduler_diagnostics_never_reach_report_context(
+    db_session,
+):
+    sentinel = "secret-path:/srv/private/trace.sql"
+    stamp = datetime.combine(DAY, time(8, 0))
+    db_session.add_all(
+        [
+            SystemAlert(
+                domain=Domain.SYSTEM.value,
+                severity="warn",
+                message=sentinel,
+                alert_key="scheduler.job_failed:raw_payload_sweep",
+                entity_ref="raw_payload_sweep",
+                created_at=stamp,
+            ),
+            SystemAlert(
+                domain=Domain.SYSTEM.value,
+                severity="info",
+                message="subject-visible",
+                alert_key="brief_empty_day",
+                entity_ref="",
+                created_at=stamp,
+            ),
+            SystemAlert(
+                domain=Domain.SYSTEM.value,
+                severity="warn",
+                message="subject-job-visible",
+                alert_key="scheduler.job_failed:weekly_digest",
+                entity_ref="weekly_digest",
+                created_at=stamp,
+            ),
+            SystemAlert(
+                domain=Domain.SYSTEM.value,
+                severity="warn",
+                message="provider-job-visible",
+                alert_key="scheduler.job_failed:garmin_sync",
+                entity_ref="garmin_sync",
+                created_at=stamp,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    ctx = await digest_service.assemble_context(
+        db_session,
+        on_date=DAY,
+        period_days=1,
+        mode=digest_service.REPORT_MODE_BRIEF,
+    )
+
+    messages = {row["message"] for row in ctx["alerts"]}
+    assert "subject-visible" in messages
+    assert "subject-job-visible" in messages
+    assert "provider-job-visible" in messages
+    assert sentinel not in messages
 
 
 async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session):

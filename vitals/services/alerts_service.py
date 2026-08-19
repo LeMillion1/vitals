@@ -623,6 +623,21 @@ def _is_platform_key(alert_key: str) -> bool:
     return any(alert_key in keys for keys in PLATFORM_ALERT_KEYS.values())
 
 
+def is_platform_alert_key(alert_key: str) -> bool:
+    """Return whether ``alert_key`` belongs to a platform-only namespace.
+
+    This small public classifier is the transitional composition guard while
+    Today/digest are still on the singleton reader.  Platform diagnostics may
+    contain operational exception details and must never enter a health report
+    or an external-model prompt.  Full subject/provider aggregation replaces
+    this guard at the composition cutover.
+    """
+
+    if not isinstance(alert_key, str):
+        return False
+    return _is_platform_key(alert_key)
+
+
 def _is_provider_key(alert_key: str) -> bool:
     return any(
         _provider_key_matches(provider, alert_key)

@@ -11,6 +11,7 @@ from datetime import timedelta
 
 from vitals.enums import DigestKind, Domain, Severity, Source
 from vitals.models.milestones import DOMAIN as INSIGHTS_DOMAIN, WeeklyDigest
+from vitals.models.system_alert import SystemAlert
 from vitals.services import milestones_service, nutrition_service, today_service, weight_service
 from vitals.utils.timeutils import today_local
 
@@ -216,6 +217,53 @@ async def test_recovery_advice_arrives_as_an_observation(db_session):
     notes = [a for a in ctx["attention"] if a["severity"] == Severity.NOTE.value]
     assert notes, ctx["attention"]
     assert all(a["severity"] != Severity.WARN.value for a in notes)
+
+
+async def test_platform_scheduler_diagnostics_never_reach_today_attention(
+    db_session,
+):
+    sentinel = "secret-path:/srv/private/trace.sql"
+    db_session.add_all(
+        [
+            SystemAlert(
+                domain=Domain.SYSTEM.value,
+                severity=Severity.WARN.value,
+                message=sentinel,
+                alert_key="scheduler.job_failed:raw_payload_sweep",
+                entity_ref="raw_payload_sweep",
+            ),
+            SystemAlert(
+                domain=Domain.SYSTEM.value,
+                severity=Severity.INFO.value,
+                message="subject-visible",
+                alert_key="brief_empty_day",
+                entity_ref="",
+            ),
+            SystemAlert(
+                domain=Domain.SYSTEM.value,
+                severity=Severity.WARN.value,
+                message="subject-job-visible",
+                alert_key="scheduler.job_failed:weekly_digest",
+                entity_ref="weekly_digest",
+            ),
+            SystemAlert(
+                domain=Domain.SYSTEM.value,
+                severity=Severity.WARN.value,
+                message="provider-job-visible",
+                alert_key="scheduler.job_failed:garmin_sync",
+                entity_ref="garmin_sync",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    ctx = await today_service.build(db_session, enabled_modules=ALL_OFF)
+
+    messages = {row["message"] for row in ctx["attention"]}
+    assert "subject-visible" in messages
+    assert "subject-job-visible" in messages
+    assert "provider-job-visible" in messages
+    assert sentinel not in messages
 
 
 async def test_feed_stays_a_glance_on_a_busy_day(db_session):

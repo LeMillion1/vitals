@@ -262,6 +262,7 @@ async def build(
     attention = [
         {"severity": a.severity, "message": a.message}
         for a in await alerts_service.list_active(session)
+        if not alerts_service.is_platform_alert_key(a.alert_key)
     ]
     advice = garmin.get("advice")
     if advice:

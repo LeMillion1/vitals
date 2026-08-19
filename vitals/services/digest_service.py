@@ -1528,6 +1528,7 @@ async def assemble_context(
         for row in await alerts_service.list_active(session)
         if row.created_at.date() <= period_end
         and domain_visible(row.domain)
+        and not alerts_service.is_platform_alert_key(row.alert_key)
     ]
     ctx["alerts"] = (
         [

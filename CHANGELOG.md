@@ -97,6 +97,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the exact-one legacy bridge against concurrent subject creation. Registration
   remains closed while the remaining alert writers, conflict mutations, global
   uniqueness, and subject-aware composition are migrated.
+- Platform-only scheduler diagnostics are now excluded from the transitional
+  Today and digest/brief composition readers. Operational exception text can no
+  longer appear in a health card or be forwarded to the external LLM while the
+  full subject-aware composition cutover is still in progress.
 
 ### Fixed — AI period-report context
 
