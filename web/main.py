@@ -14,7 +14,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from web.auth import router as auth_router
 from web.csrf import add_csrf_origin_check, add_security_headers
@@ -32,6 +33,7 @@ from web.deps import (
     require_module,
 )
 from web.templating import STATIC_DIR, templates
+from web.uploads import storage_refs_for_route_key
 
 logger = logging.getLogger(__name__)
 
@@ -169,11 +171,48 @@ add_security_headers(app)
 UPLOADS_DIR = os.path.realpath(os.path.join(STATIC_DIR, "uploads"))
 
 
-@app.get("/static/uploads/{key:path}", dependencies=[Depends(require_auth)])
-async def serve_upload(key: str):
+@app.get("/static/uploads/{key:path}")
+async def serve_upload(
+    key: str,
+    db: AsyncSession = Depends(get_session),
+    username: str = Depends(require_auth),
+):
     path = os.path.realpath(os.path.join(UPLOADS_DIR, key))
     # ``..`` (and any symlink out) resolves to somewhere else: a miss, not a read.
     if not path.startswith(UPLOADS_DIR + os.sep) or not os.path.isfile(path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    # A session proves who the browser user is, not which subject owns this
+    # particular medical file.  Resolve the compatibility subject independently
+    # and honor FileAsset lifecycle before touching the bytes.  An unregistered
+    # file remains readable only in the exact-one-subject legacy bridge; adding a
+    # second subject closes that fallback because the resolver fails closed.
+    from vitals.enums import FileAssetStatus, FileStorageBackend
+    from vitals.models.tenancy import FileAsset
+    from vitals.services.legacy_ownership import (
+        LegacyOwnershipError,
+        resolve_legacy_ownership_context,
+    )
+
+    try:
+        ownership = await resolve_legacy_ownership_context(
+            db,
+            actor_username=username,
+        )
+    except LegacyOwnershipError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+
+    asset = await db.scalar(
+        select(FileAsset).where(
+            FileAsset.subject_id == ownership.subject_id,
+            FileAsset.storage_backend == FileStorageBackend.LEGACY_LOCAL.value,
+            FileAsset.storage_ref.in_(storage_refs_for_route_key(key)),
+        )
+    )
+    if asset is not None and asset.status in {
+        FileAssetStatus.DELETED.value,
+        FileAssetStatus.PURGED.value,
+    }:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     # Never written to disk cache: the file is readable again on the next request,
     # and a logged-out browser should keep nothing. Matches the service worker,

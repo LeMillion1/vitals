@@ -28,17 +28,20 @@ from __future__ import annotations
 import base64
 import logging
 import math
+import uuid
 from datetime import date as date_type, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Domain, LabFlag, Severity, Source
+from vitals.enums import Domain, FileAssetPurpose, LabFlag, Severity, Source
 from vitals.i18n import t
 from vitals.models.labs import DOMAIN, LabMarker, LabResult
 from vitals.models.raw_payload import RawPayload
+from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, conflict_engine, raw_payload_service
+from vitals.services.upload_ownership_service import resolve_owned_upload_reference
 from vitals.utils.timeutils import now_local, today_local
 
 logger = logging.getLogger(__name__)
@@ -190,9 +193,21 @@ def normalize_marker(name: str) -> str:
 
 
 # ── Marker catalog ────────────────────────────────────────────────────────────
-async def get_marker(session: AsyncSession, name: str) -> Optional[LabMarker]:
+async def get_marker(
+    session: AsyncSession,
+    name: str,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Optional[LabMarker]:
     name = normalize_marker(name)
-    result = await session.execute(select(LabMarker).where(LabMarker.name == name))
+    stmt = select(LabMarker).where(LabMarker.name == name)
+    if subject_id is not None:
+        subject_scope = LabMarker.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, LabMarker.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
+    result = await session.execute(stmt)
     return result.scalars().first()
 
 
@@ -203,14 +218,41 @@ async def _ensure_marker(
     unit: Optional[str] = None,
     ref_low: Optional[float] = None,
     ref_high: Optional[float] = None,
+    identity: WriteIdentity | None = None,
 ) -> LabMarker:
     """Auto-create a catalog row on first sight; backfill null defaults but never
     clobber a tier/defer the user has set."""
     name = normalize_marker(name)
-    marker = await get_marker(session, name)
+    marker = await get_marker(
+        session,
+        name,
+        subject_id=identity.subject_id if identity is not None else None,
+    )
+    if marker is None and identity is not None:
+        # During expand/contract, adopt only the sole unowned catalog row.  A
+        # marker already assigned to another subject is never reused as a
+        # cross-subject catalog entry (the later scoped-key migration removes
+        # the old global uniqueness constraint).
+        marker = await session.scalar(
+            select(LabMarker)
+            .where(LabMarker.name == name, LabMarker.subject_id.is_(None))
+            .with_for_update()
+        )
+        if marker is not None:
+            marker.subject_id = identity.subject_id
+        elif await session.scalar(
+            select(LabMarker.id).where(LabMarker.name == name).limit(1)
+        ) is not None:
+            raise ValueError("lab marker belongs to another subject")
     if marker is None:
         marker = LabMarker(
-            domain=DOMAIN, name=name, unit=unit, ref_low=ref_low, ref_high=ref_high
+            subject_id=identity.subject_id if identity is not None else None,
+            actor_user_id=identity.actor_user_id if identity is not None else None,
+            domain=DOMAIN,
+            name=name,
+            unit=unit,
+            ref_low=ref_low,
+            ref_high=ref_high,
         )
         session.add(marker)
         await session.flush()
@@ -225,17 +267,39 @@ async def _ensure_marker(
     return marker
 
 
-async def list_markers(session: AsyncSession) -> Sequence[LabMarker]:
-    result = await session.execute(select(LabMarker).order_by(LabMarker.name))
+async def list_markers(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Sequence[LabMarker]:
+    stmt = select(LabMarker)
+    if subject_id is not None:
+        subject_scope = LabMarker.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, LabMarker.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
+    result = await session.execute(stmt.order_by(LabMarker.name))
     return result.scalars().all()
 
 
 async def defer_retest(
-    session: AsyncSession, marker: str, *, until: date_type, note: Optional[str] = None
+    session: AsyncSession,
+    marker: str,
+    *,
+    until: date_type,
+    note: Optional[str] = None,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Optional[LabMarker]:
     """Pause the overdue-retest alert for a marker until ``until``."""
     marker = normalize_marker(marker)
-    row = await get_marker(session, marker)
+    row = await get_marker(
+        session,
+        marker,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if row is None:
         return None
     row.defer_until = until
@@ -263,6 +327,7 @@ async def add_result(
     source: str = Source.MANUAL.value,
     raw_payload_id: Optional[int] = None,
     override: bool = False,
+    identity: WriteIdentity | None = None,
 ) -> LabResult:
     """Record a marker value, computing its flag and ensuring its catalog row.
 
@@ -276,7 +341,12 @@ async def add_result(
     if value is None or not math.isfinite(value) or abs(value) > _VALUE_ABS_MAX:
         raise ValueError(f"implausible lab value for {marker}: {value!r}")
     catalog = await _ensure_marker(
-        session, marker, unit=unit, ref_low=ref_low, ref_high=ref_high
+        session,
+        marker,
+        unit=unit,
+        ref_low=ref_low,
+        ref_high=ref_high,
+        identity=identity,
     )
     eff_low = ref_low if ref_low is not None else catalog.ref_low
     eff_high = ref_high if ref_high is not None else catalog.ref_high
@@ -295,6 +365,8 @@ async def add_result(
     )
 
     row = LabResult(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         date=on_date,
         domain=DOMAIN,
         source=source,
@@ -378,10 +450,17 @@ async def list_results(
     marker: Optional[str] = None,
     end: Optional[date_type] = None,
     limit: int = 200,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Sequence[LabResult]:
     """Newest first. ``end`` anchors the read at a date instead of at "now", so a
     report about a past window is not filled by results drawn after it."""
     stmt = select(LabResult)
+    if subject_id is not None:
+        subject_scope = LabResult.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, LabResult.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
     if marker is not None:
         marker = normalize_marker(marker)
         stmt = stmt.where(LabResult.marker == marker)
@@ -392,12 +471,22 @@ async def list_results(
     return result.scalars().all()
 
 
-async def marker_history(session: AsyncSession, marker: str) -> list[dict]:
+async def marker_history(
+    session: AsyncSession,
+    marker: str,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> list[dict]:
     """Chronological series for one marker (the per-marker chart)."""
     marker = normalize_marker(marker)
-    result = await session.execute(
-        select(LabResult).where(LabResult.marker == marker).order_by(LabResult.date)
-    )
+    stmt = select(LabResult).where(LabResult.marker == marker)
+    if subject_id is not None:
+        subject_scope = LabResult.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, LabResult.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
+    result = await session.execute(stmt.order_by(LabResult.date))
     return [
         {
             "date": r.date.isoformat(),
@@ -410,10 +499,21 @@ async def marker_history(session: AsyncSession, marker: str) -> list[dict]:
     ]
 
 
-async def latest_per_marker(session: AsyncSession) -> list[LabResult]:
+async def latest_per_marker(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> list[LabResult]:
     """The most recent result for each marker (table + alert source)."""
+    stmt = select(LabResult)
+    if subject_id is not None:
+        subject_scope = LabResult.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, LabResult.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
     result = await session.execute(
-        select(LabResult).order_by(LabResult.date.desc(), LabResult.id.desc())
+        stmt.order_by(LabResult.date.desc(), LabResult.id.desc())
     )
     seen: dict[str, LabResult] = {}
     for r in result.scalars().all():
@@ -429,8 +529,20 @@ async def resolve_latest(session: AsyncSession) -> list[dict]:
     return [{"marker": r.marker, "value": r.value, "flag": r.flag} for r in latest]
 
 
-async def delete_result(session: AsyncSession, result_id: int) -> bool:
-    row = await session.get(LabResult, result_id)
+async def delete_result(
+    session: AsyncSession,
+    result_id: int,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> bool:
+    stmt = select(LabResult).where(LabResult.id == result_id)
+    if subject_id is not None:
+        subject_scope = LabResult.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, LabResult.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
+    row = await session.scalar(stmt)
     if row is None:
         return False
     await session.delete(row)
@@ -440,7 +552,11 @@ async def delete_result(session: AsyncSession, result_id: int) -> bool:
 
 # ── Alerts ────────────────────────────────────────────────────────────────────
 async def refresh_alerts(
-    session: AsyncSession, *, on_date: Optional[date_type] = None
+    session: AsyncSession,
+    *,
+    on_date: Optional[date_type] = None,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> None:
     """Raise/clear out-of-range + overdue-retest alerts from the latest values.
     Idempotent — safe on every dashboard load / scheduler tick. Each alert is
@@ -448,8 +564,19 @@ async def refresh_alerts(
     f"{marker}:{result_id}"``), so a dismissal sticks forever for that row —
     only a new result for the marker can raise it again."""
     today = on_date or today_local()
-    latest = await latest_per_marker(session)
-    markers = {m.name: m for m in await list_markers(session)}
+    latest = await latest_per_marker(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    markers = {
+        m.name: m
+        for m in await list_markers(
+            session,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    }
 
     for r in latest:
         key = OUT_OF_RANGE_KEY
@@ -586,13 +713,30 @@ async def confirm_extracted(
     markers: Sequence[dict],
     lab_name: Optional[str] = None,
     raw_payload_id: Optional[int] = None,
+    file_key: Optional[str] = None,
     override: bool = False,
+    identity: WriteIdentity | None = None,
 ) -> list[LabResult]:
     """Persist the owner-edited marker rows from the upload preview (step 2 of
     upload -> preview -> confirm). Marks the raw payload processed. Does not
     commit — mirrors :func:`ingest_extracted` but trusts the caller's edits
     instead of re-deriving from the raw vision dict, and never drops a row as a
     'duplicate' (the owner already reviewed it)."""
+    owned_raw: RawPayload | None = None
+    if identity is not None and raw_payload_id is not None:
+        upload = await resolve_owned_upload_reference(
+            session,
+            identity=identity,
+            raw_payload_id=raw_payload_id,
+            client_storage_ref=file_key,
+            domain=DOMAIN,
+            source=Source.LAB_PARSER.value,
+            purpose=FileAssetPurpose.LAB_DOCUMENT,
+        )
+        owned_raw = upload.raw_payload
+    elif identity is not None and file_key is not None:
+        raise ValueError("owned lab file reference requires a raw upload")
+
     created: list[LabResult] = []
     for item in markers:
         marker = (item.get("marker") or "").strip()
@@ -611,11 +755,12 @@ async def confirm_extracted(
             source=Source.LAB_PARSER.value,
             raw_payload_id=raw_payload_id,
             override=override,
+            identity=identity,
         )
         created.append(row)
 
     if raw_payload_id is not None:
-        raw = await session.get(RawPayload, raw_payload_id)
+        raw = owned_raw or await session.get(RawPayload, raw_payload_id)
         if raw is not None:
             raw.processed_at = now_local()
 
@@ -628,6 +773,8 @@ async def ingest_extracted(
     *,
     file_key: Optional[str] = None,
     override: bool = False,
+    identity: WriteIdentity | None = None,
+    existing_raw_payload: RawPayload | None = None,
 ) -> dict:
     """Persist an extracted document: keep it raw, then create a result row per
     marker (deduping identical (date, marker, value)). Does not commit.
@@ -640,13 +787,31 @@ async def ingest_extracted(
     lab_name = extracted.get("lab_name")
     results = extracted.get("results") or []
 
-    raw_row = await raw_payload_service.upsert_raw_payload(
-        session,
-        domain=DOMAIN,
-        source=Source.LAB_PARSER.value,
-        external_id=file_key or f"lab:{on_date.isoformat()}:{lab_name or '?'}",
-        payload=extracted,
-    )
+    if existing_raw_payload is not None:
+        if identity is None:
+            raise ValueError("existing owned raw payload requires a write identity")
+        upload = await resolve_owned_upload_reference(
+            session,
+            identity=identity,
+            raw_payload_id=existing_raw_payload.id,
+            client_storage_ref=file_key,
+            domain=DOMAIN,
+            source=Source.LAB_PARSER.value,
+            purpose=FileAssetPurpose.LAB_DOCUMENT,
+        )
+        raw_row = upload.raw_payload
+    elif identity is not None:
+        raise ValueError(
+            "owned extraction requires an existing raw payload; create it at the boundary"
+        )
+    else:
+        raw_row = await raw_payload_service.upsert_raw_payload(
+            session,
+            domain=DOMAIN,
+            source=Source.LAB_PARSER.value,
+            external_id=file_key or f"lab:{on_date.isoformat()}:{lab_name or '?'}",
+            payload=extracted,
+        )
 
     summary = {"created": 0, "skipped": 0, "results": []}
     for item in results:
@@ -655,7 +820,13 @@ async def ingest_extracted(
         if not marker or value is None:
             summary["skipped"] += 1
             continue
-        if await _result_exists(session, on_date, marker, value):
+        if await _result_exists(
+            session,
+            on_date,
+            marker,
+            value,
+            subject_id=identity.subject_id if identity is not None else None,
+        ):
             summary["skipped"] += 1
             continue
         try:
@@ -671,6 +842,7 @@ async def ingest_extracted(
                 source=Source.LAB_PARSER.value,
                 raw_payload_id=raw_row.id,
                 override=override,
+                identity=identity,
             )
         except ValueError as e:
             # One garbled row must not cost the whole document — it stays in the
@@ -696,7 +868,16 @@ async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
     sweep_pending_job)."""
     extracted = raw_row.payload if isinstance(raw_row.payload, dict) else {}
     original_fetched_at = raw_row.fetched_at
-    await ingest_extracted(session, extracted, file_key=raw_row.external_id)
+    if raw_row.subject_id is not None and raw_row.file_asset_id is not None:
+        await ingest_extracted(
+            session,
+            extracted,
+            file_key=raw_row.external_id,
+            identity=WriteIdentity(raw_row.subject_id, raw_row.actor_user_id),
+            existing_raw_payload=raw_row,
+        )
+    else:
+        await ingest_extracted(session, extracted, file_key=raw_row.external_id)
     raw_row.fetched_at = original_fetched_at
 
 
@@ -722,15 +903,21 @@ async def reparse_pending(
 
 
 async def _result_exists(
-    session: AsyncSession, on_date: date_type, marker: str, value: float
+    session: AsyncSession,
+    on_date: date_type,
+    marker: str,
+    value: float,
+    *,
+    subject_id: uuid.UUID | None = None,
 ) -> bool:
-    result = await session.execute(
-        select(LabResult.id).where(
-            LabResult.date == on_date,
-            LabResult.marker == marker,
-            LabResult.value == value,
-        )
+    stmt = select(LabResult.id).where(
+        LabResult.date == on_date,
+        LabResult.marker == marker,
+        LabResult.value == value,
     )
+    if subject_id is not None:
+        stmt = stmt.where(LabResult.subject_id == subject_id)
+    result = await session.execute(stmt)
     return result.first() is not None
 
 

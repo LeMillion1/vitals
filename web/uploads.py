@@ -32,6 +32,37 @@ VCF_MAX_BYTES = 100 * 1024 * 1024
 _CHUNK = 1024 * 1024
 
 
+def legacy_upload_disk_path(static_dir: str, storage_ref: str) -> str:
+    """Resolve a validated legacy ``FileAsset.storage_ref`` under uploads.
+
+    Progress-photo references historically include the leading ``uploads/``;
+    lab/body references are already relative to that directory.  The realpath
+    containment check protects delete/cleanup callers from a forged legacy DB
+    value as well as from symlinks leaving the private tree.
+    """
+
+    if not isinstance(storage_ref, str) or not storage_ref:
+        raise ValueError("storage_ref must be a non-empty string")
+    relative = (
+        storage_ref.removeprefix("uploads/")
+        if storage_ref.startswith("uploads/")
+        else storage_ref
+    )
+    uploads_root = os.path.realpath(os.path.join(static_dir, "uploads"))
+    path = os.path.realpath(os.path.join(uploads_root, relative))
+    if not path.startswith(uploads_root + os.sep):
+        raise ValueError("storage_ref leaves the private uploads directory")
+    return path
+
+
+def storage_refs_for_route_key(key: str) -> tuple[str, ...]:
+    """Map the legacy download route key to its possible metadata locator."""
+
+    if key.startswith(("labs/", "body/")):
+        return (key,)
+    return (f"uploads/{key}",)
+
+
 def file_ext(filename: str | None) -> str:
     """Lower-cased extension (with dot) of *filename*, or ``''`` when absent."""
     return os.path.splitext(filename or "")[1].lower()

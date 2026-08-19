@@ -3,6 +3,7 @@ body-composition scans (InBody / МедАсс — the optional ``body_comp`` mod
 from __future__ import annotations
 
 from datetime import date as date_type
+import hashlib
 import logging
 import os
 import uuid
@@ -15,16 +16,30 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
-from vitals.enums import Domain, Source
+from vitals.enums import Domain, FileAssetPurpose, IntegrationProvider, Source
 from vitals.i18n import t
 from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
-from vitals.services import alerts_service, body_scan_service, raw_payload_service, weight_service
+from vitals.services import (
+    alerts_service,
+    body_scan_service,
+    file_asset_service,
+    raw_payload_service,
+    weight_service,
+)
 from vitals.services.analytics import body_metrics
 from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_session, require_auth, require_module
 from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
-from web.uploads import DOC_EXTS, IMAGE_EXTS, file_ext, read_capped, validate_extension
+from web.uploads import (
+    DOC_EXTS,
+    IMAGE_EXTS,
+    file_ext,
+    legacy_upload_disk_path,
+    read_capped,
+    validate_extension,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +84,11 @@ async def _section_context(
     7-day mean, body fat, weekly delta) are identical on both, and computing
     them twice is how the two headers would drift apart.
     """
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+
     # Is the optional body-composition module on? Gates the tab, the BIA chart
     # overlay, and the scan section — disabled behaves as if it isn't there.
     em = getattr(request.state, "enabled_modules", None) or {}
@@ -78,21 +98,37 @@ async def _section_context(
     # Refresh noise alerts for today (+ body-scan alerts when the module is on)
     await weight_service.refresh_noise_alert(db)
     if body_comp_enabled:
-        await body_scan_service.refresh_alerts(db)
+        await body_scan_service.refresh_alerts(
+            db,
+            subject_id=ownership.subject_id,
+            include_legacy_unowned=True,
+        )
     await db.commit()
 
     # Load data
     weights = await weight_service.list_active_weights(db)
     measurements = await weight_service.list_body_measurements(db)
     noise_markers = await weight_service.list_noise_markers(db)
-    photos = await weight_service.list_progress_photos(db)
+    photos = await weight_service.list_progress_photos(
+        db,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
     alerts = await alerts_service.list_active(db, domain=Domain.WEIGHT.value)
     series = await weight_service.chart_series(
         db, include_bia=body_comp_enabled, include_timeline=timeline_enabled
     )
 
     # Body-composition scans + the compact summary chips for the latest one.
-    bc_scans = await body_scan_service.list_scans(db) if body_comp_enabled else []
+    bc_scans = (
+        await body_scan_service.list_scans(
+            db,
+            subject_id=ownership.subject_id,
+            include_legacy_unowned=True,
+        )
+        if body_comp_enabled
+        else []
+    )
     bc_latest = bc_scans[0] if bc_scans else None
     lang = getattr(request.state, "lang", "ru")
     bc_headline = []
@@ -379,24 +415,74 @@ async def add_photo_entry(
             detail=t("weight.error.too_many_files")
         )
 
-    # Save to static/uploads
-    uploads_dir = os.path.join(STATIC_DIR, "uploads")
-    os.makedirs(uploads_dir, exist_ok=True)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    identity = ownership.owner_action()
+    written_paths: list[str] = []
+    try:
+        for f in uploaded_files:
+            file_extension = validate_extension(f.filename, IMAGE_EXTS)
+            contents = await read_capped(f)
+            unique_filename = f"{uuid.uuid4().hex}{file_extension}"
+            file_key = f"uploads/{unique_filename}"
+            file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            written_paths.append(file_path)
 
-    for f in uploaded_files:
-        file_extension = validate_extension(f.filename, IMAGE_EXTS)
-        contents = await read_capped(f)
-        unique_filename = f"{uuid.uuid4().hex}{file_extension}"
-        file_path = os.path.join(uploads_dir, unique_filename)
+            with open(file_path, "wb") as buffer:
+                buffer.write(contents)
 
-        with open(file_path, "wb") as buffer:
-            buffer.write(contents)
+            asset = await file_asset_service.register_legacy_local(
+                db,
+                subject_id=identity.subject_id,
+                uploaded_by_user_id=identity.actor_user_id,
+                purpose=FileAssetPurpose.PROGRESS_PHOTO,
+                storage_ref=file_key,
+                media_type=f.content_type or None,
+                size_bytes=len(contents),
+                content_sha256=hashlib.sha256(contents).hexdigest(),
+            )
+            await weight_service.add_progress_photo(
+                db,
+                on_date=on_date,
+                file_key=file_key,
+                note=note,
+                identity=identity,
+                file_asset_id=asset.id,
+            )
 
-        # Save reference key (relative path inside static directory)
-        file_key = f"uploads/{unique_filename}"
-        await weight_service.add_progress_photo(db, on_date=on_date, file_key=file_key, note=note)
+    except BaseException:
+        try:
+            await db.rollback()
+        except BaseException:
+            logger.exception("Could not roll back failed progress-photo transaction")
+        for path in written_paths:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("Could not clean up failed progress upload %s: %s", path, exc)
+        raise
 
-    await db.commit()
+    try:
+        await db.commit()
+    except BaseException:
+        # COMMIT can be ambiguous (server committed, client lost the response or
+        # the coroutine was cancelled). Deleting bytes here could turn a
+        # committed metadata row into permanent data loss. Preserve the files
+        # for operator reconciliation and only roll the local session back.
+        try:
+            await db.rollback()
+        except BaseException:
+            logger.exception("Could not reset session after progress-photo commit failure")
+        logger.exception(
+            "Progress-photo commit outcome is ambiguous; preserved %d upload file(s)",
+            len(written_paths),
+        )
+        raise
 
     return _back(request)
 
@@ -440,6 +526,13 @@ async def body_scan_upload(
     edits. Returns JSON the client renders as an editable table."""
     from vitals.utils.timeutils import today_local
 
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+        required_connections=(IntegrationProvider.OPENROUTER,),
+    )
+    identity = ownership.owner_action()
+
     # 415/413 surface as HTTP errors (handled by the client's error branch).
     validate_extension(file.filename, DOC_EXTS)
     contents = await read_capped(file)
@@ -466,18 +559,57 @@ async def body_scan_upload(
     # Written only once extraction succeeded — see the labs upload for why.
     ext = file_ext(file.filename) or ".bin"
     file_key = f"body/{uuid.uuid4().hex}{ext}"
-    os.makedirs(os.path.join(STATIC_DIR, "uploads", "body"), exist_ok=True)
-    with open(os.path.join(STATIC_DIR, "uploads", file_key), "wb") as fh:
-        fh.write(contents)
+    file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    try:
+        with open(file_path, "wb") as fh:
+            fh.write(contents)
+        asset = await file_asset_service.register_legacy_local(
+            db,
+            subject_id=identity.subject_id,
+            uploaded_by_user_id=identity.actor_user_id,
+            purpose=FileAssetPurpose.BODY_SCAN_DOCUMENT,
+            storage_ref=file_key,
+            media_type=file.content_type or None,
+            size_bytes=len(contents),
+            content_sha256=hashlib.sha256(contents).hexdigest(),
+        )
+        raw_row = await raw_payload_service.upsert_owned_raw_payload(
+            db,
+            identity=identity,
+            integration_connection_id=ownership.connection_id(
+                IntegrationProvider.OPENROUTER
+            ),
+            file_asset_id=asset.id,
+            domain=Domain.BODY_COMPOSITION.value,
+            source=Source.BODY_SCAN.value,
+            external_id=file_key,
+            payload=extracted,
+        )
+    except BaseException:
+        try:
+            await db.rollback()
+        except BaseException:
+            logger.exception("Could not roll back failed body-upload transaction")
+        try:
+            os.remove(file_path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("Could not clean up failed body upload %s: %s", file_path, exc)
+        raise
 
-    raw_row = await raw_payload_service.upsert_raw_payload(
-        db,
-        domain=Domain.BODY_COMPOSITION.value,
-        source=Source.BODY_SCAN.value,
-        external_id=file_key,
-        payload=extracted,
-    )
-    await db.commit()
+    try:
+        await db.commit()
+    except BaseException:
+        try:
+            await db.rollback()
+        except BaseException:
+            logger.exception("Could not reset session after body-upload commit failure")
+        logger.exception(
+            "Body-upload commit outcome is ambiguous; preserved uploaded bytes"
+        )
+        raise
 
     rows = body_scan_service.normalize_extracted(extracted)
     raw_date = date or extracted.get("date")
@@ -512,6 +644,11 @@ async def body_scan_confirm(
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date")
 
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    identity = ownership.owner_action()
     try:
         await body_scan_service.save_scan(
             db,
@@ -522,15 +659,22 @@ async def body_scan_confirm(
             metrics=[m.model_dump() for m in payload.metrics],
             note=payload.note,
             override=payload.override,
+            identity=identity,
         )
-        await body_scan_service.refresh_alerts(db)
+        await body_scan_service.refresh_alerts(
+            db,
+            subject_id=identity.subject_id,
+            include_legacy_unowned=True,
+        )
         await db.commit()
     except ConflictBlocked as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [v.to_dict() for v in e.violations]},
         )
     except ValueError as e:
+        await db.rollback()
         # A scan bridges its weight into the weight domain, which validates it.
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST, content={"error": str(e)}
@@ -546,18 +690,51 @@ async def delete_body_scan_entry(
     username: str = Depends(require_auth),
     _gate: None = Depends(require_module("body_comp")),
 ):
-    scan = await body_scan_service.get_scan(db, scan_id)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    scan = await body_scan_service.get_scan(
+        db,
+        scan_id,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
     file_key = scan.file_key if scan is not None else None
-    await body_scan_service.delete_scan(db, scan_id)
+    file_asset_id = scan.file_asset_id if scan is not None else None
+    await body_scan_service.delete_scan(
+        db,
+        scan_id,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
+    if file_asset_id is not None:
+        await file_asset_service.mark_legacy_local_deleted(
+            db,
+            file_asset_id=file_asset_id,
+            subject_id=ownership.subject_id,
+            purged=False,
+        )
     await db.commit()
 
+    bytes_purged = False
     if file_key:
-        file_path = os.path.join(STATIC_DIR, "uploads", file_key)
-        if os.path.exists(file_path):
-            try:
+        try:
+            file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
+            if os.path.exists(file_path):
                 os.remove(file_path)
-            except OSError as e:
-                logger.warning("Could not remove scan file %s: %s", file_path, e)
+            bytes_purged = True
+        except (OSError, ValueError) as e:
+            logger.warning("Could not remove scan file %s: %s", file_key, e)
+
+    if bytes_purged and file_asset_id is not None:
+        await file_asset_service.mark_legacy_local_deleted(
+            db,
+            file_asset_id=file_asset_id,
+            subject_id=ownership.subject_id,
+            purged=True,
+        )
+        await db.commit()
 
     return _back(request)
 
@@ -608,16 +785,49 @@ async def delete_photo_entry(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    file_key = await weight_service.delete_progress_photo(db, id)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    photo = await weight_service.get_progress_photo(
+        db,
+        id,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
+    file_asset_id = photo.file_asset_id if photo is not None else None
+    file_key = await weight_service.delete_progress_photo(
+        db,
+        id,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
+    if file_asset_id is not None:
+        await file_asset_service.mark_legacy_local_deleted(
+            db,
+            file_asset_id=file_asset_id,
+            subject_id=ownership.subject_id,
+            purged=False,
+        )
     await db.commit()
 
+    bytes_purged = False
     if file_key:
-        file_path = os.path.join(STATIC_DIR, file_key)
-        if os.path.exists(file_path):
-            try:
+        try:
+            file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
+            if os.path.exists(file_path):
                 os.remove(file_path)
-            except Exception as e:
-                print(f"Error removing file {file_path}: {e}")
+            bytes_purged = True
+        except (OSError, ValueError) as e:
+            logger.warning("Could not remove progress photo %s: %s", file_key, e)
+
+    if bytes_purged and file_asset_id is not None:
+        await file_asset_service.mark_legacy_local_deleted(
+            db,
+            file_asset_id=file_asset_id,
+            subject_id=ownership.subject_id,
+            purged=True,
+        )
+        await db.commit()
 
     return _back(request)
-

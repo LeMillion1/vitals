@@ -19,14 +19,15 @@ with later modules.
 from __future__ import annotations
 
 import math
+import uuid
 from datetime import date as date_type, timedelta
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import Config, load_config
-from vitals.enums import Domain, Severity, Source
+from vitals.enums import Domain, FileAssetPurpose, FileAssetStatus, Severity, Source
 from vitals.i18n import t
 from vitals.models.weight import (
     DOMAIN,
@@ -35,6 +36,8 @@ from vitals.models.weight import (
     ProgressPhoto,
     WeightLog,
 )
+from vitals.models.tenancy import FileAsset
+from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, conflict_engine
 from vitals.services.analytics import exclude_ranges
 from vitals.services.analytics.navy import lean_body_mass_kg, navy_body_fat_pct
@@ -113,6 +116,7 @@ async def log_weight(
     raw_payload_id: Optional[int] = None,
     note: Optional[str] = None,
     override: bool = False,
+    identity: WriteIdentity | None = None,
 ) -> WeightLog:
     """Record a weight for a date, honouring manual-over-Garmin priority and the
     one-active-per-date invariant.
@@ -147,6 +151,8 @@ async def log_weight(
         and existing.source == source
         and existing.weight_kg == weight_kg
     ):
+        _adopt_legacy_subject(existing, identity)
+        await session.flush()
         return existing
 
     # The active row can be a higher-priority manual measurement while an
@@ -171,6 +177,8 @@ async def log_weight(
             )
         ).scalar_one_or_none()
         if duplicate is not None:
+            _adopt_legacy_subject(duplicate, identity)
+            await session.flush()
             return duplicate
 
     insert_as_active = True
@@ -189,6 +197,8 @@ async def log_weight(
             insert_as_active = False
 
     row = WeightLog(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         date=on_date,
         domain=DOMAIN,
         source=source,
@@ -208,6 +218,17 @@ async def log_weight(
     if insert_as_active:
         await garmin_weight_service.handle_active_weight_changed(session)
     return row
+
+
+def _adopt_legacy_subject(row: WeightLog, identity: WriteIdentity | None) -> None:
+    """Attach a deduplicated legacy fact without rewriting actor history."""
+
+    if identity is None:
+        return
+    if row.subject_id not in {None, identity.subject_id}:
+        raise ValueError("weight fact belongs to another subject")
+    if row.subject_id is None:
+        row.subject_id = identity.subject_id
 
 
 async def list_active_weights(
@@ -372,20 +393,75 @@ async def add_progress_photo(
     on_date: date_type,
     file_key: str,
     note: Optional[str] = None,
+    identity: WriteIdentity | None = None,
+    file_asset_id: uuid.UUID | None = None,
 ) -> ProgressPhoto:
+    if identity is not None:
+        if not isinstance(file_asset_id, uuid.UUID):
+            raise ValueError("owned progress photo requires a file_asset_id")
+        asset = await session.scalar(
+            select(FileAsset)
+            .where(
+                FileAsset.id == file_asset_id,
+                FileAsset.subject_id == identity.subject_id,
+                FileAsset.purpose == FileAssetPurpose.PROGRESS_PHOTO.value,
+                FileAsset.storage_ref == file_key,
+            )
+            .with_for_update()
+        )
+        if asset is None or asset.status in {
+            FileAssetStatus.DELETED.value,
+            FileAssetStatus.PURGED.value,
+        }:
+            raise ValueError("progress photo file asset is not available in subject scope")
+    elif file_asset_id is not None:
+        raise ValueError("file_asset_id requires an explicit write identity")
+
     photo = ProgressPhoto(
-        date=on_date, domain=DOMAIN, source=Source.MANUAL.value, file_key=file_key, note=note
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
+        file_asset_id=file_asset_id,
+        date=on_date,
+        domain=DOMAIN,
+        source=Source.MANUAL.value,
+        file_key=file_key,
+        note=note,
     )
     session.add(photo)
     await session.flush()
     return photo
 
 
-async def list_progress_photos(session: AsyncSession) -> Sequence[ProgressPhoto]:
-    result = await session.execute(
-        select(ProgressPhoto).order_by(ProgressPhoto.date.desc())
-    )
+async def list_progress_photos(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Sequence[ProgressPhoto]:
+    stmt = select(ProgressPhoto)
+    if subject_id is not None:
+        subject_scope = ProgressPhoto.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, ProgressPhoto.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
+    result = await session.execute(stmt.order_by(ProgressPhoto.date.desc()))
     return result.scalars().all()
+
+
+async def get_progress_photo(
+    session: AsyncSession,
+    photo_id: int,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> ProgressPhoto | None:
+    stmt = select(ProgressPhoto).where(ProgressPhoto.id == photo_id)
+    if subject_id is not None:
+        subject_scope = ProgressPhoto.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, ProgressPhoto.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
+    return await session.scalar(stmt)
 
 
 # ── Alerts ────────────────────────────────────────────────────────────────────
@@ -640,12 +716,20 @@ async def delete_body_measurement(session: AsyncSession, measurement_id: int) ->
     return True
 
 
-async def delete_progress_photo(session: AsyncSession, photo_id: int) -> Optional[str]:
+async def delete_progress_photo(
+    session: AsyncSession,
+    photo_id: int,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Optional[str]:
     """Delete a progress photo record by ID. Returns the file_key of the deleted photo."""
-    result = await session.execute(
-        select(ProgressPhoto).where(ProgressPhoto.id == photo_id)
+    row = await get_progress_photo(
+        session,
+        photo_id,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
     )
-    row = result.scalar_one_or_none()
     if not row:
         return None
     file_key = row.file_key

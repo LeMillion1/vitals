@@ -20,18 +20,21 @@ entered by hand, so the module works with no key configured.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import date as date_type
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from vitals.enums import Domain, Severity, Source
+from vitals.enums import Domain, FileAssetPurpose, Severity, Source
 from vitals.i18n import t
 from vitals.models.body_scan import DOMAIN, BodyScan, BodyScanMetric
 from vitals.models.raw_payload import RawPayload
+from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, conflict_engine, raw_payload_service, weight_service
+from vitals.services.upload_ownership_service import resolve_owned_upload_reference
 from vitals.services.analytics.body_metrics import (
     CAT_OTHER,
     METRIC_REGISTRY,
@@ -142,12 +145,41 @@ async def save_scan(
     note: Optional[str] = None,
     source: str = Source.BODY_SCAN.value,
     override: bool = False,
+    identity: WriteIdentity | None = None,
+    file_asset_id: uuid.UUID | None = None,
 ) -> BodyScan:
     """Persist a scan and its metrics (owner-edited rows), stamp the raw payload
     processed, and bridge weight into the weight domain. Does not commit.
 
     May raise ``ConflictBlocked`` if a cross-domain block rule fires without
     ``override`` (override plumbing kept consistent with the weight domain)."""
+    owned_raw: RawPayload | None = None
+    authoritative_file_key = file_key
+    authoritative_file_asset_id = file_asset_id
+    if identity is not None and raw_payload_id is not None:
+        upload = await resolve_owned_upload_reference(
+            session,
+            identity=identity,
+            raw_payload_id=raw_payload_id,
+            client_storage_ref=file_key,
+            domain=DOMAIN,
+            source=Source.BODY_SCAN.value,
+            purpose=FileAssetPurpose.BODY_SCAN_DOCUMENT,
+        )
+        if file_asset_id is not None and file_asset_id != upload.file_asset.id:
+            raise ValueError("file_asset_id does not match the owned upload")
+        owned_raw = upload.raw_payload
+        authoritative_file_key = upload.storage_ref
+        authoritative_file_asset_id = upload.file_asset.id
+    elif identity is not None and any(
+        value is not None for value in (file_key, raw_payload_id, file_asset_id)
+    ):
+        raise ValueError("owned scan file references require a raw upload")
+    elif identity is None and file_asset_id is not None:
+        raise ValueError("file_asset_id requires an explicit write identity")
+
+    # Authorization precedes the conflict engine because a rejected client id
+    # must not be able to trigger even an alert side effect in this transaction.
     await conflict_engine.enforce(
         session,
         Domain.BODY_COMPOSITION.value,
@@ -157,11 +189,14 @@ async def save_scan(
     )
 
     scan = BodyScan(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
+        file_asset_id=authoritative_file_asset_id,
         date=on_date,
         domain=DOMAIN,
         source=source,
         device=(device or None),
-        file_key=file_key,
+        file_key=authoritative_file_key,
         raw_payload_id=raw_payload_id,
         note=note,
     )
@@ -170,14 +205,20 @@ async def save_scan(
 
     normalized = [n for n in (_normalize_item(m) for m in metrics) if n is not None]
     for n in normalized:
-        session.add(BodyScanMetric(scan_id=scan.id, **n))
+        session.add(
+            BodyScanMetric(
+                scan_id=scan.id,
+                subject_id=identity.subject_id if identity is not None else None,
+                **n,
+            )
+        )
     await session.flush()
 
     # Mark the verbatim vision payload processed (it stays unchanged — the owner's
     # edits live only in the normalized rows, so the original extraction is an
     # audit trail we can always re-parse).
     if raw_payload_id is not None:
-        raw = await session.get(RawPayload, raw_payload_id)
+        raw = owned_raw or await session.get(RawPayload, raw_payload_id)
         if raw is not None:
             raw.processed_at = now_local()
 
@@ -192,6 +233,7 @@ async def save_scan(
             weight_kg=w,
             source=Source.BODY_SCAN.value,
             override=override,
+            identity=identity,
         )
     await session.flush()
     return scan
@@ -239,7 +281,19 @@ async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
     raw_payload_service.sweep_pending_job)."""
     extracted = raw_row.payload if isinstance(raw_row.payload, dict) else {}
     original_fetched_at = raw_row.fetched_at
-    await ingest_extracted(session, extracted, file_key=raw_row.external_id)
+    if raw_row.subject_id is not None and raw_row.file_asset_id is not None:
+        on_date = _parse_date(extracted.get("date")) or today_local()
+        await save_scan(
+            session,
+            on_date=on_date,
+            device=extracted.get("device"),
+            file_key=raw_row.external_id,
+            raw_payload_id=raw_row.id,
+            metrics=normalize_extracted(extracted),
+            identity=WriteIdentity(raw_row.subject_id, raw_row.actor_user_id),
+        )
+    else:
+        await ingest_extracted(session, extracted, file_key=raw_row.external_id)
     raw_row.fetched_at = original_fetched_at
 
 
@@ -270,8 +324,15 @@ async def list_scans(
     *,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Sequence[BodyScan]:
     stmt = select(BodyScan).options(selectinload(BodyScan.metrics))
+    if subject_id is not None:
+        subject_scope = BodyScan.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, BodyScan.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
     if start is not None:
         stmt = stmt.where(BodyScan.date >= start)
     if end is not None:
@@ -280,22 +341,43 @@ async def list_scans(
     return (await session.execute(stmt)).scalars().all()
 
 
-async def get_scan(session: AsyncSession, scan_id: int) -> Optional[BodyScan]:
+async def get_scan(
+    session: AsyncSession,
+    scan_id: int,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Optional[BodyScan]:
     stmt = (
         select(BodyScan)
         .where(BodyScan.id == scan_id)
         .options(selectinload(BodyScan.metrics))
     )
+    if subject_id is not None:
+        subject_scope = BodyScan.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, BodyScan.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def latest_scan(session: AsyncSession) -> Optional[BodyScan]:
+async def latest_scan(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Optional[BodyScan]:
     stmt = (
         select(BodyScan)
         .options(selectinload(BodyScan.metrics))
         .order_by(BodyScan.date.desc(), BodyScan.id.desc())
         .limit(1)
     )
+    if subject_id is not None:
+        subject_scope = BodyScan.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(subject_scope, BodyScan.subject_id.is_(None))
+        stmt = stmt.where(subject_scope)
     return (await session.execute(stmt)).scalars().first()
 
 
@@ -400,12 +482,23 @@ async def bia_chart_points(session: AsyncSession) -> dict:
     return {"bf": bf, "lbm": lbm}
 
 
-async def delete_scan(session: AsyncSession, scan_id: int) -> bool:
+async def delete_scan(
+    session: AsyncSession,
+    scan_id: int,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> bool:
     """Delete a scan (cascades to its metrics). Returns False if not found.
 
     The bridged weight row is left as-is (it's an independent weight log); the
     owner can remove it from the weight tab if desired."""
-    scan = await session.get(BodyScan, scan_id)
+    scan = await get_scan(
+        session,
+        scan_id,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if scan is None:
         return False
     await session.delete(scan)
@@ -414,12 +507,21 @@ async def delete_scan(session: AsyncSession, scan_id: int) -> bool:
 
 
 # ── Alerts (light) ────────────────────────────────────────────────────────────
-async def refresh_alerts(session: AsyncSession) -> None:
+async def refresh_alerts(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> None:
     """Raise/clear passive ``info`` alerts from the latest scan: visceral fat above
     its printed range, or phase angle below its printed range. Idempotent. Each
     alert is bound to the triggering scan's id, so a dismissal sticks forever
     for that scan — only a newer scan can raise it again."""
-    scan = await latest_scan(session)
+    scan = await latest_scan(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if scan is None:
         await alerts_service.resolve_superseded(session, alert_key=VISCERAL_ALERT_KEY, keep_entity=None)
         await alerts_service.resolve_superseded(session, alert_key=PHASE_ALERT_KEY, keep_entity=None)

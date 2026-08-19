@@ -109,6 +109,28 @@ registration is idempotent only for the same subject, purpose, and compatible
 metadata. Delete/purge transitions update lifecycle timestamps; they do not hard-
 delete the ownership root.
 
+The Stage-2 upload slice now registers progress photos, lab documents, and body-
+scan documents in the same caller-owned database transaction as their normalized
+or raw rows. Lab/body raw rows carry S+A+OpenRouter C+F; confirmation locks and
+validates the S -> raw -> F chain and derives the storage reference from the
+server-side asset. Subject-scoped delete paths retire the asset before removing
+legacy-local bytes. A failure before COMMIT rolls metadata back and removes the
+new bytes; an exception or cancellation while COMMIT is in flight preserves the
+bytes because the database outcome is ambiguous and requires reconciliation.
+
+The protected legacy download route authorizes through the resolved subject and
+honors deleted/purged asset state. An asset-missing fallback remains temporarily
+for pre-backfill files, but only while the fail-closed legacy resolver sees
+exactly one subject; a second subject closes it. Opaque asset URLs and complete
+file backfill remain cutover work.
+
+Upload-adjacent alert refreshes now select lab/body facts in the resolved subject
+scope, but `system_alerts` ownership and every alert lifecycle mutation are a
+separate matrix row and are not completed by this slice. The global lab-marker
+name key and the global active-weight-per-date key also still prevent a second
+writable subject. Registration must remain disabled until those scoped-key and
+alert ownership gates land.
+
 ## Completion gates
 
 - Every production constructor, Core insert/upsert, and bulk update has a reviewed

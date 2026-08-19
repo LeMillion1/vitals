@@ -131,6 +131,36 @@ async def test_the_owner_still_gets_the_file(auth_client, an_uploaded_file):
     assert "no-store" in r.headers["cache-control"]
 
 
+async def test_unregistered_file_fallback_closes_when_a_second_subject_exists(
+    auth_client, db_session, an_uploaded_file
+):
+    """The compatibility fallback is authorized by the exact-one-subject
+    resolver, not by possession of a legacy URL."""
+    from vitals.enums import UserStatus
+    from vitals.models.identity import HealthSubject, User
+
+    other = User(
+        username="other-file-owner",
+        normalized_username="other-file-owner",
+        password_hash="$synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(other)
+    await db_session.flush()
+    db_session.add(
+        HealthSubject(
+            owner_user_id=other.id,
+            display_name="Other file owner",
+            timezone="Asia/Almaty",
+        )
+    )
+    await db_session.commit()
+
+    response = await auth_client.get(f"/static/uploads/{an_uploaded_file}")
+    assert response.status_code == 404
+    assert b"lab sheet bytes" not in response.content
+
+
 async def test_the_route_is_matched_before_the_static_mount():
     """Routes match in registration order: below the mount this guard is dead code."""
     paths = [getattr(route, "path", None) for route in app.routes]

@@ -56,6 +56,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   and optional alerts. Forged ownership fields are ignored, malformed markers
   fail before mutation, and a multi-subject database cannot use the legacy
   whole-database format.
+- Persisted progress photos, lab documents, and body-scan documents now dual-
+  write subject, human actor, private-file metadata, and OpenRouter provenance
+  where applicable. Upload confirmation validates the subject/raw/file chain,
+  legacy download and delete paths enforce subject scope and file lifecycle, and
+  failed pre-commit writes remove orphan bytes while ambiguous commits preserve
+  them for reconciliation rather than risking medical-file loss.
 
 ### Fixed — AI period-report context
 
