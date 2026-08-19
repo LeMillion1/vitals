@@ -20,7 +20,15 @@ from __future__ import annotations
 import logging
 from typing import Optional, Protocol, Sequence, runtime_checkable
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from vitals.config import Config, load_config
+from vitals.enums import IntegrationProvider
+from vitals.services.legacy_ownership import (
+    LegacyOwnershipContext,
+    resolve_legacy_ownership_context,
+)
+from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +92,16 @@ class TelegramNotifier:
     channel = "telegram"
 
     def __init__(self, token: str, chat_id: str, *, base_url: str = TELEGRAM_API):
+        try:
+            private_recipient_id = int(chat_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Telegram recipient must be a private user id") from exc
+        if private_recipient_id <= 0:
+            # Telegram groups/supergroups use negative chat ids. PHI delivery
+            # must fail closed even if that id was accidentally configured.
+            raise ValueError("Telegram recipient must be a private user id")
         self._token = token
-        self._chat_id = chat_id
+        self._chat_id = str(private_recipient_id)
         self._base_url = base_url.rstrip("/")
 
     async def _call(self, method: str, payload: dict) -> dict:
@@ -154,6 +170,40 @@ def build_notifier(config: Optional[Config] = None) -> Optional[Notifier]:
     as "stay quiet", which is how the app behaves before the bot exists."""
     config = config or load_config()
     if config.telegram_bot_token and config.telegram_chat_id:
-        return TelegramNotifier(config.telegram_bot_token, config.telegram_chat_id)
+        try:
+            return TelegramNotifier(config.telegram_bot_token, config.telegram_chat_id)
+        except ValueError:
+            logger.warning("Telegram delivery disabled: recipient is not a private user")
+            return None
     logger.debug("no delivery channel configured; proactive messages are dropped")
     return None
+
+
+def ownership_from_legacy(
+    ownership: LegacyOwnershipContext,
+) -> ProactiveOwnershipContext:
+    """Project the current channel root without leaking its vendor upward."""
+
+    if not isinstance(ownership, LegacyOwnershipContext):
+        raise TypeError("ownership must be a LegacyOwnershipContext")
+    return ProactiveOwnershipContext(
+        subject_id=ownership.subject_id,
+        recipient_user_id=ownership.owner_user_id,
+        connection_id=ownership.connection_id(IntegrationProvider.TELEGRAM),
+        include_legacy_unowned=True,
+    )
+
+
+async def resolve_legacy_channel_ownership(
+    session: AsyncSession,
+    *,
+    actor_username: str | None,
+) -> ProactiveOwnershipContext:
+    """Resolve the single-user channel roots at the channel seam."""
+
+    ownership = await resolve_legacy_ownership_context(
+        session,
+        actor_username=actor_username,
+        required_connections=(IntegrationProvider.TELEGRAM,),
+    )
+    return ownership_from_legacy(ownership)

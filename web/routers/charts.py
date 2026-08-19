@@ -46,7 +46,13 @@ async def charts_dashboard(
         for c in charts
     }
     overlays = (
-        await _overlays_by_chart(db, charts) if enabled.get("timeline") else {}
+        await _overlays_by_chart(
+            db,
+            charts,
+            subject_id=ownership.subject_id,
+        )
+        if enabled.get("timeline")
+        else {}
     )
 
     return templates.TemplateResponse(
@@ -66,6 +72,8 @@ async def charts_dashboard(
 async def _overlays_by_chart(
     db: AsyncSession,
     charts: list[dict],
+    *,
+    subject_id,
 ) -> dict[str, list[dict]]:
     """Manual Timeline flags for each saved chart — the union of its series'
     domains, deduped (a global flag would otherwise repeat once per domain)."""
@@ -77,7 +85,12 @@ async def _overlays_by_chart(
         seen: set[tuple] = set()
         merged: list[dict] = []
         for d in domains:
-            for o in await timeline_service.overlays_for(db, domain=d):
+            for o in await timeline_service.overlays_for(
+                db,
+                subject_id=subject_id,
+                include_legacy_unowned=True,
+                domain=d,
+            ):
                 key = (o["start"], o["end"], o["label"])
                 if key in seen:
                     continue

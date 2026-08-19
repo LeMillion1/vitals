@@ -24,21 +24,68 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import date as date_type, timedelta
 from typing import Any, Optional
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import DigestKind, Domain, Severity, Source
+from vitals.enums import (
+    DigestKind,
+    Domain,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Severity,
+    Source,
+)
 from vitals.i18n import t
 from vitals.models.milestones import DOMAIN as DIGEST_DOMAIN, WeeklyDigest
+from vitals.models.tenancy import IntegrationConnection
+from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, digest_service
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.services.proactive import compose, day_plan
 from vitals.utils.timeutils import now_local, today_local
 
 logger = logging.getLogger(__name__)
 
 EMPTY_DAY_ALERT_KEY = "brief_empty_day"
+
+
+class BriefOwnershipError(ValueError):
+    """A stored brief would cross its subject, actor, or LLM provenance root."""
+
+
+async def _require_llm_connection_scope(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity,
+    connection_id: uuid.UUID,
+) -> None:
+    connection = await session.scalar(
+        select(IntegrationConnection).where(IntegrationConnection.id == connection_id)
+    )
+    if connection is None:
+        raise BriefOwnershipError("LLM integration connection does not exist")
+    if connection.subject_id != identity.subject_id:
+        raise BriefOwnershipError("LLM integration connection belongs to another subject")
+    if (
+        connection.provider != IntegrationProvider.OPENROUTER.value
+        or connection.connection_type != IntegrationConnectionType.AI_GATEWAY.value
+    ):
+        raise BriefOwnershipError("brief generation requires an OpenRouter AI gateway")
+    known_statuses = {status.value for status in IntegrationConnectionStatus}
+    if connection.status not in known_statuses:
+        raise BriefOwnershipError("LLM integration connection has unknown lifecycle state")
+    if connection.status not in {
+        IntegrationConnectionStatus.LEGACY.value,
+        IntegrationConnectionStatus.ACTIVE.value,
+    }:
+        raise BriefOwnershipError(
+            "inactive LLM integration connection cannot generate a brief"
+        )
 
 # Short by design: the header already carries every number, so a long tail would
 # only restate them. Enough headroom that a reasoning model's thinking tokens
@@ -111,7 +158,11 @@ state (состояние, 1-5), symptom (симптом, 1-5), exposure (сде
 
 # ── Assembly ──────────────────────────────────────────────────────────────────
 async def build_context(
-    session: AsyncSession, *, on_date: Optional[date_type] = None
+    session: AsyncSession,
+    *,
+    on_date: Optional[date_type] = None,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> dict:
     """Today's cross-domain snapshot, minus the protocol, plus the day context.
 
@@ -134,7 +185,12 @@ async def build_context(
     # Deliberately after ``strip_protocol``: that keeps the *stored* protocol out of
     # Telegram, and a signal is not stored protocol — it is a sentence he typed
     # into this very chat. Stripping it here would hide his own words from him.
-    ctx["signals"] = await _signals_since_yesterday(session, on_date or today_local())
+    ctx["signals"] = await _signals_since_yesterday(
+        session,
+        on_date or today_local(),
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     today = on_date or today_local()
     # The one thing the brief could never do: compare. Handed a single day of
     # absolute numbers and asked what they mean, the model supplied the missing
@@ -143,14 +199,22 @@ async def build_context(
     # against, so it goes in beside the numbers rather than being left implied.
     if ctx.get("garmin"):
         ctx["garmin"]["baseline"] = await _baseline(session, today)
-    answers, answered = await day_plan.resolve(session, today)
+    answers, answered = await day_plan.resolve(
+        session,
+        today,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     # Yesterday's answers, and only the ones he actually gave. How heavy a day was
     # is answered in the evening about the day just spent, so at 11:00 the newest
     # real load in the lake is yesterday's — and it is the first thing this
     # morning's HRV should be read against. The template's guess is filtered out:
     # a guess about a day that is already over explains nothing.
     yesterday_answers, yesterday_answered = await day_plan.resolve(
-        session, today - timedelta(days=1)
+        session,
+        today - timedelta(days=1),
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
     )
     ctx["day"] = {
         "answers": answers,
@@ -189,13 +253,23 @@ async def _baseline(session: AsyncSession, on_date: date_type) -> Optional[dict]
     return baseline or None
 
 
-async def _signals_since_yesterday(session: AsyncSession, on_date: date_type) -> Optional[list]:
+async def _signals_since_yesterday(
+    session: AsyncSession,
+    on_date: date_type,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Optional[list]:
     """Today's signals plus yesterday's — the evening before is where exposures
     live, and the metric they explain is this morning's."""
     from vitals.services import signals_service
 
     rows = await signals_service.list_signals(
-        session, start=on_date - timedelta(days=1), end=on_date
+        session,
+        start=on_date - timedelta(days=1),
+        end=on_date,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
     )
     return [digest_service.signal_row(s) for s in reversed(rows)] or None
 
@@ -228,10 +302,35 @@ async def generate_brief(
     *,
     on_date: Optional[date_type] = None,
     source: str = Source.MANUAL.value,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    llm_connection_id: uuid.UUID | None = None,
 ) -> Optional[WeeklyDigest]:
     """Build the brief and store it. ``None`` = empty day, nothing built."""
+    if identity is None:
+        if llm_connection_id is not None:
+            raise BriefOwnershipError(
+                "LLM provenance requires an explicit write identity"
+            )
+    else:
+        if not isinstance(identity, WriteIdentity):
+            raise BriefOwnershipError("identity must be a WriteIdentity or None")
+        if not isinstance(llm_connection_id, uuid.UUID):
+            raise BriefOwnershipError(
+                "owned brief generation requires an LLM connection UUID"
+            )
+        await _require_llm_connection_scope(
+            session,
+            identity=identity,
+            connection_id=llm_connection_id,
+        )
     on_date = on_date or today_local()
-    ctx = await build_context(session, on_date=on_date)
+    ctx = await build_context(
+        session,
+        on_date=on_date,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if compose.is_empty_day(ctx, on_date=on_date):
         logger.info("no brief for %s: no sleep and nothing new", on_date)
         return None
@@ -251,6 +350,9 @@ async def generate_brief(
         blocks.append(compose.Block(compose.KIND_NARRATIVE, tail, 90))
 
     row = WeeklyDigest(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
+        integration_connection_id=llm_connection_id if tail else None,
         date=on_date,
         domain=DIGEST_DOMAIN,
         source=source,
@@ -319,7 +421,15 @@ async def brief_job(session_factory, redis=None) -> None:
     # Before the Garmin pull, not after: on a normal day the brief left at 11:00
     # and every later fire in the window is a no-op that must not cost a login.
     async with session_factory() as session:
-        if await delivery.already_sent(session, dedupe_key(today)):
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session,
+            actor_username=None,
+        )
+        if await delivery.already_sent(
+            session,
+            dedupe_key(today),
+            ownership=ownership,
+        ):
             return
         brief_hour, _ = prefs.hhmm((await prefs.get_prefs(session))["brief_time"])
     out_of_patience = now_local().hour >= last_attempt_hour(brief_hour)
@@ -331,13 +441,33 @@ async def brief_job(session_factory, redis=None) -> None:
 
     notifier = channels.build_notifier()
     async with session_factory() as session:
-        current_lang.set(await get_language(session, redis))
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session,
+            actor_username=None,
+        )
+        llm_ownership = await resolve_legacy_ownership_context(
+            session,
+            actor_username=None,
+            required_connections=(IntegrationProvider.OPENROUTER,),
+        )
+        if llm_ownership.subject_id != ownership.subject_id:
+            raise BriefOwnershipError("channel and LLM ownership subjects differ")
+        current_lang.set(
+            await get_language(
+                session,
+                redis,
+                user_id=ownership.recipient_user_id,
+            )
+        )
 
         # Second pass at yesterday's unparsed messages, in its own transaction and
         # behind its own guard: a recovered row belongs in the lake before the
         # brief reads it, and a model that is still down must not cost the brief.
         try:
-            recovered = await inbound.reparse_pending(session)
+            recovered = await inbound.reparse_pending(
+                session,
+                ownership=ownership,
+            )
             await session.commit()
             if recovered:
                 logger.info("re-parsed %d stored message(s) before the brief", len(recovered))
@@ -352,7 +482,16 @@ async def brief_job(session_factory, redis=None) -> None:
             logger.info("brief for %s postponed: last night is not scored yet", today)
             return
 
-        row = await generate_brief(session, LLMClient(), source=Source.SCHEDULER.value)
+        row = await generate_brief(
+            session,
+            LLMClient(),
+            source=Source.SCHEDULER.value,
+            identity=ownership.system_action(),
+            include_legacy_unowned=ownership.include_legacy_unowned,
+            llm_connection_id=llm_ownership.connection_id(
+                IntegrationProvider.OPENROUTER
+            ),
+        )
         if row is None:
             await alerts_service.raise_alert(
                 session,
@@ -379,6 +518,7 @@ async def brief_job(session_factory, redis=None) -> None:
             category=delivery.CATEGORY_BRIEF,
             dedupe_key=dedupe_key(today),
             buttons=buttons,
+            ownership=ownership,
         )
         await alerts_service.resolve_by_key(session, alert_key=EMPTY_DAY_ALERT_KEY)
         await session.commit()

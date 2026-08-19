@@ -30,6 +30,7 @@ settings form — follows from it.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import date as date_type, timedelta
 from typing import Any, Collection, Optional
@@ -39,8 +40,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Source
 from vitals.models.app_settings import AppSetting
 from vitals.models.signals import DayContext
+from vitals.ownership import WriteIdentity
 from vitals.services import signals_service
 from vitals.services.proactive import compose
+from vitals.services.proactive.ownership import ProactiveOwnershipContext
+from vitals.services.scoped_settings_service import (
+    ScopedSettingKey,
+    SettingScope,
+    get_scoped_setting,
+    set_scoped_setting,
+    update_scoped_setting,
+)
 from vitals.utils.timeutils import today_local
 
 logger = logging.getLogger(__name__)
@@ -144,12 +154,28 @@ def sanitize_template(raw: Any) -> dict[str, dict]:
     return {day: _sanitize_day(source.get(day), day) for day in WEEKDAYS}
 
 
-async def get_week_template(session: AsyncSession) -> dict[str, dict]:
-    """The stored template, or the neutral default. Never raises (a broken
-    settings row must not take the evening block down with it).
+async def get_week_template(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+) -> dict[str, dict]:
+    """The stored template, or the neutral default.
+
+    Legacy unscoped reads keep their historical soft fallback. Subject-scoped
+    reads intentionally propagate ownership/bridge errors so a second subject
+    cannot fall through to the installation-wide template.
 
     No Redis cache on purpose: this is read twice a day by two jobs.
     """
+    if subject_id is not None:
+        value = await get_scoped_setting(
+            session,
+            scope=SettingScope.SUBJECT,
+            key=ScopedSettingKey.WEEK_TEMPLATE,
+            subject_id=subject_id,
+            default=None,
+        )
+        return sanitize_template(value)
     try:
         row = await session.get(AppSetting, SETTINGS_KEY)
     except Exception:
@@ -158,9 +184,22 @@ async def get_week_template(session: AsyncSession) -> dict[str, dict]:
     return sanitize_template(row.value if row is not None else None)
 
 
-async def set_week_template(session: AsyncSession, template: Any) -> dict[str, dict]:
+async def set_week_template(
+    session: AsyncSession,
+    template: Any,
+    *,
+    subject_id: uuid.UUID | None = None,
+) -> dict[str, dict]:
     """Store the template (sanitized). Flushes; the caller commits."""
     clean = sanitize_template(template)
+    if subject_id is not None:
+        return await set_scoped_setting(
+            session,
+            scope=SettingScope.SUBJECT,
+            key=ScopedSettingKey.WEEK_TEMPLATE,
+            subject_id=subject_id,
+            value=clean,
+        )
     row = await session.get(AppSetting, SETTINGS_KEY)
     if row is None:
         session.add(AppSetting(key=SETTINGS_KEY, value=clean))
@@ -170,6 +209,30 @@ async def set_week_template(session: AsyncSession, template: Any) -> dict[str, d
     return clean
 
 
+async def update_week_template(
+    session: AsyncSession,
+    patch: dict[str, dict],
+    *,
+    subject_id: uuid.UUID,
+) -> dict[str, dict]:
+    """Atomically merge a partial template into its subject-scoped value."""
+
+    def _merge(current: Any) -> dict[str, dict]:
+        merged = sanitize_template(current)
+        for day, values in patch.items():
+            merged[day] = {**merged[day], **values}
+        return sanitize_template(merged)
+
+    return await update_scoped_setting(
+        session,
+        scope=SettingScope.SUBJECT,
+        key=ScopedSettingKey.WEEK_TEMPLATE,
+        subject_id=subject_id,
+        default=None,
+        update=_merge,
+    )
+
+
 def guess_for(template: dict[str, dict], on_date: date_type) -> dict[str, Any]:
     """What the template expects that date to be."""
     return dict(template.get(WEEKDAYS[on_date.weekday()], DEFAULT_DAY))
@@ -177,7 +240,12 @@ def guess_for(template: dict[str, dict], on_date: date_type) -> dict[str, Any]:
 
 # ── The day's answers ─────────────────────────────────────────────────────────
 async def resolve(
-    session: AsyncSession, on_date: date_type
+    session: AsyncSession,
+    on_date: date_type,
+    *,
+    ownership: ProactiveOwnershipContext | None = None,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> tuple[dict[str, Any], set[str]]:
     """``(answers, answered)`` — his answer if there is one, else the guess, plus
     the set of questions he *actually* answered.
@@ -198,44 +266,116 @@ async def resolve(
     Falling back to the bare defaults here would let a single "иду в зал" quietly
     cancel the template's "удалёнка".
     """
-    row = await signals_service.get_day_context(session, on_date)
+    if ownership is not None and subject_id is not None:
+        raise ValueError("pass either proactive ownership or subject_id")
+    effective_subject_id = (
+        ownership.subject_id if ownership is not None else subject_id
+    )
+    include_unowned = (
+        ownership.include_legacy_unowned
+        if ownership is not None
+        else include_legacy_unowned
+    )
+    row = await signals_service.get_day_context(
+        session,
+        on_date,
+        subject_id=effective_subject_id,
+        include_legacy_unowned=include_unowned,
+    )
     guess = (
         dict(row.planned)
         if row is not None and row.planned
-        else guess_for(await get_week_template(session), on_date)
+        else guess_for(
+            await get_week_template(
+                session,
+                subject_id=effective_subject_id,
+            ),
+            on_date,
+        )
     )
     answers = dict(row.answers) if row is not None and row.answers else {}
     return {**guess, **answers}, set(answers)
 
 
 async def record_answer(
-    session: AsyncSession, on_date: date_type, key: str, value: Any
+    session: AsyncSession,
+    on_date: date_type,
+    key: str,
+    value: Any,
+    *,
+    ownership: ProactiveOwnershipContext | None = None,
+    source: str = Source.MANUAL.value,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    allow_historical_connection: bool = False,
 ) -> DayContext:
     """One tap → one answer merged into that day, the guess preserved beside it."""
-    row = await signals_service.get_day_context(session, on_date)
-    answers = dict(row.answers or {}) if row is not None else {}
-    answers[key] = value
-    # Only fill the guess when there isn't one: a tap that lands days later must
-    # not overwrite what the template thought at the time it asked.
-    planned = None
-    if row is None or not row.planned:
-        planned = guess_for(await get_week_template(session), on_date)
+    if ownership is not None and identity is not None:
+        raise ValueError("pass either proactive ownership or a write identity")
+    effective_identity = (
+        ownership.owner_action() if ownership is not None else identity
+    )
+    effective_subject_id = (
+        ownership.subject_id
+        if ownership is not None
+        else (identity.subject_id if identity is not None else None)
+    )
+    include_unowned = (
+        ownership.include_legacy_unowned
+        if ownership is not None
+        else include_legacy_unowned
+    )
+    # The service applies this guess only if no plan exists after it has acquired
+    # the subject lock. Computing it eagerly is harmless; deciding whether to
+    # write it here would race a concurrent evening plan.
+    planned = guess_for(
+        await get_week_template(
+            session,
+            subject_id=(
+                effective_subject_id if effective_subject_id is not None else None
+            ),
+        ),
+        on_date,
+    )
     return await signals_service.set_day_context(
-        session, on_date, answers=answers, planned=planned, source=Source.MANUAL.value
+        session,
+        on_date,
+        answers={key: value},
+        planned=planned,
+        source=source,
+        identity=effective_identity,
+        integration_connection_id=(
+            ownership.connection_id if ownership is not None else None
+        ),
+        merge_answers=True,
+        planned_if_missing=True,
+        include_legacy_unowned=include_unowned,
+        allow_historical_connection=allow_historical_connection,
     )
 
 
 async def record_plan(
-    session: AsyncSession, on_date: date_type, planned: dict
+    session: AsyncSession,
+    on_date: date_type,
+    planned: dict,
+    *,
+    ownership: ProactiveOwnershipContext | None = None,
 ) -> DayContext:
     """Park the template's guess for a day, without touching any answer."""
-    row = await signals_service.get_day_context(session, on_date)
     return await signals_service.set_day_context(
         session,
         on_date,
-        answers=dict(row.answers or {}) if row is not None else {},
+        answers={},
         planned=planned,
-        source=row.source if row is not None else Source.TEMPLATE.value,
+        source=Source.TEMPLATE.value,
+        identity=ownership.system_action() if ownership is not None else None,
+        integration_connection_id=None,
+        merge_answers=True,
+        preserve_source=True,
+        planned_if_missing=True,
+        include_legacy_unowned=(
+            ownership.include_legacy_unowned if ownership is not None else False
+        ),
     )
 
 
@@ -439,6 +579,10 @@ async def evening_job(session_factory, redis=None) -> None:
 
     notifier = channels.build_notifier()
     async with session_factory() as session:
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session,
+            actor_username=None,
+        )
         today = today_local()
         tomorrow = today + timedelta(days=1)
 
@@ -446,7 +590,11 @@ async def evening_job(session_factory, redis=None) -> None:
         # The recap keyboard is the one-tap version of «Как день?» directly above
         # it, about the day that just ended — the only moment that question can
         # be answered rather than guessed.
-        recap_answers, recap_answered = await resolve(session, today)
+        recap_answers, recap_answered = await resolve(
+            session,
+            today,
+            ownership=ownership,
+        )
         recap_blocks = [
             compose.Block(
                 compose.KIND_DAY,
@@ -465,13 +613,29 @@ async def evening_job(session_factory, redis=None) -> None:
                 recap_answers, today, recap_answered, RECAP_QUESTIONS
             )
             or None,
+            ownership=ownership,
         )
 
         # ── Tomorrow, as planned ──────────────────────────────────────────────
-        planned = guess_for(await get_week_template(session), tomorrow)
-        await record_plan(session, tomorrow, planned)
+        planned = guess_for(
+            await get_week_template(
+                session,
+                subject_id=ownership.subject_id,
+            ),
+            tomorrow,
+        )
+        await record_plan(
+            session,
+            tomorrow,
+            planned,
+            ownership=ownership,
+        )
 
-        answers, answered = await resolve(session, tomorrow)
+        answers, answered = await resolve(
+            session,
+            tomorrow,
+            ownership=ownership,
+        )
         buttons = exception_buttons(answers, tomorrow, answered) or None
         tomorrow_line = f"{LINE_TOMORROW}{describe(answers)}"
         if buttons:
@@ -484,5 +648,6 @@ async def evening_job(session_factory, redis=None) -> None:
             category=delivery.CATEGORY_EVENING,
             dedupe_key=plan_dedupe_key(today),
             buttons=buttons,
+            ownership=ownership,
         )
         await session.commit()

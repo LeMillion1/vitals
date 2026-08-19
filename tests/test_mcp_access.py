@@ -18,7 +18,7 @@ mcp_router = pytest.importorskip("web.routers.mcp")
 
 
 @pytest.fixture(autouse=True)
-async def _optional_modules_on(session_factory):
+async def _optional_modules_on(session_factory, legacy_owner_roots):
     """Optional modules default to off, and the MCP write tools honour that
     (web/routers/mcp.gated). These tests write to optional domains — switch them on."""
     from vitals.services import modules_service

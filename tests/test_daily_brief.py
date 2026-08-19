@@ -11,16 +11,25 @@ from datetime import date, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from vitals.enums import DigestKind, Severity, Source
+from vitals.enums import (
+    DigestKind,
+    IntegrationConnectionStatus,
+    IntegrationProvider,
+    Severity,
+    Source,
+)
 from vitals.models.milestones import WeeklyDigest
 from vitals.models.proactive import Notification
 from vitals.models.system_alert import SystemAlert
+from vitals.models.tenancy import IntegrationConnection
 from vitals.services import digest_service, garmin_service, weight_service
-from vitals.services.proactive import brief, compose, day_plan, delivery
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.proactive import brief, channels, compose, day_plan, delivery
+from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
 # owner flips in Settings, and it defaults off.
-pytestmark = pytest.mark.usefixtures("all_modules_on")
+pytestmark = pytest.mark.usefixtures("all_modules_on", "legacy_owner_roots")
 
 DAY = date(2026, 7, 26)
 
@@ -72,11 +81,56 @@ class FakeNotifier:
         pass
 
 
+async def _telegram_ownership(session) -> ProactiveOwnershipContext:
+    legacy = await resolve_legacy_ownership_context(
+        session,
+        actor_username=None,
+        required_connections=(IntegrationProvider.TELEGRAM,),
+    )
+    return channels.ownership_from_legacy(legacy)
+
+
 async def _seed_day(db_session, *, on_date=DAY, weight_kg=88.0):
     await garmin_service.ingest_daily(db_session, on_date, GARMIN_RAW)
     if weight_kg is not None:
         await weight_service.log_weight(db_session, on_date=on_date, weight_kg=weight_kg)
     await db_session.commit()
+
+
+@pytest.mark.parametrize(
+    "inactive_status",
+    (
+        IntegrationConnectionStatus.PENDING.value,
+        IntegrationConnectionStatus.DISABLED.value,
+    ),
+)
+async def test_brief_rejects_inactive_llm_connection_before_network(
+    db_session,
+    inactive_status,
+):
+    ownership = await resolve_legacy_ownership_context(
+        db_session,
+        actor_username=None,
+        required_connections=(IntegrationProvider.OPENROUTER,),
+    )
+    connection_id = ownership.connection_id(IntegrationProvider.OPENROUTER)
+    connection = await db_session.get(IntegrationConnection, connection_id)
+    assert connection is not None
+    connection.status = inactive_status
+    await db_session.flush()
+    llm = FakeLLM()
+
+    with pytest.raises(brief.BriefOwnershipError, match="inactive"):
+        await brief.generate_brief(
+            db_session,
+            llm,
+            on_date=DAY,
+            identity=ownership.owner_action(),
+            include_legacy_unowned=True,
+            llm_connection_id=connection_id,
+        )
+
+    assert llm.calls == []
 
 
 # ── The header ────────────────────────────────────────────────────────────────
@@ -469,6 +523,31 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     journal = (await db_session.execute(select(Notification))).scalars().all()
     assert [n.category for n in journal] == [delivery.CATEGORY_BRIEF]
     assert journal[0].dedupe_key == brief.dedupe_key(DAY)
+    channel_ownership = await _telegram_ownership(db_session)
+    llm_ownership = await resolve_legacy_ownership_context(
+        db_session,
+        actor_username=None,
+        required_connections=(IntegrationProvider.OPENROUTER,),
+    )
+    stored = (await db_session.execute(select(WeeklyDigest))).scalars().one()
+    assert (
+        stored.subject_id,
+        stored.actor_user_id,
+        stored.integration_connection_id,
+    ) == (
+        channel_ownership.subject_id,
+        None,
+        llm_ownership.connection_id(IntegrationProvider.OPENROUTER),
+    )
+    assert (
+        journal[0].subject_id,
+        journal[0].recipient_user_id,
+        journal[0].integration_connection_id,
+    ) == (
+        channel_ownership.subject_id,
+        channel_ownership.recipient_user_id,
+        channel_ownership.connection_id,
+    )
     alert = (await db_session.execute(select(SystemAlert))).scalars().one()
     assert alert.resolved_at is not None
 
@@ -503,9 +582,14 @@ async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(
     _patch_job(monkeypatch, notifier, FakeLLM())
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
     await _seed_day(db_session)
+    ownership = await _telegram_ownership(db_session)
     for question in day_plan.QUESTIONS:
         await day_plan.record_answer(
-            db_session, DAY, question.key, next(iter(question.labels))
+            db_session,
+            DAY,
+            question.key,
+            next(iter(question.labels)),
+            ownership=ownership,
         )
     await db_session.commit()
 
@@ -564,10 +648,55 @@ async def test_build_button_shows_the_brief_and_sends_nothing(
     rows = (await db_session.execute(select(WeeklyDigest))).scalars().all()
     assert [row.kind for row in rows] == [DigestKind.DAILY_BRIEF.value]
     assert rows[0].source == Source.MANUAL.value
+    ownership = await _telegram_ownership(db_session)
+    llm_ownership = await resolve_legacy_ownership_context(
+        db_session,
+        actor_username=None,
+        required_connections=(IntegrationProvider.OPENROUTER,),
+    )
+    assert (
+        rows[0].subject_id,
+        rows[0].actor_user_id,
+        rows[0].integration_connection_id,
+    ) == (
+        ownership.subject_id,
+        ownership.recipient_user_id,
+        llm_ownership.connection_id(IntegrationProvider.OPENROUTER),
+    )
     assert (await db_session.execute(select(Notification))).scalars().all() == []
 
     page = await auth_client.get("/reports")
     assert "Восстановление в норме" in page.text
+
+
+async def test_build_button_does_not_require_a_delivery_channel(
+    auth_client,
+    db_session,
+    monkeypatch,
+):
+    """A web-only composition must not depend on a Telegram recipient root."""
+    from web.routers import reports as reports_router
+
+    telegram = await db_session.scalar(
+        select(IntegrationConnection).where(
+            IntegrationConnection.provider == IntegrationProvider.TELEGRAM.value
+        )
+    )
+    assert telegram is not None
+    await db_session.delete(telegram)
+    await db_session.commit()
+
+    monkeypatch.setattr(reports_router, "LLMClient", lambda *a, **kw: FakeLLM())
+    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    await _seed_day(db_session)
+
+    response = await auth_client.post("/reports/brief")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/reports?brief=ok"
+    stored = (await db_session.execute(select(WeeklyDigest))).scalars().one()
+    assert stored.subject_id is not None
+    assert stored.actor_user_id is not None
+    assert stored.integration_connection_id is not None
 
 
 async def test_test_send_goes_out_off_budget(auth_client, db_session, monkeypatch):
@@ -624,6 +753,24 @@ async def test_test_send_is_not_duplicated_by_a_second_tap(auth_client, db_sessi
     assert len(notifier.sent) == 1
     journal = (await db_session.execute(select(Notification))).scalars().all()
     assert [n.category for n in journal] == [delivery.CATEGORY_TEST]
+    digest = (await db_session.execute(select(WeeklyDigest))).scalars().one()
+    ownership = await _telegram_ownership(db_session)
+    llm_ownership = await resolve_legacy_ownership_context(
+        db_session,
+        actor_username=None,
+        required_connections=(IntegrationProvider.OPENROUTER,),
+    )
+    assert (
+        digest.actor_user_id,
+        digest.integration_connection_id,
+    ) == (
+        ownership.recipient_user_id,
+        llm_ownership.connection_id(IntegrationProvider.OPENROUTER),
+    )
+    assert (
+        journal[0].actor_user_id,
+        journal[0].integration_connection_id,
+    ) == (ownership.recipient_user_id, ownership.connection_id)
 
 
 async def test_test_send_without_a_channel_says_so(auth_client, db_session, monkeypatch):

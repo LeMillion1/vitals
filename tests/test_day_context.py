@@ -15,16 +15,18 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import select
 
-from vitals.enums import Source
+from vitals.enums import IntegrationProvider, Source
 from vitals.models.app_settings import AppSetting
 from vitals.models.proactive import Notification
 from vitals.models.signals import Signal
 from vitals.services import garmin_service, signals_service
-from vitals.services.proactive import brief, day_plan, delivery, inbound
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.proactive import brief, channels, day_plan, delivery, inbound
+from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
 # owner flips in Settings, and it defaults off.
-pytestmark = pytest.mark.usefixtures("signals_module_on")
+pytestmark = pytest.mark.usefixtures("signals_module_on", "legacy_owner_roots")
 
 DAY = date(2026, 7, 26)          # Sunday
 TOMORROW = DAY + timedelta(days=1)
@@ -74,6 +76,15 @@ def _patch_evening(monkeypatch, notifier):
 
     monkeypatch.setattr(channels, "build_notifier", lambda *a, **kw: notifier)
     monkeypatch.setattr(day_plan, "today_local", lambda: DAY)
+
+
+async def _telegram_ownership(session) -> ProactiveOwnershipContext:
+    legacy = await resolve_legacy_ownership_context(
+        session,
+        actor_username=None,
+        required_connections=(IntegrationProvider.TELEGRAM,),
+    )
+    return channels.ownership_from_legacy(legacy)
 
 
 # ── The 23:45 job ─────────────────────────────────────────────────────────────
@@ -147,7 +158,13 @@ async def test_evening_block_keeps_asking_what_is_still_unanswered(
     tomorrow's other two questions with no way of ever being answered."""
     notifier = FakeNotifier()
     _patch_evening(monkeypatch, notifier)
-    await day_plan.record_answer(db_session, TOMORROW, "gym", True)
+    await day_plan.record_answer(
+        db_session,
+        TOMORROW,
+        "gym",
+        True,
+        ownership=await _telegram_ownership(db_session),
+    )
     await db_session.commit()
 
     await day_plan.evening_job(session_factory)
@@ -208,6 +225,60 @@ async def test_tap_overwrites_the_answer_and_keeps_the_guess(db_session):
     assert row.answers == {"gym": True, "load": "heavy"}
     assert row.planned == {"where": "office", "gym": False}
     assert row.source == Source.MANUAL.value
+
+
+@pytest.mark.integration
+async def test_concurrent_owned_taps_merge_without_losing_answers(db_session):
+    """The subject lock serializes the read/merge/write, including a missing row."""
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    ownership = await _telegram_ownership(db_session)
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+
+    session_a = factory()
+    await day_plan.record_answer(
+        session_a,
+        TOMORROW,
+        "gym",
+        True,
+        ownership=ownership,
+        source=Source.TELEGRAM.value,
+    )
+
+    async def answer_b():
+        async with factory() as session_b:
+            await day_plan.record_answer(
+                session_b,
+                TOMORROW,
+                "load",
+                "heavy",
+                ownership=ownership,
+                source=Source.TELEGRAM.value,
+            )
+            await session_b.commit()
+
+    task_b = asyncio.create_task(answer_b())
+    await asyncio.sleep(0.25)
+    assert not task_b.done(), "the second tap must wait on the subject lock"
+
+    await session_a.commit()
+    await session_a.close()
+    await asyncio.wait_for(task_b, timeout=5)
+
+    async with factory() as verify:
+        row = await signals_service.get_day_context(
+            verify,
+            TOMORROW,
+            subject_id=ownership.subject_id,
+        )
+    assert row is not None
+    assert row.answers == {"gym": True, "load": "heavy"}
 
 
 async def test_a_tap_on_an_unasked_day_still_records_what_the_template_thought(

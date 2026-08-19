@@ -20,7 +20,7 @@ from vitals.models import GarminDaily, WeightLog  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _use_test_factory(session_factory, monkeypatch):
+def _use_test_factory(session_factory, monkeypatch, legacy_owner_roots):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
 

@@ -11,13 +11,15 @@ router turns ``ConflictBlocked`` into a 409 + violations payload.
 from __future__ import annotations
 
 import re
+import uuid
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Source
 from vitals.models.supplements import DOMAIN, Supplement
+from vitals.ownership import WriteIdentity
 from vitals.services import conflict_engine
 
 
@@ -103,10 +105,40 @@ def _proposed(key: str, active: bool, timing_slot: Optional[str] = None) -> dict
     return {"key": key, "active": active, "timing_slot": timing_slot}
 
 
+def _supplement_subject_scope(
+    subject_id: uuid.UUID,
+    *,
+    include_legacy_unowned: bool,
+):
+    scope = Supplement.subject_id == subject_id
+    if include_legacy_unowned:
+        scope = or_(
+            scope,
+            and_(
+                Supplement.subject_id.is_(None),
+                Supplement.actor_user_id.is_(None),
+            ),
+        )
+    return scope
+
+
 async def list_supplements(
-    session: AsyncSession, *, active_only: bool = False
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+    active_only: bool = False,
 ) -> Sequence[Supplement]:
     stmt = select(Supplement)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _supplement_subject_scope(
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy supplement compatibility requires a subject_id")
     if active_only:
         stmt = stmt.where(Supplement.active.is_(True))
     stmt = stmt.order_by(Supplement.active.desc(), Supplement.name)
@@ -126,6 +158,8 @@ async def add_supplement(
     contraindications: Optional[str] = None,
     note: Optional[str] = None,
     override: bool = False,
+    source: str = Source.MANUAL.value,
+    identity: WriteIdentity | None = None,
 ) -> Supplement:
     if key:
         resolved_key = key
@@ -144,8 +178,10 @@ async def add_supplement(
         entity_ref=f"supplement:{resolved_key}",
     )
     row = Supplement(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         domain=DOMAIN,
-        source=Source.MANUAL.value,
+        source=source,
         name=name,
         key=resolved_key,
         dose=dose,
@@ -173,8 +209,15 @@ async def update_supplement(
     contraindications: Optional[str] = None,
     note: Optional[str] = None,
     override: bool = False,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Optional[Supplement]:
-    row = await session.get(Supplement, supplement_id)
+    row = await get_supplement(
+        session,
+        supplement_id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if row is None:
         return None
     if key:
@@ -193,6 +236,11 @@ async def update_supplement(
         override=override,
         entity_ref=f"supplement:{resolved_key}",
     )
+    if row.subject_id is None and identity is not None:
+        # Allowed only behind the sole-subject compatibility resolver. Preserve
+        # the original (unknown) actor rather than rewriting history. Do this
+        # only after conflict enforcement succeeds so a 409 remains write-free.
+        row.subject_id = identity.subject_id
     row.name = name
     row.key = resolved_key
     row.dose = dose
@@ -206,11 +254,22 @@ async def update_supplement(
 
 
 async def set_active(
-    session: AsyncSession, supplement_id: int, active: bool, *, override: bool = False
+    session: AsyncSession,
+    supplement_id: int,
+    active: bool,
+    *,
+    override: bool = False,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Optional[Supplement]:
     """Toggle a catalog row's active flag — runs the conflict check so activating
     a contraindicated supplement surfaces the block/override flow."""
-    row = await session.get(Supplement, supplement_id)
+    row = await get_supplement(
+        session,
+        supplement_id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if row is None:
         return None
     if active:
@@ -221,13 +280,46 @@ async def set_active(
             override=override,
             entity_ref=f"supplement:{row.key}",
         )
+    if row.subject_id is None and identity is not None:
+        row.subject_id = identity.subject_id
     row.active = active
     await session.flush()
     return row
 
 
-async def delete_supplement(session: AsyncSession, supplement_id: int) -> bool:
-    row = await session.get(Supplement, supplement_id)
+async def get_supplement(
+    session: AsyncSession,
+    supplement_id: int,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Optional[Supplement]:
+    stmt = select(Supplement).where(Supplement.id == supplement_id)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _supplement_subject_scope(
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy supplement compatibility requires a subject_id")
+    return await session.scalar(stmt)
+
+
+async def delete_supplement(
+    session: AsyncSession,
+    supplement_id: int,
+    *,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+) -> bool:
+    row = await get_supplement(
+        session,
+        supplement_id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if row is None:
         return False
     await session.delete(row)
@@ -235,10 +327,25 @@ async def delete_supplement(session: AsyncSession, supplement_id: int) -> bool:
     return True
 
 
-async def resolve_active(session: AsyncSession) -> list[dict]:
+async def resolve_active(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> list[dict]:
     """Conflict-engine resolver: the catalog as match items (key + active flag +
     parsed timing slot, used by timing_separation rules)."""
-    result = await session.execute(select(Supplement))
+    stmt = select(Supplement)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _supplement_subject_scope(
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy supplement compatibility requires a subject_id")
+    result = await session.execute(stmt)
     return [
         {
             "key": s.key,

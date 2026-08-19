@@ -17,11 +17,19 @@ or multi-subject reads are enabled.
 - Pass an immutable `WriteIdentity(subject_id, actor_user_id)` into domain write
   services. A background operation uses `actor_user_id = NULL`; a missing actor
   is never interpreted inside a service as "probably the owner".
-- Resolve only the integration roots required by the operation. A provider row
-  may be legacy, pending, active, or disabled and still be valid provenance, but
-  a retired, missing, or ambiguous root fails closed.
+- Resolve only the integration roots required by the operation. A live
+  network/ingest operation requires a `legacy` or `active` connection;
+  `pending`, `disabled`, `retired`, missing, or ambiguous roots fail closed.
+  Historical reparse/read provenance may retain `disabled` or `retired` roots,
+  but never turns their lifecycle state back into permission for new activity.
 - `Source` remains ingestion provenance and never substitutes for subject, actor,
   connection, file, relationship, or consent identity.
+- MCP v1 remains a legacy installation-wide capability. Its direct Timeline,
+  Supplements, Signals, DayContext, and provider-sync tools resolve the
+  configured owner at the database boundary so writes are attributed and a
+  second subject fails closed. Whole-lake MCP composition/export stays blocked
+  for the later AccessContext cutover. This mapping is not subject authorization
+  and must not be presented as the MCP v2 token model.
 - A legacy row with `subject_id IS NULL` may be attached to the sole legacy
   subject during a reviewed reconcile. A row already attached to another subject
   is never reassigned. Historical actor fields remain unchanged.
@@ -33,7 +41,7 @@ or multi-subject reads are enabled.
 
 | Tables | Runtime writers | Stage-2 ownership rule |
 | --- | --- | --- |
-| `annotations` | timeline web/service and MCP event/note tools | New human rows get S+A; updates retain A and require the same S. |
+| `annotations` | timeline web/service and MCP event/note tools | New human rows get S+A; updates retain A and require the same S. MCP creates retain `Source.MCP`. |
 | `weight_logs` | manual/MCP saves, Garmin bridge, body-scan bridge | S always; human writes get A, provider writes get provider C, derived writes retain source ownership. |
 | `body_measurements` | manual/MCP and lean-mass recompute | Human creates get S+A; derived recompute preserves ownership. |
 | `progress_photos` | protected upload/weight service | S+A+F; the file asset is registered before the fact row. |
@@ -85,7 +93,8 @@ The first reviewed mappings are deliberately small:
 
 - `ui_language` -> `UserSetting`;
 - `enabled_modules`, `custom_charts`, `week_template` -> `SubjectSetting`;
-- `garmin_weight_export_enabled` -> Garmin `IntegrationConnectionSetting`.
+- `garmin_weight_export_enabled` -> Garmin `IntegrationConnectionSetting`
+  (target mapping only; its product-path dual-write is still pending).
 
 Reads are new-first with legacy fallback. Writes update both rows in one caller-
 owned transaction. `twofa_secret`, credentials, token material, unknown keys, and
@@ -94,12 +103,13 @@ object must first be split into subject, Telegram-connection, and Garmin-
 connection fields. Redis keys must include the corresponding user/S/C UUID before
 a second subject exists.
 
-The language, module-toggle, and custom-chart product paths now use that bridge.
+The language, module-toggle, custom-chart, and week-template product paths now
+use that bridge. Week-template partial MCP updates use a locked atomic transform.
 Authenticated web chrome resolves the sole owner once per request; writes use an
 atomic locked transform for JSON collections and prime only UUID-namespaced
 Redis entries after commit. Anonymous compatibility pages may still read the
-legacy installation value while registration is closed. `week_template` and the
-Garmin connection setting remain pending at this stage.
+legacy installation value while registration is closed. The Garmin connection
+setting remains pending at this stage.
 
 ## File transition
 
@@ -137,6 +147,48 @@ separate matrix row and are not completed by this slice. The global lab-marker
 name key and the global active-weight-per-date key also still prevent a second
 writable subject. Registration must remain disabled until those scoped-key and
 alert ownership gates land.
+
+Timeline annotation and Supplements catalog CRUD now resolve the authenticated
+legacy owner at web/MCP transaction boundaries, stamp S+A on creates, retain the
+original A on updates, and scope direct reads/mutations by S. The Timeline feed
+also scopes every derived event selector when a subject is supplied. Pre-backfill
+NULL rows are included only through an explicit compatibility flag after the
+sole-subject resolver succeeds. Cross-domain composition readers in Today,
+digest/report/share assembly, weight-chart overlays, custom-chart metric
+catalog/series resolution, whole-lake MCP exports, and the conflict resolver
+registry still await the PR-04/PR-10 AccessContext cutover;
+they remain explicit release blockers, so registration and every path to a
+second writable subject stay disabled until that cutover lands.
+
+`scripts/seed_demo.py` also remains an installation-wide destructive developer
+utility: it deletes and recreates domain rows without S/A. It must fail closed on
+a commercial identity database or be rewritten around an explicit disposable
+demo subject before registration can open; it is not a supported Stage-2 write
+boundary.
+
+Signals and proactive delivery now use a channel-neutral ownership context.
+Telegram capture writes S+A+Telegram C, MCP writes S+A with C null, and planned
+day context stays actorless. Existing Signal, DayContext, Notification, and
+brief rows with fully NULL roots are visible only after the exact-one-subject
+resolver enables the compatibility flag; partial-root rows are rejected. A
+callback is durably parked before its action, successful callbacks are marked
+processed, and a recovery pass can replay a parked action after rollback. Brief
+narrative provenance uses the OpenRouter C only when an LLM tail was produced;
+the Notification separately carries the delivery C. Dedupe and daily budget
+remain stable across channel rotation, while a key already owned by another
+subject fails before network delivery. The global notification unique index is
+still a concurrency/cutover blocker until its scoped replacement lands. Inbound
+normalization and callback mutations recover from the durable raw update, but an
+immediate reply/echo remains best-effort: PR-09 must persist an outbound intent
+with pending/sent/ambiguous states before commercial registration can open.
+
+Garmin and Hevy runtime ingestion now resolves S plus the provider C before
+network persistence, copies raw provenance into normalized parents and children,
+and rejects cross-S/C refresh, ambiguous legacy adoption, and invalid lifecycle
+state. Subject->connection lock order is shared across sync and reparse paths.
+Global provider credentials, Redis namespaces, alerts, Garmin weight outbox,
+upstream natural-key uniqueness, and the read transaction spanning vendor I/O
+remain PR-09/cutover work; registration therefore remains disabled.
 
 ## Completion gates
 

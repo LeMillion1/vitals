@@ -28,20 +28,34 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date as date_type, datetime, timedelta
+import uuid
+from dataclasses import dataclass
+from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import DigestKind, Domain, SignalKind, Source
+from vitals.enums import (
+    DigestKind,
+    Domain,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    SignalKind,
+    Source,
+)
 from vitals.integrations.llm_client import LLMClient
+from vitals.models.identity import HealthSubject
+from vitals.models.milestones import WeeklyDigest
 from vitals.models.raw_payload import RawPayload
+from vitals.models.signals import Signal
+from vitals.models.tenancy import IntegrationConnection
 from vitals.services import digest_service, signals_service
 from vitals.services.proactive import day_plan, delivery, prefs
 from vitals.services.proactive.channels import Notifier
-from vitals.services.raw_payload_service import upsert_raw_payload
-from vitals.utils.timeutils import now_local
+from vitals.services.proactive.ownership import ProactiveOwnershipContext
+from vitals.utils.timeutils import now_local, to_local_naive
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +170,24 @@ def conversation_day(now: Optional[datetime] = None) -> date_type:
     )
 
 
+def _telegram_message_day(message: dict) -> date_type | None:
+    """Map Telegram's immutable original message timestamp to the health day."""
+
+    value = message.get("date")
+    if isinstance(value, bool):
+        return None
+    try:
+        timestamp = float(value)
+        if timestamp <= 0:
+            return None
+        moment = to_local_naive(
+            datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        )
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    return conversation_day(moment) if moment is not None else None
+
+
 # ── Telegram update shape (the only place that knows it) ──────────────────────
 def chat_id_of(update: dict) -> Optional[str]:
     """The chat an update came from, whichever shape it arrived in."""
@@ -170,15 +202,224 @@ def chat_id_of(update: dict) -> Optional[str]:
     return None
 
 
-async def _already_handled(session: AsyncSession, external_id: str) -> bool:
-    result = await session.execute(
-        select(RawPayload.id).where(
-            RawPayload.domain == DOMAIN,
-            RawPayload.source == SOURCE,
-            RawPayload.external_id == external_id,
+def is_private_recipient_update(update: dict, expected_recipient_id: str) -> bool:
+    """Accept only a private chat authored by the configured recipient."""
+
+    try:
+        expected_id = int(expected_recipient_id)
+    except (TypeError, ValueError):
+        return False
+    if expected_id <= 0:
+        return False
+    callback = update.get("callback_query") or {}
+    holder = (
+        callback.get("message")
+        if callback
+        else update.get("message") or update.get("edited_message")
+    )
+    if not isinstance(holder, dict):
+        return False
+    chat = holder.get("chat") or {}
+    sender = (callback.get("from") if callback else holder.get("from")) or {}
+    try:
+        chat_id = int(chat.get("id"))
+        sender_id = int(sender.get("id"))
+    except (TypeError, ValueError):
+        return False
+    return chat.get("type") == "private" and chat_id == sender_id == expected_id
+
+
+class DurableInboundProcessingError(RuntimeError):
+    """Processing failed after the complete update was committed to the lake."""
+
+
+class InboundOwnershipError(RuntimeError):
+    """The resolved subject/recipient/connection graph is inconsistent."""
+
+
+_LIVE_TELEGRAM_CONNECTION_STATUSES = {
+    IntegrationConnectionStatus.LEGACY.value,
+    IntegrationConnectionStatus.ACTIVE.value,
+}
+_HISTORICAL_CONNECTION_STATUSES = (
+    _LIVE_TELEGRAM_CONNECTION_STATUSES
+    | {
+        IntegrationConnectionStatus.DISABLED.value,
+        IntegrationConnectionStatus.RETIRED.value,
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _RawClaim:
+    raw: RawPayload
+    created: bool
+
+
+def _owned_or_legacy_raw_scope(ownership: ProactiveOwnershipContext):
+    owned = RawPayload.subject_id == ownership.subject_id
+    if ownership.include_legacy_unowned:
+        owned = or_(
+            owned,
+            and_(
+                RawPayload.subject_id.is_(None),
+                RawPayload.actor_user_id.is_(None),
+                RawPayload.integration_connection_id.is_(None),
+                RawPayload.file_asset_id.is_(None),
+            ),
+        )
+    return owned
+
+
+async def _lock_subject_root(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext,
+) -> HealthSubject:
+    subject = await session.scalar(
+        select(HealthSubject)
+        .where(HealthSubject.id == ownership.subject_id)
+        .with_for_update()
+    )
+    if subject is None:
+        raise InboundOwnershipError("Telegram subject does not exist")
+    if subject.owner_user_id != ownership.recipient_user_id:
+        raise InboundOwnershipError("Telegram recipient is not the subject owner")
+    return subject
+
+
+async def _load_telegram_connection(
+    session: AsyncSession,
+    *,
+    connection_id: uuid.UUID,
+    subject_id: uuid.UUID,
+    allow_historical: bool,
+    lock: bool = True,
+) -> IntegrationConnection:
+    stmt = select(IntegrationConnection).where(
+        IntegrationConnection.id == connection_id
+    )
+    if lock:
+        stmt = stmt.with_for_update()
+    connection = await session.scalar(stmt)
+    if connection is None:
+        raise InboundOwnershipError("Telegram connection does not exist")
+    if connection.subject_id != subject_id:
+        raise InboundOwnershipError("Telegram connection belongs to another subject")
+    if (
+        connection.provider != IntegrationProvider.TELEGRAM.value
+        or connection.connection_type != IntegrationConnectionType.RECIPIENT.value
+    ):
+        raise InboundOwnershipError("connection is not a Telegram recipient")
+    known = {status.value for status in IntegrationConnectionStatus}
+    if connection.status not in known:
+        raise InboundOwnershipError("Telegram connection lifecycle is unknown")
+    allowed = (
+        _HISTORICAL_CONNECTION_STATUSES
+        if allow_historical
+        else _LIVE_TELEGRAM_CONNECTION_STATUSES
+    )
+    if connection.status not in allowed:
+        operation = "historical provenance" if allow_historical else "ingest"
+        raise InboundOwnershipError(
+            f"{connection.status} Telegram connection cannot {operation}"
+        )
+    return connection
+
+
+async def _validate_raw_root(
+    session: AsyncSession,
+    raw: RawPayload,
+    *,
+    ownership: ProactiveOwnershipContext,
+    lock_connection: bool = True,
+) -> None:
+    if raw.subject_id is None:
+        if not ownership.include_legacy_unowned or any(
+            value is not None
+            for value in (
+                raw.actor_user_id,
+                raw.integration_connection_id,
+                raw.file_asset_id,
+            )
+        ):
+            raise InboundOwnershipError("Telegram raw has invalid legacy roots")
+        return
+    if raw.file_asset_id is not None:
+        raise InboundOwnershipError("Telegram raw cannot reference a file asset")
+    if raw.subject_id != ownership.subject_id:
+        raise InboundOwnershipError("Telegram raw belongs to another subject")
+    if raw.actor_user_id != ownership.recipient_user_id:
+        raise InboundOwnershipError(
+            "owned Telegram raw actor is not the subject owner"
+        )
+    if raw.integration_connection_id is None:
+        raise InboundOwnershipError("owned Telegram raw has no recipient connection")
+    await _load_telegram_connection(
+        session,
+        connection_id=raw.integration_connection_id,
+        subject_id=ownership.subject_id,
+        allow_historical=True,
+        lock=lock_connection,
+    )
+
+
+async def _claim_update_raw(
+    session: AsyncSession,
+    *,
+    external_id: str,
+    payload: dict,
+    ownership: ProactiveOwnershipContext,
+) -> _RawClaim:
+    """Atomically claim one subject/update id and commit the full envelope.
+
+    The subject lock closes PostgreSQL's absent-row race before the connection
+    and raw locks. The lookup is subject-wide so a retry remains a no-op after a
+    connection rotation. Existing rows are never refreshed or reprocessed.
+    """
+
+    await _lock_subject_root(session, ownership=ownership)
+    await _load_telegram_connection(
+        session,
+        connection_id=ownership.connection_id,
+        subject_id=ownership.subject_id,
+        allow_historical=False,
+    )
+    rows = list(
+        await session.scalars(
+            select(RawPayload)
+            .where(
+                _owned_or_legacy_raw_scope(ownership),
+                RawPayload.domain == DOMAIN,
+                RawPayload.source == SOURCE,
+                RawPayload.external_id == external_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
     )
-    return result.scalars().first() is not None
+    if len(rows) > 1:
+        raise InboundOwnershipError("ambiguous Telegram update claim")
+    if rows:
+        raw = rows[0]
+        await _validate_raw_root(session, raw, ownership=ownership)
+        await session.commit()
+        return _RawClaim(raw=raw, created=False)
+
+    raw = RawPayload(
+        subject_id=ownership.subject_id,
+        actor_user_id=ownership.recipient_user_id,
+        integration_connection_id=ownership.connection_id,
+        domain=DOMAIN,
+        source=SOURCE,
+        external_id=external_id,
+        payload=payload,
+        fetched_at=now_local(),
+    )
+    session.add(raw)
+    await session.flush()
+    await session.commit()
+    return _RawClaim(raw=raw, created=True)
 
 
 async def handle_update(
@@ -187,93 +428,203 @@ async def handle_update(
     *,
     notifier: Optional[Notifier],
     parse: Optional[signals_service.Parser] = None,
+    ownership: ProactiveOwnershipContext,
 ) -> None:
     """Entry point for one Telegram update. Safe to call twice with the same one."""
     update_id = update.get("update_id")
     external_id = f"tg:{update_id}" if update_id is not None else None
-    if external_id and await _already_handled(session, external_id):
-        logger.info("ignoring repeated update %s", external_id)
-        return
-
-    # The emergency switch stops the expensive and the outgoing half — the
-    # model call and every reply — but not the ears. A message written while the
-    # module is off still lands in the lake: "выключено" must not read as
-    # "потерял", and the re-parse sweep picks the text up whenever it comes back
-    # on. What it cannot do is answer, which is enforced in ``delivery.send`` too.
-    enabled = await prefs.bot_enabled(session)
-
+    if not isinstance(ownership, ProactiveOwnershipContext):
+        raise TypeError("ownership must be a ProactiveOwnershipContext")
     callback = update.get("callback_query")
-    if callback:
-        # A tap is an answer to a question this bot asked; with the module off
-        # there is nothing asking, so it is dropped rather than stored.
-        if not enabled:
-            logger.info("ignoring tap: the signals module is switched off")
-            return
-        await _handle_callback(session, callback, notifier=notifier, external_id=external_id)
-        return
-
     message = update.get("message") or update.get("edited_message") or {}
+    edited = "edited_message" in update
     text = (message.get("text") or "").strip()
-    if not text:
-        # Photos, stickers, voice notes: nothing to capture yet (voice arrives as
-        # a transcription step in front of handle_text, not as a branch here).
+    if external_id is None or (not callback and not text):
         return
 
-    if not enabled:
-        # A slash command is addressed to the bot, not a fact about the day —
-        # same call the enabled path makes. Left unstamped it would sit in
-        # the queue until the module came back on and then cost a model call to
-        # learn that «/start» holds no signals.
-        await signals_service.store_raw_text(
+    parked = False
+    try:
+        claim = await _claim_update_raw(
             session,
-            text=text,
             external_id=external_id,
-            source=SOURCE,
-            processed=text.startswith("/"),
+            payload=update,
+            ownership=ownership,
         )
-        logger.info("stored inbound text unparsed: the signals module is switched off")
-        return
+        if not claim.created:
+            logger.info("ignoring repeated update %s", external_id)
+            return
+        parked = True
 
-    await handle_text(
-        session,
-        text,
-        notifier=notifier,
-        external_id=external_id,
-        message_id=message.get("message_id"),
-        reply_to_message_id=(message.get("reply_to_message") or {}).get("message_id"),
-        parse=parse,
-    )
+        if edited:
+            try:
+                await _supersede_edited_message(
+                    session,
+                    claim.raw,
+                    ownership=ownership,
+                )
+            except signals_service.RawPayloadAlreadyProcessedError:
+                return
+
+        enabled = await prefs.bot_enabled(
+            session,
+            subject_id=ownership.subject_id,
+            strict=True,
+        )
+        # A strict scoped-setting read may use the legacy governance bridge.
+        # Close that read transaction before any parser or Telegram network await.
+        await session.commit()
+        if not enabled:
+            if callback or text.startswith("/"):
+                await _mark_raw_processed(
+                    session,
+                    claim.raw,
+                    ownership=ownership,
+                )
+            logger.info(
+                "stored inbound update without active processing: "
+                "the signals module is switched off"
+            )
+            return
+
+        if callback:
+            await _handle_callback(
+                session,
+                callback,
+                notifier=notifier,
+                external_id=None,
+                ownership=ownership,
+                raw=claim.raw,
+            )
+            return
+
+        await handle_text(
+            session,
+            text,
+            notifier=notifier,
+            external_id=None,
+            message_id=message.get("message_id"),
+            reply_to_message_id=(message.get("reply_to_message") or {}).get(
+                "message_id"
+            ),
+            parse=parse,
+            on_date=_telegram_message_day(message),
+            ownership=ownership,
+            raw=claim.raw,
+            edited=False,
+        )
+    except Exception as exc:
+        if parked:
+            raise DurableInboundProcessingError(
+                "Telegram update failed after durable raw capture"
+            ) from exc
+        raise
 
 
 # ── Taps ──────────────────────────────────────────────────────────────────────
+async def _mark_subject_batch_misparse(
+    session: AsyncSession,
+    batch_id: str,
+    *,
+    ownership: ProactiveOwnershipContext,
+) -> int:
+    """Undo a Telegram batch across recipient-connection rotation."""
+
+    await _lock_subject_root(session, ownership=ownership)
+    owned = Signal.subject_id == ownership.subject_id
+    if ownership.include_legacy_unowned:
+        owned = or_(
+            owned,
+            and_(
+                Signal.subject_id.is_(None),
+                Signal.actor_user_id.is_(None),
+                Signal.integration_connection_id.is_(None),
+            ),
+        )
+    rows = list(
+        await session.scalars(
+            select(Signal)
+            .where(owned, Signal.batch_id == batch_id)
+            .with_for_update()
+        )
+    )
+    for row in rows:
+        if row.source != SOURCE:
+            raise InboundOwnershipError("undo target is not a Telegram signal")
+        if row.subject_id is None:
+            continue
+        if row.actor_user_id not in {None, ownership.recipient_user_id}:
+            raise InboundOwnershipError("Telegram signal belongs to another actor")
+        if row.integration_connection_id is None:
+            raise InboundOwnershipError("owned Telegram signal has no connection")
+        await _load_telegram_connection(
+            session,
+            connection_id=row.integration_connection_id,
+            subject_id=ownership.subject_id,
+            allow_historical=True,
+        )
+    return await signals_service.mark_misparse(
+        session,
+        batch_id,
+        subject_id=ownership.subject_id,
+        integration_connection_id=None,
+        include_legacy_unowned=ownership.include_legacy_unowned,
+    )
+
+
 async def _handle_callback(
     session: AsyncSession,
     callback: dict,
     *,
     notifier: Optional[Notifier],
     external_id: Optional[str],
+    ownership: ProactiveOwnershipContext,
+    raw: RawPayload | None = None,
+    historical_connection: bool = False,
 ) -> None:
     data = str(callback.get("data") or "")
     callback_id = str(callback.get("id") or "")
 
     # The tap itself is data too — which button, when — so it lands in the lake
     # like everything else, and doubles as this update's idempotency record.
-    if external_id:
-        await upsert_raw_payload(
-            session, domain=DOMAIN, source=SOURCE, external_id=external_id, payload=callback
+    if raw is None and external_id:
+        claim = await _claim_update_raw(
+            session,
+            external_id=external_id,
+            payload={"callback_query": callback},
+            ownership=ownership,
         )
+        if not claim.created:
+            return
+        raw = claim.raw
 
     toast = ""
     answered: Optional[tuple[date_type, str]] = None
     if data.startswith(CB_MISPARSE):
         batch_id = data[len(CB_MISPARSE):]
-        changed = await signals_service.mark_misparse(session, batch_id)
+        changed = await _mark_subject_batch_misparse(
+            session,
+            batch_id,
+            ownership=ownership,
+        )
         # The rows stay, flagged: they are the material the key registry gets
         # built from — real mistakes, not remembered ones.
         toast = "Убрал из графиков" if changed else "Уже убрано"
     elif data.startswith(CB_CONTEXT):
-        answered = await _apply_context(session, data)
+        answered = await _apply_context(
+            session,
+            data,
+            ownership=ownership,
+            historical_connection=historical_connection,
+        )
         toast = "Записал" if answered is not None else ""
+
+    if raw is not None:
+        raw.processed_at = now_local()
+        await session.flush()
+
+    # The callback action and terminal raw marker are durable before Telegram
+    # network awaits. This also releases Subject/C/data locks for live updates.
+    await session.commit()
 
     if notifier is not None and callback_id:
         # Acknowledged first: Telegram spins on the button until this lands, and
@@ -284,7 +635,13 @@ async def _handle_callback(
             logger.warning("could not acknowledge tap %s", callback_id, exc_info=True)
 
     if notifier is not None and answered is not None:
-        await _redraw(session, callback, *answered, notifier=notifier)
+        await _redraw(
+            session,
+            callback,
+            *answered,
+            notifier=notifier,
+            ownership=ownership,
+        )
 
 
 async def _redraw(
@@ -294,6 +651,7 @@ async def _redraw(
     key: str,
     *,
     notifier: Notifier,
+    ownership: ProactiveOwnershipContext,
 ) -> None:
     """The message that asked now says what was answered.
 
@@ -308,7 +666,11 @@ async def _redraw(
     if not message_id or not text:
         return
 
-    answers, answered = await day_plan.resolve(session, on_date)
+    answers, answered = await day_plan.resolve(
+        session,
+        on_date,
+        ownership=ownership,
+    )
     buttons = day_plan.exception_buttons(
         answers, on_date, answered, day_plan.questions_for(key)
     )
@@ -326,7 +688,11 @@ async def _redraw(
 
 
 async def _apply_context(
-    session: AsyncSession, data: str
+    session: AsyncSession,
+    data: str,
+    *,
+    ownership: ProactiveOwnershipContext,
+    historical_connection: bool = False,
 ) -> Optional[tuple[date_type, str]]:
     """``ctx:<iso date>:<key>:<value>`` → merge one answer into that day's context.
 
@@ -358,11 +724,348 @@ async def _apply_context(
         logger.warning("context payload outside the question registry: %s", data)
         return None
 
-    await day_plan.record_answer(session, on_date, key, answer)
+    await day_plan.record_answer(
+        session,
+        on_date,
+        key,
+        answer,
+        ownership=ownership,
+        source=Source.TELEGRAM.value,
+        allow_historical_connection=historical_connection,
+    )
     return on_date, key
 
 
 # ── Text ──────────────────────────────────────────────────────────────────────
+def _message_from_raw(raw: RawPayload) -> tuple[dict, bool]:
+    payload = raw.payload if isinstance(raw.payload, dict) else {}
+    message = payload.get("message")
+    if isinstance(message, dict):
+        return message, False
+    edited = payload.get("edited_message")
+    if isinstance(edited, dict):
+        return edited, True
+    return {}, False
+
+
+def _text_from_raw(raw: RawPayload) -> Optional[str]:
+    """Project text without teaching the signals service Telegram's wire shape."""
+
+    message, _edited = _message_from_raw(raw)
+    if message:
+        return str(message.get("text") or "")
+    payload = raw.payload if isinstance(raw.payload, dict) else {}
+    # Compatibility with rows parked by the channel-neutral pre-claim path.
+    return str(payload.get("text") or "") if "text" in payload else None
+
+
+def _day_from_raw(raw: RawPayload) -> date_type | None:
+    message, _edited = _message_from_raw(raw)
+    return _telegram_message_day(message) if message else None
+
+
+def _callback_from_raw(raw: RawPayload) -> Optional[dict]:
+    payload = raw.payload if isinstance(raw.payload, dict) else {}
+    callback = payload.get("callback_query")
+    if isinstance(callback, dict):
+        return callback
+    # Compatibility with the previous callback-only raw envelope.
+    return payload if "data" in payload else None
+
+
+async def _raw_text_is_signal_candidate(
+    session: AsyncSession,
+    raw: RawPayload,
+    *,
+    ownership: ProactiveOwnershipContext,
+) -> bool:
+    """Apply the live command/question/reply classifier during recovery."""
+
+    message, _edited = _message_from_raw(raw)
+    text = str((_text_from_raw(raw) or "")).strip()
+    if text.startswith("/"):
+        return False
+    reply_id = (message.get("reply_to_message") or {}).get("message_id")
+    answered = (
+        await delivery.find_sent(
+            session,
+            str(reply_id),
+            ownership=ownership,
+        )
+        if reply_id is not None
+        else None
+    )
+    to_evening = (
+        answered is not None
+        and answered.category == delivery.CATEGORY_EVENING
+    )
+    return to_evening or (
+        answered is None and not looks_like_question(text)
+    )
+
+
+async def _lock_pending_raw_for_completion(
+    session: AsyncSession,
+    raw: RawPayload,
+    *,
+    ownership: ProactiveOwnershipContext,
+) -> RawPayload:
+    """Lock S -> historical C -> raw and reject a superseded stale instance."""
+
+    await _lock_subject_root(session, ownership=ownership)
+    candidates = list(
+        await session.scalars(
+            select(RawPayload)
+            .where(
+                _owned_or_legacy_raw_scope(ownership),
+                RawPayload.domain == DOMAIN,
+                RawPayload.source == SOURCE,
+                RawPayload.id != raw.id,
+            )
+            .order_by(RawPayload.id)
+        )
+    )
+    later = [
+        candidate
+        for candidate in _same_message_versions(raw, candidates)
+        if _is_prior_message_version(raw, candidate)
+    ]
+    connection_ids = sorted(
+        {
+            candidate.integration_connection_id
+            for candidate in [raw, *later]
+            if candidate.integration_connection_id is not None
+        },
+        key=str,
+    )
+    for connection_id in connection_ids:
+        await _load_telegram_connection(
+            session,
+            connection_id=connection_id,
+            subject_id=ownership.subject_id,
+            allow_historical=True,
+        )
+    locked_rows = list(
+        await session.scalars(
+            select(RawPayload)
+            .where(
+                RawPayload.id.in_(
+                    [raw.id, *(candidate.id for candidate in later)]
+                )
+            )
+            .order_by(RawPayload.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+    locked = next(
+        (candidate for candidate in locked_rows if candidate.id == raw.id),
+        None,
+    )
+    if locked is None:
+        raise InboundOwnershipError("Telegram raw does not exist")
+    for candidate in locked_rows:
+        await _validate_raw_root(
+            session,
+            candidate,
+            ownership=ownership,
+            lock_connection=False,
+        )
+    if locked.processed_at is not None:
+        raise signals_service.RawPayloadAlreadyProcessedError(
+            "Telegram raw was already processed or superseded"
+        )
+    if later:
+        locked.processed_at = now_local()
+        await session.flush()
+        raise signals_service.RawPayloadAlreadyProcessedError(
+            "Telegram raw has a newer logical message version"
+        )
+    return locked
+
+
+async def _mark_raw_processed(
+    session: AsyncSession,
+    raw: RawPayload,
+    *,
+    ownership: ProactiveOwnershipContext,
+) -> bool:
+    try:
+        locked = await _lock_pending_raw_for_completion(
+            session,
+            raw,
+            ownership=ownership,
+        )
+    except signals_service.RawPayloadAlreadyProcessedError:
+        # Release the root locks; a newer edit already owns the terminal state.
+        await session.commit()
+        return False
+    locked.processed_at = now_local()
+    await session.flush()
+    # Commands/questions must not become facts if the later outbound call fails.
+    await session.commit()
+    return True
+
+
+def _telegram_update_sequence(raw: RawPayload) -> int | None:
+    payload = raw.payload if isinstance(raw.payload, dict) else {}
+    value = payload.get("update_id")
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _telegram_message_identity(raw: RawPayload) -> tuple[str | None, str] | None:
+    message, _edited = _message_from_raw(raw)
+    message_id = message.get("message_id")
+    if message_id is None:
+        return None
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    chat_id = chat.get("id")
+    return (str(chat_id) if chat_id is not None else None, str(message_id))
+
+
+def _is_prior_message_version(candidate: RawPayload, current: RawPayload) -> bool:
+    candidate_sequence = _telegram_update_sequence(candidate)
+    current_sequence = _telegram_update_sequence(current)
+    if candidate_sequence is not None and current_sequence is not None:
+        return candidate_sequence < current_sequence
+    # Historical synthetic rows did not retain Telegram's outer update id. Their
+    # insertion order is the only stable ordering available for compatibility.
+    return candidate.id < current.id
+
+
+def _same_message_versions(
+    raw: RawPayload,
+    candidates: list[RawPayload],
+) -> list[RawPayload]:
+    identity = _telegram_message_identity(raw)
+    if identity is None:
+        return []
+    return [
+        candidate
+        for candidate in candidates
+        if _telegram_message_identity(candidate) == identity
+    ]
+
+
+async def _supersede_edited_message(
+    session: AsyncSession,
+    raw: RawPayload,
+    *,
+    ownership: ProactiveOwnershipContext,
+) -> int:
+    """Deactivate facts from earlier versions of the same Telegram message."""
+
+    message, edited = _message_from_raw(raw)
+    message_id = message.get("message_id")
+    if not edited or message_id is None:
+        return 0
+
+    await _lock_subject_root(session, ownership=ownership)
+    candidates = list(
+        await session.scalars(
+            select(RawPayload)
+            .where(
+                _owned_or_legacy_raw_scope(ownership),
+                RawPayload.domain == DOMAIN,
+                RawPayload.source == SOURCE,
+                RawPayload.id != raw.id,
+            )
+            .order_by(RawPayload.id)
+        )
+    )
+    versions = _same_message_versions(raw, candidates)
+    prior = [
+        candidate for candidate in versions if _is_prior_message_version(candidate, raw)
+    ]
+    later = [
+        candidate for candidate in versions if _is_prior_message_version(raw, candidate)
+    ]
+    prior_ids = [candidate.id for candidate in prior]
+    connection_ids = sorted(
+        {
+            candidate.integration_connection_id
+            for candidate in [raw, *prior, *later]
+            if candidate.integration_connection_id is not None
+        },
+        key=str,
+    )
+    for connection_id in connection_ids:
+        await _load_telegram_connection(
+            session,
+            connection_id=connection_id,
+            subject_id=ownership.subject_id,
+            allow_historical=True,
+        )
+    locked = list(
+        await session.scalars(
+            select(RawPayload)
+            .where(
+                RawPayload.id.in_(
+                    [raw.id, *prior_ids, *(candidate.id for candidate in later)]
+                )
+            )
+            .order_by(RawPayload.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+    current = next((candidate for candidate in locked if candidate.id == raw.id), None)
+    if current is None:
+        raise InboundOwnershipError("edited Telegram raw disappeared")
+    for candidate in locked:
+        await _validate_raw_root(
+            session,
+            candidate,
+            ownership=ownership,
+            lock_connection=False,
+        )
+    if current.processed_at is not None or later:
+        # A later edit already superseded this version while it was waiting, or
+        # was durably claimed first because Telegram deliveries overlapped.
+        current.processed_at = current.processed_at or now_local()
+        await session.flush()
+        await session.commit()
+        raise signals_service.RawPayloadAlreadyProcessedError(
+            "edited Telegram raw was superseded by a later version"
+        )
+    if not prior_ids:
+        # Release the subject/current-raw locks before the parser/network.
+        await session.commit()
+        return 0
+    timestamp = now_local()
+    for candidate in locked:
+        if candidate.id == current.id:
+            continue
+        candidate.processed_at = candidate.processed_at or timestamp
+    result = await session.execute(
+        sql_update(Signal)
+        .where(
+            Signal.raw_id.in_(prior_ids),
+            or_(
+                Signal.subject_id == ownership.subject_id,
+                and_(
+                    ownership.include_legacy_unowned,
+                    Signal.subject_id.is_(None),
+                    Signal.actor_user_id.is_(None),
+                    Signal.integration_connection_id.is_(None),
+                ),
+            ),
+        )
+        .values(misparse=True)
+    )
+    await session.flush()
+    changed = result.rowcount or 0
+    # Release S→C→raw locks before parser/Telegram network awaits. The current
+    # edited raw is already durable, so a later failure can safely recover.
+    await session.commit()
+    return changed
+
+
 async def handle_text(
     session: AsyncSession,
     text: str,
@@ -373,8 +1076,39 @@ async def handle_text(
     reply_to_message_id: Optional[Any] = None,
     parse: Optional[signals_service.Parser] = None,
     on_date: Optional[date_type] = None,
+    ownership: ProactiveOwnershipContext | None = None,
+    raw: RawPayload | None = None,
+    edited: bool = False,
 ) -> None:
     """The channel-agnostic entry point (C8): already text, whatever produced it."""
+    if ownership is not None and not isinstance(
+        ownership, ProactiveOwnershipContext
+    ):
+        raise TypeError("ownership must be a ProactiveOwnershipContext or None")
+    owner_identity = ownership.owner_action() if ownership is not None else None
+    connection_id = (
+        ownership.connection_id if ownership is not None else None
+    )
+    if raw is not None:
+        if ownership is None:
+            raise TypeError("a claimed raw requires proactive ownership")
+        await _validate_raw_root(
+            session,
+            raw,
+            ownership=ownership,
+            lock_connection=False,
+        )
+        if edited:
+            # An edit can turn a fact into a command or question. Supersede the
+            # old normalized batch before classifying the replacement text.
+            try:
+                await _supersede_edited_message(
+                    session,
+                    raw,
+                    ownership=ownership,
+                )
+            except signals_service.RawPayloadAlreadyProcessedError:
+                return
     # A slash command is addressed to the bot, not a fact about the day. Caught
     # before anything else because ``/start`` is the very first thing anyone sends
     # a new bot: capturing it costs a model call and answers "разобрать не смог",
@@ -384,20 +1118,39 @@ async def handle_text(
         # webhook retry trips over, and without it Telegram's second delivery of
         # the same ``/start`` gets a second identical answer. ``processed`` keeps
         # the re-parse sweep from feeding «/start» to the parser later.
-        await signals_service.store_raw_text(
-            session, text=text, external_id=external_id, source=SOURCE, processed=True
-        )
+        if raw is not None:
+            if not await _mark_raw_processed(
+                session,
+                raw,
+                ownership=ownership,
+            ):
+                return
+        else:
+            await signals_service.store_raw_text(
+                session,
+                text=text,
+                external_id=external_id,
+                source=SOURCE,
+                processed=True,
+                identity=owner_identity,
+                integration_connection_id=connection_id,
+            )
         await delivery.send(
             session,
             notifier,
             text=COMMAND_REPLY,
             category=delivery.CATEGORY_REPLY,
             reply_to=str(message_id) if message_id else None,
+            ownership=ownership,
         )
         return
 
     answered = (
-        await delivery.find_sent(session, str(reply_to_message_id))
+        await delivery.find_sent(
+            session,
+            str(reply_to_message_id),
+            ownership=ownership,
+        )
         if reply_to_message_id is not None
         else None
     )
@@ -414,20 +1167,95 @@ async def handle_text(
         # in the same breath: a question is not a message waiting to be parsed
         # into signals, so the re-parse sweep must not pick it up and turn «почему
         # пульс низкий?» into a symptom row.
-        await signals_service.store_raw_text(
-            session, text=text, external_id=external_id, source=SOURCE, processed=True
+        if raw is not None:
+            if not await _mark_raw_processed(
+                session,
+                raw,
+                ownership=ownership,
+            ):
+                return
+        else:
+            await signals_service.store_raw_text(
+                session,
+                text=text,
+                external_id=external_id,
+                source=SOURCE,
+                processed=True,
+                identity=owner_identity,
+                integration_connection_id=connection_id,
+            )
+        await _answer_reply(
+            session,
+            text,
+            answered,
+            notifier=notifier,
+            message_id=message_id,
+            ownership=ownership,
         )
-        await _answer_reply(session, text, answered, notifier=notifier, message_id=message_id)
         return
 
-    rows = await signals_service.ingest_text(
-        session,
-        text=text,
-        parse=parse or make_signal_parser(await known_keys(session)),
-        external_id=external_id,
-        on_date=on_date or conversation_day(),
-        source=SOURCE,
+    parser = parse or make_signal_parser(
+        await known_keys(
+            session,
+            subject_id=(ownership.subject_id if ownership is not None else None),
+            include_legacy_unowned=(
+                ownership.include_legacy_unowned if ownership is not None else False
+            ),
+        )
     )
+    claimed_raw = raw is not None
+    if raw is None:
+        raw = await signals_service.store_raw_text(
+            session,
+            text=text,
+            external_id=external_id,
+            source=SOURCE,
+            identity=owner_identity,
+            integration_connection_id=connection_id,
+        )
+    try:
+        rows = await signals_service.ingest_stored_text(
+            session,
+            raw=raw,
+            text=text,
+            parse=parser,
+            on_date=on_date or conversation_day(),
+            source=SOURCE,
+            identity=owner_identity,
+            integration_connection_id=connection_id,
+            before_normalize=(
+                (
+                    lambda normalize_session, normalize_raw: (
+                        _lock_pending_raw_for_completion(
+                            normalize_session,
+                            normalize_raw,
+                            ownership=ownership,
+                        )
+                    )
+                )
+                if claimed_raw
+                else None
+            ),
+        )
+    except signals_service.RawPayloadAlreadyProcessedError:
+        await session.commit()
+        return
+
+    # Signals/raw terminal state must win durability before any Telegram send.
+    # An edit waiting on the subject lock can then supersede the complete batch.
+    parser_pending = not rows and raw.processed_at is None
+    await session.commit()
+
+    if parser_pending:
+        await delivery.send(
+            session,
+            notifier,
+            text="Сохранил как есть — разобрать не смог. Посмотрю позже.",
+            category=delivery.CATEGORY_ECHO,
+            reply_to=str(message_id) if message_id else None,
+            ownership=ownership,
+        )
+        return
 
     if not rows:
         # Not an error, and it must not read like one. The evening block asks «как
@@ -441,6 +1269,7 @@ async def handle_text(
             text="Записал. Фактов для графиков тут не нашёл — если что-то важное, скажи прямо.",
             category=delivery.CATEGORY_ECHO,
             reply_to=str(message_id) if message_id else None,
+            ownership=ownership,
         )
         return
 
@@ -451,6 +1280,7 @@ async def handle_text(
         category=delivery.CATEGORY_ECHO,
         buttons=[("не то", f"{CB_MISPARSE}{rows[0].batch_id}")],
         reply_to=str(message_id) if message_id else None,
+        ownership=ownership,
     )
 
 
@@ -461,6 +1291,7 @@ async def _answer_reply(
     *,
     notifier: Optional[Notifier],
     message_id: Optional[Any],
+    ownership: ProactiveOwnershipContext | None,
 ) -> None:
     """``answered`` is the message being replied to; for a question typed on its
     own the last few things we said stand in for it."""
@@ -469,11 +1300,19 @@ async def _answer_reply(
     else:
         context = "\n\n".join(
             text
-            for row in await delivery.recent_sent(session, limit=_CONTEXT_MESSAGES)
+            for row in await delivery.recent_sent(
+                session,
+                limit=_CONTEXT_MESSAGES,
+                ownership=ownership,
+            )
             if (text := (row.payload or {}).get("text"))
         )
     try:
-        text = await answer_reply(question, context, await _day_facts(session))
+        text = await answer_reply(
+            question,
+            context,
+            await _day_facts(session, ownership=ownership),
+        )
     except Exception:
         logger.warning("could not answer a reply", exc_info=True)
         text = _NO_LLM_REPLY
@@ -483,10 +1322,15 @@ async def _answer_reply(
         text=text or _NO_LLM_REPLY,
         category=delivery.CATEGORY_REPLY,
         reply_to=str(message_id) if message_id else None,
+        ownership=ownership,
     )
 
 
-async def _day_facts(session: AsyncSession) -> str:
+async def _day_facts(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext | None = None,
+) -> str:
     """The numbers behind the latest brief, as JSON — or ``""`` if there is none.
 
     Without it the model answers «почему hrv просел?» from the prose of one
@@ -495,7 +1339,62 @@ async def _day_facts(session: AsyncSession) -> str:
     the day and stored the context it was built from, so this reads *that* rather
     than assembling a second, subtly different picture of the same day.
     """
-    digest = await digest_service.latest_digest(session, kind=DigestKind.DAILY_BRIEF.value)
+    if ownership is None:
+        digest = await digest_service.latest_digest(
+            session,
+            kind=DigestKind.DAILY_BRIEF.value,
+        )
+    else:
+        owner_user_id = (
+            select(HealthSubject.owner_user_id)
+            .where(HealthSubject.id == ownership.subject_id)
+            .scalar_subquery()
+        )
+        valid_gateway = (
+            select(IntegrationConnection.id)
+            .where(
+                IntegrationConnection.id
+                == WeeklyDigest.integration_connection_id,
+                IntegrationConnection.subject_id == ownership.subject_id,
+                IntegrationConnection.provider
+                == IntegrationProvider.OPENROUTER.value,
+                IntegrationConnection.connection_type
+                == IntegrationConnectionType.AI_GATEWAY.value,
+                IntegrationConnection.status.in_(
+                    _HISTORICAL_CONNECTION_STATUSES
+                ),
+            )
+            .exists()
+        )
+        digest_scope = and_(
+            WeeklyDigest.subject_id == ownership.subject_id,
+            or_(
+                WeeklyDigest.actor_user_id.is_(None),
+                WeeklyDigest.actor_user_id == owner_user_id,
+            ),
+            or_(
+                WeeklyDigest.integration_connection_id.is_(None),
+                valid_gateway,
+            ),
+        )
+        if ownership.include_legacy_unowned:
+            digest_scope = or_(
+                digest_scope,
+                and_(
+                    WeeklyDigest.subject_id.is_(None),
+                    WeeklyDigest.actor_user_id.is_(None),
+                    WeeklyDigest.integration_connection_id.is_(None),
+                ),
+            )
+        digest = await session.scalar(
+            select(WeeklyDigest)
+            .where(
+                digest_scope,
+                WeeklyDigest.kind == DigestKind.DAILY_BRIEF.value,
+            )
+            .order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc())
+            .limit(1)
+        )
     if digest is None or not digest.context_json:
         return ""
     try:
@@ -542,21 +1441,185 @@ def render_echo(rows) -> str:
 
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
-async def known_keys(session: AsyncSession) -> list[str]:
+async def known_keys(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> list[str]:
     """The vocabulary the parser is reminded of, most-used first."""
-    stats = await signals_service.key_frequency(session)
+    stats = await signals_service.key_frequency(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     return [stat.key for stat in stats][:_KNOWN_KEYS_LIMIT]
 
 
-async def reparse_pending(session: AsyncSession) -> list:
+async def _replay_pending_callbacks(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext,
+) -> int:
+    """Recover durable taps whose original request rolled back after capture."""
+
+    base = select(RawPayload).where(
+        _owned_or_legacy_raw_scope(ownership),
+        RawPayload.domain == DOMAIN,
+        RawPayload.source == SOURCE,
+        RawPayload.processed_at.is_(None),
+    )
+    recovered = 0
+    last_id = 0
+    while recovered < signals_service.REPARSE_BATCH:
+        page = list(
+            await session.scalars(
+                base.where(RawPayload.id > last_id)
+                .order_by(RawPayload.id)
+                .limit(signals_service.REPARSE_BATCH)
+            )
+        )
+        if not page:
+            break
+        for raw in page:
+            last_id = raw.id
+            callback = _callback_from_raw(raw)
+            if callback is None:
+                continue
+            try:
+                raw = await _lock_pending_raw_for_completion(
+                    session,
+                    raw,
+                    ownership=ownership,
+                )
+                replay_ownership = ownership
+                if raw.subject_id is not None:
+                    replay_ownership = ProactiveOwnershipContext(
+                        subject_id=ownership.subject_id,
+                        recipient_user_id=ownership.recipient_user_id,
+                        connection_id=raw.integration_connection_id,
+                        include_legacy_unowned=ownership.include_legacy_unowned,
+                    )
+                data = str(callback.get("data") or "")
+                if data.startswith(CB_MISPARSE):
+                    await _mark_subject_batch_misparse(
+                        session,
+                        data[len(CB_MISPARSE):],
+                        ownership=replay_ownership,
+                    )
+                elif data.startswith(CB_CONTEXT):
+                    await _apply_context(
+                        session,
+                        data,
+                        ownership=replay_ownership,
+                        historical_connection=True,
+                    )
+                raw.processed_at = now_local()
+                await session.flush()
+                await session.commit()
+                recovered += 1
+            except signals_service.RawPayloadAlreadyProcessedError:
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logger.warning(
+                    "could not replay stored callback raw %s",
+                    raw.id,
+                    exc_info=True,
+                )
+            if recovered >= signals_service.REPARSE_BATCH:
+                break
+        if len(page) < signals_service.REPARSE_BATCH:
+            break
+    # Close the final read transaction too; no subject/raw lock may span the LLM
+    # text-recovery phase that follows.
+    await session.commit()
+    return recovered
+
+
+async def reparse_pending(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext | None = None,
+) -> list:
     """Give the messages the parser choked on one more go (R3).
 
     Lives next to the parser because that is what it needs; called from the
     morning-brief job rather than from a schedule of its own, so a recovered row
     is in the lake *before* the brief reads it.
     """
+    if ownership is not None:
+        await _replay_pending_callbacks(session, ownership=ownership)
+
+    async def _before_reparse(
+        reparse_session: AsyncSession,
+        raw: RawPayload,
+    ) -> None:
+        if ownership is None:
+            return
+        await _validate_raw_root(reparse_session, raw, ownership=ownership)
+        await _supersede_edited_message(
+            reparse_session,
+            raw,
+            ownership=ownership,
+        )
+        if not await _raw_text_is_signal_candidate(
+            reparse_session,
+            raw,
+            ownership=ownership,
+        ):
+            await _mark_raw_processed(
+                reparse_session,
+                raw,
+                ownership=ownership,
+            )
+            raise signals_service.RawPayloadAlreadyProcessedError(
+                "Telegram command/question raw is terminal without parsing"
+            )
+
+    async def _before_normalize(
+        reparse_session: AsyncSession,
+        raw: RawPayload,
+    ) -> None:
+        if ownership is None:
+            return
+        await _lock_pending_raw_for_completion(
+            reparse_session,
+            raw,
+            ownership=ownership,
+        )
+
+    async def _after_normalize(
+        reparse_session: AsyncSession,
+        _raw: RawPayload,
+    ) -> None:
+        await reparse_session.commit()
+
     return await signals_service.reparse_unparsed(
-        session, parse=make_signal_parser(await known_keys(session))
+        session,
+        parse=make_signal_parser(
+            await known_keys(
+                session,
+                subject_id=(ownership.subject_id if ownership is not None else None),
+                include_legacy_unowned=(
+                    ownership.include_legacy_unowned
+                    if ownership is not None
+                    else False
+                ),
+            )
+        ),
+        subject_id=ownership.subject_id if ownership is not None else None,
+        # Historical Telegram raws remain part of their subject after recipient
+        # connection rotation; each row validates and copies its own provenance.
+        integration_connection_id=None,
+        include_legacy_unowned=(
+            ownership.include_legacy_unowned if ownership is not None else False
+        ),
+        text_from_raw=_text_from_raw if ownership is not None else None,
+        date_from_raw=_day_from_raw if ownership is not None else None,
+        before_parse=_before_reparse if ownership is not None else None,
+        before_normalize=_before_normalize if ownership is not None else None,
+        after_normalize=_after_normalize if ownership is not None else None,
     )
 
 
@@ -576,8 +1639,12 @@ def make_signal_parser(known: Optional[list[str]] = None) -> signals_service.Par
 
     async def _parse(text: str) -> list[dict]:
         result = await LLMClient().extract_json(text, system=system)
-        items = result.get("signals")
-        return items if isinstance(items, list) else []
+        if not isinstance(result, dict) or "signals" not in result:
+            raise ValueError("signal parser response must contain a signals list")
+        items = result["signals"]
+        if not isinstance(items, list):
+            raise ValueError("signal parser signals must be a list")
+        return items
 
     return _parse
 

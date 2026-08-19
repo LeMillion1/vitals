@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import AnnotationKind, Domain
 from vitals.services import timeline_service
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -43,7 +44,15 @@ async def timeline_feed(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    events = await timeline_service.list_events(db)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    events = await timeline_service.list_events(
+        db,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
 
     return templates.TemplateResponse(
         request,
@@ -71,6 +80,10 @@ async def create_annotation_entry(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     on_date = date_type.fromisoformat(date)
     end = date_type.fromisoformat(end_date) if end_date else None
 
@@ -82,6 +95,7 @@ async def create_annotation_entry(
         kind=kind,
         domain=domain,
         note=note,
+        identity=ownership.owner_action(),
     )
     await db.commit()
 
@@ -99,7 +113,16 @@ async def delete_annotation_entry(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await timeline_service.delete_annotation(db, annotation_id)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    await timeline_service.delete_annotation(
+        db,
+        annotation_id,
+        identity=ownership.owner_action(),
+        include_legacy_unowned=True,
+    )
     await db.commit()
 
     if "hx-request" in request.headers:

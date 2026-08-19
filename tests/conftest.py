@@ -265,12 +265,12 @@ async def client(db_session, redis):
 
 
 @pytest_asyncio.fixture
-async def auth_client(client, db_session):
-    """An authenticated AsyncClient using credentials from the test env."""
+async def legacy_owner_roots(db_session):
+    """Materialize the identity/tenancy roots production creates at startup."""
     # ASGITransport does not run the application's lifespan in these tests.
     # Production startup materializes the legacy owner/subject/resource roots
-    # before serving login, so reproduce that invariant for authenticated route
-    # tests that now resolve ownership at their transaction boundary.
+    # before serving requests or jobs, so focused tests that cross one of those
+    # boundaries opt into the same invariant explicitly.
     from vitals.config import load_config
     from vitals.services.identity_bootstrap import bootstrap_legacy_owner
     from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
@@ -287,6 +287,12 @@ async def auth_client(client, db_session):
         db_session, subject_id=identity.subject_id
     )
     await db_session.commit()
+    return identity
+
+
+@pytest_asyncio.fixture
+async def auth_client(client, legacy_owner_roots):
+    """An authenticated AsyncClient using credentials from the test env."""
 
     # TEST_USERNAME/TEST_PASSWORD are module-level globals; reference them directly
     # rather than re-importing `tests.conftest` (which a site-packages `tests`

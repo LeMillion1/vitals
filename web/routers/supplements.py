@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Domain, Evidence
 from vitals.services import alerts_service, supplements_service
 from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_session, require_auth
 from web.templating import templates
 
@@ -29,7 +30,15 @@ async def supplements_dashboard(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    supplements = await supplements_service.list_supplements(db)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    supplements = await supplements_service.list_supplements(
+        db,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
     alerts = await alerts_service.list_active(db, domain=Domain.SUPPLEMENTS.value)
     return templates.TemplateResponse(
         request,
@@ -58,6 +67,11 @@ async def save_supplement(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    identity = ownership.owner_action()
     try:
         if id is not None:
             await supplements_service.update_supplement(
@@ -71,6 +85,8 @@ async def save_supplement(
                 contraindications=contraindications,
                 note=note,
                 override=override,
+                identity=identity,
+                include_legacy_unowned=True,
             )
         else:
             await supplements_service.add_supplement(
@@ -83,6 +99,7 @@ async def save_supplement(
                 contraindications=contraindications,
                 note=note,
                 override=override,
+                identity=identity,
             )
         await db.commit()
     except ConflictBlocked as e:
@@ -102,8 +119,19 @@ async def toggle_supplement(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     try:
-        await supplements_service.set_active(db, id, active, override=override)
+        await supplements_service.set_active(
+            db,
+            id,
+            active,
+            override=override,
+            identity=ownership.owner_action(),
+            include_legacy_unowned=True,
+        )
         await db.commit()
     except ConflictBlocked as e:
         return JSONResponse(
@@ -120,6 +148,15 @@ async def delete_supplement(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await supplements_service.delete_supplement(db, id)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    await supplements_service.delete_supplement(
+        db,
+        id,
+        identity=ownership.owner_action(),
+        include_legacy_unowned=True,
+    )
     await db.commit()
     return _redirect(request)

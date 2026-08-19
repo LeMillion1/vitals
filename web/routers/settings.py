@@ -121,6 +121,10 @@ async def _page(
     adjusted: Optional[str] = None,
 ) -> HTMLResponse:
     """Build the template context and render settings.html."""
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     proactive = await prefs.get_prefs(db)
     twofa = await twofa_service.get_state(db)
     _twofa_uri = (
@@ -174,7 +178,10 @@ async def _page(
         "enabled_modules": getattr(request.state, "enabled_modules", {}) or {},
         # Proactive layer — DB-backed, unlike everything above.
         "proactive": proactive,
-        "week_template": await day_plan.get_week_template(db),
+        "week_template": await day_plan.get_week_template(
+            db,
+            subject_id=ownership.subject_id,
+        ),
         "weekdays": day_plan.WEEKDAYS,
         # Only the questions a weekday can predict: the rest are asked, not set.
         "day_questions": day_plan.TEMPLATE_QUESTIONS,
@@ -557,8 +564,16 @@ async def save_proactive(
         # Unchecked boxes don't post, so the checked list *is* the answer.
         "nudges": {c: c in nudges for c in prefs.NUDGE_CATEGORIES},
     }
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
     settings = await prefs.set_prefs(db, raw_prefs)
-    await day_plan.set_week_template(db, template)
+    await day_plan.set_week_template(
+        db,
+        template,
+        subject_id=ownership.subject_id,
+    )
     await db.commit()
 
     apply_schedule(request.app, settings)

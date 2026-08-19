@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import SignalKind
 from vitals.services import signals_service
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_session, require_auth
 from web.templating import templates
 
@@ -32,10 +33,22 @@ async def signals_feed(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    signals = await signals_service.list_signals(
-        db, include_misparse=True, limit=FEED_LIMIT
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
     )
-    frequency = await signals_service.key_frequency(db)
+    signals = await signals_service.list_signals(
+        db,
+        include_misparse=True,
+        limit=FEED_LIMIT,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
+    frequency = await signals_service.key_frequency(
+        db,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
 
     return templates.TemplateResponse(
         request,
@@ -60,7 +73,16 @@ async def delete_signal_entry(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await signals_service.delete_signal(db, signal_id)
+    ownership = await resolve_legacy_ownership_context(
+        db,
+        actor_username=username,
+    )
+    await signals_service.delete_signal(
+        db,
+        signal_id,
+        subject_id=ownership.subject_id,
+        include_legacy_unowned=True,
+    )
     await db.commit()
 
     response = RedirectResponse(url="/signals", status_code=status.HTTP_303_SEE_OTHER)

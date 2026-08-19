@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.proactive import Notification
 from vitals.services.proactive import channels, delivery, prefs
+from vitals.services.proactive.ownership import ProactiveOwnershipContext
 from vitals.utils.timeutils import now_local
 
 logger = logging.getLogger(__name__)
@@ -132,7 +133,11 @@ async def _garmin_silent(session: AsyncSession, ctx: dict) -> bool:
     gap = (ctx["today"] - row.date).days
     if gap < GARMIN_SILENT_DAYS:
         return False
-    last = await last_sent_at(session, GARMIN_SILENT_KEY)
+    last = await last_sent_at(
+        session,
+        GARMIN_SILENT_KEY,
+        ownership=ctx.get("ownership"),
+    )
     if last is not None and last.date() >= row.date + timedelta(days=GARMIN_SILENT_DAYS):
         return False
     ctx["garmin_last_date"] = row.date
@@ -179,12 +184,24 @@ def dedupe_key(key: str, now: datetime) -> str:
     return f"nudge:{key}:{now:%Y-%m-%dT%H}"
 
 
-async def last_sent_at(session: AsyncSession, key: str) -> Optional[datetime]:
+async def last_sent_at(
+    session: AsyncSession,
+    key: str,
+    *,
+    ownership: ProactiveOwnershipContext | None = None,
+) -> Optional[datetime]:
+    query = select(Notification.sent_at).where(
+        Notification.dedupe_key.like(f"nudge:{key}:%")
+    )
+    if ownership is not None:
+        query = query.where(
+            delivery.notification_ownership_scope(
+                ownership,
+                connection_scoped=False,
+            )
+        )
     result = await session.execute(
-        select(Notification.sent_at)
-        .where(Notification.dedupe_key.like(f"nudge:{key}:%"))
-        .order_by(Notification.sent_at.desc())
-        .limit(1)
+        query.order_by(Notification.sent_at.desc()).limit(1)
     )
     return result.scalars().first()
 
@@ -195,6 +212,7 @@ async def run(
     *,
     now: Optional[datetime] = None,
     today: Optional[date_type] = None,
+    ownership: ProactiveOwnershipContext | None = None,
 ) -> list[Notification]:
     """Walk the registry once. Returns the journal rows for what actually went out.
 
@@ -202,14 +220,22 @@ async def run(
     the other nudges — or the job — down with it. Does not commit.
     """
     now = now or now_local()
-    ctx: dict = {"now": now, "today": today or now.date()}
+    ctx: dict = {
+        "now": now,
+        "today": today or now.date(),
+        "ownership": ownership,
+    }
     categories = (await prefs.get_prefs(session))["nudges"]
 
     sent: list[Notification] = []
     for spec in NUDGES:
         if not categories.get(spec.category, True):
             continue
-        last = await last_sent_at(session, spec.key)
+        last = await last_sent_at(
+            session,
+            spec.key,
+            ownership=ownership,
+        )
         if last is not None and now - last < timedelta(hours=spec.cooldown_h):
             continue
         try:
@@ -227,6 +253,7 @@ async def run(
             category=delivery.CATEGORY_NUDGE,
             dedupe_key=dedupe_key(spec.key, now),
             now=now,
+            ownership=ownership,
         )
         if row is not None:
             sent.append(row)
@@ -244,5 +271,13 @@ async def nudges_job(session_factory, redis=None) -> None:
     if notifier is None:
         return
     async with session_factory() as session:
-        await run(session, notifier)
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session,
+            actor_username=None,
+        )
+        await run(
+            session,
+            notifier,
+            ownership=ownership,
+        )
         await session.commit()

@@ -206,8 +206,21 @@ Implementation progress on `commercial/pr-03-subject-ownership`:
   Backup v1 safely rebinds to the sole local subject and fails closed if more
   than one subject exists; a subject-selected multi-user format remains a later
   portability cutover.
-- Stage 2 dual-write, bounded backfill, validation, scoped-key cutover, and
-  scoped-read/RLS cutover remain pending. Registration is still disabled.
+- Stage 2 is in progress. Subject/actor/resource dual-write is implemented for
+  persisted medical uploads, Garmin and Hevy ingestion, direct Timeline and
+  Supplements CRUD, Signals and Day Context, proactive Telegram delivery, and
+  the subject-scoped week template. These paths resolve the verified legacy
+  owner at their web, scheduler, or MCP boundary and fail closed if a second
+  subject makes the compatibility bridge ambiguous.
+- The completed Stage 2 slices include SQLite isolation tests and PostgreSQL 15
+  migration/foreign-key tests. Direct interactive selectors are covered for all
+  current Timeline event types, and provider ingestion preserves raw-first
+  provenance with subject/connection ownership.
+- Bounded data backfill and validation, scoped natural-key cutover, global
+  conflict/alert/outbox scoping, subject-aware composition/reporting, full MCP
+  principal propagation, and RLS remain pending. Registration stays disabled;
+  the current code is a safe single-subject migration bridge, not a multi-user
+  release boundary.
 
 Scope:
 
@@ -359,14 +372,17 @@ Scope:
   raw natural keys by subject/connection;
 - replace global scheduled syncs with dispatchers that lease due connections;
 - use per-connection locks/heartbeats and independent transactions;
+- persist notification intents before provider I/O with explicit
+  `pending`/`sent`/`ambiguous` outcomes and a reconciliation policy for timeouts
+  after possible provider acceptance;
 - keep Telegram notifications free of PHI by default.
 
 Tests:
 
 - equal upstream IDs across connections remain isolated;
 - a failed connector does not roll back or block another connection;
-- per-connection rate limits, leases, at-most-once outbox rules, and token
-  directories cannot collide;
+- per-connection rate limits, leases, outbox claims, ambiguous-send recovery, and
+  token directories cannot collide or double-send a confirmed intent;
 - two timezones/DST boundaries schedule the correct subject-local day;
 - no test calls a real provider or sends a real message.
 

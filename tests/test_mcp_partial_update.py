@@ -23,7 +23,7 @@ def _use_test_factory(session_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-async def _optional_modules_on(session_factory):
+async def _optional_modules_on(session_factory, legacy_owner_roots):
     """Optional modules default to off, and the MCP write tools honour that
     (web/routers/mcp.gated). These tests write to optional domains — switch them on."""
     from vitals.services import modules_service
@@ -66,16 +66,35 @@ async def test_glp1_edit_keeps_date_site_and_note():
 
 
 async def test_supplement_rename_keeps_paused_state_and_fields():
-    created = await mcp_router.add_supplement(name="Creatine", dose="5 g", evidence="A")
+    created = await mcp_router.add_supplement(
+        name="Creatine",
+        key="custom_creatine_key",
+        dose="5 g",
+        evidence="A",
+    )
     sid = created["id"]
     assert (await mcp_router.set_supplement_active(sid, active=False))["active"] is False
 
-    updated = await mcp_router.update_supplement(sid, name="Creatine Monohydrate")
+    updated = await mcp_router.update_supplement(sid, dose="3 g")
 
-    assert updated["name"] == "Creatine Monohydrate"
+    assert updated["name"] == "Creatine"
+    assert updated["key"] == "custom_creatine_key"
     assert updated["active"] is False
-    assert updated["dose"] == "5 g"
+    assert updated["dose"] == "3 g"
     assert updated["evidence"] == "A"
+
+    renamed = await mcp_router.update_supplement(
+        sid,
+        name="Creatine Monohydrate",
+    )
+    assert renamed["name"] == "Creatine Monohydrate"
+    assert renamed["key"] == "custom_creatine_key"
+
+    rekeyed = await mcp_router.update_supplement(
+        sid,
+        key="explicit_new_key",
+    )
+    assert rekeyed["key"] == "explicit_new_key"
 
 
 async def test_partial_update_can_still_clear_by_passing_a_value():

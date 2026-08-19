@@ -92,10 +92,19 @@ it is never open.
   `VITALS_TELEGRAM_WEBHOOK_SECRET`. Both comparisons use `compare_digest` — a
   plain `==` on a secret leaks its prefix through timing.
 - A rate limit sits in front of the route (fail-open on Redis, as everywhere else).
-- An update that clears all of the above but comes from **another chat id** gets a
-  plain `200` and is discarded. Not a 403: a distinguishable answer tells a prober
-  they found something, and Telegram would retry a non-200 for hours.
-- Updates are idempotent by `update_id`, so a Telegram retry cannot double-write.
+- Only a private chat whose chat id **and sender id** match the configured positive
+  user id is accepted. Group/supergroup ids are refused for both inbound capture
+  and outbound PHI delivery. A foreign/non-private update gets a plain `200` and
+  is discarded. Not a 403: a distinguishable answer tells a prober they found
+  something, and Telegram would retry a non-200 for hours.
+- The complete upstream update is durably claimed by subject and `update_id`
+  before parsing or action handling. Retries cannot double-write; edits retain
+  raw history while superseding the prior normalized facts. A failure before the
+  durable claim returns a retryable `503`; after that claim, the recovery sweep
+  can complete stored normalization or callback state without losing the input.
+  The immediate reply/echo is still best-effort until the notification outbox
+  cutover: a transport failure cannot safely be retried without a provider-side
+  idempotency key because acceptance followed by a timeout is ambiguous.
 
 Optionally narrow the path to Telegram's own subnets at your reverse proxy — that
 is infrastructure, not application code.

@@ -102,6 +102,25 @@ async def test_raw_is_stored_even_when_the_parser_blows_up(db_session):
     assert raws[0].source == Source.TELEGRAM.value
 
 
+async def test_nonempty_junk_parser_output_stays_pending_and_alerts(db_session):
+    rows = await svc.ingest_text(
+        db_session,
+        text="голова болит",
+        parse=_parse_fixed([{"kind": "symptm", "key": "headache"}]),
+        external_id="tg:junk",
+        on_date=D1,
+    )
+    await db_session.commit()
+
+    assert rows == []
+    raw = await db_session.scalar(
+        select(RawPayload).where(RawPayload.external_id == "tg:junk")
+    )
+    assert raw is not None and raw.processed_at is None
+    active = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
+    assert any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active)
+
+
 async def test_signals_link_back_to_their_raw_row(db_session):
     rows = await svc.ingest_text(
         db_session,
@@ -370,6 +389,25 @@ async def test_reparse_leaves_the_row_pending_when_the_model_is_still_down(db_se
 
     await db_session.refresh(raw)
     assert raw.processed_at is None
+
+
+async def test_reparse_keeps_nonempty_junk_pending_and_raises_alert(db_session):
+    raw = await svc.store_raw_text(
+        db_session,
+        text="голова болит",
+        external_id="tg:reparse-junk",
+    )
+
+    assert await svc.reparse_unparsed(
+        db_session,
+        parse=_parse_fixed([{"kind": "symptm", "key": "headache"}]),
+    ) == []
+    await db_session.commit()
+
+    await db_session.refresh(raw)
+    assert raw.processed_at is None
+    active = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
+    assert any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active)
 
 
 async def test_reparse_ignores_taps_and_anything_older_than_the_window(db_session):

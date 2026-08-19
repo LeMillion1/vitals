@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
 from vitals.services.proactive import channels, inbound
+from web.config import get_web_config
 from web.deps import get_session
 from web.ratelimit import login_rate_limit
 
@@ -78,20 +79,37 @@ async def telegram_webhook(
     if not isinstance(update, dict):
         return {"ok": True}
 
-    chat_id = inbound.chat_id_of(update)
-    if not chat_id or not config.telegram_chat_id or chat_id != config.telegram_chat_id:
-        logger.info("telegram webhook: update from chat %s discarded", chat_id)
+    if not config.telegram_chat_id or not inbound.is_private_recipient_update(
+        update,
+        config.telegram_chat_id,
+    ):
+        logger.info("telegram webhook: non-private or foreign update discarded")
         return {"ok": True}
 
     try:
-        await inbound.handle_update(session, update, notifier=notifier)
-    except Exception:
-        # Anything that escapes here would be a 500, and Telegram retries a 500
-        # for hours — each retry another model call on the same message. The text
-        # itself is already committed to the lake, so the re-parse sweep picks up
-        # whatever this run failed to finish. The rollback is by hand because
-        # ``get_session`` commits on a clean return, and committing a transaction
-        # that has already failed raises on the way out.
-        logger.exception("telegram update failed; acknowledged anyway")
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session,
+            actor_username=get_web_config().auth_username,
+        )
+        await inbound.handle_update(
+            session,
+            update,
+            notifier=notifier,
+            ownership=ownership,
+        )
+    except inbound.DurableInboundProcessingError:
+        # The complete update is already committed. A retry is now a no-op and
+        # the recovery sweep owns normalization, so acknowledging avoids a retry
+        # storm without losing data.
+        logger.exception("telegram update failed after durable capture")
         await session.rollback()
+    except Exception:
+        # Resolution, module-gate, and raw-claim failures happen before a durable
+        # copy exists. Returning success here would lose the update permanently.
+        logger.exception("telegram update failed before durable capture")
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="temporarily unavailable",
+        )
     return {"ok": True}

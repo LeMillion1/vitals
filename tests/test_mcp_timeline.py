@@ -10,6 +10,11 @@ from vitals.models.app_settings import AppSetting  # noqa: E402
 from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+async def _legacy_mcp_owner(legacy_owner_roots):
+    """MCP v1 runs only after startup has materialized its sole owner roots."""
+
+
 async def _enable_timeline(db_session):
     db_session.add(AppSetting(key=SETTINGS_KEY, value={k: True for k in MODULE_REGISTRY}))
     await db_session.commit()

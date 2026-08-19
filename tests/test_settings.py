@@ -457,6 +457,18 @@ async def test_settings_change_password_too_short(auth_client):
     assert "8 символов" in r.text
 
 
+async def _persist_owner_hash(db_session, password_hash: str) -> None:
+    """Align the startup-materialized owner with a per-test env credential."""
+    from sqlalchemy import select
+
+    from vitals.models.identity import User
+
+    user = await db_session.scalar(select(User))
+    assert user is not None
+    user.password_hash = password_hash
+    await db_session.commit()
+
+
 async def test_settings_change_password_success(
     auth_client, db_session, tmp_path, monkeypatch
 ):
@@ -500,10 +512,16 @@ async def test_settings_change_password_success(
     assert events == {
         "identity.legacy_owner.bootstrap",
         "identity.password.rotated",
+        "tenancy.legacy_resource_roots.bootstrap",
     }
 
 
-async def test_settings_change_password_takes_effect_live(auth_client, tmp_path, monkeypatch):
+async def test_settings_change_password_takes_effect_live(
+    auth_client,
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
     """After a password change the new password authenticates and the old one no
     longer does — in the same process, without a container restart."""
     from web.auth import authenticate
@@ -514,7 +532,9 @@ async def test_settings_change_password_takes_effect_live(auth_client, tmp_path,
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     # Pin a known starting hash so monkeypatch restores it on teardown — the
     # handler mutates os.environ directly, which would otherwise leak to later tests.
-    monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", hash_password("password"))
+    old_hash = hash_password("password")
+    monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", old_hash)
+    await _persist_owner_hash(db_session, old_hash)
 
     r = await auth_client.post(
         "/settings/password",
@@ -547,6 +567,7 @@ async def test_settings_change_password_preserves_stronger_bcrypt_cost(
     )
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", stronger_hash)
+    await _persist_owner_hash(db_session, stronger_hash)
 
     response = await auth_client.post(
         "/settings/password",
@@ -582,6 +603,7 @@ async def test_settings_change_password_restores_env_when_db_commit_fails(
     )
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", old_hash)
+    await _persist_owner_hash(db_session, old_hash)
     monkeypatch.setattr(
         db_session,
         "commit",
@@ -603,7 +625,9 @@ async def test_settings_change_password_restores_env_when_db_commit_fails(
     )
     assert os.environ["VITALS_AUTH_PASSWORD_HASH"] == old_hash
     user_count = await db_session.scalar(select(func.count()).select_from(User))
-    assert int(user_count or 0) == 0
+    assert int(user_count or 0) == 1
+    user = await db_session.scalar(select(User))
+    assert user is not None and user.password_hash == old_hash
     assert authenticate("tester", "password") is True
     assert authenticate("tester", "brandnewpass") is False
 
@@ -628,6 +652,7 @@ async def test_settings_change_password_compensates_task_cancellation(
     )
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", old_hash)
+    await _persist_owner_hash(db_session, old_hash)
     monkeypatch.setattr(
         db_session,
         "commit",
@@ -652,7 +677,9 @@ async def test_settings_change_password_compensates_task_cancellation(
     )
     assert os.environ["VITALS_AUTH_PASSWORD_HASH"] == old_hash
     user_count = await db_session.scalar(select(func.count()).select_from(User))
-    assert int(user_count or 0) == 0
+    assert int(user_count or 0) == 1
+    user = await db_session.scalar(select(User))
+    assert user is not None and user.password_hash == old_hash
     assert authenticate("tester", "password") is True
     assert authenticate("tester", "brandnewpass") is False
 

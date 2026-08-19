@@ -67,6 +67,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   same transaction. Their Redis cache keys include the owning UUID, collection
   updates are serialized on PostgreSQL, and web writes publish cache state only
   after the database commit succeeds.
+- Garmin and Hevy ingestion now resolves the sole legacy subject and provider
+  connection at each web, MCP, scheduler, import, and reparse boundary. Raw and
+  normalized rows carry matching subject/connection provenance, human-triggered
+  runs retain their actor, children inherit their parent roots, and cross-subject
+  or retired-root updates fail closed before replacing history.
+- Direct Timeline, Supplements, Signals, DayContext, and proactive-message web/MCP
+  paths are subject-scoped. Human/MCP writes retain actor and source provenance,
+  Telegram capture uses a channel-neutral delivery context, brief narratives cite
+  OpenRouter rather than the notification channel, and legacy NULL history is
+  visible only through the verified single-subject bridge. Telegram accepts only
+  the configured private sender, durably claims the complete upstream update,
+  supersedes edited facts without deleting raw history, and can replay failed
+  actions. A foreign notification dedupe collision is rejected before any
+  network send.
+- The week template now uses its subject-scoped setting with atomic partial MCP
+  updates and legacy dual-write. Custom-chart Timeline overlays, notification
+  budgets/dedupe across connection rotation, and the Signals module gate use the
+  resolved subject. Registration remains closed while global conflict/alert,
+  composition/export, provider credential, and scoped-unique cutovers remain.
 
 ### Fixed — AI period-report context
 

@@ -16,16 +16,19 @@ service as first-class chart series (``weight_service.chart_series``'s ``noise``
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import date as date_type
 from typing import Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import AnnotationKind, Domain, LabFlag, MilestoneStatus, Source
 from vitals.i18n import t
+from vitals.models.raw_payload import RawPayload
 from vitals.models.timeline import Annotation
+from vitals.ownership import WriteIdentity
 
 DOMAIN = Domain.TIMELINE.value
 
@@ -39,6 +42,55 @@ _TONE_BY_KIND: dict[str, str] = {
     AnnotationKind.LIFE_EVENT.value: "",
     AnnotationKind.NOTE.value: "",
 }
+
+
+def _fully_legacy_row_scope(
+    model,
+    *,
+    ownership_roots: tuple,
+    raw_link=None,
+):
+    """Match only a genuinely unowned pre-Stage-1 row.
+
+    The root list is explicit at every selector so adding a new ownership
+    column forces the Timeline contract and its tests to change deliberately.
+    Existing raw links remain portable only when the linked raw is fully
+    unowned too; a half-migrated row must never enter the sole-subject bridge.
+    """
+
+    clauses = [model.subject_id.is_(None)]
+    clauses.extend(root.is_(None) for root in ownership_roots)
+    if raw_link is not None:
+        legacy_raw = (
+            select(RawPayload.id)
+            .where(
+                RawPayload.id == raw_link,
+                RawPayload.subject_id.is_(None),
+                RawPayload.actor_user_id.is_(None),
+                RawPayload.integration_connection_id.is_(None),
+                RawPayload.file_asset_id.is_(None),
+            )
+            .exists()
+        )
+        clauses.append(or_(raw_link.is_(None), legacy_raw))
+    return and_(*clauses)
+
+
+def _annotation_subject_scope(
+    subject_id: uuid.UUID,
+    *,
+    include_legacy_unowned: bool,
+):
+    scope = Annotation.subject_id == subject_id
+    if include_legacy_unowned:
+        scope = or_(
+            scope,
+            _fully_legacy_row_scope(
+                Annotation,
+                ownership_roots=(Annotation.actor_user_id,),
+            ),
+        )
+    return scope
 
 
 @dataclass(frozen=True)
@@ -77,12 +129,16 @@ async def create_annotation(
     kind: str = AnnotationKind.NOTE.value,
     domain: str = DOMAIN,
     note: Optional[str] = None,
+    source: str = Source.MANUAL.value,
+    identity: WriteIdentity | None = None,
 ) -> Annotation:
     row = Annotation(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         date=on_date,
         end_date=end_date,
         domain=domain,
-        source=Source.MANUAL.value,
+        source=source,
         kind=kind,
         title=title,
         note=note,
@@ -102,10 +158,26 @@ async def update_annotation(
     kind: str,
     domain: str,
     note: Optional[str] = None,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Optional[Annotation]:
-    row = await session.get(Annotation, annotation_id)
+    stmt = select(Annotation).where(Annotation.id == annotation_id)
+    if identity is not None:
+        stmt = stmt.where(
+            _annotation_subject_scope(
+                identity.subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy annotation compatibility requires a write identity")
+    row = await session.scalar(stmt)
     if row is None:
         return None
+    if row.subject_id is None and identity is not None:
+        # The caller may opt into this only after the legacy resolver has proved
+        # there is exactly one subject. Historical authorship stays unknown.
+        row.subject_id = identity.subject_id
     row.title = title
     row.date = on_date
     row.end_date = end_date
@@ -116,12 +188,44 @@ async def update_annotation(
     return row
 
 
-async def get_annotation(session: AsyncSession, annotation_id: int) -> Optional[Annotation]:
-    return await session.get(Annotation, annotation_id)
+async def get_annotation(
+    session: AsyncSession,
+    annotation_id: int,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Optional[Annotation]:
+    stmt = select(Annotation).where(Annotation.id == annotation_id)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _annotation_subject_scope(
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy annotation compatibility requires a subject_id")
+    return await session.scalar(stmt)
 
 
-async def delete_annotation(session: AsyncSession, annotation_id: int) -> bool:
-    row = await session.get(Annotation, annotation_id)
+async def delete_annotation(
+    session: AsyncSession,
+    annotation_id: int,
+    *,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+) -> bool:
+    stmt = select(Annotation).where(Annotation.id == annotation_id)
+    if identity is not None:
+        stmt = stmt.where(
+            _annotation_subject_scope(
+                identity.subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy annotation compatibility requires a write identity")
+    row = await session.scalar(stmt)
     if row is None:
         return False
     await session.delete(row)
@@ -132,6 +236,8 @@ async def delete_annotation(session: AsyncSession, annotation_id: int) -> bool:
 async def list_annotations(
     session: AsyncSession,
     *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
     domain: Optional[str] = None,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
@@ -140,6 +246,15 @@ async def list_annotations(
     annotation (``end_date is None``) overlaps a range iff its ``date`` falls
     inside it; a ranged one overlaps iff the two ranges intersect."""
     stmt = select(Annotation)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _annotation_subject_scope(
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy annotation compatibility requires a subject_id")
     if domain is not None:
         stmt = stmt.where(Annotation.domain == domain)
     effective_end = func.coalesce(Annotation.end_date, Annotation.date)
@@ -154,9 +269,39 @@ async def list_annotations(
 
 # ── Derived events (read-only re-shape of other domains' own rows) ───────────
 async def _derived_events(
-    session: AsyncSession, *, start: Optional[date_type], end: Optional[date_type]
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+    start: Optional[date_type],
+    end: Optional[date_type],
 ) -> list[TimelineEvent]:
     events: list[TimelineEvent] = []
+
+    def scoped(
+        stmt,
+        model,
+        *,
+        legacy_roots: tuple,
+        raw_link=None,
+    ):
+        if subject_id is None:
+            if include_legacy_unowned:
+                raise ValueError(
+                    "legacy timeline compatibility requires a subject_id"
+                )
+            return stmt
+        subject_scope = model.subject_id == subject_id
+        if include_legacy_unowned:
+            subject_scope = or_(
+                subject_scope,
+                _fully_legacy_row_scope(
+                    model,
+                    ownership_roots=legacy_roots,
+                    raw_link=raw_link,
+                ),
+            )
+        return stmt.where(subject_scope)
 
     # GLP-1 dose phase starts — the injection log itself is too frequent to
     # surface individually here (it would flood the feed); a phase *change* is
@@ -164,7 +309,11 @@ async def _derived_events(
     # painted as a band on the weight chart.
     from vitals.models.glp1 import DOMAIN as GLP1_DOMAIN, DosePhase
 
-    p_stmt = select(DosePhase).where(DosePhase.domain == GLP1_DOMAIN)
+    p_stmt = scoped(
+        select(DosePhase).where(DosePhase.domain == GLP1_DOMAIN),
+        DosePhase,
+        legacy_roots=(DosePhase.actor_user_id,),
+    )
     if start is not None:
         p_stmt = p_stmt.where(func.coalesce(DosePhase.end_date, DosePhase.start_date) >= start)
     if end is not None:
@@ -185,7 +334,13 @@ async def _derived_events(
     # existing severity color-coding on the GLP-1 page itself.
     from vitals.models.glp1 import SideEffect
 
-    se_stmt = select(SideEffect).where(SideEffect.domain == GLP1_DOMAIN, SideEffect.severity >= 3)
+    se_stmt = scoped(
+        select(SideEffect).where(
+            SideEffect.domain == GLP1_DOMAIN, SideEffect.severity >= 3
+        ),
+        SideEffect,
+        legacy_roots=(SideEffect.actor_user_id,),
+    )
     if start is not None:
         se_stmt = se_stmt.where(SideEffect.date >= start)
     if end is not None:
@@ -203,7 +358,14 @@ async def _derived_events(
     # routine check that happened to include the same marker count).
     from vitals.models.labs import DOMAIN as LABS_DOMAIN, LabResult
 
-    l_stmt = select(LabResult.date, LabResult.marker, LabResult.flag).where(LabResult.domain == LABS_DOMAIN)
+    l_stmt = scoped(
+        select(LabResult.date, LabResult.marker, LabResult.flag).where(
+            LabResult.domain == LABS_DOMAIN
+        ),
+        LabResult,
+        legacy_roots=(LabResult.actor_user_id,),
+        raw_link=LabResult.raw_payload_id,
+    )
     if start is not None:
         l_stmt = l_stmt.where(LabResult.date >= start)
     if end is not None:
@@ -226,7 +388,12 @@ async def _derived_events(
     from vitals.models.body_scan import BodyScan
     from vitals.models.body_scan import DOMAIN as BODY_DOMAIN
 
-    b_stmt = select(BodyScan).where(BodyScan.domain == BODY_DOMAIN)
+    b_stmt = scoped(
+        select(BodyScan).where(BodyScan.domain == BODY_DOMAIN),
+        BodyScan,
+        legacy_roots=(BodyScan.actor_user_id, BodyScan.file_asset_id),
+        raw_link=BodyScan.raw_payload_id,
+    )
     if start is not None:
         b_stmt = b_stmt.where(BodyScan.date >= start)
     if end is not None:
@@ -247,7 +414,14 @@ async def _derived_events(
     # (the /weight gallery), never surfaced ambiently.
     from vitals.models.weight import DOMAIN as WEIGHT_DOMAIN, ProgressPhoto
 
-    pp_stmt = select(ProgressPhoto).where(ProgressPhoto.domain == WEIGHT_DOMAIN)
+    pp_stmt = scoped(
+        select(ProgressPhoto).where(ProgressPhoto.domain == WEIGHT_DOMAIN),
+        ProgressPhoto,
+        legacy_roots=(
+            ProgressPhoto.actor_user_id,
+            ProgressPhoto.file_asset_id,
+        ),
+    )
     if start is not None:
         pp_stmt = pp_stmt.where(ProgressPhoto.date >= start)
     if end is not None:
@@ -267,7 +441,11 @@ async def _derived_events(
     # so there's no domain filter on the query.
     from vitals.models.milestones import Milestone
 
-    ms_stmt = select(Milestone)
+    ms_stmt = scoped(
+        select(Milestone),
+        Milestone,
+        legacy_roots=(Milestone.actor_user_id,),
+    )
     for m in (await session.execute(ms_stmt)).scalars().all():
         created_date = m.created_at.date()
         if (start is None or created_date >= start) and (end is None or created_date <= end):
@@ -298,7 +476,11 @@ async def _derived_events(
     # already shades them, so the timeline reads as a complete log of "why".
     from vitals.models.weight import DOMAIN as WEIGHT_DOMAIN, NoiseMarker
 
-    n_stmt = select(NoiseMarker).where(NoiseMarker.domain == WEIGHT_DOMAIN)
+    n_stmt = scoped(
+        select(NoiseMarker).where(NoiseMarker.domain == WEIGHT_DOMAIN),
+        NoiseMarker,
+        legacy_roots=(NoiseMarker.actor_user_id,),
+    )
     if start is not None:
         n_stmt = n_stmt.where(func.coalesce(NoiseMarker.end_date, NoiseMarker.start_date) >= start)
     if end is not None:
@@ -316,7 +498,11 @@ async def _derived_events(
     # would also move this date).
     from vitals.models.supplements import DOMAIN as SUPP_DOMAIN, Supplement
 
-    sup_stmt = select(Supplement).where(Supplement.domain == SUPP_DOMAIN)
+    sup_stmt = scoped(
+        select(Supplement).where(Supplement.domain == SUPP_DOMAIN),
+        Supplement,
+        legacy_roots=(Supplement.actor_user_id,),
+    )
     for s in (await session.execute(sup_stmt)).scalars().all():
         started = s.created_at.date()
         if (start is None or started >= start) and (end is None or started <= end):
@@ -340,7 +526,11 @@ async def _derived_events(
     # when building the event instead.
     from vitals.models.skincare import DOMAIN as SKINCARE_DOMAIN, SkincareProduct
 
-    sp_stmt = select(SkincareProduct)
+    sp_stmt = scoped(
+        select(SkincareProduct),
+        SkincareProduct,
+        legacy_roots=(SkincareProduct.actor_user_id,),
+    )
     for sp in (await session.execute(sp_stmt)).scalars().all():
         added = sp.created_at.date()
         if (start is None or added >= start) and (end is None or added <= end):
@@ -364,7 +554,12 @@ async def _derived_events(
     # small — one row per variant — so fetch-then-group costs nothing here.
     from vitals.models.genetics import DOMAIN as GENETICS_DOMAIN, GeneticVariant
 
-    gv_stmt = select(GeneticVariant).where(GeneticVariant.domain == GENETICS_DOMAIN)
+    gv_stmt = scoped(
+        select(GeneticVariant).where(GeneticVariant.domain == GENETICS_DOMAIN),
+        GeneticVariant,
+        legacy_roots=(GeneticVariant.actor_user_id,),
+        raw_link=GeneticVariant.raw_payload_id,
+    )
     variants_by_day: dict[date_type, int] = {}
     for v in (await session.execute(gv_stmt)).scalars().all():
         d = v.created_at.date()
@@ -383,6 +578,8 @@ async def _derived_events(
 async def list_events(
     session: AsyncSession,
     *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
     domains: Optional[Sequence[str]] = None,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
@@ -391,14 +588,28 @@ async def list_events(
     """The unified feed: manual annotations + derived events, newest first."""
     events: list[TimelineEvent] = []
 
-    for a in await list_annotations(session, start=start, end=end):
+    for a in await list_annotations(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+        start=start,
+        end=end,
+    ):
         events.append(TimelineEvent(
             date=a.date, end_date=a.end_date, domain=a.domain, kind=a.kind,
             title=a.title, detail=a.note, tone=_TONE_BY_KIND.get(a.kind, ""),
             source="manual", ref=f"annotation:{a.id}",
         ))
 
-    events.extend(await _derived_events(session, start=start, end=end))
+    events.extend(
+        await _derived_events(
+            session,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+            start=start,
+            end=end,
+        )
+    )
 
     if domains is not None:
         allowed = set(domains) | {DOMAIN}
@@ -412,6 +623,8 @@ async def list_events(
 async def overlays_for(
     session: AsyncSession,
     *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
     domain: str,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
@@ -420,9 +633,23 @@ async def overlays_for(
     plus global ones (``Domain.TIMELINE``). Shape matches the existing noise/
     phase overlay dicts (``{start, end?, label, tone, kind}``) so the same
     Chart.js annotation plugin renders them."""
-    own = await list_annotations(session, domain=domain, start=start, end=end)
+    own = await list_annotations(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+        domain=domain,
+        start=start,
+        end=end,
+    )
     glob = (
-        await list_annotations(session, domain=DOMAIN, start=start, end=end)
+        await list_annotations(
+            session,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+            domain=DOMAIN,
+            start=start,
+            end=end,
+        )
         if domain != DOMAIN
         else []
     )

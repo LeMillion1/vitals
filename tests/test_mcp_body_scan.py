@@ -13,6 +13,11 @@ from vitals.models.app_settings import AppSetting  # noqa: E402
 from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _materialize_legacy_owner(legacy_owner_roots):
+    return legacy_owner_roots
+
+
 async def _enable_body_comp(db_session):
     db_session.add(AppSetting(key=SETTINGS_KEY, value={k: True for k in MODULE_REGISTRY}))
     await db_session.commit()

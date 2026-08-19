@@ -25,19 +25,34 @@ from __future__ import annotations
 
 import inspect
 import logging
+import uuid
+from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass
 from datetime import date as date_type, time as time_type, timedelta
 from typing import Awaitable, Callable, Optional, Sequence, Union
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Domain, Severity, SignalKind, Source
+from vitals.enums import (
+    Domain,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    Severity,
+    SignalKind,
+    Source,
+)
 from vitals.i18n import t
+from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import DayContext, Signal
-from vitals.services.raw_payload_service import upsert_raw_payload
+from vitals.models.tenancy import IntegrationConnection
+from vitals.ownership import WriteIdentity
+from vitals.services.raw_payload_service import (
+    upsert_owned_raw_payload,
+    upsert_raw_payload,
+)
 from vitals.utils.timeutils import now_local, today_local
 
 logger = logging.getLogger(__name__)
@@ -48,6 +63,247 @@ DOMAIN = Domain.SIGNALS.value
 PARSER_FAILED_ALERT_KEY = "signal_parser_failed"
 
 _VALID_KINDS = {k.value for k in SignalKind}
+
+
+class SignalOwnershipError(ValueError):
+    """A signal/day-context operation crosses an explicit ownership root."""
+
+
+class RawPayloadAlreadyProcessedError(RuntimeError):
+    """A concurrently superseded/consumed raw must not normalize or reply."""
+
+
+_LIVE_RECIPIENT_STATUSES = {
+    IntegrationConnectionStatus.LEGACY.value,
+    IntegrationConnectionStatus.ACTIVE.value,
+}
+_HISTORICAL_RECIPIENT_STATUSES = _LIVE_RECIPIENT_STATUSES | {
+    IntegrationConnectionStatus.DISABLED.value,
+    IntegrationConnectionStatus.RETIRED.value,
+}
+
+
+def _owned_health_row_scope(
+    model,
+    *,
+    subject_id: uuid.UUID,
+    integration_connection_id: uuid.UUID | None = None,
+):
+    """Stage-2 owner/recipient integrity predicate for subject-owned reads."""
+
+    owner_user_id = (
+        select(HealthSubject.owner_user_id)
+        .where(HealthSubject.id == subject_id)
+        .scalar_subquery()
+    )
+    valid_connection = (
+        select(IntegrationConnection.id)
+        .where(
+            IntegrationConnection.id == model.integration_connection_id,
+            IntegrationConnection.subject_id == subject_id,
+            IntegrationConnection.connection_type
+            == IntegrationConnectionType.RECIPIENT.value,
+            IntegrationConnection.status.in_(_HISTORICAL_RECIPIENT_STATUSES),
+        )
+        .exists()
+    )
+    scope = and_(
+        model.subject_id == subject_id,
+        or_(model.actor_user_id.is_(None), model.actor_user_id == owner_user_id),
+        or_(model.integration_connection_id.is_(None), valid_connection),
+    )
+    if integration_connection_id is not None:
+        scope = and_(
+            scope,
+            model.integration_connection_id == integration_connection_id,
+        )
+    return scope
+
+
+def _signal_scope(
+    *,
+    subject_id: uuid.UUID,
+    integration_connection_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+):
+    owned = _owned_health_row_scope(
+        Signal,
+        subject_id=subject_id,
+        integration_connection_id=integration_connection_id,
+    )
+    if include_legacy_unowned:
+        owned = or_(
+            owned,
+            and_(
+                Signal.subject_id.is_(None),
+                Signal.actor_user_id.is_(None),
+                Signal.integration_connection_id.is_(None),
+            ),
+        )
+    return owned
+
+
+def _raw_scope(
+    *,
+    subject_id: uuid.UUID,
+    integration_connection_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+):
+    owned = RawPayload.subject_id == subject_id
+    if integration_connection_id is not None:
+        owned = and_(
+            owned,
+            RawPayload.integration_connection_id == integration_connection_id,
+        )
+    if include_legacy_unowned:
+        owned = or_(
+            owned,
+            and_(
+                RawPayload.subject_id.is_(None),
+                RawPayload.actor_user_id.is_(None),
+                RawPayload.integration_connection_id.is_(None),
+                RawPayload.file_asset_id.is_(None),
+            ),
+        )
+    return owned
+
+
+def _validate_identity(
+    identity: WriteIdentity | None,
+    integration_connection_id: uuid.UUID | None,
+) -> None:
+    if identity is not None and not isinstance(identity, WriteIdentity):
+        raise SignalOwnershipError("identity must be a WriteIdentity or None")
+    if integration_connection_id is not None and not isinstance(
+        integration_connection_id, uuid.UUID
+    ):
+        raise SignalOwnershipError(
+            "integration_connection_id must be a UUID or None"
+        )
+    if identity is None and integration_connection_id is not None:
+        raise SignalOwnershipError(
+            "integration_connection_id requires an explicit WriteIdentity"
+        )
+
+
+async def _require_connection_scope(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID,
+    allow_historical: bool = False,
+) -> None:
+    connection = await session.scalar(
+        select(IntegrationConnection).where(
+            IntegrationConnection.id == integration_connection_id
+        )
+    )
+    if connection is None:
+        raise SignalOwnershipError("integration connection does not exist")
+    if connection.subject_id != identity.subject_id:
+        raise SignalOwnershipError("integration connection belongs to another subject")
+    if connection.connection_type != IntegrationConnectionType.RECIPIENT.value:
+        raise SignalOwnershipError(
+            "signals ingestion requires a recipient connection"
+        )
+    known_statuses = {status.value for status in IntegrationConnectionStatus}
+    if connection.status not in known_statuses:
+        raise SignalOwnershipError("integration connection has unknown lifecycle state")
+    allowed = (
+        _HISTORICAL_RECIPIENT_STATUSES
+        if allow_historical
+        else _LIVE_RECIPIENT_STATUSES
+    )
+    if connection.status not in allowed:
+        operation = "historical provenance" if allow_historical else "write signals"
+        raise SignalOwnershipError(
+            f"{connection.status} integration connection cannot {operation}"
+        )
+
+
+async def _require_raw_ownership_scope(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+) -> None:
+    """Validate an owned channel raw root before copying its provenance.
+
+    Reparsing is a historical read, so a retired recipient remains a
+    valid provenance root.  New ingestion goes through
+    :func:`_require_connection_scope` first and therefore cannot attach one.
+    """
+
+    if raw.subject_id is None:
+        if any(
+            value is not None
+            for value in (
+                raw.actor_user_id,
+                raw.integration_connection_id,
+                raw.file_asset_id,
+            )
+        ):
+            raise SignalOwnershipError("raw payload has partial ownership roots")
+        return
+    if raw.file_asset_id is not None:
+        raise SignalOwnershipError(
+            "owned channel raw payload cannot reference a file asset"
+        )
+    owner_user_id = await session.scalar(
+        select(HealthSubject.owner_user_id).where(
+            HealthSubject.id == raw.subject_id
+        )
+    )
+    if owner_user_id is None:
+        raise SignalOwnershipError("raw payload subject does not exist")
+    if raw.actor_user_id != owner_user_id:
+        raise SignalOwnershipError(
+            "owned channel raw payload actor is not the subject owner"
+        )
+    if raw.integration_connection_id is None:
+        raise SignalOwnershipError(
+            "owned channel raw payload has no recipient connection"
+        )
+
+    connection = await session.scalar(
+        select(IntegrationConnection).where(
+            IntegrationConnection.id == raw.integration_connection_id
+        )
+    )
+    if connection is None:
+        raise SignalOwnershipError("raw payload connection does not exist")
+    if connection.subject_id != raw.subject_id:
+        raise SignalOwnershipError(
+            "raw payload connection belongs to another subject"
+        )
+    if connection.connection_type != IntegrationConnectionType.RECIPIENT.value:
+        raise SignalOwnershipError(
+            "raw payload does not reference a recipient connection"
+        )
+    known_statuses = {status.value for status in IntegrationConnectionStatus}
+    if connection.status not in known_statuses:
+        raise SignalOwnershipError(
+            "raw payload connection has unknown lifecycle state"
+        )
+    if connection.status not in _HISTORICAL_RECIPIENT_STATUSES:
+        raise SignalOwnershipError(
+            "raw payload connection is not valid historical provenance"
+        )
+
+
+async def _require_single_subject_adoption(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> None:
+    subject_ids = list(
+        await session.scalars(
+            select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+        )
+    )
+    if subject_ids != [subject_id]:
+        raise SignalOwnershipError(
+            "unowned legacy signal state cannot be adopted after multi-subject activation"
+        )
 
 # ── Key aliases ───────────────────────────────────────────────────────────────
 # alias (as some parse once wrote it) → canonical key. Applied on **read** only.
@@ -102,6 +358,34 @@ def _stored_keys_for(canonical: str) -> set[str]:
 
 # ── Capture ───────────────────────────────────────────────────────────────────
 Parser = Callable[[str], Union[Sequence[dict], Awaitable[Sequence[dict]]]]
+RawTextExtractor = Callable[[RawPayload], Optional[str]]
+RawDateExtractor = Callable[[RawPayload], Optional[date_type]]
+RawBeforeParse = Callable[[AsyncSession, RawPayload], Awaitable[None]]
+RawBeforeNormalize = Callable[[AsyncSession, RawPayload], Awaitable[None]]
+RawAfterNormalize = Callable[[AsyncSession, RawPayload], Awaitable[None]]
+
+
+async def _lock_pending_raw_for_normalization(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+) -> RawPayload:
+    """Refresh the terminal marker under a row lock before creating facts."""
+
+    locked = await session.scalar(
+        select(RawPayload)
+        .where(RawPayload.id == raw.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked is None:
+        raise SignalOwnershipError("raw payload does not exist")
+    await _require_raw_ownership_scope(session, raw=locked)
+    if locked.processed_at is not None:
+        raise RawPayloadAlreadyProcessedError(
+            "raw payload was already processed or superseded"
+        )
+    return locked
 
 
 async def store_raw_text(
@@ -111,6 +395,8 @@ async def store_raw_text(
     external_id: Optional[str] = None,
     source: str = Source.TELEGRAM.value,
     processed: bool = False,
+    identity: WriteIdentity | None = None,
+    integration_connection_id: uuid.UUID | None = None,
 ) -> RawPayload:
     """Park the incoming message in ``raw_payloads`` before anything can fail.
 
@@ -128,13 +414,41 @@ async def store_raw_text(
     uncommitted row is invisible to that retry, so it finds no trace of the first
     attempt and pays for a second parse and a second reply to the same message.
     """
-    raw = await upsert_raw_payload(
-        session,
-        domain=DOMAIN,
-        source=source,
-        external_id=external_id or uuid4().hex,
-        payload={"text": text, "received_at": now_local().isoformat(timespec="seconds")},
-    )
+    _validate_identity(identity, integration_connection_id)
+    subject: HealthSubject | None = None
+    if identity is not None:
+        if integration_connection_id is None:
+            raise SignalOwnershipError(
+                "owned channel raw payload requires a recipient connection"
+            )
+        await _require_connection_scope(
+            session,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+        )
+    payload = {
+        "text": text,
+        "received_at": now_local().isoformat(timespec="seconds"),
+    }
+    raw_external_id = external_id or uuid4().hex
+    if identity is None:
+        raw = await upsert_raw_payload(
+            session,
+            domain=DOMAIN,
+            source=source,
+            external_id=raw_external_id,
+            payload=payload,
+        )
+    else:
+        raw = await upsert_owned_raw_payload(
+            session,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            domain=DOMAIN,
+            source=source,
+            external_id=raw_external_id,
+            payload=payload,
+        )
     if processed:
         raw.processed_at = now_local()
     await session.commit()
@@ -182,6 +496,36 @@ def _coerce_item(item: dict) -> Optional[dict]:
     }
 
 
+def _parser_items(parsed: object) -> tuple[list[dict], bool]:
+    """Return safe items and whether the parser explicitly found no facts.
+
+    An empty sequence is a valid terminal answer. Any other non-sequence shape,
+    or a non-empty sequence whose elements are not objects, is untrusted parser
+    output and must remain recoverable instead of being mistaken for "no facts".
+    Individual dictionaries still go through ``_coerce_item`` below.
+    """
+
+    if isinstance(parsed, (str, bytes, bytearray, dict)) or not isinstance(
+        parsed, SequenceABC
+    ):
+        return [], False
+    if not parsed:
+        return [], True
+    return [item for item in parsed if isinstance(item, dict)], False
+
+
+async def _raise_parser_failed_alert(session: AsyncSession) -> None:
+    from vitals.services import alerts_service
+
+    await alerts_service.raise_alert(
+        session,
+        domain=DOMAIN,
+        severity=Severity.WARN.value,
+        message=t("alert.signal_parser_failed"),
+        alert_key=PARSER_FAILED_ALERT_KEY,
+    )
+
+
 async def create_signals(
     session: AsyncSession,
     *,
@@ -190,8 +534,41 @@ async def create_signals(
     source: str = Source.TELEGRAM.value,
     raw_id: Optional[int] = None,
     batch_id: Optional[str] = None,
+    identity: WriteIdentity | None = None,
+    integration_connection_id: uuid.UUID | None = None,
+    allow_historical_connection: bool = False,
 ) -> list[Signal]:
     """Persist a parsed batch. Every row of one message shares a ``batch_id``."""
+    _validate_identity(identity, integration_connection_id)
+    if not isinstance(allow_historical_connection, bool):
+        raise SignalOwnershipError("allow_historical_connection must be a bool")
+    if identity is not None and integration_connection_id is not None:
+        await _require_connection_scope(
+            session,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            allow_historical=allow_historical_connection,
+        )
+    raw: RawPayload | None = None
+    if raw_id is not None:
+        raw = await session.scalar(
+            select(RawPayload)
+            .where(RawPayload.id == raw_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if raw is None:
+            raise SignalOwnershipError("raw payload does not exist")
+        await _require_raw_ownership_scope(session, raw=raw)
+        if identity is not None and raw.subject_id != identity.subject_id:
+            raise SignalOwnershipError("raw payload belongs to another subject")
+        if (
+            integration_connection_id is not None
+            and raw.integration_connection_id != integration_connection_id
+        ):
+            raise SignalOwnershipError(
+                "raw payload belongs to another integration connection"
+            )
     on_date = on_date or today_local()
     batch_id = batch_id or uuid4().hex
     rows: list[Signal] = []
@@ -200,6 +577,19 @@ async def create_signals(
         if fields is None:
             continue
         row = Signal(
+            subject_id=(raw.subject_id if raw is not None else identity.subject_id)
+            if raw is not None or identity is not None
+            else None,
+            actor_user_id=(
+                raw.actor_user_id if raw is not None else identity.actor_user_id
+            )
+            if raw is not None or identity is not None
+            else None,
+            integration_connection_id=(
+                raw.integration_connection_id
+                if raw is not None
+                else integration_connection_id
+            ),
             date=on_date,
             domain=DOMAIN,
             source=source,
@@ -222,6 +612,8 @@ async def ingest_text(
     external_id: Optional[str] = None,
     on_date: Optional[date_type] = None,
     source: str = Source.TELEGRAM.value,
+    identity: WriteIdentity | None = None,
+    integration_connection_id: uuid.UUID | None = None,
 ) -> list[Signal]:
     """The one entry point for incoming free text.
 
@@ -229,45 +621,116 @@ async def ingest_text(
     rather than at the call site, so no future caller can get the order wrong.
     A parser that raises costs the batch, never the message.
     """
-    raw = await store_raw_text(session, text=text, external_id=external_id, source=source)
+    raw = await store_raw_text(
+        session,
+        text=text,
+        external_id=external_id,
+        source=source,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+
+    return await ingest_stored_text(
+        session,
+        raw=raw,
+        text=text,
+        parse=parse,
+        on_date=on_date,
+        source=source,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
+
+
+async def ingest_stored_text(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    text: str,
+    parse: Parser,
+    on_date: Optional[date_type] = None,
+    source: str = Source.TELEGRAM.value,
+    identity: WriteIdentity | None = None,
+    integration_connection_id: uuid.UUID | None = None,
+    before_normalize: RawBeforeNormalize | None = None,
+) -> list[Signal]:
+    """Normalize one raw row that was durably claimed by a channel boundary.
+
+    Webhook transports must park their complete upstream envelope before an LLM
+    or any outbound call.  This continuation keeps the signals layer transport
+    neutral: the caller projects text from that envelope and passes the already
+    committed raw row here. A successful parser response, including an explicitly
+    empty sequence, consumes the raw row. Exceptions and unusable parser output
+    remain pending.
+    """
 
     from vitals.services import alerts_service
 
+    if not isinstance(raw, RawPayload):
+        raise SignalOwnershipError("raw must be a RawPayload")
+    await _require_raw_ownership_scope(session, raw=raw)
+    if identity is not None and raw.subject_id != identity.subject_id:
+        raise SignalOwnershipError("raw payload belongs to another subject")
+    if (
+        integration_connection_id is not None
+        and raw.integration_connection_id != integration_connection_id
+    ):
+        raise SignalOwnershipError(
+            "raw payload belongs to another integration connection"
+        )
+
+    parse_error: Exception | None = None
     try:
         parsed = parse(text)
         if inspect.isawaitable(parsed):
             parsed = await parsed
-    except Exception:
-        # The message survives in raw_payloads and stays ``processed_at IS NULL``,
-        # which is what :func:`reparse_unparsed` sweeps. Nothing to salvage here —
-        # but a dead parser must not be silent: swallowed whole, a week of "no
-        # model, no key, no balance" is indistinguishable from a week of messages
-        # that simply held no facts.
+    except Exception as exc:
+        parse_error = exc
         logger.warning("signal parser failed; message kept raw", exc_info=True)
-        await alerts_service.raise_alert(
-            session,
-            domain=DOMAIN,
-            severity=Severity.WARN.value,
-            message=t("alert.signal_parser_failed"),
-            alert_key=PARSER_FAILED_ALERT_KEY,
+
+    # A Telegram edit can supersede this row while an LLM call is in flight.
+    # The channel callback acquires Subject -> connection before this raw lock;
+    # the refreshed terminal marker is therefore authoritative, not the stale
+    # ORM object that existed before the await above.
+    if before_normalize is not None:
+        await before_normalize(session, raw)
+    raw = await _lock_pending_raw_for_normalization(session, raw=raw)
+    if identity is not None and raw.subject_id != identity.subject_id:
+        raise SignalOwnershipError("raw payload belongs to another subject")
+    if (
+        integration_connection_id is not None
+        and raw.integration_connection_id != integration_connection_id
+    ):
+        raise SignalOwnershipError(
+            "raw payload belongs to another integration connection"
         )
+
+    if parse_error is not None:
+        # The durable raw stays pending so a later sweep can try again.
+        await _raise_parser_failed_alert(session)
         return []
 
-    # The model answered — whatever it returned, the parser itself is back up.
-    await alerts_service.resolve_by_key(session, alert_key=PARSER_FAILED_ALERT_KEY)
-
+    items, explicitly_empty = _parser_items(parsed)
     rows = await create_signals(
         session,
-        items=parsed or [],
+        items=items,
         on_date=on_date,
         source=source,
         raw_id=raw.id,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        allow_historical_connection=True,
     )
-    if rows:
-        # Same bookkeeping every other importer does — and it is what tells the
-        # re-parse sweep "this one is done" from "this one never became anything".
-        raw.processed_at = now_local()
-        await session.flush()
+    if not rows and not explicitly_empty:
+        logger.warning("signal parser returned no usable facts; message kept raw")
+        await _raise_parser_failed_alert(session)
+        return []
+
+    await alerts_service.resolve_by_key(session, alert_key=PARSER_FAILED_ALERT_KEY)
+    # An empty, successful parse is final too. Leaving it pending would pay for
+    # the same model call forever and could starve actionable rows behind it.
+    raw.processed_at = now_local()
+    await session.flush()
     return rows
 
 
@@ -284,6 +747,14 @@ async def reparse_unparsed(
     parse: Parser,
     limit: int = REPARSE_BATCH,
     since_days: int = REPARSE_WINDOW_DAYS,
+    subject_id: uuid.UUID | None = None,
+    integration_connection_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+    text_from_raw: RawTextExtractor | None = None,
+    date_from_raw: RawDateExtractor | None = None,
+    before_parse: RawBeforeParse | None = None,
+    before_normalize: RawBeforeNormalize | None = None,
+    after_normalize: RawAfterNormalize | None = None,
 ) -> list[Signal]:
     """Second pass over messages that never became rows (R3).
 
@@ -300,50 +771,150 @@ async def reparse_unparsed(
     from vitals.services import alerts_service
 
     cutoff = now_local() - timedelta(days=since_days)
-    has_signals = select(Signal.id).where(Signal.raw_id == RawPayload.id).exists()
-    stmt = (
-        select(RawPayload)
-        .where(
-            RawPayload.domain == DOMAIN,
-            RawPayload.processed_at.is_(None),
-            RawPayload.fetched_at >= cutoff,
-            ~has_signals,
+    if subject_id is not None and not isinstance(subject_id, uuid.UUID):
+        raise SignalOwnershipError("subject_id must be a UUID or None")
+    if integration_connection_id is not None and not isinstance(
+        integration_connection_id, uuid.UUID
+    ):
+        raise SignalOwnershipError(
+            "integration_connection_id must be a UUID or None"
         )
-        .order_by(RawPayload.id)
-        .limit(limit)
-    )
+    if integration_connection_id is not None and subject_id is None:
+        raise SignalOwnershipError(
+            "integration_connection_id requires an explicit subject_id"
+        )
 
-    made: list[Signal] = []
-    for raw in (await session.execute(stmt)).scalars().all():
-        payload = raw.payload if isinstance(raw.payload, dict) else {}
-        text = (payload.get("text") or "").strip()
-        if not text:
-            continue  # a button tap, not something anyone said
-        try:
-            parsed = parse(text)
-            if inspect.isawaitable(parsed):
-                parsed = await parsed
-        except Exception:
-            logger.warning("re-parse failed for raw %s", raw.id, exc_info=True)
-            continue
-        # Same as ingest_text: the model answered, so the outage alert clears.
-        await alerts_service.resolve_by_key(session, alert_key=PARSER_FAILED_ALERT_KEY)
-        rows = await create_signals(
-            session,
-            items=parsed or [],
-            on_date=raw.fetched_at.date(),
-            source=raw.source,
-            raw_id=raw.id,
+    has_signals = select(Signal.id).where(Signal.raw_id == RawPayload.id).exists()
+    stmt = select(RawPayload).where(
+        RawPayload.domain == DOMAIN,
+        RawPayload.processed_at.is_(None),
+        RawPayload.fetched_at >= cutoff,
+        ~has_signals,
+    )
+    if subject_id is not None:
+        stmt = stmt.where(
+            _raw_scope(
+                subject_id=subject_id,
+                integration_connection_id=integration_connection_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
         )
-        if rows:
+    elif include_legacy_unowned:
+        raise SignalOwnershipError(
+            "legacy raw-payload compatibility requires an explicit subject_id"
+        )
+
+    def _default_text(raw: RawPayload) -> Optional[str]:
+        payload = raw.payload if isinstance(raw.payload, dict) else {}
+        return str(payload.get("text") or "") if "text" in payload else None
+
+    extract_text = text_from_raw or _default_text
+    made: list[Signal] = []
+    attempted = 0
+    last_id = 0
+    page_size = max(REPARSE_BATCH, min(max(limit, 1), 100))
+    dirty = False
+    while attempted < limit:
+        page = list(
+            await session.scalars(
+                stmt.where(RawPayload.id > last_id)
+                .order_by(RawPayload.id)
+                .limit(page_size)
+            )
+        )
+        if not page:
+            break
+        for raw in page:
+            last_id = raw.id
+            projected = extract_text(raw)
+            if projected is None:
+                # Another raw shape (for example a callback) must not consume the
+                # text budget. Pagination keeps rows after it reachable.
+                continue
+            if subject_id is not None:
+                await _require_raw_ownership_scope(session, raw=raw)
+            text = projected.strip()
+            if not text:
+                raw.processed_at = now_local()
+                dirty = True
+                continue
+            if before_parse is not None:
+                try:
+                    await before_parse(session, raw)
+                except RawPayloadAlreadyProcessedError:
+                    continue
+            attempted += 1
+            try:
+                parsed = parse(text)
+                if inspect.isawaitable(parsed):
+                    parsed = await parsed
+            except Exception:
+                logger.warning("re-parse failed for raw %s", raw.id, exc_info=True)
+                await _raise_parser_failed_alert(session)
+                if attempted >= limit:
+                    break
+                continue
+            try:
+                if before_normalize is not None:
+                    await before_normalize(session, raw)
+                raw = await _lock_pending_raw_for_normalization(
+                    session,
+                    raw=raw,
+                )
+            except RawPayloadAlreadyProcessedError:
+                # Another worker or a newer edited update won while the parser
+                # was running. It owns the terminal state and normalized rows.
+                if after_normalize is not None:
+                    await after_normalize(session, raw)
+                continue
+            items, explicitly_empty = _parser_items(parsed)
+            rows = await create_signals(
+                session,
+                items=items,
+                on_date=(date_from_raw(raw) if date_from_raw is not None else None)
+                or raw.fetched_at.date(),
+                source=raw.source,
+                raw_id=raw.id,
+            )
+            if not rows and not explicitly_empty:
+                logger.warning(
+                    "re-parser returned no usable facts for raw %s; kept pending",
+                    raw.id,
+                )
+                await _raise_parser_failed_alert(session)
+                if after_normalize is not None:
+                    await after_normalize(session, raw)
+                if attempted >= limit:
+                    break
+                continue
+
+            # Same as ingest_text: a valid answer clears the outage alert.
+            await alerts_service.resolve_by_key(
+                session, alert_key=PARSER_FAILED_ALERT_KEY
+            )
             raw.processed_at = now_local()
+            dirty = True
             made.extend(rows)
-    if made:
+            await session.flush()
+            if after_normalize is not None:
+                await after_normalize(session, raw)
+            if attempted >= limit:
+                break
+        if len(page) < page_size:
+            break
+    if dirty:
         await session.flush()
     return made
 
 
-async def delete_signal(session: AsyncSession, signal_id: int) -> bool:
+async def delete_signal(
+    session: AsyncSession,
+    signal_id: int,
+    *,
+    subject_id: uuid.UUID | None = None,
+    integration_connection_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> bool:
     """Pinpoint removal from the ``/signals`` page — the counterpart of the "не то"
     button, which cancels a whole batch.
 
@@ -351,7 +922,20 @@ async def delete_signal(session: AsyncSession, signal_id: int) -> bool:
     and shouldn't feed the key registry either. The raw message stays in
     ``raw_payloads`` regardless, so nothing said is ever lost.
     """
-    row = await session.get(Signal, signal_id)
+    stmt = select(Signal).where(Signal.id == signal_id)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _signal_scope(
+                subject_id=subject_id,
+                integration_connection_id=integration_connection_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise SignalOwnershipError(
+            "legacy signal compatibility requires an explicit subject_id"
+        )
+    row = await session.scalar(stmt)
     if row is None:
         return False
     await session.delete(row)
@@ -359,11 +943,29 @@ async def delete_signal(session: AsyncSession, signal_id: int) -> bool:
     return True
 
 
-async def mark_misparse(session: AsyncSession, batch_id: str) -> int:
+async def mark_misparse(
+    session: AsyncSession,
+    batch_id: str,
+    *,
+    subject_id: uuid.UUID | None = None,
+    integration_connection_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> int:
     """"Не то" — drop the whole batch out of charts, keep the rows and the raw text."""
-    result = await session.execute(
-        update(Signal).where(Signal.batch_id == batch_id).values(misparse=True)
-    )
+    stmt = update(Signal).where(Signal.batch_id == batch_id)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _signal_scope(
+                subject_id=subject_id,
+                integration_connection_id=integration_connection_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise SignalOwnershipError(
+            "legacy signal compatibility requires an explicit subject_id"
+        )
+    result = await session.execute(stmt.values(misparse=True))
     await session.flush()
     return result.rowcount or 0
 
@@ -378,9 +980,23 @@ async def list_signals(
     end: Optional[date_type] = None,
     include_misparse: bool = False,
     limit: int = 200,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> list[Signal]:
     """Newest first. ``key`` matches every stored spelling that folds to it."""
     stmt = select(Signal).where(Signal.domain == DOMAIN)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _signal_scope(
+                subject_id=subject_id,
+                integration_connection_id=None,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise SignalOwnershipError(
+            "legacy signal compatibility requires an explicit subject_id"
+        )
     if not include_misparse:
         stmt = stmt.where(Signal.misparse.is_(False))
     if key is not None:
@@ -425,6 +1041,8 @@ async def key_frequency(
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
     include_misparse: bool = True,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> list[KeyStat]:
     """Canonical keys, most-used first — the raw material for consolidating them.
 
@@ -432,6 +1050,18 @@ async def key_frequency(
     what the parser actually emits, mistakes included.
     """
     stmt = select(Signal.key, Signal.note).where(Signal.domain == DOMAIN)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _signal_scope(
+                subject_id=subject_id,
+                integration_connection_id=None,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise SignalOwnershipError(
+            "legacy signal compatibility requires an explicit subject_id"
+        )
     if not include_misparse:
         stmt = stmt.where(Signal.misparse.is_(False))
     if start is not None:
@@ -474,6 +1104,13 @@ async def set_day_context(
     answers: dict,
     planned: Optional[dict] = None,
     source: str = Source.MANUAL.value,
+    identity: WriteIdentity | None = None,
+    integration_connection_id: uuid.UUID | None = None,
+    merge_answers: bool = False,
+    preserve_source: bool = False,
+    planned_if_missing: bool = False,
+    include_legacy_unowned: bool = False,
+    allow_historical_connection: bool = False,
 ) -> DayContext:
     """Upsert the day's context — the latest answer wins, nothing is versioned.
 
@@ -481,21 +1118,202 @@ async def set_day_context(
     template can later learn from where it was wrong; passing ``None`` leaves any
     existing guess in place rather than erasing it.
     """
-    row = await get_day_context(session, on_date)
+    _validate_identity(identity, integration_connection_id)
+    for flag_name, flag in (
+        ("merge_answers", merge_answers),
+        ("preserve_source", preserve_source),
+        ("planned_if_missing", planned_if_missing),
+        ("include_legacy_unowned", include_legacy_unowned),
+        ("allow_historical_connection", allow_historical_connection),
+    ):
+        if not isinstance(flag, bool):
+            raise SignalOwnershipError(f"{flag_name} must be a bool")
+    if identity is not None:
+        # Serialize the whole read/merge/write operation on the durable subject
+        # root.  Locking only the DayContext row cannot protect the first two
+        # concurrent answers for a date where the row does not exist yet.
+        subject = await session.scalar(
+            select(HealthSubject)
+            .where(HealthSubject.id == identity.subject_id)
+            .with_for_update()
+        )
+        if subject is None:
+            raise SignalOwnershipError("day context subject does not exist")
+        if integration_connection_id is not None:
+            await _require_connection_scope(
+                session,
+                identity=identity,
+                integration_connection_id=integration_connection_id,
+                allow_historical=allow_historical_connection,
+            )
+
+    row = await session.scalar(
+        select(DayContext)
+        .where(DayContext.date == on_date)
+        .with_for_update()
+    )
+    if identity is not None:
+        if row is not None:
+            if row.subject_id is None:
+                if not include_legacy_unowned:
+                    raise SignalOwnershipError(
+                        "legacy day context adoption was not explicitly enabled"
+                    )
+                if (
+                    row.actor_user_id is not None
+                    or row.integration_connection_id is not None
+                ):
+                    raise SignalOwnershipError(
+                        "partial-root legacy day context cannot be adopted"
+                    )
+                await _require_single_subject_adoption(
+                    session,
+                    subject_id=identity.subject_id,
+                )
+                row.subject_id = identity.subject_id
+            elif row.subject_id != identity.subject_id:
+                raise SignalOwnershipError(
+                    "day context belongs to another subject"
+                )
+            if (
+                row.actor_user_id is not None
+                and row.actor_user_id != subject.owner_user_id
+            ):
+                raise SignalOwnershipError(
+                    "day context has invalid origin actor provenance"
+                )
+            historical: IntegrationConnection | None = None
+            if row.integration_connection_id is not None:
+                historical = await session.scalar(
+                    select(IntegrationConnection).where(
+                        IntegrationConnection.id
+                        == row.integration_connection_id
+                    )
+                )
+                if (
+                    historical is None
+                    or historical.subject_id != identity.subject_id
+                    or historical.connection_type
+                    != IntegrationConnectionType.RECIPIENT.value
+                    or historical.status
+                    not in _HISTORICAL_RECIPIENT_STATUSES
+                ):
+                    raise SignalOwnershipError(
+                        "day context has invalid historical connection provenance"
+                    )
+            system_plan = (
+                identity.actor_user_id is None
+                and integration_connection_id is None
+            )
+            if not system_plan:
+                if (
+                    row.actor_user_id is not None
+                    and identity.actor_user_id is not None
+                    and row.actor_user_id != identity.actor_user_id
+                ):
+                    raise SignalOwnershipError(
+                        "day context belongs to another origin actor"
+                    )
+                if row.actor_user_id is None:
+                    row.actor_user_id = identity.actor_user_id
+                if (
+                    row.integration_connection_id is None
+                    and integration_connection_id is not None
+                ):
+                    row.integration_connection_id = integration_connection_id
+
     if row is None:
-        row = DayContext(date=on_date, domain=DOMAIN, source=source, answers=answers)
+        row = DayContext(
+            subject_id=identity.subject_id if identity is not None else None,
+            actor_user_id=identity.actor_user_id if identity is not None else None,
+            integration_connection_id=integration_connection_id,
+            date=on_date,
+            domain=DOMAIN,
+            source=source,
+            answers=answers,
+        )
         session.add(row)
     else:
-        row.answers = answers
-        row.source = source
-    if planned is not None:
+        row.answers = (
+            {**dict(row.answers or {}), **answers}
+            if merge_answers
+            else answers
+        )
+        if not preserve_source:
+            row.source = source
+    if planned is not None and (not planned_if_missing or not row.planned):
         row.planned = planned
     await session.flush()
     return row
 
 
 async def get_day_context(
-    session: AsyncSession, on_date: date_type
+    session: AsyncSession,
+    on_date: date_type,
+    *,
+    subject_id: uuid.UUID | None = None,
+    integration_connection_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Optional[DayContext]:
-    result = await session.execute(select(DayContext).where(DayContext.date == on_date))
+    stmt = select(DayContext).where(DayContext.date == on_date)
+    if subject_id is not None:
+        owned = _owned_health_row_scope(
+            DayContext,
+            subject_id=subject_id,
+            integration_connection_id=integration_connection_id,
+        )
+        if include_legacy_unowned:
+            owned = or_(
+                owned,
+                and_(
+                    DayContext.subject_id.is_(None),
+                    DayContext.actor_user_id.is_(None),
+                    DayContext.integration_connection_id.is_(None),
+                ),
+            )
+        stmt = stmt.where(owned)
+    elif include_legacy_unowned:
+        raise SignalOwnershipError(
+            "legacy day-context compatibility requires an explicit subject_id"
+        )
+    result = await session.execute(stmt)
     return result.scalars().first()
+
+
+async def list_day_contexts(
+    session: AsyncSession,
+    *,
+    start: date_type | None = None,
+    end: date_type | None = None,
+    limit: int = 100,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> list[DayContext]:
+    """Newest day contexts within one explicit subject compatibility scope."""
+
+    stmt = select(DayContext)
+    if subject_id is not None:
+        owned = _owned_health_row_scope(
+            DayContext,
+            subject_id=subject_id,
+        )
+        if include_legacy_unowned:
+            owned = or_(
+                owned,
+                and_(
+                    DayContext.subject_id.is_(None),
+                    DayContext.actor_user_id.is_(None),
+                    DayContext.integration_connection_id.is_(None),
+                ),
+            )
+        stmt = stmt.where(owned)
+    elif include_legacy_unowned:
+        raise SignalOwnershipError(
+            "legacy day-context compatibility requires an explicit subject_id"
+        )
+    if start is not None:
+        stmt = stmt.where(DayContext.date >= start)
+    if end is not None:
+        stmt = stmt.where(DayContext.date <= end)
+    stmt = stmt.order_by(DayContext.date.desc()).limit(limit)
+    return list(await session.scalars(stmt))

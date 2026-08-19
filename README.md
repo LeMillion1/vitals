@@ -571,7 +571,7 @@ curl -s http://127.0.0.1:8000/health
 Без этих четырёх переменных приложение работает ровно как раньше: бот молчит, вебхук отвечает 401.
 
 1. Создайте бота у [@BotFather](https://t.me/BotFather) → `VITALS_TELEGRAM_BOT_TOKEN`.
-2. Узнайте свой id у [@userinfobot](https://t.me/userinfobot) → `VITALS_TELEGRAM_CHAT_ID`. Это **единственный** чат, который бот слушает.
+2. Узнайте свой положительный id пользователя у [@userinfobot](https://t.me/userinfobot) → `VITALS_TELEGRAM_CHAT_ID`. Это должен быть **личный чат**; отрицательные id групп/супергрупп отклоняются, чтобы медицинские данные не ушли другим участникам.
 3. Сгенерируйте секретный сегмент пути и секрет заголовка:
    ```bash
    python -c "import secrets; print(secrets.token_urlsafe(24))"
@@ -1340,7 +1340,7 @@ curl -s http://127.0.0.1:8000/health
 Leave these four empty and the app behaves exactly as before: the bot never sends, and the webhook fails closed with 401.
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) → `VITALS_TELEGRAM_BOT_TOKEN`.
-2. Get your own id from [@userinfobot](https://t.me/userinfobot) → `VITALS_TELEGRAM_CHAT_ID`. This is the **only** chat that is listened to.
+2. Get your positive user id from [@userinfobot](https://t.me/userinfobot) → `VITALS_TELEGRAM_CHAT_ID`. It must be a **private chat**; negative group/supergroup ids are rejected so health data cannot be sent to other members.
 3. Generate the secret URL segment and the header secret:
    ```bash
    python -c "import secrets; print(secrets.token_urlsafe(24))"

@@ -10,10 +10,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
-from vitals.enums import DigestKind, Domain
+from vitals.enums import DigestKind, Domain, IntegrationProvider
 from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import digest_service, milestones_service
-from vitals.services.proactive import brief, delivery
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.proactive import brief, channels, delivery
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.ratelimit import rate_limit
@@ -143,7 +144,20 @@ async def build_brief_now(
     """Assemble today's brief and show it here. Sends nothing — this is the button
     for cranking the prompt as many times as you like."""
     try:
-        row = await brief.generate_brief(db, LLMClient())
+        llm_ownership = await resolve_legacy_ownership_context(
+            db,
+            actor_username=username,
+            required_connections=(IntegrationProvider.OPENROUTER,),
+        )
+        row = await brief.generate_brief(
+            db,
+            LLMClient(),
+            identity=llm_ownership.owner_action(),
+            include_legacy_unowned=True,
+            llm_connection_id=llm_ownership.connection_id(
+                IntegrationProvider.OPENROUTER
+            ),
+        )
         await db.commit()
     except Exception as e:  # noqa: BLE001 — same soft-fail as the digest button
         logger.warning("Brief build failed: %s", e)
@@ -164,13 +178,39 @@ async def send_test_brief(
     if notifier is None:
         return _redirect(request, "?brief=no_channel")
     try:
-        row = await brief.generate_brief(db, LLMClient())
+        ownership = await channels.resolve_legacy_channel_ownership(
+            db,
+            actor_username=username,
+        )
+        test_dedupe_key = f"brief_test:{today_local().isoformat()}"
+        if await delivery.already_sent(
+            db,
+            test_dedupe_key,
+            ownership=ownership,
+        ):
+            return _redirect(request, "?brief=error")
+        llm_ownership = await resolve_legacy_ownership_context(
+            db,
+            actor_username=username,
+            required_connections=(IntegrationProvider.OPENROUTER,),
+        )
+        row = await brief.generate_brief(
+            db,
+            LLMClient(),
+            identity=ownership.owner_action(),
+            include_legacy_unowned=ownership.include_legacy_unowned,
+            llm_connection_id=llm_ownership.connection_id(
+                IntegrationProvider.OPENROUTER
+            ),
+        )
         if row is None:
             await db.commit()
             return _redirect(request, "?brief=empty")
         sent = await delivery.send(
             db, notifier, text=row.content, category=delivery.CATEGORY_TEST,
-            dedupe_key=f"brief_test:{today_local().isoformat()}",
+            dedupe_key=test_dedupe_key,
+            ownership=ownership,
+            actor_user_id=ownership.recipient_user_id,
         )
         await db.commit()
     except Exception as e:  # noqa: BLE001

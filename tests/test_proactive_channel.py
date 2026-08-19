@@ -71,8 +71,8 @@ def bot_env(monkeypatch):
 
 
 @pytest_asyncio.fixture
-async def bot_client(client, bot_env):
-    """The app with a fake channel wired in. Yields ``(client, notifier)``."""
+async def bot_client(client, bot_env, legacy_owner_roots):
+    """Anonymous webhook client with owner roots and a fake delivery channel."""
     from web.main import app
     from web.routers.telegram import get_notifier
 
@@ -95,25 +95,78 @@ def parses_to(monkeypatch):
     return _set
 
 
-def _text_update(update_id, text, *, chat=CHAT_ID, message_id=5, reply_to=None):
-    message = {"message_id": message_id, "chat": {"id": int(chat)}, "text": text}
+def _text_update(
+    update_id,
+    text,
+    *,
+    chat=CHAT_ID,
+    sender=None,
+    chat_type="private",
+    message_id=5,
+    reply_to=None,
+):
+    message = {
+        "message_id": message_id,
+        "date": 1785612345,
+        "chat": {"id": int(chat), "type": chat_type},
+        "from": {"id": int(sender or chat), "is_bot": False},
+        "text": text,
+    }
     if reply_to is not None:
         message["reply_to_message"] = {"message_id": reply_to}
     return {"update_id": update_id, "message": message}
 
 
-def _tap_update(update_id, data, *, chat=CHAT_ID, callback_id="cb-1", text=None):
-    message = {"message_id": 9, "chat": {"id": int(chat)}}
+def _edited_text_update(update_id, text, **kwargs):
+    update = _text_update(update_id, text, **kwargs)
+    update["edited_message"] = update.pop("message")
+    update["edited_message"]["edit_date"] = 1785612400
+    return update
+
+
+def _tap_update(
+    update_id,
+    data,
+    *,
+    chat=CHAT_ID,
+    sender=None,
+    chat_type="private",
+    callback_id="cb-1",
+    text=None,
+):
+    message = {
+        "message_id": 9,
+        "date": 1785612345,
+        "chat": {"id": int(chat), "type": chat_type},
+    }
     if text is not None:
         message["text"] = text
     return {
         "update_id": update_id,
-        "callback_query": {"id": callback_id, "data": data, "message": message},
+        "callback_query": {
+            "id": callback_id,
+            "from": {"id": int(sender or chat), "is_bot": False},
+            "data": data,
+            "message": message,
+        },
     }
 
 
 async def _signals(session) -> list[Signal]:
     return list((await session.execute(select(Signal))).scalars().all())
+
+
+async def _telegram_ownership(session):
+    from vitals.enums import IntegrationProvider
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.proactive import channels
+
+    legacy = await resolve_legacy_ownership_context(
+        session,
+        actor_username=None,
+        required_connections=(IntegrationProvider.TELEGRAM,),
+    )
+    return channels.ownership_from_legacy(legacy)
 
 
 # ── The door ──────────────────────────────────────────────────────────────────
@@ -164,6 +217,34 @@ async def test_foreign_chat_is_swallowed_silently(bot_client, parses_to, db_sess
     assert fake.sent == []
 
 
+@pytest.mark.parametrize(
+    "update",
+    [
+        _text_update(11, "group text", chat_type="group"),
+        _text_update(12, "forged sender", sender="999"),
+        _tap_update(13, "ctx:2026-07-27:gym:1", chat_type="supergroup"),
+        _tap_update(14, "ctx:2026-07-27:gym:1", sender="999"),
+    ],
+)
+async def test_non_private_or_foreign_sender_is_discarded_without_attribution(
+    bot_client,
+    db_session,
+    update,
+):
+    c, fake = bot_client
+
+    response = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert list(await db_session.scalars(select(RawPayload))) == []
+    assert await _signals(db_session) == []
+    assert fake.sent == [] and fake.acks == []
+
+
 async def test_cross_origin_header_does_not_block_the_webhook(bot_client, parses_to):
     """C5: the CSRF origin check must not fire on a path that has its own secret."""
     c, fake = bot_client
@@ -177,6 +258,39 @@ async def test_cross_origin_header_does_not_block_the_webhook(bot_client, parses
 
 
 # ── Capture + echo ────────────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"_unparsed": "not JSON"},
+        {},
+        {"signals": None},
+        {"signals": {}},
+        {"signals": "[]"},
+    ],
+)
+async def test_signal_parser_adapter_rejects_malformed_outer_payload(
+    monkeypatch, payload
+):
+    class _MalformedLLM:
+        async def extract_json(self, _text, *, system):
+            return payload
+
+    monkeypatch.setattr(inbound, "LLMClient", _MalformedLLM)
+
+    with pytest.raises(ValueError, match="signals"):
+        await inbound.make_signal_parser()("голова болит")
+
+
+async def test_signal_parser_adapter_preserves_explicit_empty_list(monkeypatch):
+    class _EmptyLLM:
+        async def extract_json(self, _text, *, system):
+            return {"signals": []}
+
+    monkeypatch.setattr(inbound, "LLMClient", _EmptyLLM)
+
+    assert await inbound.make_signal_parser()("просто поболтать") == []
+
+
 async def test_text_becomes_signals_plus_an_echo_with_an_undo_button(
     bot_client, parses_to, db_session
 ):
@@ -186,8 +300,10 @@ async def test_text_becomes_signals_plus_an_echo_with_an_undo_button(
         {"kind": "exposure", "key": "caffeine_late", "at_time": "22:00", "note": "кофе в 22"},
     ])
 
-    r = await c.post(f"/tg/{WEBHOOK_PATH}",
-                     json=_text_update(1, "Голова раскалывается, кофе в 22"), headers=HEADERS)
+    update = _text_update(1, "Голова раскалывается, кофе в 22")
+    r = await c.post(
+        f"/tg/{WEBHOOK_PATH}", json=update, headers=HEADERS
+    )
     assert r.status_code == 200
 
     rows = await _signals(db_session)
@@ -198,7 +314,23 @@ async def test_text_becomes_signals_plus_an_echo_with_an_undo_button(
     raw = (await db_session.execute(
         select(RawPayload).where(RawPayload.external_id == "tg:1")
     )).scalars().first()
-    assert raw is not None and raw.payload["text"].startswith("Голова")
+    assert raw is not None and raw.payload == update
+    ownership = await _telegram_ownership(db_session)
+    assert (raw.subject_id, raw.actor_user_id, raw.integration_connection_id) == (
+        ownership.subject_id,
+        ownership.recipient_user_id,
+        ownership.connection_id,
+    )
+    assert {
+        (row.subject_id, row.actor_user_id, row.integration_connection_id)
+        for row in rows
+    } == {
+        (
+            ownership.subject_id,
+            ownership.recipient_user_id,
+            ownership.connection_id,
+        )
+    }
 
     assert len(fake.sent) == 1
     echo = fake.sent[0]
@@ -210,6 +342,47 @@ async def test_text_becomes_signals_plus_an_echo_with_an_undo_button(
     label, payload = echo["buttons"][0]
     assert label == "не то"
     assert payload == f"{inbound.CB_MISPARSE}{rows[0].batch_id}"
+    journal = list(await db_session.scalars(select(Notification)))
+    assert len(journal) == 1
+    assert (
+        journal[0].subject_id,
+        journal[0].actor_user_id,
+        journal[0].recipient_user_id,
+        journal[0].integration_connection_id,
+    ) == (
+        ownership.subject_id,
+        None,
+        ownership.recipient_user_id,
+        ownership.connection_id,
+    )
+
+
+async def test_raw_capture_preserves_complete_message_reply_and_timestamps(
+    bot_client,
+    parses_to,
+    db_session,
+):
+    c, _ = bot_client
+    parses_to([])
+    update = _text_update(15, "устал", message_id=44)
+    update["message"]["edit_date"] = 1785612400
+    update["message"]["reply_to_message"] = {
+        "message_id": 43,
+        "date": 1785612200,
+        "chat": {"id": int(CHAT_ID), "type": "private"},
+        "from": {"id": int(CHAT_ID), "is_bot": False},
+        "text": "предыдущее сообщение",
+    }
+
+    response = await c.post(
+        f"/tg/{WEBHOOK_PATH}", json=update, headers=HEADERS
+    )
+
+    assert response.status_code == 200
+    raw = await db_session.scalar(
+        select(RawPayload).where(RawPayload.external_id == "tg:15")
+    )
+    assert raw is not None and raw.payload == update
 
 
 async def test_a_message_with_no_facts_is_kept_and_answered_without_alarm(
@@ -229,12 +402,42 @@ async def test_a_message_with_no_facts_is_kept_and_answered_without_alarm(
     raw = (await db_session.execute(
         select(RawPayload).where(RawPayload.external_id == "tg:1")
     )).scalars().first()
-    assert raw is not None
+    assert raw is not None and raw.processed_at is not None
     assert fake.sent[0]["text"].startswith("Записал.")
     assert "не смог" not in fake.sent[0]["text"]
     assert fake.sent[0]["buttons"] is None
     # Nothing broke, so nothing to raise: an alert here would cry wolf daily.
     assert (await db_session.execute(select(SystemAlert))).scalars().all() == []
+
+
+async def test_nonempty_parser_junk_stays_pending_and_gets_an_honest_reply(
+    bot_client, parses_to, db_session
+):
+    from vitals.models.system_alert import SystemAlert
+
+    c, fake = bot_client
+    parses_to([{"kind": "symptm", "key": "headache"}])
+
+    await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_text_update(21, "голова болит"),
+        headers=HEADERS,
+    )
+
+    assert await _signals(db_session) == []
+    raw = await db_session.scalar(
+        select(RawPayload).where(RawPayload.external_id == "tg:21")
+    )
+    assert raw is not None and raw.processed_at is None
+    alert = await db_session.scalar(
+        select(SystemAlert).where(
+            SystemAlert.alert_key == signals_service.PARSER_FAILED_ALERT_KEY,
+            SystemAlert.resolved_at.is_(None),
+        )
+    )
+    assert alert is not None
+    assert "разобрать не смог" in fake.sent[0]["text"]
+    assert "Фактов для графиков" not in fake.sent[0]["text"]
 
 
 async def test_the_off_switch_stops_the_parse_and_the_reply_but_keeps_the_text(
@@ -266,7 +469,7 @@ async def test_the_off_switch_stops_the_parse_and_the_reply_but_keeps_the_text(
     raw = (await db_session.execute(
         select(RawPayload).where(RawPayload.external_id == "tg:1")
     )).scalars().first()
-    assert raw is not None and raw.payload["text"] == "башка трещит"
+    assert raw is not None and raw.payload["message"]["text"] == "башка трещит"
     # Left pending on purpose: the re-parse sweep turns it into signals whenever
     # the module comes back on.
     assert raw.processed_at is None
@@ -274,7 +477,7 @@ async def test_the_off_switch_stops_the_parse_and_the_reply_but_keeps_the_text(
 
 async def test_a_tap_while_the_module_is_off_is_ignored(bot_client, db_session):
     """A tap answers a question this bot asked — with the module off there is
-    nothing asking, so it is dropped rather than stored."""
+    nothing asking, so its durable raw is terminal without applying the tap."""
     from vitals.services import modules_service
 
     c, fake = bot_client
@@ -282,11 +485,54 @@ async def test_a_tap_while_the_module_is_off_is_ignored(bot_client, db_session):
     await db_session.commit()
     tomorrow = date(2026, 7, 27)
 
-    await c.post(f"/tg/{WEBHOOK_PATH}",
-                 json=_tap_update(1, f"{inbound.CB_CONTEXT}{tomorrow.isoformat()}:where:remote"),
-                 headers=HEADERS)
+    update = _tap_update(
+        1,
+        f"{inbound.CB_CONTEXT}{tomorrow.isoformat()}:where:remote",
+    )
+    response = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
 
+    assert response.status_code == 200
     assert await signals_service.get_day_context(db_session, tomorrow) is None
+    assert fake.acks == []
+    raw = await db_session.scalar(
+        select(RawPayload).where(RawPayload.external_id == "tg:1")
+    )
+    assert raw is not None and raw.payload == update
+    assert raw.processed_at is not None
+
+
+async def test_callback_gate_failure_after_claim_keeps_pending_raw_for_replay(
+    bot_client,
+    db_session,
+    monkeypatch,
+):
+    c, fake = bot_client
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("module storage is temporarily unavailable")
+
+    monkeypatch.setattr(inbound.prefs, "bot_enabled", _boom)
+    update = _tap_update(
+        19,
+        f"{inbound.CB_CONTEXT}2026-07-27:where:remote",
+    )
+
+    response = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    raw = await db_session.scalar(
+        select(RawPayload).where(RawPayload.external_id == "tg:19")
+    )
+    assert raw is not None and raw.payload == update
+    assert raw.processed_at is None
     assert fake.acks == []
 
 
@@ -344,11 +590,203 @@ async def test_repeated_update_id_is_not_processed_twice(bot_client, parses_to, 
     update = _text_update(77, "спать пиздец хочу")
 
     await c.post(f"/tg/{WEBHOOK_PATH}", json=update, headers=HEADERS)
-    r = await c.post(f"/tg/{WEBHOOK_PATH}", json=update, headers=HEADERS)
+    raw = await db_session.scalar(
+        select(RawPayload).where(RawPayload.external_id == "tg:77")
+    )
+    assert raw is not None
+    original = (raw.payload, raw.fetched_at, raw.processed_at)
+    retry_with_changed_body = _text_update(77, "retry must not refresh this")
+    r = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=retry_with_changed_body,
+        headers=HEADERS,
+    )
+    await db_session.refresh(raw)
 
     assert r.status_code == 200
     assert len(await _signals(db_session)) == 1
     assert len(fake.sent) == 1
+    assert (raw.payload, raw.fetched_at, raw.processed_at) == original
+
+
+async def test_edited_message_supersedes_prior_facts_but_keeps_history(
+    bot_client,
+    db_session,
+    monkeypatch,
+):
+    c, _ = bot_client
+
+    async def _parse(text):
+        key = "headache" if "голова" in text else "sleepiness"
+        return [{"kind": "symptom", "key": key, "value_num": 3, "note": text}]
+
+    monkeypatch.setattr(inbound, "make_signal_parser", lambda known=None: _parse)
+    await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_text_update(81, "голова болит", message_id=55),
+        headers=HEADERS,
+    )
+    await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_edited_text_update(82, "спать хочу", message_id=55),
+        headers=HEADERS,
+    )
+
+    rows = list(await db_session.scalars(select(Signal).order_by(Signal.id)))
+    assert [(row.key, row.misparse) for row in rows] == [
+        ("headache", True),
+        ("sleepiness", False),
+    ]
+    assert [row.key for row in await signals_service.list_signals(db_session)] == [
+        "sleepiness"
+    ]
+    raws = list(
+        await db_session.scalars(
+            select(RawPayload)
+            .where(RawPayload.external_id.in_(["tg:81", "tg:82"]))
+            .order_by(RawPayload.id)
+        )
+    )
+    assert len(raws) == 2
+    assert "message" in raws[0].payload and "edited_message" in raws[1].payload
+
+
+@pytest.mark.parametrize("replacement", ["/start", "почему голова болела?"])
+async def test_edit_into_command_or_question_still_supersedes_prior_fact(
+    bot_client,
+    parses_to,
+    db_session,
+    replacement,
+):
+    c, _ = bot_client
+    parses_to([{"kind": "symptom", "key": "headache", "value_num": 5}])
+    await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_text_update(83, "голова раскалывается", message_id=56),
+        headers=HEADERS,
+    )
+    await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_edited_text_update(84, replacement, message_id=56),
+        headers=HEADERS,
+    )
+
+    rows = list(await db_session.scalars(select(Signal)))
+    assert len(rows) == 1 and rows[0].misparse is True
+    assert await signals_service.list_signals(db_session) == []
+
+
+async def test_edit_keeps_original_message_health_day_across_rollover(
+    bot_client,
+    db_session,
+    monkeypatch,
+):
+    from datetime import timezone
+    from freezegun import freeze_time
+
+    c, _ = bot_client
+
+    async def _parse(text):
+        key = "headache" if "голова" in text else "sleepiness"
+        return [{"kind": "symptom", "key": key, "value_num": 3}]
+
+    monkeypatch.setattr(inbound, "make_signal_parser", lambda known=None: _parse)
+    original_timestamp = int(
+        datetime(2026, 7, 26, 20, 30, tzinfo=timezone.utc).timestamp()
+    )
+    original = _text_update(85, "голова болит", message_id=57)
+    original["message"]["date"] = original_timestamp
+    edited = _edited_text_update(86, "спать хочу", message_id=57)
+    edited["edited_message"]["date"] = original_timestamp
+
+    with freeze_time("2026-07-26 20:30:00"):
+        await c.post(f"/tg/{WEBHOOK_PATH}", json=original, headers=HEADERS)
+    with freeze_time("2026-07-27 09:00:00"):
+        await c.post(f"/tg/{WEBHOOK_PATH}", json=edited, headers=HEADERS)
+
+    rows = list(await db_session.scalars(select(Signal).order_by(Signal.id)))
+    assert [(row.key, row.date, row.misparse) for row in rows] == [
+        ("headache", date(2026, 7, 26), True),
+        ("sleepiness", date(2026, 7, 26), False),
+    ]
+
+
+async def test_module_off_edit_still_supersedes_the_old_batch(
+    bot_client,
+    parses_to,
+    db_session,
+):
+    from vitals.services import modules_service
+
+    c, fake = bot_client
+    parses_to([{"kind": "symptom", "key": "headache", "value_num": 5}])
+    await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_text_update(87, "голова раскалывается", message_id=58),
+        headers=HEADERS,
+    )
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=False,
+    )
+    await db_session.commit()
+
+    await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_edited_text_update(88, "/start", message_id=58),
+        headers=HEADERS,
+    )
+
+    rows = list(await db_session.scalars(select(Signal)))
+    assert len(rows) == 1 and rows[0].misparse is True
+    edited_raw = await db_session.scalar(
+        select(RawPayload).where(RawPayload.external_id == "tg:88")
+    )
+    assert edited_raw is not None and edited_raw.processed_at is not None
+    assert len(fake.sent) == 1  # only the original echo, no disabled command reply
+
+
+@pytest.mark.parametrize("stale_text", ["/start", "почему болит голова?"])
+async def test_superseded_stale_command_or_question_never_replies(
+    db_session,
+    legacy_owner_roots,
+    stale_text,
+):
+    ownership = await _telegram_ownership(db_session)
+    original_update = _text_update(89, stale_text, message_id=59)
+    original = await inbound._claim_update_raw(
+        db_session,
+        external_id="tg:89",
+        payload=original_update,
+        ownership=ownership,
+    )
+    edited_update = _edited_text_update(90, "новая версия", message_id=59)
+    edited = await inbound._claim_update_raw(
+        db_session,
+        external_id="tg:90",
+        payload=edited_update,
+        ownership=ownership,
+    )
+    await inbound._supersede_edited_message(
+        db_session,
+        edited.raw,
+        ownership=ownership,
+    )
+    fake = FakeNotifier()
+
+    await inbound.handle_text(
+        db_session,
+        stale_text,
+        notifier=fake,
+        message_id=59,
+        ownership=ownership,
+        raw=original.raw,
+    )
+
+    assert fake.sent == []
+    await db_session.refresh(original.raw)
+    assert original.raw.processed_at is not None
 
 
 async def test_the_message_is_committed_before_the_model_is_called(db_session, monkeypatch):
@@ -384,10 +822,11 @@ async def test_the_message_is_committed_before_the_model_is_called(db_session, m
     assert durable == [True]
 
 
-async def test_a_crash_in_the_handler_is_still_answered_with_200(bot_client, monkeypatch):
-    """A 500 makes Telegram retry the same update for hours, each retry another
-    model call. The message is already in the lake by then and the re-parse sweep
-    finishes what this run didn't."""
+async def test_a_failure_before_durable_capture_returns_retryable_error(
+    bot_client,
+    monkeypatch,
+):
+    """A pre-capture failure must not acknowledge and permanently lose data."""
     c, _ = bot_client
 
     async def _boom(*a, **kw):
@@ -397,7 +836,33 @@ async def test_a_crash_in_the_handler_is_still_answered_with_200(bot_client, mon
 
     r = await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "спать хочу"), headers=HEADERS)
 
-    assert r.status_code == 200
+    assert r.status_code == 503
+
+
+async def test_a_failure_after_durable_capture_is_acknowledged_and_recoverable(
+    bot_client,
+    db_session,
+    monkeypatch,
+):
+    c, _ = bot_client
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("something broke after raw capture")
+
+    monkeypatch.setattr(inbound, "handle_text", _boom)
+    update = _text_update(2, "спать хочу")
+    response = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    raw = await db_session.scalar(
+        select(RawPayload).where(RawPayload.external_id == "tg:2")
+    )
+    assert raw is not None and raw.payload == update
+    assert raw.processed_at is None
 
 
 async def test_a_message_after_midnight_lands_on_the_day_that_just_ended(db_session):
@@ -628,8 +1093,10 @@ async def test_reply_to_our_message_is_answered_not_captured(
 ):
     c, fake = bot_client
     parses_to([{"kind": "state", "key": "sleepiness", "value_num": 5}])
+    ownership = await _telegram_ownership(db_session)
     sent = await delivery.send(db_session, fake, text="Утро: сон 6:10, HRV 42.",
-                               category=delivery.CATEGORY_BRIEF, now=NOON)
+                               category=delivery.CATEGORY_BRIEF, now=NOON,
+                               ownership=ownership)
     asked = {}
 
     async def _answer(question, context, facts=""):
@@ -653,8 +1120,10 @@ async def test_reply_falls_back_to_a_line_when_the_model_is_down(
     bot_client, db_session, monkeypatch
 ):
     c, fake = bot_client
+    ownership = await _telegram_ownership(db_session)
     sent = await delivery.send(db_session, fake, text="Утро: сон 6:10.",
-                               category=delivery.CATEGORY_BRIEF, now=NOON)
+                               category=delivery.CATEGORY_BRIEF, now=NOON,
+                               ownership=ownership)
 
     async def _boom(question, context, facts=""):
         raise RuntimeError("no key")
@@ -725,7 +1194,21 @@ async def test_the_question_path_is_given_the_days_numbers(
     from vitals.models.milestones import DOMAIN as INSIGHTS_DOMAIN, WeeklyDigest
 
     c, fake = bot_client
+    ownership = await _telegram_ownership(db_session)
+    from vitals.enums import IntegrationProvider
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+
+    llm_ownership = await resolve_legacy_ownership_context(
+        db_session,
+        actor_username=None,
+        required_connections=(IntegrationProvider.OPENROUTER,),
+    )
     db_session.add(WeeklyDigest(
+        subject_id=ownership.subject_id,
+        actor_user_id=None,
+        integration_connection_id=llm_ownership.connection_id(
+            IntegrationProvider.OPENROUTER
+        ),
         date=date(2026, 7, 26),
         domain=INSIGHTS_DOMAIN,
         kind=DigestKind.DAILY_BRIEF.value,
@@ -757,11 +1240,14 @@ async def test_a_question_without_a_reply_still_sees_what_the_bot_just_said(
     Typed plainly (nobody uses Telegram's Reply), it used to reach the model with
     no message attached, and the answer was a guess about the 2nd of the month."""
     c, fake = bot_client
+    ownership = await _telegram_ownership(db_session)
     await delivery.send(db_session, fake, text="Утро: разбор дня.",
-                        category=delivery.CATEGORY_BRIEF, now=NOON)
+                        category=delivery.CATEGORY_BRIEF, now=NOON,
+                        ownership=ownership)
     await delivery.send(db_session, fake, text="Записал:\n• спать охота → sleepiness 3/5\n"
                                               "• энергос → sugar 1 serving в 17:00",
-                        category=delivery.CATEGORY_ECHO, now=NOON)
+                        category=delivery.CATEGORY_ECHO, now=NOON,
+                        ownership=ownership)
     asked = {}
 
     async def _answer(question, context, facts=""):
@@ -934,3 +1420,15 @@ def test_build_notifier_needs_both_token_and_chat(monkeypatch):
     notifier = channels.build_notifier(load_config())
     assert isinstance(notifier, channels.Notifier)
     assert notifier.channel == "telegram"
+
+
+def test_group_chat_configuration_disables_outbound_phi(monkeypatch):
+    from vitals.config import load_config
+    from vitals.services.proactive import channels
+
+    monkeypatch.setenv("VITALS_TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("VITALS_TELEGRAM_CHAT_ID", "-100424242")
+
+    assert channels.build_notifier(load_config()) is None
+    with pytest.raises(ValueError, match="private user"):
+        channels.TelegramNotifier("t", "-100424242")

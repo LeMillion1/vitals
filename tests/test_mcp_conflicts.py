@@ -11,6 +11,11 @@ from vitals.services import conflict_registrations, genetics_service
 mcp_router = pytest.importorskip("web.routers.mcp")
 
 
+@pytest.fixture(autouse=True)
+async def _legacy_mcp_owner(legacy_owner_roots):
+    """MCP v1 runs only after startup has materialized its sole owner roots."""
+
+
 async def _seed_iron_rule(db_session):
     db_session.add(
         ConflictRule(

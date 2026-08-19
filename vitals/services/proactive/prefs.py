@@ -22,6 +22,7 @@ doesn't apply for five minutes.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import time as time_type
 from typing import Any
 
@@ -170,7 +171,12 @@ async def set_prefs(session: AsyncSession, raw: Any) -> dict[str, Any]:
     return clean
 
 
-async def bot_enabled(session: AsyncSession) -> bool:
+async def bot_enabled(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    strict: bool = False,
+) -> bool:
     """Is the proactive layer switched on at all (the emergency switch)?
 
     Deliberately reads the module registry rather than a setting of its own:
@@ -179,5 +185,26 @@ async def bot_enabled(session: AsyncSession) -> bool:
     """
     from vitals.services import modules_service
 
-    state = await modules_service.get_enabled_modules(session)
+    if strict:
+        if subject_id is None:
+            raise ValueError("strict module gating requires a subject_id")
+        from vitals.services.scoped_settings_service import (
+            ScopedSettingKey,
+            SettingScope,
+            get_scoped_setting,
+        )
+
+        raw = await get_scoped_setting(
+            session,
+            scope=SettingScope.SUBJECT,
+            key=ScopedSettingKey.ENABLED_MODULES,
+            subject_id=subject_id,
+            default=dict(modules_service.DEFAULT_STATE),
+        )
+        return bool(raw.get(MODULE_KEY)) if isinstance(raw, dict) else False
+
+    state = await modules_service.get_enabled_modules(
+        session,
+        subject_id=subject_id,
+    )
     return bool(state.get(MODULE_KEY))

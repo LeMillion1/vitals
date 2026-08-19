@@ -62,31 +62,38 @@ async def test_disabled_module_makes_the_bot_silent(db_session):
     assert fake.sent == ["бриф"]
 
 
-async def test_disabled_module_hides_the_page(client):
+async def test_disabled_module_hides_the_page(auth_client):
     """Enabled by the ``client`` fixture, then switched off through the same
     endpoint the settings card uses."""
-    r = await client.post("/login", data={"username": "tester", "password": "password"})
-    assert r.status_code == 303
+    assert (await auth_client.get("/signals")).status_code == 200
 
-    assert (await client.get("/signals")).status_code == 200
-
-    r = await client.post("/settings/modules", data={"module": "signals", "enabled": "false"})
+    r = await auth_client.post(
+        "/settings/modules",
+        data={"module": "signals", "enabled": "false"},
+    )
     assert r.status_code == 200
 
     # A disabled module 404s → the app redirects HTML navigation to the dashboard.
-    r = await client.get("/signals", headers={"accept": "text/html"})
+    r = await auth_client.get("/signals", headers={"accept": "text/html"})
     assert r.status_code in (302, 303, 404)
     assert r.headers.get("location", "") != "/signals"
 
 
 # ── The page ──────────────────────────────────────────────────────────────────
 async def test_feed_shows_captured_rows_and_deletes_one(auth_client, db_session):
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+
+    ownership = await resolve_legacy_ownership_context(
+        db_session,
+        actor_username="tester",
+    )
     rows = await signals_service.create_signals(
         db_session,
         items=[
             {"kind": "symptom", "key": "headache", "value_num": 4},
             {"kind": "exposure", "key": "coffee_late", "value_num": 200, "unit": "mg"},
         ],
+        identity=ownership.owner_action(),
     )
     await db_session.commit()
 

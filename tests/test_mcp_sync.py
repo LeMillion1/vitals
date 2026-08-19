@@ -13,7 +13,7 @@ mcp_router = pytest.importorskip("web.routers.mcp")
 
 
 @pytest.fixture(autouse=True)
-def _use_test_backends(session_factory, redis, monkeypatch):
+def _use_test_backends(session_factory, redis, monkeypatch, legacy_owner_roots):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     monkeypatch.setattr(mcp_router, "get_redis_client", lambda: redis)
 
@@ -23,8 +23,10 @@ async def test_sync_garmin_caps_at_three_a_day_and_clamps_the_window(monkeypatch
 
     calls = []
 
-    async def fake_sync_job(session_factory, redis=None, *, days=2):
-        calls.append(days)
+    async def fake_sync_job(
+        session_factory, redis=None, *, days=2, actor_username=None
+    ):
+        calls.append((days, actor_username))
         return {"days": days, "activities": 0, "error": None}
 
     monkeypatch.setattr(garmin_service, "sync_job", fake_sync_job)
@@ -36,13 +38,19 @@ async def test_sync_garmin_caps_at_three_a_day_and_clamps_the_window(monkeypatch
 
     fourth = await mcp_router.sync_garmin()
     assert "3 times today" in fourth["error"]
-    assert calls == [2, 30, 2], "the refused call must never reach Garmin"
+    assert calls == [
+        (2, "tester"),
+        (30, "tester"),
+        (2, "tester"),
+    ], "the refused call must never reach Garmin"
 
 
 async def test_sync_garmin_says_so_when_garmin_is_not_configured(monkeypatch):
     from vitals.services import garmin_service
 
-    async def unconfigured(session_factory, redis=None, *, days=2):
+    async def unconfigured(
+        session_factory, redis=None, *, days=2, actor_username=None
+    ):
         return None
 
     monkeypatch.setattr(garmin_service, "sync_job", unconfigured)
@@ -54,8 +62,8 @@ async def test_sync_hevy_refuses_a_disabled_module_without_spending_quota(monkey
 
     called = []
 
-    async def fake_sync_job(session_factory, redis=None):
-        called.append(1)
+    async def fake_sync_job(session_factory, redis=None, *, actor_username=None):
+        called.append(actor_username)
         return {"fetched": 1, "created": 1, "updated": 0, "skipped": 0}
 
     monkeypatch.setattr(hevy_service, "sync_job", fake_sync_job)
@@ -70,3 +78,4 @@ async def test_sync_hevy_refuses_a_disabled_module_without_spending_quota(monkey
         await session.commit()
 
     assert (await mcp_router.sync_hevy())["created"] == 1
+    assert called == ["tester"]

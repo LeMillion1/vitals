@@ -67,7 +67,9 @@ from vitals.models import (
 from vitals.services import conflict_engine, modules_service
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.services.data_portability_service import GENERIC_OUTPUT_SUPPRESSED_COLUMNS
+from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
+from web.config import get_web_config
 from web.deps import get_redis_client, get_session_factory
 
 logger = logging.getLogger(__name__)
@@ -189,8 +191,25 @@ async def _module_enabled(session, key: str) -> bool:
     """True when an optional module is on (write tools honour the toggle)."""
     from vitals.services import modules_service
 
-    state = await modules_service.get_enabled_modules(session)
+    ownership = await _mcp_v1_legacy_owner(session)
+    state = await modules_service.get_enabled_modules(
+        session,
+        subject_id=ownership.subject_id,
+    )
     return bool(state.get(key))
+
+
+async def _mcp_v1_legacy_owner(session):
+    """Resolve the configured single owner for one legacy MCP v1 operation.
+
+    The current connector token authenticates the installation, not a selected
+    subject. Mapping it to the configured owner is attribution plus a fail-closed
+    single-subject compatibility gate; it is not MCP v2 subject authorization.
+    """
+    return await resolve_legacy_ownership_context(
+        session,
+        actor_username=get_web_config().auth_username,
+    )
 
 
 # tool name → the optional module it belongs to. Writes register themselves through
@@ -471,10 +490,16 @@ async def get_hevy_workouts(
 @mcp.tool()
 async def get_supplements_catalog() -> list[dict]:
     """Retrieves the active supplement catalog, including dosages and evidence tiers."""
+    from vitals.services import supplements_service
+
     session_factory = get_session_factory()
     async with session_factory() as session:
-        stmt = select(Supplement).order_by(Supplement.name)
-        supps = (await session.execute(stmt)).scalars().all()
+        ownership = await _mcp_v1_legacy_owner(session)
+        supps = await supplements_service.list_supplements(
+            session,
+            subject_id=ownership.subject_id,
+            include_legacy_unowned=True,
+        )
         return [serialize_row(s) for s in supps]
 
 
@@ -648,6 +673,10 @@ async def check_supplement_conflicts(supplement_name: str) -> list[dict]:
     session_factory = get_session_factory()
     key = conflict_catalog.normalize_ingredient(supplement_name)
     async with session_factory() as session:
+        # Conflict resolvers remain legacy-global in Stage 2. Proving there is
+        # exactly one subject before evaluating keeps that compatibility path
+        # closed as soon as a second subject exists.
+        await _mcp_v1_legacy_owner(session)
         violations = await conflict_engine.evaluate(
             session,
             Domain.SUPPLEMENTS.value,
@@ -695,6 +724,7 @@ async def check_conflicts(domain: str, payload: dict) -> list[dict]:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        await _mcp_v1_legacy_owner(session)
         violations = await conflict_engine.evaluate(session, domain, payload)
         return [v.to_dict() for v in violations]
 
@@ -1440,7 +1470,20 @@ async def delete_record(domain: str, record_id: int) -> dict:
         if module_key and not await _module_enabled(session, module_key):
             return {"error": f"module '{module_key}' is disabled"}
         service = importlib.import_module(f"vitals.services.{service_name}")
-        ok = await getattr(service, fn_name)(session, record_id)
+        owned_kwargs = {}
+        if domain in {"timeline", "supplements"}:
+            ownership = await _mcp_v1_legacy_owner(session)
+            owned_kwargs = {
+                "identity": ownership.owner_action(),
+                "include_legacy_unowned": True,
+            }
+        elif domain == "signals":
+            ownership = await _mcp_v1_legacy_owner(session)
+            owned_kwargs = {
+                "subject_id": ownership.subject_id,
+                "include_legacy_unowned": True,
+            }
+        ok = await getattr(service, fn_name)(session, record_id, **owned_kwargs)
         await session.commit()
         return {"deleted": ok, "domain": domain, "record_id": record_id}
 
@@ -1737,8 +1780,15 @@ async def get_timeline(
     domains = [domain] if domain else None
 
     async with session_factory() as session:
+        ownership = await _mcp_v1_legacy_owner(session)
         events = await timeline_service.list_events(
-            session, domains=domains, start=start, end=end, limit=limit
+            session,
+            subject_id=ownership.subject_id,
+            include_legacy_unowned=True,
+            domains=domains,
+            start=start,
+            end=end,
+            limit=limit,
         )
         return [e.to_dict() for e in events]
 
@@ -1768,6 +1818,7 @@ async def log_event(
     parsed_end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
+        ownership = await _mcp_v1_legacy_owner(session)
         row = await timeline_service.create_annotation(
             session,
             title=title,
@@ -1776,6 +1827,8 @@ async def log_event(
             kind=kind,
             domain=domain,
             note=note,
+            source=Source.MCP.value,
+            identity=ownership.owner_action(),
         )
         await session.commit()
         return await serialize_written(session, row)
@@ -1803,21 +1856,30 @@ async def update_event(
     parsed_end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        merged = await _merged(
+        ownership = await _mcp_v1_legacy_owner(session)
+        current = await timeline_service.get_annotation(
             session,
-            Annotation,
             event_id,
-            title=title,
-            date=parsed_date,
-            end_date=parsed_end,
-            kind=kind,
-            domain=domain,
-            note=note,
+            subject_id=ownership.subject_id,
+            include_legacy_unowned=True,
         )
-        if merged is None:
+        if current is None:
             return {"error": f"Event {event_id} not found"}
+        merged = {
+            "title": current.title if title is None else title,
+            "date": current.date if parsed_date is None else parsed_date,
+            "end_date": current.end_date if parsed_end is None else parsed_end,
+            "kind": current.kind if kind is None else kind,
+            "domain": current.domain if domain is None else domain,
+            "note": current.note if note is None else note,
+        }
         row = await timeline_service.update_annotation(
-            session, event_id, on_date=merged.pop("date"), **merged
+            session,
+            event_id,
+            on_date=merged.pop("date"),
+            identity=ownership.owner_action(),
+            include_legacy_unowned=True,
+            **merged,
         )
         await session.commit()
         return await serialize_written(session, row)
@@ -2168,11 +2230,14 @@ async def add_supplement(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        ownership = await _mcp_v1_legacy_owner(session)
         try:
             row = await supplements_service.add_supplement(
                 session, name=name, key=key, dose=dose, timing=timing,
                 evidence=evidence, active=active,
                 contraindications=contraindications, note=note, override=override,
+                source=Source.MCP.value,
+                identity=ownership.owner_action(),
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
@@ -2203,18 +2268,34 @@ async def update_supplement(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        merged = await _merged(
-            session, Supplement, supplement_id,
-            name=name, dose=dose, timing=timing, evidence=evidence,
-            active=active, contraindications=contraindications, note=note,
+        ownership = await _mcp_v1_legacy_owner(session)
+        current = await supplements_service.get_supplement(
+            session,
+            supplement_id,
+            subject_id=ownership.subject_id,
+            include_legacy_unowned=True,
         )
-        if merged is None:
+        if current is None:
             return {"error": f"Supplement {supplement_id} not found"}
+        merged = {
+            "name": current.name if name is None else name,
+            "key": current.key if key is None else key,
+            "dose": current.dose if dose is None else dose,
+            "timing": current.timing if timing is None else timing,
+            "evidence": current.evidence if evidence is None else evidence,
+            "active": current.active if active is None else active,
+            "contraindications": (
+                current.contraindications
+                if contraindications is None
+                else contraindications
+            ),
+            "note": current.note if note is None else note,
+        }
         try:
-            # ``key`` stays as passed: left out, the service re-derives the
-            # conflict-matching slug from the (possibly new) name, same as add.
             row = await supplements_service.update_supplement(
-                session, supplement_id, key=key, override=override, **merged,
+                session, supplement_id, override=override, **merged,
+                identity=ownership.owner_action(),
+                include_legacy_unowned=True,
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
@@ -2233,9 +2314,15 @@ async def set_supplement_active(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        ownership = await _mcp_v1_legacy_owner(session)
         try:
             row = await supplements_service.set_active(
-                session, supplement_id, active, override=override
+                session,
+                supplement_id,
+                active,
+                override=override,
+                identity=ownership.owner_action(),
+                include_legacy_unowned=True,
             )
         except ConflictBlocked as e:
             return _conflict_payload(e)
@@ -2314,7 +2401,11 @@ async def get_modules() -> dict:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        enabled = await modules_service.get_enabled_modules(session)
+        ownership = await _mcp_v1_legacy_owner(session)
+        enabled = await modules_service.get_enabled_modules(
+            session,
+            subject_id=ownership.subject_id,
+        )
     return {
         "enabled": enabled,
         "core": sorted(modules_service.CORE_KEYS),
@@ -2331,13 +2422,22 @@ async def set_module(key: str, enabled: bool) -> dict:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        ownership = await _mcp_v1_legacy_owner(session)
         try:
             state = await modules_service.set_module_enabled(
-                session, key=key, enabled=enabled
+                session,
+                key=key,
+                enabled=enabled,
+                subject_id=ownership.subject_id,
             )
         except modules_service.ModuleToggleError as e:
             return {"error": str(e)}
         await session.commit()
+        await modules_service.prime_cache(
+            get_redis_client(),
+            state,
+            subject_id=ownership.subject_id,
+        )
         return {"enabled": state}
 
 
@@ -2467,8 +2567,16 @@ async def get_signals(
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
+        ownership = await _mcp_v1_legacy_owner(session)
         rows = await signals_service.list_signals(
-            session, key=key, kind=kind, start=start, end=end, limit=limit
+            session,
+            key=key,
+            kind=kind,
+            start=start,
+            end=end,
+            limit=limit,
+            subject_id=ownership.subject_id,
+            include_legacy_unowned=True,
         )
         return [serialize_row(r) for r in rows]
 
@@ -2497,6 +2605,7 @@ async def log_signal(
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
+        ownership = await _mcp_v1_legacy_owner(session)
         rows = await signals_service.create_signals(
             session,
             items=[{
@@ -2505,6 +2614,7 @@ async def log_signal(
             }],
             on_date=parsed_date,
             source=Source.MCP.value,
+            identity=ownership.owner_action(),
         )
         # create_signals drops unusable rows silently (it batch-parses LLM output,
         # where one bad fact must not cost the message). A single-row tool call has
@@ -2526,7 +2636,13 @@ async def mark_signal_misparse(batch_id: str) -> dict:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        marked = await signals_service.mark_misparse(session, batch_id)
+        ownership = await _mcp_v1_legacy_owner(session)
+        marked = await signals_service.mark_misparse(
+            session,
+            batch_id,
+            subject_id=ownership.subject_id,
+            include_legacy_unowned=True,
+        )
         await session.commit()
         return {"marked": marked, "batch_id": batch_id}
 
@@ -2545,13 +2661,17 @@ async def get_day_context(
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        stmt = select(DayContext)
-        if start:
-            stmt = stmt.where(DayContext.date >= start)
-        if end:
-            stmt = stmt.where(DayContext.date <= end)
-        stmt = stmt.order_by(DayContext.date.desc()).limit(limit)
-        rows = (await session.execute(stmt)).scalars().all()
+        from vitals.services import signals_service
+
+        ownership = await _mcp_v1_legacy_owner(session)
+        rows = await signals_service.list_day_contexts(
+            session,
+            start=start,
+            end=end,
+            limit=limit,
+            subject_id=ownership.subject_id,
+            include_legacy_unowned=True,
+        )
         return [serialize_row(r) for r in rows]
 
 
@@ -2581,8 +2701,17 @@ async def log_day_context(answers: dict, on_date: Optional[str] = None) -> dict:
             return {"error": f"{key}={value!r} is not a day-context answer — {legal}"}
 
     async with session_factory() as session:
+        ownership = await _mcp_v1_legacy_owner(session)
         for key, value in answers.items():
-            row = await day_plan.record_answer(session, parsed_date, key, value)
+            row = await day_plan.record_answer(
+                session,
+                parsed_date,
+                key,
+                value,
+                source=Source.MCP.value,
+                identity=ownership.owner_action(),
+                include_legacy_unowned=True,
+            )
         await session.commit()
         return await serialize_written(session, row)
 
@@ -2595,17 +2724,34 @@ async def get_proactive_state(limit: int = 10) -> dict:
     otherwise), and the last messages the bot actually sent. Read this before
     explaining why the bot did or didn't say something. READ tool — the settings are
     read-only here; retiming or muting the bot is done in Settings, by the owner."""
-    from vitals.models.proactive import Notification
-    from vitals.services.proactive import day_plan, prefs
+    from vitals.services.proactive import channels, day_plan, delivery, prefs
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        stmt = select(Notification).order_by(Notification.sent_at.desc()).limit(limit)
-        sent = (await session.execute(stmt)).scalars().all()
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session,
+            actor_username=get_web_config().auth_username,
+        )
+        sent = list(
+            reversed(
+                await delivery.recent_sent(
+                    session,
+                    limit=limit,
+                    ownership=ownership,
+                )
+            )
+        )
+        enabled_modules = await modules_service.get_enabled_modules(
+            session,
+            subject_id=ownership.subject_id,
+        )
         return {
-            "enabled": await prefs.bot_enabled(session),
+            "enabled": bool(enabled_modules.get("signals")),
             "prefs": await prefs.get_prefs(session),
-            "week_template": await day_plan.get_week_template(session),
+            "week_template": await day_plan.get_week_template(
+                session,
+                subject_id=ownership.subject_id,
+            ),
             "recent_notifications": [serialize_row(n) for n in sent],
         }
 
@@ -2630,15 +2776,31 @@ async def set_week_template(template: dict) -> dict:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        # Merged onto the stored template, per day: the sanitizer fills an absent
-        # weekday (and an absent key within one) from the neutral default, so a call
-        # naming only Tuesday would otherwise reset the other six.
-        merged = await day_plan.get_week_template(session)
+        ownership = await _mcp_v1_legacy_owner(session)
+        questions = {question.key: question for question in day_plan.TEMPLATE_QUESTIONS}
         for day, values in template.items():
             if not isinstance(values, dict):
                 return {"error": f"{day} must be a dict of answers, got {values!r}"}
-            merged[day] = {**merged[day], **values}
-        clean = await day_plan.set_week_template(session, merged)
+            unknown_answers = sorted(set(values) - set(questions))
+            if unknown_answers:
+                return {
+                    "error": f"{day} has unknown answer key(s) {unknown_answers}"
+                }
+            for key, value in values.items():
+                question = questions[key]
+                if isinstance(question.default, bool):
+                    if type(value) is not bool:
+                        return {"error": f"{day}.{key} must be true or false"}
+                elif value not in question.labels:
+                    legal_values = "/".join(question.labels)
+                    return {
+                        "error": f"{day}.{key} must be one of {legal_values}"
+                    }
+        clean = await day_plan.update_week_template(
+            session,
+            template,
+            subject_id=ownership.subject_id,
+        )
         await session.commit()
         return clean
 
@@ -2688,7 +2850,10 @@ async def sync_garmin(days: int = 2) -> dict:
         return spent
 
     summary = await garmin_service.sync_job(
-        get_session_factory(), get_redis_client(), days=max(1, min(int(days), 30))
+        get_session_factory(),
+        get_redis_client(),
+        days=max(1, min(int(days), 30)),
+        actor_username=get_web_config().auth_username,
     )
     if summary is None:
         return {"error": "Garmin is not configured — no credentials in settings"}
@@ -2709,7 +2874,11 @@ async def sync_hevy() -> dict:
         return spent
 
     try:
-        summary = await hevy_service.sync_job(get_session_factory(), get_redis_client())
+        summary = await hevy_service.sync_job(
+            get_session_factory(),
+            get_redis_client(),
+            actor_username=get_web_config().auth_username,
+        )
     except (HevyNotConfigured, HevyAPIError) as e:
         return {"error": f"Hevy sync failed: {e}"}
     if summary is None:
@@ -2793,7 +2962,11 @@ class ModuleVisibilityMiddleware(Middleware):
         try:
             session_factory = get_session_factory()
             async with session_factory() as session:
-                enabled = await modules_service.get_enabled_modules(session)
+                ownership = await _mcp_v1_legacy_owner(session)
+                enabled = await modules_service.get_enabled_modules(
+                    session,
+                    subject_id=ownership.subject_id,
+                )
         except Exception:
             logger.warning("mcp: module state unavailable; listing every tool", exc_info=True)
             return tools
