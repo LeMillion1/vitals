@@ -36,11 +36,23 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import (
+    IntegrationConnectionOwnershipMixin,
+    OriginActorMixin,
+    SubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.WORKOUTS.value
 
 
-class HevyWorkout(Base, InsightsMixin, TimestampMixin):
+class HevyWorkout(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    IntegrationConnectionOwnershipMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """A single training session pulled from Hevy."""
 
     __tablename__ = "hevy_workouts"
@@ -48,6 +60,19 @@ class HevyWorkout(Base, InsightsMixin, TimestampMixin):
         insights_index(__tablename__),
         # The Hevy workout id is globally unique and is our upsert key on re-sync.
         UniqueConstraint("external_id", name="uq_hevy_workouts_external_id"),
+        UniqueConstraint("id", "subject_id", name="uq_hevy_workouts_id_subject"),
+        Index("ix_hevy_workouts_subject_date", "subject_id", "date"),
+        Index(
+            "ix_hevy_workouts_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
+        Index(
+            "ix_hevy_workouts_connection_external",
+            "integration_connection_id",
+            "external_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -76,13 +101,19 @@ class HevyWorkout(Base, InsightsMixin, TimestampMixin):
     )
 
 
-class HevyExercise(Base, TimestampMixin):
+class HevyExercise(
+    Base,
+    SubjectOwnershipMixin,
+    IntegrationConnectionOwnershipMixin,
+    TimestampMixin,
+):
     """One exercise within a workout."""
 
     __tablename__ = "hevy_exercises"
     __table_args__ = (
         Index("ix_hevy_exercises_template", "exercise_template_id"),
         Index("ix_hevy_exercises_workout", "workout_id"),
+        UniqueConstraint("id", "subject_id", name="uq_hevy_exercises_id_subject"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -105,7 +136,12 @@ class HevyExercise(Base, TimestampMixin):
     )
 
 
-class HevySet(Base, TimestampMixin):
+class HevySet(
+    Base,
+    SubjectOwnershipMixin,
+    IntegrationConnectionOwnershipMixin,
+    TimestampMixin,
+):
     """A single set: weight / reps / RPE (plus distance/duration for cardio)."""
 
     __tablename__ = "hevy_sets"

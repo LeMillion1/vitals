@@ -170,7 +170,18 @@ def _assert_migration_matches_models(connection: Any) -> None:
     inspector = inspect(connection)
     assert FOUNDATION_TABLES <= set(inspector.get_table_names())
     for model in FOUNDATION_MODELS:
-        assert _migrated_schema(inspector, model.__tablename__) == _model_schema(model)
+        expected = _model_schema(model)
+        # Current models include the redundant (id, subject_id) referenced keys
+        # added by 0037 for future subject-equality FKs. Keep this frozen 0036
+        # test honest without rewriting an already published migration.
+        expected["uniques"].pop(
+            {
+                IntegrationConnection: "uq_integration_connections_id_subject",
+                FileAsset: "uq_file_assets_id_subject",
+            }.get(model),
+            None,
+        )
+        assert _migrated_schema(inspector, model.__tablename__) == expected
 
 
 def test_0036_upgrades_from_empty_0035_and_downgrades_cleanly(monkeypatch):

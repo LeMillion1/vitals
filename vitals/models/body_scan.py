@@ -33,17 +33,30 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import (
+    FileAssetOwnershipMixin,
+    OriginActorMixin,
+    SubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.BODY_COMPOSITION.value
 
 
-class BodyScan(Base, InsightsMixin, TimestampMixin):
+class BodyScan(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    FileAssetOwnershipMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """One body-composition measurement (an InBody / МедАсс sheet)."""
 
     __tablename__ = "body_scans"
@@ -52,6 +65,11 @@ class BodyScan(Base, InsightsMixin, TimestampMixin):
         # constraint on purpose: two scans on the same day are possible (e.g. a
         # gym scale plus a clinic device).
         insights_index(__tablename__),
+        Index("ix_body_scans_subject_date", "subject_id", "date"),
+        Index(
+            "ix_body_scans_subject_domain_date", "subject_id", "domain", "date"
+        ),
+        UniqueConstraint("id", "subject_id", name="uq_body_scans_id_subject"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -74,7 +92,7 @@ class BodyScan(Base, InsightsMixin, TimestampMixin):
     )
 
 
-class BodyScanMetric(Base, TimestampMixin):
+class BodyScanMetric(Base, SubjectOwnershipMixin, TimestampMixin):
     """A single parameter from a scan — generic key/value so any device fits."""
 
     __tablename__ = "body_scan_metrics"

@@ -16,20 +16,33 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String, func
+from sqlalchemy import JSON, DateTime, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.models.base import Base
+from vitals.models.ownership_mixins import (
+    FileAssetOwnershipMixin,
+    IntegrationConnectionOwnershipMixin,
+    OriginActorMixin,
+    SubjectOwnershipMixin,
+)
 
 # JSONB on Postgres, JSON on SQLite (fast tests). The GIN index below is a no-op
 # on SQLite (the dialect kwarg is ignored), so create_all still succeeds there.
 _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 
 
-class RawPayload(Base):
+class RawPayload(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    IntegrationConnectionOwnershipMixin,
+    FileAssetOwnershipMixin,
+):
     __tablename__ = "raw_payloads"
     __table_args__ = (
+        UniqueConstraint("id", "subject_id", name="uq_raw_payloads_id_subject"),
         # Containment / key-existence queries over arbitrary upstream shapes
         # (``payload @> '{...}'``) — Postgres GIN. Built here so both create_all
         # (tests) and the Alembic migration agree on the schema.
@@ -37,6 +50,32 @@ class RawPayload(Base):
         # The natural lookup key when reconciling a fetch against what we already
         # stored for a source.
         Index("ix_raw_payloads_domain_source_external", "domain", "source", "external_id"),
+        Index(
+            "ix_raw_payloads_subject_domain_processed",
+            "subject_id",
+            "domain",
+            "processed_at",
+        ),
+        Index(
+            "ix_raw_payloads_connection_domain_processed",
+            "integration_connection_id",
+            "domain",
+            "processed_at",
+        ),
+        Index(
+            "ix_raw_payloads_subject_domain_source_external",
+            "subject_id",
+            "domain",
+            "source",
+            "external_id",
+        ),
+        Index(
+            "ix_raw_payloads_connection_domain_source_external",
+            "integration_connection_id",
+            "domain",
+            "source",
+            "external_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

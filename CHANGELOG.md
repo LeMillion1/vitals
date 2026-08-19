@@ -44,6 +44,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   prevents the new durable password hash or access metadata from entering a user
   backup and prevents a legacy or forged import from replacing its authorizing
   owner, planting privileges, erasing audit history, or reviving a shared link.
+- Added the reversible PR-03 ownership expansion: subject-bound integration and
+  private-file roots, scoped setting stores, nullable subject/actor/connection/
+  file references on every classified health-data table and directly queried
+  child, and supporting subject-aware indexes. Legacy readers, paths, global
+  uniqueness, and registration behavior remain unchanged until dual-write,
+  backfill, and scoped-key validation are complete.
+- Backup v1 never transports tenant UUIDs or private resource locators. It binds
+  required rows to the sole authoritative local health subject and uses only a
+  boolean marker to preserve global-versus-subject semantics for mixed catalogs
+  and optional alerts. Forged ownership fields are ignored, malformed markers
+  fail before mutation, and a multi-subject database cannot use the legacy
+  whole-database format.
 
 ### Fixed — AI period-report context
 

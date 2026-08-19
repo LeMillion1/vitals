@@ -192,6 +192,22 @@ The canonical table-by-table contract is
 the missing ownership roots, natural keys, cross-surface dependencies, backfill
 order, and rollback boundary.
 
+Implementation progress on `commercial/pr-03-subject-ownership`:
+
+- Stage 0 is complete in revisions `0036`: the exhaustive registry, subject-bound
+  integration/file roots, scoped setting stores, and idempotent legacy resource
+  bootstrap are in place without reading credentials or file bytes.
+- Stage 1 is complete in revisions `0037` and `0038`: all 36 top-level and six
+  inherited child tables have their nullable ownership references, supporting
+  indexes, and future parent subject keys. Existing global uniqueness and parent
+  foreign keys remain intact.
+- Generic MCP/LLM output and backup v1 suppress tenant/resource identifiers.
+  Backup v1 safely rebinds to the sole local subject and fails closed if more
+  than one subject exists; a subject-selected multi-user format remains a later
+  portability cutover.
+- Stage 2 dual-write, bounded backfill, validation, scoped-key cutover, and
+  scoped-read/RLS cutover remain pending. Registration is still disabled.
+
 Scope:
 
 - add nullable `subject_id` (and connector/actor fields where required) to every

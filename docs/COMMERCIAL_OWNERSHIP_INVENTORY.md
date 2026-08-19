@@ -15,7 +15,10 @@ must change together.
 
 The inventory contains all 55 tables now registered in `Base.metadata`.
 Revision `0036` adds the six Stage-0 roots/scoped-setting tables without moving
-data, reading credentials, or touching file bytes.
+data, reading credentials, or touching file bytes. Revisions `0037` and `0038`
+implement the Stage-1 nullable expansion for all 36 top-level and six inherited
+child tables. They deliberately do not backfill rows, remove legacy uniqueness,
+change readers, or enable a second writable subject.
 
 ## Legend and common rules
 

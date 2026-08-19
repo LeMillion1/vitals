@@ -43,6 +43,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import (
+    IntegrationConnectionOwnershipMixin,
+    OriginActorMixin,
+    SubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.SIGNALS.value
 
@@ -50,7 +55,14 @@ DOMAIN = Domain.SIGNALS.value
 _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 
 
-class Signal(Base, InsightsMixin, TimestampMixin):
+class Signal(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    IntegrationConnectionOwnershipMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     __tablename__ = "signals"
     __table_args__ = (
         insights_index(__tablename__),
@@ -58,6 +70,20 @@ class Signal(Base, InsightsMixin, TimestampMixin):
         Index("ix_signals_batch", "batch_id"),
         # The key-frequency screen and per-key chart series.
         Index("ix_signals_key_date", "key", "date"),
+        Index("ix_signals_subject_date", "subject_id", "date"),
+        Index(
+            "ix_signals_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
+        Index("ix_signals_subject_batch", "subject_id", "batch_id"),
+        Index("ix_signals_subject_key_date", "subject_id", "key", "date"),
+        Index(
+            "ix_signals_connection_batch",
+            "integration_connection_id",
+            "batch_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -87,7 +113,14 @@ class Signal(Base, InsightsMixin, TimestampMixin):
     )
 
 
-class DayContext(Base, InsightsMixin, TimestampMixin):
+class DayContext(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    IntegrationConnectionOwnershipMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """What kind of day this is — remote/office, gym or not, workload.
 
     Overwritten, not versioned: the latest answer wins. ``planned`` keeps what the
@@ -99,6 +132,13 @@ class DayContext(Base, InsightsMixin, TimestampMixin):
     __table_args__ = (
         insights_index(__tablename__),
         UniqueConstraint("date", name="uq_day_context_per_date"),
+        Index("ix_day_context_subject_date", "subject_id", "date"),
+        Index(
+            "ix_day_context_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

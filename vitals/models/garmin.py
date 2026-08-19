@@ -24,6 +24,7 @@ retryable and corrections safe.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date as date_type
 from datetime import datetime
 from typing import Any, Optional
@@ -42,6 +43,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -50,6 +52,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import (
+    IntegrationConnectionOwnershipMixin,
+    OriginActorMixin,
+    SubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.GARMIN.value
 
@@ -104,7 +111,14 @@ WEIGHT_EXPORT_DELETE_FAILED = "delete_failed"
 WEIGHT_EXPORT_DELETED = "deleted"
 
 
-class GarminDaily(Base, InsightsMixin, TimestampMixin):
+class GarminDaily(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    IntegrationConnectionOwnershipMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """The day's Garmin recovery + activity snapshot (one row per date)."""
 
     __tablename__ = "garmin_daily"
@@ -112,6 +126,18 @@ class GarminDaily(Base, InsightsMixin, TimestampMixin):
         insights_index(__tablename__),
         # One daily row per date; a re-sync (or the HAE backup) upserts it.
         UniqueConstraint("date", name="uq_garmin_daily_date"),
+        Index("ix_garmin_daily_subject_date", "subject_id", "date"),
+        Index(
+            "ix_garmin_daily_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
+        Index(
+            "ix_garmin_daily_connection_date",
+            "integration_connection_id",
+            "date",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -180,13 +206,32 @@ class GarminDaily(Base, InsightsMixin, TimestampMixin):
     load_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
 
-class GarminActivity(Base, InsightsMixin, TimestampMixin):
+class GarminActivity(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    IntegrationConnectionOwnershipMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """A recorded sport activity (run, ride, strength, …)."""
 
     __tablename__ = "garmin_activities"
     __table_args__ = (
         insights_index(__tablename__),
         UniqueConstraint("external_id", name="uq_garmin_activities_external_id"),
+        Index("ix_garmin_activities_subject_date", "subject_id", "date"),
+        Index(
+            "ix_garmin_activities_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
+        Index(
+            "ix_garmin_activities_connection_external",
+            "integration_connection_id",
+            "external_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -217,7 +262,13 @@ class GarminActivity(Base, InsightsMixin, TimestampMixin):
     splits: Mapped[Optional[Any]] = mapped_column(_JSON_TYPE, nullable=True)
 
 
-class GarminIntraday(Base, InsightsMixin, TimestampMixin):
+class GarminIntraday(
+    Base,
+    SubjectOwnershipMixin,
+    IntegrationConnectionOwnershipMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """One within-day sample of one series.
 
     ``garmin_daily`` keeps the day's *summary* of stress, Body Battery and sleep
@@ -246,6 +297,25 @@ class GarminIntraday(Base, InsightsMixin, TimestampMixin):
         # "Everything recorded on this day, in order" — the day-detail read path,
         # and the (date, series_type) prefix the re-import delete scans.
         Index("ix_garmin_intraday_date_ts", "date", "ts"),
+        Index("ix_garmin_intraday_subject_date", "subject_id", "date"),
+        Index(
+            "ix_garmin_intraday_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
+        Index(
+            "ix_garmin_intraday_connection_series_date",
+            "integration_connection_id",
+            "series_type",
+            "date",
+        ),
+        Index(
+            "ix_garmin_intraday_connection_date_ts",
+            "integration_connection_id",
+            "date",
+            "ts",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -259,7 +329,12 @@ class GarminIntraday(Base, InsightsMixin, TimestampMixin):
     value: Mapped[float] = mapped_column(Float, nullable=False)
 
 
-class GarminWeightExport(Base, TimestampMixin):
+class GarminWeightExport(
+    Base,
+    SubjectOwnershipMixin,
+    IntegrationConnectionOwnershipMixin,
+    TimestampMixin,
+):
     """Transactional outbox for local weight writes to Garmin Connect.
 
     There is one row per date rather than per ``WeightLog`` revision.  When the
@@ -274,12 +349,30 @@ class GarminWeightExport(Base, TimestampMixin):
             "weight_kg > 0", name="ck_garmin_weight_exports_weight_positive"
         ),
         Index("ix_garmin_weight_exports_status_next", "status", "next_attempt_at"),
+        Index("ix_garmin_weight_exports_subject_date", "subject_id", "date"),
+        Index(
+            "ix_garmin_weight_exports_connection_date",
+            "integration_connection_id",
+            "date",
+        ),
+        Index(
+            "ix_garmin_weight_exports_connection_status_next",
+            "integration_connection_id",
+            "status",
+            "next_attempt_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     date: Mapped[date_type] = mapped_column(Date, nullable=False)
     weight_log_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("weight_logs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    requested_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
     )
     weight_kg: Mapped[float] = mapped_column(Float, nullable=False)
     # Local naive wall-clock time; Garmin's client converts it with Config.timezone.

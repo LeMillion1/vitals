@@ -13,16 +13,17 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import Index, String, Text, text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
+from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
 
 DOMAIN = Domain.GENETICS.value
 
 
-class GeneticVariant(Base, TimestampMixin):
+class GeneticVariant(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     # No ``InsightsMixin`` on purpose: a variant is a lifelong fact, not something
     # that happened on a date — there is nothing to put in ``date``, and a fake one
     # would pollute every ``(domain, date)`` timeline query. That is why genetics is
@@ -31,6 +32,8 @@ class GeneticVariant(Base, TimestampMixin):
     __tablename__ = "genetic_variants"
     __table_args__ = (
         Index("ix_genetic_variants_marker", "marker"),
+        Index("ix_genetic_variants_subject_rsid", "subject_id", "rsid"),
+        Index("ix_genetic_variants_subject_marker", "subject_id", "marker"),
         # An rsID is a globally-unique dbSNP identifier — at most one row per rsid,
         # so a re-import or manual re-add refreshes in place instead of silently
         # duplicating (enforced; upsert_by_rsid relies on it). Partial so manual
@@ -48,6 +51,14 @@ class GeneticVariant(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     domain: Mapped[str] = mapped_column(String(32), nullable=False, server_default=DOMAIN)
     source: Mapped[str] = mapped_column(String(32), nullable=False, server_default="manual")
+    # VCF imports persist raw-first. The legacy importer did not link the two;
+    # dual-write/backfill fills this nullable provenance reference later.
+    raw_payload_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("raw_payloads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     gene: Mapped[str] = mapped_column(String(64), nullable=False)
     rsid: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)

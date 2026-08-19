@@ -25,18 +25,32 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
 
 DOMAIN = Domain.LABS.value
 
 
-class LabResult(Base, InsightsMixin, TimestampMixin):
+class LabResult(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """A single measured marker value on a date."""
 
     __tablename__ = "lab_results"
     __table_args__ = (
         insights_index(__tablename__),
+        Index("ix_lab_results_subject_date", "subject_id", "date"),
+        Index(
+            "ix_lab_results_subject_domain_date", "subject_id", "domain", "date"
+        ),
         # Per-marker history scans (charts) hit this constantly.
         Index("ix_lab_results_marker_date", "marker", "date"),
+        Index(
+            "ix_lab_results_subject_marker_date", "subject_id", "marker", "date"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -56,12 +70,15 @@ class LabResult(Base, InsightsMixin, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class LabMarker(Base, TimestampMixin):
+class LabMarker(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """Per-marker reference/config (catalog). No per-day date → no InsightsMixin,
     just ``domain``/``source`` for uniform export (like the supplements catalog)."""
 
     __tablename__ = "lab_markers"
-    __table_args__ = (Index("ix_lab_markers_name", "name", unique=True),)
+    __table_args__ = (
+        Index("ix_lab_markers_name", "name", unique=True),
+        Index("ix_lab_markers_subject_name", "subject_id", "name"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     domain: Mapped[str] = mapped_column(String(32), nullable=False, server_default=DOMAIN)

@@ -21,17 +21,26 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import DigestKind, Domain, MilestoneStatus
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import (
+    IntegrationConnectionOwnershipMixin,
+    OriginActorMixin,
+    SubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.MILESTONES.value
 
 _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 
 
-class Milestone(Base, TimestampMixin):
+class Milestone(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """A goal card: name, related domain, optional numeric target + deadline."""
 
     __tablename__ = "milestones"
-    __table_args__ = (Index("ix_milestones_status", "status"),)
+    __table_args__ = (
+        Index("ix_milestones_status", "status"),
+        Index("ix_milestones_subject_status", "subject_id", "status"),
+        Index("ix_milestones_subject_deadline", "subject_id", "deadline"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # The health area this goal relates to (weight / glp1 / labs / ...).
@@ -46,7 +55,14 @@ class Milestone(Base, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class WeeklyDigest(Base, InsightsMixin, TimestampMixin):
+class WeeklyDigest(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    IntegrationConnectionOwnershipMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """A generated cross-domain narrative + the context it was built from.
 
     ``kind`` (weekly | daily_brief | evening) is what lets the daily brief reuse
@@ -56,7 +72,19 @@ class WeeklyDigest(Base, InsightsMixin, TimestampMixin):
     """
 
     __tablename__ = "weekly_digests"
-    __table_args__ = (insights_index(__tablename__),)
+    __table_args__ = (
+        insights_index(__tablename__),
+        Index("ix_weekly_digests_subject_date", "subject_id", "date"),
+        Index(
+            "ix_weekly_digests_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
+        Index(
+            "ix_weekly_digests_subject_kind_date", "subject_id", "kind", "date"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kind: Mapped[str] = mapped_column(

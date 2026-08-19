@@ -32,14 +32,35 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import Domain, NoiseDirection
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import (
+    FileAssetOwnershipMixin,
+    IntegrationConnectionOwnershipMixin,
+    OriginActorMixin,
+    SubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.WEIGHT.value
 
 
-class WeightLog(Base, InsightsMixin, TimestampMixin):
+class WeightLog(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    IntegrationConnectionOwnershipMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     __tablename__ = "weight_logs"
     __table_args__ = (
         insights_index(__tablename__),
+        Index("ix_weight_logs_subject_date", "subject_id", "date"),
+        Index(
+            "ix_weight_logs_subject_domain_date", "subject_id", "domain", "date"
+        ),
+        Index(
+            "ix_weight_logs_connection_date", "integration_connection_id", "date"
+        ),
+        UniqueConstraint("id", "subject_id", name="uq_weight_logs_id_subject"),
         # At most one *active* weight per date. The service supersedes the
         # previous active row (e.g. a Garmin import) before inserting a manual
         # one, so this invariant encodes "manual beats Garmin for the day".
@@ -68,10 +89,23 @@ class WeightLog(Base, InsightsMixin, TimestampMixin):
     )
 
 
-class BodyMeasurement(Base, InsightsMixin, TimestampMixin):
+class BodyMeasurement(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     __tablename__ = "body_measurements"
     __table_args__ = (
         insights_index(__tablename__),
+        Index("ix_body_measurements_subject_date", "subject_id", "date"),
+        Index(
+            "ix_body_measurements_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
         # One measurement set per day (the service upserts).
         UniqueConstraint("date", name="uq_body_measurement_per_date"),
     )
@@ -90,9 +124,25 @@ class BodyMeasurement(Base, InsightsMixin, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class ProgressPhoto(Base, InsightsMixin, TimestampMixin):
+class ProgressPhoto(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    FileAssetOwnershipMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     __tablename__ = "progress_photos"
-    __table_args__ = (insights_index(__tablename__),)
+    __table_args__ = (
+        insights_index(__tablename__),
+        Index("ix_progress_photos_subject_date", "subject_id", "date"),
+        Index(
+            "ix_progress_photos_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # Storage key / path of the image. Files live outside the DB (gitignored
@@ -101,7 +151,7 @@ class ProgressPhoto(Base, InsightsMixin, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class NoiseMarker(Base, TimestampMixin):
+class NoiseMarker(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """A date range to **exclude** from trend & regression (creatine loading,
     sodium spike, training start → water-weight noise). Not a point metric, so it
     carries ``start_date``/``end_date`` instead of ``InsightsMixin.date`` — but it
@@ -111,6 +161,13 @@ class NoiseMarker(Base, TimestampMixin):
     __tablename__ = "noise_markers"
     __table_args__ = (
         Index("ix_noise_markers_domain_range", "domain", "start_date", "end_date"),
+        Index(
+            "ix_noise_markers_subject_domain_range",
+            "subject_id",
+            "domain",
+            "start_date",
+            "end_date",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

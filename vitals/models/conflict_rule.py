@@ -21,11 +21,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.models.base import Base, TimestampMixin
+from vitals.models.ownership_mixins import SubjectOwnershipMixin
 
 _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 
 
-class ConflictRule(Base, TimestampMixin):
+class ConflictRule(Base, SubjectOwnershipMixin, TimestampMixin):
     __tablename__ = "conflict_rules"
     __table_args__ = (Index("ix_conflict_rules_code", "code", unique=True),)
 

@@ -78,6 +78,9 @@ class IntegrationConnection(Base):
             "external_account_discriminator",
             name="uq_integration_connections_subject_provider_type_discriminator",
         ),
+        UniqueConstraint(
+            "id", "subject_id", name="uq_integration_connections_id_subject"
+        ),
         CheckConstraint(
             f"provider IN ({_values(IntegrationProvider)})",
             name="ck_integration_connections_provider",
@@ -152,6 +155,7 @@ class FileAsset(Base):
     __tablename__ = "file_assets"
     __table_args__ = (
         UniqueConstraint("opaque_key", name="uq_file_assets_opaque_key"),
+        UniqueConstraint("id", "subject_id", name="uq_file_assets_id_subject"),
         UniqueConstraint(
             "storage_backend",
             "storage_ref",

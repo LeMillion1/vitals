@@ -9,22 +9,33 @@ from __future__ import annotations
 from datetime import time as time_type
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, Float, String, Text, Time
+from sqlalchemy import CheckConstraint, Float, Index, String, Text, Time
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
 
 DOMAIN = Domain.NUTRITION.value
 
 
-class MealLog(Base, InsightsMixin, TimestampMixin):
+class MealLog(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """A single meal / snack entry."""
 
     __tablename__ = "meal_logs"
     __table_args__ = (
         insights_index(__tablename__),
+        Index("ix_meal_logs_subject_date", "subject_id", "date"),
+        Index(
+            "ix_meal_logs_subject_domain_date", "subject_id", "domain", "date"
+        ),
         CheckConstraint(
             "calories IS NULL OR calories >= 0",
             name="ck_meal_logs_calories_nonneg",

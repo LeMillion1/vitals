@@ -19,15 +19,29 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import AnnotationKind, Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
 
 DOMAIN = Domain.TIMELINE.value
 
 
-class Annotation(Base, InsightsMixin, TimestampMixin):
+class Annotation(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     __tablename__ = "annotations"
     __table_args__ = (
         insights_index(__tablename__),
         Index("ix_annotations_date_range", "date", "end_date"),
+        Index("ix_annotations_subject_date", "subject_id", "date"),
+        Index(
+            "ix_annotations_subject_domain_date", "subject_id", "domain", "date"
+        ),
+        Index(
+            "ix_annotations_subject_date_range", "subject_id", "date", "end_date"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

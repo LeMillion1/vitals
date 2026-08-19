@@ -12,22 +12,38 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from sqlalchemy import Boolean, Integer, JSON, String, Text, text
+from sqlalchemy import Boolean, Index, Integer, JSON, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
 
 DOMAIN = Domain.SKINCARE.value
 
 
-class SkincareLog(Base, InsightsMixin, TimestampMixin):
+class SkincareLog(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """Evening routine checklist for a date (one per day — the service upserts)."""
 
     __tablename__ = "skincare_logs"
-    __table_args__ = (insights_index(__tablename__),)
+    __table_args__ = (
+        insights_index(__tablename__),
+        Index("ix_skincare_logs_subject_date", "subject_id", "date"),
+        Index(
+            "ix_skincare_logs_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     retinoid: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
@@ -48,11 +64,26 @@ class SkincareLog(Base, InsightsMixin, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class SkincareObservation(Base, InsightsMixin, TimestampMixin):
+class SkincareObservation(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """Graded skin-state observation for a date."""
 
     __tablename__ = "skincare_observations"
-    __table_args__ = (insights_index(__tablename__),)
+    __table_args__ = (
+        insights_index(__tablename__),
+        Index("ix_skincare_observations_subject_date", "subject_id", "date"),
+        Index(
+            "ix_skincare_observations_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     inflammation: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 1-5
@@ -61,10 +92,15 @@ class SkincareObservation(Base, InsightsMixin, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class SkincareProduct(Base, TimestampMixin):
+class SkincareProduct(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """Reference catalog of active skincare products and their schedules."""
 
     __tablename__ = "skincare_products"
+    __table_args__ = (
+        Index("ix_skincare_products_subject_name", "subject_id", "name"),
+        Index("ix_skincare_products_subject_type", "subject_id", "type"),
+        Index("ix_skincare_products_subject_active", "subject_id", "active"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -79,4 +115,3 @@ class SkincareProduct(Base, TimestampMixin):
         JSONB().with_variant(JSON(), "sqlite"), nullable=False, server_default=text("'[]'")
     )  # array of integers e.g. [1, 2, 3] (Monday=1, Sunday=0)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
-

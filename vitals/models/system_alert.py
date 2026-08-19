@@ -14,16 +14,21 @@ it stays active; once ``resolved_at`` is set the slot frees for a fresh raise.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Index, String, Text, func, text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, Uuid, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.models.base import Base
+from vitals.models.ownership_mixins import (
+    IntegrationConnectionOwnershipMixin,
+    SubjectOwnershipMixin,
+)
 
 
-class SystemAlert(Base):
+class SystemAlert(Base, SubjectOwnershipMixin, IntegrationConnectionOwnershipMixin):
     __tablename__ = "system_alerts"
     __table_args__ = (
         # At most one active (unresolved) alert per (key, entity). Mirrors Boxly's
@@ -39,6 +44,18 @@ class SystemAlert(Base):
         ),
         # Dashboard query: list active alerts, newest first, filterable by domain.
         Index("ix_system_alerts_domain_resolved", "domain", "resolved_at"),
+        Index(
+            "ix_system_alerts_subject_domain_resolved",
+            "subject_id",
+            "domain",
+            "resolved_at",
+        ),
+        Index(
+            "ix_system_alerts_connection_domain_resolved",
+            "integration_connection_id",
+            "domain",
+            "resolved_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -61,5 +78,17 @@ class SystemAlert(Base):
     # Set when a `block` alert was overridden by the user (the product always
     # leaves the final choice to the user). Distinct from resolved_at.
     override_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    overridden_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     # Set when the alert is no longer active (condition cleared or acknowledged).
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    resolved_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )

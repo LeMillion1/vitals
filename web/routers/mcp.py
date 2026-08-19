@@ -66,6 +66,7 @@ from vitals.models import (
 )
 from vitals.services import conflict_engine, modules_service
 from vitals.services.conflict_engine import ConflictBlocked
+from vitals.services.data_portability_service import GENERIC_OUTPUT_SUPPRESSED_COLUMNS
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis_client, get_session_factory
 
@@ -79,7 +80,19 @@ mcp = FastMCP("Vitals")
 # at a hundred rows per read the key names alone outweigh the data. ``id`` and
 # ``date`` stay (edits and deletes address rows by id); ``source`` stays (weight
 # priority and provenance are answers in their own right).
-_ROW_NOISE = frozenset({"domain", "created_at", "updated_at", "raw_payload_id"})
+_ROW_NOISE = (
+    frozenset(
+        {
+            "domain",
+            "created_at",
+            "updated_at",
+            "raw_payload_id",
+            "raw_id",
+            "weight_log_id",
+        }
+    )
+    | GENERIC_OUTPUT_SUPPRESSED_COLUMNS
+)
 
 
 def serialize_row(row) -> dict:

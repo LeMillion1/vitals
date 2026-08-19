@@ -12,24 +12,52 @@ not an observation of the body.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date as date_type, datetime
 from typing import Any, Optional
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    Uuid,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.models.base import Base, TimestampMixin
+from vitals.models.ownership_mixins import SubjectOwnershipMixin
 
 _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 
 
-class SharedReport(Base, TimestampMixin):
+class SharedReport(Base, SubjectOwnershipMixin, TimestampMixin):
     """One password-protected document published at ``/r/<token>``."""
 
     __tablename__ = "shared_reports"
+    __table_args__ = (
+        Index("ix_shared_reports_subject_created", "subject_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    created_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    revoked_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     # secrets.token_urlsafe(32) — the whole address space of the public route.
     token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     # bcrypt. The plaintext is returned by create_report exactly once and is

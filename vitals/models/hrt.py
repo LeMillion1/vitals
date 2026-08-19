@@ -34,6 +34,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy import JSON
@@ -43,13 +44,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
 
 DOMAIN = Domain.HRT.value
 
 _JSON_TYPE = JSON().with_variant(JSONB(), "postgresql")
 
 
-class HrtCompound(Base, TimestampMixin):
+class HrtCompound(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """A molecule in the reference catalog (testosterone ester, oral AAS, AI,
     SERM, GH/IGF/peptide, ...). Brand-agnostic — describes the substance, not a
     product. ``key`` is the stable slug the catalog upserts on and that a dose
@@ -60,6 +62,9 @@ class HrtCompound(Base, TimestampMixin):
         Index("ix_hrt_compounds_key", "key", unique=True),
         Index("ix_hrt_compounds_active", "active"),
         Index("ix_hrt_compounds_class", "compound_class"),
+        Index("ix_hrt_compounds_subject_key", "subject_id", "key"),
+        Index("ix_hrt_compounds_subject_active", "subject_id", "active"),
+        UniqueConstraint("id", "subject_id", name="uq_hrt_compounds_id_subject"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -99,7 +104,7 @@ class HrtCompound(Base, TimestampMixin):
     )
 
 
-class HrtCompoundComponent(Base, TimestampMixin):
+class HrtCompoundComponent(Base, SubjectOwnershipMixin, TimestampMixin):
     """One ester of a multi-ester blend, with its mg per ml. Empty for
     single-ester/oral compounds; populated for Sustanon-style blends so the
     active-release curve sums each ester's own half-life."""
@@ -119,7 +124,13 @@ class HrtCompoundComponent(Base, TimestampMixin):
     compound: Mapped["HrtCompound"] = relationship(back_populates="components")
 
 
-class HrtDose(Base, InsightsMixin, TimestampMixin):
+class HrtDose(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """A single administration (injection / tablet / application). ``dose`` is in
     ``unit`` (mg for AAS/esters, IU for GH, mcg for peptides). Injectables are
     entered as ``volume_ml`` × concentration; the service computes mg."""
@@ -127,7 +138,17 @@ class HrtDose(Base, InsightsMixin, TimestampMixin):
     __tablename__ = "hrt_doses"
     __table_args__ = (
         insights_index(__tablename__),
+        Index("ix_hrt_doses_subject_date", "subject_id", "date"),
+        Index(
+            "ix_hrt_doses_subject_domain_date", "subject_id", "domain", "date"
+        ),
         Index("ix_hrt_doses_compound_key", "compound_key"),
+        Index(
+            "ix_hrt_doses_subject_compound_date",
+            "subject_id",
+            "compound_key",
+            "date",
+        ),
         CheckConstraint("dose > 0", name="ck_hrt_doses_dose_positive"),
     )
 
@@ -156,12 +177,25 @@ class HrtDose(Base, InsightsMixin, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class HrtSideEffect(Base, InsightsMixin, TimestampMixin):
+class HrtSideEffect(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """A reported side effect on a date, graded 1-5 (mirrors GLP-1)."""
 
     __tablename__ = "hrt_side_effects"
     __table_args__ = (
         insights_index(__tablename__),
+        Index("ix_hrt_side_effects_subject_date", "subject_id", "date"),
+        Index(
+            "ix_hrt_side_effects_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
         CheckConstraint(
             "severity >= 1 AND severity <= 5",
             name="ck_hrt_side_effects_severity_range",
@@ -174,7 +208,7 @@ class HrtSideEffect(Base, InsightsMixin, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class HrtCycle(Base, TimestampMixin):
+class HrtCycle(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """A protocol spanning a date range (``end_date`` null = ongoing), like the
     GLP-1 ``DosePhase`` — carries ``domain``/``source`` for uniform export but no
     single ``InsightsMixin.date``. Owns one plan item per compound; those items'
@@ -183,6 +217,14 @@ class HrtCycle(Base, TimestampMixin):
     __tablename__ = "hrt_cycles"
     __table_args__ = (
         Index("ix_hrt_cycles_range", "domain", "start_date", "end_date"),
+        Index(
+            "ix_hrt_cycles_subject_domain_range",
+            "subject_id",
+            "domain",
+            "start_date",
+            "end_date",
+        ),
+        UniqueConstraint("id", "subject_id", name="uq_hrt_cycles_id_subject"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -203,7 +245,7 @@ class HrtCycle(Base, TimestampMixin):
     )
 
 
-class HrtCycleItem(Base, TimestampMixin):
+class HrtCycleItem(Base, SubjectOwnershipMixin, TimestampMixin):
     """One compound's plan within a cycle. ``schedule`` is an ordered JSON list of
     segments — each ``{"dose", "interval_days", "duration_days"}`` (flat) or a
     linear ramp ``{"dose_start", "dose_end", "step", "step_every_days",
@@ -237,7 +279,12 @@ class HrtCycleItem(Base, TimestampMixin):
     cycle: Mapped["HrtCycle"] = relationship(back_populates="items")
 
 
-class HrtCycleTemplate(Base, TimestampMixin):
+class HrtCycleTemplate(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    TimestampMixin,
+):
     """A reusable, **date-free** snapshot of a cycle plan — everything relative
     (per-item offsets + schedules), no ``start_date``. Materialized into a real
     ``HrtCycle`` by ``create_cycle_from_template``, and portable across
@@ -247,6 +294,12 @@ class HrtCycleTemplate(Base, TimestampMixin):
     __tablename__ = "hrt_cycle_templates"
     __table_args__ = (
         Index("ix_hrt_cycle_templates_name", "name"),
+        Index(
+            "ix_hrt_cycle_templates_subject_name", "subject_id", "name"
+        ),
+        UniqueConstraint(
+            "id", "subject_id", name="uq_hrt_cycle_templates_id_subject"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -265,7 +318,7 @@ class HrtCycleTemplate(Base, TimestampMixin):
     )
 
 
-class HrtCycleTemplateItem(Base, TimestampMixin):
+class HrtCycleTemplateItem(Base, SubjectOwnershipMixin, TimestampMixin):
     """One compound's plan inside a template — the same shape as ``HrtCycleItem``
     minus the cycle FK. ``compound_key`` only (no ``compound_id``): the slug is
     the portable reference, resolved against the local catalog on apply."""

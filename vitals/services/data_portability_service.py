@@ -3,14 +3,14 @@
 Two deliberately different shapes (they pull in opposite directions, so we don't
 try to make one file serve both):
 
-  * **Full backup** (:func:`export_full` / :func:`import_full`) — a faithful,
-    machine-round-trippable snapshot of every portable data table (including the
+  * **Full backup** (:func:`export_full` / :func:`import_full`) — a
+    machine-round-trippable snapshot of portable health data (including the
     ``raw_payloads`` JSONB data-lake and internal ``id``s). Durable identity,
-    authorization, audit, and published-link control-plane tables are deliberately
-    excluded. Import runs **replace** for portable data only, preserving primary
-    keys so foreign keys stay valid. The whole thing rides the request's single
-    transaction — any error rolls the DB back to where it started (the router owns
-    the commit; we only ``flush``).
+    authorization, audit, published-link control-plane tables, and tenant/private
+    resource references are deliberately excluded. Import runs **replace** for
+    portable data only, preserving business columns and primary keys. The whole
+    thing rides the request's single transaction — any error rolls the DB back to
+    where it started (the router owns the commit; we only ``flush``).
 
   * **LLM export** (:func:`export_llm`) — a flat, human-readable digest the owner
     pastes straight into a chat (Claude/ChatGPT). No raw dumps, no ids, no service
@@ -50,7 +50,7 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
-from sqlalchemy import Date, DateTime, Time, func, select, text
+from sqlalchemy import Date, DateTime, Time, func, inspect, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -71,7 +71,11 @@ from vitals.models.skincare import SkincareLog, SkincareObservation
 from vitals.models.supplements import Supplement
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, NoiseMarker, WeightLog
-from vitals.ownership import OWNERSHIP_REGISTRY
+from vitals.ownership import (
+    OWNERSHIP_REGISTRY,
+    OwnershipClass,
+    TargetColumn,
+)
 from vitals.i18n import t
 from vitals.services.signals_service import normalize_key
 from vitals.utils.timeutils import now_local
@@ -84,6 +88,36 @@ KIND_LLM = "llm_export"
 # An ``app_settings`` key is treated as a secret (and dropped from the backup) when
 # it contains any of these substrings — forward-looking guard for token rows.
 _SECRET_KEY_MARKERS = ("token", "secret", "password", "api_key", "apikey", "credential")
+
+# Cross-surface ownership and private-resource plumbing.  These fields are set by
+# trusted tenant/storage boundaries, not transported by v1 backups, generic MCP
+# responses, or the digest pasted into an LLM.  Keep this an explicit
+# deny-by-name policy: a suffix rule such as ``*_id`` would also erase useful
+# vendor/business identifiers (for example ``exercise_template_id``).
+GENERIC_OUTPUT_SUPPRESSED_COLUMNS = frozenset(
+    {
+        "subject_id",
+        "actor_user_id",
+        "created_by_user_id",
+        "revoked_by_user_id",
+        "overridden_by_user_id",
+        "resolved_by_user_id",
+        "recipient_user_id",
+        "requested_by_user_id",
+        "integration_connection_id",
+        "file_asset_id",
+        "uploaded_by_user_id",
+        "credential_ref",
+        "storage_ref",
+        "opaque_key",
+    }
+)
+
+# Backup v1 is intentionally single-subject and never transports a subject UUID.
+# This row-level marker preserves the distinction between a subject-bound row and
+# a legitimate global row in mixed/optional tables without making a local UUID
+# portable.  The name is reserved and accepted from imports only as a real bool.
+_SUBJECT_BOUND_MARKER = "_vitals_subject_bound"
 
 # The reviewed ownership registry is the source of truth in both directions.
 # A newly added table cannot drift into a backup merely because this service's
@@ -107,6 +141,66 @@ _LABELED_TABLES = (
 class PortabilityError(Exception):
     """Raised on a malformed/invalid backup file. The router turns it into a clean
     HTTP 400 (never a silent failure or a leaked DB error)."""
+
+
+def _contract_error(message_key: str, **params: Any) -> PortabilityError:
+    """Build a localized backup-v1 contract violation."""
+
+    return PortabilityError(t(message_key, **params))
+
+
+async def _single_local_subject_id(session: AsyncSession) -> Any | None:
+    """Return the sole local subject, or ``None`` for a legacy/pre-bootstrap DB.
+
+    Some compatibility tests and pre-identity databases do not have the identity
+    table at all, so probe the schema before selecting.  Reading at most two rows
+    is sufficient: backup v1 cannot safely represent a multi-subject database and
+    must fail before export reads or import mutation begins.
+    """
+
+    subject_table = Base.metadata.tables.get("health_subjects")
+    if subject_table is None:
+        return None
+
+    connection = await session.connection()
+    has_subject_table = await connection.run_sync(
+        lambda sync_connection: inspect(sync_connection).has_table(
+            subject_table.name
+        )
+    )
+    if not has_subject_table:
+        return None
+
+    subject_ids = tuple(
+        await session.scalars(select(subject_table.c.id).limit(2))
+    )
+    if len(subject_ids) > 1:
+        raise _contract_error("portability.error.v1_multi_subject")
+    return subject_ids[0] if subject_ids else None
+
+
+def _subject_marker(row: dict[str, Any]) -> bool:
+    """Read a marker already shape-validated by :func:`_validate_payload`."""
+
+    return row.get(_SUBJECT_BOUND_MARKER) is True
+
+
+def _subject_rebind_required(table_name: str, row: dict[str, Any]) -> bool:
+    """Whether one imported row must bind to the authoritative local subject."""
+
+    spec = OWNERSHIP_REGISTRY[table_name]
+    if spec.subject is TargetColumn.REQUIRED:
+        return True
+    if spec.ownership is OwnershipClass.SUBJECT_CHILD:
+        return True
+    if (
+        spec.subject in {TargetColumn.MIXED, TargetColumn.OPTIONAL}
+        or spec.ownership is OwnershipClass.MIXED_CATALOG_CHILD
+    ):
+        return _subject_marker(row)
+    raise _contract_error(
+        "portability.error.v1_unknown_subject_policy", table=table_name
+    )
 
 
 class BackupMetadata(BaseModel):
@@ -190,8 +284,10 @@ async def export_full(session: AsyncSession) -> dict[str, Any]:
     """Snapshot portable tables into ``{table_name: [rows]}`` plus metadata.
 
     Tables are walked in FK order (``sorted_tables``); ``app_settings`` secret-ish
-    rows are dropped. The result is a plain dict ready for ``json.dumps``.
+    rows and ownership/private-resource plumbing are dropped. The result is a
+    plain dict ready for ``json.dumps``.
     """
+    local_subject_id = await _single_local_subject_id(session)
     out: dict[str, Any] = {
         "metadata": {
             "version": BACKUP_VERSION,
@@ -205,12 +301,22 @@ async def export_full(session: AsyncSession) -> dict[str, Any]:
         if table.name in _EXCLUDED_TABLES:
             continue
         result = await session.execute(select(table))
-        column_names = list(table.columns.keys())
+        column_names = [
+            name
+            for name in table.columns.keys()
+            if name not in GENERIC_OUTPUT_SUPPRESSED_COLUMNS
+        ]
         rows: list[dict[str, Any]] = []
         for mapping in result.mappings().all():
             if table.name == "app_settings" and _is_secret_setting_key(mapping.get("key")):
                 continue
-            rows.append({col: _serialize_value(mapping[col]) for col in column_names})
+            row = {col: _serialize_value(mapping[col]) for col in column_names}
+            if "subject_id" in table.columns:
+                subject_bound = mapping["subject_id"] is not None
+                if local_subject_id is None and subject_bound:
+                    raise _contract_error("portability.error.v1_missing_subject")
+                row[_SUBJECT_BOUND_MARKER] = subject_bound
+            rows.append(row)
         out[table.name] = rows
 
     return out
@@ -242,6 +348,19 @@ def _validate_payload(payload: Any) -> BackupMetadata:
         for i, item in enumerate(value):
             if not isinstance(item, dict):
                 raise PortabilityError(t("import.error.not_object", i=i, key=key))
+            if _SUBJECT_BOUND_MARKER in item:
+                marker = item[_SUBJECT_BOUND_MARKER]
+                table = Base.metadata.tables[key]
+                if (
+                    key in _EXCLUDED_TABLES
+                    or "subject_id" not in table.columns
+                    or type(marker) is not bool
+                ):
+                    raise _contract_error(
+                        "portability.error.v1_bad_marker",
+                        i=i,
+                        table=key,
+                    )
     return meta
 
 
@@ -284,6 +403,18 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     audit trail.
     """
     _validate_payload(payload)
+    local_subject_id = await _single_local_subject_id(session)
+    if local_subject_id is None:
+        has_bound_marker = any(
+            _subject_marker(row)
+            for table_name, rows in payload.items()
+            if table_name != "metadata"
+            and table_name not in _EXCLUDED_TABLES
+            and "subject_id" in Base.metadata.tables[table_name].columns
+            for row in rows
+        )
+        if has_bound_marker:
+            raise _contract_error("portability.error.v1_missing_subject")
 
     try:
         preserved = await _secret_settings(session)
@@ -295,7 +426,9 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
             await session.execute(table.delete())
 
         counts: dict[str, int] = {}
-        # Reload in FK order, preserving ids and all columns.
+        # Reload in FK order, preserving ids and business columns. Ownership and
+        # private-resource references are assigned by a trusted tenancy-aware
+        # boundary, never accepted from a portable v1 file.
         for table in Base.metadata.sorted_tables:
             if table.name in _EXCLUDED_TABLES:
                 continue
@@ -310,9 +443,17 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                     key: _deserialize_value(columns[key].type, val)
                     for key, val in row.items()
                     if key in columns  # tolerate columns dropped in a later schema
+                    if key not in GENERIC_OUTPUT_SUPPRESSED_COLUMNS
                 }
                 for row in rows
             ]
+            if "subject_id" in columns and local_subject_id is not None:
+                for row, record in zip(rows, records, strict=True):
+                    record["subject_id"] = (
+                        local_subject_id
+                        if _subject_rebind_required(table.name, row)
+                        else None
+                    )
             await session.execute(table.insert(), records)
             counts[table.name] = len(records)
 
@@ -380,8 +521,18 @@ def _compact(row: dict[str, Any]) -> dict[str, Any]:
 
 # Plumbing an LLM has no use for: ids, FK links and row bookkeeping.
 _LLM_SKIP_COLUMNS = frozenset(
-    {"id", "raw_payload_id", "domain", "source", "external_id", "created_at", "updated_at"}
-)
+    {
+        "id",
+        "raw_payload_id",
+        "raw_id",
+        "weight_log_id",
+        "domain",
+        "source",
+        "external_id",
+        "created_at",
+        "updated_at",
+    }
+) | GENERIC_OUTPUT_SUPPRESSED_COLUMNS
 
 
 def _row_dump(obj: Any) -> dict[str, Any]:

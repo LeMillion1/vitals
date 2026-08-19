@@ -23,16 +23,30 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
+from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
 
 DOMAIN = Domain.GLP1.value
 
 
-class Injection(Base, InsightsMixin, TimestampMixin):
+class Injection(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """A single subcutaneous injection event."""
 
     __tablename__ = "glp1_injections"
     __table_args__ = (
         insights_index(__tablename__),
+        Index("ix_glp1_injections_subject_date", "subject_id", "date"),
+        Index(
+            "ix_glp1_injections_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
         CheckConstraint("dose_mg > 0", name="ck_glp1_injections_dose_positive"),
     )
 
@@ -45,7 +59,7 @@ class Injection(Base, InsightsMixin, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class DosePhase(Base, TimestampMixin):
+class DosePhase(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """A date range the user spent on a given drug/dose. Like ``NoiseMarker`` it
     spans ``start_date``/``end_date`` (open-ended when ``end_date`` is null) rather
     than the single ``InsightsMixin.date``, but keeps ``domain``/``source`` for
@@ -56,6 +70,13 @@ class DosePhase(Base, TimestampMixin):
     __tablename__ = "glp1_dose_phases"
     __table_args__ = (
         Index("ix_glp1_dose_phases_range", "domain", "start_date", "end_date"),
+        Index(
+            "ix_glp1_dose_phases_subject_domain_range",
+            "subject_id",
+            "domain",
+            "start_date",
+            "end_date",
+        ),
         CheckConstraint("dose_mg > 0", name="ck_glp1_dose_phases_dose_positive"),
     )
 
@@ -70,12 +91,25 @@ class DosePhase(Base, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class SideEffect(Base, InsightsMixin, TimestampMixin):
+class SideEffect(
+    Base,
+    SubjectOwnershipMixin,
+    OriginActorMixin,
+    InsightsMixin,
+    TimestampMixin,
+):
     """A reported side effect on a date, graded 1-5."""
 
     __tablename__ = "glp1_side_effects"
     __table_args__ = (
         insights_index(__tablename__),
+        Index("ix_glp1_side_effects_subject_date", "subject_id", "date"),
+        Index(
+            "ix_glp1_side_effects_subject_domain_date",
+            "subject_id",
+            "domain",
+            "date",
+        ),
         CheckConstraint(
             "severity >= 1 AND severity <= 5",
             name="ck_glp1_side_effects_severity_range",
