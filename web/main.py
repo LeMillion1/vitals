@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
     from vitals.config import load_config
     from vitals.scheduler.jobs import register_all_jobs
     from vitals.scheduler.scheduler import seed_heartbeats, setup_scheduler
-    from vitals.services import conflict_catalog, hrt_catalog
+    from vitals.services import conflict_catalog, conflict_engine, hrt_catalog
     from vitals.services.conflict_registrations import register_all_resolvers
     from vitals.services.proactive import prefs
 
@@ -108,9 +108,32 @@ async def lifespan(app: FastAPI):
         await conflict_catalog.sync_catalog(session)
         # Upsert the curated HRT compound catalog (vitals/data/hrt_compounds.yaml).
         await hrt_catalog.sync_catalog(session)
-        # Register the hormone/safety bloodwork panel in the Labs catalog.
-        from vitals.services import hrt_reminders
-        await hrt_reminders.seed_hormone_panel(session)
+        await session.commit()
+
+    # The panel seed adopts the pre-tenancy catalog only under the shared
+    # governance lock. Keep it in a fresh transaction so catalog row locks are
+    # never acquired before governance/subject locks.
+    from vitals.services import hrt_reminders
+    from vitals.utils.timeutils import today_local
+
+    async with session_factory() as session:
+        conflict_context = (
+            await conflict_engine.resolve_legacy_conflict_write_context(
+                session,
+                actor_username=None,
+                evaluation_date=today_local(),
+            )
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
+        await hrt_reminders.seed_hormone_panel(
+            session,
+            identity=conflict_context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
         await session.commit()
 
     if redis is not None:

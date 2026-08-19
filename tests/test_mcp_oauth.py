@@ -492,7 +492,11 @@ async def test_mcp_initialize_over_streamable_http(client):
     assert "protocolVersion" in r.text
 
 
-async def test_mcp_read_only_tools_execution(db_session, session_factory):
+async def test_mcp_read_only_tools_execution(
+    db_session,
+    session_factory,
+    legacy_owner_roots,
+):
     """Test that the read-only MCP tools execute and return valid serializable schemas."""
     # Pre-seed some test data
     w_log = WeightLog(

@@ -179,8 +179,16 @@ notes, and deletes are subject-scoped. GLP-1 injections, dose phases, and side
 effects use the same prepared boundary; a phase replaces the active subject-day
 resolver item before evaluation and can only close an eligible phase in that
 subject. Plateau reconciliation consumes subject-scoped phase/Weight/noise reads
-and writes an actorless health alert. Other domain writers and the transitional
-legacy service fallbacks remain on the reviewed inventory. Their
+and writes an actorless health alert. Labs manual, MCP, and upload-confirmation
+writes now use the prepared boundary before marker/result/raw/file locks. Direct
+Labs CRUD and notes are exact-S, the fully-NULL bridge rejects partial roots,
+single and batch MCP writes persist Source.MCP raw rows before normalization, and
+parser replay validates S/A plus the historical OpenRouter C and LAB_DOCUMENT F
+chain. Labs out-of-range/retest reconciliation and the startup marker seed are
+actorless subject actions. Labs chart/share/digest/overview/export consumers still
+belong to the subject-aware composition cutover and cannot serve a second writable
+subject. Other domain writers and the transitional legacy service fallbacks remain
+on the reviewed inventory. Their
 cutover must preserve the canonical governance
 -> provider/outbox advisory -> subject/domain-row -> alert order;
 in particular, weight conflict enforcement cannot acquire governance after the

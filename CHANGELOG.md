@@ -107,6 +107,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   or partially owned legacy rows. Plateau detection now reads only the subject's
   phase, Weight facts, and noise ranges, and reconciles an actorless subject alert;
   the scheduled check no-ops when that subject has GLP-1 disabled.
+- Labs manual, upload-confirmation, and MCP writes now use the selected subject's
+  transaction-bound conflict capability. Single and batch MCP inputs persist an
+  owned raw payload with MCP provenance before normalization; parser results keep
+  their validated uploader, OpenRouter connection, and private-file chain. Direct
+  Labs reads, edits, notes, deferrals, and deletes reject foreign or partial roots,
+  while the nightly replay and startup hormone-marker seed use actorless scoped
+  boundaries. Out-of-range and retest alerts reconcile only within that subject.
 - System alerts now have typed health-subject, provider-connection, and platform
   contexts backed by an exhaustive key/domain registry. The legacy owner sees
   health alerts plus current and retired provider alerts through one fail-closed

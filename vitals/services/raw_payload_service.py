@@ -589,8 +589,15 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
     another's completed work.
     """
     from vitals.enums import IntegrationProvider
-    from vitals.services import body_scan_service, garmin_service, hevy_service, labs_service
+    from vitals.services import (
+        body_scan_service,
+        conflict_engine,
+        garmin_service,
+        hevy_service,
+        labs_service,
+    )
     from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.utils.timeutils import today_local
 
     async with session_factory() as session:
         async def _sweep_owned_garmin() -> int:
@@ -621,10 +628,27 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
                 ),
             )
 
+        async def _sweep_owned_labs() -> int:
+            context = await conflict_engine.resolve_legacy_conflict_write_context(
+                session,
+                actor_username=None,
+                evaluation_date=today_local(),
+            )
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=context,
+            )
+            return await labs_service.reparse_owned_pending(
+                session,
+                identity=context.identity,
+                prepared_conflict_write=prepared,
+                include_legacy_unowned=True,
+            )
+
         for name, sweep in (
             ("garmin", _sweep_owned_garmin),
             ("hevy", _sweep_owned_hevy),
-            ("labs", lambda: labs_service.reparse_pending(session)),
+            ("labs", _sweep_owned_labs),
             ("body_comp", lambda: body_scan_service.reparse_pending(session)),
         ):
             try:

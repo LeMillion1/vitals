@@ -22,7 +22,7 @@ DAY = date(2026, 7, 1)
 
 
 @pytest.fixture(autouse=True)
-def _use_test_factory(session_factory, monkeypatch):
+def _use_test_factory(session_factory, monkeypatch, legacy_owner_roots):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
 

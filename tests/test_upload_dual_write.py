@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import (
     Domain,
     FileAssetPurpose,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
     IntegrationProvider,
     Source,
     UserStatus,
@@ -24,6 +26,7 @@ from vitals.models.weight import ProgressPhoto, WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.services import (
     body_scan_service,
+    conflict_engine,
     file_asset_service,
     labs_service,
     raw_payload_service,
@@ -66,6 +69,18 @@ async def _owned_document(
     source: str,
     payload: dict,
 ) -> tuple[FileAsset, RawPayload]:
+    connection_id = None
+    if source == Source.LAB_PARSER.value:
+        connection = IntegrationConnection(
+            subject_id=subject.id,
+            provider=IntegrationProvider.OPENROUTER.value,
+            connection_type=IntegrationConnectionType.AI_GATEWAY.value,
+            external_account_discriminator=f"synthetic-{storage_ref}",
+            status=IntegrationConnectionStatus.ACTIVE.value,
+        )
+        session.add(connection)
+        await session.flush()
+        connection_id = connection.id
     asset = await file_asset_service.register_legacy_local(
         session,
         subject_id=subject.id,
@@ -79,6 +94,7 @@ async def _owned_document(
     raw = await raw_payload_service.upsert_owned_raw_payload(
         session,
         identity=identity,
+        integration_connection_id=connection_id,
         file_asset_id=asset.id,
         domain=domain,
         source=source,
@@ -86,6 +102,20 @@ async def _owned_document(
         payload=payload,
     )
     return asset, raw
+
+
+async def _prepared(
+    session: AsyncSession,
+    identity: WriteIdentity,
+    *,
+    on_date: date = date(2026, 8, 19),
+):
+    context = conflict_engine.ConflictWriteContext(
+        identity=identity,
+        evaluation_date=on_date,
+        legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
+    )
+    return await conflict_engine.prepare_scoped_write(session, context=context)
 
 
 async def test_body_upload_confirm_copies_subject_actor_and_file_to_all_facts(
@@ -145,6 +175,7 @@ async def test_lab_upload_confirm_copies_subject_actor_and_rejects_key_tampering
         source=Source.LAB_PARSER.value,
         payload={"results": [{"marker": "Ferritin", "value": 95}]},
     )
+    prepared = await _prepared(db_session, identity)
 
     with pytest.raises(UploadOwnershipError, match="file_key"):
         await labs_service.confirm_extracted(
@@ -154,6 +185,7 @@ async def test_lab_upload_confirm_copies_subject_actor_and_rejects_key_tampering
             raw_payload_id=raw.id,
             file_key="labs/client-substitution.png",
             identity=identity,
+            prepared_conflict_write=prepared,
         )
     assert await db_session.scalar(select(func.count()).select_from(LabResult)) == 0
 
@@ -164,6 +196,7 @@ async def test_lab_upload_confirm_copies_subject_actor_and_rejects_key_tampering
         raw_payload_id=raw.id,
         file_key=asset.storage_ref,
         identity=identity,
+        prepared_conflict_write=prepared,
     )
     assert len(results) == 1
     assert (results[0].subject_id, results[0].actor_user_id) == (
@@ -208,6 +241,7 @@ async def test_foreign_raw_id_cannot_authorize_upload_confirmation(
         source=raw_source,
         payload={},
     )
+    prepared = await _prepared(db_session, owner_identity)
 
     with pytest.raises(UploadOwnershipError, match="subject scope"):
         if is_body:
@@ -227,6 +261,7 @@ async def test_foreign_raw_id_cannot_authorize_upload_confirmation(
                 raw_payload_id=raw.id,
                 file_key=storage_ref,
                 identity=owner_identity,
+                prepared_conflict_write=prepared,
             )
 
     model = BodyScan if is_body else LabResult
@@ -390,7 +425,13 @@ async def test_owned_pending_upload_reparse_preserves_ownership(
         assert child is not None and child.subject_id == subject.id
         assert normalized.file_asset_id == asset.id
     else:
-        await labs_service.reparse_from_raw(db_session, raw)
+        system_identity = WriteIdentity(subject.id, None)
+        prepared = await _prepared(db_session, system_identity)
+        await labs_service.reparse_owned_pending(
+            db_session,
+            identity=system_identity,
+            prepared_conflict_write=prepared,
+        )
         normalized = await db_session.scalar(select(LabResult))
     assert normalized is not None
     assert (normalized.subject_id, normalized.actor_user_id) == (

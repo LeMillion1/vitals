@@ -60,13 +60,17 @@ async def test_nightly_raw_sweep_passes_exact_system_owned_roots(
         calls.append(("hevy", identity, integration_connection_id))
         return 0
 
+    async def _labs(session, *, identity, prepared_conflict_write, **kwargs):
+        calls.append(("labs", identity, prepared_conflict_write))
+        return 0
+
     async def _legacy(session, **kwargs):
         calls.append(("legacy", None, None))
         return 0
 
     monkeypatch.setattr(garmin_service, "reparse_owned_pending", _garmin)
     monkeypatch.setattr(hevy_service, "reparse_owned_pending", _hevy)
-    monkeypatch.setattr(labs_service, "reparse_pending", _legacy)
+    monkeypatch.setattr(labs_service, "reparse_owned_pending", _labs)
     monkeypatch.setattr(body_scan_service, "reparse_pending", _legacy)
 
     await raw_payload_service.sweep_pending_job(session_factory)
@@ -84,10 +88,16 @@ async def test_nightly_raw_sweep_passes_exact_system_owned_roots(
     )
     assert garmin_connection_id == connections[IntegrationProvider.GARMIN.value].id
     assert hevy_connection_id == connections[IntegrationProvider.HEVY.value].id
+    labs_identity = calls[2][1]
+    assert (labs_identity.subject_id, labs_identity.actor_user_id) == (
+        subject.id,
+        None,
+    )
+    assert calls[2][2] is not None
     assert [name for name, _identity, _connection in calls] == [
         "garmin",
         "hevy",
-        "legacy",
+        "labs",
         "legacy",
     ]
 

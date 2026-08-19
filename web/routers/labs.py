@@ -17,17 +17,25 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
-from vitals.enums import Domain, FileAssetPurpose, IntegrationProvider, Source
+from vitals.enums import (
+    Domain,
+    FileAssetPurpose,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Source,
+)
 from vitals.i18n import t
 from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import (
     alerts_service,
+    conflict_engine,
     file_asset_service,
     labs_service,
     raw_payload_service,
 )
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.upload_ownership_service import require_live_upload_connection
 from web.deps import get_session, require_auth
 from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
@@ -44,6 +52,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/labs", tags=["labs"])
 
 
+async def _prepared_owner_write(
+    db: AsyncSession,
+    *,
+    username: str,
+    evaluation_date: date_type,
+):
+    context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=evaluation_date,
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        db,
+        context=context,
+    )
+    return context, prepared
+
+
 @router.get("", response_class=HTMLResponse)
 async def labs_dashboard(
     request: Request,
@@ -53,20 +79,24 @@ async def labs_dashboard(
 ):
     """Labs dashboard: latest value per marker, the selected marker's history, the
     marker catalog (with retest/defer), and out-of-range alerts."""
-    ownership = await resolve_legacy_ownership_context(
+    from vitals.utils.timeutils import today_local
+
+    today = today_local()
+    conflict_context, prepared = await _prepared_owner_write(
         db,
-        actor_username=username,
+        username=username,
+        evaluation_date=today,
     )
     await labs_service.refresh_alerts(
         db,
-        subject_id=ownership.subject_id,
+        identity=conflict_context.identity,
         include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
     )
-    await db.commit()
 
     latest = await labs_service.latest_per_marker(
         db,
-        subject_id=ownership.subject_id,
+        subject_id=conflict_context.identity.subject_id,
         include_legacy_unowned=True,
     )
     # Sort latest: out-of-range first (newest to oldest), then normal (newest to oldest)
@@ -77,12 +107,12 @@ async def labs_dashboard(
     )
     markers = await labs_service.list_markers(
         db,
-        subject_id=ownership.subject_id,
+        subject_id=conflict_context.identity.subject_id,
         include_legacy_unowned=True,
     )
     alerts = await alerts_service.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        context=alerts_service.HealthAlertContext(conflict_context.identity),
         domain=Domain.LABS,
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
@@ -92,7 +122,7 @@ async def labs_dashboard(
         await labs_service.marker_history(
             db,
             selected,
-            subject_id=ownership.subject_id,
+            subject_id=conflict_context.identity.subject_id,
             include_legacy_unowned=True,
         )
         if selected
@@ -100,8 +130,7 @@ async def labs_dashboard(
     )
 
     out_of_range = sum(1 for r in latest if labs_service.is_out_of_range(r.flag))
-
-    from vitals.utils.timeutils import today_local
+    await db.commit()
 
     return templates.TemplateResponse(
         request,
@@ -115,7 +144,7 @@ async def labs_dashboard(
             "series": {"points": history},
             "out_of_range": out_of_range,
             "llm_configured": bool(load_config().openrouter_api_key),
-            "today": today_local().isoformat(),
+            "today": today.isoformat(),
             "upload": request.query_params.get("upload"),
             "added": request.query_params.get("added"),
             "failed": request.query_params.get("failed"),
@@ -138,14 +167,16 @@ async def add_result(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
+    on_date = date_type.fromisoformat(date)
+    conflict_context, prepared = await _prepared_owner_write(
         db,
-        actor_username=username,
+        username=username,
+        evaluation_date=on_date,
     )
     try:
         await labs_service.add_result(
             db,
-            on_date=date_type.fromisoformat(date),
+            on_date=on_date,
             marker=marker.strip(),
             value=value,
             unit=unit,
@@ -154,7 +185,14 @@ async def add_result(
             lab_name=lab_name,
             note=note,
             override=override,
-            identity=ownership.owner_action(),
+            identity=conflict_context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
+        await labs_service.refresh_alerts(
+            db,
+            identity=conflict_context.identity,
+            prepared_conflict_write=prepared,
         )
     except ConflictBlocked as e:
         await db.rollback()
@@ -206,12 +244,24 @@ async def upload_document(
     the client, each getting its own preview."""
     from vitals.utils.timeutils import today_local
 
-    ownership = await resolve_legacy_ownership_context(
+    # This is a read-only preflight before any file bytes or PHI leave the
+    # process. Release its transaction before the OpenRouter await; roots are
+    # resolved again under the durable write transaction below.
+    preflight_ownership = await resolve_legacy_ownership_context(
         db,
         actor_username=username,
         required_connections=(IntegrationProvider.OPENROUTER,),
     )
-    identity = ownership.owner_action()
+    await require_live_upload_connection(
+        db,
+        identity=preflight_ownership.owner_action(),
+        connection_id=preflight_ownership.connection_id(
+            IntegrationProvider.OPENROUTER
+        ),
+        provider=IntegrationProvider.OPENROUTER,
+        connection_type=IntegrationConnectionType.AI_GATEWAY,
+    )
+    await db.rollback()
 
     # 415/413 surface as HTTP errors (handled by the client's error branch).
     validate_extension(file.filename, DOC_EXTS)
@@ -246,6 +296,34 @@ async def upload_document(
     try:
         with open(file_path, "wb") as fh:
             fh.write(contents)
+
+        try:
+            lab_date = date_type.fromisoformat(str(extracted.get("date"))[:10])
+        except (ValueError, TypeError):
+            lab_date = today_local()
+        conflict_context, _prepared = await _prepared_owner_write(
+            db,
+            username=username,
+            evaluation_date=lab_date,
+        )
+        ownership = await resolve_legacy_ownership_context(
+            db,
+            actor_username=username,
+            required_connections=(IntegrationProvider.OPENROUTER,),
+        )
+        identity = ownership.owner_action()
+        if identity != conflict_context.identity:
+            raise ValueError("lab upload identity changed during extraction")
+        openrouter_connection_id = ownership.connection_id(
+            IntegrationProvider.OPENROUTER
+        )
+        await require_live_upload_connection(
+            db,
+            identity=identity,
+            connection_id=openrouter_connection_id,
+            provider=IntegrationProvider.OPENROUTER,
+            connection_type=IntegrationConnectionType.AI_GATEWAY,
+        )
         asset = await file_asset_service.register_legacy_local(
             db,
             subject_id=identity.subject_id,
@@ -259,9 +337,7 @@ async def upload_document(
         raw_row = await raw_payload_service.upsert_owned_raw_payload(
             db,
             identity=identity,
-            integration_connection_id=ownership.connection_id(
-                IntegrationProvider.OPENROUTER
-            ),
+            integration_connection_id=openrouter_connection_id,
             file_asset_id=asset.id,
             domain=Domain.LABS.value,
             source=Source.LAB_PARSER.value,
@@ -297,15 +373,11 @@ async def upload_document(
         raise
 
     rows = labs_service.normalize_extracted(extracted)
-    try:
-        lab_date = date_type.fromisoformat(str(extracted.get("date"))[:10]).isoformat()
-    except (ValueError, TypeError):
-        lab_date = today_local().isoformat()
 
     return JSONResponse({
         "ok": True,
         "lab": {
-            "date": lab_date,
+            "date": lab_date.isoformat(),
             "lab_name": extracted.get("lab_name"),
             "file_key": file_key,
             "raw_payload_id": raw_row.id,
@@ -327,11 +399,11 @@ async def labs_confirm(
     except (ValueError, TypeError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid date")
 
-    ownership = await resolve_legacy_ownership_context(
+    conflict_context, prepared = await _prepared_owner_write(
         db,
-        actor_username=username,
+        username=username,
+        evaluation_date=on_date,
     )
-    identity = ownership.owner_action()
     try:
         created = await labs_service.confirm_extracted(
             db,
@@ -341,7 +413,13 @@ async def labs_confirm(
             raw_payload_id=payload.raw_payload_id,
             file_key=payload.file_key,
             override=payload.override,
-            identity=identity,
+            identity=conflict_context.identity,
+            prepared_conflict_write=prepared,
+        )
+        await labs_service.refresh_alerts(
+            db,
+            identity=conflict_context.identity,
+            prepared_conflict_write=prepared,
         )
     except ConflictBlocked as e:
         await db.rollback()
@@ -352,11 +430,6 @@ async def labs_confirm(
     except ValueError as e:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    await labs_service.refresh_alerts(
-        db,
-        subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    )
     await db.commit()
     return JSONResponse({"ok": True, "created": len(created)})
 
@@ -370,17 +443,21 @@ async def defer_marker(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
+    from vitals.utils.timeutils import today_local
+
+    conflict_context, prepared = await _prepared_owner_write(
         db,
-        actor_username=username,
+        username=username,
+        evaluation_date=today_local(),
     )
     await labs_service.defer_retest(
         db,
         name,
         until=date_type.fromisoformat(until),
         note=note,
-        subject_id=ownership.subject_id,
+        identity=conflict_context.identity,
         include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
     )
     await db.commit()
     return _redirect(request, marker=name)
@@ -393,15 +470,19 @@ async def delete_result(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
+    from vitals.utils.timeutils import today_local
+
+    conflict_context, prepared = await _prepared_owner_write(
         db,
-        actor_username=username,
+        username=username,
+        evaluation_date=today_local(),
     )
     await labs_service.delete_result(
         db,
         result_id,
-        subject_id=ownership.subject_id,
+        identity=conflict_context.identity,
         include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
     )
     await db.commit()
     return _redirect(request)

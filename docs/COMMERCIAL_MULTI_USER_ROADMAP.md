@@ -214,8 +214,9 @@ Implementation progress on `commercial/main`:
   current and retired provider roots, and provider/scheduler writers use an exact
   reviewed scope. Conflict reads and all seven resolver domains use one subject
   and date. Curated conflict-rule activation is stored per subject, and the
-  Supplements, Nutrition, Skincare, and GLP-1 web/MCP write paths use an opaque prepared
-  writer capability and locked target rows. Supplements replace one catalog row;
+  Supplements, Nutrition, Skincare, GLP-1, and Labs web/MCP write paths use an
+  opaque prepared writer capability and locked target rows. Supplements replace
+  one catalog row;
   Nutrition replaces the subject-day aggregate and evaluates projected totals so
   concurrent meals cannot bypass a cumulative rule. Skincare replaces one
   subject-day checklist without comparing its new actives to the stale checklist.
@@ -225,6 +226,11 @@ Implementation progress on `commercial/main`:
   GLP-1 injections, dose phases, and side effects dual-write S+A with exact
   manual/MCP source provenance; plateau evaluation uses subject-scoped
   phase/Weight/noise reads and actorless alert reconciliation.
+  Labs manual, MCP, and upload-confirmation writes dual-write S+A; MCP inputs are
+  raw-first with C/F null, while parser facts validate the subject/uploader,
+  historical OpenRouter C, and lab-document F chain. Direct Labs reads and
+  mutations, derived alerts, startup marker seeding, and nightly replay use the
+  same exact-one subject boundary.
   These paths resolve the verified legacy owner at their web, scheduler, or MCP
   boundary and fail closed if a second subject makes the compatibility bridge
   ambiguous.
@@ -234,7 +240,8 @@ Implementation progress on `commercial/main`:
   provenance with subject/connection ownership.
 - Bounded data backfill and validation, scoped natural-key/alert-unique cutover,
   remaining health-alert and conflict writers, outbox scoping, subject-aware
-  composition/reporting, full MCP principal propagation, and RLS remain pending.
+  composition/reporting (including Labs charts, shares, digests, overview, and
+  export), full MCP principal propagation, and RLS remain pending.
   Registration stays disabled; the current code is a safe single-subject
   migration bridge, not a multi-user release boundary.
 

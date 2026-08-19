@@ -8,6 +8,11 @@ import pytest
 mcp_router = pytest.importorskip("web.routers.mcp")
 
 
+@pytest.fixture(autouse=True)
+async def _legacy_mcp_owner(legacy_owner_roots):
+    """MCP v1 Labs is attributed only after sole-owner roots exist."""
+
+
 async def test_log_get_delete_lab_result(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 

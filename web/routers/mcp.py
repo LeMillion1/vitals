@@ -25,6 +25,7 @@ import functools
 import importlib
 import logging
 import os
+import uuid
 from datetime import date as date_type, timedelta
 from typing import Optional
 
@@ -67,7 +68,7 @@ from vitals.services import conflict_engine, modules_service
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.services.data_portability_service import GENERIC_OUTPUT_SUPPRESSED_COLUMNS
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
-from vitals.utils.timeutils import today_local
+from vitals.utils.timeutils import now_local, today_local
 from web.config import get_web_config
 from web.deps import get_redis_client, get_session_factory
 
@@ -1609,6 +1610,26 @@ async def log_note(
                 return {"error": f"{domain} record {record_id} not found"}
             await session.commit()
             return await serialize_written(session, row)
+        if domain == "labs":
+            from vitals.services import labs_service
+
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            row = await labs_service.update_result_note(
+                session,
+                record_id,
+                note=note,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
+            )
+            if row is None:
+                return {"error": f"{domain} record {record_id} not found"}
+            await session.commit()
+            return await serialize_written(session, row)
         row = await session.get(model, record_id)
         if row is None:
             return {"error": f"{domain} record {record_id} not found"}
@@ -1645,6 +1666,7 @@ async def get_notes(
         nutrition_scope = None
         skincare_scope = None
         glp1_scope = None
+        labs_scope = None
         if "nutrition" in targets:
             if not await _module_enabled(session, "nutrition"):
                 if domain == "nutrition":
@@ -1666,6 +1688,8 @@ async def get_notes(
                 targets.pop("glp1")
             else:
                 glp1_scope = await _mcp_v1_conflict_scope(session)
+        if "labs" in targets:
+            labs_scope = await _mcp_v1_conflict_scope(session)
         for d_name, model in targets.items():
             if d_name == "nutrition":
                 assert nutrition_scope is not None
@@ -1716,6 +1740,26 @@ async def get_notes(
                     subject_id=glp1_scope.subject_id,
                     include_legacy_unowned=(
                         glp1_scope.include_legacy_unowned
+                    ),
+                    start=start,
+                    end=end,
+                    has_note=True,
+                    limit=limit,
+                )
+                for row in rows:
+                    entry = serialize_row(row)
+                    entry["_domain"] = d_name
+                    results.append(entry)
+                continue
+            if d_name == "labs":
+                assert labs_scope is not None
+                from vitals.services import labs_service
+
+                rows = await labs_service.list_results(
+                    session,
+                    subject_id=labs_scope.subject_id,
+                    include_legacy_unowned=(
+                        labs_scope.include_legacy_unowned
                     ),
                     start=start,
                     end=end,
@@ -1814,6 +1858,17 @@ async def delete_record(domain: str, record_id: int) -> dict:
             owned_kwargs = {
                 "identity": conflict_context.identity,
                 "include_unowned_legacy": True,
+                "prepared_conflict_write": prepared,
+            }
+        elif domain == "labs":
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            owned_kwargs = {
+                "identity": conflict_context.identity,
+                "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
         elif domain == "skincare_observation":
@@ -1973,15 +2028,16 @@ async def get_lab_results(
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        stmt = select(LabResult)
-        if marker:
-            stmt = stmt.where(LabResult.marker == labs_service.normalize_marker(marker))
-        if start:
-            stmt = stmt.where(LabResult.date >= start)
-        if end:
-            stmt = stmt.where(LabResult.date <= end)
-        stmt = stmt.order_by(LabResult.date.desc(), LabResult.id.desc()).limit(limit)
-        results = (await session.execute(stmt)).scalars().all()
+        scope = await _mcp_v1_conflict_scope(session)
+        results = await labs_service.list_results(
+            session,
+            marker=marker,
+            start=start,
+            end=end,
+            limit=limit,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+        )
         return [serialize_row(r) for r in results]
 
 
@@ -2010,7 +2066,37 @@ async def log_lab_result(
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
+            from vitals.services import raw_payload_service
+
+            raw = await raw_payload_service.upsert_owned_raw_payload(
+                session,
+                identity=conflict_context.identity,
+                integration_connection_id=None,
+                file_asset_id=None,
+                domain=Domain.LABS.value,
+                source=Source.MCP.value,
+                external_id=f"mcp:{uuid.uuid4().hex}",
+                payload={
+                    "date": parsed_date.isoformat(),
+                    "marker": marker,
+                    "value": value,
+                    "unit": unit,
+                    "ref_low": ref_low,
+                    "ref_high": ref_high,
+                    "lab_name": lab_name,
+                    "note": note,
+                    "override": override,
+                },
+            )
             row = await labs_service.add_result(
                 session,
                 on_date=parsed_date,
@@ -2022,11 +2108,24 @@ async def log_lab_result(
                 lab_name=lab_name,
                 note=note,
                 source=Source.MCP.value,
+                raw_payload_id=raw.id,
                 override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
+            )
+            raw.processed_at = now_local()
+            await session.flush()
+            await labs_service.refresh_alerts(
+                session,
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         await session.commit()
         return await serialize_written(session, row)
@@ -2043,6 +2142,7 @@ async def update_lab_result(
     ref_high: Optional[float] = None,
     lab_name: Optional[str] = None,
     note: Optional[str] = None,
+    override: bool = False,
 ) -> dict:
     """Corrects an existing lab result by ID — a mistyped value, a range read off
     the wrong column. Only the fields you pass are changed; the out-of-range flag
@@ -2054,6 +2154,33 @@ async def update_lab_result(
     parsed_date = _parse_date(on_date, field="on_date")
 
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date or today_local(),
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
+        current = await labs_service.get_result_for_update(
+            session,
+            result_id,
+            identity=conflict_context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
+        if current is None:
+            return {"error": f"Lab result {result_id} not found"}
+        final_date = parsed_date or current.date
+        if final_date != conflict_context.evaluation_date:
+            conflict_context = await _mcp_v1_conflict_write_context(
+                session,
+                evaluation_date=final_date,
+            )
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
         try:
             row = await labs_service.update_result(
                 session,
@@ -2066,8 +2193,16 @@ async def update_lab_result(
                 ref_high=ref_high,
                 lab_name=lab_name,
                 note=note,
+                override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
+        except ConflictBlocked as e:
+            await session.rollback()
+            return _conflict_payload(e)
         except ValueError as e:
+            await session.rollback()
             return {"error": str(e)}
         if row is None:
             return {"error": f"Lab result {result_id} not found"}
@@ -2105,12 +2240,46 @@ async def log_lab_results(
             "lab_name": lab_name,
             "results": results,
         }
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
+        from vitals.services import raw_payload_service
+
+        raw = await raw_payload_service.upsert_owned_raw_payload(
+            session,
+            identity=conflict_context.identity,
+            integration_connection_id=None,
+            file_asset_id=None,
+            domain=Domain.LABS.value,
+            source=Source.MCP.value,
+            external_id=f"mcp:{uuid.uuid4().hex}",
+            payload=extracted,
+        )
         try:
-            summary = await labs_service.ingest_extracted(
-                session, extracted, override=override
+            summary = await labs_service.ingest_structured_results(
+                session,
+                extracted,
+                raw_payload=raw,
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
+                override=override,
+            )
+            await labs_service.refresh_alerts(
+                session,
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
+        except ValueError as e:
+            await session.rollback()
+            return {"error": str(e)}
         await session.commit()
         return {
             "created": summary["created"],

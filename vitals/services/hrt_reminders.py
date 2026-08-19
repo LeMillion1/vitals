@@ -30,7 +30,14 @@ from vitals.enums import Domain, Severity
 from vitals.i18n import current_lang, t
 from vitals.models.hrt import HrtDose
 from vitals.models.labs import LabMarker, LabResult
-from vitals.services import alerts_service, hrt_cycle_service, hrt_service, labs_service
+from vitals.ownership import WriteIdentity
+from vitals.services import (
+    alerts_service,
+    conflict_engine,
+    hrt_cycle_service,
+    hrt_service,
+    labs_service,
+)
 from vitals.utils.timeutils import today_local
 
 logger = logging.getLogger(__name__)
@@ -67,13 +74,39 @@ PANEL_WINDOW_BY_KIND: dict[str, int] = {
 _DEFAULT_PANEL_WINDOW = 90
 
 
-async def seed_hormone_panel(session: AsyncSession) -> dict[str, int]:
+async def seed_hormone_panel(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+) -> dict[str, int]:
     """Register the panel markers in the Labs catalog. Idempotent — creates a
     missing marker, and backfills ``category``/``retest_interval_days`` on an
     existing one only when unset (never clobbers a user's edit)."""
     created = 0
     updated = 0
+    if (identity is None) != (prepared_conflict_write is None):
+        raise conflict_engine.ConflictPreparedWriteError(
+            "scoped hormone-panel seed requires identity and a prepared write"
+        )
     for name, interval in HORMONE_PANEL.items():
+        if identity is not None:
+            assert prepared_conflict_write is not None
+            _row, was_created, was_updated = (
+                await labs_service.ensure_marker_catalog_entry(
+                    session,
+                    name=name,
+                    category=_PANEL_CATEGORY,
+                    retest_interval_days=interval,
+                    identity=identity,
+                    include_legacy_unowned=include_legacy_unowned,
+                    prepared_conflict_write=prepared_conflict_write,
+                )
+            )
+            created += int(was_created)
+            updated += int(was_updated)
+            continue
         row = await labs_service.get_marker(session, name)
         if row is None:
             session.add(
