@@ -17,6 +17,7 @@ wired end-to-end, consistent with the weight service.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date as date_type, timedelta
 from typing import Optional, Sequence
 
@@ -26,7 +27,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Domain, InjectionSite, Severity, Source
 from vitals.i18n import t
 from vitals.models.glp1 import DOMAIN, DosePhase, Injection, SideEffect
-from vitals.services import alerts_service, conflict_engine, weight_service
+from vitals.ownership import WriteIdentity
+from vitals.services import (
+    alerts_service,
+    conflict_engine,
+    modules_service,
+    weight_service,
+)
 from vitals.services.analytics.regression import fit_trend
 from vitals.utils.timeutils import today_local
 
@@ -41,6 +48,92 @@ PLATEAU_MIN_DAYS = 14
 PLATEAU_SLOPE_THRESHOLD = -0.1
 
 _INJECTION_SITES = frozenset(s.value for s in InjectionSite)
+_ACTIVE_ENTITY_PREFIX = "glp1-active"
+
+
+def _active_entity_key(on_date: date_type) -> str:
+    return f"{_ACTIVE_ENTITY_PREFIX}:{on_date.isoformat()}"
+
+
+def _require_scoped_prepared_write(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity | None,
+    prepared: conflict_engine.PreparedConflictWrite | None,
+) -> conflict_engine.ConflictWriteContext | None:
+    if identity is None and prepared is None:
+        return None
+    if identity is None or prepared is None:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "scoped GLP-1 writes require identity and a prepared conflict write"
+        )
+    return conflict_engine.require_prepared_identity(
+        session,
+        prepared=prepared,
+        identity=identity,
+    )
+
+
+def _require_evaluation_date(
+    context: conflict_engine.ConflictWriteContext,
+    on_date: date_type,
+) -> None:
+    if context.evaluation_date != on_date:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "GLP-1 write date does not match prepared conflict evaluation date"
+        )
+
+
+def _require_legacy_bridge(
+    context: conflict_engine.ConflictWriteContext,
+    *,
+    include_legacy_unowned: bool,
+) -> None:
+    if (
+        include_legacy_unowned
+        and context.legacy_bridge
+        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+    ):
+        raise conflict_engine.ConflictPreparedWriteError(
+            "legacy GLP-1 access requires a fully-unowned bridge"
+        )
+
+
+def _subject_scope(model, subject_id: uuid.UUID, *, include_legacy_unowned: bool):
+    scope = model.subject_id == subject_id
+    if include_legacy_unowned:
+        scope = or_(
+            scope,
+            and_(
+                model.subject_id.is_(None),
+                model.actor_user_id.is_(None),
+            ),
+        )
+    return scope
+
+
+async def _owned_row_for_update(
+    session: AsyncSession,
+    model,
+    row_id: int,
+    *,
+    subject_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+):
+    stmt = select(model).where(model.id == row_id)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _subject_scope(
+                model,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy GLP-1 compatibility requires a subject_id")
+    return await session.scalar(
+        stmt.with_for_update().execution_options(populate_existing=True)
+    )
 
 
 def _validate_injection(
@@ -75,20 +168,44 @@ async def log_injection(
     dose_mg: float,
     site: Optional[str] = None,
     note: Optional[str] = None,
+    source: str = Source.MANUAL.value,
     override: bool = False,
+    identity: WriteIdentity | None = None,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> Injection:
-    drug, site = _validate_injection(drug=drug, dose_mg=dose_mg, site=site)
-    await conflict_engine.enforce(
+    context = _require_scoped_prepared_write(
         session,
-        Domain.GLP1.value,
-        {"drug": drug, "dose_mg": dose_mg},
-        override=override,
-        entity_ref=f"injection:{on_date.isoformat()}",
+        identity=identity,
+        prepared=prepared_conflict_write,
     )
+    if context is not None:
+        _require_evaluation_date(context, on_date)
+    drug, site = _validate_injection(drug=drug, dose_mg=dose_mg, site=site)
+    proposed = {"drug": drug, "dose_mg": dose_mg}
+    if context is None:
+        await conflict_engine.enforce(
+            session,
+            Domain.GLP1.value,
+            proposed,
+            override=override,
+            entity_ref=f"injection:{on_date.isoformat()}",
+        )
+    else:
+        assert prepared_conflict_write is not None
+        await conflict_engine.enforce_prepared(
+            session,
+            prepared=prepared_conflict_write,
+            domain=Domain.GLP1,
+            proposed_state=proposed,
+            override=override,
+            entity_ref=f"injection:{on_date.isoformat()}",
+        )
     row = Injection(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         date=on_date,
         domain=DOMAIN,
-        source=Source.MANUAL.value,
+        source=source,
         drug=drug,
         dose_mg=dose_mg,
         site=site,
@@ -99,18 +216,80 @@ async def log_injection(
     return row
 
 
-async def list_injections(session: AsyncSession) -> Sequence[Injection]:
-    result = await session.execute(
-        select(Injection).order_by(Injection.date.desc(), Injection.id.desc())
-    )
+async def list_injections(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+    start: date_type | None = None,
+    end: date_type | None = None,
+    has_note: bool = False,
+    limit: int | None = None,
+) -> Sequence[Injection]:
+    stmt = select(Injection)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _subject_scope(
+                Injection,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy GLP-1 compatibility requires a subject_id")
+    if start is not None:
+        stmt = stmt.where(Injection.date >= start)
+    if end is not None:
+        stmt = stmt.where(Injection.date <= end)
+    if has_note:
+        stmt = stmt.where(Injection.note.is_not(None), Injection.note != "")
+    stmt = stmt.order_by(Injection.date.desc(), Injection.id.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    result = await session.execute(stmt)
     return result.scalars().all()
 
 
-async def last_injection(session: AsyncSession) -> Optional[Injection]:
-    result = await session.execute(
-        select(Injection).order_by(Injection.date.desc(), Injection.id.desc()).limit(1)
+async def last_injection(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Optional[Injection]:
+    rows = await list_injections(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+        limit=1,
     )
-    return result.scalars().first()
+    return rows[0] if rows else None
+
+
+async def get_injection_for_update(
+    session: AsyncSession,
+    injection_id: int,
+    *,
+    identity: WriteIdentity,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+) -> Optional[Injection]:
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    assert context is not None
+    _require_legacy_bridge(
+        context,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    return await _owned_row_for_update(
+        session,
+        Injection,
+        injection_id,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
 
 
 def site_frequency(injections: Sequence[Injection]) -> dict[str, int]:
@@ -134,20 +313,54 @@ async def update_injection(
     site: Optional[str] = None,
     note: Optional[str] = None,
     override: bool = False,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> Optional[Injection]:
-    row = await session.get(Injection, injection_id)
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    if context is not None:
+        _require_evaluation_date(context, on_date)
+        _require_legacy_bridge(
+            context,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    row = await _owned_row_for_update(
+        session,
+        Injection,
+        injection_id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if row is None:
         return None
     drug, site = _validate_injection(drug=drug, dose_mg=dose_mg, site=site)
     # Run the same conflict-engine gate as log_injection so editing a shot can't
     # slip past a cross-domain block that a fresh log would have caught.
-    await conflict_engine.enforce(
-        session,
-        Domain.GLP1.value,
-        {"drug": drug, "dose_mg": dose_mg},
-        override=override,
-        entity_ref=f"injection:{on_date.isoformat()}",
-    )
+    proposed = {"drug": drug, "dose_mg": dose_mg}
+    if context is None:
+        await conflict_engine.enforce(
+            session,
+            Domain.GLP1.value,
+            proposed,
+            override=override,
+            entity_ref=f"injection:{on_date.isoformat()}",
+        )
+    else:
+        assert prepared_conflict_write is not None
+        await conflict_engine.enforce_prepared(
+            session,
+            prepared=prepared_conflict_write,
+            domain=Domain.GLP1,
+            proposed_state=proposed,
+            override=override,
+            entity_ref=f"injection:{on_date.isoformat()}",
+        )
+    if row.subject_id is None and identity is not None:
+        row.subject_id = identity.subject_id
     row.date = on_date
     row.drug = drug
     row.dose_mg = dose_mg
@@ -157,8 +370,56 @@ async def update_injection(
     return row
 
 
-async def delete_injection(session: AsyncSession, injection_id: int) -> bool:
-    row = await session.get(Injection, injection_id)
+async def update_injection_note(
+    session: AsyncSession,
+    injection_id: int,
+    *,
+    note: str,
+    identity: WriteIdentity,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
+) -> Optional[Injection]:
+    row = await get_injection_for_update(
+        session,
+        injection_id,
+        identity=identity,
+        include_legacy_unowned=include_legacy_unowned,
+        prepared_conflict_write=prepared_conflict_write,
+    )
+    if row is None:
+        return None
+    if row.subject_id is None:
+        row.subject_id = identity.subject_id
+    row.note = note
+    await session.flush()
+    return row
+
+
+async def delete_injection(
+    session: AsyncSession,
+    injection_id: int,
+    *,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+) -> bool:
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    if context is not None:
+        _require_legacy_bridge(
+            context,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    row = await _owned_row_for_update(
+        session,
+        Injection,
+        injection_id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if row is None:
         return False
     await session.delete(row)
@@ -167,22 +428,44 @@ async def delete_injection(session: AsyncSession, injection_id: int) -> bool:
 
 
 # ── Dose phases ───────────────────────────────────────────────────────────────
-async def list_dose_phases(session: AsyncSession) -> Sequence[DosePhase]:
+async def list_dose_phases(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Sequence[DosePhase]:
+    stmt = select(DosePhase).where(DosePhase.domain == DOMAIN)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _subject_scope(
+                DosePhase,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy GLP-1 compatibility requires a subject_id")
     result = await session.execute(
-        select(DosePhase)
-        .where(DosePhase.domain == DOMAIN)
-        .order_by(DosePhase.start_date)
+        stmt.order_by(DosePhase.start_date, DosePhase.id)
     )
     return result.scalars().all()
 
 
 async def active_dose_phase(
-    session: AsyncSession, *, on_date: Optional[date_type] = None
+    session: AsyncSession,
+    *,
+    on_date: Optional[date_type] = None,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Optional[DosePhase]:
     """The phase covering ``on_date`` (today by default): start <= date and
     (end is null or date <= end). The newest matching phase wins."""
     day = on_date or today_local()
-    phases = await list_dose_phases(session)
+    phases = await list_dose_phases(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     match: Optional[DosePhase] = None
     for p in phases:
         if p.start_date <= day and (p.end_date is None or day <= p.end_date):
@@ -233,7 +516,16 @@ async def resolve_active_scoped(
     )
     if phase is None:
         return []
-    return [{"drug": phase.drug, "dose_mg": phase.dose_mg, "active": True}]
+    return [
+        {
+            conflict_engine.CONFLICT_ENTITY_KEY: _active_entity_key(
+                scope.evaluation_date
+            ),
+            "drug": phase.drug,
+            "dose_mg": phase.dose_mg,
+            "active": True,
+        }
+    ]
 
 
 async def add_dose_phase(
@@ -244,25 +536,101 @@ async def add_dose_phase(
     dose_mg: float,
     end_date: Optional[date_type] = None,
     note: Optional[str] = None,
+    source: str = Source.MANUAL.value,
+    override: bool = False,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> DosePhase:
-    """Add a dose phase. If it's open-ended (no ``end_date``), close any other
-    still-open phase the day before this one starts so the timeline doesn't
-    overlap (a single current dose at a time)."""
-    if end_date is None:
-        result = await session.execute(
-            select(DosePhase).where(
-                DosePhase.domain == DOMAIN, DosePhase.end_date.is_(None)
+    """Add a dose phase while keeping open-ended phases chronologically bounded.
+
+    A newer phase closes older open phases at the preceding boundary; a repeated
+    same-day phase turns the previous row into a one-day historical interval. A
+    back-dated phase is capped before the earliest newer open phase, so commit
+    order cannot leave two current doses.
+    """
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    if context is not None:
+        _require_evaluation_date(context, start_date)
+        _require_legacy_bridge(
+            context,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    drug, _site = _validate_injection(drug=drug, dose_mg=dose_mg, site=None)
+    if end_date is not None and end_date < start_date:
+        raise ValueError("end_date must not be before start_date")
+
+    open_stmt = select(DosePhase).where(
+        DosePhase.domain == DOMAIN,
+        DosePhase.end_date.is_(None),
+    )
+    if identity is not None:
+        open_stmt = open_stmt.where(
+            _subject_scope(
+                DosePhase,
+                identity.subject_id,
+                include_legacy_unowned=include_legacy_unowned,
             )
         )
-        for open_phase in result.scalars().all():
-            if open_phase.start_date < start_date:
-                open_phase.end_date = start_date - timedelta(days=1)
+    elif include_legacy_unowned:
+        raise ValueError("legacy GLP-1 compatibility requires a subject_id")
+    if context is not None:
+        open_stmt = open_stmt.with_for_update().execution_options(
+            populate_existing=True
+        )
+    open_phases = list(
+        await session.scalars(open_stmt.order_by(DosePhase.start_date, DosePhase.id))
+    )
+
+    proposed = {"drug": drug, "dose_mg": dose_mg, "active": True}
+    if context is not None:
+        assert prepared_conflict_write is not None
+        await conflict_engine.enforce_prepared(
+            session,
+            prepared=prepared_conflict_write,
+            domain=Domain.GLP1,
+            proposed_state=proposed,
+            override=override,
+            entity_ref=f"dose_phase:{start_date.isoformat()}",
+            replace_entity_key=_active_entity_key(start_date),
+        )
+
+    phase_end_date = end_date
+    if end_date is None:
+        # A back-dated phase may race with, or simply be entered after, a newer
+        # open phase.  In that ordering there is nothing older to close, so cap
+        # the new phase immediately before the earliest newer one.  The subject
+        # root lock held by the prepared write makes this projection stable on
+        # PostgreSQL and leaves exactly the newest phase open regardless of
+        # commit order.
+        newer_starts = [
+            open_phase.start_date
+            for open_phase in open_phases
+            if open_phase.start_date > start_date
+        ]
+        if newer_starts:
+            phase_end_date = min(newer_starts) - timedelta(days=1)
+        for open_phase in open_phases:
+            if open_phase.start_date <= start_date:
+                if open_phase.subject_id is None and identity is not None:
+                    open_phase.subject_id = identity.subject_id
+                open_phase.end_date = (
+                    start_date
+                    if open_phase.start_date == start_date
+                    else start_date - timedelta(days=1)
+                )
 
     phase = DosePhase(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         domain=DOMAIN,
-        source=Source.MANUAL.value,
+        source=source,
         start_date=start_date,
-        end_date=end_date,
+        end_date=phase_end_date,
         drug=drug,
         dose_mg=dose_mg,
         note=note,
@@ -272,8 +640,31 @@ async def add_dose_phase(
     return phase
 
 
-async def delete_dose_phase(session: AsyncSession, phase_id: int) -> bool:
-    row = await session.get(DosePhase, phase_id)
+async def delete_dose_phase(
+    session: AsyncSession,
+    phase_id: int,
+    *,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+) -> bool:
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    if context is not None:
+        _require_legacy_bridge(
+            context,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    row = await _owned_row_for_update(
+        session,
+        DosePhase,
+        phase_id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if row is None:
         return False
     await session.delete(row)
@@ -281,9 +672,18 @@ async def delete_dose_phase(session: AsyncSession, phase_id: int) -> bool:
     return True
 
 
-async def dose_phase_overlays(session: AsyncSession) -> list[dict]:
+async def dose_phase_overlays(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> list[dict]:
     """Phases shaped for the weight chart's GLP-1 colour overlay."""
-    phases = await list_dose_phases(session)
+    phases = await list_dose_phases(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     return [
         {
             "start": p.start_date.isoformat(),
@@ -304,11 +704,23 @@ async def log_side_effect(
     effect_type: str,
     severity: int,
     note: Optional[str] = None,
+    source: str = Source.MANUAL.value,
+    identity: WriteIdentity | None = None,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> SideEffect:
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    if context is not None:
+        _require_evaluation_date(context, on_date)
     row = SideEffect(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         date=on_date,
         domain=DOMAIN,
-        source=Source.MANUAL.value,
+        source=source,
         effect_type=effect_type,
         severity=severity,
         note=note,
@@ -318,15 +730,62 @@ async def log_side_effect(
     return row
 
 
-async def list_side_effects(session: AsyncSession) -> Sequence[SideEffect]:
-    result = await session.execute(
-        select(SideEffect).order_by(SideEffect.date.desc(), SideEffect.id.desc())
-    )
+async def list_side_effects(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+    start: date_type | None = None,
+    end: date_type | None = None,
+    limit: int | None = None,
+) -> Sequence[SideEffect]:
+    stmt = select(SideEffect)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _subject_scope(
+                SideEffect,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy GLP-1 compatibility requires a subject_id")
+    if start is not None:
+        stmt = stmt.where(SideEffect.date >= start)
+    if end is not None:
+        stmt = stmt.where(SideEffect.date <= end)
+    stmt = stmt.order_by(SideEffect.date.desc(), SideEffect.id.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    result = await session.execute(stmt)
     return result.scalars().all()
 
 
-async def delete_side_effect(session: AsyncSession, effect_id: int) -> bool:
-    row = await session.get(SideEffect, effect_id)
+async def delete_side_effect(
+    session: AsyncSession,
+    effect_id: int,
+    *,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+) -> bool:
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    if context is not None:
+        _require_legacy_bridge(
+            context,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    row = await _owned_row_for_update(
+        session,
+        SideEffect,
+        effect_id,
+        subject_id=identity.subject_id if identity is not None else None,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     if row is None:
         return False
     await session.delete(row)
@@ -336,13 +795,27 @@ async def delete_side_effect(session: AsyncSession, effect_id: int) -> bool:
 
 # ── Plateau detection ─────────────────────────────────────────────────────────
 async def evaluate_plateau(
-    session: AsyncSession, *, on_date: Optional[date_type] = None
+    session: AsyncSession,
+    *,
+    on_date: Optional[date_type] = None,
+    scope: conflict_engine.ConflictScope | None = None,
 ) -> Optional[dict]:
     """Pure read: is the current dose plateaued? Returns a context dict
     (drug, dose, days_on_dose, slope_per_week) when a plateau is detected on the
     current phase, else ``None``. Writes nothing."""
-    today = on_date or today_local()
-    phase = await active_dose_phase(session, on_date=today)
+    today = scope.evaluation_date if scope is not None else (on_date or today_local())
+    if on_date is not None and on_date != today:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "plateau date does not match the prepared conflict scope"
+        )
+    phase = await active_dose_phase(
+        session,
+        on_date=today,
+        subject_id=scope.subject_id if scope is not None else None,
+        include_legacy_unowned=(
+            scope.include_legacy_unowned if scope is not None else False
+        ),
+    )
     if phase is None:
         return None
 
@@ -351,10 +824,24 @@ async def evaluate_plateau(
         return None
 
     weights = await weight_service.list_active_weights(
-        session, start=phase.start_date, end=today
+        session,
+        start=phase.start_date,
+        end=today,
+        subject_id=scope.subject_id if scope is not None else None,
+        include_legacy_unowned=(
+            scope.include_legacy_unowned if scope is not None else False
+        ),
     )
     points = [(w.date, w.weight_kg) for w in weights]
-    ranges = await weight_service._noise_ranges(session)
+    ranges = await weight_service._noise_ranges(
+        session,
+        subject_id=scope.subject_id if scope is not None else None,
+        include_legacy_unowned=(
+            scope.include_legacy_unowned if scope is not None else False
+        ),
+        start=phase.start_date,
+        end=today,
+    )
     trend = fit_trend(points, exclude=ranges)
     if trend is None:
         return None
@@ -370,32 +857,93 @@ async def evaluate_plateau(
 
 
 async def refresh_plateau_alert(
-    session: AsyncSession, *, on_date: Optional[date_type] = None
+    session: AsyncSession,
+    *,
+    on_date: Optional[date_type] = None,
+    identity: WriteIdentity | None = None,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> Optional[object]:
     """Raise a ``note`` alert while the current dose is plateaued; resolve it once
     progress resumes (or the dose changes). Idempotent — safe on every dashboard
     load / scheduler tick. Respects same-day dismissal like the noise alert."""
-    context = await evaluate_plateau(session, on_date=on_date)
-    if context is not None:
-        if await alerts_service._was_dismissed_today(session, PLATEAU_ALERT_KEY, ""):
+    write_context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
+    if write_context is not None and on_date is not None:
+        _require_evaluation_date(write_context, on_date)
+    plateau = await evaluate_plateau(
+        session,
+        on_date=on_date,
+        scope=write_context.scope if write_context is not None else None,
+    )
+    if write_context is None:
+        if plateau is not None:
+            if await alerts_service._was_dismissed_today(
+                session,
+                PLATEAU_ALERT_KEY,
+                "",
+            ):
+                return None
+            message = t(
+                "alert.glp1_plateau",
+                drug=plateau["drug"],
+                dose=plateau["dose_mg"],
+                days=plateau["days_on_dose"],
+                slope=plateau["slope_per_week"],
+            )
+            return await alerts_service.raise_alert(
+                session,
+                domain=Domain.GLP1.value,
+                severity=Severity.NOTE.value,
+                message=message,
+                alert_key=PLATEAU_ALERT_KEY,
+            )
+        return await alerts_service.resolve_by_key(
+            session,
+            alert_key=PLATEAU_ALERT_KEY,
+        )
+
+    system_identity = WriteIdentity(write_context.identity.subject_id, None)
+    alert_context = alerts_service.HealthAlertContext(system_identity)
+    alert_bridge = (
+        alerts_service.LegacyAlertBridge.FULLY_UNOWNED
+        if write_context.scope.include_legacy_unowned
+        else alerts_service.LegacyAlertBridge.REJECT
+    )
+    if plateau is not None:
+        if await alerts_service.was_scoped_dismissed_today(
+            session,
+            context=alert_context,
+            alert_key=PLATEAU_ALERT_KEY,
+            entity_ref="",
+            on_date=write_context.evaluation_date,
+            legacy_bridge=alert_bridge,
+        ):
             return None
         message = t(
             "alert.glp1_plateau",
-            drug=context["drug"],
-            dose=context["dose_mg"],
-            days=context["days_on_dose"],
-            slope=context["slope_per_week"],
+            drug=plateau["drug"],
+            dose=plateau["dose_mg"],
+            days=plateau["days_on_dose"],
+            slope=plateau["slope_per_week"],
         )
-        return await alerts_service.raise_alert(
+        return await alerts_service.raise_scoped_alert(
             session,
-            domain=Domain.GLP1.value,
-            # A plateau is a reading of the trend, not something that went
-            # wrong — the quiet ``note`` tone, not amber.
-            severity=Severity.NOTE.value,
+            context=alert_context,
+            domain=Domain.GLP1,
+            severity=Severity.NOTE,
             message=message,
             alert_key=PLATEAU_ALERT_KEY,
+            legacy_bridge=alert_bridge,
         )
-    return await alerts_service.resolve_by_key(session, alert_key=PLATEAU_ALERT_KEY)
+    return await alerts_service.resolve_scoped_by_key(
+        session,
+        context=alert_context,
+        alert_key=PLATEAU_ALERT_KEY,
+        legacy_bridge=alert_bridge,
+    )
 
 
 # ── Scheduler job ─────────────────────────────────────────────────────────────
@@ -403,10 +951,40 @@ async def plateau_job(session_factory, redis=None) -> None:
     """Daily plateau check (registered in vitals/scheduler/jobs.py). Runs the same
     refresh the dashboard does, so the alert is fresh even without a page load."""
     async with session_factory() as session:
+        today = today_local()
+        context = await conflict_engine.resolve_legacy_conflict_write_context(
+            session,
+            actor_username=None,
+            evaluation_date=today,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=context,
+        )
+        enabled = await modules_service.get_enabled_modules(
+            session,
+            redis,
+            subject_id=context.identity.subject_id,
+        )
+        if not enabled.get("glp1", False):
+            await session.commit()
+            return
+
         from vitals.services.language_service import get_language
         from vitals.i18n import current_lang
-        lang = await get_language(session, redis)
+        from vitals.models.identity import HealthSubject
+
+        owner_user_id = await session.scalar(
+            select(HealthSubject.owner_user_id).where(
+                HealthSubject.id == context.identity.subject_id
+            )
+        )
+        lang = await get_language(session, redis, user_id=owner_user_id)
         current_lang.set(lang)
 
-        await refresh_plateau_alert(session)
+        await refresh_plateau_alert(
+            session,
+            identity=context.identity,
+            prepared_conflict_write=prepared,
+        )
         await session.commit()

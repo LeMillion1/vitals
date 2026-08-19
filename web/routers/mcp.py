@@ -336,6 +336,7 @@ async def get_weight_logs(
 
 
 @mcp.tool()
+@gated("glp1")
 async def get_glp1_logs(
     start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
 ) -> dict:
@@ -346,27 +347,32 @@ async def get_glp1_logs(
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        # Injections
-        i_stmt = select(Injection)
-        if start:
-            i_stmt = i_stmt.where(Injection.date >= start)
-        if end:
-            i_stmt = i_stmt.where(Injection.date <= end)
-        i_stmt = i_stmt.order_by(Injection.date.desc()).limit(limit)
-        injections = (await session.execute(i_stmt)).scalars().all()
+        from vitals.services import glp1_service
 
-        # Dose phases
-        p_stmt = select(DosePhase).order_by(DosePhase.start_date.desc())
-        phases = (await session.execute(p_stmt)).scalars().all()
-
-        # Side effects
-        s_stmt = select(SideEffect)
-        if start:
-            s_stmt = s_stmt.where(SideEffect.date >= start)
-        if end:
-            s_stmt = s_stmt.where(SideEffect.date <= end)
-        s_stmt = s_stmt.order_by(SideEffect.date.desc()).limit(limit)
-        effects = (await session.execute(s_stmt)).scalars().all()
+        scope = await _mcp_v1_conflict_scope(session)
+        scope_kwargs = {
+            "subject_id": scope.subject_id,
+            "include_legacy_unowned": scope.include_legacy_unowned,
+        }
+        injections = await glp1_service.list_injections(
+            session,
+            start=start,
+            end=end,
+            limit=limit,
+            **scope_kwargs,
+        )
+        phases = sorted(
+            await glp1_service.list_dose_phases(session, **scope_kwargs),
+            key=lambda phase: (phase.start_date, phase.id),
+            reverse=True,
+        )
+        effects = await glp1_service.list_side_effects(
+            session,
+            start=start,
+            end=end,
+            limit=limit,
+            **scope_kwargs,
+        )
 
         return {
             "injections": [serialize_row(i) for i in injections],
@@ -1083,12 +1089,23 @@ async def log_glp1(
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         try:
             row = await glp1_service.log_injection(
                 session, on_date=parsed_date, drug=drug, dose_mg=dose_mg,
-                site=site, note=note, override=override,
+                site=site, note=note, source=Source.MCP.value, override=override,
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         except ValueError as e:
             # An LLM bypasses the HTML form, so bad input (dose_mg<=0, garbage site)
@@ -1570,6 +1587,28 @@ async def log_note(
                 return {"error": f"{domain} record {record_id} not found"}
             await session.commit()
             return await serialize_written(session, row)
+        if domain == "glp1":
+            if not await _module_enabled(session, "glp1"):
+                return {"error": "module 'glp1' is disabled"}
+            from vitals.services import glp1_service
+
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            row = await glp1_service.update_injection_note(
+                session,
+                record_id,
+                note=note,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
+            )
+            if row is None:
+                return {"error": f"{domain} record {record_id} not found"}
+            await session.commit()
+            return await serialize_written(session, row)
         row = await session.get(model, record_id)
         if row is None:
             return {"error": f"{domain} record {record_id} not found"}
@@ -1605,6 +1644,7 @@ async def get_notes(
     async with session_factory() as session:
         nutrition_scope = None
         skincare_scope = None
+        glp1_scope = None
         if "nutrition" in targets:
             if not await _module_enabled(session, "nutrition"):
                 if domain == "nutrition":
@@ -1619,6 +1659,13 @@ async def get_notes(
                 targets.pop("skincare")
             else:
                 skincare_scope = await _mcp_v1_conflict_scope(session)
+        if "glp1" in targets:
+            if not await _module_enabled(session, "glp1"):
+                if domain == "glp1":
+                    return [{"error": "module 'glp1' is disabled"}]
+                targets.pop("glp1")
+            else:
+                glp1_scope = await _mcp_v1_conflict_scope(session)
         for d_name, model in targets.items():
             if d_name == "nutrition":
                 assert nutrition_scope is not None
@@ -1649,6 +1696,26 @@ async def get_notes(
                     subject_id=skincare_scope.subject_id,
                     include_legacy_unowned=(
                         skincare_scope.include_legacy_unowned
+                    ),
+                    start=start,
+                    end=end,
+                    has_note=True,
+                    limit=limit,
+                )
+                for row in rows:
+                    entry = serialize_row(row)
+                    entry["_domain"] = d_name
+                    results.append(entry)
+                continue
+            if d_name == "glp1":
+                assert glp1_scope is not None
+                from vitals.services import glp1_service
+
+                rows = await glp1_service.list_injections(
+                    session,
+                    subject_id=glp1_scope.subject_id,
+                    include_legacy_unowned=(
+                        glp1_scope.include_legacy_unowned
                     ),
                     start=start,
                     end=end,
@@ -1750,6 +1817,17 @@ async def delete_record(domain: str, record_id: int) -> dict:
                 "prepared_conflict_write": prepared,
             }
         elif domain == "skincare_observation":
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            owned_kwargs = {
+                "identity": conflict_context.identity,
+                "include_legacy_unowned": True,
+                "prepared_conflict_write": prepared,
+            }
+        elif domain in {"glp1", "glp1_side_effect", "glp1_dose_phase"}:
             conflict_context = await _mcp_v1_conflict_write_context(session)
             prepared = await conflict_engine.prepare_scoped_write(
                 session,
@@ -2395,18 +2473,53 @@ async def update_glp1(
     session_factory = get_session_factory()
     parsed_date = _parse_date(on_date, field="on_date")
     async with session_factory() as session:
-        merged = await _merged(
-            session, Injection, injection_id,
-            date=parsed_date, drug=drug, dose_mg=dose_mg, site=site, note=note,
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date or today_local(),
         )
-        if merged is None:
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
+        current = await glp1_service.get_injection_for_update(
+            session,
+            injection_id,
+            identity=conflict_context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
+        if current is None:
             return {"error": f"Injection {injection_id} not found"}
+        final_date = current.date if parsed_date is None else parsed_date
+        if conflict_context.evaluation_date != final_date:
+            conflict_context = conflict_engine.ConflictWriteContext(
+                identity=conflict_context.identity,
+                evaluation_date=final_date,
+                legacy_bridge=conflict_context.legacy_bridge,
+            )
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+        merged = {
+            "drug": current.drug if drug is None else drug,
+            "dose_mg": current.dose_mg if dose_mg is None else dose_mg,
+            "site": current.site if site is None else site,
+            "note": current.note if note is None else note,
+        }
         try:
             row = await glp1_service.update_injection(
-                session, injection_id, on_date=merged.pop("date"),
-                override=override, **merged,
+                session,
+                injection_id,
+                on_date=final_date,
+                override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
+                **merged,
             )
         except ConflictBlocked as e:
+            await session.rollback()
             return _conflict_payload(e)
         except ValueError as e:
             return {"error": str(e)}
@@ -2430,9 +2543,19 @@ async def log_side_effect(
     session_factory = get_session_factory()
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_date,
+        )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         row = await glp1_service.log_side_effect(
             session, on_date=parsed_date, effect_type=effect_type,
-            severity=severity, note=note,
+            severity=severity, note=note, source=Source.MCP.value,
+            identity=conflict_context.identity,
+            prepared_conflict_write=prepared,
         )
         await session.commit()
         return await serialize_written(session, row)
@@ -2446,20 +2569,44 @@ async def add_dose_phase(
     dose_mg: float,
     end_date: Optional[str] = None,
     note: Optional[str] = None,
+    override: bool = False,
 ) -> dict:
     """Adds a GLP-1 dose phase (a period on a given drug + dose, overlaid on the
-    weight chart). An open-ended phase (no ``end_date``) auto-closes any other
-    still-open phase the day before it starts. WRITE tool."""
+    weight chart). Open-ended phases are bounded at adjacent phase starts so only
+    the newest one remains current. WRITE tool."""
     from vitals.services import glp1_service
 
     session_factory = get_session_factory()
     parsed_start = _parse_date(start_date, field="start_date")
     parsed_end = _parse_date(end_date, field="end_date")
     async with session_factory() as session:
-        row = await glp1_service.add_dose_phase(
-            session, start_date=parsed_start, drug=drug, dose_mg=dose_mg,
-            end_date=parsed_end, note=note,
+        conflict_context = await _mcp_v1_conflict_write_context(
+            session,
+            evaluation_date=parsed_start,
         )
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
+        try:
+            row = await glp1_service.add_dose_phase(
+                session,
+                start_date=parsed_start,
+                drug=drug,
+                dose_mg=dose_mg,
+                end_date=parsed_end,
+                note=note,
+                source=Source.MCP.value,
+                override=override,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
+            )
+        except ConflictBlocked as exc:
+            await session.rollback()
+            return _conflict_payload(exc)
+        except ValueError as exc:
+            return {"error": str(exc)}
         await session.commit()
         return await serialize_written(session, row)
 

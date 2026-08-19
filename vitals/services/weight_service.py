@@ -23,11 +23,18 @@ import uuid
 from datetime import date as date_type, timedelta
 from typing import Optional, Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import Config, load_config
-from vitals.enums import Domain, FileAssetPurpose, FileAssetStatus, Severity, Source
+from vitals.enums import (
+    Domain,
+    FileAssetPurpose,
+    FileAssetStatus,
+    IntegrationConnectionStatus,
+    Severity,
+    Source,
+)
 from vitals.i18n import t
 from vitals.models.weight import (
     DOMAIN,
@@ -36,6 +43,7 @@ from vitals.models.weight import (
     ProgressPhoto,
     WeightLog,
 )
+from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset
 from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, conflict_engine
@@ -236,12 +244,110 @@ async def list_active_weights(
     *,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Sequence[WeightLog]:
     stmt = select(WeightLog).where(WeightLog.superseded.is_(False))
+    fact_scope = None
+    allowed_linked_raw = None
+    if subject_id is not None:
+        from vitals.models.identity import HealthSubject
+        from vitals.models.tenancy import IntegrationConnection
+
+        owner_user_id = (
+            select(HealthSubject.owner_user_id)
+            .where(HealthSubject.id == subject_id)
+            .scalar_subquery()
+        )
+        historical_statuses = tuple(
+            status.value
+            for status in IntegrationConnectionStatus
+            if status is not IntegrationConnectionStatus.PENDING
+        )
+        exact_scope = and_(
+            WeightLog.subject_id == subject_id,
+            or_(
+                WeightLog.actor_user_id.is_(None),
+                WeightLog.actor_user_id == owner_user_id,
+            ),
+            or_(
+                WeightLog.integration_connection_id.is_(None),
+                exists(
+                    select(1).where(
+                        IntegrationConnection.id
+                        == WeightLog.integration_connection_id,
+                        IntegrationConnection.subject_id == subject_id,
+                        IntegrationConnection.status.in_(historical_statuses),
+                    )
+                ),
+            ),
+        )
+        fact_scope = exact_scope
+        if include_legacy_unowned:
+            fact_scope = or_(
+                fact_scope,
+                and_(
+                    WeightLog.subject_id.is_(None),
+                    WeightLog.actor_user_id.is_(None),
+                    WeightLog.integration_connection_id.is_(None),
+                ),
+            )
+        stmt = stmt.where(fact_scope)
+
+        raw_scope = conflict_engine.ConflictScope(
+            subject_id=subject_id,
+            evaluation_date=end or start or today_local(),
+            legacy_bridge=(
+                conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                if include_legacy_unowned
+                else conflict_engine.LegacyConflictBridge.REJECT
+            ),
+        )
+        exact_raw, fully_unowned_raw = (
+            conflict_engine.raw_payload_scope_conditions(raw_scope)
+        )
+        allowed_linked_raw = exact_raw
+        if include_legacy_unowned:
+            allowed_linked_raw = or_(allowed_linked_raw, fully_unowned_raw)
+    elif include_legacy_unowned:
+        raise ValueError("legacy weight compatibility requires a subject_id")
+    date_filters = []
     if start is not None:
-        stmt = stmt.where(WeightLog.date >= start)
+        date_filters.append(WeightLog.date >= start)
     if end is not None:
-        stmt = stmt.where(WeightLog.date <= end)
+        date_filters.append(WeightLog.date <= end)
+    if date_filters:
+        stmt = stmt.where(*date_filters)
+    if allowed_linked_raw is not None:
+        assert fact_scope is not None
+        invalid_raw = await session.scalar(
+            select(1)
+            .select_from(WeightLog)
+            .outerjoin(RawPayload, WeightLog.raw_payload_id == RawPayload.id)
+            .where(
+                WeightLog.superseded.is_(False),
+                fact_scope,
+                *date_filters,
+                WeightLog.raw_payload_id.is_not(None),
+                allowed_linked_raw.is_not(True),
+            )
+            .limit(1)
+        )
+        if invalid_raw is not None:
+            raise conflict_engine.ConflictRawOwnershipError(
+                "weight fact links to foreign or partial raw provenance"
+            )
+        stmt = stmt.where(
+            or_(
+                WeightLog.raw_payload_id.is_(None),
+                exists(
+                    select(1).where(
+                        RawPayload.id == WeightLog.raw_payload_id,
+                        allowed_linked_raw,
+                    )
+                ),
+            )
+        )
     stmt = stmt.order_by(WeightLog.date)
     result = await session.execute(stmt)
     return result.scalars().all()
@@ -372,17 +478,66 @@ async def add_noise_marker(
     return marker
 
 
-async def list_noise_markers(session: AsyncSession) -> Sequence[NoiseMarker]:
-    result = await session.execute(
-        select(NoiseMarker)
-        .where(NoiseMarker.domain == DOMAIN)
-        .order_by(NoiseMarker.start_date)
-    )
+async def list_noise_markers(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+    start: date_type | None = None,
+    end: date_type | None = None,
+) -> Sequence[NoiseMarker]:
+    stmt = select(NoiseMarker).where(NoiseMarker.domain == DOMAIN)
+    if subject_id is not None:
+        from vitals.models.identity import HealthSubject
+
+        owner_user_id = (
+            select(HealthSubject.owner_user_id)
+            .where(HealthSubject.id == subject_id)
+            .scalar_subquery()
+        )
+        subject_scope = and_(
+            NoiseMarker.subject_id == subject_id,
+            or_(
+                NoiseMarker.actor_user_id.is_(None),
+                NoiseMarker.actor_user_id == owner_user_id,
+            ),
+        )
+        if include_legacy_unowned:
+            subject_scope = or_(
+                subject_scope,
+                and_(
+                    NoiseMarker.subject_id.is_(None),
+                    NoiseMarker.actor_user_id.is_(None),
+                ),
+            )
+        stmt = stmt.where(subject_scope)
+    elif include_legacy_unowned:
+        raise ValueError("legacy weight compatibility requires a subject_id")
+    if start is not None:
+        stmt = stmt.where(
+            or_(NoiseMarker.end_date.is_(None), NoiseMarker.end_date >= start)
+        )
+    if end is not None:
+        stmt = stmt.where(NoiseMarker.start_date <= end)
+    result = await session.execute(stmt.order_by(NoiseMarker.start_date))
     return result.scalars().all()
 
 
-async def _noise_ranges(session: AsyncSession) -> list[tuple[date_type, Optional[date_type]]]:
-    markers = await list_noise_markers(session)
+async def _noise_ranges(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+    start: date_type | None = None,
+    end: date_type | None = None,
+) -> list[tuple[date_type, Optional[date_type]]]:
+    markers = await list_noise_markers(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+        start=start,
+        end=end,
+    )
     return [(m.start_date, m.end_date) for m in markers]
 
 

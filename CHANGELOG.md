@@ -100,6 +100,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   retinoid/peel rules; note and delete paths reject foreign or partial legacy
   rows. The destructive historical Skincare seed script now refuses to run once
   commercial identity bootstrap exists.
+- GLP-1 injection, dose-phase, and side-effect web/MCP paths now stamp and filter
+  the selected subject while preserving manual versus MCP provenance. Injection
+  edits merge only after a scoped row lock, phase creation evaluates the proposed
+  active dose before closing an older phase, and note/delete paths reject foreign
+  or partially owned legacy rows. Plateau detection now reads only the subject's
+  phase, Weight facts, and noise ranges, and reconciles an actorless subject alert;
+  the scheduled check no-ops when that subject has GLP-1 disabled.
 - System alerts now have typed health-subject, provider-connection, and platform
   contexts backed by an exhaustive key/domain registry. The legacy owner sees
   health alerts plus current and retired provider alerts through one fail-closed

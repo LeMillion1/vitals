@@ -165,3 +165,11 @@ async def test_skincare_reads_and_generic_notes_refuse_when_module_is_off():
     assert await mcp_router.get_skincare_logs() == error
     assert await mcp_router.log_note("skincare", 1, "hidden") == error
     assert await mcp_router.get_notes(domain="skincare") == [error]
+
+
+async def test_glp1_reads_and_generic_notes_refuse_when_module_is_off():
+    error = {"error": "module 'glp1' is disabled"}
+
+    assert await mcp_router.get_glp1_logs() == error
+    assert await mcp_router.log_note("glp1", 1, "hidden") == error
+    assert await mcp_router.get_notes(domain="glp1") == [error]

@@ -8,10 +8,9 @@ from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Domain, Drug, InjectionSite
-from vitals.services import alerts_service, glp1_service
+from vitals.enums import Domain, Drug, InjectionSite, Source
+from vitals.services import alerts_service, conflict_engine, glp1_service
 from vitals.services.conflict_engine import ConflictBlocked
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -26,6 +25,24 @@ def _redirect(request: Request) -> RedirectResponse:
     return response
 
 
+async def _prepared_owner_write(
+    db: AsyncSession,
+    *,
+    username: str,
+    evaluation_date: date_type,
+):
+    context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=evaluation_date,
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        db,
+        context=context,
+    )
+    return context, prepared
+
+
 @router.get("", response_class=HTMLResponse)
 async def glp1_dashboard(
     request: Request,
@@ -33,25 +50,39 @@ async def glp1_dashboard(
     username: str = Depends(require_auth),
 ):
     """GLP-1 dashboard: current dose, body-map rotation, injections, side effects."""
-    ownership = await resolve_legacy_ownership_context(
+    today = today_local()
+    context, prepared = await _prepared_owner_write(
         db,
-        actor_username=username,
+        username=username,
+        evaluation_date=today,
     )
-    await glp1_service.refresh_plateau_alert(db)
-    await db.commit()
+    await glp1_service.refresh_plateau_alert(
+        db,
+        identity=context.identity,
+        prepared_conflict_write=prepared,
+    )
 
-    injections = await glp1_service.list_injections(db)
-    phases = await glp1_service.list_dose_phases(db)
-    side_effects = await glp1_service.list_side_effects(db)
+    scope_kwargs = {
+        "subject_id": context.identity.subject_id,
+        "include_legacy_unowned": True,
+    }
+    injections = await glp1_service.list_injections(db, **scope_kwargs)
+    phases = await glp1_service.list_dose_phases(db, **scope_kwargs)
+    side_effects = await glp1_service.list_side_effects(db, **scope_kwargs)
     alerts = await alerts_service.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        context=alerts_service.HealthAlertContext(context.identity),
         domain=Domain.GLP1,
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
 
-    active_phase = await glp1_service.active_dose_phase(db)
-    last_inj = await glp1_service.last_injection(db)
+    active_phase = await glp1_service.active_dose_phase(
+        db,
+        on_date=today,
+        **scope_kwargs,
+    )
+    last_inj = await glp1_service.last_injection(db, **scope_kwargs)
+    await db.commit()
 
     return templates.TemplateResponse(
         request,
@@ -67,8 +98,8 @@ async def glp1_dashboard(
             "site_counts": glp1_service.site_frequency(injections),
             "drugs": [d.value for d in Drug],
             "sites": [s.value for s in InjectionSite],
-            "today": today_local().isoformat(),
-            "today_date": today_local(),
+            "today": today.isoformat(),
+            "today_date": today,
         },
     )
 
@@ -87,11 +118,19 @@ async def add_injection(
     username: str = Depends(require_auth),
 ):
     on_date = date_type.fromisoformat(date)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=on_date,
+    )
     try:
         if id is not None:
             await glp1_service.update_injection(
                 db, id, on_date=on_date, drug=drug, dose_mg=dose_mg,
                 site=site, note=note, override=override,
+                identity=context.identity,
+                include_legacy_unowned=True,
+                prepared_conflict_write=prepared,
             )
         else:
             await glp1_service.log_injection(
@@ -101,10 +140,14 @@ async def add_injection(
                 dose_mg=dose_mg,
                 site=site,
                 note=note,
+                source=Source.MANUAL.value,
                 override=override,
+                identity=context.identity,
+                prepared_conflict_write=prepared,
             )
         await db.commit()
     except ConflictBlocked as e:
+        await db.rollback()
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"violations": [v.to_dict() for v in e.violations]},
@@ -120,15 +163,38 @@ async def add_phase(
     drug: str = Form(...),
     dose_mg: float = Form(...),
     note: Optional[str] = Form(None),
+    override: bool = Form(False),
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
     start = date_type.fromisoformat(start_date)
     end = date_type.fromisoformat(end_date) if end_date else None
-    await glp1_service.add_dose_phase(
-        db, start_date=start, end_date=end, drug=drug, dose_mg=dose_mg, note=note
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=start,
     )
-    await db.commit()
+    try:
+        await glp1_service.add_dose_phase(
+            db,
+            start_date=start,
+            end_date=end,
+            drug=drug,
+            dose_mg=dose_mg,
+            note=note,
+            source=Source.MANUAL.value,
+            override=override,
+            identity=context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
+        await db.commit()
+    except ConflictBlocked as exc:
+        await db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"violations": [v.to_dict() for v in exc.violations]},
+        )
     return _redirect(request)
 
 
@@ -143,8 +209,20 @@ async def add_side_effect(
     username: str = Depends(require_auth),
 ):
     on_date = date_type.fromisoformat(date)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=on_date,
+    )
     await glp1_service.log_side_effect(
-        db, on_date=on_date, effect_type=effect_type, severity=severity, note=note
+        db,
+        on_date=on_date,
+        effect_type=effect_type,
+        severity=severity,
+        note=note,
+        source=Source.MANUAL.value,
+        identity=context.identity,
+        prepared_conflict_write=prepared,
     )
     await db.commit()
     return _redirect(request)
@@ -157,7 +235,18 @@ async def delete_injection(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await glp1_service.delete_injection(db, id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await glp1_service.delete_injection(
+        db,
+        id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)
 
@@ -169,7 +258,18 @@ async def delete_phase(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await glp1_service.delete_dose_phase(db, id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await glp1_service.delete_dose_phase(
+        db,
+        id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)
 
@@ -181,6 +281,17 @@ async def delete_side_effect(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await glp1_service.delete_side_effect(db, id)
+    context, prepared = await _prepared_owner_write(
+        db,
+        username=username,
+        evaluation_date=today_local(),
+    )
+    await glp1_service.delete_side_effect(
+        db,
+        id,
+        identity=context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)

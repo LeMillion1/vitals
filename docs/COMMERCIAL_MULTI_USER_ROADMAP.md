@@ -214,7 +214,7 @@ Implementation progress on `commercial/main`:
   current and retired provider roots, and provider/scheduler writers use an exact
   reviewed scope. Conflict reads and all seven resolver domains use one subject
   and date. Curated conflict-rule activation is stored per subject, and the
-  Supplements, Nutrition, and Skincare web/MCP write paths use an opaque prepared
+  Supplements, Nutrition, Skincare, and GLP-1 web/MCP write paths use an opaque prepared
   writer capability and locked target rows. Supplements replace one catalog row;
   Nutrition replaces the subject-day aggregate and evaluates projected totals so
   concurrent meals cannot bypass a cumulative rule. Skincare replaces one
@@ -222,6 +222,9 @@ Implementation progress on `commercial/main`:
   Nutrition deletes share the same subject lock, and its actorless day-end job
   uses scoped reconciliation. Skincare observations and personal products also
   dual-write S+A, while direct reads, notes, and deletes enforce the same subject.
+  GLP-1 injections, dose phases, and side effects dual-write S+A with exact
+  manual/MCP source provenance; plateau evaluation uses subject-scoped
+  phase/Weight/noise reads and actorless alert reconciliation.
   These paths resolve the verified legacy owner at their web, scheduler, or MCP
   boundary and fail closed if a second subject makes the compatibility bridge
   ambiguous.

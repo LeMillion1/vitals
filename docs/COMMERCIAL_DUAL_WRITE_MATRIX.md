@@ -175,7 +175,11 @@ deletion joins the subject-lock order, direct MCP Nutrition reads are scoped, an
 the day-end job reconciles actorless subject alerts. Skincare checklist replacement
 uses a subject-day marker so old actives do not false-block a corrected routine;
 its observations and personal product catalog stamp S+A, and direct web/MCP reads,
-notes, and deletes are subject-scoped. Other domain writers and the transitional
+notes, and deletes are subject-scoped. GLP-1 injections, dose phases, and side
+effects use the same prepared boundary; a phase replaces the active subject-day
+resolver item before evaluation and can only close an eligible phase in that
+subject. Plateau reconciliation consumes subject-scoped phase/Weight/noise reads
+and writes an actorless health alert. Other domain writers and the transitional
 legacy service fallbacks remain on the reviewed inventory. Their
 cutover must preserve the canonical governance
 -> provider/outbox advisory -> subject/domain-row -> alert order;
