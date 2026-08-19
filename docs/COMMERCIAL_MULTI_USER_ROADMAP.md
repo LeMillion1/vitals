@@ -4,8 +4,7 @@ Status: active design and implementation plan
 
 Last reviewed: 2026-08-19
 
-Current implementation branch: `commercial/main` (next:
-`commercial/pr-03-subject-ownership`)
+Current implementation branch: `commercial/pr-03-subject-ownership`
 
 Commercial base: current `origin/master`; publish it as a separate branch in
 `vlakimov/vitals` instead of rewriting the fork's historical `master`
@@ -188,6 +187,11 @@ mode. Never delete the copied password hash until the auth cutover is verified.
 
 ### PR 03 — Subject ownership expansion and backfill
 
+The canonical table-by-table contract is
+`docs/COMMERCIAL_OWNERSHIP_INVENTORY.md`. It classifies all 49 current tables,
+the missing ownership roots, natural keys, cross-surface dependencies, backfill
+order, and rollback boundary.
+
 Scope:
 
 - add nullable `subject_id` (and connector/actor fields where required) to every
@@ -195,19 +199,30 @@ Scope:
   child table;
 - split global `AppSetting` state into user, subject, and platform settings;
 - backfill the legacy subject in bounded batches and verify counts/checksums;
-- rebuild natural/unique keys around subject or integration connection;
-- retain old columns and dual-write during the transition.
+- retain old columns, readers, and global uniqueness while nullable expansion,
+  dual-write, and backfill are validated;
+- run a separate gated scoped-key cutover after backfill: create and validate
+  subject/connection-scoped unique indexes, switch every key-based write/read,
+  then remove the corresponding global uniqueness;
+- keep every path to a second writable subject disabled until that cutover has
+  passed.
 
 Tests:
 
-- two subjects may use the same date, rsID, alert key, Garmin activity ID, Hevy
-  workout ID, notification dedupe key, and external payload ID without collision;
-- orphan count is zero; child rows cannot cross subjects;
+- expand/backfill validation proves orphan count is zero, child rows cannot
+  cross subjects, and old/new counts and checksums agree while old uniqueness is
+  still present;
+- after the gated key cutover, two subjects may use the same date, rsID, alert
+  key, notification dedupe key, and external payload ID, and two connections may
+  use the same Garmin activity ID or Hevy workout ID without collision;
 - a real `0034` snapshot upgrades with counts, provenance, raw links, and frozen
   reports intact.
 
-Rollback: nullable expansion and legacy columns allow code rollback. Do not run
-contract steps or remove legacy uniqueness here.
+Rollback: nullable expansion and legacy columns allow code rollback before a
+second subject can write. A removed global unique may be recreated only after
+proving the data still satisfies it. Once a second subject has written data,
+especially a duplicate of a legacy global key, downgrade to the single-subject
+schema is forbidden; recovery requires a verified backup and forward fix.
 
 ### PR 04 — Scoped services, policy engine, and PostgreSQL RLS
 
@@ -431,9 +446,9 @@ Exit criteria:
 
 Scope:
 
-- make scope columns non-null, remove compatibility reads/dual writes, and drop
-  obsolete global uniqueness/settings only after all previous releases are
-  stable;
+- make scope columns non-null and remove compatibility reads/dual writes,
+  legacy settings, and any obsolete constraints explicitly deferred by the
+  PR-03 scoped-key cutover, only after all previous releases are stable;
 - publish a backup-required recovery path for deployments that now contain more
   than one subject.
 
@@ -527,6 +542,7 @@ Additional gates:
 | 2026-08-19 | Registration is implemented only after isolation, then opened last. | A working signup form before complete subject isolation creates a direct health-data breach risk. |
 | 2026-08-19 | Preserve legacy browser cookies through their existing TTL using a strict versioned compatibility envelope. | A flag-day logout is unnecessary in the bootstrap PR, but unknown token shapes and authorization facts in signed-readable cookies must fail closed. |
 | 2026-08-19 | Treat password rotation as an explicit environment/DB dual-write until database auth cuts over. | Strict startup hash reconciliation would otherwise turn a legitimate settings change into a startup outage; compensation narrows the unavoidable file/database crash window. |
+| 2026-08-19 | Separate nullable ownership expansion/backfill from the scoped-key cutover, and complete both before a second subject is writable. | Keeping a global unique constraint cannot permit the same date or upstream ID in two subjects. After scoped duplicate data exists, a downgrade to the global-key schema would be lossy and is forbidden. |
 
 ## Continuation protocol
 

@@ -70,6 +70,7 @@ from vitals.models.skincare import SkincareLog, SkincareObservation
 from vitals.models.supplements import Supplement
 from vitals.models.timeline import Annotation
 from vitals.models.weight import BodyMeasurement, NoiseMarker, WeightLog
+from vitals.ownership import OWNERSHIP_REGISTRY
 from vitals.i18n import t
 from vitals.services.signals_service import normalize_key
 from vitals.utils.timeutils import now_local
@@ -83,21 +84,13 @@ KIND_LLM = "llm_export"
 # it contains any of these substrings — forward-looking guard for token rows.
 _SECRET_KEY_MARKERS = ("token", "secret", "password", "api_key", "apikey", "credential")
 
-# Tables the ordinary user backup must not touch in either direction (see module
-# docstring). Published reports are outward-facing artifacts with their own
-# lifecycle. Identity, authorization, and audit rows are durable control-plane
-# state: exporting them would leak password hashes and access metadata, while
-# importing them could replace the account that is authorizing the restore.
+# The reviewed ownership registry is the source of truth in both directions.
+# A newly added table cannot drift into a backup merely because this service's
+# generic metadata walk discovered it before a hand-maintained denylist did.
 _EXCLUDED_TABLES = frozenset(
-    {
-        "audit_events",
-        "health_subjects",
-        "shared_reports",
-        "support_access_grants",
-        "support_access_scopes",
-        "user_roles",
-        "users",
-    }
+    table_name
+    for table_name, spec in OWNERSHIP_REGISTRY.items()
+    if not spec.user_portable
 )
 
 _LABELED_TABLES = (
