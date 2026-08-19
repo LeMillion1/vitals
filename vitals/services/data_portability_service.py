@@ -4,11 +4,13 @@ Two deliberately different shapes (they pull in opposite directions, so we don't
 try to make one file serve both):
 
   * **Full backup** (:func:`export_full` / :func:`import_full`) — a faithful,
-    machine-round-trippable snapshot of *every* table (including the ``raw_payloads``
-    JSONB data-lake and internal ``id``s). Import runs **replace**: wipe every table
-    and reload the file, preserving primary keys so foreign keys stay valid. The
-    whole thing rides the request's single transaction — any error rolls the DB back
-    to where it started (the router owns the commit; we only ``flush``).
+    machine-round-trippable snapshot of every portable data table (including the
+    ``raw_payloads`` JSONB data-lake and internal ``id``s). Durable identity,
+    authorization, audit, and published-link control-plane tables are deliberately
+    excluded. Import runs **replace** for portable data only, preserving primary
+    keys so foreign keys stay valid. The whole thing rides the request's single
+    transaction — any error rolls the DB back to where it started (the router owns
+    the commit; we only ``flush``).
 
   * **LLM export** (:func:`export_llm`) — a flat, human-readable digest the owner
     pastes straight into a chat (Claude/ChatGPT). No raw dumps, no ids, no service
@@ -81,10 +83,22 @@ KIND_LLM = "llm_export"
 # it contains any of these substrings — forward-looking guard for token rows.
 _SECRET_KEY_MARKERS = ("token", "secret", "password", "api_key", "apikey", "credential")
 
-# Tables the generic walk must not touch, in either direction (see module
-# docstring). Published doctor reports are outward-facing artifacts with their
-# own lifecycle, not data to round-trip.
-_EXCLUDED_TABLES = frozenset({"shared_reports"})
+# Tables the ordinary user backup must not touch in either direction (see module
+# docstring). Published reports are outward-facing artifacts with their own
+# lifecycle. Identity, authorization, and audit rows are durable control-plane
+# state: exporting them would leak password hashes and access metadata, while
+# importing them could replace the account that is authorizing the restore.
+_EXCLUDED_TABLES = frozenset(
+    {
+        "audit_events",
+        "health_subjects",
+        "shared_reports",
+        "support_access_grants",
+        "support_access_scopes",
+        "user_roles",
+        "users",
+    }
+)
 
 _LABELED_TABLES = (
     "weight_logs", "body_measurements", "progress_photos", "hevy_workouts",
@@ -179,7 +193,7 @@ def _is_secret_setting_key(key: str) -> bool:
 
 
 async def export_full(session: AsyncSession) -> dict[str, Any]:
-    """Snapshot every table into ``{table_name: [rows]}`` plus a ``metadata`` head.
+    """Snapshot portable tables into ``{table_name: [rows]}`` plus metadata.
 
     Tables are walked in FK order (``sorted_tables``); ``app_settings`` secret-ish
     rows are dropped. The result is a plain dict ready for ``json.dumps``.
@@ -255,11 +269,12 @@ async def _secret_settings(session: AsyncSession) -> list[dict[str, Any]]:
 
 
 async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
-    """Replace the whole DB with the file's contents, in the caller's transaction.
+    """Replace portable data with the file's contents, in the caller's transaction.
 
-    Deletes every table (children first), reloads each present table preserving
-    primary keys (parents first), then fixes Postgres identity sequences. Only
-    ``flush`` — the router commits, so any raised error rolls everything back.
+    Deletes every portable table (children first), reloads each present portable
+    table preserving primary keys (parents first), then fixes Postgres identity
+    sequences. Only ``flush`` — the router commits, so any raised error rolls
+    everything back.
 
     **What the export refuses to write, the import refuses to delete or accept.**
     ``export_full`` drops secret-ish ``app_settings`` keys, so a wipe-and-reload
@@ -270,8 +285,9 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     not be a way to plant a credential either.
 
     ``_EXCLUDED_TABLES`` follows the same rule from the other side: those tables
-    are neither wiped nor loaded, so a restore can't republish a doctor link the
-    owner revoked six months ago.
+    are neither wiped nor loaded, so a restore cannot republish a revoked report,
+    replace its authorizing owner, plant roles or support access, or rewrite the
+    audit trail.
     """
     _validate_payload(payload)
 
@@ -322,12 +338,11 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
 
 
 async def _reset_sequences(session: AsyncSession) -> None:
-    """Postgres only: after inserting explicit ids, advance each id sequence past the
-    max id so the next normal insert doesn't collide. No-op on SQLite (tests)."""
+    """Advance sequences for restored portable tables; no-op on SQLite."""
     if session.bind is None or session.bind.dialect.name != "postgresql":
         return
     for table in Base.metadata.sorted_tables:
-        if "id" not in table.columns:
+        if table.name in _EXCLUDED_TABLES or "id" not in table.columns:
             continue
         seq = (
             await session.execute(

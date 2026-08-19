@@ -36,6 +36,34 @@ from web.templating import STATIC_DIR, templates
 logger = logging.getLogger(__name__)
 
 
+async def _bootstrap_legacy_identity(session_factory, *, timezone: str) -> None:
+    """Materialize the environment-backed owner before any background work.
+
+    The compatibility login remains environment-backed in this rollout phase,
+    but every deployment must have one durable owner/subject boundary before a
+    scheduler, connector, or catalog job can start.  Keep this transaction short
+    so the PostgreSQL governance lock is never held while unrelated catalogs are
+    synchronized.
+    """
+
+    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from web.config import get_web_config
+
+    web_config = get_web_config()
+    async with session_factory() as session:
+        try:
+            await bootstrap_legacy_owner(
+                session,
+                username=web_config.auth_username,
+                password_hash=web_config.auth_password_hash,
+                timezone=timezone,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
@@ -55,6 +83,11 @@ async def lifespan(app: FastAPI):
     from vitals.services.proactive import prefs
 
     config = load_config()
+
+    # Fail startup closed if the legacy credential cannot be reconciled with the
+    # durable identity.  This runs before catalogs, scheduler registration, or
+    # connector work so a partially initialized process never serves requests.
+    await _bootstrap_legacy_identity(session_factory, timezone=config.timezone)
 
     # Register cross-domain conflict resolvers (supplements/genetics/skincare/...).
     register_all_resolvers()
@@ -417,4 +450,3 @@ try:
 except ImportError:
     import logging
     logging.getLogger(__name__).warning("MCP/OAuth disabled (fastmcp not available)")
-

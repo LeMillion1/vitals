@@ -34,9 +34,25 @@ fi
 export VITALS_TEST_DATABASE_URL="postgresql+asyncpg://postgres:${PASSWORD}@127.0.0.1:${PORT}/${DB}"
 echo "→ running pytest against $VITALS_TEST_DATABASE_URL"
 
+TEST_PYTHON="${VITALS_TEST_PYTHON:-.venv/bin/python}"
+if [ ! -x "$TEST_PYTHON" ]; then
+  TEST_PYTHON="python3"
+fi
+
+# Exercise the real migration chain and this branch's reversible identity slice
+# before create_all()-based tests begin. The database is disposable, so a
+# downgrade to the previous head is safe and catches drift that model tests miss.
+if [ "${VITALS_TEST_ALEMBIC:-1}" = "1" ]; then
+  export VITALS_DATABASE_URL="$VITALS_TEST_DATABASE_URL"
+  echo "→ checking Alembic upgrade head → downgrade 0034 → upgrade head"
+  "$TEST_PYTHON" -m alembic upgrade head
+  "$TEST_PYTHON" -m alembic downgrade 0034
+  "$TEST_PYTHON" -m alembic upgrade head
+fi
+
 # Pass through any extra args (specific files, -k, -q, …); default to full suite.
 if [ "$#" -gt 0 ]; then
-  python -m pytest "$@"
+  "$TEST_PYTHON" -m pytest "$@"
 else
-  python -m pytest
+  "$TEST_PYTHON" -m pytest
 fi

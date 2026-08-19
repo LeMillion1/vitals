@@ -4,7 +4,7 @@ Status: active design and implementation plan
 
 Last reviewed: 2026-08-19
 
-Current implementation branch: `commercial/multi-user-foundation`
+Current implementation branch: `commercial/pr-02-legacy-bootstrap`
 
 Commercial base: current `origin/master`; publish it as a separate branch in
 `vlakimov/vitals` instead of rewriting the fork's historical `master`
@@ -151,7 +151,7 @@ Exit criteria:
 Rollback: downgrade drops only the new empty foundation tables. No legacy row is
 changed in this PR.
 
-### PR 02 — Legacy owner bootstrap and access context
+### PR 02 — Legacy owner bootstrap and access context — **in review**
 
 Scope:
 
@@ -162,6 +162,8 @@ Scope:
 - introduce the framework-independent `AccessContext` and policy vocabulary;
 - keep the existing cookie/login flow active behind a compatibility adapter;
 - add session/token versioning so a later cutover can revoke old credentials.
+- keep identity, support, and audit control-plane rows out of ordinary user
+  backup/restore while subject-scoped portability is not yet available.
 
 Tests:
 
@@ -169,6 +171,8 @@ Tests:
 - a missing email is supported; invalid/ambiguous legacy identity fails closed;
 - role alone cannot authorize a health-data action;
 - the last-superadmin invariant is enforced.
+- legacy or forged imports cannot read, replace, or delete identity control-plane
+  state.
 
 Rollback: retain new rows but return the compatibility adapter to legacy-only
 mode. Never delete the copied password hash until the auth cutover is verified.
@@ -488,7 +492,7 @@ Additional gates:
 - [x] Select isolated commercial fork and current upstream base without rewriting
   historical fork branches.
 - [x] Merge PR 01 identity/support foundation.
-- [ ] Bootstrap current owner and introduce `AccessContext`.
+- [x] Bootstrap current owner and introduce `AccessContext`.
 - [ ] Backfill subject ownership across the lake.
 - [ ] Pass cross-subject service isolation and PostgreSQL RLS gates.
 - [ ] Cut over database auth and per-user sessions/MFA.
@@ -512,6 +516,8 @@ Additional gates:
 | 2026-08-19 | Platform superadmins have no standing PHI access. | Support needs are real, but invisible impersonation or global MCP access is unacceptable. Scoped, time-limited grants preserve repair capability and accountability. |
 | 2026-08-19 | Patient-visible care-team threads precede any hidden professional channel. | This is the safest useful communication model and avoids inventing a private clinical channel without product/legal approval. |
 | 2026-08-19 | Registration is implemented only after isolation, then opened last. | A working signup form before complete subject isolation creates a direct health-data breach risk. |
+| 2026-08-19 | Preserve legacy browser cookies through their existing TTL using a strict versioned compatibility envelope. | A flag-day logout is unnecessary in the bootstrap PR, but unknown token shapes and authorization facts in signed-readable cookies must fail closed. |
+| 2026-08-19 | Treat password rotation as an explicit environment/DB dual-write until database auth cuts over. | Strict startup hash reconciliation would otherwise turn a legitimate settings change into a startup outage; compensation narrows the unavoidable file/database crash window. |
 
 ## Continuation protocol
 

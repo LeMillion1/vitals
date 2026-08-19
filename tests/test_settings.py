@@ -457,8 +457,15 @@ async def test_settings_change_password_too_short(auth_client):
     assert "8 символов" in r.text
 
 
-async def test_settings_change_password_success(auth_client, tmp_path, monkeypatch):
-    """POST /settings/password with valid data updates the hash in .env."""
+async def test_settings_change_password_success(
+    auth_client, db_session, tmp_path, monkeypatch
+):
+    """A password change updates both compatibility config and durable identity."""
+    from sqlalchemy import select
+
+    from vitals.models.identity import AuditEvent, HealthSubject, User, UserRole
+    from vitals.utils.passwords import verify_password
+
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_AUTH_PASSWORD_HASH=old_hash\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
@@ -481,6 +488,19 @@ async def test_settings_change_password_success(auth_client, tmp_path, monkeypat
     # The hash was updated (bcrypt hashes start with $2b$)
     assert "$2b$" in content
     assert "old_hash" not in content
+
+    user = await db_session.scalar(select(User))
+    assert user is not None
+    assert user.username == "tester"
+    assert verify_password("mynewpassword", user.password_hash)
+    assert user.session_version == 2
+    assert len(list(await db_session.scalars(select(UserRole)))) == 2
+    assert await db_session.scalar(select(HealthSubject)) is not None
+    events = set(await db_session.scalars(select(AuditEvent.event_type)))
+    assert events == {
+        "identity.legacy_owner.bootstrap",
+        "identity.password.rotated",
+    }
 
 
 async def test_settings_change_password_takes_effect_live(auth_client, tmp_path, monkeypatch):
@@ -508,6 +528,133 @@ async def test_settings_change_password_takes_effect_live(auth_client, tmp_path,
 
     assert authenticate("tester", "password") is False
     assert authenticate("tester", "brandnewpass") is True
+
+
+async def test_settings_change_password_preserves_stronger_bcrypt_cost(
+    auth_client, db_session, tmp_path, monkeypatch
+):
+    """A pre-existing cost above the runtime default must not make rotation fail."""
+    from sqlalchemy import select
+
+    from vitals.models.identity import User
+    from vitals.services.identity_service import bcrypt_cost
+    from vitals.utils.passwords import hash_password
+
+    stronger_hash = hash_password("password", minimum_rounds=5)
+    env_file = tmp_path / "test.env"
+    env_file.write_text(
+        f"VITALS_AUTH_PASSWORD_HASH={stronger_hash}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", stronger_hash)
+
+    response = await auth_client.post(
+        "/settings/password",
+        data={
+            "old_password": "password",
+            "new_password": "brandnewpass",
+            "new_password_confirm": "brandnewpass",
+        },
+    )
+
+    assert response.status_code == 303
+    user = await db_session.scalar(select(User))
+    assert user is not None
+    assert bcrypt_cost(user.password_hash) == 5
+
+
+async def test_settings_change_password_restores_env_when_db_commit_fails(
+    auth_client, db_session, tmp_path, monkeypatch
+):
+    """The non-transactional env half is compensated if DB commit fails."""
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import func, select
+
+    from vitals.models.identity import User
+    from vitals.utils.passwords import hash_password
+    from web.auth import authenticate
+
+    old_hash = hash_password("password")
+    env_file = tmp_path / "test.env"
+    env_file.write_text(
+        f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", old_hash)
+    monkeypatch.setattr(
+        db_session,
+        "commit",
+        AsyncMock(side_effect=RuntimeError("synthetic commit failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic commit failure"):
+        await auth_client.post(
+            "/settings/password",
+            data={
+                "old_password": "password",
+                "new_password": "brandnewpass",
+                "new_password_confirm": "brandnewpass",
+            },
+        )
+
+    assert env_file.read_text(encoding="utf-8") == (
+        f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n"
+    )
+    assert os.environ["VITALS_AUTH_PASSWORD_HASH"] == old_hash
+    user_count = await db_session.scalar(select(func.count()).select_from(User))
+    assert int(user_count or 0) == 0
+    assert authenticate("tester", "password") is True
+    assert authenticate("tester", "brandnewpass") is False
+
+
+async def test_settings_change_password_compensates_task_cancellation(
+    auth_client, db_session, tmp_path, monkeypatch
+):
+    """Cancellation after the env write must not strand a mismatched hash."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import func, select
+
+    from vitals.models.identity import User
+    from vitals.utils.passwords import hash_password
+    from web.auth import authenticate
+
+    old_hash = hash_password("password")
+    env_file = tmp_path / "test.env"
+    env_file.write_text(
+        f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_AUTH_PASSWORD_HASH", old_hash)
+    monkeypatch.setattr(
+        db_session,
+        "commit",
+        AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+
+    # Starlette's BaseHTTPMiddleware converts an uncaught BaseException from the
+    # endpoint task into this transport-level error. The assertions below pin the
+    # behavior that matters: our endpoint saw cancellation and compensated first.
+    with pytest.raises(RuntimeError, match="No response returned"):
+        await auth_client.post(
+            "/settings/password",
+            data={
+                "old_password": "password",
+                "new_password": "brandnewpass",
+                "new_password_confirm": "brandnewpass",
+            },
+        )
+
+    assert env_file.read_text(encoding="utf-8") == (
+        f"VITALS_AUTH_PASSWORD_HASH={old_hash}\n"
+    )
+    assert os.environ["VITALS_AUTH_PASSWORD_HASH"] == old_hash
+    user_count = await db_session.scalar(select(func.count()).select_from(User))
+    assert int(user_count or 0) == 0
+    assert authenticate("tester", "password") is True
+    assert authenticate("tester", "brandnewpass") is False
 
 
 async def test_settings_restart_endpoint(auth_client, monkeypatch):

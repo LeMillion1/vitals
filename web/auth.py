@@ -6,12 +6,13 @@ the single-user configuration loaded from web/config.py.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from itsdangerous import BadData, BadSignature, SignatureExpired, URLSafeTimedSerializer
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +27,27 @@ from web.templating import templates
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_SESSION_TOKEN_VERSION = 1
+_SESSION_TOKEN_TYPE = "web_session"
+_SESSION_AUTH_SOURCE = "legacy_env"
+_SESSION_V1_KEYS = frozenset({"v", "type", "auth_source", "username"})
+
+
+@dataclass(frozen=True, slots=True)
+class SessionClaims:
+    """Validated browser-session identity without authorization state.
+
+    PR-02 still authenticates the single legacy owner from environment-backed
+    credentials.  The versioned envelope gives a later database-auth cutover a
+    stable compatibility boundary without putting roles, subject access, or
+    health data in the signed (but readable) cookie.
+    """
+
+    version: int
+    token_type: str
+    auth_source: str
+    username: str
 
 
 def _get_serializer() -> URLSafeTimedSerializer:
@@ -102,30 +124,71 @@ def safe_next(next: str | None) -> str:
     return next
 
 
-def read_session(token: str | None) -> Optional[str]:
-    """Verify and load the username from a signed session token.
+def decode_session(token: str | None) -> SessionClaims | None:
+    """Verify and strictly decode a browser session token.
 
-    Returns the username if valid, or None if expired, tampered, or — since MCP
-    access tokens are dict payloads, not bare usernames — actually an MCP token
-    presented as a session cookie.
+    Existing bare-string cookies are accepted as version 0 until their normal
+    TTL expires.  New cookies use the exact version 1 envelope; unknown,
+    malformed, or extended envelopes fail closed.
     """
-    if not token:
+    if not isinstance(token, str) or not token:
         return None
     cfg = get_web_config()
     serializer = _get_serializer()
     try:
         payload = serializer.loads(token, max_age=cfg.session_ttl)
-    except (SignatureExpired, BadSignature):
+    except BadData:
         return None
-    if not isinstance(payload, str):
+
+    if isinstance(payload, str):
+        if not payload.strip():
+            return None
+        return SessionClaims(
+            version=0,
+            token_type=_SESSION_TOKEN_TYPE,
+            auth_source=_SESSION_AUTH_SOURCE,
+            username=payload,
+        )
+
+    if not isinstance(payload, dict) or set(payload) != _SESSION_V1_KEYS:
         return None
-    return payload
+    if type(payload["v"]) is not int or payload["v"] != _SESSION_TOKEN_VERSION:
+        return None
+    if payload["type"] != _SESSION_TOKEN_TYPE:
+        return None
+    if payload["auth_source"] != _SESSION_AUTH_SOURCE:
+        return None
+    username = payload["username"]
+    if not isinstance(username, str) or not username.strip():
+        return None
+
+    return SessionClaims(
+        version=_SESSION_TOKEN_VERSION,
+        token_type=_SESSION_TOKEN_TYPE,
+        auth_source=_SESSION_AUTH_SOURCE,
+        username=username,
+    )
+
+
+def read_session(token: str | None) -> Optional[str]:
+    """Return the username from a valid browser session, preserving the public API."""
+    claims = decode_session(token)
+    return claims.username if claims is not None else None
 
 
 def create_session(username: str) -> str:
-    """Generate a signed session token for a username."""
+    """Generate a version 1 legacy-owner browser session token."""
+    if not isinstance(username, str) or not username.strip():
+        raise ValueError("session username must be a non-blank string")
     serializer = _get_serializer()
-    return serializer.dumps(username)
+    return serializer.dumps(
+        {
+            "v": _SESSION_TOKEN_VERSION,
+            "type": _SESSION_TOKEN_TYPE,
+            "auth_source": _SESSION_AUTH_SOURCE,
+            "username": username,
+        }
+    )
 
 
 def set_session_cookie(response: Response, token: str) -> None:

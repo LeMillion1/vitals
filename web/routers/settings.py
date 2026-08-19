@@ -605,9 +605,12 @@ async def change_password(
     new_password: str = Form(""),
     new_password_confirm: str = Form(""),
 ):
-    from web.auth import authenticate, clear_session_cookie, create_session, set_session_cookie
-    from web.config import get_web_config
+    from vitals.config import load_config
+    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from vitals.services.identity_service import bcrypt_cost, rotate_password_hash
     from vitals.utils.passwords import hash_password
+    from web.auth import authenticate, create_session, set_session_cookie
+    from web.config import get_web_config
 
     cfg = get_web_config()
 
@@ -620,18 +623,62 @@ async def change_password(
     if new_password != new_password_confirm:
         return await _page(request, username, db=db, redis=redis, error="password_mismatch")
 
-    hashed = hash_password(new_password)
-    write_keys({"VITALS_AUTH_PASSWORD_HASH": hashed})
-    # Apply live: get_web_config() reads the env at call time, so updating the
-    # process env makes the new password work immediately and invalidates the old
-    # one without waiting for a container restart (unlike the other settings,
-    # which are cached/loaded at startup — that's fine for them, not for a secret).
-    import os
+    hashed = hash_password(
+        new_password,
+        minimum_rounds=bcrypt_cost(cfg.auth_password_hash),
+    )
 
-    os.environ["VITALS_AUTH_PASSWORD_HASH"] = hashed
+    # The compatibility login still reads the environment, while the durable
+    # identity is now the fail-closed startup anchor.  Update both as one logical
+    # operation: bootstrap/rotation only flush, this HTTP boundary owns commit,
+    # and a failed DB commit restores the old environment credential best-effort.
+    bootstrap = await bootstrap_legacy_owner(
+        db,
+        username=cfg.auth_username,
+        password_hash=cfg.auth_password_hash,
+        timezone=load_config().timezone,
+    )
+    await rotate_password_hash(
+        db,
+        user_id=bootstrap.user_id,
+        expected_current_hash=cfg.auth_password_hash,
+        new_hash=hashed,
+        actor_user_id=bootstrap.user_id,
+    )
 
-    # Re-issue session so the user isn't kicked out by the cookie change.
+    key = "VITALS_AUTH_PASSWORD_HASH"
+    previous_persisted_hash = read_key(key) or cfg.auth_password_hash
     token = create_session(cfg.auth_username)
+    environment_written = False
+    try:
+        write_keys({key: hashed})
+        environment_written = True
+        os.environ[key] = hashed
+        await db.commit()
+    # Cancellation and process-shutdown exceptions also need compensation after
+    # the file write. Re-raise every BaseException once the old credential has
+    # been restored; this is not an error-swallowing boundary.
+    except BaseException:
+        try:
+            await db.rollback()
+        finally:
+            os.environ[key] = cfg.auth_password_hash
+            if environment_written:
+                try:
+                    write_keys({key: previous_persisted_hash})
+                except Exception as compensation_error:
+                    logger.critical(
+                        "password rotation failed and the environment file could "
+                        "not be restored; explicit credential reconciliation is "
+                        "required"
+                    )
+                    raise RuntimeError(
+                        "password rotation could not restore its persisted credential"
+                    ) from compensation_error
+        raise
+
+    # Existing browser cookies remain compatibility credentials until PR-05;
+    # this response merely gives the current browser the new versioned envelope.
     response = _redirect("?saved=password")
     set_session_cookie(response, token)
     return response

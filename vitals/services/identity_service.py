@@ -1,0 +1,413 @@
+"""Durable identity-governance operations for the multi-user foundation.
+
+The functions in this module deliberately do not commit.  They acquire the
+shared identity-governance lock, mutate, and flush; the web, job, or startup
+boundary owns the transaction outcome.
+
+PostgreSQL uses one transaction-scoped advisory lock for every operation that
+can change the active platform-superadmin set or an identity credential.  This
+serializes empty-table bootstrap and the otherwise racy "last active admin"
+check.  SQLite is the fast test path and has no equivalent cross-connection
+guarantee, so the lock is intentionally a no-op there.
+"""
+from __future__ import annotations
+
+import hmac
+import re
+import unicodedata
+import uuid
+from dataclasses import dataclass
+from typing import Optional
+
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from vitals.enums import AuditOutcome, UserRoleName, UserStatus
+from vitals.models.identity import AuditEvent, User, UserRole
+
+# Stable two-int PostgreSQL advisory-lock namespace.  Never use Python's hash(),
+# whose result changes between processes.  0x5649544C spells "VITL".
+IDENTITY_GOVERNANCE_LOCK_NAMESPACE = 0x5649544C
+IDENTITY_GOVERNANCE_LOCK_KEY = 1
+
+_BCRYPT_RE = re.compile(
+    r"^\$2[aby]\$(?P<cost>\d{2})\$[./A-Za-z0-9]{53}$"
+)
+_MIN_BCRYPT_COST = 4
+_MAX_BCRYPT_COST = 31
+_MAX_USERNAME_LENGTH = 128
+
+
+class IdentityServiceError(RuntimeError):
+    """Base class for identity state and governance failures."""
+
+
+class IdentityValidationError(ValueError):
+    """An identity input cannot be represented safely."""
+
+
+class UnsupportedIdentityDatabaseError(IdentityServiceError):
+    """Identity governance was called on an unsupported database dialect."""
+
+
+class UserNotFoundError(IdentityServiceError):
+    """The requested identity does not exist."""
+
+
+class IdentityStateConflictError(IdentityServiceError):
+    """Persisted identity state is inconsistent with the requested mutation."""
+
+
+class LastActivePlatformSuperadminError(IdentityServiceError):
+    """A mutation would leave the platform without an active superadmin."""
+
+
+class PasswordHashMismatchError(IdentityServiceError):
+    """A compare-and-swap password update used a stale current hash."""
+
+
+class PasswordHashDowngradeError(IdentityServiceError):
+    """A password update attempted to lower the bcrypt work factor."""
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedUsername:
+    """Display spelling plus the unique, case-insensitive lookup key."""
+
+    display: str
+    lookup_key: str
+
+
+def normalize_username(raw: str) -> NormalizedUsername:
+    """Return the one canonical username representation used by identity writes.
+
+    NFKC prevents compatibility spellings from creating separate accounts, and
+    ``casefold`` is deliberately stronger than ASCII-only ``lower``.  Internal
+    whitespace remains valid for the legacy owner; registration can impose a
+    narrower product policy later without changing the persisted lookup rule.
+    """
+
+    if not isinstance(raw, str):
+        raise IdentityValidationError("username must be a string")
+    display = unicodedata.normalize("NFKC", raw).strip()
+    if not display:
+        raise IdentityValidationError("username must not be blank")
+    if any(unicodedata.category(char).startswith("C") for char in display):
+        raise IdentityValidationError("username must not contain control characters")
+    lookup_key = display.casefold()
+    if len(display) > _MAX_USERNAME_LENGTH or len(lookup_key) > _MAX_USERNAME_LENGTH:
+        raise IdentityValidationError("normalized username is too long")
+    return NormalizedUsername(display=display, lookup_key=lookup_key)
+
+
+def bcrypt_cost(password_hash: str) -> int:
+    """Validate a bcrypt hash envelope and return its work factor.
+
+    This validates syntax only.  Bootstrap has no plaintext password and must
+    copy the configured one-way hash verbatim rather than verify or re-hash it.
+    """
+
+    if not isinstance(password_hash, str):
+        raise IdentityValidationError("password hash must be a string")
+    match = _BCRYPT_RE.fullmatch(password_hash)
+    if match is None:
+        raise IdentityValidationError("password hash must be a complete bcrypt hash")
+    cost = int(match.group("cost"))
+    if not _MIN_BCRYPT_COST <= cost <= _MAX_BCRYPT_COST:
+        raise IdentityValidationError("bcrypt cost is outside the supported range")
+    return cost
+
+
+async def acquire_identity_governance_lock(session: AsyncSession) -> None:
+    """Serialize identity-governance mutations for the current transaction."""
+
+    dialect = session.get_bind().dialect.name
+    if dialect == "sqlite":
+        return
+    if dialect != "postgresql":
+        raise UnsupportedIdentityDatabaseError(
+            f"identity governance does not support database dialect {dialect!r}"
+        )
+    await session.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "CAST(:namespace AS INTEGER), CAST(:lock_key AS INTEGER))"
+        ),
+        {
+            "namespace": IDENTITY_GOVERNANCE_LOCK_NAMESPACE,
+            "lock_key": IDENTITY_GOVERNANCE_LOCK_KEY,
+        },
+    )
+
+
+async def _user_for_update(session: AsyncSession, user_id: uuid.UUID) -> User:
+    user = await session.scalar(
+        select(User).where(User.id == user_id).with_for_update()
+    )
+    if user is None:
+        raise UserNotFoundError(f"user {user_id} does not exist")
+    return user
+
+
+async def _role_for_update(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    role: UserRoleName,
+) -> Optional[UserRole]:
+    return await session.scalar(
+        select(UserRole)
+        .where(UserRole.user_id == user_id, UserRole.role == role.value)
+        .with_for_update()
+    )
+
+
+async def has_active_platform_superadmin(
+    session: AsyncSession,
+    *,
+    exclude_user_id: uuid.UUID | None = None,
+) -> bool:
+    """Return whether the current transaction can see an active superadmin."""
+
+    query = (
+        select(User.id)
+        .join(UserRole, UserRole.user_id == User.id)
+        .where(
+            User.status == UserStatus.ACTIVE.value,
+            UserRole.role == UserRoleName.PLATFORM_SUPERADMIN.value,
+        )
+        .limit(1)
+    )
+    if exclude_user_id is not None:
+        query = query.where(User.id != exclude_user_id)
+    return await session.scalar(query) is not None
+
+
+def _add_audit_event(
+    session: AsyncSession,
+    *,
+    actor_user_id: uuid.UUID | None,
+    user_id: uuid.UUID,
+    event_type: str,
+    result_code: str,
+    changed_fields: list[str],
+) -> None:
+    session.add(
+        AuditEvent(
+            actor_user_id=actor_user_id,
+            event_type=event_type,
+            outcome=AuditOutcome.SUCCESS.value,
+            resource_type="user",
+            resource_id=str(user_id),
+            metadata_json={
+                "source_surface": "identity_service",
+                "result_code": result_code,
+                "changed_fields": changed_fields,
+            },
+        )
+    )
+
+
+def _as_role(role: UserRoleName | str) -> UserRoleName:
+    try:
+        return UserRoleName(role)
+    except (TypeError, ValueError) as exc:
+        raise IdentityValidationError(f"unknown user role: {role!r}") from exc
+
+
+def _as_status(status: UserStatus | str) -> UserStatus:
+    try:
+        return UserStatus(status)
+    except (TypeError, ValueError) as exc:
+        raise IdentityValidationError(f"unknown user status: {status!r}") from exc
+
+
+async def assign_role(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    role: UserRoleName | str,
+    assigned_by_user_id: uuid.UUID | None,
+) -> UserRole:
+    """Idempotently assign a capability role without granting subject access."""
+
+    role_name = _as_role(role)
+    await acquire_identity_governance_lock(session)
+    await _user_for_update(session, user_id)
+    existing = await _role_for_update(session, user_id=user_id, role=role_name)
+    if existing is not None:
+        return existing
+
+    assignment = UserRole(
+        user_id=user_id,
+        role=role_name.value,
+        assigned_by_user_id=assigned_by_user_id,
+    )
+    session.add(assignment)
+    _add_audit_event(
+        session,
+        actor_user_id=assigned_by_user_id,
+        user_id=user_id,
+        event_type="identity.role.assigned",
+        result_code=f"{role_name.value}_assigned",
+        changed_fields=["roles"],
+    )
+    await session.flush()
+    return assignment
+
+
+async def revoke_role(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    role: UserRoleName | str,
+    actor_user_id: uuid.UUID | None,
+) -> bool:
+    """Revoke a role, rejecting removal of the last active superadmin."""
+
+    role_name = _as_role(role)
+    await acquire_identity_governance_lock(session)
+    user = await _user_for_update(session, user_id)
+    assignment = await _role_for_update(session, user_id=user_id, role=role_name)
+    if assignment is None:
+        return False
+
+    if (
+        role_name is UserRoleName.PLATFORM_SUPERADMIN
+        and user.status == UserStatus.ACTIVE.value
+        and not await has_active_platform_superadmin(
+            session, exclude_user_id=user.id
+        )
+    ):
+        raise LastActivePlatformSuperadminError(
+            "cannot revoke the last active platform_superadmin role"
+        )
+
+    await session.delete(assignment)
+    _add_audit_event(
+        session,
+        actor_user_id=actor_user_id,
+        user_id=user_id,
+        event_type="identity.role.revoked",
+        result_code=f"{role_name.value}_revoked",
+        changed_fields=["roles"],
+    )
+    await session.flush()
+    return True
+
+
+async def change_user_status(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    new_status: UserStatus | str,
+    actor_user_id: uuid.UUID | None,
+) -> User:
+    """Change lifecycle status while preserving one active platform superadmin."""
+
+    status = _as_status(new_status)
+    await acquire_identity_governance_lock(session)
+    user = await _user_for_update(session, user_id)
+    if user.status == status.value:
+        return user
+
+    superadmin_role = await _role_for_update(
+        session,
+        user_id=user.id,
+        role=UserRoleName.PLATFORM_SUPERADMIN,
+    )
+    if (
+        user.status == UserStatus.ACTIVE.value
+        and status is not UserStatus.ACTIVE
+        and superadmin_role is not None
+        and not await has_active_platform_superadmin(
+            session, exclude_user_id=user.id
+        )
+    ):
+        raise LastActivePlatformSuperadminError(
+            "cannot deactivate the last active platform_superadmin"
+        )
+
+    previous_status = user.status
+    user.status = status.value
+    # Any lifecycle transition invalidates credentials minted under the previous
+    # state.  PR-05 will make browser/MCP validation consume this version.
+    user.session_version += 1
+    _add_audit_event(
+        session,
+        actor_user_id=actor_user_id,
+        user_id=user.id,
+        event_type="identity.user.status_changed",
+        result_code=f"{previous_status}_to_{status.value}",
+        changed_fields=["status", "session_version"],
+    )
+    await session.flush()
+    return user
+
+
+async def rotate_password_hash(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    expected_current_hash: str,
+    new_hash: str,
+    actor_user_id: uuid.UUID | None,
+) -> User:
+    """Replace a bcrypt hash with compare-and-swap and revoke old sessions."""
+
+    new_cost = bcrypt_cost(new_hash)
+    await acquire_identity_governance_lock(session)
+    user = await _user_for_update(session, user_id)
+    if not isinstance(expected_current_hash, str) or not hmac.compare_digest(
+        user.password_hash, expected_current_hash
+    ):
+        raise PasswordHashMismatchError("stored password hash changed concurrently")
+
+    try:
+        current_cost = bcrypt_cost(user.password_hash)
+    except IdentityValidationError as exc:
+        raise IdentityStateConflictError(
+            "stored password hash is not a valid bcrypt hash"
+        ) from exc
+    if new_cost < current_cost:
+        raise PasswordHashDowngradeError(
+            "new bcrypt work factor is lower than the stored work factor"
+        )
+    if hmac.compare_digest(user.password_hash, new_hash):
+        return user
+
+    user.password_hash = new_hash
+    user.session_version += 1
+    _add_audit_event(
+        session,
+        actor_user_id=actor_user_id,
+        user_id=user.id,
+        event_type="identity.password.rotated",
+        result_code="password_hash_rotated",
+        changed_fields=["password_hash", "session_version"],
+    )
+    await session.flush()
+    return user
+
+
+__all__ = [
+    "IDENTITY_GOVERNANCE_LOCK_KEY",
+    "IDENTITY_GOVERNANCE_LOCK_NAMESPACE",
+    "IdentityServiceError",
+    "IdentityStateConflictError",
+    "IdentityValidationError",
+    "LastActivePlatformSuperadminError",
+    "NormalizedUsername",
+    "PasswordHashDowngradeError",
+    "PasswordHashMismatchError",
+    "UnsupportedIdentityDatabaseError",
+    "UserNotFoundError",
+    "acquire_identity_governance_lock",
+    "assign_role",
+    "bcrypt_cost",
+    "change_user_status",
+    "has_active_platform_superadmin",
+    "normalize_username",
+    "revoke_role",
+    "rotate_password_hash",
+]

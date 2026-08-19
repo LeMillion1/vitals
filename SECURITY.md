@@ -41,6 +41,33 @@ Key security controls already in place:
 - **Loopback-only port binding** in `docker-compose.yml` (`127.0.0.1:8000`)
 - **MCP OAuth 2.0 + PKCE** for Claude.ai integration
 
+### Commercial branch transition
+
+The `commercial/*` branches are an in-progress multi-user rewrite. Public
+registration remains disabled until subject ownership, scoped services, files,
+integrations, sessions, MCP, and PostgreSQL RLS have all passed their isolation
+gates. A schema row or role is not evidence that the branch is ready to host
+multiple people.
+
+The legacy environment-backed owner is materialized as an active database user,
+`member`, `platform_superadmin`, and self-owned health subject during startup.
+Startup fails closed if the configured username or bcrypt hash disagrees with a
+non-empty identity database. The last active platform superadmin cannot be
+revoked or suspended through identity services.
+
+`platform_superadmin` is an operational role, not standing permission to inspect
+health data. Patient data requires a short-lived, subject-bound support grant
+with an explicit reason, approver, expiry, mode, and concrete scope. This is how
+maintainers can investigate and repair production issues without creating an
+invisible global medical-record bypass.
+
+Browser cookies are signed, not encrypted. New compatibility cookies carry only
+a format version, token type, legacy auth source, and username; roles, subjects,
+grants, credentials, and PHI are deliberately excluded. Existing signed
+bare-username cookies remain accepted only for their configured lifetime. The
+current version marker prepares the later database-session cutover; it does not
+yet make legacy cookies individually revocable.
+
 ## The Telegram Webhook
 
 The proactive layer adds the only endpoint that is reachable without a session:

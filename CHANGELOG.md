@@ -17,9 +17,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   must be bound to one subject, reason, expiry, mode, approver, and concrete scope.
 - Added reversible migration `0035`, synthetic constraint/security tests, and a
   durable PR-by-PR implementation and validation roadmap in
-  `docs/COMMERCIAL_MULTI_USER_ROADMAP.md`. Existing environment-backed login and
-  the single-user runtime remain unchanged; registration stays closed until the
+  `docs/COMMERCIAL_MULTI_USER_ROADMAP.md`. The environment-backed login remains
+  active through a compatibility layer; registration stays closed until the
   subject-isolation and authorization gates are complete.
+- Added an idempotent, fail-closed runtime bootstrap for the existing owner. It
+  copies the configured bcrypt hash verbatim, assigns `member` and
+  `platform_superadmin`, creates the self-owned health subject, serializes
+  concurrent PostgreSQL startup with an advisory lock, and records only bounded
+  operational audit metadata. A config/identity/hash mismatch now stops startup
+  instead of silently creating or rewriting an administrator.
+- Added framework-independent immutable access-policy values. Ownership permits
+  access to the selected subject; doctor/trainer access requires an exact live
+  relationship-consent scope, and superadmin support access requires an exact
+  live support grant and scope. Roles alone never expose another subject's PHI,
+  wildcard scopes and implicit support-mode expansion are denied, and policy
+  evaluation never imports the web or database layers.
+- Browser sessions now use a strict versioned envelope while accepting existing
+  signed bare-username cookies for their normal TTL. The public auth dependency
+  remains compatible, and cookies contain no roles, subject IDs, grants, or PHI.
+  Password changes update both the environment compatibility credential and the
+  durable user using compare-and-swap, increment `session_version`, and restore
+  the old environment hash if the database commit fails. Registration remains
+  disabled; database-backed session enforcement arrives at the auth cutover.
+- Ordinary backup/export and restore now leave identity, role, health-subject,
+  support-grant, audit, and published-link control-plane tables untouched. This
+  prevents the new durable password hash or access metadata from entering a user
+  backup and prevents a legacy or forged import from replacing its authorizing
+  owner, planting privileges, erasing audit history, or reviving a shared link.
 
 ### Fixed — AI period-report context
 

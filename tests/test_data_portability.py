@@ -27,6 +27,15 @@ from vitals.services.data_portability_service import (
     import_full,
 )
 
+_IDENTITY_CONTROL_PLANE_TABLES = {
+    "users",
+    "user_roles",
+    "health_subjects",
+    "support_access_grants",
+    "support_access_scopes",
+    "audit_events",
+}
+
 
 async def _seed(session) -> None:
     """Populate a few rows across domains, including a raw payload + FK link, a
@@ -240,6 +249,114 @@ async def test_export_excludes_secret_settings(db_session):
     keys = {row["key"] for row in snap["app_settings"]}
     assert "ui_pref" in keys
     assert "garmin_oauth_token" not in keys  # dropped by the secret guard
+
+
+async def test_full_backup_excludes_identity_control_plane(db_session):
+    """A user backup carries health history, never login or access-control state."""
+    from vitals.models.identity import User
+    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+
+    password_hash = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
+    result = await bootstrap_legacy_owner(
+        db_session,
+        username="Portability Owner",
+        password_hash=password_hash,
+        timezone="UTC",
+    )
+    await db_session.commit()
+
+    assert await db_session.get(User, result.user_id) is not None
+    snapshot = await export_full(db_session)
+    assert _IDENTITY_CONTROL_PLANE_TABLES.isdisjoint(snapshot)
+    assert password_hash not in json.dumps(snapshot, ensure_ascii=False)
+
+
+async def test_import_cannot_delete_or_replace_identity_control_plane(db_session):
+    """Legacy and forged backups cannot mutate the durable restore principal."""
+    from sqlalchemy import select as sa_select
+
+    from vitals.models.identity import AuditEvent, HealthSubject, User, UserRole
+    from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+
+    password_hash = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
+    result = await bootstrap_legacy_owner(
+        db_session,
+        username="Durable Owner",
+        password_hash=password_hash,
+        timezone="Asia/Almaty",
+    )
+    await db_session.commit()
+
+    async def identity_state():
+        db_session.expire_all()
+        user = await db_session.scalar(
+            sa_select(User).where(User.id == result.user_id)
+        )
+        subject = await db_session.scalar(
+            sa_select(HealthSubject).where(HealthSubject.id == result.subject_id)
+        )
+        roles = tuple(
+            sorted(
+                await db_session.scalars(
+                    sa_select(UserRole.role).where(UserRole.user_id == result.user_id)
+                )
+            )
+        )
+        audits = tuple(
+            (
+                row.id,
+                row.event_type,
+                row.subject_id,
+                row.metadata_json,
+            )
+            for row in await db_session.scalars(
+                sa_select(AuditEvent).order_by(AuditEvent.occurred_at, AuditEvent.id)
+            )
+        )
+        return (
+            user.id,
+            user.username,
+            user.password_hash,
+            user.status,
+            user.session_version,
+            subject.id,
+            subject.owner_user_id,
+            subject.timezone,
+            roles,
+            audits,
+        )
+
+    before = await identity_state()
+    legacy_snapshot = {
+        "metadata": {"version": "1.0", "kind": "full_backup"},
+        "app_settings": [],
+    }
+
+    # A pre-identity backup has no control-plane sections. Restoring it must not
+    # delete the account, subject, roles, or audit event created during bootstrap.
+    await import_full(db_session, legacy_snapshot)
+    await db_session.flush()
+    assert await identity_state() == before
+
+    # Even a file that claims to carry control-plane rows cannot overwrite them.
+    # Invalid placeholder shapes are intentional: excluded sections are never
+    # deserialized or loaded, just as they are never exported or deleted.
+    forged_snapshot = dict(legacy_snapshot)
+    forged_snapshot.update(
+        {
+            "users": [{"id": "forged", "password_hash": "planted"}],
+            "user_roles": [{"id": "forged", "role": "platform_superadmin"}],
+            "health_subjects": [{"id": "forged", "timezone": "UTC"}],
+            "support_access_grants": [{"id": "forged"}],
+            "support_access_scopes": [{"id": "forged"}],
+            "audit_events": [{"id": "forged", "event_type": "planted"}],
+        }
+    )
+    stats = await import_full(db_session, forged_snapshot)
+    await db_session.flush()
+
+    assert await identity_state() == before
+    assert _IDENTITY_CONTROL_PLANE_TABLES.isdisjoint(stats.counts)
 
 
 # ── LLM export shape ───────────────────────────────────────────────────────────
