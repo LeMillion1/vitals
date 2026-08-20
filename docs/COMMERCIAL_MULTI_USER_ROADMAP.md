@@ -108,6 +108,19 @@ an AI artifact without the same subject authorization that any other actor
 needs. Subject owners may use authorized AI features without becoming admins;
 professional and support use remains relationship/consent/grant scoped.
 
+The first control surface is `/settings/platform/ai`. It authorizes an active
+platform superadmin independently from subject access, exposes only gateway
+status/version, opaque subject UUIDs, half-open UTC quota periods, and aggregate
+ledger counters, and never loads a subject profile or AI artifact. Root rotation
+uses the allowlisted environment resolver reference; the raw key remains in the
+legacy secret file/process environment. If commit fails after that environment
+write, the outcome is treated as ambiguous: the credential is cleared and an
+operator must reconcile the intended database root before re-entering it. The
+kill switch and quotas govern migrated platform consumers only—currently Weekly
+Digest. Historical subject-owned OpenRouter roots must remain live for the
+unmigrated brief/parser consumers until their own invocation-ledger cutovers are
+complete.
+
 Every paid call follows `prepare/reserve -> commit -> provider I/O -> fresh
 finalize/persist`. No database lock spans OpenRouter. `AIInvocation` reserves a
 subject/purpose budget before dispatch, prevents retry duplication, and records

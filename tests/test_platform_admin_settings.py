@@ -12,6 +12,17 @@ from vitals.services import platform_admin_service
 from web.config import get_web_config
 
 
+@pytest.fixture(autouse=True)
+def _restore_ai_runtime_after_each_test(monkeypatch):
+    """Settings saves are live; synthetic provider values stay test-local."""
+
+    monkeypatch.setenv("VITALS_OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("VITALS_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("VITALS_LLM_MODEL_DIGEST", "anthropic/claude-sonnet-4.6")
+    monkeypatch.setenv("VITALS_LLM_MODEL_PARSER", "google/gemini-2.5-flash")
+    monkeypatch.setenv("VITALS_LLM_MODEL_BRIEF", "")
+
+
 async def _remove_platform_admin_role(db_session) -> None:
     role = await db_session.scalar(
         select(UserRole).where(
@@ -71,14 +82,22 @@ async def test_platform_admin_save_is_value_free_in_audit(
     monkeypatch,
 ):
     env_file = tmp_path / "test.env"
-    env_file.write_text("VITALS_OPENROUTER_API_KEY=\n", encoding="utf-8")
+    env_file.write_text(
+        "VITALS_OPENROUTER_API_KEY=\n"
+        "VITALS_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1/\n"
+        "VITALS_LLM_MODEL_DIGEST=synthetic/old-digest\n"
+        "VITALS_LLM_MODEL_PARSER=synthetic/old-parser\n"
+        "VITALS_LLM_MODEL_BRIEF=synthetic/old-brief\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_OPENROUTER_API_KEY", "")
 
     response = await auth_client.post(
         "/settings/ai",
         data={
             "openrouter_api_key": "synthetic-secret-value",
-            "openrouter_base_url": "https://example.invalid/v1",
+            "openrouter_base_url": "https://openrouter.ai/api/v1",
             "llm_model_digest": "synthetic/digest",
             "llm_model_parser": "synthetic/parser",
             "llm_model_brief": "synthetic/brief",
@@ -107,7 +126,7 @@ async def test_platform_admin_save_is_value_free_in_audit(
     serialized_audit = json.dumps(event.metadata_json, sort_keys=True)
     for forbidden in (
         "synthetic-secret-value",
-        "https://example.invalid/v1",
+        "https://openrouter.ai/api/v1",
         "synthetic/digest",
         "synthetic/parser",
         "synthetic/brief",

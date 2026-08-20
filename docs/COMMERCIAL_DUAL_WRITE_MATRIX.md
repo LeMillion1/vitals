@@ -330,6 +330,16 @@ Backup v1 excludes `weekly_digests` because it cannot transport either legacy C
 or platform-invocation provenance safely; it preserves live rows in place, while
 the separate curated LLM export may still include narrative text.
 
+The platform AI settings boundary now creates and version-rotates the global
+gateway, preserves a disabled root across ordinary configuration saves, and
+configures one platform period plus one exactly aligned opaque-S period in a
+single caller-owned transaction. Its read model contains only gateway
+status/version, opaque S identifiers, dates, limits, and counters; it never joins
+subject profiles or generated artifacts. This control surface does not change
+the legacy subject OpenRouter dual-read/write entries elsewhere in this matrix:
+until each consumer adopts `AIInvocation`, the platform kill switch and quotas
+cannot be described as universal AI enforcement.
+
 Garmin and Hevy runtime ingestion now resolves S plus the provider C before
 network persistence, copies raw provenance into normalized parents and children,
 and rejects cross-S/C refresh, ambiguous legacy adoption, and invalid lifecycle

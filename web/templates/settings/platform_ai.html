@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("settings.platform_ai.page_title") }}{% endblock %}
+
+{% block content %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page v-page-settings px-6 py-7 max-w-6xl mx-auto space-y-8">
+    {% call masthead_header('settings', t('settings.platform_ai.heading'), []) %}
+        <a href="/settings" class="v-btn-ghost text-xs">{{ t("settings.platform_ai.back") }}</a>
+    {% endcall %}
+
+    <p class="v-text-body max-w-3xl" style="color: var(--muted)">
+        {{ t("settings.platform_ai.scope_notice") }}
+    </p>
+
+    {% if saved == 'ai' %}
+    <div class="v-alert info">{{ t("settings.platform_ai.saved.configuration") }}</div>
+    {% elif saved == 'enabled' %}
+    <div class="v-alert info">{{ t("settings.platform_ai.saved.enabled") }}</div>
+    {% elif saved == 'disabled' %}
+    <div class="v-alert warn">{{ t("settings.platform_ai.saved.disabled") }}</div>
+    {% elif saved == 'quota' %}
+    <div class="v-alert info">{{ t("settings.platform_ai.saved.quota") }}</div>
+    {% endif %}
+    {% if error == 'configuration_invalid' %}
+    <div class="v-alert block">{{ t("settings.platform_ai.error.configuration_invalid") }}</div>
+    {% elif error == 'credential_missing' %}
+    <div class="v-alert block">{{ t("settings.platform_ai.error.credential_missing") }}</div>
+    {% elif error == 'gateway_invalid' %}
+    <div class="v-alert block">{{ t("settings.platform_ai.error.gateway_invalid") }}</div>
+    {% elif error == 'quota_invalid' %}
+    <div class="v-alert block">{{ t("settings.platform_ai.error.quota_invalid") }}</div>
+    {% endif %}
+
+    <div class="v-card p-6 space-y-5">
+        {{ card_header(t("settings.platform_ai.gateway_title")) }}
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div class="v-card-inset p-4 space-y-1">
+                <div class="v-text-label">{{ t("settings.platform_ai.gateway_status") }}</div>
+                <div class="v-text-card">
+                    {% if gateway.status == 'active' %}{{ t("settings.platform_ai.status.active") }}
+                    {% elif gateway.status == 'disabled' %}{{ t("settings.platform_ai.status.disabled") }}
+                    {% else %}{{ t("settings.platform_ai.status.unconfigured") }}{% endif %}
+                </div>
+            </div>
+            <div class="v-card-inset p-4 space-y-1">
+                <div class="v-text-label">{{ t("settings.platform_ai.config_version") }}</div>
+                <div class="v-text-card v-num">{{ gateway.config_version or '—' }}</div>
+            </div>
+            <div class="v-card-inset p-4 space-y-1">
+                <div class="v-text-label">{{ t("settings.api_key") }}</div>
+                <div class="v-text-card">
+                    {{ t("settings.key_set") if openrouter_api_key_set else t("settings.key_not_set") }}
+                </div>
+            </div>
+        </div>
+        <p class="v-text-micro" style="color: var(--muted)">
+            {{ t("settings.platform_ai.kill_switch_scope") }}
+        </p>
+        <div class="flex flex-wrap justify-end gap-3">
+            {% if gateway.status == 'active' %}
+            <form action="/settings/platform/ai/disable" method="POST">
+                <button type="submit" class="v-btn-danger text-xs">{{ t("settings.platform_ai.disable") }}</button>
+            </form>
+            {% else %}
+            <form action="/settings/platform/ai/enable" method="POST">
+                <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.platform_ai.enable") }}</button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="v-card p-6 space-y-5">
+        {{ card_header(t("settings.platform_ai.configuration_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("settings.platform_ai.configuration_hint") }}
+        </p>
+        <form action="/settings/platform/ai/configuration" method="POST" class="space-y-4">
+            <div class="space-y-1.5">
+                <label for="platform-or-key" class="v-label">{{ t("settings.api_key") }}</label>
+                <input id="platform-or-key" name="openrouter_api_key" type="password"
+                       value="" class="v-input" maxlength="2048"
+                       placeholder="{{ t('settings.key_placeholder_set') if openrouter_api_key_set else 'sk-or-...' }}"
+                       autocomplete="new-password">
+                <p class="v-text-micro mt-1">{{ t("settings.keep_hint") }}</p>
+            </div>
+            <div class="space-y-1.5">
+                <label for="platform-or-url" class="v-label">{{ t("settings.base_url") }}</label>
+                <input id="platform-or-url" name="openrouter_base_url" type="url" required
+                       value="{{ openrouter_base_url }}" class="v-input" maxlength="128"
+                       placeholder="https://openrouter.ai/api/v1">
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div class="space-y-1.5">
+                    <label for="platform-digest-model" class="v-label">{{ t("settings.digest_model") }}</label>
+                    <input id="platform-digest-model" name="llm_model_digest" type="text" required
+                           value="{{ llm_model_digest }}" class="v-input" maxlength="255">
+                </div>
+                <div class="space-y-1.5">
+                    <label for="platform-parser-model" class="v-label">{{ t("settings.parser_model") }}</label>
+                    <input id="platform-parser-model" name="llm_model_parser" type="text" required
+                           value="{{ llm_model_parser }}" class="v-input" maxlength="255">
+                </div>
+                <div class="space-y-1.5">
+                    <label for="platform-brief-model" class="v-label">{{ t("settings.brief_model") }}</label>
+                    <input id="platform-brief-model" name="llm_model_brief" type="text"
+                           value="{{ llm_model_brief }}" class="v-input" maxlength="255"
+                           placeholder="{{ llm_model_digest }}">
+                </div>
+            </div>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn text-xs">{{ t("settings.save_ai") }}</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="v-card p-6 space-y-5">
+        {{ card_header(t("settings.platform_ai.quota_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("settings.platform_ai.quota_hint") }}
+        </p>
+        <form action="/settings/platform/ai/quota" method="POST" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div class="space-y-1.5 sm:col-span-3">
+                    <label for="platform-subject" class="v-label">{{ t("settings.platform_ai.subject_id") }}</label>
+                    <select id="platform-subject" name="subject_id" class="v-select" required>
+                        <option value="">{{ t("settings.platform_ai.subject_select") }}</option>
+                        {% for subject_id in eligible_subject_ids %}
+                        <option value="{{ subject_id }}">{{ subject_id }}</option>
+                        {% endfor %}
+                    </select>
+                    <p class="v-text-micro mt-1">{{ t("settings.platform_ai.subject_opaque_hint") }}</p>
+                </div>
+                <div class="space-y-1.5">
+                    <label for="platform-period-start" class="v-label">{{ t("settings.platform_ai.period_start") }}</label>
+                    <input id="platform-period-start" name="period_start" type="date" class="v-input" required>
+                </div>
+                <div class="space-y-1.5">
+                    <label for="platform-period-end" class="v-label">{{ t("settings.platform_ai.period_end") }}</label>
+                    <input id="platform-period-end" name="period_end" type="date" class="v-input" required>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="v-card-inset p-4 space-y-3">
+                    <div class="v-text-card">{{ t("settings.platform_ai.platform_budget") }}</div>
+                    <div class="space-y-1.5">
+                        <label for="platform-cost-limit" class="v-label">{{ t("settings.platform_ai.cost_limit") }}</label>
+                        <input inputmode="numeric" id="platform-cost-limit" name="platform_cost_limit_microunits" type="number" min="0" step="1" class="v-input" required>
+                    </div>
+                    <div class="space-y-1.5">
+                        <label for="platform-unit-limit" class="v-label">{{ t("settings.platform_ai.unit_limit") }}</label>
+                        <input inputmode="numeric" id="platform-unit-limit" name="platform_unit_limit" type="number" min="0" step="1" class="v-input" required>
+                    </div>
+                </div>
+                <div class="v-card-inset p-4 space-y-3">
+                    <div class="v-text-card">{{ t("settings.platform_ai.subject_budget") }}</div>
+                    <div class="space-y-1.5">
+                        <label for="subject-cost-limit" class="v-label">{{ t("settings.platform_ai.cost_limit") }}</label>
+                        <input inputmode="numeric" id="subject-cost-limit" name="subject_cost_limit_microunits" type="number" min="0" step="1" class="v-input" required>
+                    </div>
+                    <div class="space-y-1.5">
+                        <label for="subject-unit-limit" class="v-label">{{ t("settings.platform_ai.unit_limit") }}</label>
+                        <input inputmode="numeric" id="subject-unit-limit" name="subject_unit_limit" type="number" min="0" step="1" class="v-input" required>
+                    </div>
+                </div>
+            </div>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn-ghost text-xs">{{ t("settings.platform_ai.save_quota") }}</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="v-card p-6 space-y-5">
+        {{ card_header(t("settings.platform_ai.current_quotas")) }}
+        <div class="v-table-wrap">
+            <table class="v-table v-rows">
+                <thead>
+                    <tr>
+                        <th>{{ t("settings.platform_ai.scope") }}</th>
+                        <th>{{ t("settings.platform_ai.period") }}</th>
+                        <th>{{ t("settings.platform_ai.cost_usage") }}</th>
+                        <th>{{ t("settings.platform_ai.unit_usage") }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for quota in platform_periods %}
+                    <tr>
+                        <td data-label="{{ t('settings.platform_ai.scope') }}">{{ t("settings.platform_ai.platform_budget") }}</td>
+                        <td data-label="{{ t('settings.platform_ai.period') }}" class="v-num">[{{ quota.period_start }}, {{ quota.period_end }})</td>
+                        <td data-label="{{ t('settings.platform_ai.cost_usage') }}" class="v-num">{{ (quota.reserved_cost_microunits + quota.charged_cost_microunits) | format_number }} / {{ quota.cost_limit_microunits | format_number }}</td>
+                        <td data-label="{{ t('settings.platform_ai.unit_usage') }}" class="v-num">{{ (quota.reserved_units + quota.charged_units) | format_number }} / {{ quota.unit_limit | format_number }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% for quota in subject_periods %}
+                    <tr>
+                        <td data-label="{{ t('settings.platform_ai.scope') }}">{{ t("settings.platform_ai.subject_budget") }} · {{ quota.subject_id }}</td>
+                        <td data-label="{{ t('settings.platform_ai.period') }}" class="v-num">[{{ quota.period_start }}, {{ quota.period_end }})</td>
+                        <td data-label="{{ t('settings.platform_ai.cost_usage') }}" class="v-num">{{ (quota.reserved_cost_microunits + quota.charged_cost_microunits) | format_number }} / {{ quota.cost_limit_microunits | format_number }}</td>
+                        <td data-label="{{ t('settings.platform_ai.unit_usage') }}" class="v-num">{{ (quota.reserved_units + quota.charged_units) | format_number }} / {{ quota.unit_limit | format_number }}</td>
+                    </tr>
+                    {% else %}
+                    {% if not platform_periods %}
+                    <tr><td colspan="4">{{ t("settings.platform_ai.no_quotas") }}</td></tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <p class="v-text-micro" style="color: var(--muted)">
+            {{ t("settings.platform_ai.quota_immutable_hint") }}
+        </p>
+    </div>
+</div>
+{% endblock %}

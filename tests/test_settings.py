@@ -158,6 +158,11 @@ async def test_settings_save_ai_key(auth_client, tmp_path, monkeypatch):
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_OPENROUTER_API_KEY=\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("VITALS_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("VITALS_LLM_MODEL_DIGEST", "anthropic/claude-sonnet-4.6")
+    monkeypatch.setenv("VITALS_LLM_MODEL_PARSER", "google/gemini-2.5-flash")
+    monkeypatch.setenv("VITALS_LLM_MODEL_BRIEF", "")
 
     r = await auth_client.post(
         "/settings/ai",
@@ -180,6 +185,10 @@ async def test_settings_save_ai_sentinel_not_overwritten(auth_client, tmp_path, 
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_OPENROUTER_API_KEY=sk-or-real-key\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    monkeypatch.setenv("VITALS_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("VITALS_LLM_MODEL_DIGEST", "anthropic/claude-sonnet-4.6")
+    monkeypatch.setenv("VITALS_LLM_MODEL_PARSER", "google/gemini-2.5-flash")
+    monkeypatch.setenv("VITALS_LLM_MODEL_BRIEF", "")
 
     # Submitting an empty api_key (like when user leaves placeholder)
     r = await auth_client.post(

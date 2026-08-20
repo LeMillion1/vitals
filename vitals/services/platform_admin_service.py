@@ -34,6 +34,19 @@ _OPENROUTER_CHANGED_FIELDS = frozenset(
         "digest_model",
         "parser_model",
         "brief_model",
+        "platform_quota",
+        "subject_quota",
+    }
+)
+_OPENROUTER_RESULT_CODES = frozenset(
+    {
+        "configuration_updated",
+        "gateway_created",
+        "gateway_rotated",
+        "gateway_rotated_disabled",
+        "gateway_enabled",
+        "gateway_disabled",
+        "quota_configured",
     }
 )
 
@@ -52,6 +65,24 @@ class PlatformAdminCapabilityError(PlatformAdminError):
 
 class PlatformAdminValidationError(ValueError):
     """Platform-control audit input is not in the reviewed vocabulary."""
+
+
+def validate_openrouter_changed_fields(
+    changed_fields: Iterable[str],
+) -> tuple[str, ...]:
+    """Canonicalize the value-free OpenRouter audit field vocabulary."""
+
+    try:
+        fields = tuple(sorted(set(changed_fields)))
+    except TypeError as exc:
+        raise PlatformAdminValidationError(
+            "changed_fields must be an iterable of reviewed field names"
+        ) from exc
+    if any(field not in _OPENROUTER_CHANGED_FIELDS for field in fields):
+        raise PlatformAdminValidationError(
+            "changed_fields contains an unreviewed OpenRouter field"
+        )
+    return fields
 
 
 class PreparedPlatformAdmin:
@@ -215,22 +246,19 @@ async def record_openrouter_configuration_change(
     *,
     prepared: PreparedPlatformAdmin,
     changed_fields: Iterable[str],
+    result_code: str = "configuration_updated",
 ) -> AuditEvent | None:
     """Append a value-free audit record for one authorized configuration save."""
 
     capability = _require_prepared(session, prepared)
-    try:
-        fields = tuple(sorted(set(changed_fields)))
-    except TypeError as exc:
+    fields = validate_openrouter_changed_fields(changed_fields)
+    if result_code not in _OPENROUTER_RESULT_CODES:
         raise PlatformAdminValidationError(
-            "changed_fields must be an iterable of reviewed field names"
-        ) from exc
-    if any(field not in _OPENROUTER_CHANGED_FIELDS for field in fields):
-        raise PlatformAdminValidationError(
-            "changed_fields contains an unreviewed OpenRouter field"
+            "result_code is not a reviewed OpenRouter control outcome"
         )
     if not fields:
-        return None
+        if result_code not in {"gateway_created", "gateway_enabled", "gateway_disabled"}:
+            return None
 
     event = AuditEvent(
         actor_user_id=capability.user_id,
@@ -241,7 +269,7 @@ async def record_openrouter_configuration_change(
         resource_id="openrouter",
         metadata_json={
             "source_surface": "web.settings",
-            "result_code": "configuration_updated",
+            "result_code": result_code,
             "changed_fields": list(fields),
         },
     )
@@ -260,4 +288,5 @@ __all__ = [
     "prepare_platform_admin",
     "record_openrouter_configuration_change",
     "require_prepared_platform_admin",
+    "validate_openrouter_changed_fields",
 ]

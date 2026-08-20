@@ -181,6 +181,11 @@
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.ai_description") }}
         </p>
+        <div class="flex justify-end">
+            <a href="/settings/platform/ai" class="v-btn-ghost text-xs">
+                {{ t("settings.platform_ai.manage") }}
+            </a>
+        </div>
         <form action="/settings/ai" method="POST" class="space-y-4">
             <div class="space-y-1.5">
                 <label for="s-or-key" class="v-label">

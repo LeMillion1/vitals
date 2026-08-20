@@ -37,6 +37,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   endpoint, and model choices. Authorization is locked against concurrent role
   changes, and the audit event records field names only—never secret or model
   values. This role gate grants no prompt, artifact, or subject-data access.
+- Added a dedicated, no-PHI platform AI control page for creating, rotating,
+  enabling, and disabling the global gateway and configuring aligned half-open
+  platform/opaque-subject quota periods. Configuration changes are versioned,
+  a commit error after an environment write clears the credential and requires
+  explicit reconciliation rather than guessing an ambiguous database outcome,
+  and only migrated platform consumers (currently Weekly Digest) are governed;
+  legacy subject OpenRouter roots remain available during their cutover.
 - Weekly digests now use that centrally funded gateway without granting the
   superadmin health-data access. Web, MCP, and scheduler generation reserve a
   subject-owned `AIInvocation`, commit before exactly one OpenRouter call, then
