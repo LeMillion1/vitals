@@ -412,21 +412,17 @@ async def _derived_events(
     # labs) — an always-visible inline image here is real, unwanted exposure.
     # The photo itself stays reachable only from its deliberate destination
     # (the /weight gallery), never surfaced ambiently.
-    from vitals.models.weight import DOMAIN as WEIGHT_DOMAIN, ProgressPhoto
+    from vitals.models.weight import DOMAIN as WEIGHT_DOMAIN
+    from vitals.services import weight_service
 
-    pp_stmt = scoped(
-        select(ProgressPhoto).where(ProgressPhoto.domain == WEIGHT_DOMAIN),
-        ProgressPhoto,
-        legacy_roots=(
-            ProgressPhoto.actor_user_id,
-            ProgressPhoto.file_asset_id,
-        ),
+    photos = await weight_service.list_progress_photos(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+        start=start,
+        end=end,
     )
-    if start is not None:
-        pp_stmt = pp_stmt.where(ProgressPhoto.date >= start)
-    if end is not None:
-        pp_stmt = pp_stmt.where(ProgressPhoto.date <= end)
-    for p in (await session.execute(pp_stmt)).scalars().all():
+    for p in photos:
         events.append(TimelineEvent(
             date=p.date, end_date=None, domain=WEIGHT_DOMAIN, kind="photo",
             title=t("timeline.derived.progress_photo"),

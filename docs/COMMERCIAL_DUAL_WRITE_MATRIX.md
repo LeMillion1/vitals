@@ -145,10 +145,13 @@ new bytes; an exception or cancellation while COMMIT is in flight preserves the
 bytes because the database outcome is ambiguous and requires reconciliation.
 
 The protected legacy download route authorizes through the resolved subject and
-honors deleted/purged asset state. An asset-missing fallback remains temporarily
-for pre-backfill files, but only while the fail-closed legacy resolver sees
-exactly one subject; a second subject closes it. Opaque asset URLs and complete
-file backfill remain cutover work.
+honors deleted/purged asset state. Progress-photo paths additionally require a
+reachable validated ProgressPhoto fact: exact rows prove S+A+F, purpose, uploader,
+backend, lifecycle, and storage key, while pre-backfill history is accepted only
+when the photo's S/A/F roots are all NULL. The broader asset-missing compatibility
+behavior for lab/body documents remains separate cutover work. Opaque asset URLs,
+complete file backfill, and binary-aware portability remain required before the
+file contract can become non-null.
 
 Genetics VCF, manual, and MCP boundaries now resolve the verified legacy owner,
 write S+A, and scope direct reads/mutations by S. VCF imports persist a

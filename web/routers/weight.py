@@ -566,12 +566,8 @@ async def add_photo_entry(
             detail=t("weight.error.too_many_files")
         )
 
-    ownership = await resolve_legacy_ownership_context(
-        db,
-        actor_username=username,
-    )
-    identity = ownership.owner_action()
     written_paths: list[str] = []
+    prepared_files: list[tuple[str, str | None, bytes]] = []
     try:
         for f in uploaded_files:
             file_extension = validate_extension(f.filename, IMAGE_EXTS)
@@ -585,13 +581,22 @@ async def add_photo_entry(
             with open(file_path, "wb") as buffer:
                 buffer.write(contents)
 
+            prepared_files.append((file_key, f.content_type or None, contents))
+
+        conflict_context, prepared = await _prepare_aux_write(
+            db,
+            username=username,
+            on_date=on_date,
+        )
+        identity = conflict_context.identity
+        for file_key, content_type, contents in prepared_files:
             asset = await file_asset_service.register_legacy_local(
                 db,
                 subject_id=identity.subject_id,
                 uploaded_by_user_id=identity.actor_user_id,
                 purpose=FileAssetPurpose.PROGRESS_PHOTO,
                 storage_ref=file_key,
-                media_type=f.content_type or None,
+                media_type=content_type,
                 size_bytes=len(contents),
                 content_sha256=hashlib.sha256(contents).hexdigest(),
             )
@@ -602,6 +607,7 @@ async def add_photo_entry(
                 note=note,
                 identity=identity,
                 file_asset_id=asset.id,
+                prepared_conflict_write=prepared,
             )
 
     except BaseException:
@@ -1019,47 +1025,53 @@ async def delete_photo_entry(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
+    today = today_local()
+    conflict_context, prepared = await _prepare_aux_write(
         db,
-        actor_username=username,
+        username=username,
+        on_date=today,
     )
-    photo = await weight_service.get_progress_photo(
-        db,
-        id,
-        subject_id=ownership.subject_id,
-        include_legacy_unowned=True,
-    )
-    file_asset_id = photo.file_asset_id if photo is not None else None
-    file_key = await weight_service.delete_progress_photo(
+    receipt = await weight_service.delete_progress_photo(
         db,
         id,
-        subject_id=ownership.subject_id,
+        identity=conflict_context.identity,
         include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
     )
-    if file_asset_id is not None:
-        await file_asset_service.mark_legacy_local_deleted(
-            db,
-            file_asset_id=file_asset_id,
-            subject_id=ownership.subject_id,
-            purged=False,
-        )
     await db.commit()
 
     bytes_purged = False
-    if file_key:
+    if receipt is not None:
         try:
-            file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
+            file_path = legacy_upload_disk_path(STATIC_DIR, receipt.file_key)
             if os.path.exists(file_path):
                 os.remove(file_path)
-            bytes_purged = True
+            bytes_purged = not os.path.exists(file_path)
         except (OSError, ValueError) as e:
-            logger.warning("Could not remove progress photo %s: %s", file_key, e)
+            logger.warning(
+                "Could not remove progress photo %s: %s",
+                receipt.file_key,
+                e,
+            )
 
-    if bytes_purged and file_asset_id is not None:
+    if (
+        bytes_purged
+        and receipt is not None
+        and receipt.file_asset_id is not None
+    ):
+        purge_context, _purge_prepared = await _prepare_aux_write(
+            db,
+            username=username,
+            on_date=today,
+        )
+        if purge_context.identity != conflict_context.identity:
+            raise weight_service.ProgressPhotoOwnershipError(
+                "progress-photo identity changed during physical purge"
+            )
         await file_asset_service.mark_legacy_local_deleted(
             db,
-            file_asset_id=file_asset_id,
-            subject_id=ownership.subject_id,
+            file_asset_id=receipt.file_asset_id,
+            subject_id=purge_context.identity.subject_id,
             purged=True,
         )
         await db.commit()

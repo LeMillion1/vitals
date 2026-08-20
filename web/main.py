@@ -202,14 +202,16 @@ async def serve_upload(
 ):
     path = os.path.realpath(os.path.join(UPLOADS_DIR, key))
     # ``..`` (and any symlink out) resolves to somewhere else: a miss, not a read.
-    if not path.startswith(UPLOADS_DIR + os.sep) or not os.path.isfile(path):
+    # Authorize the persisted graph before consulting file existence so a
+    # guessed progress-photo path cannot become a metadata oracle.
+    if not path.startswith(UPLOADS_DIR + os.sep):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     # A session proves who the browser user is, not which subject owns this
-    # particular medical file.  Resolve the compatibility subject independently
-    # and honor FileAsset lifecycle before touching the bytes.  An unregistered
-    # file remains readable only in the exact-one-subject legacy bridge; adding a
-    # second subject closes that fallback because the resolver fails closed.
+    # particular medical file. Resolve the compatibility subject independently
+    # and honor persisted lifecycle before touching the bytes. Progress photos
+    # additionally require a reachable validated fact; arbitrary legacy paths
+    # are not an authorization capability.
     from vitals.enums import FileAssetStatus, FileStorageBackend
     from vitals.models.tenancy import FileAsset
     from vitals.services.legacy_ownership import (
@@ -225,17 +227,43 @@ async def serve_upload(
     except LegacyOwnershipError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
 
-    asset = await db.scalar(
-        select(FileAsset).where(
-            FileAsset.subject_id == ownership.subject_id,
-            FileAsset.storage_backend == FileStorageBackend.LEGACY_LOCAL.value,
-            FileAsset.storage_ref.in_(storage_refs_for_route_key(key)),
+    from vitals.services import weight_service
+
+    try:
+        photo = await weight_service.get_progress_photo_by_file_key(
+            db,
+            file_key=f"uploads/{key}",
+            subject_id=ownership.subject_id,
+            include_legacy_unowned=True,
         )
-    )
-    if asset is not None and asset.status in {
-        FileAssetStatus.DELETED.value,
-        FileAssetStatus.PURGED.value,
-    }:
+    except weight_service.ProgressPhotoOwnershipError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+
+    document_asset = None
+    if key.startswith(("labs/", "body/")):
+        document_asset = await db.scalar(
+            select(FileAsset).where(
+                FileAsset.subject_id == ownership.subject_id,
+                FileAsset.storage_backend == FileStorageBackend.LEGACY_LOCAL.value,
+                FileAsset.storage_ref.in_(storage_refs_for_route_key(key)),
+            )
+        )
+    if photo is not None and document_asset is not None:
+        # ``uploads/labs/x`` and ``labs/x`` resolve to the same legacy-local
+        # bytes. Two metadata authorities for that path are ambiguous even when
+        # both are individually live, so refuse the alias rather than letting
+        # one lifecycle silently override the other.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if photo is None and document_asset is not None:
+        if document_asset.status in {
+            FileAssetStatus.DELETED.value,
+            FileAssetStatus.PURGED.value,
+        }:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    elif photo is None and not key.startswith(("labs/", "body/")):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    if not os.path.isfile(path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     # Never written to disk cache: the file is readable again on the next request,
     # and a logged-out browser should keep nothing. Matches the service worker,

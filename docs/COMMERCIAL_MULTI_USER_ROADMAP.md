@@ -251,6 +251,10 @@ Implementation progress on `commercial/main`:
   conflict evaluation, derived alerts, and nightly replay use that same exact-one
   subject boundary; replay isolates failures per raw row and MCP provenance keeps
   Source.MCP on raw/scan while the derived Weight remains Source.BODY_SCAN.
+  ProgressPhoto upload, gallery reads, Timeline markers, protected downloads,
+  and deletes now validate one exact subject/owner/FileAsset graph. File assets
+  are exclusive to one photo; deletion durably retires metadata before unlinking
+  bytes, and only the fully-null S/A/F legacy shape can use the exact-one bridge.
   Genetics web/MCP/CLI writers now persist a content-addressed owned VCF raw
   revision before curated normalization, scope direct CRUD by the selected
   subject, preserve historical actor/source/raw provenance on correction, and

@@ -123,7 +123,26 @@ async def test_an_uploaded_file_is_not_public(client, an_uploaded_file):
     assert r.headers["location"].startswith("/login")
 
 
-async def test_the_owner_still_gets_the_file(auth_client, an_uploaded_file):
+async def test_the_owner_still_gets_the_file(
+    auth_client,
+    db_session,
+    an_uploaded_file,
+):
+    from datetime import date
+
+    from vitals.enums import Domain, Source
+    from vitals.models.weight import ProgressPhoto
+
+    db_session.add(
+        ProgressPhoto(
+            date=date(2026, 8, 20),
+            domain=Domain.WEIGHT.value,
+            source=Source.MANUAL.value,
+            file_key=f"uploads/{an_uploaded_file}",
+        )
+    )
+    await db_session.commit()
+
     r = await auth_client.get(f"/static/uploads/{an_uploaded_file}")
     assert r.status_code == 200
     assert r.content == b"lab sheet bytes"
@@ -134,10 +153,22 @@ async def test_the_owner_still_gets_the_file(auth_client, an_uploaded_file):
 async def test_unregistered_file_fallback_closes_when_a_second_subject_exists(
     auth_client, db_session, an_uploaded_file
 ):
-    """The compatibility fallback is authorized by the exact-one-subject
-    resolver, not by possession of a legacy URL."""
-    from vitals.enums import UserStatus
+    """A legacy photo fact is authorized only by the exact-one-subject bridge."""
+    from datetime import date
+
+    from vitals.enums import Domain, Source, UserStatus
     from vitals.models.identity import HealthSubject, User
+    from vitals.models.weight import ProgressPhoto
+
+    db_session.add(
+        ProgressPhoto(
+            date=date(2026, 8, 20),
+            domain=Domain.WEIGHT.value,
+            source=Source.MANUAL.value,
+            file_key=f"uploads/{an_uploaded_file}",
+        )
+    )
+    await db_session.flush()
 
     other = User(
         username="other-file-owner",

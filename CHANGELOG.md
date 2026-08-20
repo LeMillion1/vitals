@@ -161,6 +161,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   fact. The bounded raw sample still records an explicit truncation flag;
   lossless VCF chunking, scoped rsID/raw uniqueness, composite ownership FKs,
   and whole-lake composition remain registration blockers.
+- ProgressPhoto upload, gallery, Timeline markers, protected downloads, and
+  deletes now accept only an exact subject/owner/private-file graph. New photos
+  derive their storage key from one exclusive locked FileAsset; the compatibility
+  bridge accepts only fully-null S/A/F history, while partial, cross-subject,
+  wrong-purpose, retired, duplicated, or key-mismatched graphs fail closed.
+  Deletion atomically removes the fact and marks its file metadata DELETED before
+  bytes are unlinked, then records PURGED in a fresh transaction, so rollback and
+  ambiguous commits cannot silently discard intimate medical images.
 - The Garmin Weight export outbox now projects only the prepared subject and Garmin
   account, validates every linked Weight fact before using remote-delete authority,
   and records the human requester while scheduled work remains actorless. Settings,

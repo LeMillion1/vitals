@@ -315,12 +315,15 @@ async def test_progress_photo_reads_and_deletes_are_strictly_subject_scoped(
         purpose=FileAssetPurpose.PROGRESS_PHOTO,
         storage_ref="uploads/foreign.png",
     )
+    owner_prepared = await _prepared(db_session, owner_identity)
+    foreign_prepared = await _prepared(db_session, foreign_identity)
     own_photo = await weight_service.add_progress_photo(
         db_session,
         on_date=date(2026, 8, 19),
         file_key=owner_asset.storage_ref,
         identity=owner_identity,
         file_asset_id=owner_asset.id,
+        prepared_conflict_write=owner_prepared,
     )
     foreign_photo = await weight_service.add_progress_photo(
         db_session,
@@ -328,6 +331,7 @@ async def test_progress_photo_reads_and_deletes_are_strictly_subject_scoped(
         file_key=foreign_asset.storage_ref,
         identity=foreign_identity,
         file_asset_id=foreign_asset.id,
+        prepared_conflict_write=foreign_prepared,
     )
 
     visible = await weight_service.list_progress_photos(
@@ -338,7 +342,8 @@ async def test_progress_photo_reads_and_deletes_are_strictly_subject_scoped(
         await weight_service.delete_progress_photo(
             db_session,
             foreign_photo.id,
-            subject_id=owner_subject.id,
+            identity=owner_identity,
+            prepared_conflict_write=owner_prepared,
         )
         is None
     )

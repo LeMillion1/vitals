@@ -31,7 +31,12 @@ from vitals.models.tenancy import FileAsset
 from vitals.models.timeline import Annotation
 from vitals.models.weight import NoiseMarker, ProgressPhoto
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine, supplements_service, timeline_service
+from vitals.services import (
+    conflict_engine,
+    supplements_service,
+    timeline_service,
+    weight_service,
+)
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 
 mcp_router = pytest.importorskip("web.routers.mcp")
@@ -230,6 +235,27 @@ async def _identity(session, slug: str) -> WriteIdentity:
     return WriteIdentity(subject_id=subject.id, actor_user_id=user.id)
 
 
+async def _complete_progress_photo_graph(
+    session,
+    row,
+    identity: WriteIdentity,
+) -> None:
+    if not isinstance(row, ProgressPhoto) or row.subject_id is None:
+        return
+    asset = FileAsset(
+        subject_id=identity.subject_id,
+        uploaded_by_user_id=identity.actor_user_id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO.value,
+        storage_backend=FileStorageBackend.LEGACY_LOCAL.value,
+        storage_ref=row.file_key,
+        status=FileAssetStatus.LEGACY_PLACEHOLDER.value,
+    )
+    session.add(asset)
+    await session.flush()
+    row.actor_user_id = identity.actor_user_id
+    row.file_asset_id = asset.id
+
+
 async def _prepared_supplement_write(
     session,
     identity: WriteIdentity,
@@ -297,6 +323,8 @@ async def test_each_derived_timeline_selector_rejects_cross_subject_rows(
         subject_id=foreign.subject_id,
         ordinal=1,
     )
+    await _complete_progress_photo_graph(db_session, owner_row, owner)
+    await _complete_progress_photo_graph(db_session, foreign_row, foreign)
     db_session.add_all([owner_row, foreign_row])
     await db_session.flush()
 
@@ -337,6 +365,7 @@ async def test_each_derived_timeline_selector_requires_explicit_legacy_null_brid
         subject_id=None,
         ordinal=2,
     )
+    await _complete_progress_photo_graph(db_session, owner_row, owner)
     db_session.add_all([owner_row, legacy_row])
     await db_session.flush()
 
@@ -373,6 +402,15 @@ async def test_derived_timeline_bridge_rejects_partial_actor_roots(
     partial.actor_user_id = foreign.actor_user_id
     db_session.add(partial)
     await db_session.flush()
+
+    if selector == "progress_photo":
+        with pytest.raises(weight_service.ProgressPhotoOwnershipError):
+            await timeline_service.list_events(
+                db_session,
+                subject_id=owner.subject_id,
+                include_legacy_unowned=True,
+            )
+        return
 
     refs = {
         event.ref
@@ -413,6 +451,15 @@ async def test_derived_timeline_bridge_rejects_partial_file_roots(
     partial.file_asset_id = asset.id
     db_session.add(partial)
     await db_session.flush()
+
+    if selector == "progress_photo":
+        with pytest.raises(weight_service.ProgressPhotoOwnershipError):
+            await timeline_service.list_events(
+                db_session,
+                subject_id=owner.subject_id,
+                include_legacy_unowned=True,
+            )
+        return
 
     refs = {
         event.ref

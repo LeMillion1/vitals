@@ -432,9 +432,12 @@ async def test_delete_progress_photo(db_session):
     photos = await weight_service.list_progress_photos(db_session)
     assert len(photos) == 1
 
-    file_key = await weight_service.delete_progress_photo(db_session, p.id)
+    deletion = await weight_service.delete_progress_photo(db_session, p.id)
     await db_session.commit()
-    assert file_key == "uploads/test_photo.jpg"
+    assert deletion == weight_service.ProgressPhotoDeletion(
+        file_key="uploads/test_photo.jpg",
+        file_asset_id=None,
+    )
 
     photos2 = await weight_service.list_progress_photos(db_session)
     assert len(photos2) == 0
