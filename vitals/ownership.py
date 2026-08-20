@@ -260,6 +260,11 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         connection=TargetColumn.REQUIRED,
         user_portable=False,
     ),
+    "ownership_backfill_checkpoints": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "platform_settings": OwnershipSpec(
         OwnershipClass.ACCOUNT_CONTROL,
         user_portable=False,

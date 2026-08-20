@@ -77,6 +77,11 @@ from vitals.ownership import (
     TargetColumn,
 )
 from vitals.i18n import t
+from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.raw_ownership_backfill_service import (
+    RawOwnershipBackfillError,
+    block_raw_ownership_backfill_for_portability_v1_restore,
+)
 from vitals.services.signals_service import normalize_key
 from vitals.utils.timeutils import now_local
 
@@ -88,6 +93,7 @@ KIND_LLM = "llm_export"
 # An ``app_settings`` key is treated as a secret (and dropped from the backup) when
 # it contains any of these substrings — forward-looking guard for token rows.
 _SECRET_KEY_MARKERS = ("token", "secret", "password", "api_key", "apikey", "credential")
+_POSTGRES_INTEGER_MAX = 2_147_483_647
 
 # Cross-surface ownership and private-resource plumbing.  These fields are set by
 # trusted tenant/storage boundaries, not transported by v1 backups, generic MCP
@@ -127,6 +133,14 @@ _EXCLUDED_TABLES = frozenset(
     table_name
     for table_name, spec in OWNERSHIP_REGISTRY.items()
     if not spec.user_portable
+)
+
+# These retained control-plane tables have RESTRICT provenance FKs into the
+# portable raw lake.  Backup v1 cannot replace those roots without either
+# deleting durable control state or silently rebinding it to different payloads.
+_RETAINED_RAW_REFERENCE_TABLES = (
+    "ai_invocations",
+    "notification_delivery_intents",
 )
 
 _LABELED_TABLES = (
@@ -365,6 +379,53 @@ def _validate_payload(payload: Any) -> BackupMetadata:
     return meta
 
 
+def _raw_replacement_snapshot_bounds(payload: dict[str, Any]) -> tuple[int, int]:
+    """Validate portable raw PKs and return the immutable snapshot bounds."""
+
+    raw_rows = payload.get("raw_payloads") or ()
+    high_watermark = 0
+    for index, row in enumerate(raw_rows):
+        raw_id = row.get("id")
+        if (
+            not isinstance(raw_id, int)
+            or isinstance(raw_id, bool)
+            or not 1 <= raw_id <= _POSTGRES_INTEGER_MAX
+        ):
+            raise _contract_error(
+                "import.error.generic",
+                exc=(
+                    "raw_payloads record "
+                    f"#{index} must carry a positive integer id within the "
+                    "PostgreSQL INTEGER range"
+                ),
+            )
+        high_watermark = max(high_watermark, raw_id)
+    return high_watermark, len(raw_rows)
+
+
+async def _refuse_retained_raw_references(session: AsyncSession) -> None:
+    """Fail before mutation when retained control state still binds any raw."""
+
+    for table_name in _RETAINED_RAW_REFERENCE_TABLES:
+        table = Base.metadata.tables[table_name]
+        has_reference = await session.scalar(
+            select(
+                select(1)
+                .select_from(table)
+                .where(table.c.raw_payload_id.is_not(None))
+                .exists()
+            )
+        )
+        if has_reference:
+            raise _contract_error(
+                "import.error.generic",
+                exc=(
+                    "raw replacement is blocked by retained "
+                    "control-plane provenance"
+                ),
+            )
+
+
 async def _secret_settings(session: AsyncSession) -> list[dict[str, Any]]:
     """The ``app_settings`` rows a backup never carries, read back verbatim so the
     restore can put them down again after the wipe.
@@ -404,20 +465,41 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     audit trail.
     """
     _validate_payload(payload)
-    local_subject_id = await _single_local_subject_id(session)
-    if local_subject_id is None:
-        has_bound_marker = any(
-            _subject_marker(row)
-            for table_name, rows in payload.items()
-            if table_name != "metadata"
-            and table_name not in _EXCLUDED_TABLES
-            and "subject_id" in Base.metadata.tables[table_name].columns
-            for row in rows
-        )
-        if has_bound_marker:
-            raise _contract_error("portability.error.v1_missing_subject")
+    raw_high_watermark, raw_snapshot_rows = _raw_replacement_snapshot_bounds(
+        payload
+    )
 
     try:
+        # Freeze identity before deriving the local subject and keep governance
+        # through every provenance preflight and replacement mutation.  This
+        # closes both zero-subject/bootstrap and retained-reference writer races;
+        # the block service's re-acquisition is transaction-reentrant.
+        await acquire_identity_governance_lock(session)
+        local_subject_id = await _single_local_subject_id(session)
+        if local_subject_id is None:
+            has_bound_marker = any(
+                _subject_marker(row)
+                for table_name, rows in payload.items()
+                if table_name != "metadata"
+                and table_name not in _EXCLUDED_TABLES
+                and "subject_id" in Base.metadata.tables[table_name].columns
+                for row in rows
+            )
+            if has_bound_marker:
+                raise _contract_error("portability.error.v1_missing_subject")
+        await _refuse_retained_raw_references(session)
+        if local_subject_id is not None:
+            try:
+                await block_raw_ownership_backfill_for_portability_v1_restore(
+                    session,
+                    scan_high_watermark_id=raw_high_watermark,
+                    snapshot_rows=raw_snapshot_rows,
+                )
+            except RawOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="raw ownership restore block was rejected",
+                ) from exc
         preserved = await _secret_settings(session)
 
         # Wipe in reverse FK order so child rows go before the parents they reference.
@@ -468,7 +550,12 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     except SQLAlchemyError as exc:
         # Surface a clean message instead of a raw driver error; the transaction is
         # rolled back by the router's session dependency.
-        raise PortabilityError(t("import.error.generic", exc=exc)) from exc
+        raise PortabilityError(
+            t(
+                "import.error.generic",
+                exc="database rejected the portable restore",
+            )
+        ) from exc
 
     return ImportStats(counts=counts)
 

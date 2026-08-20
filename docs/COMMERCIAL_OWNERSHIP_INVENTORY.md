@@ -1,8 +1,8 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 design and migration source of truth
+Status: PR-03 Stage-3A implementation source of truth
 
-Last reviewed: 2026-08-19
+Last reviewed: 2026-08-21
 
 This document classifies every SQLAlchemy table currently registered in
 `Base.metadata` and records the ownership, provenance, key, backfill, and
@@ -13,7 +13,9 @@ migration contract. The machine-readable companion in `vitals/ownership.py`
 owns the exact registry membership and target-column categories. Both forms
 must change together.
 
-The inventory contains all 55 tables now registered in `Base.metadata`.
+The original table-by-table inventory contains the 55 tables present at the
+Stage-0 expansion. The post-foundation control-plane tables below bring the
+current exhaustive `Base.metadata` and machine registry to 62 tables.
 Revision `0036` adds the six Stage-0 roots/scoped-setting tables without moving
 data, reading credentials, or touching file bytes. Revisions `0037` and `0038`
 implement the Stage-1 nullable expansion for all 36 top-level and six inherited
@@ -148,15 +150,21 @@ remain PR-06 work.
 | 54 | `subject_settings` / `SubjectSetting` | S-scoped preference | Composite key `(S, key)`. Excluded from legacy generic portability until selected-subject backup v2 exists. |
 | 55 | `integration_connection_settings` / `IntegrationConnectionSetting` | C-scoped option, S inherited from C | Composite key `(C, key)`. External-action settings are never restored blindly. |
 
-### Planned platform AI control plane
+### Post-foundation control-plane additions
 
-The centrally funded OpenRouter cutover adds two tables above the current
-55-table inventory rather than weakening the subject-bound connection root:
+The centrally funded OpenRouter, durable Telegram-delivery, and bounded-backfill
+slices add reviewed control state above the original 55-table inventory rather
+than weakening subject-bound data roots:
 
-| Planned table | Ownership | Contract |
+| Table | Ownership | Contract |
 | --- | --- | --- |
 | `platform_integration_connections` / `PlatformIntegrationConnection` | Platform control plane | One installation-wide OpenRouter AI-gateway root, configured only by an active `platform_superadmin`. It has no S and stores an opaque credential reference, lifecycle, and non-secret configuration version; secrets remain outside ordinary DB/settings/export paths. |
+| `ai_platform_quota_periods` / `AIPlatformQuotaPeriod` | Platform control plane | Installation-wide bounded usage ledger. It contains no prompt, completion, document, or medical value and is excluded from ordinary subject portability. |
+| `ai_subject_quota_periods` / `AISubjectQuotaPeriod` | Required S control state | Opaque-S quota ledger aligned to the platform period. It is accounting and authorization state, not a PHI artifact or ordinary export row. |
 | `ai_invocations` / `AIInvocation` | Required S, optional A/system, required platform gateway | One paid-call reservation/outcome with purpose, source, model/config version, idempotency, lifecycle, opaque upstream ID, token counts, and cost microunits. Prompts, completions, documents, raw payloads, and medical values are forbidden. `UNIQUE(id, S)` supports composite subject-equality links from artifacts. |
+| `legacy_openrouter_connection_bridges` / `LegacyOpenRouterConnectionBridge` | Platform control child | Exact mapping from one historical subject OpenRouter C to the platform gateway. It preserves provenance but never grants PHI access or copies a credential. |
+| `notification_delivery_intents` / `NotificationDeliveryIntent` | Required S and recipient/delivery C, optional A/system | Payload-free at-most-once delivery lifecycle. Text, buttons, recipient address, credentials, and free-form provider errors are forbidden. |
+| `ownership_backfill_checkpoints` / `OwnershipBackfillCheckpoint` | Required S control state | One versioned phase checkpoint with stable scan watermarks, cumulative counts, operational timestamps, and lowercase SHA-256 digests. It contains no row payload, title, medical/event date, file path, credential, or free-form error and is excluded from ordinary portability. Any populated checkpoint makes revision `0045` downgrade fail before DDL. |
 
 `WeeklyDigest`, AI-parsed `RawPayload`, AI-assisted `Signal`/`Notification`, and
 future AI artifacts link to `AIInvocation`, not to a fabricated per-subject
@@ -276,6 +284,16 @@ logical subject envelope and these rules:
    plane. A fresh-install restore uses the same logical remap path.
 8. A user import replaces only the selected subject's portable data and never
    performs a global table wipe.
+9. A v1 full restore never imports checkpoint contents. A non-empty restore has
+   stripped A/C/F and cannot prove whether a row came from a historical connector
+   or the platform parser, so the same transaction records
+   `stage3.raw_payloads.v1` as `RESTORE_BLOCKED`; ordinary Stage-3A apply cannot
+   guess or clear it. A future backup-v2 remap or reviewed manual recovery must
+   supply the missing provenance. An empty restore records an empty `COMPLETED`
+   checkpoint. If retained AI-invocation or durable-delivery control rows still
+   reference a raw row, v1 replacement refuses before deleting anything. A
+   checkpoint is operational state, never authorization: consumers continue to
+   reject S-only restored history.
 
 Medical file bytes are not currently part of the JSON backup. FileAsset metadata
 must not imply that the file itself was backed up. A later archive format needs
@@ -288,7 +306,7 @@ and access-controlled product. It must not weaken the ordinary user contract.
 
 ### Stage 0 — Registry and roots
 
-- keep the static ownership registry exhaustive across all 55 current tables;
+- keep the static ownership registry exhaustive across all 62 current tables;
 - add minimal IntegrationConnection and FileAsset roots;
 - add scoped setting/preference tables;
 - keep provider clients, credentials, and files untouched;
@@ -326,13 +344,59 @@ Backfill in dependency order:
 8. copy known scoped settings while retaining `app_settings`.
 
 The job is idempotent, batches by stable PK, stores a checkpoint, and emits only
-counts/opaque IDs. It records before/after counts and deterministic checksums for
+bounded counts and deterministic checksums. It records before/after evidence for
 data/provenance fields, raw links, and frozen reports. Zero orphans, ambiguous
 connection mappings, and duplicate candidates are hard gates, not warnings.
 
 Do not hide a large production data rewrite inside one unbounded Alembic
 transaction. Alembic owns schema; a reviewed resumable operation owns the data
 backfill and produces a validation report.
+
+The implemented Stage-3A slice is limited to step 3, under the immutable phase
+key `stage3.raw_payloads.v1`. Revision `0045` adds its subject-bound checkpoint
+but does not rewrite data. The operator command is deliberately fixed-target:
+
+```bash
+# Read-only status and complete preflight (the default).
+python scripts/backfill_subject_ownership.py
+
+# Advance at most one independently committed batch.
+python scripts/backfill_subject_ownership.py --apply
+
+# Explicit bounded maintenance window: at most 10 batches of 500 rows.
+python scripts/backfill_subject_ownership.py \
+  --apply --batch-size 500 --max-batches 10
+```
+
+Batch size defaults to 250 and is limited to 1–1000; `max-batches` defaults to
+1 and is limited to 1–100. Each batch and its checkpoint commit atomically, so a
+later invocation resumes after the last committed stable-PK cursor. The operation
+is a maintenance boundary: all raw ingest, refresh, replay, and import writers
+remain paused from the first mutating batch through completion. The initial high
+watermark freezes the reviewed population; new rows above it are reported and
+must already satisfy the live dual-write graph rather than being silently folded
+into the old scan. Before `COMPLETED`, the service locks and keyset-rehashes the
+entire frozen snapshot with bounded page memory; any cross-batch payload, count,
+or ownership drift fails closed. There is no reset/rebase, delete, arbitrary
+table/phase, or command-line DB URL. Standard output is one versioned JSON object
+containing only phase/status, counts, completion/result codes, and deterministic checksums. Subject,
+checkpoint, and raw row IDs—even internal cursor/high-watermark IDs—are not
+serialized. Remaining normalized, child, report/notification/alert/outbox,
+file, and setting phases require separate reviewed phase keys and are still
+pending.
+
+Historical actorless provider/parser rows may receive C only from the exact
+same-subject `legacy_singleton_v1` provider/type root; its retired lifecycle is
+valid historical provenance, while rotated/current accounts are never guessed.
+That compatibility bridge is not an ingress authority: every new
+provider/parser write remains on the strict live S/A/C-or-artifact dual-write
+boundary.
+
+The synthetic PostgreSQL 15 rehearsal passed a real migration build through
+revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
+completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
+before DDL once the checkpoint contained durable state. This validates only the
+Stage-3A raw slice; the later Stage 3 phases and Stage 4 gates remain pending.
 
 ### Stage 4 — Ownership validation
 

@@ -7,24 +7,44 @@ Postgres sequence-reset behaviour is an ``@pytest.mark.integration`` test (SQLit
 can't exercise it).
 """
 import json
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
-from vitals.enums import Domain
+from vitals.enums import (
+    AIInvocationPurpose,
+    AIInvocationSource,
+    AIInvocationStatus,
+    Domain,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    NotificationDeliveryStatus,
+    Source,
+)
+from vitals.models.ai import AIInvocation
 from vitals.models.app_settings import AppSetting
 from vitals.models.garmin import GarminActivity, GarminDaily, GarminIntraday
 from vitals.models.glp1 import Injection
 from vitals.models.hevy import HevyExercise, HevySet, HevyWorkout
 from vitals.models.labs import LabResult
+from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
+from vitals.models.proactive import NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
 from vitals.models.supplements import Supplement
+from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import BodyMeasurement, WeightLog
+from vitals.services import data_portability_service
 from vitals.services.data_portability_service import (
     PortabilityError,
     export_full,
     export_llm,
     import_full,
+)
+from vitals.services.raw_ownership_backfill_service import (
+    RAW_OWNERSHIP_BACKFILL_PHASE,
+    RawOwnershipBackfillIdentityError,
+    RawOwnershipBackfillStateError,
 )
 
 _IDENTITY_CONTROL_PLANE_TABLES = {
@@ -35,6 +55,10 @@ _IDENTITY_CONTROL_PLANE_TABLES = {
     "support_access_scopes",
     "audit_events",
 }
+_EMPTY_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb924"
+    "27ae41e4649b934ca495991b7852b855"
+)
 
 
 async def _seed(session) -> None:
@@ -357,6 +381,492 @@ async def test_import_cannot_delete_or_replace_identity_control_plane(db_session
 
     assert await identity_state() == before
     assert _IDENTITY_CONTROL_PLANE_TABLES.isdisjoint(stats.counts)
+
+
+async def test_full_import_blocks_raw_backfill_atomically_and_preserves_other_phase(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_governance = data_portability_service.acquire_identity_governance_lock
+    original_subject = data_portability_service._single_local_subject_id
+    original_preflight = data_portability_service._refuse_retained_raw_references
+    original_block = (
+        data_portability_service.block_raw_ownership_backfill_for_portability_v1_restore
+    )
+
+    async def tracked_governance(*args, **kwargs):
+        order.append("governance")
+        return await original_governance(*args, **kwargs)
+
+    async def tracked_subject(*args, **kwargs):
+        order.append("local-subject")
+        return await original_subject(*args, **kwargs)
+
+    async def tracked_preflight(*args, **kwargs):
+        order.append("retained-reference-preflight")
+        return await original_preflight(*args, **kwargs)
+
+    async def tracked_block(*args, **kwargs):
+        order.append("restore-block")
+        return await original_block(*args, **kwargs)
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "acquire_identity_governance_lock",
+        tracked_governance,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "_single_local_subject_id",
+        tracked_subject,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "_refuse_retained_raw_references",
+        tracked_preflight,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "block_raw_ownership_backfill_for_portability_v1_restore",
+        tracked_block,
+    )
+    old_raw = RawPayload(
+        domain=Domain.GENETICS.value,
+        source="vcf_import",
+        external_id="old-portability-raw",
+        payload={"old": True},
+    )
+    db_session.add(old_raw)
+    await db_session.flush()
+    now = datetime(2026, 8, 21, 12, tzinfo=UTC)
+    checkpoint = OwnershipBackfillCheckpoint(
+        phase_key=RAW_OWNERSHIP_BACKFILL_PHASE,
+        subject_id=legacy_owner_roots.subject_id,
+        status="completed",
+        scan_high_watermark_id=old_raw.id,
+        snapshot_rows=1,
+        last_scanned_id=old_raw.id,
+        scanned_rows=1,
+        updated_rows=1,
+        unchanged_rows=0,
+        data_checksum_before="a" * 64,
+        data_checksum_after="a" * 64,
+        ownership_checksum_after="c" * 64,
+        started_at=now,
+        updated_at=now,
+        completed_at=now,
+    )
+    unrelated = OwnershipBackfillCheckpoint(
+        phase_key="synthetic.unrelated.v1",
+        subject_id=legacy_owner_roots.subject_id,
+        status="running",
+        scan_high_watermark_id=0,
+        snapshot_rows=0,
+        last_scanned_id=0,
+        scanned_rows=0,
+        updated_rows=0,
+        unchanged_rows=0,
+        data_checksum_before="d" * 64,
+        data_checksum_after="e" * 64,
+        ownership_checksum_after="f" * 64,
+        started_at=now,
+        updated_at=now,
+        completed_at=None,
+    )
+    db_session.add_all([checkpoint, unrelated])
+    await db_session.commit()
+    old_raw_id = old_raw.id
+
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [
+                {
+                    "id": 11,
+                    "domain": Domain.GENETICS.value,
+                    "source": "vcf_import",
+                    "external_id": "restored-portability-raw-11",
+                    "payload": {"restored": True},
+                    "_vitals_subject_bound": True,
+                },
+                {
+                    "id": 37,
+                    "domain": Domain.GENETICS.value,
+                    "source": "vcf_import",
+                    "external_id": "restored-portability-raw-37",
+                    "payload": {"restored": True},
+                    "_vitals_subject_bound": True,
+                }
+            ],
+        },
+    )
+    assert order == [
+        "governance",
+        "local-subject",
+        "retained-reference-preflight",
+        "restore-block",
+    ]
+
+    blocked = await db_session.get(
+        OwnershipBackfillCheckpoint,
+        RAW_OWNERSHIP_BACKFILL_PHASE,
+    )
+    other = await db_session.get(
+        OwnershipBackfillCheckpoint,
+        unrelated.phase_key,
+    )
+    restored_low = await db_session.get(RawPayload, 11)
+    restored = await db_session.get(RawPayload, 37)
+    assert (
+        blocked is not None
+        and other is not None
+        and restored_low is not None
+        and restored is not None
+    )
+    assert (
+        blocked.status,
+        blocked.scan_high_watermark_id,
+        blocked.snapshot_rows,
+        blocked.last_scanned_id,
+        blocked.scanned_rows,
+        blocked.updated_rows,
+        blocked.unchanged_rows,
+        blocked.completed_at,
+    ) == ("restore_blocked", 37, 2, 0, 0, 0, 0, None)
+    assert other.status == "running" and other.data_checksum_before == "d" * 64
+    assert (
+        restored.subject_id,
+        restored.actor_user_id,
+        restored.integration_connection_id,
+        restored.file_asset_id,
+    ) == (legacy_owner_roots.subject_id, None, None, None)
+    assert await db_session.scalar(
+        select(RawPayload.id).where(RawPayload.id == old_raw_id)
+    ) is None
+
+    await db_session.rollback()
+    original_checkpoint = (
+        await db_session.execute(
+            select(
+                OwnershipBackfillCheckpoint.status,
+                OwnershipBackfillCheckpoint.scan_high_watermark_id,
+                OwnershipBackfillCheckpoint.snapshot_rows,
+                OwnershipBackfillCheckpoint.completed_at,
+            ).where(
+                OwnershipBackfillCheckpoint.phase_key
+                == RAW_OWNERSHIP_BACKFILL_PHASE
+            )
+        )
+    ).one()
+    assert (
+        original_checkpoint.status,
+        original_checkpoint.scan_high_watermark_id,
+        original_checkpoint.snapshot_rows,
+        original_checkpoint.completed_at is not None,
+    ) == ("completed", old_raw_id, 1, True)
+    assert await db_session.scalar(
+        select(RawPayload.id).where(RawPayload.id == old_raw_id)
+    ) == old_raw_id
+    assert await db_session.scalar(
+        select(RawPayload.id).where(RawPayload.id == 11)
+    ) is None
+    assert await db_session.scalar(
+        select(RawPayload.id).where(RawPayload.id == 37)
+    ) is None
+
+
+async def test_full_import_completes_an_empty_raw_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    old_raw = RawPayload(
+        domain=Domain.GENETICS.value,
+        source=Source.VCF_IMPORT.value,
+        external_id="empty-restore-removes-old-raw",
+        payload={"old": True},
+    )
+    db_session.add(old_raw)
+    await db_session.commit()
+    old_raw_id = old_raw.id
+
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    checkpoint = await db_session.get(
+        OwnershipBackfillCheckpoint,
+        RAW_OWNERSHIP_BACKFILL_PHASE,
+    )
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+    ) == ("completed", 0, 0, 0, 0, 0, 0)
+    assert checkpoint.completed_at is not None
+    assert checkpoint.data_checksum_before == _EMPTY_SHA256
+    assert checkpoint.data_checksum_after == _EMPTY_SHA256
+    assert checkpoint.ownership_checksum_after == _EMPTY_SHA256
+    assert await db_session.scalar(
+        select(RawPayload.id).where(RawPayload.id == old_raw_id)
+    ) is None
+
+
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_raw_replacement_rejects_nonpositive_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    bad_id,
+):
+    old_raw = RawPayload(
+        domain=Domain.GENETICS.value,
+        source="vcf_import",
+        external_id="positive-id-guard",
+        payload={"old": True},
+    )
+    db_session.add(old_raw)
+    await db_session.commit()
+    old_raw_id = old_raw.id
+    called = False
+
+    async def unexpected_block(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "block_raw_ownership_backfill_for_portability_v1_restore",
+        unexpected_block,
+    )
+    row = {
+        "domain": Domain.GENETICS.value,
+        "source": "vcf_import",
+        "payload": {},
+    }
+    if bad_id is not None:
+        row["id"] = bad_id
+    with pytest.raises(PortabilityError, match="positive integer id"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [row],
+            },
+        )
+    assert called is False
+    assert await db_session.get(RawPayload, old_raw_id) is not None
+
+
+@pytest.mark.parametrize(
+    "block_error",
+    (RawOwnershipBackfillIdentityError, RawOwnershipBackfillStateError),
+)
+async def test_raw_restore_block_failure_is_bounded_and_does_not_start_replacement(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    block_error,
+):
+    old_raw = RawPayload(
+        domain=Domain.GENETICS.value,
+        source="vcf_import",
+        external_id="restore-block-failure-guard",
+        payload={"old": True},
+    )
+    db_session.add(old_raw)
+    await db_session.commit()
+    old_raw_id = old_raw.id
+
+    async def rejected_block(*args, **kwargs):
+        raise block_error("sensitive raw id 999 must never escape")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "block_raw_ownership_backfill_for_portability_v1_restore",
+        rejected_block,
+    )
+    with pytest.raises(PortabilityError) as caught:
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+            },
+        )
+    assert "sensitive" not in str(caught.value)
+    assert "999" not in str(caught.value)
+    assert await db_session.get(RawPayload, old_raw_id) is not None
+
+
+async def test_database_failure_is_bounded_and_caller_rollback_is_atomic(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    old_raw = RawPayload(
+        domain=Domain.GENETICS.value,
+        source=Source.VCF_IMPORT.value,
+        external_id="database-error-rollback-guard",
+        payload={"old": True},
+    )
+    db_session.add(old_raw)
+    await db_session.commit()
+    old_raw_id = old_raw.id
+
+    async def rejected_database_read(*args, **kwargs):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        raise SQLAlchemyError(
+            "sensitive payload marker and raw id 987654 must never escape"
+        )
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "_secret_settings",
+        rejected_database_read,
+    )
+    with pytest.raises(PortabilityError) as caught:
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [
+                    {
+                        "id": 37,
+                        "domain": Domain.GENETICS.value,
+                        "source": Source.VCF_IMPORT.value,
+                        "external_id": "incoming-database-error",
+                        "payload": {"incoming": True},
+                        "_vitals_subject_bound": True,
+                    }
+                ],
+            },
+        )
+    message = str(caught.value)
+    assert "database rejected the portable restore" in message
+    assert "sensitive payload marker" not in message
+    assert "987654" not in message
+
+    await db_session.rollback()
+    assert await db_session.get(RawPayload, old_raw_id) is not None
+    assert await db_session.get(RawPayload, 37) is None
+    assert (
+        await db_session.get(
+            OwnershipBackfillCheckpoint,
+            RAW_OWNERSHIP_BACKFILL_PHASE,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("retained_table", ("ai", "delivery_intent"))
+async def test_full_import_refuses_retained_raw_control_provenance_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    platform_ai_ready,
+    retained_table,
+):
+    connection_id = await db_session.scalar(
+        select(IntegrationConnection.id).where(
+            IntegrationConnection.subject_id == legacy_owner_roots.subject_id,
+            IntegrationConnection.provider == IntegrationProvider.TELEGRAM.value,
+            IntegrationConnection.connection_type
+            == IntegrationConnectionType.RECIPIENT.value,
+        )
+    )
+    assert connection_id is not None
+    raw = RawPayload(
+        subject_id=legacy_owner_roots.subject_id,
+        actor_user_id=legacy_owner_roots.user_id,
+        integration_connection_id=connection_id,
+        domain=Domain.SIGNALS.value,
+        source=Source.TELEGRAM.value,
+        external_id=f"retained-control-sensitive-{retained_table}",
+        payload={"synthetic": True},
+    )
+    db_session.add(raw)
+    await db_session.flush()
+    if retained_table == "ai":
+        db_session.add(
+            AIInvocation(
+                subject_id=legacy_owner_roots.subject_id,
+                actor_user_id=legacy_owner_roots.user_id,
+                raw_payload_id=raw.id,
+                platform_integration_connection_id=platform_ai_ready.id,
+                purpose=AIInvocationPurpose.SIGNAL_PARSE.value,
+                source=AIInvocationSource.TELEGRAM.value,
+                model="synthetic/portability-guard",
+                config_version=platform_ai_ready.config_version,
+                idempotency_key="retained-portability-ai",
+                quota_period_start=date(2020, 1, 1),
+                quota_period_end=date(2100, 1, 1),
+                reserved_cost_microunits=1,
+                reserved_units=1,
+                charged_cost_microunits=0,
+                charged_units=0,
+                status=AIInvocationStatus.PREPARED.value,
+            )
+        )
+    else:
+        db_session.add(
+            NotificationDeliveryIntent(
+                subject_id=legacy_owner_roots.subject_id,
+                recipient_user_id=legacy_owner_roots.user_id,
+                actor_user_id=legacy_owner_roots.user_id,
+                integration_connection_id=connection_id,
+                raw_payload_id=raw.id,
+                category="reply",
+                channel="telegram",
+                idempotency_key="d" * 64,
+                policy_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+                policy_date=date(2026, 8, 21),
+                status=NotificationDeliveryStatus.PENDING.value,
+            )
+        )
+    await db_session.commit()
+    raw_id = raw.id
+
+    with pytest.raises(PortabilityError) as caught:
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [
+                    {
+                        "id": raw_id,
+                        "domain": Domain.SIGNALS.value,
+                        "source": Source.TELEGRAM.value,
+                        "external_id": "replacement-must-not-start",
+                        "payload": {"replacement": True},
+                        "_vitals_subject_bound": True,
+                    }
+                ],
+            },
+        )
+
+    message = str(caught.value)
+    assert "control-plane provenance" in message
+    assert "retained-control-sensitive" not in message
+    assert await db_session.get(RawPayload, raw_id) is not None
+    assert (
+        await db_session.get(
+            OwnershipBackfillCheckpoint,
+            RAW_OWNERSHIP_BACKFILL_PHASE,
+        )
+        is None
+    )
 
 
 # ── LLM export shape ───────────────────────────────────────────────────────────

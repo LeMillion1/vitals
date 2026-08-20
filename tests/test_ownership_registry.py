@@ -16,7 +16,7 @@ from vitals.ownership import (
 
 def test_every_registered_table_has_exactly_one_ownership_contract():
     assert set(OWNERSHIP_REGISTRY) == set(Base.metadata.tables)
-    assert len(OWNERSHIP_REGISTRY) == 61
+    assert len(OWNERSHIP_REGISTRY) == 62
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -62,6 +62,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "integration_connections",
         "legacy_openrouter_connection_bridges",
         "notification_delivery_intents",
+        "ownership_backfill_checkpoints",
         "platform_integration_connections",
         "platform_settings",
         "shared_reports",

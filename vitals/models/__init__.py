@@ -5,6 +5,7 @@ autogenerate and by the tests' ``create_all``).
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
 from vitals.models.raw_payload import RawPayload
+from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.system_alert import SystemAlert
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.app_settings import AppSetting
@@ -107,6 +108,7 @@ __all__ = [
     "InsightsMixin",
     "insights_index",
     "RawPayload",
+    "OwnershipBackfillCheckpoint",
     "SystemAlert",
     "ConflictRule",
     "AppSetting",

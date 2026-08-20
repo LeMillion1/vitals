@@ -1,8 +1,8 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A implementation source of truth
 
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-21
 
 This document records every compatibility write boundary that must populate the
 nullable ownership columns introduced by revisions `0037` and `0038`. It is the
@@ -437,6 +437,57 @@ an exhaustive registry. Global provider credentials, Redis namespaces, Garmin
 Weight outbox/date uniqueness, upstream natural-key uniqueness, and the read transaction
 spanning vendor I/O remain PR-09/cutover work; registration therefore remains
 disabled.
+
+## Stage-3A raw-ownership operation
+
+Stage 2 makes new `RawPayload` writes explicit; Stage 3A handles only historical
+rows below a frozen stable-PK high watermark. The phase is permanently named
+`stage3.raw_payloads.v1`. Its service resolves the exact bootstrapped subject and
+reviewed legacy connection mapping under identity governance, rejects partial or
+foreign ownership, ambiguous provider mapping, duplicate natural-key candidates,
+and checkpoint drift, and never invents a historical actor or file root.
+An actorless historical provider/parser row may receive C only from the exact
+same-subject `legacy_singleton_v1` provider/type root (including a retired root
+that remains historical provenance); rotated/current accounts are never guessed.
+The bridge is never accepted as authority for live ingress, whose strict
+S/A/C-or-artifact dual-write contract remains unchanged.
+
+`scripts/backfill_subject_ownership.py` is a thin operator boundary. With no
+arguments it runs read-only status and the complete fail-closed preflight.
+Mutation requires `--apply`; batch size is 1–1000 (default 250), `--max-batches`
+is 1–100 (default 1), and each batch plus checkpoint commits independently. The
+command accepts no table, phase, reset/delete, or DB-URL argument. It performs no
+payload-file or provider I/O and never resolves or uses credentials.
+
+The service result retains internal scan watermarks for resume validation, but
+the CLI applies a narrower JSON allowlist: phase/status, cumulative and final-
+batch counts, remaining/above-high-watermark counts, completion/result codes,
+and three lowercase SHA-256 checksums. It emits no subject/checkpoint/raw ID,
+payload, medical value, title, medical/event date, path, credential reference,
+DB URL, or exception text. Revision `0045` is schema-only; once any durable
+checkpoint row exists, its downgrade refuses before DDL. All normalized, child,
+artifact, delivery, alert/outbox, file, and setting phases remain separate
+pending slices.
+
+Every mutating invocation belongs to one continuous raw-writer maintenance
+window: ingest, refresh, replay, and import stay paused until the phase completes.
+The final transition locks and keyset-rehashes the complete frozen snapshot with
+the requested batch size as its page bound. Cardinality, payload, or ownership
+drift between committed batches fails closed; Stage-3A intentionally exposes no
+operator reset/rebase that could erase that evidence.
+
+The throwaway PostgreSQL 15 rehearsal passed a real migration build through
+revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
+completion, unchanged data/link/frozen-output hashes, and populated-checkpoint
+downgrade refusal before DDL.
+
+A v1 full restore does not import checkpoint state. A non-empty restore has
+discarded A/C/F provenance and atomically records `stage3.raw_payloads.v1` as
+`RESTORE_BLOCKED`; ordinary apply cannot remap or unblock it. Future backup-v2 or
+reviewed manual recovery must provide the missing graph. An empty restore records
+an empty `COMPLETED` checkpoint. Replacement refuses before mutation if retained
+AI-invocation or durable-delivery rows still reference raw history. No checkpoint
+state authorizes S-only restored rows.
 
 ## Completion gates
 

@@ -231,10 +231,11 @@ mode. Never delete the copied password hash until the auth cutover is verified.
 ### PR 03 — Subject ownership expansion and backfill
 
 The canonical table-by-table contract is
-`docs/COMMERCIAL_OWNERSHIP_INVENTORY.md`. It classifies all 55 current tables,
-the missing ownership roots, natural keys, cross-surface dependencies, backfill
-order, and rollback boundary. The runtime write-path contract is maintained in
-`docs/COMMERCIAL_DUAL_WRITE_MATRIX.md`.
+`docs/COMMERCIAL_OWNERSHIP_INVENTORY.md`. It classifies the original 55-table
+expansion plus seven post-foundation control-plane additions—the current 62
+tables—along with missing ownership roots, natural keys, cross-surface
+dependencies, backfill order, and rollback boundary. The runtime write-path
+contract is maintained in `docs/COMMERCIAL_DUAL_WRITE_MATRIX.md`.
 
 Implementation progress on `commercial/main`:
 
@@ -395,11 +396,31 @@ Implementation progress on `commercial/main`:
   migration/foreign-key tests. Direct interactive selectors are covered for all
   current Timeline event types, and provider ingestion preserves raw-first
   provenance with subject/connection ownership.
-- Bounded data backfill and validation, scoped natural-key/alert/outbox-unique
-  cutover, remaining health-alert and conflict writers, subject-aware
-  composition/reporting (including Labs/Genetics charts, share snapshot inputs,
-  digests, overview, remaining Today composition, and export), lossless VCF chunking,
-  full MCP principal propagation, and RLS remain pending.
+- Stage 3A adds schema-only revision `0045` plus the
+  fixed `stage3.raw_payloads.v1` operator phase. Status/preflight is the default
+  and cannot write; `--apply` advances independently committed stable-PK batches
+  behind a subject-bound checkpoint. The initial high watermark, cumulative
+  counts, and deterministic data/ownership checksums make stop/resume and
+  no-content-change validation explicit. CLI JSON excludes S and raw/checkpoint
+  IDs as well as payloads, titles, dates, paths, credentials, and free-form
+  errors. Its throwaway PostgreSQL 15 gate passed a real migration build through
+  revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
+  completion, unchanged raw/link/frozen-output hashes, and populated-checkpoint
+  downgrade refusal.
+  A non-empty v1 full restore has stripped A/C/F provenance and atomically marks
+  this phase `RESTORE_BLOCKED`; ordinary apply cannot guess or clear it. Future
+  backup-v2 or reviewed manual remap is required. An empty restore records an
+  empty `COMPLETED` checkpoint, and any retained AI/delivery raw reference blocks
+  replacement before mutation. The checkpoint never authorizes an S-only raw
+  row. Operators pause all raw writers for the complete multi-batch run; the
+  final transition performs a bounded-page full-snapshot rehash and fails closed
+  on cross-batch payload, count, or ownership drift.
+- Remaining bounded backfill phases and whole-lake validation, scoped
+  natural-key/alert/outbox-unique cutover, remaining health-alert and conflict
+  writers, subject-aware composition/reporting (including Labs/Genetics charts,
+  share snapshot inputs, digests, overview, remaining Today composition, and
+  export), lossless VCF chunking, full MCP principal propagation, and RLS remain
+  pending.
   Registration stays disabled; the current code is a safe single-subject
   migration bridge, not a multi-user release boundary.
 
@@ -854,6 +875,7 @@ Additional gates:
 | 2026-08-19 | Preserve legacy browser cookies through their existing TTL using a strict versioned compatibility envelope. | A flag-day logout is unnecessary in the bootstrap PR, but unknown token shapes and authorization facts in signed-readable cookies must fail closed. |
 | 2026-08-19 | Treat password rotation as an explicit environment/DB dual-write until database auth cuts over. | Strict startup hash reconciliation would otherwise turn a legitimate settings change into a startup outage; compensation narrows the unavoidable file/database crash window. |
 | 2026-08-19 | Separate nullable ownership expansion/backfill from the scoped-key cutover, and complete both before a second subject is writable. | Keeping a global unique constraint cannot permit the same date or upstream ID in two subjects. After scoped duplicate data exists, a downgrade to the global-key schema would be lossy and is forbidden. |
+| 2026-08-21 | Keep Alembic schema-only and run each data-backfill phase through a fixed, bounded, resumable operator command. | A production lake rewrite must commit in reviewable batches, preserve deterministic evidence across restart, expose no PHI in operator output, and block schema downgrade once its durable checkpoint exists. |
 
 ## Continuation protocol
 

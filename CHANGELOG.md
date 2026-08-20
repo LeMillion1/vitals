@@ -26,6 +26,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   concurrent PostgreSQL startup with an advisory lock, and records only bounded
   operational audit metadata. A config/identity/hash mismatch now stops startup
   instead of silently creating or rewriting an administrator.
+- Added Stage 3A, the first resumable subject-ownership data phase over
+  historical raw payloads. Schema-only
+  revision `0045` stores a payload-free, subject-bound checkpoint;
+  the fixed `stage3.raw_payloads.v1` operator command defaults to read-only
+  status/preflight and requires `--apply` for independently committed bounded
+  batches inside one raw-writer maintenance window. The final transition
+  keyset-rehashes the complete frozen snapshot and refuses cross-batch payload,
+  count, or ownership drift. Its JSON output excludes subject and raw/checkpoint IDs, payloads,
+  paths, credentials, DB URLs, and exception text. A throwaway PostgreSQL 15
+  gate passed the real migration chain through revision `0034` and then to head,
+  batch-size-2 process stop/resume, unchanged data/link/frozen-output hashes,
+  idempotent completion, and populated-checkpoint downgrade refusal. Remaining
+  ownership phases and whole-lake validation are still required before
+  registration can open.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before
@@ -165,6 +179,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   prevents the new durable password hash or access metadata from entering a user
   backup and prevents a legacy or forged import from replacing its authorizing
   owner, planting privileges, erasing audit history, or reviving a shared link.
+  A non-empty v1 full restore cannot prove the A/C/F roots it strips, so it
+  atomically records `stage3.raw_payloads.v1` as `RESTORE_BLOCKED`; ordinary
+  apply cannot guess or clear that state, and future backup-v2 or reviewed manual
+  remap is required. Empty restores record an empty completed checkpoint, while
+  retained AI-invocation or durable-delivery references make raw replacement
+  refuse before mutation. The checkpoint itself grants no authority over S-only
+  raw history.
 - Added the reversible PR-03 ownership expansion: subject-bound integration and
   private-file roots, scoped setting stores, nullable subject/actor/connection/
   file references on every classified health-data table and directly queried
