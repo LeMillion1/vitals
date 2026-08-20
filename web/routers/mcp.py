@@ -1773,6 +1773,24 @@ async def log_note(
                 return {"error": f"{domain} record {record_id} not found"}
             await session.commit()
             return await serialize_written(session, row)
+        if domain == "body_comp":
+            if not await _module_enabled(session, "body_comp"):
+                return {"error": "module 'body_comp' is disabled"}
+            from vitals.services import body_scan_service
+
+            conflict_context, prepared = await _mcp_v1_weight_write(session)
+            row = await body_scan_service.update_scan_note(
+                session,
+                record_id,
+                note=note,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_weight_write=prepared,
+            )
+            if row is None:
+                return {"error": f"{domain} record {record_id} not found"}
+            await session.commit()
+            return await serialize_written(session, row)
         if domain == "nutrition":
             if not await _module_enabled(session, "nutrition"):
                 return {"error": "module 'nutrition' is disabled"}
@@ -1898,6 +1916,7 @@ async def get_notes(
         skincare_scope = None
         glp1_scope = None
         labs_scope = None
+        body_comp_scope = None
         if "weight" in targets:
             weight_scope = await _mcp_v1_conflict_scope(session)
         if "measurement" in targets:
@@ -1925,6 +1944,13 @@ async def get_notes(
                 glp1_scope = await _mcp_v1_conflict_scope(session)
         if "labs" in targets:
             labs_scope = await _mcp_v1_conflict_scope(session)
+        if "body_comp" in targets:
+            if not await _module_enabled(session, "body_comp"):
+                if domain == "body_comp":
+                    return [{"error": "module 'body_comp' is disabled"}]
+                targets.pop("body_comp")
+            else:
+                body_comp_scope = await _mcp_v1_conflict_scope(session)
         for d_name, model in targets.items():
             if d_name == "weight":
                 assert weight_scope is not None
@@ -2044,6 +2070,24 @@ async def get_notes(
                     entry["_domain"] = d_name
                     results.append(entry)
                 continue
+            if d_name == "body_comp":
+                assert body_comp_scope is not None
+                from vitals.services import body_scan_service
+
+                rows = await body_scan_service.list_scans(
+                    session,
+                    subject_id=body_comp_scope.subject_id,
+                    include_legacy_unowned=(
+                        body_comp_scope.include_legacy_unowned
+                    ),
+                    start=start,
+                    end=end,
+                )
+                for row in (r for r in rows if r.note):
+                    entry = serialize_row(row)
+                    entry["_domain"] = d_name
+                    results.append(entry)
+                continue
             stmt = select(model).where(model.note.isnot(None), model.note != "")
             if start:
                 stmt = stmt.where(model.date >= start)
@@ -2133,6 +2177,13 @@ async def delete_record(domain: str, record_id: int) -> dict:
                 "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
+        elif domain == "body_comp":
+            conflict_context, prepared = await _mcp_v1_weight_write(session)
+            owned_kwargs = {
+                "identity": conflict_context.identity,
+                "include_legacy_unowned": True,
+                "prepared_weight_write": prepared,
+            }
         elif domain in {"timeline", "supplements"}:
             ownership = await _mcp_v1_legacy_owner(session)
             owned_kwargs = {
@@ -2206,6 +2257,13 @@ async def delete_record(domain: str, record_id: int) -> dict:
                 "include_legacy_unowned": True,
             }
         ok = await getattr(service, fn_name)(session, record_id, **owned_kwargs)
+        if domain == "body_comp" and ok:
+            await service.refresh_alerts(
+                session,
+                identity=conflict_context.identity,
+                include_legacy_unowned=True,
+                prepared_weight_write=prepared,
+            )
         await session.commit()
         return {"deleted": ok, "domain": domain, "record_id": record_id}
 
@@ -2230,14 +2288,19 @@ async def get_body_scans(
     end = _parse_date(end_date, field="end_date")
 
     async with session_factory() as session:
-        stmt = select(BodyScan).options(selectinload(BodyScan.metrics))
-        if start:
-            stmt = stmt.where(BodyScan.date >= start)
-        if end:
-            stmt = stmt.where(BodyScan.date <= end)
-        stmt = stmt.order_by(BodyScan.date.desc(), BodyScan.id.desc()).limit(limit)
-        scans = (await session.execute(stmt)).scalars().all()
-        return [_serialize_scan(s) for s in scans]
+        from vitals.services import body_scan_service
+
+        if not await _module_enabled(session, "body_comp"):
+            return [{"error": "module 'body_comp' is disabled"}]
+        scope = await _mcp_v1_conflict_scope(session)
+        scans = await body_scan_service.list_scans(
+            session,
+            start=start,
+            end=end,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+        )
+        return [_serialize_scan(s) for s in scans[:limit]]
 
 
 @mcp.tool()
@@ -2247,7 +2310,15 @@ async def get_body_scan(scan_id: int) -> dict:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        scan = await body_scan_service.get_scan(session, scan_id)
+        if not await _module_enabled(session, "body_comp"):
+            return {"error": "module 'body_comp' is disabled"}
+        scope = await _mcp_v1_conflict_scope(session)
+        scan = await body_scan_service.get_scan(
+            session,
+            scan_id,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+        )
         if scan is None:
             return {"error": f"Body scan {scan_id} not found"}
         return _serialize_scan(scan)
@@ -2268,8 +2339,17 @@ async def get_body_metric_history(
     start = _parse_date(start_date, field="start_date")
     end = _parse_date(end_date, field="end_date")
     async with session_factory() as session:
+        if not await _module_enabled(session, "body_comp"):
+            return [{"error": "module 'body_comp' is disabled"}]
+        scope = await _mcp_v1_conflict_scope(session)
         return await body_scan_service.metric_history(
-            session, metric_key, segment=segment, start=start, end=end
+            session,
+            metric_key,
+            segment=segment,
+            start=start,
+            end=end,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
         )
 
 
@@ -2297,19 +2377,41 @@ async def log_body_scan(
     parsed_date = _parse_date(on_date, today_local(), field="on_date")
 
     async with session_factory() as session:
+        extracted = {
+            "date": parsed_date.isoformat(),
+            "device": device,
+            "note": note,
+            "metrics": metrics,
+            "override": override,
+        }
         try:
             conflict_context, prepared_weight_write = await _mcp_v1_weight_write(
                 session,
                 evaluation_date=parsed_date,
             )
-            scan = await body_scan_service.save_scan(
+            from vitals.services import raw_payload_service
+
+            raw = await raw_payload_service.upsert_owned_raw_payload(
+                session,
+                identity=conflict_context.identity,
+                integration_connection_id=None,
+                file_asset_id=None,
+                domain=Domain.BODY_COMPOSITION.value,
+                source=Source.MCP.value,
+                external_id=f"mcp:{uuid.uuid4().hex}",
+                payload=extracted,
+            )
+            scan = await body_scan_service.ingest_structured_scan(
+                session,
+                extracted,
+                raw_payload=raw,
+                identity=conflict_context.identity,
+                prepared_weight_write=prepared_weight_write,
+                override=override,
+            )
+            await body_scan_service.refresh_alerts(
                 session,
                 on_date=parsed_date,
-                device=device,
-                metrics=metrics,
-                note=note,
-                source=Source.MCP.value,
-                override=override,
                 identity=conflict_context.identity,
                 include_legacy_unowned=True,
                 prepared_weight_write=prepared_weight_write,
@@ -2321,7 +2423,12 @@ async def log_body_scan(
             await session.rollback()
             return {"error": str(e)}
         await session.commit()
-        full = await body_scan_service.get_scan(session, scan.id)
+        full = await body_scan_service.get_scan(
+            session,
+            scan.id,
+            subject_id=conflict_context.identity.subject_id,
+            include_legacy_unowned=True,
+        )
         return _serialize_scan(full) if full else {"scan_id": scan.id}
 
 

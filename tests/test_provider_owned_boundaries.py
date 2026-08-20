@@ -64,14 +64,18 @@ async def test_nightly_raw_sweep_passes_exact_system_owned_roots(
         calls.append(("labs", identity, prepared_conflict_write))
         return 0
 
-    async def _legacy(session, **kwargs):
-        calls.append(("legacy", None, None))
+    async def _body_comp(session, *, identity, include_legacy_unowned, **kwargs):
+        calls.append(("body_comp", identity, include_legacy_unowned))
         return 0
 
     monkeypatch.setattr(garmin_service, "reparse_owned_pending", _garmin)
     monkeypatch.setattr(hevy_service, "reparse_owned_pending", _hevy)
     monkeypatch.setattr(labs_service, "reparse_owned_pending", _labs)
-    monkeypatch.setattr(body_scan_service, "reparse_pending", _legacy)
+    monkeypatch.setattr(
+        body_scan_service,
+        "reparse_owned_pending",
+        _body_comp,
+    )
 
     await raw_payload_service.sweep_pending_job(session_factory)
 
@@ -94,11 +98,17 @@ async def test_nightly_raw_sweep_passes_exact_system_owned_roots(
         None,
     )
     assert calls[2][2] is not None
+    body_identity = calls[3][1]
+    assert (body_identity.subject_id, body_identity.actor_user_id) == (
+        subject.id,
+        None,
+    )
+    assert calls[3][2] is True
     assert [name for name, _identity, _connection in calls] == [
         "garmin",
         "hevy",
         "labs",
-        "legacy",
+        "body_comp",
     ]
 
 

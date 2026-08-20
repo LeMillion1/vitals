@@ -16,7 +16,13 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
-from vitals.enums import Domain, FileAssetPurpose, IntegrationProvider, Source
+from vitals.enums import (
+    Domain,
+    FileAssetPurpose,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Source,
+)
 from vitals.i18n import t
 from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import (
@@ -31,6 +37,7 @@ from vitals.services import (
 from vitals.services.analytics import body_metrics
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.upload_ownership_service import require_live_upload_connection
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth, require_module
 from web.ratelimit import rate_limit
@@ -132,19 +139,28 @@ async def _section_context(
     7-day mean, body fat, weekly delta) are identical on both, and computing
     them twice is how the two headers would drift apart.
     """
-    today = today_local()
-    conflict_context, prepared = await _prepare_aux_write(
-        db,
-        username=username,
-        on_date=today,
-    )
-    identity = conflict_context.identity
-
     # Is the optional body-composition module on? Gates the tab, the BIA chart
     # overlay, and the scan section — disabled behaves as if it isn't there.
     em = getattr(request.state, "enabled_modules", None) or {}
     body_comp_enabled = bool(em.get("body_comp"))
     timeline_enabled = bool(em.get("timeline"))
+
+    today = today_local()
+    prepared_weight_write = None
+    if body_comp_enabled:
+        conflict_context, prepared_weight_write = await _prepare_weight_write(
+            db,
+            username=username,
+            on_date=today,
+        )
+        prepared = prepared_weight_write.conflict_write
+    else:
+        conflict_context, prepared = await _prepare_aux_write(
+            db,
+            username=username,
+            on_date=today,
+        )
+    identity = conflict_context.identity
 
     # Refresh noise alerts for today (+ body-scan alerts when the module is on)
     await weight_service.refresh_noise_alert(
@@ -154,10 +170,13 @@ async def _section_context(
         prepared_conflict_write=prepared,
     )
     if body_comp_enabled:
+        assert prepared_weight_write is not None
         await body_scan_service.refresh_alerts(
             db,
-            subject_id=identity.subject_id,
+            on_date=today,
+            identity=identity,
             include_legacy_unowned=True,
+            prepared_weight_write=prepared_weight_write,
         )
     await db.commit()
 
@@ -188,6 +207,15 @@ async def _section_context(
         domain=Domain.WEIGHT,
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
+    if body_comp_enabled:
+        alerts.extend(
+            await alerts_service.list_active_scoped(
+                db,
+                context=alerts_service.HealthAlertContext(identity),
+                domain=Domain.BODY_COMPOSITION,
+                legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+            )
+        )
     series = await weight_service.chart_series(
         db,
         subject_id=identity.subject_id,
@@ -649,12 +677,24 @@ async def body_scan_upload(
     edits. Returns JSON the client renders as an editable table."""
     from vitals.utils.timeutils import today_local
 
-    ownership = await resolve_legacy_ownership_context(
+    # Admit the upload only through a live AI-gateway root, then release every
+    # database lock before file IO and the external extraction await. The durable
+    # write transaction below resolves and validates the roots again.
+    preflight_ownership = await resolve_legacy_ownership_context(
         db,
         actor_username=username,
         required_connections=(IntegrationProvider.OPENROUTER,),
     )
-    identity = ownership.owner_action()
+    await require_live_upload_connection(
+        db,
+        identity=preflight_ownership.owner_action(),
+        connection_id=preflight_ownership.connection_id(
+            IntegrationProvider.OPENROUTER
+        ),
+        provider=IntegrationProvider.OPENROUTER,
+        connection_type=IntegrationConnectionType.AI_GATEWAY,
+    )
+    await db.rollback()
 
     # 415/413 surface as HTTP errors (handled by the client's error branch).
     validate_extension(file.filename, DOC_EXTS)
@@ -687,6 +727,24 @@ async def body_scan_upload(
     try:
         with open(file_path, "wb") as fh:
             fh.write(contents)
+        ownership = await resolve_legacy_ownership_context(
+            db,
+            actor_username=username,
+            required_connections=(IntegrationProvider.OPENROUTER,),
+        )
+        identity = ownership.owner_action()
+        if identity != preflight_ownership.owner_action():
+            raise ValueError("body-scan upload identity changed during extraction")
+        openrouter_connection_id = ownership.connection_id(
+            IntegrationProvider.OPENROUTER
+        )
+        await require_live_upload_connection(
+            db,
+            identity=identity,
+            connection_id=openrouter_connection_id,
+            provider=IntegrationProvider.OPENROUTER,
+            connection_type=IntegrationConnectionType.AI_GATEWAY,
+        )
         asset = await file_asset_service.register_legacy_local(
             db,
             subject_id=identity.subject_id,
@@ -700,9 +758,7 @@ async def body_scan_upload(
         raw_row = await raw_payload_service.upsert_owned_raw_payload(
             db,
             identity=identity,
-            integration_connection_id=ownership.connection_id(
-                IntegrationProvider.OPENROUTER
-            ),
+            integration_connection_id=openrouter_connection_id,
             file_asset_id=asset.id,
             domain=Domain.BODY_COMPOSITION.value,
             source=Source.BODY_SCAN.value,
@@ -789,8 +845,10 @@ async def body_scan_confirm(
         )
         await body_scan_service.refresh_alerts(
             db,
-            subject_id=identity.subject_id,
+            on_date=on_date,
+            identity=identity,
             include_legacy_unowned=True,
+            prepared_weight_write=prepared_weight_write,
         )
         await db.commit()
     except ConflictBlocked as e:
@@ -816,35 +874,50 @@ async def delete_body_scan_entry(
     username: str = Depends(require_auth),
     _gate: None = Depends(require_module("body_comp")),
 ):
-    ownership = await resolve_legacy_ownership_context(
+    operation_date = today_local()
+    conflict_context, prepared_weight_write = await _prepare_weight_write(
         db,
-        actor_username=username,
+        username=username,
+        on_date=operation_date,
     )
+    identity = conflict_context.identity
     scan = await body_scan_service.get_scan(
         db,
         scan_id,
-        subject_id=ownership.subject_id,
+        subject_id=identity.subject_id,
         include_legacy_unowned=True,
     )
+    if scan is None:
+        return _back(request)
+
     file_key = scan.file_key if scan is not None else None
     file_asset_id = scan.file_asset_id if scan is not None else None
-    await body_scan_service.delete_scan(
+    deleted = await body_scan_service.delete_scan(
         db,
         scan_id,
-        subject_id=ownership.subject_id,
+        identity=identity,
         include_legacy_unowned=True,
+        prepared_weight_write=prepared_weight_write,
     )
-    if file_asset_id is not None:
+    if deleted:
+        await body_scan_service.refresh_alerts(
+            db,
+            on_date=operation_date,
+            identity=identity,
+            include_legacy_unowned=True,
+            prepared_weight_write=prepared_weight_write,
+        )
+    if deleted and file_asset_id is not None:
         await file_asset_service.mark_legacy_local_deleted(
             db,
             file_asset_id=file_asset_id,
-            subject_id=ownership.subject_id,
+            subject_id=identity.subject_id,
             purged=False,
         )
     await db.commit()
 
     bytes_purged = False
-    if file_key:
+    if deleted and file_key:
         try:
             file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
             if os.path.exists(file_path):
@@ -857,7 +930,7 @@ async def delete_body_scan_entry(
         await file_asset_service.mark_legacy_local_deleted(
             db,
             file_asset_id=file_asset_id,
-            subject_id=ownership.subject_id,
+            subject_id=identity.subject_id,
             purged=True,
         )
         await db.commit()

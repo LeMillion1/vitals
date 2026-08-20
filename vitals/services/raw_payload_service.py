@@ -645,11 +645,23 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
                 include_legacy_unowned=True,
             )
 
+        async def _sweep_owned_body_comp() -> int:
+            context = await conflict_engine.resolve_legacy_conflict_write_context(
+                session,
+                actor_username=None,
+                evaluation_date=today_local(),
+            )
+            return await body_scan_service.reparse_owned_pending(
+                session,
+                identity=context.identity,
+                include_legacy_unowned=True,
+            )
+
         for name, sweep in (
             ("garmin", _sweep_owned_garmin),
             ("hevy", _sweep_owned_hevy),
             ("labs", _sweep_owned_labs),
-            ("body_comp", lambda: body_scan_service.reparse_pending(session)),
+            ("body_comp", _sweep_owned_body_comp),
         ):
             try:
                 await sweep()

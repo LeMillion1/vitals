@@ -356,6 +356,9 @@ def _weight_scope_condition(
     exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
         raw_scope
     )
+    exact_fact_raw = exact_raw
+    if include_legacy_unowned:
+        exact_fact_raw = or_(exact_fact_raw, fully_unowned_raw)
     exact = and_(
         WeightLog.subject_id == subject_id,
         or_(
@@ -378,7 +381,7 @@ def _weight_scope_condition(
             exists(
                 select(1).where(
                     RawPayload.id == WeightLog.raw_payload_id,
-                    exact_raw,
+                    exact_fact_raw,
                 )
             ),
         ),
@@ -407,6 +410,7 @@ async def _assert_weight_scope_integrity(
     *,
     subject_id: uuid.UUID,
     evaluation_date: date_type,
+    include_legacy_unowned: bool,
     filters: Sequence = (),
 ) -> None:
     """Reject partial roots instead of silently treating them as absent."""
@@ -419,6 +423,9 @@ async def _assert_weight_scope_integrity(
     exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
         raw_scope
     )
+    exact_fact_raw = exact_raw
+    if include_legacy_unowned:
+        exact_fact_raw = or_(exact_fact_raw, fully_unowned_raw)
     invalid_raw = await session.scalar(
         select(WeightLog.id)
         .where(
@@ -434,7 +441,7 @@ async def _assert_weight_scope_integrity(
                     exists(
                         select(1).where(
                             RawPayload.id == WeightLog.raw_payload_id,
-                            exact_raw,
+                            exact_fact_raw,
                         )
                     ),
                 ),
@@ -501,6 +508,7 @@ async def get_active_weight(
             session,
             subject_id=subject_id,
             evaluation_date=on_date,
+            include_legacy_unowned=include_legacy_unowned,
             filters=(
                 WeightLog.date == on_date,
                 WeightLog.superseded.is_(False),
@@ -627,9 +635,23 @@ async def _validate_new_weight_provenance(
         raise conflict_engine.ConflictRawOwnershipError(
             "weight actor does not match durable raw provenance"
         )
-    if raw.source != source:
+    allowed_raw_sources = {source}
+    if source == Source.BODY_SCAN.value:
+        # Structured MCP body composition is raw-first as MCP, while its
+        # derived Weight fact remains BODY_SCAN so source priority and chart
+        # semantics describe the measurement rather than the transport.
+        allowed_raw_sources.add(Source.MCP.value)
+    if raw.source not in allowed_raw_sources:
         raise conflict_engine.ConflictRawOwnershipError(
             "weight source does not match durable raw provenance"
+        )
+    if source == Source.BODY_SCAN.value and raw.source == Source.MCP.value and (
+        raw.actor_user_id is None
+        or integration_connection_id is not None
+        or raw.file_asset_id is not None
+    ):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "MCP body-composition lineage must have null connection and file roots"
         )
     expected_raw_domain = (
         Domain.GARMIN.value
@@ -702,23 +724,25 @@ async def _validate_persisted_weight_provenance(
             raise conflict_engine.ConflictRawOwnershipError(
                 "weight fact references a missing raw payload"
             )
+        raw_is_fully_unowned = all(
+            root is None
+            for root in (
+                raw.subject_id,
+                raw.actor_user_id,
+                raw.integration_connection_id,
+                raw.file_asset_id,
+            )
+        )
         if is_legacy:
-            if any(
-                root is not None
-                for root in (
-                    raw.subject_id,
-                    raw.actor_user_id,
-                    raw.integration_connection_id,
-                    raw.file_asset_id,
-                )
-            ):
+            if not raw_is_fully_unowned:
                 raise conflict_engine.ConflictRawOwnershipError(
                     "legacy weight fact links to partially owned raw provenance"
                 )
         elif raw.subject_id != subject_id:
-            raise conflict_engine.ConflictRawOwnershipError(
-                "weight fact links to raw provenance outside its subject scope"
-            )
+            if not include_legacy_unowned or not raw_is_fully_unowned:
+                raise conflict_engine.ConflictRawOwnershipError(
+                    "weight fact links to raw provenance outside its subject scope"
+                )
         if raw.actor_user_id != row.actor_user_id:
             raise conflict_engine.ConflictRawOwnershipError(
                 "weight actor does not match durable raw provenance"
@@ -792,7 +816,16 @@ async def _validate_persisted_weight_provenance(
             )
         if raw is not None and (
             raw.domain != Domain.BODY_COMPOSITION.value
-            or raw.source != Source.BODY_SCAN.value
+            or raw.source not in {Source.BODY_SCAN.value, Source.MCP.value}
+            or (
+                raw.source == Source.MCP.value
+                and (
+                    raw.actor_user_id is None
+                    or connection is not None
+                    or raw.integration_connection_id is not None
+                    or raw.file_asset_id is not None
+                )
+            )
         ):
             raise conflict_engine.ConflictRawOwnershipError(
                 "body-scan weight raw provenance is incompatible"
@@ -898,6 +931,7 @@ async def _get_weight_log_date_in_scope(
         session,
         subject_id=subject_id,
         evaluation_date=evaluation_date,
+        include_legacy_unowned=include_legacy_unowned,
         filters=(WeightLog.id == weight_id,),
     )
     return await session.scalar(
@@ -1062,6 +1096,7 @@ async def log_weight(
                 session,
                 subject_id=identity.subject_id,
                 evaluation_date=on_date,
+                include_legacy_unowned=include_legacy_unowned,
                 filters=(
                     WeightLog.date == on_date,
                     WeightLog.source == source,
@@ -1287,6 +1322,7 @@ async def list_active_weights(
             session,
             subject_id=subject_id,
             evaluation_date=end or start or today_local(),
+            include_legacy_unowned=include_legacy_unowned,
             filters=(WeightLog.superseded.is_(False), *date_filters),
         )
         stmt = stmt.where(scope)
@@ -1333,6 +1369,7 @@ async def list_weight_notes(
         session,
         subject_id=subject_id,
         evaluation_date=end or start or today_local(),
+        include_legacy_unowned=include_legacy_unowned,
         filters=tuple(filters),
     )
     rows = tuple(
@@ -2438,6 +2475,7 @@ async def delete_weight_log(
                 session,
                 subject_id=identity.subject_id,
                 evaluation_date=target_date,
+                include_legacy_unowned=include_legacy_unowned,
                 filters=(
                     WeightLog.date == target_date,
                     WeightLog.id != row.id,

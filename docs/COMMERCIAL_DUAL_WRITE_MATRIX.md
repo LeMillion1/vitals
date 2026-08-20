@@ -213,9 +213,15 @@ original actor/source on correction, and allow only a fully NULL S/A legacy row
 through the exact-one bridge. Measurement writes use the scoped conflict proof;
 noise reconciliation writes an actorless health alert. The authenticated Weight
 page propagates S through Weight, measurement, noise, GLP-1, Timeline, and BIA
-selectors. The global active-weight/body-measurement/outbox date keys, the pending
-BodyScan root-integrity cutover, and unscoped chart, share, digest, overview, and
-export consumers remain explicit release blockers.
+selectors. BodyScan upload confirmation, MCP raw-first ingest, direct reads,
+notes/deletes, conflict evaluation, derived Weight projection, passive alerts,
+and nightly replay now validate one exact S/A/C/F/raw/metric graph. The legacy
+bridge admits only a fully NULL historical raw root and keeps that provenance
+explicit when normalizing subject-owned facts. MCP keeps Source.MCP on both raw
+and scan, while the linked derived Weight correctly retains Source.BODY_SCAN. The global
+active-weight/body-measurement/outbox date keys, BodyScan composite-FK/backfill and
+raw-key cutovers, and unscoped chart, share, digest, overview, and export consumers
+remain explicit release blockers.
 Other domain writers and transitional legacy fallbacks stay on the reviewed
 inventory, so registration and every path to a second writable subject remain
 disabled until those cutovers land.

@@ -245,6 +245,12 @@ Implementation progress on `commercial/main`:
   S+A with manual/MCP source provenance, reject partial roots and foreign IDs,
   and reconcile the noisy-period health alert actorlessly. The authenticated
   Weight chart propagates the selected subject through its direct series.
+  BodyScan upload confirmation and MCP structured ingest are now raw-first and
+  validate the complete subject/uploader/file/parser/raw/metric graph before
+  normalization. Direct scan reads, notes, deletes, metric history/catalog/BIA,
+  conflict evaluation, derived alerts, and nightly replay use that same exact-one
+  subject boundary; replay isolates failures per raw row and MCP provenance keeps
+  Source.MCP on raw/scan while the derived Weight remains Source.BODY_SCAN.
   These paths resolve the verified legacy owner at their web, scheduler, or MCP
   boundary and fail closed if a second subject makes the compatibility bridge
   ambiguous.

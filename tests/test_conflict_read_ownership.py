@@ -50,7 +50,11 @@ RESOLVER_DOMAINS = (
     Domain.NUTRITION.value,
     Domain.HRT.value,
 )
-REGISTERED_RESOLVER_DOMAINS = (*RESOLVER_DOMAINS, Domain.WEIGHT.value)
+REGISTERED_RESOLVER_DOMAINS = (
+    *RESOLVER_DOMAINS,
+    Domain.WEIGHT.value,
+    Domain.BODY_COMPOSITION.value,
+)
 
 FACT_CONDITIONS = {
     Domain.SUPPLEMENTS.value: {"key": "scope_probe", "active": True},

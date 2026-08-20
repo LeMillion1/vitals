@@ -139,6 +139,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   and the noisy-period alert is an actorless typed health alert. The global
   BodyMeasurement date key, BodyScan provenance, and whole-lake composition remain
   explicit registration blockers.
+- BodyScan upload confirmation, structured MCP writes, direct reads, notes,
+  deletes, alert reconciliation, and nightly replay now use the same selected
+  subject and transaction-bound Weight capability. Upload graphs validate the
+  uploader, private file, historical OpenRouter connection, raw payload, scan,
+  and every metric as one S/A/C/F chain; partial or foreign roots fail closed.
+  MCP scans persist their complete Source.MCP payload before normalization, keep
+  Source.MCP on the scan, and link any derived Source.BODY_SCAN Weight fact to
+  that exact raw record. Conflict evaluation is subject-scoped, visceral/phase
+  alerts are actorless health alerts, and owned replay is isolated per raw row.
+  Composite ownership FKs/backfill, raw natural-key uniqueness, and the remaining
+  chart/share/digest/overview/export composition cutover still block registration.
 - The Garmin Weight export outbox now projects only the prepared subject and Garmin
   account, validates every linked Weight fact before using remote-delete authority,
   and records the human requester while scheduled work remains actorless. Settings,

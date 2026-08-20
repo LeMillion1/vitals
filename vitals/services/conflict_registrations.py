@@ -13,6 +13,7 @@ from __future__ import annotations
 from vitals.enums import Domain
 from vitals.services import conflict_engine
 from vitals.services import (
+    body_scan_service,
     genetics_service,
     glp1_service,
     hrt_service,
@@ -65,4 +66,8 @@ def register_all_resolvers() -> None:
     conflict_engine.register_domain_resolver(
         Domain.WEIGHT.value,
         weight_service.resolve_active_scoped,
+    )
+    conflict_engine.register_domain_resolver(
+        Domain.BODY_COMPOSITION.value,
+        body_scan_service.resolve_active_scoped,
     )

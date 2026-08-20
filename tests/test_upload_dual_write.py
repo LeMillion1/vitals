@@ -70,7 +70,7 @@ async def _owned_document(
     payload: dict,
 ) -> tuple[FileAsset, RawPayload]:
     connection_id = None
-    if source == Source.LAB_PARSER.value:
+    if source in {Source.LAB_PARSER.value, Source.BODY_SCAN.value}:
         connection = IntegrationConnection(
             subject_id=subject.id,
             provider=IntegrationProvider.OPENROUTER.value,
@@ -260,7 +260,12 @@ async def test_foreign_raw_id_cannot_authorize_upload_confirmation(
     prepared_weight = await _prepared_weight(db_session, owner_identity)
     prepared = await _prepared(db_session, owner_identity)
 
-    with pytest.raises(UploadOwnershipError, match="subject scope"):
+    expected_error = (
+        conflict_engine.ConflictRawOwnershipError
+        if is_body
+        else UploadOwnershipError
+    )
+    with pytest.raises(expected_error):
         if is_body:
             await body_scan_service.save_scan(
                 db_session,
@@ -437,7 +442,11 @@ async def test_owned_pending_upload_reparse_preserves_ownership(
     )
 
     if is_body:
-        await body_scan_service.reparse_from_raw(db_session, raw)
+        replayed = await body_scan_service.reparse_owned_pending(
+            db_session,
+            identity=WriteIdentity(subject.id, None),
+        )
+        assert replayed == 1
         normalized = await db_session.scalar(select(BodyScan))
         child = await db_session.scalar(select(BodyScanMetric))
         assert child is not None and child.subject_id == subject.id

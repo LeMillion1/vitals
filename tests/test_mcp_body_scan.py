@@ -59,14 +59,20 @@ async def test_log_get_history_delete_body_scan(db_session, session_factory, mon
     assert "error" in await mcp_router.get_body_scan(scan_id)
 
 
-async def test_write_tools_blocked_when_module_disabled(db_session, session_factory, monkeypatch):
-    # No app_settings row → body_comp is off by default; write tools must refuse.
+async def test_tools_blocked_when_module_disabled(db_session, session_factory, monkeypatch):
+    # No app_settings row → body_comp is off by default; direct calls must refuse
+    # even though tools/list normally hides the whole optional surface.
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
     res = await mcp_router.log_body_scan(metrics=[{"label": "Вес", "value": 80.0}], on_date="2026-06-10")
     assert res.get("error")
     d = await mcp_router.delete_record("body_comp", 1)
     assert d.get("error")
+    assert (await mcp_router.get_body_scans())[0].get("error")
+    assert (await mcp_router.get_body_scan(1)).get("error")
+    assert (await mcp_router.get_body_metric_history("body_fat_pct"))[0].get(
+        "error"
+    )
 
 
 async def test_notes_for_body_comp_domain(db_session, session_factory, monkeypatch):

@@ -21,20 +21,30 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date as date_type
+from datetime import date as date_type, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from vitals.enums import Domain, FileAssetPurpose, Severity, Source
+from vitals.enums import (
+    Domain,
+    FileAssetPurpose,
+    FileAssetStatus,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Severity,
+    Source,
+)
 from vitals.i18n import t
 from vitals.models.body_scan import DOMAIN, BodyScan, BodyScanMetric
+from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
+from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, conflict_engine, raw_payload_service, weight_service
-from vitals.services.upload_ownership_service import resolve_owned_upload_reference
 from vitals.services.analytics.body_metrics import (
     CAT_OTHER,
     METRIC_REGISTRY,
@@ -52,6 +62,121 @@ logger = logging.getLogger(__name__)
 
 VISCERAL_ALERT_KEY = "body_comp.visceral_high"
 PHASE_ALERT_KEY = "body_comp.phase_low"
+
+
+class BodyScanOwnershipError(ValueError):
+    """A scan, metric, or provenance root is outside the requested scope."""
+
+
+class BodyScanRawAlreadyNormalizedError(BodyScanOwnershipError):
+    """One immutable raw payload already owns a normalized BodyScan fact."""
+
+
+def _require_scoped_prepared_write(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity | None,
+    prepared: weight_service.PreparedWeightWrite | None,
+) -> conflict_engine.ConflictWriteContext | None:
+    if identity is None and prepared is None:
+        return None
+    if identity is None or prepared is None:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "scoped body-scan writes require identity and a prepared Weight write"
+        )
+    return weight_service.require_prepared_weight_identity(
+        session,
+        prepared=prepared,
+        identity=identity,
+    )
+
+
+def _require_evaluation_date(
+    context: conflict_engine.ConflictWriteContext,
+    on_date: date_type,
+) -> None:
+    if context.evaluation_date != on_date:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "body-scan date does not match prepared Weight capability"
+        )
+
+
+def _require_legacy_bridge(
+    context: conflict_engine.ConflictWriteContext,
+    *,
+    include_legacy_unowned: bool,
+) -> None:
+    if (
+        include_legacy_unowned
+        and context.legacy_bridge
+        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+    ):
+        raise conflict_engine.ConflictPreparedWriteError(
+            "legacy body-scan access requires fully-unowned compatibility"
+        )
+
+
+def _subject_scope(
+    model,
+    subject_id: uuid.UUID,
+    *,
+    include_legacy_unowned: bool,
+):
+    exact = model.subject_id == subject_id
+    if not include_legacy_unowned:
+        return exact
+    legacy = model.subject_id.is_(None)
+    if hasattr(model, "actor_user_id"):
+        legacy = and_(legacy, model.actor_user_id.is_(None))
+    if hasattr(model, "file_asset_id"):
+        legacy = and_(legacy, model.file_asset_id.is_(None))
+    return or_(exact, legacy)
+
+
+def _alert_bridge(
+    context: conflict_engine.ConflictWriteContext,
+) -> alerts_service.LegacyAlertBridge:
+    if context.legacy_bridge is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED:
+        return alerts_service.LegacyAlertBridge.FULLY_UNOWNED
+    return alerts_service.LegacyAlertBridge.REJECT
+
+
+def _system_alert_context(
+    context: conflict_engine.ConflictWriteContext,
+) -> alerts_service.HealthAlertContext:
+    return alerts_service.HealthAlertContext(
+        WriteIdentity(context.identity.subject_id, None)
+    )
+
+
+def _scan_entity_key(scan: BodyScan) -> str:
+    return f"body_scan:{scan.id}"
+
+
+async def _subject_owner_user_id(
+    session: AsyncSession,
+    subject_id: uuid.UUID,
+) -> uuid.UUID:
+    owner_user_id = await session.scalar(
+        select(HealthSubject.owner_user_id).where(HealthSubject.id == subject_id)
+    )
+    if owner_user_id is None:
+        raise BodyScanOwnershipError("body-scan subject has no durable owner")
+    return owner_user_id
+
+
+def _create_conflict_entity_ref(raw_payload_id: int | None) -> str:
+    """Unique create-operation identity for per-scan conflict alerts.
+
+    Durable raw-backed creates use their immutable raw id, making a retried
+    confirmation address the same alert. A rawless manual scan is a genuinely
+    new fact even when its date and values match another scan, so it receives a
+    fresh operation UUID rather than collapsing onto a date-based key.
+    """
+
+    if raw_payload_id is not None:
+        return f"body_scan:raw:{raw_payload_id}"
+    return f"body_scan:create:{uuid.uuid4().hex}"
 
 
 # ── LLM extraction (optional auto-fill) ───────────────────────────────────────
@@ -134,6 +259,169 @@ def _normalize_item(item: dict) -> Optional[dict]:
     }
 
 
+async def _validate_upload_chain(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    asset: FileAsset,
+    identity: WriteIdentity,
+    require_boundary_actor: bool,
+) -> None:
+    owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
+    if raw.subject_id != identity.subject_id or asset.subject_id != identity.subject_id:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan upload is outside the prepared subject"
+        )
+    if (
+        identity.actor_user_id != owner_user_id
+        or raw.actor_user_id != owner_user_id
+        or asset.uploaded_by_user_id != owner_user_id
+    ):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan upload actor does not match the subject owner"
+        )
+    if require_boundary_actor:
+        if identity.actor_user_id is None:
+            raise conflict_engine.ConflictPreparedWriteError(
+                "body-scan upload confirmation requires an active human actor"
+            )
+        if raw.actor_user_id != identity.actor_user_id:
+            raise conflict_engine.ConflictRawOwnershipError(
+                "body-scan upload actor does not match the prepared writer"
+            )
+    if (
+        raw.domain != DOMAIN
+        or raw.source != Source.BODY_SCAN.value
+        or raw.file_asset_id != asset.id
+        or asset.purpose != FileAssetPurpose.BODY_SCAN_DOCUMENT.value
+        or raw.external_id != asset.storage_ref
+    ):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan upload provenance is inconsistent"
+        )
+    if raw.integration_connection_id is None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan parser raw has no AI gateway connection"
+        )
+    historical_statuses = tuple(
+        status.value
+        for status in IntegrationConnectionStatus
+        if status is not IntegrationConnectionStatus.PENDING
+    )
+    connection = await session.scalar(
+        select(IntegrationConnection)
+        .where(
+            IntegrationConnection.id == raw.integration_connection_id,
+            IntegrationConnection.subject_id == identity.subject_id,
+            IntegrationConnection.provider == IntegrationProvider.OPENROUTER.value,
+            IntegrationConnection.connection_type
+            == IntegrationConnectionType.AI_GATEWAY.value,
+            IntegrationConnection.status.in_(historical_statuses),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if connection is None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan parser AI gateway provenance is invalid"
+        )
+
+
+async def _lock_owned_raw(
+    session: AsyncSession,
+    *,
+    raw_payload_id: int,
+    context: conflict_engine.ConflictWriteContext,
+    expected_source: str,
+    require_boundary_actor: bool,
+    file_key: str | None = None,
+) -> tuple[RawPayload, FileAsset | None]:
+    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+        context.scope
+    )
+    allowed_raw = exact_raw
+    if context.scope.include_legacy_unowned:
+        allowed_raw = or_(allowed_raw, fully_unowned_raw)
+    raw = await session.scalar(
+        select(RawPayload)
+        .where(RawPayload.id == raw_payload_id, allowed_raw)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if raw is None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan raw provenance is outside the prepared subject"
+        )
+    if raw.domain != DOMAIN or raw.source != expected_source:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan raw provenance has a mismatched domain or source"
+        )
+    is_legacy = raw.subject_id is None
+    if is_legacy:
+        if any(
+            value is not None
+            for value in (
+                raw.actor_user_id,
+                raw.integration_connection_id,
+                raw.file_asset_id,
+            )
+        ):
+            raise conflict_engine.ConflictRawOwnershipError(
+                "legacy body-scan raw provenance must be fully unowned"
+            )
+        return raw, None
+
+    if expected_source == Source.MCP.value:
+        owner_user_id = await _subject_owner_user_id(
+            session,
+            context.identity.subject_id,
+        )
+        if (
+            context.identity.actor_user_id != owner_user_id
+            or raw.actor_user_id != owner_user_id
+            or raw.integration_connection_id is not None
+            or raw.file_asset_id is not None
+        ):
+            raise conflict_engine.ConflictRawOwnershipError(
+                "structured MCP body-scan raw must have exact S/A and null C/F"
+            )
+        return raw, None
+
+    if raw.file_asset_id is None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "owned body-scan parser provenance has no file root"
+        )
+    asset = await session.scalar(
+        select(FileAsset)
+        .where(
+            FileAsset.id == raw.file_asset_id,
+            FileAsset.subject_id == context.identity.subject_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if asset is None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan file provenance is outside the prepared subject"
+        )
+    if asset.status in {FileAssetStatus.DELETED.value, FileAssetStatus.PURGED.value}:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan file provenance is no longer available"
+        )
+    if file_key is not None and file_key != asset.storage_ref:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan file key does not match durable provenance"
+        )
+    await _validate_upload_chain(
+        session,
+        raw=raw,
+        asset=asset,
+        identity=context.identity,
+        require_boundary_actor=require_boundary_actor,
+    )
+    return raw, asset
+
+
 async def save_scan(
     session: AsyncSession,
     *,
@@ -155,66 +443,122 @@ async def save_scan(
 
     May raise ``ConflictBlocked`` if a cross-domain block rule fires without
     ``override`` (override plumbing kept consistent with the weight domain)."""
-    weight_context = None
-    if identity is not None or prepared_weight_write is not None:
-        if identity is None or prepared_weight_write is None:
-            raise conflict_engine.ConflictPreparedWriteError(
-                "owned body-scan weight bridge requires identity and Weight capability"
-            )
-        weight_context = weight_service.require_prepared_weight_identity(
-            session,
-            prepared=prepared_weight_write,
-            identity=identity,
+    weight_context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_weight_write,
+    )
+    if weight_context is not None:
+        _require_evaluation_date(weight_context, on_date)
+        _require_legacy_bridge(
+            weight_context,
+            include_legacy_unowned=include_legacy_unowned,
         )
-        if weight_context.evaluation_date != on_date:
-            raise conflict_engine.ConflictPreparedWriteError(
-                "body-scan date does not match prepared Weight capability"
-            )
-        if (
-            include_legacy_unowned
-            and weight_context.legacy_bridge
-            is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-        ):
-            raise conflict_engine.ConflictPreparedWriteError(
-                "legacy body-scan bridge requires fully-unowned compatibility"
-            )
     elif include_legacy_unowned:
-        raise ValueError("legacy body-scan bridge requires a scoped writer")
+        raise ValueError("legacy body-scan compatibility requires a scoped writer")
+
+    # Validate every client-controlled capability before locking raw/file/fact
+    # roots. PreparedWeightWrite proves governance -> Garmin advisory -> S/A.
+    if weight_context is not None:
+        if source not in {
+            Source.MANUAL.value,
+            Source.MCP.value,
+            Source.BODY_SCAN.value,
+        }:
+            raise BodyScanOwnershipError(
+                "unsupported scoped body-scan provenance source"
+            )
+        if source == Source.MANUAL.value and any(
+            value is not None
+            for value in (file_key, raw_payload_id, file_asset_id)
+        ):
+            raise conflict_engine.ConflictRawOwnershipError(
+                "manual body scans cannot claim raw, file, or provider provenance"
+            )
+        if source == Source.MANUAL.value:
+            owner_user_id = await _subject_owner_user_id(
+                session,
+                identity.subject_id,
+            )
+            if identity.actor_user_id != owner_user_id:
+                raise conflict_engine.ConflictPreparedWriteError(
+                    "manual body scans require the subject owner actor"
+                )
+        if source == Source.MCP.value and any(
+            value is not None for value in (file_key, file_asset_id)
+        ):
+            raise conflict_engine.ConflictRawOwnershipError(
+                "structured MCP body scans require null file provenance"
+            )
+        if source in {Source.MCP.value, Source.BODY_SCAN.value} and raw_payload_id is None:
+            raise conflict_engine.ConflictRawOwnershipError(
+                f"scoped {source} body scans require durable raw provenance"
+            )
 
     owned_raw: RawPayload | None = None
+    owned_asset: FileAsset | None = None
     authoritative_file_key = file_key
     authoritative_file_asset_id = file_asset_id
-    if identity is not None and raw_payload_id is not None:
-        upload = await resolve_owned_upload_reference(
-            session,
-            identity=identity,
-            raw_payload_id=raw_payload_id,
-            client_storage_ref=file_key,
-            domain=DOMAIN,
-            source=Source.BODY_SCAN.value,
-            purpose=FileAssetPurpose.BODY_SCAN_DOCUMENT,
+    if weight_context is not None and raw_payload_id is not None:
+        expected_raw_source = (
+            Source.MCP.value if source == Source.MCP.value else Source.BODY_SCAN.value
         )
-        if file_asset_id is not None and file_asset_id != upload.file_asset.id:
+        owned_raw, owned_asset = await _lock_owned_raw(
+            session,
+            raw_payload_id=raw_payload_id,
+            context=weight_context,
+            expected_source=expected_raw_source,
+            require_boundary_actor=expected_raw_source == Source.BODY_SCAN.value,
+            file_key=file_key,
+        )
+        if file_asset_id is not None and (
+            owned_asset is None or file_asset_id != owned_asset.id
+        ):
             raise ValueError("file_asset_id does not match the owned upload")
-        owned_raw = upload.raw_payload
-        authoritative_file_key = upload.storage_ref
-        authoritative_file_asset_id = upload.file_asset.id
-    elif identity is not None and any(
-        value is not None for value in (file_key, raw_payload_id, file_asset_id)
+        authoritative_file_key = owned_asset.storage_ref if owned_asset is not None else None
+        authoritative_file_asset_id = owned_asset.id if owned_asset is not None else None
+        existing_scan_id = await session.scalar(
+            select(BodyScan.id)
+            .where(BodyScan.raw_payload_id == owned_raw.id)
+            .order_by(BodyScan.id)
+            .limit(1)
+            .with_for_update()
+        )
+        if owned_raw.processed_at is not None or existing_scan_id is not None:
+            raise BodyScanRawAlreadyNormalizedError(
+                "body-scan raw payload is already normalized"
+            )
+    elif weight_context is not None and any(
+        value is not None for value in (file_key, file_asset_id)
     ):
         raise ValueError("owned scan file references require a raw upload")
-    elif identity is None and file_asset_id is not None:
+    elif weight_context is None and file_asset_id is not None:
         raise ValueError("file_asset_id requires an explicit write identity")
 
     # Authorization precedes the conflict engine because a rejected client id
     # must not be able to trigger even an alert side effect in this transaction.
-    await conflict_engine.enforce(
-        session,
-        Domain.BODY_COMPOSITION.value,
-        {"scan": True},
-        override=override,
-        entity_ref=f"body_scan:{on_date.isoformat()}",
+    proposed = {"scan": True, "source": source}
+    conflict_entity_ref = _create_conflict_entity_ref(
+        owned_raw.id if owned_raw is not None else raw_payload_id
     )
+    if weight_context is None:
+        await conflict_engine.enforce(
+            session,
+            Domain.BODY_COMPOSITION.value,
+            proposed,
+            override=override,
+            entity_ref=conflict_entity_ref,
+        )
+    else:
+        assert prepared_weight_write is not None
+        await conflict_engine.enforce_prepared(
+            session,
+            prepared=prepared_weight_write.conflict_write,
+            domain=Domain.BODY_COMPOSITION,
+            proposed_state=proposed,
+            override=override,
+            entity_ref=conflict_entity_ref,
+        )
 
     scan = BodyScan(
         subject_id=identity.subject_id if identity is not None else None,
@@ -225,7 +569,7 @@ async def save_scan(
         source=source,
         device=(device or None),
         file_key=authoritative_file_key,
-        raw_payload_id=raw_payload_id,
+        raw_payload_id=owned_raw.id if owned_raw is not None else raw_payload_id,
         note=note,
     )
     session.add(scan)
@@ -311,6 +655,54 @@ async def ingest_extracted(
     )
 
 
+async def ingest_structured_scan(
+    session: AsyncSession,
+    extracted: dict,
+    *,
+    raw_payload: RawPayload,
+    identity: WriteIdentity,
+    prepared_weight_write: weight_service.PreparedWeightWrite,
+    override: bool = False,
+) -> BodyScan:
+    """Persist an MCP-authored scan with immutable raw-first provenance."""
+
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_weight_write,
+    )
+    assert context is not None
+    on_date = _parse_date(extracted.get("date")) or context.evaluation_date
+    _require_evaluation_date(context, on_date)
+    if not isinstance(raw_payload, RawPayload) or raw_payload.id is None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "structured MCP body scans require a persisted raw payload"
+        )
+    raw, _ = await _lock_owned_raw(
+        session,
+        raw_payload_id=raw_payload.id,
+        context=context,
+        expected_source=Source.MCP.value,
+        require_boundary_actor=False,
+    )
+    scan = await save_scan(
+        session,
+        on_date=on_date,
+        device=extracted.get("device"),
+        raw_payload_id=raw.id,
+        metrics=normalize_extracted(extracted),
+        note=extracted.get("note"),
+        source=Source.MCP.value,
+        override=override,
+        identity=identity,
+        include_legacy_unowned=context.scope.include_legacy_unowned,
+        prepared_weight_write=prepared_weight_write,
+    )
+    raw.processed_at = now_local()
+    await session.flush()
+    return scan
+
+
 async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
     """Re-run extraction ingest against a scan payload already on disk — no new
     upload. Covers uploads the owner never confirmed (extracted but abandoned at
@@ -321,50 +713,196 @@ async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
     than forcing it through. Preserves ``fetched_at``: this is a reparse, not a
     new upload. Used by :func:`reparse_pending` (the nightly sweep —
     raw_payload_service.sweep_pending_job)."""
+    if raw_row.subject_id is not None:
+        raise ValueError(
+            "owned body-scan raws require reparse_owned_pending boundary proof"
+        )
+    if any(
+        value is not None
+        for value in (
+            raw_row.actor_user_id,
+            raw_row.integration_connection_id,
+            raw_row.file_asset_id,
+        )
+    ):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "generic body-scan replay accepts only fully-unowned raw provenance"
+        )
     extracted = raw_row.payload if isinstance(raw_row.payload, dict) else {}
     original_fetched_at = raw_row.fetched_at
-    if raw_row.subject_id is not None and raw_row.file_asset_id is not None:
-        on_date = _parse_date(extracted.get("date")) or today_local()
-        identity = WriteIdentity(raw_row.subject_id, raw_row.actor_user_id)
-        from vitals.services import garmin_weight_service
-
-        resolved_export = await garmin_weight_service.resolve_optional_legacy_export_context(
-            session,
-            actor_username=None,
-        )
-        prepared_weight_write = await weight_service.prepare_weight_write(
-            session,
-            context=conflict_engine.ConflictWriteContext(
-                identity=identity,
-                evaluation_date=on_date,
-                legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
-            ),
-            garmin_weight_export_context=(
-                garmin_weight_service.GarminWeightExportContext(
-                    identity=identity,
-                    integration_connection_id=(
-                        resolved_export.integration_connection_id
-                    ),
-                    legacy_bridge=resolved_export.legacy_bridge,
-                )
-                if resolved_export is not None
-                else None
-            ),
-        )
-        await save_scan(
-            session,
-            on_date=on_date,
-            device=extracted.get("device"),
-            file_key=raw_row.external_id,
-            raw_payload_id=raw_row.id,
-            metrics=normalize_extracted(extracted),
-            identity=identity,
-            include_legacy_unowned=True,
-            prepared_weight_write=prepared_weight_write,
-        )
-    else:
-        await ingest_extracted(session, extracted, file_key=raw_row.external_id)
+    await ingest_extracted(session, extracted, file_key=raw_row.external_id)
     raw_row.fetched_at = original_fetched_at
+
+
+async def reparse_owned_pending(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity,
+    include_legacy_unowned: bool = False,
+    limit: int = raw_payload_service.REPARSE_BATCH,
+    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
+) -> int:
+    """Replay pending upload raws in isolated per-raw savepoints."""
+
+    if not isinstance(identity, WriteIdentity):
+        raise conflict_engine.ConflictPreparedWriteError(
+            "owned body-scan replay requires a WriteIdentity"
+        )
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise ValueError("limit must be a positive integer")
+    if (
+        not isinstance(since_days, int)
+        or isinstance(since_days, bool)
+        or since_days < 0
+    ):
+        raise ValueError("since_days must be a non-negative integer")
+
+    raw_scope = RawPayload.subject_id == identity.subject_id
+    if include_legacy_unowned:
+        raw_scope = or_(
+            raw_scope,
+            and_(
+                RawPayload.subject_id.is_(None),
+                RawPayload.actor_user_id.is_(None),
+                RawPayload.integration_connection_id.is_(None),
+                RawPayload.file_asset_id.is_(None),
+            ),
+        )
+    cutoff = now_local() - timedelta(days=since_days)
+    linked_scans = list(
+        await session.scalars(
+            select(BodyScan)
+            .join(RawPayload, BodyScan.raw_payload_id == RawPayload.id)
+            .where(
+                raw_scope,
+                RawPayload.domain == DOMAIN,
+                RawPayload.source == Source.BODY_SCAN.value,
+                RawPayload.processed_at.is_(None),
+                RawPayload.fetched_at >= cutoff,
+            )
+            .options(selectinload(BodyScan.metrics))
+            .order_by(BodyScan.id)
+        )
+    )
+    for linked_scan in linked_scans:
+        try:
+            await _validate_persisted_scan(
+                session,
+                linked_scan,
+                subject_id=identity.subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        except (
+            BodyScanOwnershipError,
+            conflict_engine.ConflictRawOwnershipError,
+        ) as exc:
+            raise conflict_engine.ConflictRawOwnershipError(
+                "pending body-scan raw links to foreign or partial normalized "
+                "provenance"
+            ) from exc
+    has_normalized = (
+        select(BodyScan.id).where(BodyScan.raw_payload_id == RawPayload.id).exists()
+    )
+    raw_ids = list(
+        await session.scalars(
+            select(RawPayload.id)
+            .where(
+                raw_scope,
+                RawPayload.domain == DOMAIN,
+                RawPayload.source == Source.BODY_SCAN.value,
+                RawPayload.processed_at.is_(None),
+                RawPayload.fetched_at >= cutoff,
+                ~has_normalized,
+            )
+            .order_by(RawPayload.id)
+            .limit(limit)
+        )
+    )
+    done = 0
+    for raw_id in raw_ids:
+        try:
+            async with session.begin_nested():
+                # Read the date without taking a row lock; prepare Weight first so
+                # governance/outbox/S/A always precede raw/F/parser-C locks.
+                probe = await session.get(RawPayload, raw_id)
+                if probe is None:
+                    continue
+                extracted = probe.payload if isinstance(probe.payload, dict) else {}
+                on_date = _parse_date(extracted.get("date")) or today_local()
+                is_legacy = probe.subject_id is None
+                origin_identity = WriteIdentity(
+                    identity.subject_id,
+                    None if is_legacy else probe.actor_user_id,
+                )
+                bridge = (
+                    conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                    if include_legacy_unowned
+                    else conflict_engine.LegacyConflictBridge.REJECT
+                )
+                prepared = await weight_service.prepare_weight_write(
+                    session,
+                    context=conflict_engine.ConflictWriteContext(
+                        identity=origin_identity,
+                        evaluation_date=on_date,
+                        legacy_bridge=bridge,
+                    ),
+                )
+                context = prepared.context
+                raw, asset = await _lock_owned_raw(
+                    session,
+                    raw_payload_id=raw_id,
+                    context=context,
+                    expected_source=Source.BODY_SCAN.value,
+                    require_boundary_actor=False,
+                    file_key=probe.external_id,
+                )
+                # The candidate query deliberately ran before governance/raw
+                # locks. Another worker may have completed this raw while we
+                # waited, so re-check both completion signals under the raw lock
+                # before manufacturing any normalized fact.
+                if raw.processed_at is not None:
+                    continue
+                existing_scan_id = await session.scalar(
+                    select(BodyScan.id)
+                    .where(BodyScan.raw_payload_id == raw.id)
+                    .order_by(BodyScan.id)
+                    .limit(1)
+                    .with_for_update()
+                )
+                if existing_scan_id is not None:
+                    continue
+                locked_extracted = raw.payload if isinstance(raw.payload, dict) else {}
+                locked_date = _parse_date(locked_extracted.get("date")) or today_local()
+                _require_evaluation_date(context, locked_date)
+                await save_scan(
+                    session,
+                    on_date=locked_date,
+                    device=locked_extracted.get("device"),
+                    file_key=asset.storage_ref if asset is not None else None,
+                    raw_payload_id=raw.id,
+                    metrics=normalize_extracted(locked_extracted),
+                    identity=origin_identity,
+                    include_legacy_unowned=include_legacy_unowned,
+                    prepared_weight_write=prepared,
+                )
+                await refresh_alerts(
+                    session,
+                    on_date=locked_date,
+                    identity=origin_identity,
+                    include_legacy_unowned=include_legacy_unowned,
+                    prepared_weight_write=prepared,
+                )
+                raw.processed_at = now_local()
+                await session.flush()
+        except Exception:
+            logger.warning(
+                "owned BodyScan re-parse failed for raw payload %s",
+                raw_id,
+                exc_info=True,
+            )
+            continue
+        done += 1
+    return done
 
 
 async def reparse_pending(
@@ -389,6 +927,192 @@ async def reparse_pending(
 
 
 # ── Reads ─────────────────────────────────────────────────────────────────────
+async def _validate_persisted_scan(
+    session: AsyncSession,
+    scan: BodyScan,
+    *,
+    subject_id: uuid.UUID,
+    include_legacy_unowned: bool,
+    for_update: bool = False,
+) -> None:
+    if scan.domain != DOMAIN or scan.subject_id not in {None, subject_id}:
+        raise BodyScanOwnershipError("body scan is outside the requested scope")
+    owner_user_id = await _subject_owner_user_id(session, subject_id)
+    is_legacy_scan = scan.subject_id is None
+    if is_legacy_scan and (
+        not include_legacy_unowned
+        or scan.actor_user_id is not None
+        or scan.file_asset_id is not None
+    ):
+        raise BodyScanOwnershipError(
+            "legacy body scan must be fully unowned"
+        )
+    if any(metric.subject_id != scan.subject_id for metric in scan.metrics):
+        raise BodyScanOwnershipError(
+            "body-scan metric ownership does not inherit its scan"
+        )
+    if scan.source not in {
+        Source.MANUAL.value,
+        Source.MCP.value,
+        Source.BODY_SCAN.value,
+    }:
+        raise BodyScanOwnershipError(
+            "body scan has an unsupported scoped provenance source"
+        )
+    if scan.source == Source.MANUAL.value:
+        if not is_legacy_scan and scan.actor_user_id != owner_user_id:
+            raise BodyScanOwnershipError(
+                "manual body-scan actor does not match the subject owner"
+            )
+        if (
+            scan.raw_payload_id is not None
+            or scan.file_asset_id is not None
+            or scan.file_key is not None
+        ):
+            raise conflict_engine.ConflictRawOwnershipError(
+                "manual body scan carries raw or file provenance"
+            )
+        return
+    if scan.raw_payload_id is None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            f"{scan.source} body scan has no durable raw provenance"
+        )
+
+    stmt = select(RawPayload).where(RawPayload.id == scan.raw_payload_id)
+    if for_update:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    raw = await session.scalar(stmt)
+    if raw is None or raw.domain != DOMAIN:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body scan references missing or incompatible raw provenance"
+        )
+    raw_is_exact = raw.subject_id == subject_id
+    raw_is_legacy = all(
+        value is None
+        for value in (
+            raw.subject_id,
+            raw.actor_user_id,
+            raw.integration_connection_id,
+            raw.file_asset_id,
+        )
+    )
+    if not raw_is_exact and not (include_legacy_unowned and raw_is_legacy):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body scan links to foreign or partial raw provenance"
+        )
+    if raw_is_exact and raw.actor_user_id != scan.actor_user_id:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body scan actor does not match durable raw provenance"
+        )
+    if raw.source != scan.source:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body scan source does not match durable raw provenance"
+        )
+    if raw.source == Source.MCP.value:
+        if (
+            scan.actor_user_id != owner_user_id
+            or raw.actor_user_id != owner_user_id
+            or raw.integration_connection_id is not None
+            or raw.file_asset_id is not None
+            or scan.file_asset_id is not None
+            or scan.file_key is not None
+        ):
+            raise conflict_engine.ConflictRawOwnershipError(
+                "structured MCP body-scan provenance must have null C/F"
+            )
+        return
+    if raw.source != Source.BODY_SCAN.value:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body scan has unsupported raw provenance"
+        )
+    if raw_is_legacy:
+        # Registration-disabled compatibility for pre-ownership parser rows.
+        # New scoped BODY_SCAN writes can never create this graph.
+        if (
+            scan.actor_user_id is not None
+            or scan.file_asset_id is not None
+            or scan.file_key is not None
+        ):
+            raise conflict_engine.ConflictRawOwnershipError(
+                "legacy body-scan raw cannot authorize a file root"
+            )
+        return
+    if raw.file_asset_id is None or scan.file_asset_id != raw.file_asset_id:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body scan file root does not match durable raw provenance"
+        )
+    asset_stmt = select(FileAsset).where(FileAsset.id == raw.file_asset_id)
+    if for_update:
+        asset_stmt = asset_stmt.with_for_update().execution_options(
+            populate_existing=True
+        )
+    asset = await session.scalar(asset_stmt)
+    if (
+        asset is None
+        or asset.subject_id != subject_id
+        or scan.actor_user_id != owner_user_id
+        or raw.actor_user_id != owner_user_id
+        or asset.uploaded_by_user_id != owner_user_id
+        or asset.purpose != FileAssetPurpose.BODY_SCAN_DOCUMENT.value
+        or asset.status
+        in {FileAssetStatus.DELETED.value, FileAssetStatus.PURGED.value}
+        or asset.storage_ref != raw.external_id
+        or scan.file_key != asset.storage_ref
+    ):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body scan raw/file graph is inconsistent"
+        )
+    if raw.integration_connection_id is None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan upload has no parser connection"
+        )
+    connection_stmt = select(IntegrationConnection).where(
+        IntegrationConnection.id == raw.integration_connection_id
+    )
+    if for_update:
+        connection_stmt = connection_stmt.with_for_update().execution_options(
+            populate_existing=True
+        )
+    connection = await session.scalar(connection_stmt)
+    historical_statuses = {
+        status.value
+        for status in IntegrationConnectionStatus
+        if status is not IntegrationConnectionStatus.PENDING
+    }
+    if (
+        connection is None
+        or connection.subject_id != subject_id
+        or connection.provider != IntegrationProvider.OPENROUTER.value
+        or connection.connection_type != IntegrationConnectionType.AI_GATEWAY.value
+        or connection.status not in historical_statuses
+    ):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan parser connection provenance is invalid"
+        )
+
+
+async def _assert_no_partial_legacy_scans(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> None:
+    invalid = await session.scalar(
+        select(BodyScan.id)
+        .where(
+            BodyScan.subject_id.is_(None),
+            or_(
+                BodyScan.actor_user_id.is_not(None),
+                BodyScan.file_asset_id.is_not(None),
+            ),
+        )
+        .limit(1)
+    )
+    if invalid is not None:
+        raise BodyScanOwnershipError(
+            "body-scan scope contains a partially owned legacy fact"
+        )
+
+
 async def list_scans(
     session: AsyncSession,
     *,
@@ -399,16 +1123,35 @@ async def list_scans(
 ) -> Sequence[BodyScan]:
     stmt = select(BodyScan).options(selectinload(BodyScan.metrics))
     if subject_id is not None:
-        subject_scope = BodyScan.subject_id == subject_id
         if include_legacy_unowned:
-            subject_scope = or_(subject_scope, BodyScan.subject_id.is_(None))
-        stmt = stmt.where(subject_scope)
+            await _assert_no_partial_legacy_scans(
+                session,
+                subject_id=subject_id,
+            )
+        stmt = stmt.where(
+            _subject_scope(
+                BodyScan,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy body-scan compatibility requires a subject_id")
     if start is not None:
         stmt = stmt.where(BodyScan.date >= start)
     if end is not None:
         stmt = stmt.where(BodyScan.date <= end)
     stmt = stmt.order_by(BodyScan.date.desc(), BodyScan.id.desc())
-    return (await session.execute(stmt)).scalars().all()
+    rows = (await session.execute(stmt)).scalars().all()
+    if subject_id is not None:
+        for row in rows:
+            await _validate_persisted_scan(
+                session,
+                row,
+                subject_id=subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+    return rows
 
 
 async def get_scan(
@@ -424,11 +1167,29 @@ async def get_scan(
         .options(selectinload(BodyScan.metrics))
     )
     if subject_id is not None:
-        subject_scope = BodyScan.subject_id == subject_id
         if include_legacy_unowned:
-            subject_scope = or_(subject_scope, BodyScan.subject_id.is_(None))
-        stmt = stmt.where(subject_scope)
-    return (await session.execute(stmt)).scalar_one_or_none()
+            await _assert_no_partial_legacy_scans(
+                session,
+                subject_id=subject_id,
+            )
+        stmt = stmt.where(
+            _subject_scope(
+                BodyScan,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy body-scan compatibility requires a subject_id")
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is not None and subject_id is not None:
+        await _validate_persisted_scan(
+            session,
+            row,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    return row
 
 
 async def latest_scan(
@@ -444,11 +1205,75 @@ async def latest_scan(
         .limit(1)
     )
     if subject_id is not None:
-        subject_scope = BodyScan.subject_id == subject_id
         if include_legacy_unowned:
-            subject_scope = or_(subject_scope, BodyScan.subject_id.is_(None))
-        stmt = stmt.where(subject_scope)
-    return (await session.execute(stmt)).scalars().first()
+            await _assert_no_partial_legacy_scans(
+                session,
+                subject_id=subject_id,
+            )
+        stmt = stmt.where(
+            _subject_scope(
+                BodyScan,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy body-scan compatibility requires a subject_id")
+    row = (await session.execute(stmt)).scalars().first()
+    if row is not None and subject_id is not None:
+        await _validate_persisted_scan(
+            session,
+            row,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    return row
+
+
+async def resolve_active(session: AsyncSession) -> list[dict]:
+    """Registration-disabled singleton compatibility resolver."""
+
+    rows = await list_scans(session)
+    if not rows:
+        return []
+    latest_date = rows[0].date
+    return [
+        {"scan": True, "source": row.source}
+        for row in rows
+        if row.date == latest_date
+    ]
+
+
+async def resolve_active_scoped(
+    session: AsyncSession,
+    *,
+    scope: conflict_engine.ConflictScope,
+) -> list[dict]:
+    """Return every latest-date BodyScan visible in one conflict scope.
+
+    Multiple same-day scans are independent facts. Create operations therefore
+    never use replacement semantics and the resolver must not collapse them to
+    one row. Older dates are historical rather than permanently active state.
+    """
+
+    rows = await list_scans(
+        session,
+        end=scope.evaluation_date,
+        subject_id=scope.subject_id,
+        include_legacy_unowned=scope.include_legacy_unowned,
+    )
+    if not rows:
+        return []
+    latest_date = rows[0].date
+    return [
+        {
+            conflict_engine.CONFLICT_ENTITY_KEY: _scan_entity_key(row),
+            "scan": True,
+            "source": row.source,
+        }
+        for row in rows
+        if row.date == latest_date
+    ]
 
 
 async def metric_history(
@@ -458,6 +1283,8 @@ async def metric_history(
     segment: Optional[str] = None,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> list[dict]:
     """Chronological series for one metric (optionally a single segment)."""
     stmt = (
@@ -472,8 +1299,31 @@ async def metric_history(
         stmt = stmt.where(BodyScan.date >= start)
     if end is not None:
         stmt = stmt.where(BodyScan.date <= end)
+    if subject_id is not None:
+        stmt = stmt.where(
+            _subject_scope(
+                BodyScan,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy body-scan compatibility requires a subject_id")
     stmt = stmt.order_by(BodyScan.date, BodyScanMetric.id)
     rows = (await session.execute(stmt)).all()
+    if subject_id is not None:
+        scan_ids = {metric.scan_id for metric, _ in rows}
+        for scan_id in scan_ids:
+            scan = await get_scan(
+                session,
+                scan_id,
+                subject_id=subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+            if scan is None:
+                raise BodyScanOwnershipError(
+                    "body-scan metric parent is outside the requested scope"
+                )
     return [
         {
             "date": d.isoformat(),
@@ -500,17 +1350,40 @@ SEGMENT_LABELS_RU = {
 }
 
 
-async def available_metrics(session: AsyncSession) -> list[dict]:
+async def available_metrics(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> list[dict]:
     """Distinct (metric_key, segment) pairs actually present across all scans,
     each with a display label and a stable ``value`` (``metric_key`` for
     whole-body rows, ``"metric_key:segment"`` for segmental rows) — the
     parameter picklist for the chart-builder catalog (analogous to
     ``hevy_service.exercise_catalog``)."""
-    result = await session.execute(
+    stmt = (
         select(BodyScanMetric.metric_key, BodyScanMetric.segment)
+        .join(BodyScan, BodyScanMetric.scan_id == BodyScan.id)
         .distinct()
         .order_by(BodyScanMetric.metric_key, BodyScanMetric.segment)
     )
+    if subject_id is not None:
+        # Validate the complete graph before exposing its metric catalog.
+        await list_scans(
+            session,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+        stmt = stmt.where(
+            _subject_scope(
+                BodyScan,
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise ValueError("legacy body-scan compatibility requires a subject_id")
+    result = await session.execute(stmt)
     out: list[dict] = []
     for metric_key, segment in result.all():
         label = display_name(metric_key) or metric_key
@@ -559,23 +1432,145 @@ async def bia_chart_points(
     return {"bf": bf, "lbm": lbm}
 
 
+async def _lock_scan_for_update(
+    session: AsyncSession,
+    scan_id: int,
+    *,
+    context: conflict_engine.ConflictWriteContext,
+    include_legacy_unowned: bool,
+) -> BodyScan | None:
+    candidate = await get_scan(
+        session,
+        scan_id,
+        subject_id=context.identity.subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    if candidate is None:
+        return None
+    await _validate_persisted_scan(
+        session,
+        candidate,
+        subject_id=context.identity.subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+        for_update=True,
+    )
+    # Provenance roots were validated before the fact lock. Lock the parent and
+    # children in their stable order, then reject a concurrent provenance swap.
+    row = await session.scalar(
+        select(BodyScan)
+        .where(
+            BodyScan.id == scan_id,
+            _subject_scope(
+                BodyScan,
+                context.identity.subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            ),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        return None
+    list(
+        await session.scalars(
+            select(BodyScanMetric)
+            .where(BodyScanMetric.scan_id == row.id)
+            .order_by(BodyScanMetric.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+    refreshed = await get_scan(
+        session,
+        row.id,
+        subject_id=context.identity.subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    if refreshed is None:
+        return None
+    if (
+        refreshed.raw_payload_id != candidate.raw_payload_id
+        or refreshed.source != candidate.source
+        or refreshed.file_asset_id != candidate.file_asset_id
+    ):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan provenance changed while acquiring write locks"
+        )
+    return refreshed
+
+
+async def update_scan_note(
+    session: AsyncSession,
+    scan_id: int,
+    *,
+    note: str | None,
+    identity: WriteIdentity,
+    include_legacy_unowned: bool = False,
+    prepared_weight_write: weight_service.PreparedWeightWrite,
+) -> BodyScan | None:
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_weight_write,
+    )
+    assert context is not None
+    _require_legacy_bridge(
+        context,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    row = await _lock_scan_for_update(
+        session,
+        scan_id,
+        context=context,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    if row is None:
+        return None
+    row.note = note
+    await session.flush()
+    return row
+
+
 async def delete_scan(
     session: AsyncSession,
     scan_id: int,
     *,
     subject_id: uuid.UUID | None = None,
+    identity: WriteIdentity | None = None,
     include_legacy_unowned: bool = False,
+    prepared_weight_write: weight_service.PreparedWeightWrite | None = None,
 ) -> bool:
     """Delete a scan (cascades to its metrics). Returns False if not found.
 
     The bridged weight row is left as-is (it's an independent weight log); the
     owner can remove it from the weight tab if desired."""
-    scan = await get_scan(
+    context = _require_scoped_prepared_write(
         session,
-        scan_id,
-        subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
+        identity=identity,
+        prepared=prepared_weight_write,
     )
+    if context is not None:
+        _require_legacy_bridge(
+            context,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+        if subject_id is not None and subject_id != identity.subject_id:
+            raise conflict_engine.ConflictPreparedWriteError(
+                "subject_id does not match prepared body-scan identity"
+            )
+        scan = await _lock_scan_for_update(
+            session,
+            scan_id,
+            context=context,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+    else:
+        scan = await get_scan(
+            session,
+            scan_id,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
     if scan is None:
         return False
     await session.delete(scan)
@@ -587,56 +1582,236 @@ async def delete_scan(
 async def refresh_alerts(
     session: AsyncSession,
     *,
+    on_date: date_type | None = None,
     subject_id: uuid.UUID | None = None,
+    identity: WriteIdentity | None = None,
     include_legacy_unowned: bool = False,
+    prepared_weight_write: weight_service.PreparedWeightWrite | None = None,
 ) -> None:
     """Raise/clear passive ``info`` alerts from the latest scan: visceral fat above
     its printed range, or phase angle below its printed range. Idempotent. Each
     alert is bound to the triggering scan's id, so a dismissal sticks forever
     for that scan — only a newer scan can raise it again."""
+    context = _require_scoped_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_weight_write,
+    )
+    if context is not None:
+        _require_legacy_bridge(
+            context,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+        if on_date is not None:
+            _require_evaluation_date(context, on_date)
+        if subject_id is not None and subject_id != identity.subject_id:
+            raise conflict_engine.ConflictPreparedWriteError(
+                "subject_id does not match prepared body-scan identity"
+            )
+        subject_id = identity.subject_id
+    elif include_legacy_unowned and subject_id is None:
+        raise ValueError("legacy body-scan compatibility requires a subject_id")
+
     scan = await latest_scan(
         session,
         subject_id=subject_id,
         include_legacy_unowned=include_legacy_unowned,
     )
+    alert_context = _system_alert_context(context) if context is not None else None
+    alert_bridge = _alert_bridge(context) if context is not None else None
+
+    if context is not None and scan is not None:
+        # Raw/F/parser-C validation and locks precede the scan and its children;
+        # typed alerts acquire their natural-key locks only after this block.
+        await _validate_persisted_scan(
+            session,
+            scan,
+            subject_id=identity.subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+            for_update=True,
+        )
+        await session.scalar(
+            select(BodyScan)
+            .where(BodyScan.id == scan.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        list(
+            await session.scalars(
+                select(BodyScanMetric)
+                .where(BodyScanMetric.scan_id == scan.id)
+                .order_by(BodyScanMetric.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
+        scan = await get_scan(
+            session,
+            scan.id,
+            subject_id=identity.subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+        if scan is None:
+            raise BodyScanOwnershipError(
+                "body scan disappeared while acquiring alert locks"
+            )
+
     if scan is None:
-        await alerts_service.resolve_superseded(session, alert_key=VISCERAL_ALERT_KEY, keep_entity=None)
-        await alerts_service.resolve_superseded(session, alert_key=PHASE_ALERT_KEY, keep_entity=None)
+        if alert_context is None:
+            await alerts_service.resolve_superseded(
+                session, alert_key=VISCERAL_ALERT_KEY, keep_entity=None
+            )
+            await alerts_service.resolve_superseded(
+                session, alert_key=PHASE_ALERT_KEY, keep_entity=None
+            )
+        else:
+            assert alert_bridge is not None
+            await alerts_service.resolve_scoped_superseded(
+                session,
+                context=alert_context,
+                alert_key=VISCERAL_ALERT_KEY,
+                keep_entity=None,
+                legacy_bridge=alert_bridge,
+            )
+            await alerts_service.resolve_scoped_superseded(
+                session,
+                context=alert_context,
+                alert_key=PHASE_ALERT_KEY,
+                keep_entity=None,
+                legacy_bridge=alert_bridge,
+            )
         return
 
     entity = str(scan.id)
-    await alerts_service.resolve_superseded(session, alert_key=VISCERAL_ALERT_KEY, keep_entity=entity)
-    await alerts_service.resolve_superseded(session, alert_key=PHASE_ALERT_KEY, keep_entity=entity)
+    if alert_context is None:
+        await alerts_service.resolve_superseded(
+            session, alert_key=VISCERAL_ALERT_KEY, keep_entity=entity
+        )
+        await alerts_service.resolve_superseded(
+            session, alert_key=PHASE_ALERT_KEY, keep_entity=entity
+        )
+    else:
+        assert alert_bridge is not None
+        await alerts_service.resolve_scoped_superseded(
+            session,
+            context=alert_context,
+            alert_key=VISCERAL_ALERT_KEY,
+            keep_entity=entity,
+            legacy_bridge=alert_bridge,
+        )
+        await alerts_service.resolve_scoped_superseded(
+            session,
+            context=alert_context,
+            alert_key=PHASE_ALERT_KEY,
+            keep_entity=entity,
+            legacy_bridge=alert_bridge,
+        )
 
     by_key = {m.metric_key: m for m in scan.metrics}
 
     vfa = by_key.get("visceral_fat_area") or by_key.get("visceral_fat_level")
     if vfa is not None and vfa.ref_high is not None and vfa.value > vfa.ref_high:
-        if not await alerts_service._was_ever_dismissed(session, VISCERAL_ALERT_KEY, entity):
-            await alerts_service.raise_alert(
+        dismissed = (
+            await alerts_service._was_ever_dismissed(
+                session, VISCERAL_ALERT_KEY, entity
+            )
+            if alert_context is None
+            else await alerts_service.was_scoped_ever_dismissed(
                 session,
-                domain=Domain.BODY_COMPOSITION.value,
-                severity=Severity.INFO.value,
-                message=t("alert.body_visceral_high", value=vfa.value, unit=((" " + vfa.unit) if vfa.unit else "")),
+                context=alert_context,
                 alert_key=VISCERAL_ALERT_KEY,
                 entity_ref=entity,
+                legacy_bridge=alert_bridge,
             )
+        )
+        if not dismissed:
+            message = t(
+                "alert.body_visceral_high",
+                value=vfa.value,
+                unit=((" " + vfa.unit) if vfa.unit else ""),
+            )
+            if alert_context is None:
+                await alerts_service.raise_alert(
+                    session,
+                    domain=Domain.BODY_COMPOSITION.value,
+                    severity=Severity.INFO.value,
+                    message=message,
+                    alert_key=VISCERAL_ALERT_KEY,
+                    entity_ref=entity,
+                )
+            else:
+                await alerts_service.raise_scoped_alert(
+                    session,
+                    context=alert_context,
+                    domain=Domain.BODY_COMPOSITION,
+                    severity=Severity.INFO,
+                    message=message,
+                    alert_key=VISCERAL_ALERT_KEY,
+                    entity_ref=entity,
+                    legacy_bridge=alert_bridge,
+                )
     else:
-        await alerts_service.resolve_by_key(session, alert_key=VISCERAL_ALERT_KEY, entity_ref=entity)
+        if alert_context is None:
+            await alerts_service.resolve_by_key(
+                session, alert_key=VISCERAL_ALERT_KEY, entity_ref=entity
+            )
+        else:
+            await alerts_service.resolve_scoped_by_key(
+                session,
+                context=alert_context,
+                alert_key=VISCERAL_ALERT_KEY,
+                entity_ref=entity,
+                legacy_bridge=alert_bridge,
+            )
 
     phase = by_key.get("phase_angle")
     if phase is not None and phase.ref_low is not None and phase.value < phase.ref_low:
-        if not await alerts_service._was_ever_dismissed(session, PHASE_ALERT_KEY, entity):
-            await alerts_service.raise_alert(
+        dismissed = (
+            await alerts_service._was_ever_dismissed(session, PHASE_ALERT_KEY, entity)
+            if alert_context is None
+            else await alerts_service.was_scoped_ever_dismissed(
                 session,
-                domain=Domain.BODY_COMPOSITION.value,
-                severity=Severity.INFO.value,
-                message=t("alert.body_phase_low", value=phase.value),
+                context=alert_context,
                 alert_key=PHASE_ALERT_KEY,
                 entity_ref=entity,
+                legacy_bridge=alert_bridge,
             )
+        )
+        if not dismissed:
+            message = t("alert.body_phase_low", value=phase.value)
+            if alert_context is None:
+                await alerts_service.raise_alert(
+                    session,
+                    domain=Domain.BODY_COMPOSITION.value,
+                    severity=Severity.INFO.value,
+                    message=message,
+                    alert_key=PHASE_ALERT_KEY,
+                    entity_ref=entity,
+                )
+            else:
+                await alerts_service.raise_scoped_alert(
+                    session,
+                    context=alert_context,
+                    domain=Domain.BODY_COMPOSITION,
+                    severity=Severity.INFO,
+                    message=message,
+                    alert_key=PHASE_ALERT_KEY,
+                    entity_ref=entity,
+                    legacy_bridge=alert_bridge,
+                )
     else:
-        await alerts_service.resolve_by_key(session, alert_key=PHASE_ALERT_KEY, entity_ref=entity)
+        if alert_context is None:
+            await alerts_service.resolve_by_key(
+                session, alert_key=PHASE_ALERT_KEY, entity_ref=entity
+            )
+        else:
+            await alerts_service.resolve_scoped_by_key(
+                session,
+                context=alert_context,
+                alert_key=PHASE_ALERT_KEY,
+                entity_ref=entity,
+                legacy_bridge=alert_bridge,
+            )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
