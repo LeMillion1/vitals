@@ -4,9 +4,9 @@ Database rows contain only authorization/provenance/accounting metadata. Prompt,
 response, provider secrets, and exception text exist only in short-lived in-memory
 objects. Every mutating database function flushes; its caller owns commit.
 
-Lock order is identity governance -> S -> A -> platform root -> platform quota ->
-subject quota -> invocation. No provider await is permitted until the issuing
-start-dispatch transaction has committed.
+Lock order is identity governance -> S -> A -> raw provenance -> platform root ->
+platform quota -> subject quota -> invocation. No provider await is permitted
+until the issuing start-dispatch transaction has committed.
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ from vitals.models.ai import (
     AISubjectQuotaPeriod,
 )
 from vitals.models.identity import HealthSubject, User
+from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services.identity_service import acquire_identity_governance_lock
@@ -48,6 +49,15 @@ from vitals.utils.timeutils import now_utc
 
 T = TypeVar("T")
 MAX_SIGNED_BIGINT = (1 << 63) - 1
+MAX_SIGNED_INTEGER = (1 << 31) - 1
+RAW_BACKED_PURPOSES = frozenset(
+    {
+        AIInvocationPurpose.SIGNAL_PARSE,
+        AIInvocationPurpose.QUESTION_REPLY,
+        AIInvocationPurpose.LAB_DOCUMENT_PARSE,
+        AIInvocationPurpose.BODY_SCAN_PARSE,
+    }
+)
 ALLOWED_CREDENTIAL_REFS = frozenset(
     {
         "env:VITALS_OPENROUTER_API_KEY",
@@ -163,6 +173,21 @@ def _as_source(value: AIInvocationSource | str) -> AIInvocationSource:
         raise ValueError("unknown AI invocation source") from exc
 
 
+def _validate_raw_binding(
+    purpose: AIInvocationPurpose,
+    raw_payload_id: int | None,
+) -> int | None:
+    if raw_payload_id is not None and (
+        isinstance(raw_payload_id, bool)
+        or not isinstance(raw_payload_id, int)
+        or not 1 <= raw_payload_id <= MAX_SIGNED_INTEGER
+    ):
+        raise ValueError("raw_payload_id must fit a positive signed integer")
+    if (purpose in RAW_BACKED_PURPOSES) != (raw_payload_id is not None):
+        raise ValueError("AI invocation purpose/raw payload provenance is invalid")
+    return raw_payload_id
+
+
 @dataclass(frozen=True, slots=True)
 class AIReservationResult:
     """Non-authorizing idempotency result; terminal duplicates cannot dispatch."""
@@ -180,6 +205,7 @@ class _InvocationKey:
     invocation_id: uuid.UUID
     subject_id: uuid.UUID
     actor_user_id: uuid.UUID | None
+    raw_payload_id: int | None
     platform_integration_connection_id: uuid.UUID
     config_version: int
     purpose: str
@@ -224,10 +250,12 @@ class AIDispatchRequest:
         "__weakref__",
         "_config_version",
         "_credential",
+        "_fingerprint",
         "_idempotency_key",
         "_invocation_id",
         "_model",
         "_platform_connection_id",
+        "_raw_payload_id",
     )
 
     def __init__(self, *args, **kwargs):
@@ -243,7 +271,9 @@ class AIDispatchRequest:
         config_version: int,
         model: str,
         idempotency_key: str,
+        raw_payload_id: int | None,
         credential: str,
+        fingerprint: tuple,
     ) -> "AIDispatchRequest":
         request = object.__new__(cls)
         object.__setattr__(request, "_invocation_id", invocation_id)
@@ -251,7 +281,9 @@ class AIDispatchRequest:
         object.__setattr__(request, "_config_version", config_version)
         object.__setattr__(request, "_model", model)
         object.__setattr__(request, "_idempotency_key", idempotency_key)
+        object.__setattr__(request, "_raw_payload_id", raw_payload_id)
         object.__setattr__(request, "_credential", credential)
+        object.__setattr__(request, "_fingerprint", fingerprint)
         return request
 
     def __setattr__(self, name, value) -> None:
@@ -285,6 +317,10 @@ class AIDispatchRequest:
         return self._idempotency_key
 
     @property
+    def raw_payload_id(self) -> int | None:
+        return self._raw_payload_id
+
+    @property
     def credential(self) -> str:
         return self._credential
 
@@ -311,6 +347,7 @@ class AIDispatchLease:
         "_period_start",
         "_platform_connection_id",
         "_purpose",
+        "_raw_payload_id",
         "_reserved_cost_microunits",
         "_reserved_units",
         "_rollback_listener",
@@ -336,6 +373,7 @@ class AIDispatchLease:
         object.__setattr__(lease, "_invocation_id", invocation.id)
         object.__setattr__(lease, "_subject_id", invocation.subject_id)
         object.__setattr__(lease, "_actor_user_id", invocation.actor_user_id)
+        object.__setattr__(lease, "_raw_payload_id", invocation.raw_payload_id)
         object.__setattr__(
             lease,
             "_platform_connection_id",
@@ -366,6 +404,7 @@ class AIDispatchLease:
                 invocation.id,
                 invocation.subject_id,
                 invocation.actor_user_id,
+                invocation.raw_payload_id,
                 invocation.purpose,
                 invocation.source,
                 invocation.model,
@@ -588,6 +627,27 @@ async def _lock_subject_authority(
     ):
         raise AIGatewayAuthorizationError("AI subject authorization failed")
     return subject
+
+
+async def _lock_raw_payload_scope(
+    session: AsyncSession,
+    *,
+    raw_payload_id: int | None,
+    subject_id: uuid.UUID,
+) -> None:
+    """Lock only an opaque raw-row projection and prove its exact S."""
+
+    if raw_payload_id is None:
+        return
+    row = (
+        await session.execute(
+            select(RawPayload.id, RawPayload.subject_id)
+            .where(RawPayload.id == raw_payload_id)
+            .with_for_update()
+        )
+    ).one_or_none()
+    if row is None or row.subject_id != subject_id:
+        raise AIGatewayAuthorizationError("AI raw payload authorization failed")
 
 
 async def _lock_current_root(session: AsyncSession) -> PlatformIntegrationConnection:
@@ -1002,11 +1062,13 @@ async def reserve_ai_invocation(
     idempotency_key: str,
     reserved_cost_microunits: int,
     reserved_units: int,
+    raw_payload_id: int | None = None,
 ) -> AIReservationResult:
     """Authorize exact S and reserve both hard ledgers in one short transaction."""
 
     _validate_reservation(reserved_cost_microunits, reserved_units)
     purpose_value = _as_purpose(purpose)
+    raw_payload_value = _validate_raw_binding(purpose_value, raw_payload_id)
     source_value = _as_source(source)
     model_value = _clean_string(model, "model", 128)
     key_value = _clean_string(idempotency_key, "idempotency_key", 128)
@@ -1023,6 +1085,11 @@ async def reserve_ai_invocation(
             "AI invocation source does not match actor provenance"
         )
     await _lock_subject_authority(session, identity)
+    await _lock_raw_payload_scope(
+        session,
+        raw_payload_id=raw_payload_value,
+        subject_id=identity.subject_id,
+    )
     root = await _lock_current_root(session)
     billing_date = now_utc().date()
     platform_quota, subject_quota = await _lock_current_quota_rows(
@@ -1044,6 +1111,7 @@ async def reserve_ai_invocation(
         expected_fingerprint = (
             identity.subject_id,
             identity.actor_user_id,
+            raw_payload_value,
             purpose_value.value,
             source_value.value,
             model_value,
@@ -1058,6 +1126,7 @@ async def reserve_ai_invocation(
         actual_fingerprint = (
             existing.subject_id,
             existing.actor_user_id,
+            existing.raw_payload_id,
             existing.purpose,
             existing.source,
             existing.model,
@@ -1090,6 +1159,7 @@ async def reserve_ai_invocation(
     invocation = AIInvocation(
         subject_id=identity.subject_id,
         actor_user_id=identity.actor_user_id,
+        raw_payload_id=raw_payload_value,
         platform_integration_connection_id=root.id,
         purpose=purpose_value.value,
         source=source_value.value,
@@ -1129,6 +1199,7 @@ async def _invocation_key(
                     AIInvocation.id,
                     AIInvocation.subject_id,
                     AIInvocation.actor_user_id,
+                    AIInvocation.raw_payload_id,
                     AIInvocation.platform_integration_connection_id,
                     AIInvocation.config_version,
                     AIInvocation.purpose,
@@ -1167,6 +1238,11 @@ async def start_ai_dispatch(
     ):
         raise AIGatewayAuthorizationError("AI subject authorization failed")
     await _lock_subject_authority(session, identity)
+    await _lock_raw_payload_scope(
+        session,
+        raw_payload_id=snapshot.raw_payload_id,
+        subject_id=snapshot.subject_id,
+    )
     root = await _lock_exact_root(session, snapshot, require_active=True)
     billing_date = now_utc().date()
     if not (
@@ -1237,6 +1313,7 @@ async def dispatch_ai(
             lease._invocation_id,
             lease._subject_id,
             lease._actor_user_id,
+            lease._raw_payload_id,
             lease._purpose,
             lease._source,
             lease._model,
@@ -1265,7 +1342,9 @@ async def dispatch_ai(
         config_version=lease._config_version,
         model=lease._model,
         idempotency_key=lease._idempotency_key,
+        raw_payload_id=lease._raw_payload_id,
         credential=credential,
+        fingerprint=lease._fingerprint,
     )
     try:
         try:
@@ -1340,6 +1419,7 @@ async def finalize_ai_invocation(
         snapshot.invocation_id,
         snapshot.subject_id,
         snapshot.actor_user_id,
+        snapshot.raw_payload_id,
         snapshot.purpose,
         snapshot.source,
         snapshot.model,
@@ -1356,6 +1436,11 @@ async def finalize_ai_invocation(
         select(HealthSubject)
         .where(HealthSubject.id == snapshot.subject_id)
         .with_for_update()
+    )
+    await _lock_raw_payload_scope(
+        session,
+        raw_payload_id=snapshot.raw_payload_id,
+        subject_id=snapshot.subject_id,
     )
     await _lock_exact_root(session, snapshot, require_active=False)
     await _lock_quota_rows(
@@ -1405,6 +1490,11 @@ async def cancel_reserved_ai_invocation(
     ):
         raise AIGatewayAuthorizationError("AI subject authorization failed")
     await _lock_subject_authority(session, identity)
+    await _lock_raw_payload_scope(
+        session,
+        raw_payload_id=snapshot.raw_payload_id,
+        subject_id=snapshot.subject_id,
+    )
     await _lock_exact_root(session, snapshot, require_active=False)
     platform_quota, subject_quota = await _lock_quota_rows(
         session,
@@ -1472,6 +1562,11 @@ async def reconcile_stale_dispatches(
             .where(HealthSubject.id == snapshot.subject_id)
             .with_for_update()
         )
+        await _lock_raw_payload_scope(
+            session,
+            raw_payload_id=snapshot.raw_payload_id,
+            subject_id=snapshot.subject_id,
+        )
         await _lock_exact_root(session, snapshot, require_active=False)
         await _lock_quota_rows(
             session,
@@ -1538,6 +1633,11 @@ async def reconcile_stale_reservations(
             select(HealthSubject)
             .where(HealthSubject.id == key.subject_id)
             .with_for_update()
+        )
+        await _lock_raw_payload_scope(
+            session,
+            raw_payload_id=key.raw_payload_id,
+            subject_id=key.subject_id,
         )
         await _lock_exact_root(session, key, require_active=False)
         platform_quota, subject_quota = await _lock_quota_rows(

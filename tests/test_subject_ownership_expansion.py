@@ -88,6 +88,14 @@ COLUMN_TARGETS = {
 }
 
 MULTI_FOREIGN_KEY_TARGETS = {
+    ("notifications", SUBJECT): {
+        "health_subjects.id",
+        "ai_invocations.subject_id",
+    },
+    ("system_alerts", SUBJECT): {
+        "health_subjects.id",
+        "ai_invocations.subject_id",
+    },
     ("weekly_digests", SUBJECT): {
         "health_subjects.id",
         "ai_invocations.subject_id",

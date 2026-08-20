@@ -707,6 +707,7 @@ def test_0039_upgrade_downgrade_round_trip_and_model_shape(monkeypatch):
                 }
 
             legacy_invocation_columns = set(AIInvocation.__table__.columns.keys()) - {
+                "raw_payload_id",
                 "quota_period_start",
                 "quota_period_end",
                 "reserved_cost_microunits",

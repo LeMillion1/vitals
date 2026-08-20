@@ -22,6 +22,17 @@ _COLUMN_TARGETS = {
     "resolved_by_user_id": "users.id",
 }
 
+_MULTI_FOREIGN_KEY_TARGETS = {
+    (Notification, "subject_id"): {
+        "health_subjects.id",
+        "ai_invocations.subject_id",
+    },
+    (SystemAlert, "subject_id"): {
+        "health_subjects.id",
+        "ai_invocations.subject_id",
+    },
+}
+
 _MODEL_COLUMNS = {
     RawPayload: {
         "subject_id",
@@ -168,10 +179,17 @@ def test_special_models_have_exact_nullable_ownership_and_lifecycle_fks(
         assert isinstance(column.type, Uuid)
         assert column.type.as_uuid is True
         assert column.nullable is True
-        assert len(column.foreign_keys) == 1
-        foreign_key = next(iter(column.foreign_keys))
-        assert foreign_key.target_fullname == _COLUMN_TARGETS[column_name]
-        assert foreign_key.ondelete == "RESTRICT"
+        expected_targets = _MULTI_FOREIGN_KEY_TARGETS.get(
+            (model, column_name),
+            {_COLUMN_TARGETS[column_name]},
+        )
+        foreign_keys = list(column.foreign_keys)
+        assert {
+            foreign_key.target_fullname for foreign_key in foreign_keys
+        } == expected_targets
+        assert all(
+            foreign_key.ondelete == "RESTRICT" for foreign_key in foreign_keys
+        )
 
         index_name = f"ix_{table.name}_{column_name}"
         assert index_name in indexes

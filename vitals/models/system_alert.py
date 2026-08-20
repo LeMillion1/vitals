@@ -18,7 +18,18 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, Uuid, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    Uuid,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.models.base import Base
@@ -31,6 +42,19 @@ from vitals.models.ownership_mixins import (
 class SystemAlert(Base, SubjectOwnershipMixin, IntegrationConnectionOwnershipMixin):
     __tablename__ = "system_alerts"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["ai_invocation_id", "subject_id"],
+            ["ai_invocations.id", "ai_invocations.subject_id"],
+            ondelete="RESTRICT",
+            name="fk_system_alerts_ai_invocation_subject",
+        ),
+        CheckConstraint(
+            "ai_invocation_id IS NULL OR "
+            "(subject_id IS NOT NULL AND integration_connection_id IS NULL "
+            "AND alert_key = 'signal_parser_failed' "
+            "AND length(trim(entity_ref)) > 0)",
+            name="ck_system_alerts_ai_invocation_scope",
+        ),
         # At most one active (unresolved) alert per (key, entity). Mirrors Boxly's
         # uq_active_* partial indexes; declared here so create_all (tests) and the
         # Alembic migration build the same constraint.
@@ -56,9 +80,13 @@ class SystemAlert(Base, SubjectOwnershipMixin, IntegrationConnectionOwnershipMix
             "domain",
             "resolved_at",
         ),
+        Index("ix_system_alerts_ai_invocation_id", "ai_invocation_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    ai_invocation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

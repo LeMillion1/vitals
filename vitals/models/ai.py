@@ -25,6 +25,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -73,6 +74,12 @@ class AIInvocation(Base):
             name="uq_ai_invocations_subject_purpose_idempotency",
         ),
         ForeignKeyConstraint(
+            ["raw_payload_id", "subject_id"],
+            ["raw_payloads.id", "raw_payloads.subject_id"],
+            ondelete="RESTRICT",
+            name="fk_ai_invocations_raw_payload_subject",
+        ),
+        ForeignKeyConstraint(
             ["platform_integration_connection_id", "config_version"],
             [
                 "platform_integration_connections.id",
@@ -103,6 +110,14 @@ class AIInvocation(Base):
         CheckConstraint(
             f"purpose IN ({_values(AIInvocationPurpose)})",
             name="ck_ai_invocations_purpose",
+        ),
+        CheckConstraint(
+            "(purpose IN ('signal_parse', 'question_reply', "
+            "'lab_document_parse', 'body_scan_parse') "
+            "AND raw_payload_id IS NOT NULL) OR "
+            "(purpose IN ('weekly_digest', 'daily_brief') "
+            "AND raw_payload_id IS NULL)",
+            name="ck_ai_invocations_purpose_raw_payload",
         ),
         CheckConstraint(
             f"source IN ({_values(AIInvocationSource)})",
@@ -215,6 +230,24 @@ class AIInvocation(Base):
             "actor_user_id",
             "created_at",
         ),
+        Index(
+            "ix_ai_invocations_raw_purpose_created",
+            "raw_payload_id",
+            "purpose",
+            "created_at",
+        ),
+        Index(
+            "uq_ai_invocations_raw_purpose_succeeded",
+            "raw_payload_id",
+            "purpose",
+            unique=True,
+            postgresql_where=text(
+                "raw_payload_id IS NOT NULL AND status = 'succeeded'"
+            ),
+            sqlite_where=text(
+                "raw_payload_id IS NOT NULL AND status = 'succeeded'"
+            ),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -228,6 +261,7 @@ class AIInvocation(Base):
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=True,
     )
+    raw_payload_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     platform_integration_connection_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         nullable=False,

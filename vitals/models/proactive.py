@@ -21,7 +21,19 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Uuid, func, text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,6 +55,23 @@ class Notification(
 ):
     __tablename__ = "notifications"
     __table_args__ = (
+        UniqueConstraint(
+            "ai_invocation_id",
+            name="uq_notifications_ai_invocation_id",
+        ),
+        ForeignKeyConstraint(
+            ["ai_invocation_id", "subject_id"],
+            ["ai_invocations.id", "ai_invocations.subject_id"],
+            ondelete="RESTRICT",
+            name="fk_notifications_ai_invocation_subject",
+        ),
+        CheckConstraint(
+            "ai_invocation_id IS NULL OR "
+            "(subject_id IS NOT NULL AND recipient_user_id IS NOT NULL "
+            "AND integration_connection_id IS NOT NULL "
+            "AND channel = 'telegram' AND category IN ('reply', 'echo'))",
+            name="ck_notifications_ai_invocation_delivery",
+        ),
         # One row per dedupe_key, ever. Rows without a key (replies, echoes) don't
         # participate — hence partial, not a plain UNIQUE that NULLs would skip
         # silently on Postgres anyway.
@@ -77,6 +106,7 @@ class Notification(
             "recipient_user_id",
             "external_id",
         ),
+        Index("ix_notifications_ai_invocation_id", "ai_invocation_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -85,6 +115,9 @@ class Notification(
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=True,
         index=True,
+    )
+    ai_invocation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), nullable=True
     )
     # Local wall-clock time (set by the caller via now_local(), not the DB clock)
     # — the budget window is a *local* calendar day.

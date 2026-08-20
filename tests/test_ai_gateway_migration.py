@@ -125,11 +125,18 @@ def _insert_quota_rows(connection, *, user_id, subject_id):
     return tables
 
 
-def _assert_model_parity(connection, model):
+def _assert_model_parity(
+    connection,
+    model,
+    *,
+    excluded_columns=frozenset(),
+    excluded_constraints=frozenset(),
+    excluded_indexes=frozenset(),
+):
     inspector = inspect(connection)
     assert {
         column["name"] for column in inspector.get_columns(model.__tablename__)
-    } == set(model.__table__.columns.keys())
+    } == set(model.__table__.columns.keys()) - set(excluded_columns)
     assert {
         item["name"]
         for item in inspector.get_check_constraints(model.__tablename__)
@@ -137,6 +144,7 @@ def _assert_model_parity(connection, model):
         constraint.name
         for constraint in model.__table__.constraints
         if isinstance(constraint, CheckConstraint)
+        and constraint.name not in excluded_constraints
     }
     assert {
         item["name"]: tuple(item["column_names"])
@@ -145,13 +153,18 @@ def _assert_model_parity(connection, model):
         constraint.name: tuple(column.name for column in constraint.columns)
         for constraint in model.__table__.constraints
         if isinstance(constraint, UniqueConstraint)
+        and constraint.name not in excluded_constraints
     }
     assert {
         item["name"]: (tuple(item["column_names"]), bool(item["unique"]))
         for item in inspector.get_indexes(model.__tablename__)
     } == {
-        index.name: (tuple(column.name for column in index.columns), bool(index.unique))
+        index.name: (
+            tuple(column.name for column in index.columns),
+            bool(index.unique),
+        )
         for index in model.__table__.indexes
+        if index.name not in excluded_indexes
     }
     assert {
         (
@@ -171,6 +184,7 @@ def _assert_model_parity(connection, model):
         )
         for constraint in model.__table__.constraints
         if isinstance(constraint, ForeignKeyConstraint)
+        and constraint.name not in excluded_constraints
     }
 
 
@@ -185,12 +199,21 @@ def test_0040_empty_round_trip_and_model_parity(monkeypatch):
             }
             migration.upgrade()
             assert QUOTA_TABLES <= set(inspect(connection).get_table_names())
-            for model in (
-                AIPlatformQuotaPeriod,
-                AISubjectQuotaPeriod,
-                AIInvocation,
-            ):
+            for model in (AIPlatformQuotaPeriod, AISubjectQuotaPeriod):
                 _assert_model_parity(connection, model)
+            _assert_model_parity(
+                connection,
+                AIInvocation,
+                excluded_columns={"raw_payload_id"},
+                excluded_constraints={
+                    "ck_ai_invocations_purpose_raw_payload",
+                    "fk_ai_invocations_raw_payload_subject",
+                },
+                excluded_indexes={
+                    "ix_ai_invocations_raw_purpose_created",
+                    "uq_ai_invocations_raw_purpose_succeeded",
+                },
+            )
 
             migration.downgrade()
             assert QUOTA_TABLES.isdisjoint(inspect(connection).get_table_names())
