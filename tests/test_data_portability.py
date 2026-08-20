@@ -47,6 +47,10 @@ from vitals.services.data_portability_service import (
     export_llm,
     import_full,
 )
+from vitals.services.hevy_child_ownership_backfill_service import (
+    HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    HEVY_CHILD_OWNERSHIP_BACKFILL_TABLES,
+)
 from vitals.services.hrt_child_ownership_backfill_service import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     HRT_CHILD_OWNERSHIP_BACKFILL_TABLES,
@@ -996,6 +1000,122 @@ async def test_provider_replacement_rejects_invalid_ids_before_mutation(
                 "metadata": {"version": "1.0", "kind": "full_backup"},
                 "raw_payloads": [],
                 "garmin_daily": [row],
+            },
+        )
+    assert called is False
+
+
+async def test_full_import_blocks_nonempty_hevy_child_stage3e_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "hevy_workouts": [
+                {
+                    "id": 5,
+                    "external_id": "synthetic-workout",
+                    "date": "2026-08-21",
+                    "domain": Domain.WORKOUTS.value,
+                    "source": Source.HEVY_API.value,
+                    "_vitals_subject_bound": True,
+                }
+            ],
+            "hevy_exercises": [
+                {
+                    "id": 11,
+                    "workout_id": 5,
+                    "exercise_index": 0,
+                    "title": "Synthetic exercise",
+                    "_vitals_subject_bound": True,
+                }
+            ],
+            "hevy_sets": [
+                {
+                    "id": 17,
+                    "exercise_id": 11,
+                    "set_index": 0,
+                    "set_type": "normal",
+                    "reps": 5,
+                    "_vitals_subject_bound": True,
+                }
+            ],
+        },
+    )
+
+    exercise = await db_session.get(HevyExercise, 11)
+    hevy_set = await db_session.get(HevySet, 17)
+    assert exercise is not None and hevy_set is not None
+    assert (
+        exercise.subject_id,
+        exercise.integration_connection_id,
+        hevy_set.subject_id,
+        hevy_set.integration_connection_id,
+    ) == (legacy_owner_roots.subject_id, None, legacy_owner_roots.subject_id, None)
+
+    checkpoints = {
+        row.phase_key: row
+        for row in await db_session.scalars(
+            select(OwnershipBackfillCheckpoint).where(
+                OwnershipBackfillCheckpoint.phase_key.in_(
+                    tuple(HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+                )
+            )
+        )
+    }
+    assert len(checkpoints) == len(HEVY_CHILD_OWNERSHIP_BACKFILL_TABLES) == 2
+    for table_name, high_watermark in (
+        ("hevy_exercises", 11),
+        ("hevy_sets", 17),
+    ):
+        checkpoint = checkpoints[
+            HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES[table_name]
+        ]
+        assert (
+            checkpoint.status,
+            checkpoint.scan_high_watermark_id,
+            checkpoint.snapshot_rows,
+            checkpoint.last_scanned_id,
+            checkpoint.scanned_rows,
+            checkpoint.completed_at,
+        ) == ("restore_blocked", high_watermark, 1, 0, 0, None)
+
+
+@pytest.mark.parametrize("table_name", HEVY_CHILD_OWNERSHIP_BACKFILL_TABLES)
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_hevy_child_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    table_name,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_block(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "block_hevy_child_ownership_backfill_for_portability_v1_restore",
+        unexpected_block,
+    )
+    row = {"workout_id": 1, "exercise_index": 0, "title": "Synthetic"}
+    if table_name == "hevy_sets":
+        row = {"exercise_id": 1, "set_index": 0, "set_type": "normal"}
+    if bad_id is not None:
+        row["id"] = bad_id
+    with pytest.raises(PortabilityError, match="positive integer id"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                table_name: [row],
             },
         )
     assert called is False

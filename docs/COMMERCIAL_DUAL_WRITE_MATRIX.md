@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -590,6 +590,30 @@ after the prior phase resets and before replacement; ordinary apply cannot guess
 or clear it. Empty tables record `COMPLETED`. Future backup v2 or an explicit
 reviewed remap must provide the missing connection provenance.
 
+## Stage-3E Hevy inherited-child ownership operation
+
+The fixed `stage3.inherited_children.hevy.v1` phase covers exactly
+`hevy_exercises` followed by `hevy_sets`. Exercises inherit S/C only from an
+exact reviewed Stage-3D workout/raw/Hevy-account graph. Sets inherit only from
+an exact exercise after the exercise checkpoint completes, and independently
+prove the same workout S/C chain. Frozen history permits only `(NULL,NULL)`, the
+backup-v1 `(parent S,NULL)` bridge, or exact parent S/C; live tail rows must
+already be exact. No actor, file, raw link, or child business key is invented.
+
+Both child tables are replaced wholesale by owned Hevy refreshes. Operators
+therefore pause every Hevy sync/reparse/import writer through completion of both
+checkpoints. Initial finalization locks and rehashes the frozen snapshots;
+subsequent completed status validates every current child graph without
+requiring deleted historical child IDs to survive.
+
+`scripts/backfill_hevy_child_subject_ownership.py` is read-only by default and
+has only bounded apply controls. Its JSON projection contains fixed phase,
+status, table, count, checksum, and result fields—never child IDs, parent/raw
+keys, UUIDs, workout content, measurements, errors, or database configuration.
+Backup v1 strips C while rebinding child S, so import atomically records each
+non-empty Stage-3E table as `RESTORE_BLOCKED` after the Stage-3D transition;
+empty tables complete. There is no Stage-3E remap/reset operator.
+
 ## Completion gates
 
 - Every production constructor, Core insert/upsert, and bulk update has a reviewed
@@ -597,9 +621,12 @@ reviewed remap must provide the missing connection provenance.
 - One create test covers each ownership-bearing table and actor/channel policy.
 - Raw and normalized S match; required provider C matches; direct children copy
   parent S/C; cross-subject repair is rejected.
-- Backup v1 rebinds S, derives child S/C, maps required legacy connections,
-  creates safe file placeholders, leaves actors null, and mirrors known scoped
-  settings atomically.
+- Backup v1 rebinds S where its portable marker proves subject scope and leaves
+  actors null. It derives child roots only when the retained parent graph still
+  proves them; it never guesses a stripped provider C or file F. Non-empty
+  provider/Hevy-child snapshots whose provenance was stripped are recorded as
+  `RESTORE_BLOCKED` pending a provenance-bearing format or reviewed remap, while
+  the known scoped settings are mirrored atomically.
 - Scripts that perform global delete/import either require the sole legacy
   context and scope their work or fail closed.
 - Fast SQLite tests and a real PostgreSQL 15 migration/concurrency suite pass.

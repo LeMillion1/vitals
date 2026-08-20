@@ -449,6 +449,13 @@ Implementation progress on `commercial/main`:
   maintenance pause. Backup v1 cannot reconstruct C, so every non-empty restored
   provider checkpoint is `RESTORE_BLOCKED` pending a provenance-bearing backup
   or reviewed remap; empty snapshots complete.
+- Stage 3E uses `stage3.inherited_children.hevy.v1` for exactly
+  `hevy_exercises` and `hevy_sets`. It requires the completed Stage-3D parent
+  graph, copies only exact inherited S/C, and rejects partial, foreign, orphaned,
+  or live-null child roots. Both tables are volatile rebuild outputs, so the
+  initial snapshot is finalized under a full Hevy writer pause and later status
+  validates the current strict graph. Backup v1 records non-empty child
+  checkpoints as `RESTORE_BLOCKED`; empty snapshots complete.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows, remaining inherited children,
   artifacts,

@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -499,6 +499,31 @@ same import transaction therefore records every non-empty Stage-3D table as
 `RESTORE_BLOCKED`, while empty tables complete. No Stage-3D CLI reset or remap
 exists.
 
+Stage 3E continues inherited-child migration with
+`stage3.inherited_children.hevy.v1` over exactly `hevy_exercises` and
+`hevy_sets`. An exercise copies missing S/C only from its exact reviewed
+Stage-3D workout. A set copies only from its exact exercise after that table's
+checkpoint completes, while also proving the exercise/workout S/C chain.
+Historical `(NULL,NULL)` and backup-v1 `(parent S,NULL)` shapes are transitional;
+connection-only, foreign, orphaned, or live-null rows fail closed. No child fact,
+timestamp, actor, raw link, or synthetic uniqueness is changed.
+
+The fixed-target operator is:
+
+```bash
+python scripts/backfill_hevy_child_subject_ownership.py
+python scripts/backfill_hevy_child_subject_ownership.py --apply
+python scripts/backfill_hevy_child_subject_ownership.py \
+  --apply --batch-size 500 --max-batches 10
+```
+
+Every Hevy writer remains paused until both checkpoints complete. Owned refresh
+rebuilds both child tables, so later completed checks validate all current strict
+rows without requiring frozen IDs to survive. Backup v1 rebinds child S but
+strips C; the same import transaction records non-empty Stage-3E snapshots as
+`RESTORE_BLOCKED` after Stage-3D handling, while empty snapshots complete. No
+Stage-3E remap/reset CLI exists.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -506,8 +531,11 @@ before DDL once the checkpoint contained durable state. Stage-3B and Stage-3C
 have separate PostgreSQL rehearsals. The Stage-3D PostgreSQL rehearsal covers
 the same migration boundary, fixed-catalog stop/resume, restore refusal, and an
 actual two-session normalized/raw-link race that fails before ownership or
-checkpoint mutation. Remaining raw/file-sensitive normalized rows, inherited
-children, artifacts, control phases, and the Stage 4 gates remain pending.
+checkpoint mutation. The Stage-3E rehearsal adds volatile Hevy child rebuilds,
+and its PostgreSQL service gate exercises workout-FK, exercise-FK, and child
+disappearance races before ownership/checkpoint mutation. Remaining
+raw/file-sensitive normalized rows, inherited children, artifacts, control
+phases, and the Stage 4 gates remain pending.
 
 ### Stage 4 — Ownership validation
 

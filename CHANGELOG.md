@@ -70,6 +70,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   locked data/ownership verification. Non-empty backup-v1 restores become
   terminal `RESTORE_BLOCKED` because stripped connection provenance cannot be
   guessed; empty provider snapshots complete safely.
+- Added Stage 3E for Hevy's inherited exercise/set tree. The fixed
+  `stage3.inherited_children.hevy.v1` operator copies only the exact S/C of the
+  reviewed workout/exercise parent chain, rejects partial or foreign roots, and
+  preserves every child fact and timestamp. Because owned Hevy refreshes replace
+  both child tables wholesale, completion freezes the migration snapshot while
+  later status validates the current strict graph. Non-empty backup-v1 child
+  snapshots become `RESTORE_BLOCKED`; empty snapshots complete.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before
