@@ -139,14 +139,30 @@ remain PR-06 work.
 | 45 | `system_alerts` / `SystemAlert` | Optional S, optional C, named lifecycle actors | Add separate unresolved partial uniques for connection, subject-without-connection, and platform-without-S/C alerts. Add `(S, domain, resolved_at)`, `overridden_by_user_id`, and `resolved_by_user_id`. |
 | 46 | `user_roles` / `UserRole` | Account control plane | Preserve additive `(user_id, role)` uniqueness and assignment provenance. A role never grants PHI access. |
 | 47 | `users` / `User` | Account control plane | No S. Keep outside ordinary user backup/import. |
-| 48 | `weekly_digests` / `WeeklyDigest` | S, optional A/system, optional AI C | Add `(S, kind, date)`. `content` and `context_json` are PHI. Retain model/provider provenance without putting prompts or content in audit metadata. |
+| 48 | `weekly_digests` / `WeeklyDigest` | S, optional A/system, optional AI invocation | Add `(S, kind, date)`. `content` and `context_json` are PHI. New model-generated rows link to subject-owned `AIInvocation`; historical subject OpenRouter C stays bridge provenance. Never put prompts or content in audit metadata. |
 | 49 | `weight_logs` / `WeightLog` | S, A, optional C | Current partial unique active date becomes `(S, date) WHERE superseded = false`. Add a subject-safe raw link; direct C preserves provider provenance if the raw link is later absent. |
-| 50 | `integration_connections` / `IntegrationConnection` | S-bound connection root | Provider/type plus an opaque account discriminator is unique within S. `credential_ref` is a resolver handle only; secrets, tokens, PII, cursors, and transient sync state are forbidden. |
+| 50 | `integration_connections` / `IntegrationConnection` | S-bound connection root | Provider/type plus an opaque account discriminator is unique within S. New OpenRouter writes move to the separate platform gateway below; existing subject OpenRouter rows remain immutable historical provenance during the bridge. `credential_ref` is a resolver handle only; secrets, tokens, PII, cursors, and transient sync state are forbidden. |
 | 51 | `file_assets` / `FileAsset` | S, optional uploader A | Opaque lookup key is separate from the private backend/storage reference. Legacy rows are placeholders registered from DB references without reading or moving bytes. |
 | 52 | `platform_settings` / `PlatformSetting` | Platform control plane | Non-secret installation settings only. No current legacy key is copied here automatically. |
 | 53 | `user_settings` / `UserSetting` | Account-scoped preference | Composite key `(user_id, key)`. MFA and credentials are forbidden. |
 | 54 | `subject_settings` / `SubjectSetting` | S-scoped preference | Composite key `(S, key)`. Excluded from legacy generic portability until selected-subject backup v2 exists. |
 | 55 | `integration_connection_settings` / `IntegrationConnectionSetting` | C-scoped option, S inherited from C | Composite key `(C, key)`. External-action settings are never restored blindly. |
+
+### Planned platform AI control plane
+
+The centrally funded OpenRouter cutover adds two tables above the current
+55-table inventory rather than weakening the subject-bound connection root:
+
+| Planned table | Ownership | Contract |
+| --- | --- | --- |
+| `platform_integration_connections` / `PlatformIntegrationConnection` | Platform control plane | One installation-wide OpenRouter AI-gateway root, configured only by an active `platform_superadmin`. It has no S and stores an opaque credential reference, lifecycle, and non-secret configuration version; secrets remain outside ordinary DB/settings/export paths. |
+| `ai_invocations` / `AIInvocation` | Required S, optional A/system, required platform gateway | One paid-call reservation/outcome with purpose, source, model/config version, idempotency, lifecycle, opaque upstream ID, token counts, and cost microunits. Prompts, completions, documents, raw payloads, and medical values are forbidden. `UNIQUE(id, S)` supports composite subject-equality links from artifacts. |
+
+`WeeklyDigest`, AI-parsed `RawPayload`, AI-assisted `Signal`/`Notification`, and
+future AI artifacts link to `AIInvocation`, not to a fabricated per-subject
+OpenRouter connection. Existing subject OpenRouter C values are preserved and
+mapped explicitly to the platform root during expand/backfill; they are never
+silently reassigned or deleted.
 
 ## Critical cross-surface dependencies
 
@@ -197,8 +213,11 @@ Garmin, Hevy, Telegram, and OpenRouter configuration is currently process-wide.
 Scheduled jobs run once for the installation, and locks/caches use global names
 such as `scheduler:lock:{job_id}`, `settings:enabled_modules`, and
 `settings:custom_charts`. PR-03 records ownership and connection identity. PR-09
-turns jobs into per-connection dispatchers and namespaces locks, cursors,
-breakers, budgets, dedupe, and caches.
+turns subject-provider jobs into per-connection dispatchers and namespaces locks,
+cursors, breakers, budgets, dedupe, and caches. OpenRouter is deliberately
+different: one superadmin-managed platform root pays for all subjects, while
+subject-owned `AIInvocation` reservations enforce authorization, idempotency,
+per-subject quotas, provenance, and usage accounting.
 
 ### Analytics, conflict checks, exports, and service lookups
 
@@ -222,6 +241,8 @@ dual-write. Known keys map as follows:
 | `week_template` | Subject | Day interpretation uses the subject timezone. |
 | `proactive` | Subject plus recipient/channel | Delivery times, quiet hours, and budgets must not be global. |
 | `garmin_weight_export_enabled` | Integration connection | It controls one destination connection/outbox. |
+| OpenRouter endpoint/model allowlist/quota defaults | Platform gateway/settings | Active platform superadmin only; secrets remain in a dedicated secret resolver, never generic settings. |
+| AI feature opt-in and subject quota override | Subject | Availability preference only; it never grants access to the subject or to additional prompt domains. |
 
 Reads use new scoped state first and legacy fallback while only the bootstrapped
 subject is writable. Writes update both stores. Unknown keys remain in the

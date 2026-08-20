@@ -2,7 +2,7 @@
 
 Status: active design and implementation plan
 
-Last reviewed: 2026-08-19
+Last reviewed: 2026-08-20
 
 Current implementation branch: `commercial/main`
 
@@ -65,6 +65,11 @@ privacy, and legal decision permits it.
     page is not a safe milestone by itself.
 12. **Migrations use expand/backfill/cutover/contract.** No release depends on a
     one-shot destructive conversion, and no existing health history is dropped.
+13. **The paid AI gateway is platform control-plane state, not patient
+    ownership.** Only an active `platform_superadmin` may configure OpenRouter,
+    while every invocation still requires ordinary subject authorization and
+    records its subject, actor/system origin, purpose, model, usage, and exact
+    platform gateway. Paying for AI never grants the administrator PHI access.
 
 ## Target domain model
 
@@ -78,6 +83,8 @@ privacy, and legal decision permits it.
 | `ConsentGrant` / scopes | Versioned subject consent for domain, action, purpose, time range, expiry, and revocation. |
 | `AccessContext` | Boundary value containing principal, selected subject, role assignments, relationship, consent version/scopes, session/token, and optional support grant. |
 | `IntegrationConnection` | Per-subject provider credentials/token reference, cursor, breaker, sync state, and lease namespace. |
+| `PlatformIntegrationConnection` | Installation-wide provider gateway managed only by active platform superadmins. OpenRouter uses this root; it has no subject FK and stores only an opaque credential reference, never the secret. |
+| `AIInvocation` | Subject-owned paid-operation ledger linking S, optional A/system origin, exact platform gateway, purpose/model/config version, idempotency, lifecycle, bounded usage, and cost. It stores no prompt, completion, document bytes, or medical values. |
 | `FileAsset` | Private stored object with subject, owner/uploader, purpose, content metadata, and access policy. |
 | `SupportAccessGrant` | Time-limited, reasoned, scoped support authorization for one superadmin and one subject. |
 | `AuditEvent` | Append-only record of sensitive reads, writes, exports, consent changes, overrides, and support activity. |
@@ -93,6 +100,21 @@ catalog rows must move to subject preferences.
 `platform_superadmin` is for migrations, service configuration, account recovery,
 job health, quotas, and incident response. It does not make an unscoped query of
 health tables legal.
+
+OpenRouter is one centrally funded platform gateway. An active superadmin may
+configure its secret reference, endpoint, model allowlist, budgets, and kill
+switch, but cannot compose a prompt, invoke a model against a subject, or inspect
+an AI artifact without the same subject authorization that any other actor
+needs. Subject owners may use authorized AI features without becoming admins;
+professional and support use remains relationship/consent/grant scoped.
+
+Every paid call follows `prepare/reserve -> commit -> provider I/O -> fresh
+finalize/persist`. No database lock spans OpenRouter. `AIInvocation` reserves a
+subject/purpose budget before dispatch, prevents retry duplication, and records
+only operational metadata: opaque request ID, exact model/config version,
+token/cost counters, timestamps, and a sanitized outcome. Prompts, completions,
+raw payloads, document bytes, and health values are forbidden from this ledger
+and from platform audit/usage screens.
 
 A support investigation must create a `SupportAccessGrant` with:
 
@@ -216,8 +238,10 @@ Implementation progress on `commercial/main`:
   subject alert context and exact-one fully-null bridge; its still-legacy
   exact-one composition, OpenRouter, digest persistence, Telegram, notification
   journalling, and alert bookkeeping are separate phases so network waits hold
-  no database transaction. The Signals parser-outage warning now uses the exact
-  subject and OpenRouter AI-gateway connection with no actor. Live and recovery
+  no database transaction. As a transitional Stage-2 bridge, the Signals
+  parser-outage warning still uses the exact subject OpenRouter AI-gateway
+  connection with no actor; the platform-AI cutover replaces it with a separate
+  platform gateway reference plus subject-owned invocation. Live and recovery
   paths commit durable raw/Signal outcomes before best-effort alert bookkeeping,
   hold no ownership transaction over the parser await, and resolve a validated
   same-subject historical gateway after rotation. Signal composition and durable
@@ -237,8 +261,10 @@ Implementation progress on `commercial/main`:
   manual/MCP source provenance; plateau evaluation uses subject-scoped
   phase/Weight/noise reads and actorless alert reconciliation.
   Labs manual, MCP, and upload-confirmation writes dual-write S+A; MCP inputs are
-  raw-first with C/F null, while parser facts validate the subject/uploader,
-  historical OpenRouter C, and lab-document F chain. Direct Labs reads and
+  raw-first with C/F null, while parser facts currently validate the
+  subject/uploader, historical subject OpenRouter C, and lab-document F chain.
+  The platform-AI cutover preserves this C as legacy provenance and links new
+  parser attempts through `AIInvocation`. Direct Labs reads and
   mutations, derived alerts, startup marker seeding, and nightly replay use the
   same exact-one subject boundary.
   HRT doses, side effects, cycles, child plans, and templates now use the same
@@ -449,14 +475,20 @@ Tests:
 
 Rollback: professional UI can be disabled while scoped APIs remain authoritative.
 
-### PR 09 — Per-subject integrations, scheduler, and notifications
+### PR 09 — Subject integrations, platform AI gateway, scheduler, and notifications
 
 Scope:
 
-- create encrypted/reference-backed `IntegrationConnection` records for Garmin,
-  Hevy, OpenRouter, Telegram recipients, and future providers;
+- create encrypted/reference-backed per-subject `IntegrationConnection` records
+  for Garmin, Hevy, Telegram recipients, and future subject providers;
+- create one separately modeled `PlatformIntegrationConnection` for OpenRouter,
+  administered only by active platform superadmins, plus subject-owned
+  `AIInvocation` reservation/usage rows for every model call;
 - namespace credentials, token stores, Redis keys, cursors, breakers, dedupe, and
   raw natural keys by subject/connection;
+- enforce platform and per-subject AI budgets, model/purpose allowlists,
+  idempotency, ambiguous paid-call outcomes, and usage reconciliation without
+  storing PHI in the billing/control plane;
 - replace global scheduled syncs with dispatchers that lease due connections;
 - use per-connection locks/heartbeats and independent transactions;
 - persist notification intents before provider I/O with explicit
@@ -467,6 +499,12 @@ Scope:
 Tests:
 
 - equal upstream IDs across connections remain isolated;
+- a non-admin subject owner may use an allowed AI feature but cannot configure
+  the gateway; a superadmin without subject authorization may configure the
+  gateway but cannot compose prompts or read artifacts;
+- concurrent quota reservations and retries buy at most one call, gateway
+  rotation keeps the exact historical provenance of an already-dispatched call,
+  and revocation before dispatch causes zero network calls;
 - a failed connector does not roll back or block another connection;
 - per-connection rate limits, leases, outbox claims, ambiguous-send recovery, and
   token directories cannot collide or double-send a confirmed intent;
@@ -711,6 +749,7 @@ Additional gates:
 | 2026-08-19 | Use actor + health subject, not a single `user_id`, as the core boundary. | Professionals act on another person's data; identity ownership and data subject are not interchangeable. |
 | 2026-08-19 | Roles are additive; professional access requires relationship + consent. | A doctor/trainer may also be a member, and self-asserted roles must not expose PHI. |
 | 2026-08-19 | Platform superadmins have no standing PHI access. | Support needs are real, but invisible impersonation or global MCP access is unacceptable. Scoped, time-limited grants preserve repair capability and accountability. |
+| 2026-08-20 | OpenRouter is one superadmin-managed platform gateway, while every paid use is a subject-owned `AIInvocation`. | The platform pays for all users, but provider billing/configuration must not become a PHI grant. A separate platform root preserves subject-connection composite FKs and lets quotas, provenance, and no-standing-admin-access be enforced independently. |
 | 2026-08-19 | Patient-visible care-team threads precede any hidden professional channel. | This is the safest useful communication model and avoids inventing a private clinical channel without product/legal approval. |
 | 2026-08-19 | Registration is implemented only after isolation, then opened last. | A working signup form before complete subject isolation creates a direct health-data breach risk. |
 | 2026-08-19 | Preserve legacy browser cookies through their existing TTL using a strict versioned compatibility envelope. | A flag-day logout is unnecessary in the bootstrap PR, but unknown token shapes and authorization facts in signed-readable cookies must fail closed. |

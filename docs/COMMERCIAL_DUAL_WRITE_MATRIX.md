@@ -60,12 +60,12 @@ or multi-subject reads are enabled.
 | `lab_markers`, `lab_results` | upload/parser, manual/MCP, reparse, hormone seed | S always; human/import parser rows get A, system seed does not. Raw and result S must match. |
 | `meal_logs` | web/MCP | S+A and existing MCP provenance. |
 | `milestones` | reports web/MCP | Create gets S+A; updates retain A; direct reads/mutations and progress inputs use the selected S. |
-| `weekly_digests` | web/MCP/schedulers/brief | S always; human generation gets A, scheduler does not. OpenRouter C is set only when that provider actually produced content. |
+| `weekly_digests` | web/MCP/schedulers/brief | S always; human generation gets A, scheduler does not. During the current bridge historical subject OpenRouter C is preserved. New AI narratives will link to a subject-owned `AIInvocation`, whose provider root is the platform OpenRouter gateway; deterministic fallbacks have no invocation. |
 | `notifications` | proactive delivery | S + recipient user + Telegram C; explicit human test actions may get A, scheduled/reply delivery does not infer one. |
 | `shared_reports` | create/open/revoke/purge | Create gets S+creator; human revoke gets revoker. Anonymous open and scheduled purge do not mutate actor fields. |
 | `skincare_*` | web/MCP/seed scripts | Human creates get S+A; product/log updates preserve A and are S-scoped. |
 | `supplements` | web/MCP | Human creates get S+A; updates retain A and MCP retains `Source.MCP`. |
-| `system_alerts` | domain services, jobs, web/MCP lifecycle | Health alerts get S; provider alerts also get C. Human override/resolve uses the named actor field; automatic resolution remains actorless. The scheduled `brief_empty_day` row is S-only. `signal_parser_failed` uses S plus the exact OpenRouter AI-gateway C, never Telegram C. Both adopt only their exact-key fully-null legacy row through the exact-one bridge. |
+| `system_alerts` | domain services, jobs, web/MCP lifecycle | Health alerts get S; subject-provider alerts get subject C; platform-provider alerts use a separate platform-gateway reference. Human override/resolve uses the named actor field; automatic resolution remains actorless. The scheduled `brief_empty_day` row is S-only. `signal_parser_failed` is subject-visible but references the platform OpenRouter gateway, never Telegram C. Legacy subject-C and fully-null rows remain read-only bridge provenance until backfill. |
 
 Direct MCP note updates to weight, meals, GLP-1, skincare, body measurements,
 body scans, and labs must go through owned services or perform an explicit
@@ -85,8 +85,8 @@ pending and the scoped service refuses to mutate the global `active` flag.
 | Garmin API / Health Auto Export | S; optional triggering A; Garmin C; no F | Daily/activity/intraday copy S+A+C. |
 | Hevy | S; optional triggering A; Hevy C; no F | Workout copies S+A+C; exercises/sets copy S+C. |
 | Telegram | S+A+Telegram C; no F | Signals/day context copy the raw ownership. |
-| Lab document | S+A+OpenRouter C+lab F when AI parsing ran | Results/markers use raw S/A; F remains on raw. |
-| Body-scan document | S+A+OpenRouter C+body F when AI parsing ran | Scan uses raw S/A/F; metrics copy S. |
+| Lab document | S+A+lab F plus AIInvocation when AI parsing ran | Results/markers use raw S/A; F remains on raw. AIInvocation links the subject to the platform OpenRouter gateway and paid-call metadata. |
+| Body-scan document | S+A+body F plus AIInvocation when AI parsing ran | Scan uses raw S/A/F; metrics copy S. Derived Weight follows the raw/invocation chain rather than pretending the platform gateway is a subject provider. |
 | Structured MCP lab/body input | S+A; C/F null | Normalized rows use the supplied write identity. |
 | VCF | S+A; C/F null | Curated variants link to that raw row. |
 
@@ -137,7 +137,9 @@ delete the ownership root.
 
 The Stage-2 upload slice now registers progress photos, lab documents, and body-
 scan documents in the same caller-owned database transaction as their normalized
-or raw rows. Lab/body raw rows carry S+A+OpenRouter C+F; confirmation locks and
+or raw rows. During the bridge, Lab/body raw rows carry S+A+historical subject
+OpenRouter C+F; the platform-AI cutover replaces new direct C writes with an
+AIInvocation link. Confirmation locks and
 validates the S -> raw -> F chain and derives the storage reference from the
 server-side asset. Subject-scoped delete paths retire the asset before removing
 legacy-local bytes. A failure before COMMIT rolls metadata back and removes the
@@ -207,7 +209,8 @@ and writes an actorless health alert. Labs manual, MCP, and upload-confirmation
 writes now use the prepared boundary before marker/result/raw/file locks. Direct
 Labs CRUD and notes are exact-S, the fully-NULL bridge rejects partial roots,
 single and batch MCP writes persist Source.MCP raw rows before normalization, and
-parser replay validates S/A plus the historical OpenRouter C and LAB_DOCUMENT F
+parser replay currently validates S/A plus the historical subject OpenRouter C
+and LAB_DOCUMENT F
 chain. Labs out-of-range/retest reconciliation and the startup marker seed are
 actorless subject actions. Labs chart/share/digest/overview/export consumers still
 belong to the subject-aware composition cutover and cannot serve a second writable
@@ -257,8 +260,9 @@ day context stays actorless. Existing Signal, DayContext, Notification, and
 brief rows with fully NULL roots are visible only after the exact-one-subject
 resolver enables the compatibility flag; partial-root rows are rejected. A
 callback is durably parked before its action, successful callbacks are marked
-processed, and a recovery pass can replay a parked action after rollback. Brief
-narrative provenance uses the OpenRouter C only when an LLM tail was produced;
+processed, and a recovery pass can replay a parked action after rollback. During
+the current bridge, brief narrative provenance uses the historical subject
+OpenRouter C only when an LLM tail was produced;
 the Notification separately carries the delivery C. Dedupe and daily budget
 remain stable across channel rotation, while a key already owned by another
 subject fails before network delivery. The global notification unique index is
@@ -267,8 +271,9 @@ normalization and callback mutations recover from the durable raw update, but an
 immediate reply/echo remains best-effort: PR-09 must persist an outbound intent
 with pending/sent/ambiguous states before commercial registration can open.
 
-The live signal parser freezes the exact OpenRouter AI-gateway C separately from
-the Telegram recipient C, validates it fresh, and closes the raw/ownership read
+The live signal parser currently freezes the exact subject OpenRouter AI-gateway
+C separately from the Telegram recipient C, validates it fresh, and closes the
+raw/ownership read
 transaction before the adapter await. Recovery performs nonlocking Telegram
 validation and completes edit/classification work before each parser await, then
 revalidates the canonical S -> historical Telegram C -> raw chain before
@@ -278,7 +283,10 @@ actorless `signal_parser_failed` warning. Any attempted failure or junk result i
 a recovery batch raises; otherwise a success or explicit-empty result resolves,
 including a same-subject validated historical OpenRouter C after rotation.
 Skipped non-parser raws do not change alert state. Signals composition and the
-durable outbound-intent cutover remain deferred. Historical-C selection still
+durable outbound-intent cutover remain deferred. This subject-C contract is
+transitional: the platform-AI cutover will reserve an `AIInvocation` before the
+parser await and reconcile `signal_parser_failed` against the separate platform
+gateway. Historical-C selection still
 relies on the single global active `(alert_key, entity_ref)` slot; replacing that
 index with scoped partial uniques remains a registration blocker.
 
