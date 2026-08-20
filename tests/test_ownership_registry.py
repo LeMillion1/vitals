@@ -70,6 +70,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "user_roles",
         "user_settings",
         "users",
+        "weekly_digests",
     }
     assert {
         table_name

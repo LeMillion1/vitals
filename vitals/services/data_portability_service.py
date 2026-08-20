@@ -105,6 +105,7 @@ GENERIC_OUTPUT_SUPPRESSED_COLUMNS = frozenset(
         "recipient_user_id",
         "requested_by_user_id",
         "integration_connection_id",
+        "ai_invocation_id",
         "file_asset_id",
         "uploaded_by_user_id",
         "credential_ref",

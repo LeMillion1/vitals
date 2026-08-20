@@ -102,9 +102,13 @@
 
         {% if digest == 'ok' %}
         <div class="v-alert info">{{ t("reports.digest_ok") }}</div>
+        {% elif digest == 'pending' %}
+        <div class="v-alert info">{{ t("reports.digest_pending") }}</div>
+        {% elif digest == 'quota' %}
+        <div class="v-alert warn">{{ t("reports.digest_quota") }}</div>
         {% elif digest == 'not_configured' %}
         <div class="v-alert warn">{{ t("reports.digest_not_configured") }}</div>
-        {% elif digest == 'error' %}
+        {% elif digest in ('provider_error', 'error') %}
         <div class="v-alert warn">{{ t("reports.digest_error") }}</div>
         {% endif %}
 

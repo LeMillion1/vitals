@@ -466,6 +466,7 @@ PLATFORM_ALERT_KEYS: Mapping[
             {
                 "scheduler.job_failed:raw_payload_sweep",
                 "scheduler.job_failed:share_purge",
+                "scheduler.job_failed:ai_invocation_reconcile",
             }
         )
     }

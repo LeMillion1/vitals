@@ -10,10 +10,24 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
-from vitals.enums import DigestKind, Domain, IntegrationProvider
+from vitals.enums import (
+    AIInvocationSource,
+    AIInvocationStatus,
+    DigestKind,
+    Domain,
+    IntegrationProvider,
+)
 from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
-from vitals.services import conflict_engine, digest_service, milestones_service
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services import (
+    ai_gateway_service,
+    conflict_engine,
+    digest_service,
+    milestones_service,
+)
+from vitals.services.legacy_ownership import (
+    LegacyOwnershipError,
+    resolve_legacy_ownership_context,
+)
 from vitals.services.proactive import brief, channels, delivery
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
@@ -49,9 +63,21 @@ async def reports_dashboard(
         subject_id=milestone_scope.subject_id,
         include_legacy_unowned=milestone_scope.include_legacy_unowned,
     )
-    latest = await digest_service.latest_digest(db)
-    history = await digest_service.list_digests(db, limit=12)
-    latest_brief = await digest_service.latest_digest(db, kind=DigestKind.DAILY_BRIEF.value)
+    digest_owner = await digest_service.prepare_digest_owner(
+        db,
+        actor_username=username,
+    )
+    latest = await digest_service.latest_digest(db, prepared_owner=digest_owner)
+    history = await digest_service.list_digests(
+        db,
+        limit=12,
+        prepared_owner=digest_owner,
+    )
+    latest_brief = await digest_service.latest_digest(
+        db,
+        kind=DigestKind.DAILY_BRIEF.value,
+        prepared_owner=digest_owner,
+    )
     config = load_config()
 
     return templates.TemplateResponse(
@@ -174,26 +200,48 @@ async def generate_digest_now(
     _rl: None = Depends(rate_limit("digest_generate", limit=5, window=60)),
 ):
     """Generate this week's digest on demand."""
-    milestone_scope = await conflict_engine.resolve_legacy_conflict_scope(
-        db,
-        actor_username=username,
-        evaluation_date=today_local(),
-    )
-    # Digest composition is still a legacy whole-lake query.  Validate its
-    # Milestone arm under the same governance-locked exact-one proof before any
-    # health data can be placed in an external LLM prompt.
-    await milestones_service.list_milestones(
-        db,
-        subject_id=milestone_scope.subject_id,
-        include_legacy_unowned=milestone_scope.include_legacy_unowned,
-    )
+    prepared = None
     try:
-        await digest_service.generate_digest(db, LLMClient(), period_days=period_days)
+        prepared = await digest_service.prepare_digest(
+            db,
+            actor_username=username,
+            invocation_source=AIInvocationSource.WEB,
+            period_days=period_days,
+        )
         await db.commit()
-    except LLMNotConfigured:
+        if prepared.existing_artifact_id is not None:
+            return _redirect(request, "?digest=ok")
+        if not prepared.dispatchable:
+            if prepared.reservation_status is AIInvocationStatus.DISPATCHING:
+                return _redirect(request, "?digest=pending")
+            return _redirect(request, "?digest=error")
+        lease = await digest_service.start_digest_dispatch(db, prepared)
+        await db.commit()
+        completion = await digest_service.render_digest(prepared, lease)
+        row = await digest_service.persist_digest(db, prepared, completion)
+        await db.commit()
+        if row is None:
+            return _redirect(request, "?digest=provider_error")
+    except ai_gateway_service.AIQuotaExceededError:
+        await db.rollback()
+        return _redirect(request, "?digest=quota")
+    except ai_gateway_service.AIGatewayConfigurationError:
+        await _release_digest_reservation(db, prepared)
         return _redirect(request, "?digest=not_configured")
-    except Exception as e:  # noqa: BLE001 — surface generation failures softly
-        logger.warning("Digest generation failed: %s", e)
+    except (
+        ai_gateway_service.AIGatewayAuthorizationError,
+        LegacyOwnershipError,
+        digest_service.DigestOwnershipError,
+        milestones_service.MilestoneOwnershipError,
+    ):
+        await _release_digest_reservation(db, prepared)
+        raise
+    except ai_gateway_service.AIInvocationStateError:
+        await db.rollback()
+        return _redirect(request, "?digest=pending")
+    except Exception:  # noqa: BLE001 — surface generation failures softly
+        await _release_digest_reservation(db, prepared)
+        logger.warning("Digest generation failed (code=internal_error)")
         return _redirect(request, "?digest=error")
     return _redirect(request, "?digest=ok")
 
@@ -289,3 +337,18 @@ def _redirect(request: Request, suffix: str = "") -> RedirectResponse:
     if "hx-request" in request.headers:
         response.headers["HX-Redirect"] = url
     return response
+
+
+async def _release_digest_reservation(
+    session: AsyncSession,
+    prepared: digest_service.PreparedDigest | None,
+) -> None:
+    """Release a committed PREPARED call after a zero-network boundary error."""
+
+    await session.rollback()
+    if prepared is None or not prepared.dispatchable:
+        return
+    if await digest_service.release_prepared_digest(session, prepared):
+        await session.commit()
+    else:
+        await session.rollback()

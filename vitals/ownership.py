@@ -319,6 +319,11 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         actor=TargetColumn.OPTIONAL,
         connection=TargetColumn.OPTIONAL,
+        # Backup v1 cannot carry either subject-provider C or platform
+        # AIInvocation provenance. Preserve live artifacts in place and keep the
+        # narrative available through the separate curated LLM export instead of
+        # restoring a forged S-only generated row.
+        user_portable=False,
     ),
     "weight_logs": OwnershipSpec(
         OwnershipClass.SUBJECT_DATA,

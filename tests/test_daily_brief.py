@@ -280,11 +280,31 @@ async def test_brief_is_stored_as_its_own_kind(db_session):
     await db_session.commit()
 
     assert row.kind == DigestKind.DAILY_BRIEF.value
-    assert await digest_service.latest_digest(db_session) is None
+    owner = await digest_service.prepare_legacy_digest_owner(
+        db_session,
+        actor_username="tester",
+    )
     assert (
-        await digest_service.latest_digest(db_session, kind=DigestKind.DAILY_BRIEF.value)
+        await digest_service.latest_digest(
+            db_session,
+            prepared_owner=owner,
+        )
+        is None
+    )
+    assert (
+        await digest_service.latest_digest(
+            db_session,
+            kind=DigestKind.DAILY_BRIEF.value,
+            prepared_owner=owner,
+        )
     ).id == row.id
-    assert await digest_service.list_digests(db_session) == []
+    assert (
+        await digest_service.list_digests(
+            db_session,
+            prepared_owner=owner,
+        )
+        == []
+    )
 
 
 async def test_protocol_never_reaches_the_brief(db_session):

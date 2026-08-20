@@ -307,11 +307,22 @@ Implementation progress on `commercial/main`:
   module-setting inputs used for live goal progress receive that same scope.
   Legacy whole-lake MCP snapshot/export/overview tools and manual, MCP, or
   scheduled weekly-digest generation now acquire the same exact-one governance
-  proof before any global compatibility query or LLM request. The bridge accepts
-  only fully-null S/A history and rejects partial roots.
+  proof before any global compatibility query or LLM request. Weekly generation
+  reserves platform and subject quota, commits before one OpenRouter call, and
+  atomically persists sanitized accounting plus an invocation-linked artifact;
+  no subject provider C is created for the platform gateway. Three bounded
+  attempt slots distinguish terminal failures from an in-flight dispatch, and a
+  completed or dispatching product is reused even when the gateway root, quota
+  period, or context-sized reservation has since changed. An incompatible
+  PREPARED reservation is released before advancing, and a 15-minute platform
+  recovery job releases abandoned reservations. The bridge
+  accepts only fully-null S/A history and rejects partial roots.
   These paths resolve the verified legacy owner at their web, scheduler, or MCP
   boundary and fail closed if a second subject makes the compatibility bridge
   ambiguous.
+  Backup v1 deliberately leaves WeeklyDigest and AI accounting rows in place
+  because stripping either legacy C or `AIInvocation` would manufacture invalid
+  provenance; the curated LLM export still carries narrative content.
   SharedReport creation and owner lifecycle now use a transaction-bound
   exact-one owner proof. New frozen artifacts carry S plus their human creator;
   list/get/download/revoke/delete are exact-S, a human revoke records its actor,

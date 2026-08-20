@@ -115,6 +115,7 @@ async def build(
     enabled_modules: Optional[dict[str, bool]] = None,
     subject_id: uuid.UUID | None = None,
     include_legacy_unowned: bool = False,
+    prepared_digest_owner=None,
 ) -> dict:
     """Everything ``today/index.html`` renders, as one plain dict."""
     from vitals.services import (
@@ -244,7 +245,11 @@ async def build(
             })
 
     # ── The narrative ────────────────────────────────────────────────────────
-    digest = await digest_service.latest_digest(session, kind=DigestKind.DAILY_BRIEF.value)
+    digest = await digest_service.latest_digest(
+        session,
+        kind=DigestKind.DAILY_BRIEF.value,
+        prepared_owner=prepared_digest_owner,
+    )
     brief_prose = _prose_from(digest) if digest is not None and digest.date == today else ""
     if brief_prose:
         narrative, narrative_source = brief_prose, "digest"

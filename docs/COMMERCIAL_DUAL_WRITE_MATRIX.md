@@ -60,7 +60,7 @@ or multi-subject reads are enabled.
 | `lab_markers`, `lab_results` | upload/parser, manual/MCP, reparse, hormone seed | S always; human/import parser rows get A, system seed does not. Raw and result S must match. |
 | `meal_logs` | web/MCP | S+A and existing MCP provenance. |
 | `milestones` | reports web/MCP | Create gets S+A; updates retain A; direct reads/mutations and progress inputs use the selected S. |
-| `weekly_digests` | web/MCP/schedulers/brief | S always; human generation gets A, scheduler does not. During the current bridge historical subject OpenRouter C is preserved. New AI narratives will link to a subject-owned `AIInvocation`, whose provider root is the platform OpenRouter gateway; deterministic fallbacks have no invocation. |
+| `weekly_digests` | web/MCP/schedulers/brief | S always; human generation gets A, scheduler does not. New weekly narratives link to a subject-owned `AIInvocation`, set subject C null, and obtain provider/config/quota provenance from the installation-wide platform OpenRouter gateway. Historical weekly and current daily-brief rows preserve their validated subject OpenRouter C during the bridge; deterministic fallbacks have no invocation. |
 | `notifications` | proactive delivery | S + recipient user + Telegram C; explicit human test actions may get A, scheduled/reply delivery does not infer one. |
 | `shared_reports` | create/open/revoke/purge | Create gets S+creator; human revoke gets revoker. Anonymous open and scheduled purge do not mutate actor fields. |
 | `skincare_*` | web/MCP/seed scripts | Human creates get S+A; product/log updates preserve A and are S-scoped. |
@@ -312,6 +312,23 @@ page. The access cookie binds report id plus a token fingerprint. Snapshot bytes
 and rendered output contain no ownership identifiers. Underlying report assembly
 is still an exact-one whole-lake compatibility read pending PR-10; this slice does
 not claim subject-aware composition.
+
+Weekly Digest is the first platform-funded AI consumer. Web, MCP, and scheduler
+boundaries freeze the exact-one compatibility snapshot and reserve quota in a
+short transaction, commit a second authorization/charge transaction before the
+single provider await, then finalize sanitized accounting plus the artifact in
+one fresh transaction. Failed, ambiguous, or policy-cancelled calls advance only
+through three versioned attempt slots; concurrent starts still obtain one lease.
+Product status is resolved before comparing mutable gateway roots, quota periods,
+or reservation ceilings: a succeeded artifact and an in-flight paid call remain
+idempotent across rotation, while an incompatible PREPARED reservation is
+released before the next attempt is reserved.
+Configuration failure before dispatch releases the reservation when authority
+still permits it, and the platform reconciliation job releases PREPARED rows
+older than 15 minutes while marking hour-old paid DISPATCHING rows ambiguous.
+Backup v1 excludes `weekly_digests` because it cannot transport either legacy C
+or platform-invocation provenance safely; it preserves live rows in place, while
+the separate curated LLM export may still include narrative text.
 
 Garmin and Hevy runtime ingestion now resolves S plus the provider C before
 network persistence, copies raw provenance into normalized parents and children,

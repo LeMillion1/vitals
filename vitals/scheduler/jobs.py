@@ -44,6 +44,9 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.proactive.nudges import nudges_job
     from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
     from vitals.services.share_service import purge_job as share_purge_job
+    from vitals.services.ai_gateway_service import (
+        reconciliation_job as ai_invocation_reconciliation_job,
+    )
 
     # GLP-1 plateau check — once a day at 06:00 local. Cheap read; raises/clears a
     # passive warn alert so it's fresh even on days the dashboard isn't opened.
@@ -104,6 +107,17 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         failure_family=JobFailureFamily.PLATFORM,
         hour=4,
         minute=0,
+    )
+
+    # Platform-funded AI accounting recovery — no provider I/O.  It releases
+    # reservations abandoned between prepare and dispatch, and conservatively
+    # closes paid dispatches whose process died before finalization.
+    register_job(
+        "ai_invocation_reconcile",
+        ai_invocation_reconciliation_job,
+        trigger="interval",
+        failure_family=JobFailureFamily.PLATFORM,
+        minutes=15,
     )
 
     # Hevy sync — every 6h. No-ops when Hevy isn't configured.
@@ -201,7 +215,8 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         minute=5,
     )
 
-    # Weekly AI digest — Mondays at 08:00 local. No-ops when no OpenRouter key.
+    # Weekly AI digest — Mondays at 08:00 local. The database gateway/quota state
+    # is authoritative; an unavailable platform gateway causes a clean no-op.
     register_job(
         "weekly_digest",
         digest_job,

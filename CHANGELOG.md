@@ -37,6 +37,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   endpoint, and model choices. Authorization is locked against concurrent role
   changes, and the audit event records field names only—never secret or model
   values. This role gate grants no prompt, artifact, or subject-data access.
+- Weekly digests now use that centrally funded gateway without granting the
+  superadmin health-data access. Web, MCP, and scheduler generation reserve a
+  subject-owned `AIInvocation`, commit before exactly one OpenRouter call, then
+  atomically finalize sanitized usage and an S/A-scoped digest linked to the
+  invocation; new rows never pretend the platform gateway is a subject provider.
+  Platform and per-subject quotas are hard-ledgered, terminal failures advance
+  through three bounded idempotent attempts, completed/in-flight product keys
+  survive gateway or quota rotation without another paid call, incompatible
+  PREPARED reservations are released before retry, and a 15-minute platform
+  recovery job releases abandoned reservations or conservatively closes stale
+  paid calls.
+  Backup v1 leaves generated digests and their accounting provenance in place
+  rather than exporting broken ownership links; the curated LLM export continues
+  to include their narrative content.
 - Browser sessions now use a strict versioned envelope while accepting existing
   signed bare-username cookies for their normal TTL. The public auth dependency
   remains compatible, and cookies contain no roles, subject IDs, grants, or PHI.

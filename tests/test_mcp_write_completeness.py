@@ -143,10 +143,13 @@ async def test_modules_get_and_toggle():
 
 # ── digest trigger ────────────────────────────────────────────────────────────
 async def test_generate_digest_without_llm_key_errors():
-    # Test env clears VITALS_OPENROUTER_API_KEY, so the LLM is not configured.
+    # Test state has no active platform gateway/quota, so paid AI is unavailable.
     result = await mcp_router.generate_digest_now()
     assert "error" in result
-    assert "LLM not configured" in result["error"]
+    assert result == {
+        "error": "platform AI is not configured",
+        "code": "provider_unconfigured",
+    }
 
 
 # ── get_trend ─────────────────────────────────────────────────────────────────

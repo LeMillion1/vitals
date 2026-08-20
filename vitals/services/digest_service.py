@@ -6,23 +6,46 @@ narrative* — the interpretation of how the domains relate, not a restatement o
 the numbers. The structured context is stored alongside the text so it can be
 re-inspected or re-run later.
 
-The LLM client is injected so the generator is unit-tested without network or a
-key; the scheduled job no-ops when no key is configured.
+Production generation reserves one subject-owned platform AI invocation, closes
+the database transaction, performs exactly one provider call, then atomically
+finalizes accounting and the digest artifact.  The legacy injected-client seam
+is quarantined to databases with no commercial identity roots.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from dataclasses import dataclass
+import uuid
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from datetime import date as date_type, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from vitals.enums import DigestKind, Source
-from vitals.integrations.llm_client import LLMEmptyResponse
+from vitals.config import load_config
+from vitals.enums import (
+    AIInvocationPurpose,
+    AIInvocationSource,
+    AIInvocationStatus,
+    DigestKind,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Source,
+    UserStatus,
+)
+from vitals.integrations.llm_client import LLMCallResult, LLMClient, LLMEmptyResponse
+from vitals.models.ai import AIInvocation
+from vitals.models.identity import HealthSubject, User
 from vitals.models.milestones import DOMAIN, WeeklyDigest
+from vitals.models.tenancy import IntegrationConnection
+from vitals.ownership import WriteIdentity
+from vitals.services import ai_gateway_service
+from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.utils.timeutils import today_local
 
 logger = logging.getLogger(__name__)
@@ -32,6 +55,10 @@ logger = logging.getLogger(__name__)
 # visible digest got cut mid-sentence. Russian is ~2 chars/token, and a full
 # cross-domain digest runs 8-10k chars, so leave headroom for both.
 _DIGEST_MAX_TOKENS = 16000
+_DIGEST_POLICY_VERSION = "wd:v1"
+_DIGEST_RESERVATION_OVERHEAD_UNITS = 512
+_DIGEST_RESERVED_COST_MICROUNITS = 10_000_000
+_DIGEST_MAX_ATTEMPTS = 3
 
 # Row budget per day of window for the signals block. The service's own default
 # (200) is a screen's worth; a 90-day window quietly lost everything older than
@@ -96,6 +123,258 @@ REPORT_MODE_CLOSED = "closed_period"
 REPORT_MODE_BRIEF = "daily_brief"
 MIN_PERIOD_DAYS = 1
 MAX_PERIOD_DAYS = 90
+
+_HISTORICAL_GATEWAY_STATUSES = frozenset(
+    {
+        IntegrationConnectionStatus.LEGACY.value,
+        IntegrationConnectionStatus.ACTIVE.value,
+        IntegrationConnectionStatus.DISABLED.value,
+        IntegrationConnectionStatus.RETIRED.value,
+    }
+)
+_DIGEST_SOURCES = frozenset(
+    {Source.MANUAL.value, Source.MCP.value, Source.SCHEDULER.value}
+)
+_DIGEST_KINDS = frozenset(kind.value for kind in DigestKind)
+_ARTIFACT_SOURCE_BY_INVOCATION_SOURCE = {
+    AIInvocationSource.WEB: Source.MANUAL.value,
+    AIInvocationSource.MCP: Source.MCP.value,
+    AIInvocationSource.SCHEDULER: Source.SCHEDULER.value,
+}
+_INVOCATION_SOURCE_BY_ARTIFACT_SOURCE = {
+    artifact_source: invocation_source.value
+    for invocation_source, artifact_source in (
+        _ARTIFACT_SOURCE_BY_INVOCATION_SOURCE.items()
+    )
+}
+_INVOCATION_PURPOSE_BY_DIGEST_KIND = {
+    DigestKind.WEEKLY.value: AIInvocationPurpose.WEEKLY_DIGEST.value,
+    DigestKind.DAILY_BRIEF.value: AIInvocationPurpose.DAILY_BRIEF.value,
+}
+
+
+class DigestOwnershipError(ValueError):
+    """A digest operation has invalid subject, actor, or provider roots."""
+
+
+class DigestPreparedOwnerError(DigestOwnershipError):
+    """A digest read lacks a live service-issued exact-one owner proof."""
+
+
+class DigestInvocationStateError(DigestOwnershipError):
+    """A paid digest attempt is not eligible for another provider dispatch."""
+
+
+@dataclass(frozen=True, slots=True)
+class _DigestAttemptState:
+    """Projected invocation state; never carries provider or health payloads."""
+
+    attempt: int
+    invocation_id: uuid.UUID
+    status: AIInvocationStatus
+
+
+class PreparedDigestOwner:
+    """Opaque exact-one owner proof bound to one session transaction."""
+
+    __slots__ = (
+        "_actor_user_id",
+        "_fingerprint",
+        "_nested_transaction",
+        "_owner_user_id",
+        "_seal",
+        "_session",
+        "_subject_id",
+        "_transaction",
+    )
+
+    def __new__(cls, *args, **kwargs):
+        del args, kwargs
+        raise DigestPreparedOwnerError(
+            "prepared digest owners are issued only by prepare_digest_owner"
+        )
+
+    @classmethod
+    def _issue(
+        cls,
+        *,
+        session: AsyncSession,
+        subject_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        actor_user_id: uuid.UUID | None,
+    ) -> "PreparedDigestOwner":
+        prepared = object.__new__(cls)
+        object.__setattr__(prepared, "_subject_id", subject_id)
+        object.__setattr__(prepared, "_owner_user_id", owner_user_id)
+        object.__setattr__(prepared, "_actor_user_id", actor_user_id)
+        object.__setattr__(
+            prepared,
+            "_fingerprint",
+            (subject_id, owner_user_id, actor_user_id),
+        )
+        object.__setattr__(prepared, "_session", session)
+        object.__setattr__(
+            prepared, "_transaction", session.sync_session.get_transaction()
+        )
+        object.__setattr__(
+            prepared,
+            "_nested_transaction",
+            session.sync_session.get_nested_transaction(),
+        )
+        object.__setattr__(prepared, "_seal", _PREPARED_DIGEST_OWNER_SEAL)
+        return prepared
+
+    def __setattr__(self, name, value) -> None:
+        del name, value
+        raise AttributeError("PreparedDigestOwner is immutable")
+
+    @property
+    def identity(self) -> WriteIdentity:
+        return WriteIdentity(
+            subject_id=self._subject_id,
+            actor_user_id=self._actor_user_id,
+        )
+
+
+_PREPARED_DIGEST_OWNER_SEAL = object()
+
+
+class PreparedDigest:
+    """Opaque PHI-bearing snapshot bound to one exact AI reservation."""
+
+    __slots__ = (
+        "_actor_user_id",
+        "_artifact_source",
+        "_context_json_text",
+        "_dispatchable",
+        "_existing_artifact_id",
+        "_fingerprint",
+        "_invocation_id",
+        "_invocation_source",
+        "_lang",
+        "_model",
+        "_on_date",
+        "_owner_user_id",
+        "_period_days",
+        "_prompt",
+        "_attempt",
+        "_reservation_status",
+        "_seal",
+        "_subject_id",
+    )
+
+    def __new__(cls, *args, **kwargs):
+        del args, kwargs
+        raise DigestPreparedOwnerError(
+            "prepared digests are issued only by prepare_digest"
+        )
+
+    @classmethod
+    def _issue(
+        cls,
+        *,
+        on_date: date_type,
+        period_days: int,
+        artifact_source: str,
+        invocation_source: AIInvocationSource,
+        lang: str,
+        subject_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        actor_user_id: uuid.UUID | None,
+        model: str,
+        attempt: int,
+        invocation_id: uuid.UUID,
+        reservation_status: AIInvocationStatus,
+        dispatchable: bool,
+        existing_artifact_id: int | None,
+        context_json_text: str,
+        prompt: str,
+    ) -> "PreparedDigest":
+        prepared = object.__new__(cls)
+        values = {
+            "_on_date": on_date,
+            "_period_days": period_days,
+            "_artifact_source": artifact_source,
+            "_invocation_source": invocation_source,
+            "_lang": lang,
+            "_subject_id": subject_id,
+            "_owner_user_id": owner_user_id,
+            "_actor_user_id": actor_user_id,
+            "_model": model,
+            "_attempt": attempt,
+            "_invocation_id": invocation_id,
+            "_reservation_status": reservation_status,
+            "_dispatchable": dispatchable,
+            "_existing_artifact_id": existing_artifact_id,
+            "_context_json_text": context_json_text,
+            "_prompt": prompt,
+        }
+        for name, value in values.items():
+            object.__setattr__(prepared, name, value)
+        object.__setattr__(
+            prepared,
+            "_fingerprint",
+            cls._fingerprint_for(**values),
+        )
+        object.__setattr__(prepared, "_seal", _PREPARED_DIGEST_SEAL)
+        return prepared
+
+    @staticmethod
+    def _fingerprint_for(**values) -> tuple:
+        return (
+            values["_on_date"],
+            values["_period_days"],
+            values["_artifact_source"],
+            values["_invocation_source"],
+            values["_lang"],
+            values["_subject_id"],
+            values["_owner_user_id"],
+            values["_actor_user_id"],
+            values["_model"],
+            values["_attempt"],
+            values["_invocation_id"],
+            values["_reservation_status"],
+            values["_dispatchable"],
+            values["_existing_artifact_id"],
+            hashlib.sha256(values["_context_json_text"].encode("utf-8")).digest(),
+            hashlib.sha256(values["_prompt"].encode("utf-8")).digest(),
+        )
+
+    def __setattr__(self, name, value) -> None:
+        del name, value
+        raise AttributeError("PreparedDigest is immutable")
+
+    def __repr__(self) -> str:
+        return (
+            f"<PreparedDigest invocation_id={self._invocation_id} "
+            f"status={self._reservation_status.value} redacted>"
+        )
+
+    def __reduce__(self):
+        raise TypeError("PreparedDigest is not pickleable")
+
+    @property
+    def invocation_id(self) -> uuid.UUID:
+        return self._invocation_id
+
+    @property
+    def reservation_status(self) -> AIInvocationStatus:
+        return self._reservation_status
+
+    @property
+    def attempt(self) -> int:
+        return self._attempt
+
+    @property
+    def dispatchable(self) -> bool:
+        return self._dispatchable
+
+    @property
+    def existing_artifact_id(self) -> int | None:
+        return self._existing_artifact_id
+
+
+_PREPARED_DIGEST_SEAL = object()
 
 
 @dataclass(frozen=True)
@@ -2482,8 +2761,6 @@ def signal_row(signal) -> dict:
 
 def build_prompt(context: dict, lang: str = "ru") -> str:
     """Render the structured context into the user prompt for the narrative."""
-    import json
-
     if lang == "en":
         prefix = "Structured data snapshot for the period (JSON):\n\n"
         suffix = "\n\nWrite an analytical digest based on this data."
@@ -2501,6 +2778,835 @@ def build_prompt(context: dict, lang: str = "ru") -> str:
 
 
 # ── Generation ────────────────────────────────────────────────────────────────
+def _require_prepared_digest_owner(
+    session: AsyncSession,
+    prepared_owner: PreparedDigestOwner,
+) -> PreparedDigestOwner:
+    if not isinstance(prepared_owner, PreparedDigestOwner):
+        raise DigestPreparedOwnerError("digest owner is not a valid capability")
+    try:
+        valid_fingerprint = prepared_owner._fingerprint == (
+            prepared_owner._subject_id,
+            prepared_owner._owner_user_id,
+            prepared_owner._actor_user_id,
+        )
+        valid_seal = prepared_owner._seal is _PREPARED_DIGEST_OWNER_SEAL
+        prepared_session = prepared_owner._session
+        transaction = prepared_owner._transaction
+        nested_transaction = prepared_owner._nested_transaction
+    except (AttributeError, TypeError) as exc:
+        raise DigestPreparedOwnerError(
+            "digest owner is not a valid issued capability"
+        ) from exc
+    if not valid_seal or not valid_fingerprint:
+        raise DigestPreparedOwnerError("digest owner capability was modified")
+    if prepared_session is not session:
+        raise DigestPreparedOwnerError("digest owner belongs to another session")
+    if session.sync_session.get_transaction() is not transaction:
+        raise DigestPreparedOwnerError("digest owner transaction is no longer active")
+    if session.sync_session.get_nested_transaction() is not nested_transaction:
+        raise DigestPreparedOwnerError("digest owner savepoint is no longer active")
+    return prepared_owner
+
+
+def _require_prepared_digest(prepared: PreparedDigest) -> PreparedDigest:
+    if not isinstance(prepared, PreparedDigest):
+        raise DigestPreparedOwnerError("digest snapshot is not a valid capability")
+    try:
+        values = {
+            "_on_date": prepared._on_date,
+            "_period_days": prepared._period_days,
+            "_artifact_source": prepared._artifact_source,
+            "_invocation_source": prepared._invocation_source,
+            "_lang": prepared._lang,
+            "_subject_id": prepared._subject_id,
+            "_owner_user_id": prepared._owner_user_id,
+            "_actor_user_id": prepared._actor_user_id,
+            "_model": prepared._model,
+            "_attempt": prepared._attempt,
+            "_invocation_id": prepared._invocation_id,
+            "_reservation_status": prepared._reservation_status,
+            "_dispatchable": prepared._dispatchable,
+            "_existing_artifact_id": prepared._existing_artifact_id,
+            "_context_json_text": prepared._context_json_text,
+            "_prompt": prepared._prompt,
+        }
+        valid = (
+            prepared._seal is _PREPARED_DIGEST_SEAL
+            and prepared._fingerprint == PreparedDigest._fingerprint_for(**values)
+        )
+    except (AttributeError, KeyError, TypeError, UnicodeError) as exc:
+        raise DigestPreparedOwnerError(
+            "digest snapshot is not a valid issued capability"
+        ) from exc
+    if not valid:
+        raise DigestPreparedOwnerError("digest snapshot capability was modified")
+    return prepared
+
+
+def _as_invocation_source(value: AIInvocationSource | str) -> AIInvocationSource:
+    try:
+        source = AIInvocationSource(value)
+    except (TypeError, ValueError) as exc:
+        raise DigestOwnershipError("unsupported digest invocation source") from exc
+    if source not in _ARTIFACT_SOURCE_BY_INVOCATION_SOURCE:
+        raise DigestOwnershipError("unsupported digest invocation source")
+    return source
+
+
+def _validate_source_actor(
+    *,
+    source: str,
+    actor_user_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID,
+) -> None:
+    if source not in _DIGEST_SOURCES:
+        raise DigestOwnershipError(f"unsupported digest source {source!r}")
+    if source in {Source.MANUAL.value, Source.MCP.value}:
+        if actor_user_id != owner_user_id:
+            raise DigestOwnershipError(
+                "human digest source requires the current owner actor"
+            )
+    elif actor_user_id is not None:
+        raise DigestOwnershipError("scheduled digest must not have a human actor")
+
+
+def _digest_idempotency_key(
+    *,
+    invocation_source: AIInvocationSource,
+    on_date: date_type,
+    period_days: int,
+    lang: str,
+    model: str,
+    attempt: int,
+) -> str:
+    key_material = "|".join(
+        (
+            _DIGEST_POLICY_VERSION,
+            invocation_source.value,
+            on_date.isoformat(),
+            str(period_days),
+            lang,
+            model,
+            str(attempt),
+        )
+    )
+    return (
+        f"{_DIGEST_POLICY_VERSION}:"
+        f"{hashlib.sha256(key_material.encode('utf-8')).hexdigest()}"
+    )
+
+
+async def _load_digest_attempts(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity,
+    invocation_source: AIInvocationSource,
+    model: str,
+    idempotency_keys: Sequence[str],
+) -> dict[int, _DigestAttemptState]:
+    """Read product-attempt state before comparing mutable gateway fingerprints.
+
+    Gateway roots, quota periods, and conservative reservation size may change
+    after a paid attempt.  Those operational values must not hide a succeeded or
+    dispatching invocation for the same immutable digest product key.
+    """
+
+    attempt_by_key = {key: attempt for attempt, key in enumerate(idempotency_keys)}
+    with session.no_autoflush:
+        rows = list(
+            await session.execute(
+                select(
+                    AIInvocation.id,
+                    AIInvocation.actor_user_id,
+                    AIInvocation.source,
+                    AIInvocation.model,
+                    AIInvocation.idempotency_key,
+                    AIInvocation.status,
+                ).where(
+                    AIInvocation.subject_id == identity.subject_id,
+                    AIInvocation.purpose
+                    == AIInvocationPurpose.WEEKLY_DIGEST.value,
+                    AIInvocation.idempotency_key.in_(tuple(idempotency_keys)),
+                )
+            )
+        )
+    attempts: dict[int, _DigestAttemptState] = {}
+    for row in rows:
+        attempt = attempt_by_key.get(row.idempotency_key)
+        if (
+            attempt is None
+            or row.actor_user_id != identity.actor_user_id
+            or row.source != invocation_source.value
+            or row.model != model
+            or attempt in attempts
+        ):
+            raise DigestInvocationStateError(
+                "digest invocation retry provenance is inconsistent"
+            )
+        try:
+            status = AIInvocationStatus(row.status)
+        except (TypeError, ValueError) as exc:
+            raise DigestInvocationStateError(
+                "digest invocation has an invalid lifecycle state"
+            ) from exc
+        attempts[attempt] = _DigestAttemptState(
+            attempt=attempt,
+            invocation_id=row.id,
+            status=status,
+        )
+    live = [
+        state
+        for state in attempts.values()
+        if state.status
+        in {
+            AIInvocationStatus.PREPARED,
+            AIInvocationStatus.DISPATCHING,
+            AIInvocationStatus.SUCCEEDED,
+        }
+    ]
+    if len(live) > 1:
+        raise DigestInvocationStateError(
+            "digest invocation retry history has multiple live attempts"
+        )
+    return attempts
+
+
+async def _validate_digest_rows(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID | None,
+) -> None:
+    """Validate every persisted digest root without materializing narrative PHI."""
+    roots = list(
+        await session.execute(
+            select(
+                WeeklyDigest.id,
+                WeeklyDigest.subject_id,
+                WeeklyDigest.actor_user_id,
+                WeeklyDigest.integration_connection_id,
+                WeeklyDigest.ai_invocation_id,
+                WeeklyDigest.domain,
+                WeeklyDigest.source,
+                WeeklyDigest.kind,
+                WeeklyDigest.model,
+            ).order_by(WeeklyDigest.id)
+        )
+    )
+    connection_ids = {
+        root.integration_connection_id
+        for root in roots
+        if root.integration_connection_id is not None
+    }
+    connections = (
+        {
+            row.id: row
+            for row in await session.scalars(
+                select(IntegrationConnection)
+                .where(IntegrationConnection.id.in_(tuple(connection_ids)))
+                .execution_options(populate_existing=True)
+            )
+        }
+        if connection_ids
+        else {}
+    )
+    invocation_ids = {
+        root.ai_invocation_id for root in roots if root.ai_invocation_id is not None
+    }
+    invocations = (
+        {
+            row.id: row
+            for row in await session.scalars(
+                select(AIInvocation)
+                .where(AIInvocation.id.in_(tuple(invocation_ids)))
+                .execution_options(populate_existing=True)
+            )
+        }
+        if invocation_ids
+        else {}
+    )
+
+    for root in roots:
+        if root.domain != DOMAIN:
+            raise DigestOwnershipError(
+                f"digest {root.id} has unexpected domain {root.domain!r}"
+            )
+        if root.kind not in _DIGEST_KINDS:
+            raise DigestOwnershipError(
+                f"digest {root.id} has unknown kind {root.kind!r}"
+            )
+        if root.source not in _DIGEST_SOURCES:
+            raise DigestOwnershipError(
+                f"digest {root.id} has unknown source {root.source!r}"
+            )
+        if root.subject_id is None:
+            if (
+                root.actor_user_id is not None
+                or root.integration_connection_id is not None
+                or root.ai_invocation_id is not None
+            ):
+                raise DigestOwnershipError(
+                    f"digest {root.id} has partial legacy ownership roots"
+                )
+            continue
+        if subject_id is None or owner_user_id is None:
+            raise DigestOwnershipError(
+                f"digest {root.id} is owned but no subject scope was prepared"
+            )
+        if root.subject_id != subject_id:
+            raise DigestOwnershipError(
+                f"digest {root.id} belongs to another subject"
+            )
+        _validate_source_actor(
+            source=root.source,
+            actor_user_id=root.actor_user_id,
+            owner_user_id=owner_user_id,
+        )
+        if root.ai_invocation_id is not None:
+            if root.integration_connection_id is not None:
+                raise DigestOwnershipError(
+                    f"digest {root.id} mixes platform and subject provider roots"
+                )
+            invocation = invocations.get(root.ai_invocation_id)
+            if invocation is None:
+                raise DigestOwnershipError(
+                    f"digest {root.id} AI invocation is missing"
+                )
+            expected_purpose = _INVOCATION_PURPOSE_BY_DIGEST_KIND.get(root.kind)
+            expected_source = _INVOCATION_SOURCE_BY_ARTIFACT_SOURCE.get(root.source)
+            if (
+                invocation.subject_id != root.subject_id
+                or invocation.actor_user_id != root.actor_user_id
+                or invocation.status != AIInvocationStatus.SUCCEEDED.value
+                or expected_purpose is None
+                or invocation.purpose != expected_purpose
+                or expected_source is None
+                or invocation.source != expected_source
+                or root.model != invocation.model
+            ):
+                raise DigestOwnershipError(
+                    f"digest {root.id} has invalid AI invocation provenance"
+                )
+            continue
+        if root.kind == DigestKind.WEEKLY.value:
+            if root.integration_connection_id is None:
+                raise DigestOwnershipError(
+                    f"weekly digest {root.id} lacks OpenRouter provenance"
+                )
+        elif root.integration_connection_id is None and root.model is not None:
+            raise DigestOwnershipError(
+                f"digest {root.id} has a model without provider provenance"
+            )
+        if root.integration_connection_id is None:
+            continue
+        connection = connections.get(root.integration_connection_id)
+        if connection is None:
+            raise DigestOwnershipError(
+                f"digest {root.id} integration connection is missing"
+            )
+        if connection.subject_id != subject_id:
+            raise DigestOwnershipError(
+                f"digest {root.id} integration belongs to another subject"
+            )
+        if (
+            connection.provider != IntegrationProvider.OPENROUTER.value
+            or connection.connection_type
+            != IntegrationConnectionType.AI_GATEWAY.value
+        ):
+            raise DigestOwnershipError(
+                f"digest {root.id} requires an OpenRouter AI gateway"
+            )
+        if connection.status not in _HISTORICAL_GATEWAY_STATUSES:
+            raise DigestOwnershipError(
+                f"digest {root.id} has invalid provider lifecycle state"
+            )
+
+
+async def prepare_digest_owner(
+    session: AsyncSession,
+    *,
+    actor_username: str | None,
+) -> PreparedDigestOwner:
+    """Prepare exact-one read/generation roots in canonical lock order."""
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+
+    await acquire_identity_governance_lock(session)
+    ownership = await resolve_legacy_ownership_context(
+        session,
+        actor_username=actor_username,
+    )
+    with session.no_autoflush:
+        subject_ids = list(
+            await session.scalars(
+                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+            )
+        )
+        if subject_ids != [ownership.subject_id]:
+            raise DigestOwnershipError(
+                "digest compatibility requires exactly one health subject"
+            )
+        subject = await session.scalar(
+            select(HealthSubject)
+            .where(HealthSubject.id == ownership.subject_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if subject is None or subject.owner_user_id != ownership.owner_user_id:
+            raise DigestOwnershipError("digest subject owner changed")
+        owner = await session.scalar(
+            select(User)
+            .where(User.id == ownership.owner_user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if owner is None or owner.status != UserStatus.ACTIVE.value:
+            raise DigestOwnershipError("digest owner is missing or inactive")
+        if (
+            ownership.actor_user_id is not None
+            and ownership.actor_user_id != owner.id
+        ):
+            raise DigestOwnershipError("digest actor is not the subject owner")
+    await _validate_digest_rows(
+        session,
+        subject_id=subject.id,
+        owner_user_id=owner.id,
+    )
+    return PreparedDigestOwner._issue(
+        session=session,
+        subject_id=subject.id,
+        owner_user_id=owner.id,
+        actor_user_id=ownership.actor_user_id,
+    )
+
+
+async def prepare_legacy_digest_owner(
+    session: AsyncSession,
+    *,
+    actor_username: str | None,
+) -> PreparedDigestOwner:
+    """Compatibility alias for exact-one callers during AccessContext cutover."""
+
+    return await prepare_digest_owner(session, actor_username=actor_username)
+
+
+async def _owner_or_zero_subject_legacy(
+    session: AsyncSession,
+    prepared_owner: PreparedDigestOwner | None,
+) -> PreparedDigestOwner | None:
+    if prepared_owner is not None:
+        return _require_prepared_digest_owner(session, prepared_owner)
+    await acquire_identity_governance_lock(session)
+    if await session.scalar(select(HealthSubject.id).limit(1)) is not None:
+        raise DigestPreparedOwnerError(
+            "digest reads require a prepared owner once identity exists"
+        )
+    await _validate_digest_rows(session, subject_id=None, owner_user_id=None)
+    return None
+
+
+async def prepare_digest(
+    session: AsyncSession,
+    *,
+    actor_username: str | None,
+    invocation_source: AIInvocationSource | str,
+    on_date: Optional[date_type] = None,
+    period_days: int = 7,
+) -> PreparedDigest:
+    """Freeze exact-one PHI and reserve one paid call without external I/O."""
+    invocation_source_value = _as_invocation_source(invocation_source)
+    artifact_source = _ARTIFACT_SOURCE_BY_INVOCATION_SOURCE[
+        invocation_source_value
+    ]
+    if (
+        invocation_source_value is not AIInvocationSource.SCHEDULER
+        and actor_username is None
+    ):
+        raise DigestOwnershipError("human digest source requires an actor")
+    if (
+        invocation_source_value is AIInvocationSource.SCHEDULER
+        and actor_username is not None
+    ):
+        raise DigestOwnershipError("scheduled digest must not have a human actor")
+    owner = await prepare_digest_owner(
+        session,
+        actor_username=actor_username,
+    )
+    _validate_source_actor(
+        source=artifact_source,
+        actor_user_id=owner._actor_user_id,
+        owner_user_id=owner._owner_user_id,
+    )
+    from vitals.services import milestones_service
+
+    await milestones_service.list_milestones(
+        session,
+        subject_id=owner._subject_id,
+        include_legacy_unowned=True,
+    )
+    frozen_date = on_date or today_local()
+    from vitals.i18n import current_lang
+
+    lang = current_lang.get()
+    model = load_config().llm_model_digest.strip()
+    if not model:
+        raise DigestOwnershipError("digest model is not configured")
+    context = await assemble_context(
+        session,
+        on_date=frozen_date,
+        period_days=period_days,
+    )
+    frozen_context = deepcopy(context)
+    context_json_text = json.dumps(
+        frozen_context,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    prompt = build_prompt(frozen_context, lang=lang)
+    system = DIGEST_SYSTEM_EN if lang == "en" else DIGEST_SYSTEM
+    reserved_units = (
+        len((system + "\n" + prompt).encode("utf-8"))
+        + _DIGEST_MAX_TOKENS
+        + _DIGEST_RESERVATION_OVERHEAD_UNITS
+    )
+    idempotency_keys = tuple(
+        _digest_idempotency_key(
+            invocation_source=invocation_source_value,
+            on_date=frozen_date,
+            period_days=period_days,
+            lang=lang,
+            model=model,
+            attempt=attempt,
+        )
+        for attempt in range(_DIGEST_MAX_ATTEMPTS)
+    )
+    existing_attempts = await _load_digest_attempts(
+        session,
+        identity=owner.identity,
+        invocation_source=invocation_source_value,
+        model=model,
+        idempotency_keys=idempotency_keys,
+    )
+    terminal_statuses = {
+        AIInvocationStatus.FAILED,
+        AIInvocationStatus.AMBIGUOUS,
+        AIInvocationStatus.CANCELLED,
+    }
+    reservation = None
+    attempt = 0
+    for attempt, idempotency_key in enumerate(idempotency_keys):
+        existing = existing_attempts.get(attempt)
+        if existing is not None and existing.status in {
+            AIInvocationStatus.SUCCEEDED,
+            AIInvocationStatus.DISPATCHING,
+        }:
+            # Product identity is independent of the mutable gateway root,
+            # billing period, and context-derived reservation ceiling.  Reuse a
+            # paid/live attempt without asking the current gateway to compare a
+            # now-obsolete operational fingerprint.
+            reservation = ai_gateway_service.AIReservationResult(
+                invocation_id=existing.invocation_id,
+                status=existing.status,
+                created=False,
+                dispatchable=False,
+            )
+            break
+        if existing is not None and existing.status in terminal_statuses:
+            reservation = ai_gateway_service.AIReservationResult(
+                invocation_id=existing.invocation_id,
+                status=existing.status,
+                created=False,
+                dispatchable=False,
+            )
+            if attempt + 1 < _DIGEST_MAX_ATTEMPTS:
+                continue
+            break
+        try:
+            candidate = await ai_gateway_service.reserve_ai_invocation(
+                session,
+                identity=owner.identity,
+                purpose=AIInvocationPurpose.WEEKLY_DIGEST,
+                source=invocation_source_value,
+                model=model,
+                idempotency_key=idempotency_key,
+                reserved_cost_microunits=_DIGEST_RESERVED_COST_MICROUNITS,
+                reserved_units=reserved_units,
+            )
+        except ai_gateway_service.AIIdempotencyConflictError as exc:
+            if (
+                existing is None
+                or existing.status is not AIInvocationStatus.PREPARED
+            ):
+                # prepare_digest_owner holds the subject root, so an unseen or
+                # non-prepared conflict cannot be a legitimate concurrent
+                # transition.  Never buy a second call around corrupt history.
+                raise DigestInvocationStateError(
+                    "digest invocation retry history changed unexpectedly"
+                ) from exc
+            cancelled = await ai_gateway_service.cancel_reserved_ai_invocation(
+                session,
+                identity=owner.identity,
+                invocation_id=existing.invocation_id,
+            )
+            if cancelled.status != AIInvocationStatus.CANCELLED.value:
+                raise DigestInvocationStateError(
+                    "stale digest reservation was not released"
+                )
+            reservation = ai_gateway_service.AIReservationResult(
+                invocation_id=existing.invocation_id,
+                status=AIInvocationStatus.CANCELLED,
+                created=False,
+                dispatchable=False,
+            )
+            if attempt + 1 >= _DIGEST_MAX_ATTEMPTS:
+                break
+            continue
+        if existing is not None and candidate.invocation_id != existing.invocation_id:
+            raise DigestInvocationStateError(
+                "digest reservation changed identity during preparation"
+            )
+        reservation = candidate
+        if (
+            candidate.status in terminal_statuses
+            and attempt + 1 < _DIGEST_MAX_ATTEMPTS
+        ):
+            continue
+        break
+    if reservation is None:  # pragma: no cover - loop either reserves or raises
+        raise DigestInvocationStateError("digest reservation was not created")
+    existing_artifact_id = None
+    if reservation.status is AIInvocationStatus.SUCCEEDED:
+        existing_artifact_id = await session.scalar(
+            select(WeeklyDigest.id).where(
+                WeeklyDigest.ai_invocation_id == reservation.invocation_id,
+                WeeklyDigest.subject_id == owner._subject_id,
+            )
+        )
+        if existing_artifact_id is None:
+            raise DigestInvocationStateError(
+                "a succeeded digest invocation is missing its artifact"
+            )
+    return PreparedDigest._issue(
+        on_date=frozen_date,
+        period_days=period_days,
+        artifact_source=artifact_source,
+        invocation_source=invocation_source_value,
+        lang=lang,
+        subject_id=owner._subject_id,
+        owner_user_id=owner._owner_user_id,
+        actor_user_id=owner._actor_user_id,
+        model=model,
+        attempt=attempt,
+        invocation_id=reservation.invocation_id,
+        reservation_status=reservation.status,
+        dispatchable=reservation.dispatchable,
+        existing_artifact_id=existing_artifact_id,
+        context_json_text=context_json_text,
+        prompt=prompt,
+    )
+
+
+def _resolve_openrouter_credential(credential_ref: str) -> str | None:
+    if credential_ref not in ai_gateway_service.ALLOWED_CREDENTIAL_REFS:
+        return None
+    credential = load_config().openrouter_api_key.strip()
+    return credential or None
+
+
+async def start_digest_dispatch(
+    session: AsyncSession,
+    prepared: PreparedDigest,
+    *,
+    credential_resolver=None,
+) -> ai_gateway_service.AIDispatchLease:
+    """Freshly authorize and charge one prepared digest; caller commits."""
+    snapshot = _require_prepared_digest(prepared)
+    if not snapshot._dispatchable:
+        raise DigestInvocationStateError(
+            f"digest invocation is {snapshot._reservation_status.value}"
+        )
+    resolver = credential_resolver or _resolve_openrouter_credential
+    return await ai_gateway_service.start_ai_dispatch(
+        session,
+        identity=WriteIdentity(
+            subject_id=snapshot._subject_id,
+            actor_user_id=snapshot._actor_user_id,
+        ),
+        invocation_id=snapshot._invocation_id,
+        credential_resolver=resolver,
+    )
+
+
+async def cancel_prepared_digest(
+    session: AsyncSession,
+    prepared: PreparedDigest,
+) -> AIInvocation:
+    """Release a still-prepared reservation after a zero-network boundary error."""
+    snapshot = _require_prepared_digest(prepared)
+    return await ai_gateway_service.cancel_reserved_ai_invocation(
+        session,
+        identity=WriteIdentity(
+            subject_id=snapshot._subject_id,
+            actor_user_id=snapshot._actor_user_id,
+        ),
+        invocation_id=snapshot._invocation_id,
+    )
+
+
+async def release_prepared_digest(
+    session: AsyncSession,
+    prepared: PreparedDigest,
+) -> bool:
+    """Best-effort zero-network release after a failed start authorization.
+
+    The caller must begin a fresh transaction and owns commit/rollback.  A
+    concurrent dispatcher, suspended actor, or stale capability returns ``False``
+    without disguising the original boundary error; the platform reconciliation
+    job remains the crash/revocation backstop.
+    """
+
+    try:
+        await cancel_prepared_digest(session, prepared)
+    except (
+        ai_gateway_service.AIGatewayAuthorizationError,
+        ai_gateway_service.AIGatewayConfigurationError,
+        ai_gateway_service.AIInvocationStateError,
+    ):
+        return False
+    return True
+
+
+async def render_digest(
+    prepared: PreparedDigest,
+    lease: ai_gateway_service.AIDispatchLease,
+) -> ai_gateway_service.AICompletion[LLMCallResult[str]]:
+    """Perform exactly one gateway-funded OpenRouter call with no DB I/O."""
+    snapshot = _require_prepared_digest(prepared)
+    system = DIGEST_SYSTEM_EN if snapshot._lang == "en" else DIGEST_SYSTEM
+
+    async def provider_call(
+        request: ai_gateway_service.AIDispatchRequest,
+    ) -> LLMCallResult[str]:
+        if (
+            request.invocation_id != snapshot._invocation_id
+            or request.model != snapshot._model
+        ):
+            raise DigestInvocationStateError("digest dispatch provenance changed")
+        config = replace(
+            load_config(),
+            openrouter_api_key=request.credential,
+        )
+        return await LLMClient(config).complete_text_with_usage(
+            snapshot._prompt,
+            model=request.model,
+            system=system,
+            max_tokens=_DIGEST_MAX_TOKENS,
+        )
+
+    def usage_extractor(
+        result: LLMCallResult[str],
+    ) -> ai_gateway_service.SanitizedAIUsage:
+        if (
+            not isinstance(result, LLMCallResult)
+            or not isinstance(result.value, str)
+            or not result.value.strip()
+            or result.input_tokens is None
+            or result.output_tokens is None
+            or result.cost_microunits is None
+        ):
+            raise ValueError("digest provider usage is incomplete")
+        return ai_gateway_service.SanitizedAIUsage(
+            upstream_request_id=result.upstream_request_id,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cost_microunits=result.cost_microunits,
+        )
+
+    return await ai_gateway_service.dispatch_ai(
+        lease,
+        provider_call=provider_call,
+        usage_extractor=usage_extractor,
+    )
+
+
+async def persist_digest(
+    session: AsyncSession,
+    prepared: PreparedDigest,
+    completion: ai_gateway_service.AICompletion[LLMCallResult[str]],
+) -> WeeklyDigest | None:
+    """Atomically finalize paid metadata and insert one successful artifact."""
+    snapshot = _require_prepared_digest(prepared)
+    if completion.invocation_id != snapshot._invocation_id:
+        raise DigestInvocationStateError("digest completion belongs to another call")
+    invocation = await ai_gateway_service.finalize_ai_invocation(
+        session,
+        completion=completion,
+    )
+    if (
+        invocation.subject_id != snapshot._subject_id
+        or invocation.actor_user_id != snapshot._actor_user_id
+        or invocation.purpose != AIInvocationPurpose.WEEKLY_DIGEST.value
+        or invocation.source != snapshot._invocation_source.value
+        or invocation.model != snapshot._model
+    ):
+        raise DigestInvocationStateError("digest invocation provenance changed")
+    if invocation.status != AIInvocationStatus.SUCCEEDED.value:
+        return None
+    result = completion.payload
+    if (
+        not isinstance(result, LLMCallResult)
+        or not isinstance(result.value, str)
+        or not result.value.strip()
+    ):
+        raise DigestInvocationStateError("successful digest payload is missing")
+    try:
+        context = json.loads(snapshot._context_json_text)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - frozen factory output
+        raise DigestOwnershipError("prepared digest context is invalid") from exc
+    row = WeeklyDigest(
+        subject_id=snapshot._subject_id,
+        actor_user_id=snapshot._actor_user_id,
+        integration_connection_id=None,
+        ai_invocation_id=invocation.id,
+        date=snapshot._on_date,
+        domain=DOMAIN,
+        source=snapshot._artifact_source,
+        kind=DigestKind.WEEKLY.value,
+        content=result.value.strip(),
+        context_json=context,
+        model=snapshot._model,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def existing_digest_for_prepared(
+    session: AsyncSession,
+    prepared: PreparedDigest,
+    *,
+    prepared_owner: PreparedDigestOwner,
+) -> WeeklyDigest | None:
+    """Reload one idempotent artifact under a fresh exact-owner read proof."""
+    snapshot = _require_prepared_digest(prepared)
+    owner = _require_prepared_digest_owner(session, prepared_owner)
+    if (
+        owner._subject_id != snapshot._subject_id
+        or owner._actor_user_id != snapshot._actor_user_id
+        or snapshot._existing_artifact_id is None
+    ):
+        return None
+    return await session.scalar(
+        select(WeeklyDigest)
+        .where(
+            WeeklyDigest.id == snapshot._existing_artifact_id,
+            WeeklyDigest.subject_id == snapshot._subject_id,
+            WeeklyDigest.ai_invocation_id == snapshot._invocation_id,
+        )
+        .execution_options(populate_existing=True)
+    )
+
+
 async def generate_digest(
     session: AsyncSession,
     llm: Any,
@@ -2509,9 +3615,18 @@ async def generate_digest(
     period_days: int = 7,
     source: str = Source.MANUAL.value,
 ) -> WeeklyDigest:
-    """Assemble context, get the narrative from the LLM, and persist the digest.
-    Raises whatever the LLM client raises (e.g. ``LLMNotConfigured``), or
-    ``LLMEmptyResponse`` if the model comes back blank twice in a row. No commit."""
+    """Zero-subject compatibility wrapper for injected legacy/test callers.
+
+    Identity-bearing production boundaries must use prepare/render/persist so no
+    database transaction spans OpenRouter. This wrapper never commits.
+    """
+    await acquire_identity_governance_lock(session)
+    if await session.scalar(select(HealthSubject.id).limit(1)) is not None:
+        raise DigestOwnershipError(
+            "identity-bearing digest generation requires phased APIs"
+        )
+    if source not in _DIGEST_SOURCES:
+        raise DigestOwnershipError(f"unsupported digest source {source!r}")
     from vitals.i18n import current_lang
     lang = current_lang.get()
 
@@ -2543,57 +3658,144 @@ async def generate_digest(
 
 
 async def latest_digest(
-    session: AsyncSession, *, kind: str = DigestKind.WEEKLY.value
+    session: AsyncSession,
+    *,
+    kind: str = DigestKind.WEEKLY.value,
+    prepared_owner: PreparedDigestOwner | None = None,
 ) -> Optional[WeeklyDigest]:
     """The most recent narrative of one kind. Defaults to the weekly digest, so a
     daily brief can never show up where a weekly one is expected."""
+    if kind not in _DIGEST_KINDS:
+        raise DigestOwnershipError(f"unknown digest kind {kind!r}")
+    owner = await _owner_or_zero_subject_legacy(session, prepared_owner)
+    scope = (
+        and_(
+            WeeklyDigest.subject_id.is_(None),
+            WeeklyDigest.actor_user_id.is_(None),
+            WeeklyDigest.integration_connection_id.is_(None),
+            WeeklyDigest.ai_invocation_id.is_(None),
+        )
+        if owner is None
+        else or_(
+            WeeklyDigest.subject_id == owner._subject_id,
+            and_(
+                WeeklyDigest.subject_id.is_(None),
+                WeeklyDigest.actor_user_id.is_(None),
+                WeeklyDigest.integration_connection_id.is_(None),
+                WeeklyDigest.ai_invocation_id.is_(None),
+            ),
+        )
+    )
     result = await session.execute(
         select(WeeklyDigest)
-        .where(WeeklyDigest.kind == kind)
+        .where(scope, WeeklyDigest.kind == kind)
         .order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc())
         .limit(1)
+        .execution_options(populate_existing=True)
     )
     return result.scalars().first()
 
 
 async def list_digests(
-    session: AsyncSession, *, limit: int = 20, kind: str = DigestKind.WEEKLY.value
+    session: AsyncSession,
+    *,
+    limit: int = 20,
+    kind: str = DigestKind.WEEKLY.value,
+    prepared_owner: PreparedDigestOwner | None = None,
 ) -> Sequence[WeeklyDigest]:
+    if kind not in _DIGEST_KINDS:
+        raise DigestOwnershipError(f"unknown digest kind {kind!r}")
+    owner = await _owner_or_zero_subject_legacy(session, prepared_owner)
+    scope = (
+        and_(
+            WeeklyDigest.subject_id.is_(None),
+            WeeklyDigest.actor_user_id.is_(None),
+            WeeklyDigest.integration_connection_id.is_(None),
+            WeeklyDigest.ai_invocation_id.is_(None),
+        )
+        if owner is None
+        else or_(
+            WeeklyDigest.subject_id == owner._subject_id,
+            and_(
+                WeeklyDigest.subject_id.is_(None),
+                WeeklyDigest.actor_user_id.is_(None),
+                WeeklyDigest.integration_connection_id.is_(None),
+                WeeklyDigest.ai_invocation_id.is_(None),
+            ),
+        )
+    )
     result = await session.execute(
         select(WeeklyDigest)
-        .where(WeeklyDigest.kind == kind)
+        .where(scope, WeeklyDigest.kind == kind)
         .order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc())
         .limit(limit)
+        .execution_options(populate_existing=True)
     )
     return result.scalars().all()
 
 
 # ── Scheduler job ─────────────────────────────────────────────────────────────
 async def digest_job(session_factory, redis=None) -> None:
-    """Weekly digest generation. No-ops when no OpenRouter key is configured so the
-    scheduler never logs spurious failures."""
-    from vitals.config import load_config
-    from vitals.integrations.llm_client import LLMClient
+    """Generate one idempotent platform-funded weekly digest."""
+    del redis
+    from vitals.i18n import current_lang
+    from vitals.services.language_service import get_language
 
-    if not load_config().openrouter_api_key:
+    try:
+        async with session_factory() as session:
+            owner = await prepare_digest_owner(
+                session,
+                actor_username=None,
+            )
+            # DB is authoritative here. Avoid a Redis await while governance and
+            # the subject are locked; the weekly job needs no cache acceleration.
+            current_lang.set(
+                await get_language(
+                    session,
+                    None,
+                    user_id=owner._owner_user_id,
+                )
+            )
+            prepared = await prepare_digest(
+                session,
+                actor_username=None,
+                invocation_source=AIInvocationSource.SCHEDULER,
+            )
+            await session.commit()
+    except (
+        ai_gateway_service.AIGatewayConfigurationError,
+        ai_gateway_service.AIQuotaExceededError,
+    ):
         return
+
+    if prepared.existing_artifact_id is not None or not prepared.dispatchable:
+        if prepared.reservation_status is AIInvocationStatus.DISPATCHING:
+            return
+        raise DigestInvocationStateError(
+            f"scheduled digest attempt ended as {prepared.reservation_status.value}"
+        )
+
     async with session_factory() as session:
-        from vitals.services import conflict_engine, milestones_service
-        from vitals.services.language_service import get_language
-        from vitals.i18n import current_lang
+        try:
+            lease = await start_digest_dispatch(session, prepared)
+            await session.commit()
+        except (
+            ai_gateway_service.AIGatewayAuthorizationError,
+            ai_gateway_service.AIGatewayConfigurationError,
+        ):
+            await session.rollback()
+            if await release_prepared_digest(session, prepared):
+                await session.commit()
+            else:
+                await session.rollback()
+            return
+        except ai_gateway_service.AIInvocationStateError:
+            await session.rollback()
+            return
 
-        milestone_scope = await conflict_engine.resolve_legacy_conflict_scope(
-            session,
-            actor_username=None,
-            evaluation_date=today_local(),
-        )
-        await milestones_service.list_milestones(
-            session,
-            subject_id=milestone_scope.subject_id,
-            include_legacy_unowned=milestone_scope.include_legacy_unowned,
-        )
-        lang = await get_language(session, redis)
-        current_lang.set(lang)
-
-        await generate_digest(session, LLMClient(), source=Source.SCHEDULER.value)
+    completion = await render_digest(prepared, lease)
+    async with session_factory() as session:
+        row = await persist_digest(session, prepared, completion)
         await session.commit()
+    if row is None:
+        completion.raise_for_provider_failure()

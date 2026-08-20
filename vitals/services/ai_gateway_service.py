@@ -54,6 +54,8 @@ ALLOWED_CREDENTIAL_REFS = frozenset(
         "legacy_env:openrouter",
     }
 )
+PREPARED_STALE_AFTER = timedelta(minutes=15)
+DISPATCHING_STALE_AFTER = timedelta(hours=1)
 
 
 class AIGatewayError(RuntimeError):
@@ -1572,9 +1574,35 @@ async def reconcile_stale_reservations(
     return changed
 
 
+async def reconciliation_job(session_factory, redis=None) -> None:
+    """Release abandoned reservations and close paid ambiguous dispatches.
+
+    Each phase owns a short transaction so its governance/subject/root locks are
+    released before the next population is scanned.  The job performs no provider
+    I/O and stores no prompt, response, credential, or exception text.
+    """
+
+    del redis
+    current = now_utc()
+    async with session_factory() as session:
+        await reconcile_stale_reservations(
+            session,
+            stale_before=current - PREPARED_STALE_AFTER,
+        )
+        await session.commit()
+    async with session_factory() as session:
+        await reconcile_stale_dispatches(
+            session,
+            stale_before=current - DISPATCHING_STALE_AFTER,
+        )
+        await session.commit()
+
+
 __all__ = [
     "ALLOWED_CREDENTIAL_REFS",
+    "DISPATCHING_STALE_AFTER",
     "MAX_SIGNED_BIGINT",
+    "PREPARED_STALE_AFTER",
     "AICapabilityError",
     "AICompletion",
     "AIDispatchLease",
@@ -1598,6 +1626,7 @@ __all__ = [
     "finalize_ai_invocation",
     "reconcile_stale_dispatches",
     "reconcile_stale_reservations",
+    "reconciliation_job",
     "reserve_ai_invocation",
     "rotate_gateway",
     "start_ai_dispatch",

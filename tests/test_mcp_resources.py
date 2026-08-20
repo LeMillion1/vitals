@@ -20,7 +20,11 @@ async def test_profile_resource_returns_profile():
     assert "goals" in prof
 
 
-async def test_latest_digest_resource_empty_then_populated(db_session):
+async def test_latest_digest_resource_empty_then_populated(
+    db_session,
+    legacy_owner_roots,
+):
+    del legacy_owner_roots
     assert await mcp_router.latest_digest_resource() == {"error": "No digests yet"}
 
     from vitals.models import WeeklyDigest

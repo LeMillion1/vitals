@@ -35,7 +35,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from vitals.config import load_config
-from vitals.enums import Domain, IntegrationProvider, MilestoneStatus, Source
+from vitals.enums import (
+    AIInvocationSource,
+    AIInvocationStatus,
+    Domain,
+    IntegrationProvider,
+    MilestoneStatus,
+    Source,
+)
 from vitals.models import (
     Annotation,
     BodyMeasurement,
@@ -90,6 +97,7 @@ _ROW_NOISE = (
             "updated_at",
             "raw_payload_id",
             "raw_id",
+            "ai_invocation_id",
             "weight_log_id",
         }
     )
@@ -241,13 +249,19 @@ async def _mcp_v1_composition_scope(session) -> conflict_engine.ConflictScope:
     aggregate can serialize or send them to an LLM.
     """
 
-    from vitals.services import milestones_service
+    from vitals.services import digest_service, milestones_service
 
     scope = await _mcp_v1_conflict_scope(session)
     await milestones_service.list_milestones(
         session,
         subject_id=scope.subject_id,
         include_legacy_unowned=scope.include_legacy_unowned,
+    )
+    # Whole-lake compatibility tools still query globally, so validate every
+    # WeeklyDigest root before export/overview can serialize or count it.
+    await digest_service.prepare_digest_owner(
+        session,
+        actor_username=get_web_config().auth_username,
     )
     return scope
 
@@ -818,9 +832,17 @@ async def get_weekly_digests(limit: int = 5) -> list[dict]:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        owner = await digest_service.prepare_digest_owner(
+            session,
+            actor_username=get_web_config().auth_username,
+        )
         # Through the service, so this stays weekly-only: the same table now also
         # holds the daily Telegram briefs.
-        digests = await digest_service.list_digests(session, limit=limit)
+        digests = await digest_service.list_digests(
+            session,
+            limit=limit,
+            prepared_owner=owner,
+        )
         return [serialize_row(d) for d in digests]
 
 
@@ -3644,23 +3666,98 @@ async def set_module(key: str, enabled: bool) -> dict:
 async def generate_digest_now(period_days: int = 7) -> dict:
     """Generates a fresh weekly AI digest right now (assembles the cross-domain
     context, asks the configured LLM for the narrative, saves it) and returns it.
-    Errors cleanly if no OpenRouter key is configured. WRITE tool."""
-    from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
-    from vitals.services import digest_service
+    Errors cleanly if platform AI is unavailable. WRITE tool."""
+    from vitals.services import (
+        ai_gateway_service,
+        digest_service,
+        milestones_service,
+    )
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        await _mcp_v1_composition_scope(session)
+        prepared = None
+
+        async def release_reservation() -> None:
+            await session.rollback()
+            if prepared is None or not prepared.dispatchable:
+                return
+            if await digest_service.release_prepared_digest(session, prepared):
+                await session.commit()
+            else:
+                await session.rollback()
+
         try:
-            row = await digest_service.generate_digest(
-                session, LLMClient(), period_days=period_days
+            prepared = await digest_service.prepare_digest(
+                session,
+                actor_username=get_web_config().auth_username,
+                invocation_source=AIInvocationSource.MCP,
+                period_days=period_days,
             )
-        except LLMNotConfigured:
-            return {"error": "LLM not configured — set VITALS_OPENROUTER_API_KEY"}
-        except ValueError as exc:
-            return {"error": str(exc)}
-        await session.commit()
-        return await serialize_written(session, row)
+            await session.commit()
+            if prepared.existing_artifact_id is not None:
+                owner = await digest_service.prepare_digest_owner(
+                    session,
+                    actor_username=get_web_config().auth_username,
+                )
+                row = await digest_service.existing_digest_for_prepared(
+                    session,
+                    prepared,
+                    prepared_owner=owner,
+                )
+                if row is None:
+                    return {"error": "digest provenance is unavailable"}
+                return await serialize_written(session, row)
+            if not prepared.dispatchable:
+                if prepared.reservation_status is AIInvocationStatus.DISPATCHING:
+                    return {
+                        "error": "digest generation is already pending",
+                        "code": "dispatching",
+                    }
+                return {
+                    "error": "digest generation attempt failed",
+                    "code": prepared.reservation_status.value,
+                }
+            lease = await digest_service.start_digest_dispatch(session, prepared)
+            await session.commit()
+            completion = await digest_service.render_digest(prepared, lease)
+            row = await digest_service.persist_digest(
+                session,
+                prepared,
+                completion,
+            )
+            await session.commit()
+            if row is None:
+                return {
+                    "error": "AI provider did not produce a digest",
+                    "code": (
+                        completion.error_code.value
+                        if completion.error_code is not None
+                        else "invalid_response"
+                    ),
+                }
+            return await serialize_written(session, row)
+        except ai_gateway_service.AIQuotaExceededError:
+            await session.rollback()
+            return {"error": "AI quota is unavailable", "code": "quota_exceeded"}
+        except ai_gateway_service.AIGatewayConfigurationError:
+            await release_reservation()
+            return {
+                "error": "platform AI is not configured",
+                "code": "provider_unconfigured",
+            }
+        except (
+            ai_gateway_service.AIGatewayAuthorizationError,
+            digest_service.DigestOwnershipError,
+            milestones_service.MilestoneOwnershipError,
+        ):
+            await release_reservation()
+            raise
+        except ai_gateway_service.AIInvocationStateError:
+            await session.rollback()
+            return {"error": "digest generation is already pending"}
+        except ValueError:
+            await session.rollback()
+            return {"error": "invalid digest request"}
 
 
 # ── Trend analytics ───────────────────────────────────────────────────────────
@@ -4106,7 +4203,14 @@ async def latest_digest_resource() -> dict:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        row = await digest_service.latest_digest(session)
+        owner = await digest_service.prepare_digest_owner(
+            session,
+            actor_username=get_web_config().auth_username,
+        )
+        row = await digest_service.latest_digest(
+            session,
+            prepared_owner=owner,
+        )
         if row is None:
             return {"error": "No digests yet"}
         return {"date": row.date.isoformat(), "content": row.content, "model": row.model}
