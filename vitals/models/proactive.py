@@ -133,6 +133,7 @@ class Notification(
     channel: Mapped[str] = mapped_column(String(16), nullable=False)
     # The channel's own message id (Telegram message_id) — the join key for replies.
     external_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    # What was actually sent: {"text": ..., "buttons": [...]}. Kept so a reply can
-    # be answered against the exact context the owner is looking at.
+    # Ordinary messages keep what was sent so a reply can use the exact visible
+    # context. Platform-AI question answers deliberately persist only a bounded
+    # {"content_redacted": true, "raw_payload_id": ...} provenance marker.
     payload: Mapped[Optional[Any]] = mapped_column(_JSON_TYPE, nullable=True)

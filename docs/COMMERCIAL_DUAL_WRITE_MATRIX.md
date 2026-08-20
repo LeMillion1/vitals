@@ -52,7 +52,7 @@ or multi-subject reads are enabled.
 | `garmin_daily`, `garmin_activities`, `garmin_intraday` | scheduler, on-demand sync, HAE import, raw reparse | S+Garmin C required. Human-triggered runs get A; scheduler runs do not. Intraday replacement deletes only inside S+C. |
 | `garmin_weight_exports` | Core upsert and outbox lifecycle | S matches the validated Weight subject; C is the distinct Garmin destination. Q records the human requester and stays NULL for scheduler work. Linked Weight provenance keeps its own origin C/raw roots, and lifecycle updates never erase Q. |
 | `genetic_variants` | VCF/manual/MCP | Raw-first, then S+A and raw link on interpreted variants. Upsert keys are S-scoped. |
-| `raw_payloads` | all imports/connectors/uploads/Telegram | Raw ownership is written before normalized rows. Lookup is S/C scoped; refresh preserves historical A and rejects cross-S/C/F conflicts. |
+| `raw_payloads` | all imports/connectors/uploads/Telegram | Raw ownership is written before normalized rows. Lookup is S/C scoped; refresh preserves historical A and rejects cross-S/C/F conflicts. Telegram keeps the complete current inbound message but reduces nested replied-to/callback bot output to operational IDs so a memory-only AI answer cannot be copied back into durable raw history. |
 | `glp1_*` | web/MCP | Human rows get S+A; automatic phase close is S-scoped and preserves A. MCP retains `Source.MCP`. |
 | `hevy_workouts`, `hevy_exercises`, `hevy_sets` | sync and raw reparse | Workout gets S+Hevy C; children copy S+C from the parent. Child rebuild/delete is parent-scoped. |
 | `hrt_compounds`, `hrt_compound_components` | catalog sync and activation | Curated definitions/components remain global; subject activation is a scoped setting. Future custom rows and components share S. |
@@ -61,7 +61,7 @@ or multi-subject reads are enabled.
 | `meal_logs` | web/MCP | S+A and existing MCP provenance. |
 | `milestones` | reports web/MCP | Create gets S+A; updates retain A; direct reads/mutations and progress inputs use the selected S. |
 | `weekly_digests` | web/MCP/schedulers/brief | S always; human generation gets A, scheduler does not. New weekly and Daily Brief narratives link to a subject-owned `AIInvocation`, set subject C null, and obtain provider/config/quota provenance from the installation-wide platform OpenRouter gateway. Failed/ambiguous/cancelled Daily Brief attempts link a model-null deterministic header to that exact invocation; platform-unavailable headers have both provider roots null. Historical subject-OpenRouter rows remain readable bridge provenance. |
-| `notifications` | proactive delivery | S + recipient user + Telegram C; explicit human test actions may get A, scheduled/reply delivery does not infer one. AI parser echoes additionally link the exact terminal subject invocation. |
+| `notifications` | proactive delivery | S + recipient user + Telegram C; explicit human test actions may get A, scheduled/reply delivery does not infer one. AI parser echoes and question replies additionally link the exact terminal subject invocation. Question answers are never copied into the journal: its payload contains only a bounded redaction marker and raw id. |
 | `shared_reports` | create/open/revoke/purge | Create gets S+creator; human revoke gets revoker. Anonymous open and scheduled purge do not mutate actor fields. |
 | `skincare_*` | web/MCP/seed scripts | Human creates get S+A; product/log updates preserve A and are S-scoped. |
 | `supplements` | web/MCP | Human creates get S+A; updates retain A and MCP retains `Source.MCP`. |
@@ -289,6 +289,27 @@ Parser echoes carry the invocation link and revalidate the logical Telegram
 message before and after transport; a concurrently superseded echo is suppressed
 or neutralized. A durable outbound intent and scoped replacement for the global
 active-alert unique index remain PR-09 registration blockers.
+
+Telegram questions use the same installation gateway with a distinct
+`QUESTION_REPLY` invocation bound to the exact raw, human owner A, and TELEGRAM
+source. T1 atomically marks the raw as classified and reserves the sole lifetime
+attempt; T2 commits the conservative charge before one usage-aware completion;
+T3 finalizes accounting before delivery. Prompts and completions never enter the
+ledger, Notification, durable raw history, logs, or generic audit metadata.
+Before a later Telegram reply is stored raw, any nested replied-to/callback bot
+message is reduced to operational message/chat identifiers so Telegram cannot
+copy the prior answer back into persistence. The in-memory answer is
+repr-redacted and non-pickleable, and the journal stores only
+`content_redacted=true`, the raw id, and the optional exact invocation FK.
+Configuration/quota failures send the same bounded fallback without an
+invocation, while failed, ambiguous, and pre-dispatch-cancelled attempts retain
+their exact terminal linkage. Recovery queries every unjournaled invocation
+independently of an opaque raw-scan cursor, so a busy Telegram history cannot
+strand a paid result. Delivery rechecks the module, current owner/recipient C,
+and immutable edit ordering after transport and attempts to withdraw a stale
+answer. The unavoidable check/send/journal and send/withdraw windows remain the
+shared PR-09 durable outbound-intent blocker; no at-most-once Telegram claim is
+asserted in Stage 2.
 
 The scheduled morning brief freezes its exact-S compatibility context and
 reserves platform quota, commits authorization/charge before exactly one

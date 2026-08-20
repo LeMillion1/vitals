@@ -42,7 +42,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   platform/opaque-subject quota periods. Configuration changes are versioned,
   a commit error after an environment write clears the credential and requires
   explicit reconciliation rather than guessing an ambiguous database outcome,
-  and only migrated platform consumers (currently Weekly Digest and Daily Brief) are governed;
+  and only migrated platform consumers (currently Weekly Digest, Daily Brief,
+  Signals parsing, and Telegram question replies) are governed;
   legacy subject OpenRouter roots remain available during their cutover.
 - Weekly digests now use that centrally funded gateway without granting the
   superadmin health-data access. Web, MCP, and scheduler generation reserve a
@@ -84,6 +85,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   tracked under PR-09. Keyset recovery also scans past malformed or oversized
   immutable raws, so they remain available for audit without starving later
   valid messages or aborting unrelated parser-alert reconciliation.
+- Telegram questions now use one raw-bound, subject-authorized invocation of the
+  centrally funded gateway. Raw classification and reservation commit together;
+  start/charge commits before exactly one usage-aware OpenRouter call, and
+  terminal accounting commits before Telegram delivery. Duplicate webhooks and
+  the scheduled recovery worker never buy another attempt, while a cursor scans
+  beyond ordinary-message head rows and invocation-backed gaps remain directly
+  recoverable from PostgreSQL. The generated answer exists only in redacted,
+  non-pickleable memory: Telegram receives it, but the Notification journal keeps
+  only the raw/invocation provenance marker. A post-send check withdraws an
+  answer after a concurrent edit, module disable, owner change, or recipient-
+  connection retirement. New inbound raws retain the owner's current message
+  but reduce Telegram's nested replied-to/callback bot message to operational
+  IDs, so Telegram cannot copy a memory-only AI answer back into raw history.
+  The remaining check/send/journal race still requires
+  PR-09's durable outbound intent before registration opens.
 - Browser sessions now use a strict versioned envelope while accepting existing
   signed bare-username cookies for their normal TTL. The public auth dependency
   remains compatible, and cookies contain no roles, subject IDs, grants, or PHI.

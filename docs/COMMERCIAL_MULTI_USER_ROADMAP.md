@@ -117,8 +117,9 @@ legacy secret file/process environment. If commit fails after that environment
 write, the outcome is treated as ambiguous: the credential is cleared and an
 operator must reconcile the intended database root before re-entering it. The
 kill switch and quotas govern migrated platform consumers only—currently Weekly
-Digest, Daily Brief, and Signals parsing/recovery. Historical subject-owned
-OpenRouter roots remain only for unmigrated reply/document-parser consumers and
+Digest, Daily Brief, Signals parsing/recovery, and Telegram question replies.
+Historical subject-owned OpenRouter roots remain only for unmigrated
+document-parser consumers and
 readable legacy provenance until those invocation-ledger cutovers are complete.
 
 Every paid call follows `prepare/reserve -> commit -> provider I/O -> fresh
@@ -264,7 +265,17 @@ Implementation progress on `commercial/main`:
   Fully-null historical raws may gain only S through the exact-one bridge;
   partial graphs fail closed. Echoes link the terminal invocation and revalidate
   concurrent edits before and after transport. Signal composition and the
-  durable outbound-intent state machine remain deferred. All seven conflict
+  durable outbound-intent state machine remain deferred. Telegram question
+  replies now use a distinct raw-bound platform invocation with one lifetime
+  paid attempt. Raw classification and reservation are atomic, no database
+  transaction spans the usage-aware provider call, and terminal accounting
+  precedes delivery. The generated answer stays in redacted, non-pickleable
+  memory and the Notification payload records only an opaque raw marker plus the
+  optional terminal invocation. DB-backed invocation gaps and an opaque cursor
+  recover past long non-question histories without buying a second attempt;
+  concurrent edits, owner/recipient changes, and module disable are rechecked
+  after transport. A durable at-most-once outbound claim and atomic emergency
+  withdrawal remain PR-09 blockers. All seven conflict
   resolver domains read within one subject and date. Curated conflict-rule
   activation is stored per subject. The
   Supplements, Nutrition, Skincare, GLP-1, and Labs web/MCP write paths use an

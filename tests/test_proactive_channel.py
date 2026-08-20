@@ -21,7 +21,13 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import Signal
 from vitals.services import signals_service
 from vitals.models.tenancy import PlatformIntegrationConnection
-from vitals.services.proactive import day_plan, delivery, inbound, signal_ai_service
+from vitals.services.proactive import (
+    day_plan,
+    delivery,
+    inbound,
+    question_ai_service,
+    signal_ai_service,
+)
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
 # owner flips in Settings, and it defaults off.
@@ -153,6 +159,38 @@ def parses_to(monkeypatch):
 
     monkeypatch.setattr(signal_ai_service, "LLMClient", _FakeSignalLLM)
     return _set
+
+
+@pytest.fixture
+def question_replies(monkeypatch, db_session):
+    """Pin the usage-aware platform reply call while preserving phase checks."""
+
+    state = {"value": "Synthetic answer", "error": None, "prompts": []}
+
+    class _FakeQuestionLLM:
+        def __init__(self, config):
+            assert config.openrouter_api_key == "synthetic-platform-key"
+
+        async def complete_text_with_usage(
+            self, prompt, *, model, system, max_tokens
+        ):
+            assert not db_session.in_transaction()
+            assert system
+            assert max_tokens == 800
+            state["prompts"].append(prompt)
+            if state["error"] is not None:
+                raise state["error"]
+            return LLMCallResult(
+                value=state["value"],
+                upstream_request_id="question-test-request",
+                model=model,
+                input_tokens=10,
+                output_tokens=10,
+                cost_microunits=10,
+            )
+
+    monkeypatch.setattr(question_ai_service, "LLMClient", _FakeQuestionLLM)
+    return state
 
 
 def _text_update(
@@ -470,7 +508,7 @@ async def test_concurrent_edit_neutralizes_an_already_sent_stale_echo(
     assert len(rows) == 1 and rows[0].misparse is False
 
 
-async def test_raw_capture_preserves_complete_message_reply_and_timestamps(
+async def test_raw_capture_preserves_inbound_and_nested_user_message(
     bot_client,
     parses_to,
     db_session,
@@ -495,7 +533,17 @@ async def test_raw_capture_preserves_complete_message_reply_and_timestamps(
     raw = await db_session.scalar(
         select(RawPayload).where(RawPayload.external_id == "tg:15")
     )
-    assert raw is not None and raw.payload == update
+    assert raw is not None
+    assert raw.payload["update_id"] == update["update_id"]
+    assert raw.payload["message"]["text"] == "устал"
+    assert raw.payload["message"]["edit_date"] == 1785612400
+    assert raw.payload["message"]["reply_to_message"] == update["message"][
+        "reply_to_message"
+    ]
+    assert "предыдущее сообщение" in str(raw.payload)
+    # Sanitization operates on a copy; downstream live classification still sees
+    # the exact webhook object and never mutates the caller's request value.
+    assert update["message"]["reply_to_message"]["text"] == "предыдущее сообщение"
 
 
 async def test_a_message_with_no_facts_is_kept_and_answered_without_alarm(
@@ -1220,7 +1268,7 @@ async def test_a_redraw_the_channel_refuses_does_not_lose_the_answer(bot_client,
 
 # ── Replies ───────────────────────────────────────────────────────────────────
 async def test_reply_to_our_message_is_answered_not_captured(
-    bot_client, parses_to, db_session, monkeypatch
+    bot_client, parses_to, db_session, monkeypatch, question_replies
 ):
     c, fake = bot_client
     parses_to([{"kind": "state", "key": "sleepiness", "value_num": 5}])
@@ -1228,14 +1276,7 @@ async def test_reply_to_our_message_is_answered_not_captured(
     sent = await delivery.send(db_session, fake, text="Утро: сон 6:10, HRV 42.",
                                category=delivery.CATEGORY_BRIEF, now=NOON,
                                ownership=ownership)
-    asked = {}
-
-    async def _answer(question, context, facts=""):
-        assert not db_session.in_transaction()
-        asked["question"], asked["context"] = question, context
-        return "HRV чуть ниже твоей нормы."
-
-    monkeypatch.setattr(inbound, "answer_reply", _answer)
+    question_replies["value"] = "HRV чуть ниже твоей нормы."
     real_send = fake.send
 
     async def _send_without_transaction(text, *, buttons=None, reply_to=None):
@@ -1250,13 +1291,13 @@ async def test_reply_to_our_message_is_answered_not_captured(
 
     # A question is a question, not a symptom — nothing lands in signals.
     assert await _signals(db_session) == []
-    assert asked["question"] == "а HRV это плохо?"
-    assert "HRV 42" in asked["context"]
+    assert "а HRV это плохо?" in question_replies["prompts"][0]
+    assert "HRV 42" in question_replies["prompts"][0]
     assert fake.sent[-1]["text"] == "HRV чуть ниже твоей нормы."
 
 
 async def test_reply_falls_back_to_a_line_when_the_model_is_down(
-    bot_client, db_session, monkeypatch
+    bot_client, db_session, question_replies
 ):
     c, fake = bot_client
     ownership = await _telegram_ownership(db_session)
@@ -1264,10 +1305,7 @@ async def test_reply_falls_back_to_a_line_when_the_model_is_down(
                                category=delivery.CATEGORY_BRIEF, now=NOON,
                                ownership=ownership)
 
-    async def _boom(question, context, facts=""):
-        raise RuntimeError("no key")
-
-    monkeypatch.setattr(inbound, "answer_reply", _boom)
+    question_replies["error"] = RuntimeError("sensitive upstream detail")
 
     await c.post(f"/tg/{WEBHOOK_PATH}",
                  json=_text_update(1, "почему?", reply_to=int(sent.external_id)),
@@ -1277,7 +1315,7 @@ async def test_reply_falls_back_to_a_line_when_the_model_is_down(
 
 
 async def test_a_question_typed_without_a_reply_is_answered_not_parsed(
-    bot_client, db_session, monkeypatch
+    bot_client, db_session, monkeypatch, question_replies
 ):
     """Telegram-reply is a feature almost nobody uses on mobile. Typed plainly,
     «почему hrv просел?» went to the fact parser and came back as «фактов для
@@ -1288,19 +1326,13 @@ async def test_a_question_typed_without_a_reply_is_answered_not_parsed(
         raise AssertionError("a question must not reach the signal parser")
 
     monkeypatch.setattr(inbound, "make_signal_parser", _never)
-    asked = {}
-
-    async def _answer(question, context, facts=""):
-        asked["question"] = question
-        return "HRV просел после позднего кофеина."
-
-    monkeypatch.setattr(inbound, "answer_reply", _answer)
+    question_replies["value"] = "HRV просел после позднего кофеина."
 
     await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "почему hrv просел?"),
                  headers=HEADERS)
 
     assert await _signals(db_session) == []
-    assert asked["question"] == "почему hrv просел?"
+    assert "почему hrv просел?" in question_replies["prompts"][0]
     assert fake.sent[-1]["text"] == "HRV просел после позднего кофеина."
 
 
@@ -1323,13 +1355,12 @@ async def test_a_fact_that_opens_with_a_question_word_is_still_captured(
 
 
 async def test_the_question_path_is_given_the_days_numbers(
-    bot_client, db_session, monkeypatch
+    bot_client, db_session, question_replies
 ):
     """Fed one message's prose and nothing else, the model cannot see the HRV it
     is being asked about, so the only honest answer it has is "в тексте этого
     нет". The brief already stored the day it was built from — read that."""
     from vitals.enums import DigestKind
-    from vitals.integrations import llm_client
     from vitals.models.milestones import DOMAIN as INSIGHTS_DOMAIN, WeeklyDigest
 
     c, fake = bot_client
@@ -1357,24 +1388,19 @@ async def test_the_question_path_is_given_the_days_numbers(
     ))
     await db_session.flush()
 
-    seen = {}
-
-    async def _complete(self, prompt, **kwargs):
-        seen["prompt"] = prompt
-        return "HRV 42 — ниже твоей нормы."
-
-    monkeypatch.setattr(llm_client.LLMClient, "complete_text", _complete)
+    question_replies["value"] = "HRV 42 — ниже твоей нормы."
 
     await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "почему hrv просел?"),
                  headers=HEADERS)
 
-    assert "42" in seen["prompt"] and "6.1" in seen["prompt"]
-    assert "почему hrv просел?" in seen["prompt"]
+    prompt = question_replies["prompts"][0]
+    assert "42" in prompt and "6.1" in prompt
+    assert "почему hrv просел?" in prompt
     assert fake.sent[-1]["text"] == "HRV 42 — ниже твоей нормы."
 
 
 async def test_a_question_without_a_reply_still_sees_what_the_bot_just_said(
-    bot_client, db_session, monkeypatch
+    bot_client, db_session, question_replies
 ):
     """«что за ключ странный на второе» is about the echo sent a minute earlier.
     Typed plainly (nobody uses Telegram's Reply), it used to reach the model with
@@ -1388,20 +1414,15 @@ async def test_a_question_without_a_reply_still_sees_what_the_bot_just_said(
                                               "• энергос → sugar 1 serving в 17:00",
                         category=delivery.CATEGORY_ECHO, now=NOON,
                         ownership=ownership)
-    asked = {}
-
-    async def _answer(question, context, facts=""):
-        asked["context"] = context
-        return "sugar — ключ для сахара, 1 порция."
-
-    monkeypatch.setattr(inbound, "answer_reply", _answer)
+    question_replies["value"] = "sugar — ключ для сахара, 1 порция."
 
     await c.post(f"/tg/{WEBHOOK_PATH}",
                  json=_text_update(1, "что за ключ странный на второе"), headers=HEADERS)
 
-    assert "sugar 1 serving" in asked["context"]
+    prompt = question_replies["prompts"][0]
+    assert "sugar 1 serving" in prompt
     # Oldest first, so the message being asked about is the one nearest the question.
-    assert asked["context"].index("Утро") < asked["context"].index("Записал")
+    assert prompt.index("Утро") < prompt.index("Записал")
     assert fake.sent[-1]["text"] == "sugar — ключ для сахара, 1 порция."
 
 

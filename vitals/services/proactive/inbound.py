@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional
@@ -53,6 +54,7 @@ from vitals.i18n import t
 from vitals.integrations.llm_client import LLMClient
 from vitals.models.ai import AIInvocation
 from vitals.models.identity import HealthSubject
+from vitals.models.proactive import Notification
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import Signal
 from vitals.models.system_alert import SystemAlert
@@ -64,7 +66,13 @@ from vitals.services import (
     signals_service,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.proactive import day_plan, delivery, prefs, signal_ai_service
+from vitals.services.proactive import (
+    day_plan,
+    delivery,
+    prefs,
+    question_ai_service,
+    signal_ai_service,
+)
 from vitals.services.proactive.channels import Notifier
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 from vitals.utils.timeutils import now_local, to_local_naive
@@ -110,6 +118,14 @@ _REPLY_MAX_TOKENS = 800
 # followed by a nudge that landed in between; more starts pulling in yesterday.
 _CONTEXT_MESSAGES = 3
 _NO_LLM_REPLY = "Сейчас не отвечу — модель недоступна. Загляни в приложение."
+# The recovery cursor contains only an opaque subject UUID and raw integer id.
+# Paid/in-flight invocation gaps are queried independently of this cursor; the
+# cursor exists solely so a long history of ordinary Telegram facts
+# cannot keep an older pre-reservation question outside a fixed newest-N window.
+_QUESTION_RECOVERY_CURSOR_PREFIX = "question-reply-recovery:cursor:"
+_QUESTION_RECOVERY_PAGE_SIZE = 100
+_QUESTION_RECOVERY_SCAN_LIMIT = 1000
+_QUESTION_RECOVERY_WORK_LIMIT = 20
 # The day's numbers as JSON, capped: the brief's context grows a field per module
 # and the prompt is paid for by the token.
 _DAY_FACTS_LIMIT = 4000
@@ -539,6 +555,53 @@ async def _validate_raw_root(
     )
 
 
+def _raw_storage_update(update: dict) -> dict:
+    """Keep the inbound message, but never duplicate prior bot output in raw.
+
+    Telegram embeds the complete replied-to message in a new update. For a
+    platform-AI answer that would copy the memory-only completion into
+    ``raw_payloads`` on the owner's next reply. The pipeline needs only the
+    immutable Telegram message id to resolve its already-authorized Notification
+    context, so nested reply bodies are deliberately reduced to that id. Callback
+    envelopes likewise keep their opaque callback data and message identity, not
+    the bot-authored rendered message.
+    """
+
+    if not isinstance(update, dict):
+        raise TypeError("Telegram update must be a dict")
+    stored = deepcopy(update)
+    for key in ("message", "edited_message"):
+        message = stored.get(key)
+        if not isinstance(message, dict):
+            continue
+        replied = message.get("reply_to_message")
+        replied_from = (
+            replied.get("from")
+            if isinstance(replied, dict) and isinstance(replied.get("from"), dict)
+            else {}
+        )
+        # In the private owner chat Telegram supplies ``from.is_bot`` on the
+        # embedded message. Preserve user-authored reply context raw-first; only
+        # bot output can contain the deliberately memory-only AI completion.
+        if isinstance(replied, dict) and replied_from.get("is_bot") is True:
+            message_id = replied.get("message_id")
+            message["reply_to_message"] = (
+                {"message_id": message_id}
+                if message_id is not None
+                else {}
+            )
+    callback = stored.get("callback_query")
+    if isinstance(callback, dict) and isinstance(callback.get("message"), dict):
+        message = callback["message"]
+        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+        callback["message"] = {
+            "message_id": message.get("message_id"),
+            "date": message.get("date"),
+            "chat": {"id": chat.get("id"), "type": chat.get("type")},
+        }
+    return stored
+
+
 async def _claim_update_raw(
     session: AsyncSession,
     *,
@@ -553,6 +616,7 @@ async def _claim_update_raw(
     connection rotation. Existing rows are never refreshed or reprocessed.
     """
 
+    stored_payload = _raw_storage_update(payload)
     await _lock_subject_root(session, ownership=ownership)
     await _load_telegram_connection(
         session,
@@ -588,7 +652,7 @@ async def _claim_update_raw(
         domain=DOMAIN,
         source=SOURCE,
         external_id=external_id,
-        payload=payload,
+        payload=stored_payload,
         fetched_at=now_local(),
     )
     session.add(raw)
@@ -626,10 +690,23 @@ async def handle_update(
             payload=update,
             ownership=ownership,
         )
-        if not claim.created:
-            logger.info("ignoring repeated update %s", external_id)
-            return
+        # A durable claim means later failures must be retried/recovered rather
+        # than silently acknowledged, whether this is its first webhook or a
+        # duplicate used to resume a question after a process crash.
         parked = True
+        if not claim.created:
+            enabled = await prefs.bot_enabled(
+                session, subject_id=ownership.subject_id, strict=True
+            )
+            await session.commit()
+            if enabled and not callback:
+                await _recover_claimed_question(
+                    session,
+                    raw=claim.raw,
+                    notifier=notifier,
+                    ownership=ownership,
+                )
+            return
 
         if edited:
             try:
@@ -1466,14 +1543,7 @@ async def handle_text(
         # in the same breath: a question is not a message waiting to be parsed
         # into signals, so the re-parse sweep must not pick it up and turn «почему
         # пульс низкий?» into a symptom row.
-        if raw is not None:
-            if not await _mark_raw_processed(
-                session,
-                raw,
-                ownership=ownership,
-            ):
-                return
-        else:
+        if raw is None:
             await signals_service.store_raw_text(
                 session,
                 text=text,
@@ -1490,6 +1560,7 @@ async def handle_text(
             notifier=notifier,
             message_id=message_id,
             ownership=ownership,
+            raw=raw,
         )
         return
 
@@ -1798,6 +1869,7 @@ async def _answer_reply(
     notifier: Optional[Notifier],
     message_id: Optional[Any],
     ownership: ProactiveOwnershipContext | None,
+    raw: RawPayload | None = None,
 ) -> None:
     """``answered`` is the message being replied to; for a question typed on its
     own the last few things we said stand in for it."""
@@ -1814,25 +1886,202 @@ async def _answer_reply(
             if (text := (row.payload or {}).get("text"))
         )
     facts = await _day_facts(session, ownership=ownership)
-    # Raw question state and every PHI/provenance read are durable/materialized.
-    # Release governance/S/owner locks before the still-legacy provider await.
-    await session.commit()
-    try:
-        text = await answer_reply(
-            question,
-            context,
-            facts,
+
+    # Compatibility for zero-subject injected parsers: this intentionally keeps
+    # the former dependency-injection seam and has no platform-AI authority.
+    if ownership is None:
+        await session.commit()
+        try:
+            text = await answer_reply(question, context, facts)
+        except Exception:
+            logger.warning("could not answer a reply (code=provider_error)")
+            text = _NO_LLM_REPLY
+        prepared_delivery = await delivery._prepare_delivery(
+            session,
+            notifier,
+            text=text or _NO_LLM_REPLY,
+            category=delivery.CATEGORY_REPLY,
+            reply_to=str(message_id) if message_id else None,
+            ownership=None,
         )
-    except Exception:
-        logger.warning("could not answer a reply (code=provider_error)")
+        await session.commit()
+        if prepared_delivery is None:
+            return
+        assert notifier is not None
+        delivered = await delivery._transmit_prepared_delivery(notifier, prepared_delivery)
+        if delivered is not None:
+            await delivery._journal_prepared_delivery(
+                session, prepared_delivery, external_id=delivered.external_id
+            )
+            await session.commit()
+        return
+
+    if raw is None:
+        raise InboundOwnershipError("owned question replies require their claimed raw")
+    raw_payload_id = raw.id
+    # A reply has no durable artifact other than the journal.  Never spend a
+    # platform-funded attempt when there is no channel on which it can appear.
+    if notifier is None:
+        if raw.processed_at is None:
+            await _mark_raw_processed(session, raw, ownership=ownership)
+        await session.commit()
+        return
+    # Materialize all composition/delivery reads before T1.  The next transaction
+    # acquires governance -> S -> owner -> current Telegram C -> raw, so no
+    # notification/digest read lock can invert that order.
+    if await question_ai_service.delivery_is_journaled(
+        session, raw_payload_id=raw_payload_id, ownership=ownership
+    ):
+        await session.commit()
+        return
+    await session.commit()
+    result: question_ai_service.QuestionReplyResult | None = None
+    prepared_question = None
+    try:
+        # T1: current subject/owner/Telegram/raw and the in-memory context
+        # snapshot are bound to one deterministic reservation before commit.
+        prepared_question = await question_ai_service.prepare_live_question_reply(
+            session,
+            ownership=ownership,
+            raw_payload_id=raw_payload_id,
+            context=context,
+            facts=facts,
+        )
+        await session.commit()
+    except ai_gateway_service.AIQuotaExceededError:
+        await session.rollback()
+    except question_ai_service.QuestionAIStaleError:
+        await session.rollback()
+        return
+    except (
+        ai_gateway_service.AIGatewayConfigurationError,
+        question_ai_service.QuestionAIInputError,
+    ):
+        await session.rollback()
+    else:
+        if prepared_question.dispatchable:
+            try:
+                # T2 is deliberately a fresh authorization/charge transaction.
+                lease = await question_ai_service.start_question_dispatch(
+                    session, prepared_question
+                )
+                await session.commit()
+            except (
+                ai_gateway_service.AIGatewayConfigurationError,
+                question_ai_service.QuestionAIModuleDisabledError,
+            ):
+                await session.rollback()
+                # A reservation which could not begin has no paid response and
+                # may never be rebound to a changed root/model policy.
+                try:
+                    cancelled = await question_ai_service.cancel_prepared_question_reply(
+                        session, prepared_question
+                    )
+                    await session.commit()
+                    result = question_ai_service.QuestionReplyResult(
+                        invocation_id=cancelled.id,
+                        status=AIInvocationStatus.CANCELLED,
+                    )
+                except Exception:
+                    await session.rollback()
+            except ai_gateway_service.AIGatewayError:
+                await session.rollback()
+            else:
+                completion = await question_ai_service.render_question_reply(
+                    prepared_question, lease
+                )
+                try:
+                    # T3 finalizes sanitized accounting before any delivery work.
+                    result = await question_ai_service.persist_question_reply(
+                        session, prepared_question, completion
+                    )
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    logger.warning("could not finalize Telegram question reply")
+        else:
+            # Recovery never sends a reconstructed successful answer: the answer
+            # was not persisted and an inherited PREPARED capability is not safe
+            # to dispatch after conversation context may have changed.
+            if (
+                prepared_question.invocation_id is not None
+                and await question_ai_service.invocation_is_journaled(
+                    session,
+                    invocation_id=prepared_question.invocation_id,
+                    ownership=ownership,
+                )
+            ):
+                await session.commit()
+                return
+            result = question_ai_service.recovered_terminal_result(prepared_question)
+            await session.commit()
+
+    if (
+        result is None
+        and prepared_question is not None
+        and prepared_question.reservation_status
+        in {AIInvocationStatus.PREPARED, AIInvocationStatus.DISPATCHING}
+    ):
+        # An inherited capability cannot be safely dispatched, and neither state
+        # is a terminal result that delivery may represent.  Gateway
+        # reconciliation eventually changes it to CANCELLED/AMBIGUOUS.
+        return
+
+    if result is not None and result.stale:
+        return
+    if prepared_question is None:
+        # A local configuration/quota/input failure rolled T1 back, including
+        # its atomic processed marker. Persist that classification before the
+        # deterministic no-AI fallback so signal recovery cannot reinterpret the
+        # question as a health fact.
+        pending_raw = await session.scalar(
+            select(RawPayload)
+            .where(RawPayload.id == raw_payload_id)
+            .execution_options(populate_existing=True)
+        )
+        if pending_raw is None:
+            raise InboundOwnershipError("question raw disappeared before fallback")
+        if pending_raw.processed_at is None:
+            await _mark_raw_processed(
+                session,
+                pending_raw,
+                ownership=ownership,
+            )
+        await session.commit()
+    if result is not None and result.status is AIInvocationStatus.SUCCEEDED:
+        text = result.text or _NO_LLM_REPLY
+    else:
+        # Configuration/quota/cancelled paths have no terminal invocation;
+        # failed/ambiguous paths do, and are journaled with it below.
         text = _NO_LLM_REPLY
+    invocation_id = (
+        result.invocation_id
+        if result is not None
+        and result.status
+        in {
+            AIInvocationStatus.SUCCEEDED,
+            AIInvocationStatus.FAILED,
+            AIInvocationStatus.AMBIGUOUS,
+            AIInvocationStatus.CANCELLED,
+        }
+        else None
+    )
+    if await question_ai_service.raw_is_superseded(
+        session, subject_id=ownership.subject_id, raw_payload_id=raw_payload_id
+    ):
+        await session.commit()
+        return
     prepared_delivery = await delivery._prepare_delivery(
         session,
         notifier,
-        text=text or _NO_LLM_REPLY,
+        text=text,
         category=delivery.CATEGORY_REPLY,
+        dedupe_key=question_ai_service.delivery_dedupe_key(raw_payload_id),
         reply_to=str(message_id) if message_id else None,
         ownership=ownership,
+        ai_invocation_id=invocation_id,
+        redact_journal_content=True,
+        journal_raw_payload_id=raw_payload_id,
     )
     # Delivery policy reads/locks are complete. Never retain their transaction
     # across Telegram; journal a successful send in a fresh transaction. This
@@ -1847,12 +2096,363 @@ async def _answer_reply(
     )
     if delivered is None:
         return
+    try:
+        await delivery._require_ownership_scope(
+            session,
+            ownership,
+            channel=notifier.channel,
+        )
+        still_enabled = await prefs.bot_enabled(
+            session,
+            subject_id=ownership.subject_id,
+            strict=True,
+        )
+        still_current = not await question_ai_service.raw_is_superseded(
+            session,
+            subject_id=ownership.subject_id,
+            raw_payload_id=raw_payload_id,
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        still_enabled = False
+        still_current = False
+        logger.warning(
+            "could not revalidate a delivered Telegram question reply"
+        )
+    if not (still_enabled and still_current):
+        try:
+            await notifier.edit(
+                delivered.external_id,
+                t("telegram.question_reply_withdrawn"),
+                buttons=None,
+            )
+        except Exception:
+            # The durable outbound-intent/withdrawal guarantee is PR09. Avoid
+            # traceback logging because a transport exception may retain the
+            # original memory-only answer request.
+            logger.warning(
+                "could not withdraw a stale Telegram question reply"
+            )
     await delivery._journal_prepared_delivery(
         session,
         prepared_delivery,
         external_id=delivered.external_id,
     )
     await session.commit()
+
+
+async def _recover_claimed_question(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    notifier: Optional[Notifier],
+    ownership: ProactiveOwnershipContext,
+) -> bool:
+    """Resume only an already-classified question; never reparse an old fact."""
+
+    # A stable journal is a completed lineage, not recovery work. Validate it
+    # before classification but do not consume the per-run work budget; this is
+    # essential when Redis is unavailable and every scan starts from raw id 0.
+    if await question_ai_service.delivery_is_journaled(
+        session,
+        raw_payload_id=raw.id,
+        ownership=ownership,
+    ):
+        await session.commit()
+        return False
+    message, _edited = _message_from_raw(raw)
+    question = (message.get("text") or "").strip()
+    if not question or question.startswith("/"):
+        return False
+    if await question_ai_service.raw_is_superseded(
+        session, subject_id=ownership.subject_id, raw_payload_id=raw.id
+    ):
+        await session.commit()
+        return False
+    reply_to = (message.get("reply_to_message") or {}).get("message_id")
+    answered = (
+        await delivery.find_sent(session, str(reply_to), ownership=ownership)
+        if reply_to is not None
+        else None
+    )
+    if answered is not None and answered.category == delivery.CATEGORY_EVENING:
+        return False
+    if answered is None and not looks_like_question(question):
+        return False
+    await _answer_reply(
+        session,
+        question,
+        answered,
+        notifier=notifier,
+        message_id=message.get("message_id"),
+        ownership=ownership,
+        raw=raw,
+    )
+    return True
+
+
+def _question_recovery_cursor_key(subject_id: uuid.UUID) -> str:
+    return f"{_QUESTION_RECOVERY_CURSOR_PREFIX}{subject_id}"
+
+
+async def _load_question_recovery_cursor(
+    redis,
+    subject_id: uuid.UUID,
+) -> tuple[int, bool]:
+    if redis is None:
+        return 0, False
+    try:
+        value = await redis.get(_question_recovery_cursor_key(subject_id))
+        if isinstance(value, bytes):
+            value = value.decode("ascii")
+        cursor = int(value or 0)
+        return (cursor if cursor >= 0 else 0), True
+    except (TypeError, ValueError, UnicodeError):
+        logger.warning("invalid Telegram question recovery cursor; restarting scan")
+        return 0, False
+    except Exception:
+        logger.warning("could not read Telegram question recovery cursor")
+        return 0, False
+
+
+async def _store_question_recovery_cursor(
+    redis,
+    subject_id: uuid.UUID,
+    cursor: int,
+) -> None:
+    if redis is None:
+        return
+    try:
+        await redis.set(_question_recovery_cursor_key(subject_id), str(cursor))
+    except Exception:
+        # Invocation-backed gaps remain DB-discoverable. A lost scan cursor only
+        # restarts the bounded raw walk; it can never authorize a duplicate call.
+        logger.warning("could not persist Telegram question recovery cursor")
+
+
+async def _unjournaled_question_invocation_raw_ids(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext,
+) -> list[int]:
+    """Find every bounded paid/in-flight gap independently of the scan cursor."""
+
+    journal_exists = (
+        select(Notification.id)
+        .where(Notification.ai_invocation_id == AIInvocation.id)
+        .correlate(AIInvocation)
+        .exists()
+    )
+    rows = list(
+        await session.execute(
+            select(
+                AIInvocation.raw_payload_id,
+                AIInvocation.actor_user_id,
+                AIInvocation.source,
+                AIInvocation.status,
+            )
+            .where(
+                AIInvocation.subject_id == ownership.subject_id,
+                AIInvocation.purpose == AIInvocationPurpose.QUESTION_REPLY.value,
+                ~journal_exists,
+            )
+            .order_by(AIInvocation.created_at, AIInvocation.id)
+            .limit(_QUESTION_RECOVERY_SCAN_LIMIT)
+        )
+    )
+    ranked: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    terminal = {
+        AIInvocationStatus.SUCCEEDED.value,
+        AIInvocationStatus.FAILED.value,
+        AIInvocationStatus.AMBIGUOUS.value,
+        AIInvocationStatus.CANCELLED.value,
+    }
+    for raw_payload_id, actor_user_id, source, status in rows:
+        if (
+            isinstance(raw_payload_id, bool)
+            or not isinstance(raw_payload_id, int)
+            or raw_payload_id < 1
+            or actor_user_id != ownership.recipient_user_id
+            or source != AIInvocationSource.TELEGRAM.value
+            or status not in {item.value for item in AIInvocationStatus}
+        ):
+            raise InboundOwnershipError(
+                "question recovery invocation provenance is invalid"
+            )
+        if raw_payload_id in seen:
+            raise InboundOwnershipError(
+                "question raw has multiple recovery invocations"
+            )
+        seen.add(raw_payload_id)
+        priority = 0 if status in terminal else 1
+        ranked.append((priority, raw_payload_id))
+    ranked.sort()
+    return [raw_id for _priority, raw_id in ranked]
+
+
+async def _run_question_recovery_raw(
+    session_factory,
+    *,
+    raw_payload_id: int,
+    notifier: Notifier,
+) -> bool:
+    """Resolve fresh roots for one candidate and keep failures isolated."""
+
+    from vitals.services.proactive import channels
+
+    async with session_factory() as session:
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session,
+            actor_username=None,
+        )
+        if not await prefs.bot_enabled(
+            session,
+            subject_id=ownership.subject_id,
+            strict=True,
+        ):
+            await session.commit()
+            return False
+        raw = await session.get(RawPayload, raw_payload_id)
+        if raw is None:
+            await session.commit()
+            return False
+        try:
+            return await _recover_claimed_question(
+                session,
+                raw=raw,
+                notifier=notifier,
+                ownership=ownership,
+            )
+        except (
+            InboundOwnershipError,
+            question_ai_service.QuestionAIError,
+            delivery.NotificationOwnershipConflictError,
+            delivery.ProactiveOwnershipScopeError,
+        ):
+            await session.rollback()
+            logger.warning(
+                "skipping invalid Telegram question recovery candidate"
+            )
+            return False
+
+
+async def question_reply_recovery_job(session_factory, redis=None) -> None:
+    """Bounded durable recovery for claimed Telegram questions.
+
+    The worker never re-dispatches an inherited PREPARED invocation and never
+    calls a provider for DISPATCHING. Gateway reconciliation moves those states
+    to CANCELLED/AMBIGUOUS; a later pass emits the one deduped fallback where
+    appropriate. Raw rows with no invocation are safe to classify afresh because
+    no T1 prompt snapshot was ever committed.
+    """
+
+    from vitals.services.proactive import channels
+
+    notifier = channels.build_notifier()
+    if notifier is None:
+        return
+    async with session_factory() as session:
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session, actor_username=None
+        )
+        if not await prefs.bot_enabled(
+            session, subject_id=ownership.subject_id, strict=True
+        ):
+            await session.commit()
+            return
+        invocation_gap_ids = await _unjournaled_question_invocation_raw_ids(
+            session,
+            ownership=ownership,
+        )
+        raw_high_water_id = await session.scalar(
+            select(func.max(RawPayload.id)).where(
+                RawPayload.subject_id == ownership.subject_id,
+                RawPayload.actor_user_id == ownership.recipient_user_id,
+                RawPayload.domain == DOMAIN,
+                RawPayload.source == SOURCE,
+            )
+        )
+        await session.commit()
+
+    work = 0
+    processed_ids: set[int] = set()
+    for raw_id in invocation_gap_ids:
+        if work >= _QUESTION_RECOVERY_WORK_LIMIT:
+            break
+        processed_ids.add(raw_id)
+        if await _run_question_recovery_raw(
+            session_factory,
+            raw_payload_id=raw_id,
+            notifier=notifier,
+        ):
+            work += 1
+
+    # A process may die after raw capture but before T1 atomically classifies and
+    # reserves the question. Walk every Telegram raw by a persistent opaque
+    # cursor instead of repeatedly looking only at the newest N rows. Redis loss
+    # merely restarts this scan; all paid/in-flight gaps above remain DB-backed.
+    cursor, cursor_persistent = await _load_question_recovery_cursor(
+        redis,
+        ownership.subject_id,
+    )
+    if raw_high_water_id is None:
+        return
+    if cursor > raw_high_water_id:
+        cursor = 0
+        await _store_question_recovery_cursor(
+            redis,
+            ownership.subject_id,
+            cursor,
+        )
+    scanned = 0
+    while (
+        work < _QUESTION_RECOVERY_WORK_LIMIT
+        and (
+            not cursor_persistent
+            or scanned < _QUESTION_RECOVERY_SCAN_LIMIT
+        )
+    ):
+        async with session_factory() as session:
+            page = list(
+                await session.scalars(
+                    select(RawPayload.id)
+                    .where(
+                        RawPayload.subject_id == ownership.subject_id,
+                        RawPayload.actor_user_id == ownership.recipient_user_id,
+                        RawPayload.domain == DOMAIN,
+                        RawPayload.source == SOURCE,
+                        RawPayload.id > cursor,
+                        RawPayload.id <= raw_high_water_id,
+                    )
+                    .order_by(RawPayload.id)
+                    .limit(_QUESTION_RECOVERY_PAGE_SIZE)
+                )
+            )
+            await session.commit()
+        if not page:
+            break
+        for raw_id in page:
+            cursor = raw_id
+            scanned += 1
+            if raw_id in processed_ids:
+                continue
+            if await _run_question_recovery_raw(
+                session_factory,
+                raw_payload_id=raw_id,
+                notifier=notifier,
+            ):
+                work += 1
+                if work >= _QUESTION_RECOVERY_WORK_LIMIT:
+                    break
+        await _store_question_recovery_cursor(
+            redis,
+            ownership.subject_id,
+            cursor,
+        )
+        if len(page) < _QUESTION_RECOVERY_PAGE_SIZE:
+            break
 
 
 async def _day_facts(

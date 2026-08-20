@@ -42,6 +42,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.proactive.brief import brief_job, last_attempt_hour
     from vitals.services.proactive.day_plan import evening_job
     from vitals.services.proactive.nudges import nudges_job
+    from vitals.services.proactive.inbound import question_reply_recovery_job
     from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
     from vitals.services.share_service import purge_job as share_purge_job
     from vitals.services.ai_gateway_service import (
@@ -117,6 +118,16 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         ai_invocation_reconciliation_job,
         trigger="interval",
         failure_family=JobFailureFamily.PLATFORM,
+        minutes=15,
+    )
+
+    # Claimed Telegram questions are raw-first. This bounded worker resumes the
+    # zero-attempt and terminal-journal gaps without replaying a paid dispatch.
+    register_job(
+        "question_reply_recovery",
+        question_reply_recovery_job,
+        trigger="interval",
+        failure_family=JobFailureFamily.SUBJECT,
         minutes=15,
     )
 

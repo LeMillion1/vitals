@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date as date_type, datetime, time as time_type
 from typing import Optional
 
@@ -40,13 +40,17 @@ from vitals.enums import (
     AIInvocationPurpose,
     AIInvocationSource,
     AIInvocationStatus,
+    Domain,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
+    IntegrationProvider,
+    Source,
     UserStatus,
 )
 from vitals.models.ai import AIInvocation
 from vitals.models.identity import HealthSubject, User
 from vitals.models.proactive import Notification
+from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import IntegrationConnection
 from vitals.services.proactive import prefs
 from vitals.services.proactive.channels import Buttons, Notifier
@@ -178,7 +182,7 @@ class ProactiveOwnershipScopeError(ValueError):
 class _PreparedDelivery:
     """Policy-approved message that may cross the network without a DB session."""
 
-    text: str
+    text: str = field(repr=False)
     category: str
     dedupe_key: str | None
     buttons: tuple[tuple[str, str], ...] | None
@@ -188,6 +192,11 @@ class _PreparedDelivery:
     ownership: ProactiveOwnershipContext | None
     actor_user_id: uuid.UUID | None
     ai_invocation_id: uuid.UUID | None
+    redact_journal_content: bool
+    journal_raw_payload_id: int | None
+
+    def __reduce__(self):
+        raise TypeError("_PreparedDelivery is not pickleable")
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,9 +289,9 @@ async def _require_ai_invocation_scope(
     ownership: ProactiveOwnershipContext | None,
     category: str,
     ai_invocation_id: uuid.UUID | None,
-) -> None:
+) -> int | None:
     if ai_invocation_id is None:
-        return
+        return None
     if not isinstance(ai_invocation_id, uuid.UUID):
         raise TypeError("ai_invocation_id must be a UUID or None")
     if ownership is None or category not in {CATEGORY_ECHO, CATEGORY_REPLY}:
@@ -294,6 +303,15 @@ async def _require_ai_invocation_scope(
         if category == CATEGORY_ECHO
         else AIInvocationPurpose.QUESTION_REPLY
     )
+    allowed_statuses = {
+        AIInvocationStatus.SUCCEEDED.value,
+        AIInvocationStatus.FAILED.value,
+        AIInvocationStatus.AMBIGUOUS.value,
+    }
+    if expected_purpose is AIInvocationPurpose.QUESTION_REPLY:
+        # A reply reservation cancelled before provider I/O still owns the one
+        # deterministic fallback journal for its raw question.
+        allowed_statuses.add(AIInvocationStatus.CANCELLED.value)
     row = (
         await session.execute(
             select(
@@ -314,15 +332,78 @@ async def _require_ai_invocation_scope(
         or actor_user_id != ownership.recipient_user_id
         or purpose != expected_purpose.value
         or source != AIInvocationSource.TELEGRAM.value
-        or status
-        not in {
-            AIInvocationStatus.SUCCEEDED.value,
-            AIInvocationStatus.FAILED.value,
-            AIInvocationStatus.AMBIGUOUS.value,
-        }
+        or status not in allowed_statuses
         or raw_payload_id is None
     ):
         raise ProactiveOwnershipScopeError("AI delivery invocation provenance is invalid")
+    return raw_payload_id
+
+
+async def _require_redacted_reply_raw_scope(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext,
+    raw_payload_id: int,
+    invocation_raw_payload_id: int | None,
+) -> None:
+    """Prove the JSON journal marker points at the exact owned Telegram raw."""
+
+    row = (
+        await session.execute(
+            select(
+                RawPayload.subject_id,
+                RawPayload.actor_user_id,
+                RawPayload.file_asset_id,
+                RawPayload.domain,
+                RawPayload.source,
+                RawPayload.processed_at,
+                IntegrationConnection.subject_id,
+                IntegrationConnection.provider,
+                IntegrationConnection.connection_type,
+                IntegrationConnection.status,
+            )
+            .join(
+                IntegrationConnection,
+                IntegrationConnection.id == RawPayload.integration_connection_id,
+            )
+            .where(RawPayload.id == raw_payload_id)
+        )
+    ).one_or_none()
+    if row is None:
+        raise ProactiveOwnershipScopeError(
+            "redacted reply raw provenance does not exist"
+        )
+    (
+        raw_subject_id,
+        raw_actor_user_id,
+        raw_file_asset_id,
+        raw_domain,
+        raw_source,
+        raw_processed_at,
+        connection_subject_id,
+        connection_provider,
+        connection_type,
+        connection_status,
+    ) = row
+    if (
+        raw_subject_id != ownership.subject_id
+        or raw_actor_user_id != ownership.recipient_user_id
+        or raw_file_asset_id is not None
+        or raw_domain != Domain.SIGNALS.value
+        or raw_source != Source.TELEGRAM.value
+        or raw_processed_at is None
+        or connection_subject_id != ownership.subject_id
+        or connection_provider != IntegrationProvider.TELEGRAM.value
+        or connection_type != IntegrationConnectionType.RECIPIENT.value
+        or connection_status not in HISTORICAL_RECIPIENT_STATUSES
+        or (
+            invocation_raw_payload_id is not None
+            and invocation_raw_payload_id != raw_payload_id
+        )
+    ):
+        raise ProactiveOwnershipScopeError(
+            "redacted reply raw provenance is invalid"
+        )
 
 
 def in_quiet_hours(
@@ -439,6 +520,8 @@ async def _prepare_delivery(
     ownership: ProactiveOwnershipContext | None = None,
     actor_user_id: uuid.UUID | None = None,
     ai_invocation_id: uuid.UUID | None = None,
+    redact_journal_content: bool = False,
+    journal_raw_payload_id: int | None = None,
 ) -> _PreparedDelivery | None:
     """Apply delivery policy without calling the transport or mutating state.
 
@@ -449,6 +532,27 @@ async def _prepare_delivery(
     """
     if notifier is None or not text.strip():
         return None
+    if not isinstance(redact_journal_content, bool):
+        raise TypeError("redact_journal_content must be a bool")
+    if journal_raw_payload_id is not None and (
+        isinstance(journal_raw_payload_id, bool)
+        or not isinstance(journal_raw_payload_id, int)
+        or journal_raw_payload_id < 1
+    ):
+        raise ValueError("journal_raw_payload_id must be a positive integer or None")
+    if redact_journal_content:
+        if (
+            ownership is None
+            or category != CATEGORY_REPLY
+            or journal_raw_payload_id is None
+        ):
+            raise ProactiveOwnershipScopeError(
+                "redacted delivery journals require an owned raw-backed reply"
+            )
+    elif journal_raw_payload_id is not None:
+        raise ProactiveOwnershipScopeError(
+            "journal_raw_payload_id requires redacted journal content"
+        )
     _validate_ownership(ownership, actor_user_id=actor_user_id)
     if ownership is not None:
         await _require_ownership_scope(
@@ -456,12 +560,20 @@ async def _prepare_delivery(
             ownership,
             channel=notifier.channel,
         )
-    await _require_ai_invocation_scope(
+    invocation_raw_payload_id = await _require_ai_invocation_scope(
         session,
         ownership=ownership,
         category=category,
         ai_invocation_id=ai_invocation_id,
     )
+    if redact_journal_content:
+        assert ownership is not None and journal_raw_payload_id is not None
+        await _require_redacted_reply_raw_scope(
+            session,
+            ownership=ownership,
+            raw_payload_id=journal_raw_payload_id,
+            invocation_raw_payload_id=invocation_raw_payload_id,
+        )
     if not await prefs.bot_enabled(
         session,
         subject_id=(ownership.subject_id if ownership is not None else None),
@@ -525,6 +637,8 @@ async def _prepare_delivery(
         ownership=ownership,
         actor_user_id=actor_user_id,
         ai_invocation_id=ai_invocation_id,
+        redact_journal_content=redact_journal_content,
+        journal_raw_payload_id=journal_raw_payload_id,
     )
 
 
@@ -548,11 +662,19 @@ async def _transmit_prepared_delivery(
             )
         )
     except Exception:
-        logger.warning(
-            "delivery failed for %s; message dropped",
-            prepared.category,
-            exc_info=True,
-        )
+        if prepared.redact_journal_content:
+            # Transport exceptions can embed the outbound request body. The AI
+            # answer is intentionally memory-only, so log a bounded code only.
+            logger.warning(
+                "delivery failed for %s; message dropped (code=transport_error)",
+                prepared.category,
+            )
+        else:
+            logger.warning(
+                "delivery failed for %s; message dropped",
+                prepared.category,
+                exc_info=True,
+            )
         return None
 
 
@@ -575,11 +697,35 @@ async def _journal_prepared_delivery(
             prepared.ownership,
             channel=prepared.channel,
         )
-    await _require_ai_invocation_scope(
+    invocation_raw_payload_id = await _require_ai_invocation_scope(
         session,
         ownership=prepared.ownership,
         category=prepared.category,
         ai_invocation_id=prepared.ai_invocation_id,
+    )
+    if prepared.redact_journal_content:
+        assert prepared.ownership is not None
+        assert prepared.journal_raw_payload_id is not None
+        await _require_redacted_reply_raw_scope(
+            session,
+            ownership=prepared.ownership,
+            raw_payload_id=prepared.journal_raw_payload_id,
+            invocation_raw_payload_id=invocation_raw_payload_id,
+        )
+    payload = (
+        {
+            "content_redacted": True,
+            "raw_payload_id": prepared.journal_raw_payload_id,
+        }
+        if prepared.redact_journal_content
+        else {
+            "text": prepared.text,
+            "buttons": (
+                [list(button) for button in prepared.buttons]
+                if prepared.buttons
+                else None
+            ),
+        }
     )
     row = Notification(
         subject_id=(
@@ -604,14 +750,7 @@ async def _journal_prepared_delivery(
         channel=prepared.channel,
         external_id=external_id or None,
         ai_invocation_id=prepared.ai_invocation_id,
-        payload={
-            "text": prepared.text,
-            "buttons": (
-                [list(button) for button in prepared.buttons]
-                if prepared.buttons
-                else None
-            ),
-        },
+        payload=payload,
     )
     session.add(row)
     await session.flush()

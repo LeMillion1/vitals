@@ -1025,7 +1025,12 @@ async def test_callback_capture_survives_failure_and_replays(
     callback = {
         "id": "callback-1",
         "data": f"{inbound.CB_CONTEXT}{DAY.isoformat()}:gym:1",
-        "message": {"message_id": 7, "text": "question"},
+        "message": {
+            "message_id": 7,
+            "date": 1_785_612_200,
+            "chat": {"id": 424242, "type": "private"},
+            "text": "memory-only generated answer",
+        },
     }
     with pytest.raises(RuntimeError, match="simulated action failure"):
         await inbound._handle_callback(
@@ -1044,6 +1049,18 @@ async def test_callback_capture_survives_failure_and_replays(
     )
     assert raw is not None
     assert raw.processed_at is None
+    assert raw.payload == {
+        "callback_query": {
+            "id": "callback-1",
+            "data": f"{inbound.CB_CONTEXT}{DAY.isoformat()}:gym:1",
+            "message": {
+                "message_id": 7,
+                "date": 1_785_612_200,
+                "chat": {"id": 424242, "type": "private"},
+            },
+        }
+    }
+    assert "memory-only generated answer" not in str(raw.payload)
     assert await signals_service.get_day_context(db_session, DAY) is None
 
     monkeypatch.setattr(day_plan, "record_answer", original_record_answer)
