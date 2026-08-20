@@ -18,6 +18,9 @@ from vitals.models.weight import WeightLog
 from vitals.services import share_service
 from vitals.services.modules_service import MODULE_REGISTRY
 from vitals.utils.timeutils import now_local
+from web.config import get_web_config
+
+pytestmark = pytest.mark.usefixtures("legacy_owner_roots")
 
 ALL_ON = {k: True for k in MODULE_REGISTRY}
 START = date(2026, 3, 1)
@@ -46,6 +49,10 @@ async def _seed(db_session) -> None:
 
 async def _make_report(db_session, **kwargs):
     await _seed(db_session)
+    owner = await share_service.prepare_legacy_owner(
+        db_session,
+        actor_username=get_web_config().auth_username,
+    )
     params = dict(
         title="Endocrinologist",
         domains=[Domain.WEIGHT.value, Domain.LABS.value],
@@ -54,7 +61,11 @@ async def _make_report(db_session, **kwargs):
         enabled=ALL_ON,
     )
     params.update(kwargs)
-    row, password = await share_service.create_report(db_session, **params)
+    row, password = await share_service.create_report(
+        db_session,
+        prepared_owner=owner,
+        **params,
+    )
     await db_session.commit()
     return row, password
 
@@ -116,6 +127,82 @@ async def test_correct_password_opens_the_document(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_password_verification_runs_without_a_database_transaction(
+    client,
+    db_session,
+    monkeypatch,
+):
+    from web.routers import public_report as public_router
+
+    row, password = await _make_report(db_session)
+    original = public_router.verify_password
+
+    def checked(candidate, password_hash):
+        assert not db_session.in_transaction()
+        return original(candidate, password_hash)
+
+    monkeypatch.setattr(public_router, "verify_password", checked)
+    assert (
+        await client.post(f"/r/{row.token}", data={"password": password})
+    ).status_code == 303
+
+
+@pytest.mark.asyncio
+async def test_unlocked_document_renders_before_governance_is_released(
+    client,
+    db_session,
+    monkeypatch,
+):
+    from web.routers import public_report as public_router
+
+    row, password = await _make_report(db_session)
+    await client.post(f"/r/{row.token}", data={"password": password})
+    original = public_router.render_document
+
+    def checked(request, report, *, download=False):
+        assert db_session.in_transaction()
+        return original(request, report, download=download)
+
+    monkeypatch.setattr(public_router, "render_document", checked)
+    response = await client.get(f"/r/{row.token}")
+    assert response.status_code == 200
+    assert "Ферритин" in response.text
+
+
+@pytest.mark.asyncio
+async def test_access_cookie_does_not_follow_a_recycled_report_id(
+    client,
+    db_session,
+):
+    first, password = await _make_report(db_session)
+    await client.post(f"/r/{first.token}", data={"password": password})
+    old_id = first.id
+
+    owner = await share_service.prepare_legacy_owner(
+        db_session,
+        actor_username=get_web_config().auth_username,
+    )
+    assert await share_service.delete_report(
+        db_session,
+        old_id,
+        prepared_owner=owner,
+    )
+    await db_session.commit()
+    replacement, _ = await _make_report(db_session, title="Replacement")
+    if replacement.id != old_id:
+        # PostgreSQL sequences do not recycle ids naturally; force the database
+        # state this regression protects without changing the token.
+        replacement.id = old_id
+        await db_session.commit()
+    assert replacement.id == old_id
+
+    response = await client.get(f"/r/{replacement.token}")
+    assert response.status_code == 200
+    assert 'type="password"' in response.text
+    assert "Ферритин" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_wrong_password_grants_nothing(client, db_session):
     row, _ = await _make_report(db_session)
 
@@ -144,7 +231,15 @@ async def test_a_cookie_for_one_report_does_not_open_another(client, db_session)
 async def test_missing_revoked_and_expired_are_indistinguishable(client, db_session):
     revoked, _ = await _make_report(db_session)
     expired, _ = await _make_report(db_session)
-    await share_service.revoke(db_session, revoked.id)
+    owner = await share_service.prepare_legacy_owner(
+        db_session,
+        actor_username=get_web_config().auth_username,
+    )
+    await share_service.revoke(
+        db_session,
+        revoked.id,
+        prepared_owner=owner,
+    )
     expired.expires_at = now_local() - timedelta(days=1)
     await db_session.commit()
 

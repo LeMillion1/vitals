@@ -212,6 +212,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   can clear the same-subject warning on its validated historical gateway, while
   partial, foreign, pending, and ambiguous roots remain fail-closed. Outbound
   echo intent and subject-aware composition remain later commercial cutovers.
+- Frozen doctor-report rows now belong to the exact legacy subject and creator;
+  owner list, download, revoke, and delete actions validate that scope, and a
+  human revoke records its revoker without inventing a missing historical
+  creator. Public links remain opaque password-protected capabilities: corrupt
+  roots look identical to dead links, successful opens revalidate and lock the
+  token before counting, and access cookies bind both row id and token so id
+  reuse cannot reopen another report. Password verification holds no database
+  or identity-governance transaction, while an already-unlocked document renders
+  before governance is released so a concurrent revoke cannot leak one final
+  page. Scheduled expiry cleanup stays actorless. Snapshot assembly is still an
+  exact-one whole-lake compatibility read; subject-aware report composition
+  remains a later commercial cutover.
 - Platform-only scheduler diagnostics are now excluded from the transitional
   Today and digest/brief composition readers. Operational exception text can no
   longer appear in a health card or be forwarded to the external LLM while the

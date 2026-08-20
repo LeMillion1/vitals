@@ -40,7 +40,11 @@ async def _page(
     status_code: int = status.HTTP_200_OK,
 ) -> Response:
     enabled = getattr(request.state, "enabled_modules", None) or {}
-    reports = await share_service.list_reports(db)
+    owner = await share_service.prepare_legacy_owner(
+        db,
+        actor_username=username,
+    )
+    reports = await share_service.list_reports(db, prepared_owner=owner)
     # The form opens on the last report's selection. That is the personal preset,
     # without a table to store one in: the next appointment is usually the same
     # shape as the last one.
@@ -133,14 +137,27 @@ async def create(
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
     elif period == "all":
+        owner = await share_service.prepare_legacy_owner(
+            db,
+            actor_username=username,
+        )
         _, end = share_service.window_for(1)
-        start = await share_service.earliest_data_date(db) or end
+        start = (
+            await share_service.earliest_data_date(db, prepared_owner=owner)
+            or end
+        )
     else:
         try:
             days = int(period)
         except ValueError:
             days = 90
         start, end = share_service.window_for(days)
+
+    if period != "all":
+        owner = await share_service.prepare_legacy_owner(
+            db,
+            actor_username=username,
+        )
 
     row, password = await share_service.create_report(
         db,
@@ -153,6 +170,7 @@ async def create(
         labs_flagged_only=labs_flagged_only,
         preset=preset or None,
         enabled=enabled,
+        prepared_owner=owner,
     )
     if not (row.snapshot or {}).get("blocks"):
         # An empty document is worse than no document — it looks like a person
@@ -181,7 +199,11 @@ async def revoke(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await share_service.revoke(db, report_id)
+    owner = await share_service.prepare_legacy_owner(
+        db,
+        actor_username=username,
+    )
+    await share_service.revoke(db, report_id, prepared_owner=owner)
     await db.commit()
     return RedirectResponse(url="/share", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -192,7 +214,11 @@ async def delete(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await share_service.delete_report(db, report_id)
+    owner = await share_service.prepare_legacy_owner(
+        db,
+        actor_username=username,
+    )
+    await share_service.delete_report(db, report_id, prepared_owner=owner)
     await db.commit()
     return RedirectResponse(url="/share", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -207,7 +233,15 @@ async def download(
     """The same document as a file — for handing over on a stick, or printing
     somewhere with no network. Everything is already inline, so there is nothing
     to bundle."""
-    row = await share_service.get_report(db, report_id)
+    owner = await share_service.prepare_legacy_owner(
+        db,
+        actor_username=username,
+    )
+    row = await share_service.get_report(
+        db,
+        report_id,
+        prepared_owner=owner,
+    )
     if row is None or row.snapshot is None:
         return RedirectResponse(url="/share", status_code=status.HTTP_303_SEE_OTHER)
     return Response(

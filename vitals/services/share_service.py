@@ -29,20 +29,219 @@ from __future__ import annotations
 
 import logging
 import secrets
+import uuid
 from datetime import date as date_type, datetime, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Domain
+from vitals.enums import Domain, UserStatus
+from vitals.models.identity import HealthSubject, User
 from vitals.models.share import SharedReport
+from vitals.ownership import WriteIdentity
+from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.utils.passwords import hash_password
 from vitals.utils.timeutils import now_local, today_local
 
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_VERSION = 1
+
+
+class ShareOwnershipError(ValueError):
+    """A report is outside, or corrupt within, its validated subject scope."""
+
+
+class SharePreparedOwnerError(ShareOwnershipError):
+    """A scoped report operation lacks a live service-issued owner proof."""
+
+
+class _PublicReportOwnershipError(ShareOwnershipError):
+    """Internal public-token validation failure, always mapped to not-found."""
+
+
+class PreparedShareOwner:
+    """Opaque exact-one owner proof bound to one session transaction.
+
+    The capability keeps the identity-governance, subject, and active-owner locks
+    alive while legacy whole-lake snapshot readers run.  It cannot be reused
+    after a commit, rollback, or savepoint boundary.
+    """
+
+    __slots__ = (
+        "_identity",
+        "_identity_fingerprint",
+        "_nested_transaction",
+        "_owner_user_id",
+        "_seal",
+        "_session",
+        "_transaction",
+    )
+
+    def __new__(cls, *args, **kwargs):
+        del args, kwargs
+        raise SharePreparedOwnerError(
+            "prepared share owners are issued only by prepare_legacy_owner"
+        )
+
+    @classmethod
+    def _issue(
+        cls,
+        *,
+        session: AsyncSession,
+        identity: WriteIdentity,
+        owner_user_id: uuid.UUID,
+    ) -> "PreparedShareOwner":
+        prepared = object.__new__(cls)
+        object.__setattr__(prepared, "_identity", identity)
+        object.__setattr__(prepared, "_owner_user_id", owner_user_id)
+        object.__setattr__(
+            prepared,
+            "_identity_fingerprint",
+            (identity.subject_id, identity.actor_user_id, owner_user_id),
+        )
+        object.__setattr__(prepared, "_session", session)
+        object.__setattr__(
+            prepared,
+            "_transaction",
+            session.sync_session.get_transaction(),
+        )
+        object.__setattr__(
+            prepared,
+            "_nested_transaction",
+            session.sync_session.get_nested_transaction(),
+        )
+        object.__setattr__(prepared, "_seal", _PREPARED_OWNER_SEAL)
+        return prepared
+
+    def __setattr__(self, name, value) -> None:
+        del name, value
+        raise AttributeError("PreparedShareOwner is immutable")
+
+    @property
+    def identity(self) -> WriteIdentity:
+        return self._identity
+
+
+_PREPARED_OWNER_SEAL = object()
+
+
+async def prepare_legacy_owner(
+    session: AsyncSession,
+    *,
+    actor_username: str,
+) -> PreparedShareOwner:
+    """Lock and authenticate the exact-one legacy owner for one transaction."""
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+
+    await acquire_identity_governance_lock(session)
+    ownership = await resolve_legacy_ownership_context(
+        session,
+        actor_username=actor_username,
+    )
+    identity = ownership.owner_action()
+    with session.no_autoflush:
+        subject_ids = list(
+            await session.scalars(
+                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+            )
+        )
+        if subject_ids != [identity.subject_id]:
+            raise SharePreparedOwnerError(
+                "share compatibility requires exactly one matching health subject"
+            )
+        subject = await session.scalar(
+            select(HealthSubject)
+            .where(HealthSubject.id == identity.subject_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if subject is None or subject.owner_user_id != ownership.owner_user_id:
+            raise SharePreparedOwnerError("share subject owner changed during validation")
+        owner = await session.scalar(
+            select(User)
+            .where(User.id == ownership.owner_user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if owner is None or owner.status != UserStatus.ACTIVE.value:
+            raise SharePreparedOwnerError("share owner is missing or inactive")
+        if identity.actor_user_id != owner.id:
+            raise SharePreparedOwnerError("share actions require the active subject owner")
+    if session.sync_session.get_transaction() is None:  # pragma: no cover
+        raise SharePreparedOwnerError("share owner proof has no active transaction")
+    return PreparedShareOwner._issue(
+        session=session,
+        identity=identity,
+        owner_user_id=owner.id,
+    )
+
+
+def _require_prepared_owner(
+    session: AsyncSession,
+    prepared_owner: PreparedShareOwner,
+) -> PreparedShareOwner:
+    if not isinstance(prepared_owner, PreparedShareOwner):
+        raise SharePreparedOwnerError(
+            "prepared share owner belongs to another session"
+        )
+    try:
+        identity = prepared_owner._identity
+        owner_user_id = prepared_owner._owner_user_id
+        valid_fingerprint = prepared_owner._identity_fingerprint == (
+            identity.subject_id,
+            identity.actor_user_id,
+            owner_user_id,
+        )
+        valid_seal = prepared_owner._seal is _PREPARED_OWNER_SEAL
+        prepared_session = prepared_owner._session
+        transaction = prepared_owner._transaction
+        nested_transaction = prepared_owner._nested_transaction
+    except (AttributeError, TypeError) as exc:
+        raise SharePreparedOwnerError(
+            "prepared share owner is not a valid issued capability"
+        ) from exc
+    if not valid_seal or not valid_fingerprint:
+        raise SharePreparedOwnerError(
+            "prepared share owner identity was not issued by the validator"
+        )
+    if prepared_session is not session:
+        raise SharePreparedOwnerError(
+            "prepared share owner belongs to another session"
+        )
+    if session.sync_session.get_transaction() is not transaction:
+        raise SharePreparedOwnerError(
+            "prepared share owner transaction is no longer active"
+        )
+    if (
+        session.sync_session.get_nested_transaction()
+        is not nested_transaction
+    ):
+        raise SharePreparedOwnerError(
+            "prepared share owner savepoint is no longer active"
+        )
+    return prepared_owner
+
+
+async def _owner_or_zero_subject_legacy(
+    session: AsyncSession,
+    prepared_owner: PreparedShareOwner | None,
+) -> PreparedShareOwner | None:
+    """Validate a production capability or quarantine the old zero-subject API.
+
+    Commercial startup always materializes one subject before serving traffic.
+    The zero-subject arm exists only for direct legacy/service consumers and the
+    pure snapshot test suite; it cannot authorize a production owner route.
+    """
+    if prepared_owner is not None:
+        return _require_prepared_owner(session, prepared_owner)
+    await acquire_identity_governance_lock(session)
+    if await session.scalar(select(HealthSubject.id).limit(1)) is not None:
+        raise SharePreparedOwnerError(
+            "share operations require a prepared owner once identity exists"
+        )
+    return None
 
 # Which module switch gates each selectable domain. A domain missing from this
 # map cannot be published at all — the map, not the form, is the gate.
@@ -167,6 +366,95 @@ def available_domains(enabled: Optional[dict[str, bool]] = None) -> list[str]:
     return resolve_domains(DOMAIN_ORDER, enabled)
 
 
+def _owner_scope(prepared_owner: PreparedShareOwner):
+    identity = prepared_owner._identity
+    return or_(
+        SharedReport.subject_id == identity.subject_id,
+        and_(
+            SharedReport.subject_id.is_(None),
+            SharedReport.created_by_user_id.is_(None),
+            SharedReport.revoked_by_user_id.is_(None),
+        ),
+    )
+
+
+def _validate_owner_roots(
+    prepared_owner: PreparedShareOwner,
+    *,
+    subject_id: uuid.UUID | None,
+    created_by_user_id: uuid.UUID | None,
+    revoked_by_user_id: uuid.UUID | None,
+    revoked_at: datetime | None,
+) -> bool:
+    """Validate stored roots; return whether this is fully-null legacy history."""
+    identity = prepared_owner._identity
+    owner_user_id = prepared_owner._owner_user_id
+    if revoked_by_user_id is not None and revoked_at is None:
+        raise ShareOwnershipError(
+            "shared report has revocation actor without revocation timestamp"
+        )
+    if subject_id is None:
+        if created_by_user_id is not None or revoked_by_user_id is not None:
+            raise ShareOwnershipError(
+                "shared report has partial legacy ownership roots"
+            )
+        return True
+    if subject_id != identity.subject_id:
+        raise ShareOwnershipError("shared report belongs to another subject")
+    for actor_user_id in (created_by_user_id, revoked_by_user_id):
+        # An exact-S row may legitimately lack historical actor provenance.  A
+        # non-null actor, however, must be the subject owner.
+        if actor_user_id is not None and actor_user_id != owner_user_id:
+            raise ShareOwnershipError(
+                "shared report actor does not own its health subject"
+            )
+    return False
+
+
+async def _reject_selected_scope_corruption(
+    session: AsyncSession,
+    prepared_owner: PreparedShareOwner,
+) -> None:
+    identity = prepared_owner._identity
+    owner_user_id = prepared_owner._owner_user_id
+    corrupt_id = await session.scalar(
+        select(SharedReport.id)
+        .where(
+            or_(
+                and_(
+                    SharedReport.subject_id.is_(None),
+                    or_(
+                        SharedReport.created_by_user_id.is_not(None),
+                        SharedReport.revoked_by_user_id.is_not(None),
+                    ),
+                ),
+                and_(
+                    SharedReport.subject_id == identity.subject_id,
+                    or_(
+                        and_(
+                            SharedReport.created_by_user_id.is_not(None),
+                            SharedReport.created_by_user_id != owner_user_id,
+                        ),
+                        and_(
+                            SharedReport.revoked_by_user_id.is_not(None),
+                            SharedReport.revoked_by_user_id != owner_user_id,
+                        ),
+                        and_(
+                            SharedReport.revoked_by_user_id.is_not(None),
+                            SharedReport.revoked_at.is_(None),
+                        ),
+                    ),
+                ),
+            )
+        )
+        .limit(1)
+    )
+    if corrupt_id is not None:
+        raise ShareOwnershipError(
+            "shared report has partial or foreign ownership roots"
+        )
+
+
 # ── Snapshot ──────────────────────────────────────────────────────────────────
 
 
@@ -178,6 +466,7 @@ async def build_snapshot(
     period_end: date_type,
     labs_flagged_only: bool = False,
     enabled: Optional[dict[str, bool]] = None,
+    prepared_owner: PreparedShareOwner | None = None,
 ) -> dict[str, Any]:
     """Assemble the document's data for one window. No DB writes.
 
@@ -186,6 +475,8 @@ async def build_snapshot(
     today" is read through yesterday and the row stores that, rather than a
     header claiming a day the numbers don't cover.
     """
+    await _owner_or_zero_subject_legacy(session, prepared_owner)
+
     from vitals.config import load_config
     from vitals.i18n import current_lang
     from vitals.services import digest_service
@@ -580,12 +871,14 @@ async def create_report(
     labs_flagged_only: bool = False,
     preset: Optional[str] = None,
     enabled: Optional[dict[str, bool]] = None,
+    prepared_owner: PreparedShareOwner | None = None,
 ) -> tuple[SharedReport, str]:
     """Freeze a document and publish it. Flushes; the caller commits.
 
     Returns the row **and the plaintext password**, which exists only in this
     return value — after this call there is nothing but the bcrypt hash.
     """
+    owner = await _owner_or_zero_subject_legacy(session, prepared_owner)
     snapshot = await build_snapshot(
         session,
         domains=domains,
@@ -593,9 +886,14 @@ async def create_report(
         period_end=period_end,
         labs_flagged_only=labs_flagged_only,
         enabled=enabled,
+        prepared_owner=owner,
     )
     password = generate_password()
     row = SharedReport(
+        subject_id=(owner._identity.subject_id if owner is not None else None),
+        created_by_user_id=(
+            owner._identity.actor_user_id if owner is not None else None
+        ),
         token=secrets.token_urlsafe(32),
         password_hash=hash_password(password),
         title=title.strip()[:120],
@@ -613,15 +911,164 @@ async def create_report(
     return row, password
 
 
-async def list_reports(session: AsyncSession) -> Sequence[SharedReport]:
+async def list_reports(
+    session: AsyncSession,
+    *,
+    prepared_owner: PreparedShareOwner | None = None,
+) -> Sequence[SharedReport]:
+    owner = await _owner_or_zero_subject_legacy(session, prepared_owner)
+    if owner is None:
+        stmt = select(SharedReport).where(
+            SharedReport.subject_id.is_(None),
+            SharedReport.created_by_user_id.is_(None),
+            SharedReport.revoked_by_user_id.is_(None),
+        )
+    else:
+        await _reject_selected_scope_corruption(session, owner)
+        stmt = select(SharedReport).where(_owner_scope(owner))
     result = await session.execute(
-        select(SharedReport).order_by(SharedReport.created_at.desc(), SharedReport.id.desc())
+        stmt.order_by(SharedReport.created_at.desc(), SharedReport.id.desc())
+        .execution_options(populate_existing=True)
     )
-    return result.scalars().all()
+    rows = result.scalars().all()
+    if owner is not None:
+        for row in rows:
+            _validate_owner_roots(
+                owner,
+                subject_id=row.subject_id,
+                created_by_user_id=row.created_by_user_id,
+                revoked_by_user_id=row.revoked_by_user_id,
+                revoked_at=row.revoked_at,
+            )
+    return rows
 
 
-async def get_report(session: AsyncSession, report_id: int) -> Optional[SharedReport]:
-    return await session.get(SharedReport, report_id)
+async def get_report(
+    session: AsyncSession,
+    report_id: int,
+    *,
+    prepared_owner: PreparedShareOwner | None = None,
+) -> Optional[SharedReport]:
+    owner = await _owner_or_zero_subject_legacy(session, prepared_owner)
+    if owner is None:
+        stmt = select(SharedReport).where(
+            SharedReport.id == report_id,
+            SharedReport.subject_id.is_(None),
+            SharedReport.created_by_user_id.is_(None),
+            SharedReport.revoked_by_user_id.is_(None),
+        )
+    else:
+        await _reject_selected_scope_corruption(session, owner)
+        stmt = select(SharedReport).where(
+            SharedReport.id == report_id,
+            _owner_scope(owner),
+        )
+    row = await session.scalar(stmt.execution_options(populate_existing=True))
+    if row is None:
+        return None
+    if owner is None:
+        return row
+    _validate_owner_roots(
+        owner,
+        subject_id=row.subject_id,
+        created_by_user_id=row.created_by_user_id,
+        revoked_by_user_id=row.revoked_by_user_id,
+        revoked_at=row.revoked_at,
+    )
+    return row
+
+
+async def _public_subject_owner(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None,
+    created_by_user_id: uuid.UUID | None,
+    revoked_by_user_id: uuid.UUID | None,
+    revoked_at: datetime | None,
+    for_update: bool,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Validate roots selected by an opaque public token, never infer actors."""
+    if revoked_by_user_id is not None and revoked_at is None:
+        raise _PublicReportOwnershipError(
+            "public report has revocation actor without revocation timestamp"
+        )
+    if subject_id is None:
+        if created_by_user_id is not None or revoked_by_user_id is not None:
+            raise _PublicReportOwnershipError(
+                "public report has partial legacy ownership roots"
+            )
+        from vitals.services.legacy_ownership import (
+            LegacyOwnershipError,
+            resolve_legacy_ownership_context,
+        )
+
+        try:
+            ownership = await resolve_legacy_ownership_context(
+                session,
+                actor_username=None,
+            )
+        except LegacyOwnershipError as exc:
+            raise _PublicReportOwnershipError(
+                "public legacy report requires exactly one active owner"
+            ) from exc
+        resolved_subject_id = ownership.subject_id
+        owner_user_id = ownership.owner_user_id
+    else:
+        resolved_subject_id = subject_id
+        subject_stmt = select(HealthSubject).where(
+            HealthSubject.id == resolved_subject_id
+        )
+        if for_update:
+            subject_stmt = subject_stmt.with_for_update().execution_options(
+                populate_existing=True
+            )
+        else:
+            subject_stmt = subject_stmt.execution_options(populate_existing=True)
+        subject = await session.scalar(subject_stmt)
+        if subject is None:
+            raise _PublicReportOwnershipError("public report subject is missing")
+        owner_user_id = subject.owner_user_id
+
+    if subject_id is None and for_update:
+        subject = await session.scalar(
+            select(HealthSubject)
+            .where(HealthSubject.id == resolved_subject_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if subject is None or subject.owner_user_id != owner_user_id:
+            raise _PublicReportOwnershipError(
+                "public report subject owner changed during validation"
+            )
+
+    owner_stmt = select(User).where(User.id == owner_user_id)
+    if for_update:
+        owner_stmt = owner_stmt.with_for_update().execution_options(
+            populate_existing=True
+        )
+    else:
+        owner_stmt = owner_stmt.execution_options(populate_existing=True)
+    owner = await session.scalar(owner_stmt)
+    if owner is None or owner.status != UserStatus.ACTIVE.value:
+        raise _PublicReportOwnershipError(
+            "public report owner is missing or inactive"
+        )
+    for actor_user_id in (created_by_user_id, revoked_by_user_id):
+        # Actor NULL is valid historical provenance once S is exact.  The
+        # fully-null bridge above is stricter because S is not authoritative.
+        if actor_user_id is not None and actor_user_id != owner_user_id:
+            raise _PublicReportOwnershipError(
+                "public report actor does not own its subject"
+            )
+    return resolved_subject_id, owner_user_id
+
+
+def _report_is_publicly_live(row: SharedReport) -> bool:
+    return bool(
+        row.revoked_at is None
+        and row.snapshot is not None
+        and row.expires_at > now_local()
+    )
 
 
 async def resolve_public(session: AsyncSession, token: str) -> Optional[SharedReport]:
@@ -633,37 +1080,214 @@ async def resolve_public(session: AsyncSession, token: str) -> Optional[SharedRe
     """
     if not token:
         return None
-    row = (
-        await session.execute(select(SharedReport).where(SharedReport.token == token))
-    ).scalars().first()
-    if row is None or row.revoked_at is not None or row.snapshot is None:
+    await acquire_identity_governance_lock(session)
+    row = await session.scalar(
+        select(SharedReport)
+        .where(SharedReport.token == token)
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
         return None
-    if row.expires_at <= now_local():
+    try:
+        await _public_subject_owner(
+            session,
+            subject_id=row.subject_id,
+            created_by_user_id=row.created_by_user_id,
+            revoked_by_user_id=row.revoked_by_user_id,
+            revoked_at=row.revoked_at,
+            for_update=False,
+        )
+    except _PublicReportOwnershipError:
+        logger.warning(
+            "shared report %s has invalid public ownership roots",
+            row.id,
+        )
         return None
-    return row
+    return row if _report_is_publicly_live(row) else None
 
 
-async def register_open(session: AsyncSession, row: SharedReport) -> None:
-    """Count one successful open. Flushes; the caller commits."""
+async def register_open(
+    session: AsyncSession,
+    token: str,
+) -> Optional[SharedReport]:
+    """Lock and count one still-live token after password verification."""
+    if not token:
+        return None
+    await acquire_identity_governance_lock(session)
+    roots = (
+        await session.execute(
+            select(
+                SharedReport.id,
+                SharedReport.subject_id,
+                SharedReport.created_by_user_id,
+                SharedReport.revoked_by_user_id,
+                SharedReport.revoked_at,
+            ).where(SharedReport.token == token)
+        )
+    ).one_or_none()
+    if roots is None:
+        return None
+    report_id, subject_id, created_by_user_id, revoked_by_user_id, revoked_at = roots
+    try:
+        await _public_subject_owner(
+            session,
+            subject_id=subject_id,
+            created_by_user_id=created_by_user_id,
+            revoked_by_user_id=revoked_by_user_id,
+            revoked_at=revoked_at,
+            for_update=True,
+        )
+    except _PublicReportOwnershipError:
+        logger.warning(
+            "shared report %s has invalid open ownership roots",
+            report_id,
+        )
+        return None
+    row = await session.scalar(
+        select(SharedReport)
+        .where(SharedReport.id == report_id, SharedReport.token == token)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        return None
+    if (
+        row.subject_id != subject_id
+        or row.created_by_user_id != created_by_user_id
+        or row.revoked_by_user_id != revoked_by_user_id
+        or row.revoked_at != revoked_at
+    ):
+        logger.warning(
+            "shared report %s ownership changed while registering an open",
+            report_id,
+        )
+        return None
+    if not _report_is_publicly_live(row):
+        return None
     row.opened_count = (row.opened_count or 0) + 1
     row.last_opened_at = now_local()
     await session.flush()
+    return row
 
 
-async def revoke(session: AsyncSession, report_id: int) -> bool:
+async def _lock_owner_report(
+    session: AsyncSession,
+    report_id: int,
+    *,
+    prepared_owner: PreparedShareOwner,
+) -> SharedReport | None:
+    owner = _require_prepared_owner(session, prepared_owner)
+    await _reject_selected_scope_corruption(session, owner)
+    roots = (
+        await session.execute(
+            select(
+                SharedReport.subject_id,
+                SharedReport.created_by_user_id,
+                SharedReport.revoked_by_user_id,
+                SharedReport.revoked_at,
+            ).where(
+                SharedReport.id == report_id,
+                _owner_scope(owner),
+            )
+        )
+    ).one_or_none()
+    if roots is None:
+        return None
+    subject_id, created_by_user_id, revoked_by_user_id, revoked_at = roots
+    _validate_owner_roots(
+        owner,
+        subject_id=subject_id,
+        created_by_user_id=created_by_user_id,
+        revoked_by_user_id=revoked_by_user_id,
+        revoked_at=revoked_at,
+    )
+    row = await session.scalar(
+        select(SharedReport)
+        .where(
+            SharedReport.id == report_id,
+            _owner_scope(owner),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        return None
+    _validate_owner_roots(
+        owner,
+        subject_id=row.subject_id,
+        created_by_user_id=row.created_by_user_id,
+        revoked_by_user_id=row.revoked_by_user_id,
+        revoked_at=row.revoked_at,
+    )
+    return row
+
+
+async def revoke(
+    session: AsyncSession,
+    report_id: int,
+    *,
+    prepared_owner: PreparedShareOwner | None = None,
+) -> bool:
     """Kill the link now. The snapshot goes with it — a revoked report is one the
     owner decided should stop existing, not one to keep a copy of."""
-    row = await session.get(SharedReport, report_id)
+    owner = await _owner_or_zero_subject_legacy(session, prepared_owner)
+    if owner is None:
+        row = await session.scalar(
+            select(SharedReport)
+            .where(
+                SharedReport.id == report_id,
+                SharedReport.subject_id.is_(None),
+                SharedReport.created_by_user_id.is_(None),
+                SharedReport.revoked_by_user_id.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    else:
+        row = await _lock_owner_report(
+            session,
+            report_id,
+            prepared_owner=owner,
+        )
     if row is None or row.revoked_at is not None:
         return False
+    if owner is not None:
+        if row.subject_id is None:
+            row.subject_id = owner._identity.subject_id
+        # Preserve a known creator and preserve NULL when legacy history did not
+        # record one; only this authenticated lifecycle action gets a new actor.
+        row.revoked_by_user_id = owner._identity.actor_user_id
     row.revoked_at = now_local()
     row.snapshot = None
     await session.flush()
     return True
 
 
-async def delete_report(session: AsyncSession, report_id: int) -> bool:
-    row = await session.get(SharedReport, report_id)
+async def delete_report(
+    session: AsyncSession,
+    report_id: int,
+    *,
+    prepared_owner: PreparedShareOwner | None = None,
+) -> bool:
+    owner = await _owner_or_zero_subject_legacy(session, prepared_owner)
+    if owner is None:
+        row = await session.scalar(
+            select(SharedReport)
+            .where(
+                SharedReport.id == report_id,
+                SharedReport.subject_id.is_(None),
+                SharedReport.created_by_user_id.is_(None),
+                SharedReport.revoked_by_user_id.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    else:
+        row = await _lock_owner_report(
+            session,
+            report_id,
+            prepared_owner=owner,
+        )
     if row is None:
         return False
     await session.delete(row)
@@ -678,18 +1302,144 @@ async def purge_expired(session: AsyncSession, *, now: Optional[datetime] = None
     copy of the medical record for every appointment ever attended. The row stays
     so /share can still say what was shared and when.
     """
+    await acquire_identity_governance_lock(session)
     moment = now or now_local()
-    rows = (
+    root_rows = list(
         await session.execute(
-            select(SharedReport)
+            select(
+                SharedReport.id,
+                SharedReport.subject_id,
+                SharedReport.created_by_user_id,
+                SharedReport.revoked_by_user_id,
+                SharedReport.revoked_at,
+            )
             .where(SharedReport.expires_at <= moment)
             .where(SharedReport.snapshot.is_not(None))
+            .order_by(SharedReport.id)
         )
-    ).scalars().all()
+    )
+    if not root_rows:
+        return 0
+
+    legacy_owner: tuple[uuid.UUID, uuid.UUID] | None = None
+    subject_ids = {
+        row.subject_id for row in root_rows if row.subject_id is not None
+    }
+    if any(row.subject_id is None for row in root_rows):
+        null_rows = [row for row in root_rows if row.subject_id is None]
+        if any(
+            row.created_by_user_id is not None or row.revoked_by_user_id is not None
+            for row in null_rows
+        ):
+            raise ShareOwnershipError(
+                "expired shared report has partial legacy ownership roots"
+            )
+        # A fully-null report has no stored S to lock.  Under governance, map it
+        # only when there is exactly one subject, then validate that subject and
+        # its owner through the same ordered locks below.  Owner suspension must
+        # not retain expired PHI, and this actorless purge never adopts the roots.
+        with session.no_autoflush:
+            legacy_subjects = list(
+                await session.execute(
+                    select(HealthSubject.id, HealthSubject.owner_user_id)
+                    .order_by(HealthSubject.id)
+                    .limit(2)
+                )
+            )
+        if len(legacy_subjects) != 1:
+            raise ShareOwnershipError(
+                "expired legacy reports require exactly one health subject"
+            )
+        legacy_subject_id, legacy_owner_user_id = legacy_subjects[0]
+        legacy_owner = (legacy_subject_id, legacy_owner_user_id)
+        subject_ids.add(legacy_subject_id)
+
+    subjects = {
+        subject.id: subject
+        for subject in await session.scalars(
+            select(HealthSubject)
+            .where(HealthSubject.id.in_(tuple(subject_ids)))
+            .order_by(HealthSubject.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    }
+    if set(subjects) != subject_ids:
+        raise ShareOwnershipError("expired shared report subject is missing")
+    if legacy_owner is not None:
+        legacy_subject_id, legacy_owner_user_id = legacy_owner
+        if subjects[legacy_subject_id].owner_user_id != legacy_owner_user_id:
+            raise ShareOwnershipError(
+                "expired legacy report owner changed during purge"
+            )
+    owner_ids = {subject.owner_user_id for subject in subjects.values()}
+    owners = {
+        owner.id: owner
+        for owner in await session.scalars(
+            select(User)
+            .where(User.id.in_(tuple(owner_ids)))
+            .order_by(User.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    }
+    # Suspension closes public access, but it must not retain an already-expired
+    # PHI snapshot.  Purge is actorless data minimization: the owner root must
+    # still exist and match the subject/actor graph, but it need not be active.
+    if any(owners.get(owner_id) is None for owner_id in owner_ids):
+        raise ShareOwnershipError("expired shared report owner is missing")
+
+    expected_roots = {}
+    for root in root_rows:
+        if root.subject_id is None:
+            assert legacy_owner is not None
+            _, owner_user_id = legacy_owner
+        else:
+            owner_user_id = subjects[root.subject_id].owner_user_id
+        for actor_user_id in (root.created_by_user_id, root.revoked_by_user_id):
+            if actor_user_id is not None and actor_user_id != owner_user_id:
+                raise ShareOwnershipError(
+                    "expired shared report actor does not own its subject"
+                )
+        if root.revoked_by_user_id is not None and root.revoked_at is None:
+            raise ShareOwnershipError(
+                "expired shared report has revocation actor without timestamp"
+            )
+        expected_roots[root.id] = (
+            root.subject_id,
+            root.created_by_user_id,
+            root.revoked_by_user_id,
+            root.revoked_at,
+        )
+
+    rows = list(
+        await session.scalars(
+            select(SharedReport)
+            .where(SharedReport.id.in_(tuple(expected_roots)))
+            .order_by(SharedReport.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+    if {row.id for row in rows} != set(expected_roots):
+        raise ShareOwnershipError("expired shared report changed during purge")
+    purged = 0
     for row in rows:
+        if (
+            row.subject_id,
+            row.created_by_user_id,
+            row.revoked_by_user_id,
+            row.revoked_at,
+        ) != expected_roots[row.id]:
+            raise ShareOwnershipError(
+                "expired shared report ownership changed during purge"
+            )
+        if row.expires_at > moment or row.snapshot is None:
+            continue
         row.snapshot = None
+        purged += 1
     await session.flush()
-    return len(rows)
+    return purged
 
 
 async def purge_job(session_factory, redis=None) -> None:
@@ -723,11 +1473,17 @@ def default_period(days: int = 90) -> tuple[date_type, date_type]:
     return window_for(days)
 
 
-async def earliest_data_date(session: AsyncSession) -> Optional[date_type]:
+async def earliest_data_date(
+    session: AsyncSession,
+    *,
+    prepared_owner: PreparedShareOwner | None = None,
+) -> Optional[date_type]:
     """The oldest dated row in any domain a report can carry — what "all time"
     means. Nine cheap ``MIN()`` reads on one form submit, so a report that says
     it covers everything starts where the record actually starts rather than at
     some round number of years ago."""
+    await _owner_or_zero_subject_legacy(session, prepared_owner)
+
     from sqlalchemy import func
 
     from vitals.models.body_scan import BodyScan

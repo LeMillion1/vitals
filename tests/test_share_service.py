@@ -20,6 +20,7 @@ from vitals.services import share_service
 from vitals.services.modules_service import MODULE_REGISTRY
 from vitals.utils.timeutils import now_local
 from vitals.utils.passwords import verify_password
+from web.config import get_web_config
 
 ALL_ON = {k: True for k in MODULE_REGISTRY}
 
@@ -54,6 +55,13 @@ async def _create(session, **kwargs):
     )
     params.update(kwargs)
     return await share_service.create_report(session, **params)
+
+
+async def _prepared_owner(session):
+    return await share_service.prepare_legacy_owner(
+        session,
+        actor_username=get_web_config().auth_username,
+    )
 
 
 # ── Snapshot ──────────────────────────────────────────────────────────────────
@@ -346,13 +354,17 @@ async def test_link_lifetime_is_independent_of_the_report_period(db_session):
 
 
 @pytest.mark.asyncio
-async def test_resolve_public_hides_missing_revoked_and_expired_alike(db_session):
+async def test_resolve_public_hides_missing_revoked_and_expired_alike(
+    db_session,
+    legacy_owner_roots,
+):
     await _seed_weights(db_session)
-    live, _ = await _create(db_session)
-    revoked, _ = await _create(db_session)
-    expired, _ = await _create(db_session)
+    owner = await _prepared_owner(db_session)
+    live, _ = await _create(db_session, prepared_owner=owner)
+    revoked, _ = await _create(db_session, prepared_owner=owner)
+    expired, _ = await _create(db_session, prepared_owner=owner)
     expired.expires_at = now_local() - timedelta(days=1)
-    await share_service.revoke(db_session, revoked.id)
+    await share_service.revoke(db_session, revoked.id, prepared_owner=owner)
     await db_session.commit()
 
     assert await share_service.resolve_public(db_session, live.token) is not None
@@ -363,14 +375,15 @@ async def test_resolve_public_hides_missing_revoked_and_expired_alike(db_session
 
 
 @pytest.mark.asyncio
-async def test_register_open_counts_and_timestamps(db_session):
+async def test_register_open_counts_and_timestamps(db_session, legacy_owner_roots):
     await _seed_weights(db_session)
-    row, _ = await _create(db_session)
+    owner = await _prepared_owner(db_session)
+    row, _ = await _create(db_session, prepared_owner=owner)
     await db_session.commit()
     assert row.opened_count == 0 and row.last_opened_at is None
 
-    await share_service.register_open(db_session, row)
-    await share_service.register_open(db_session, row)
+    await share_service.register_open(db_session, row.token)
+    await share_service.register_open(db_session, row.token)
     await db_session.commit()
 
     assert row.opened_count == 2
@@ -378,10 +391,14 @@ async def test_register_open_counts_and_timestamps(db_session):
 
 
 @pytest.mark.asyncio
-async def test_purge_expired_clears_the_snapshot_and_keeps_the_metadata(db_session):
+async def test_purge_expired_clears_the_snapshot_and_keeps_the_metadata(
+    db_session,
+    legacy_owner_roots,
+):
     await _seed_weights(db_session)
-    live, _ = await _create(db_session)
-    dead, _ = await _create(db_session)
+    owner = await _prepared_owner(db_session)
+    live, _ = await _create(db_session, prepared_owner=owner)
+    dead, _ = await _create(db_session, prepared_owner=owner)
     dead.expires_at = now_local() - timedelta(minutes=1)
     await db_session.flush()
 

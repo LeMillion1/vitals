@@ -289,6 +289,22 @@ journalled in a fresh caller-owned transaction. Isolated actorless S-only
 `brief_empty_day` reconciliation then follows canonical governance -> S -> key/row
 order. Empty outcomes use the same alert phase without calling either provider.
 
+SharedReport owner actions use a transaction-bound exact-one proof before any
+whole-lake compatibility read or report-row query. Create writes S+creator;
+list/get/download/delete select exact S plus fully-null historical roots, while a
+human revoke may attach only that fully-null row to S, preserves an unknown NULL
+creator, and records the revoker. A non-null creator or revoker must be the
+subject owner. Public token resolution takes no caller S, validates the stored
+S/actor graph, and maps corrupt, revoked, expired, purged, and missing rows to the
+same response. A successful anonymous open re-locks the live token before its
+counter update; scheduled purge changes only expired snapshots. Neither infers
+an actor. Bcrypt verification holds no database transaction, while unlocked HTML
+is rendered under governance so concurrent revoke cannot authorize one stale
+page. The access cookie binds report id plus a token fingerprint. Snapshot bytes
+and rendered output contain no ownership identifiers. Underlying report assembly
+is still an exact-one whole-lake compatibility read pending PR-10; this slice does
+not claim subject-aware composition.
+
 Garmin and Hevy runtime ingestion now resolves S plus the provider C before
 network persistence, copies raw provenance into normalized parents and children,
 and rejects cross-S/C refresh, ambiguous legacy adoption, and invalid lifecycle

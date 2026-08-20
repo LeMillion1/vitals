@@ -286,14 +286,25 @@ Implementation progress on `commercial/main`:
   These paths resolve the verified legacy owner at their web, scheduler, or MCP
   boundary and fail closed if a second subject makes the compatibility bridge
   ambiguous.
+  SharedReport creation and owner lifecycle now use a transaction-bound
+  exact-one owner proof. New frozen artifacts carry S plus their human creator;
+  list/get/download/revoke/delete are exact-S, a human revoke records its actor,
+  and only fully-null historical S/creator/revoker roots enter the bridge.
+  Public tokens remain caller-subject-free capabilities, but validate their
+  stored subject/actor graph and re-lock the live token before counting an open.
+  Anonymous open and scheduled purge never infer ownership actors. Password
+  verification releases governance first, unlocked rendering retains governance
+  through HTML construction, and the cookie binds both report id and token.
+  The frozen snapshot is unchanged, and its underlying domain assembly remains
+  an exact-one whole-lake compatibility read pending PR-10 AccessContext work.
 - The completed Stage 2 slices include SQLite isolation tests and PostgreSQL 15
   migration/foreign-key tests. Direct interactive selectors are covered for all
   current Timeline event types, and provider ingestion preserves raw-first
   provenance with subject/connection ownership.
 - Bounded data backfill and validation, scoped natural-key/alert/outbox-unique
   cutover, remaining health-alert and conflict writers, subject-aware
-  composition/reporting (including Labs/Genetics charts, shares, digests,
-  overview, remaining Today composition, and export), lossless VCF chunking,
+  composition/reporting (including Labs/Genetics charts, share snapshot inputs,
+  digests, overview, remaining Today composition, and export), lossless VCF chunking,
   full MCP principal propagation, and RLS remain pending.
   Registration stays disabled; the current code is a safe single-subject
   migration bridge, not a multi-user release boundary.
