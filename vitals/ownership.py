@@ -253,6 +253,13 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         actor=TargetColumn.OPTIONAL,
         connection=TargetColumn.OPTIONAL,
     ),
+    "notification_delivery_intents": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.OPTIONAL,
+        connection=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "platform_settings": OwnershipSpec(
         OwnershipClass.ACCOUNT_CONTROL,
         user_portable=False,

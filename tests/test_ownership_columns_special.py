@@ -26,6 +26,15 @@ _MULTI_FOREIGN_KEY_TARGETS = {
     (Notification, "subject_id"): {
         "health_subjects.id",
         "ai_invocations.subject_id",
+        "notification_delivery_intents.subject_id",
+    },
+    (Notification, "recipient_user_id"): {
+        "users.id",
+        "notification_delivery_intents.recipient_user_id",
+    },
+    (Notification, "integration_connection_id"): {
+        "integration_connections.id",
+        "notification_delivery_intents.integration_connection_id",
     },
     (SystemAlert, "subject_id"): {
         "health_subjects.id",
@@ -73,7 +82,8 @@ _RETAINED_SCHEMA_OBJECTS = {
     },
     DayContext: {"ix_day_context_domain_date", "uq_day_context_per_date"},
     Notification: {
-        "uq_notification_dedupe_key",
+        "uq_notifications_owned_dedupe_key",
+        "uq_notifications_legacy_dedupe_key",
         "ix_notifications_category_sent",
         "ix_notifications_external_id",
     },
@@ -263,7 +273,8 @@ def test_special_lifecycle_models_do_not_gain_generic_actor_column():
 
 def test_special_partial_indexes_keep_both_dialect_predicates():
     for model, index_name in (
-        (Notification, "uq_notification_dedupe_key"),
+        (Notification, "uq_notifications_owned_dedupe_key"),
+        (Notification, "uq_notifications_legacy_dedupe_key"),
         (SystemAlert, "uq_active_alert_per_key_entity"),
     ):
         index = next(

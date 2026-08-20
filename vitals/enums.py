@@ -139,6 +139,28 @@ class AIInvocationErrorCode(StrEnum):
     INTERNAL_ERROR = "internal_error"
 
 
+class NotificationDeliveryStatus(StrEnum):
+    """Durable lifecycle of one at-most-once outbound delivery attempt."""
+
+    PENDING = "pending"
+    DISPATCHING = "dispatching"
+    SENT = "sent"
+    AMBIGUOUS = "ambiguous"
+    CANCELLED = "cancelled"
+
+
+class NotificationDeliveryErrorCode(StrEnum):
+    """Allowlisted delivery outcomes; never free-form transport detail."""
+
+    TRANSPORT_ERROR = "transport_error"
+    INVALID_RESPONSE = "invalid_response"
+    STALE_DISPATCH = "stale_dispatch"
+    CANCELLED_BY_POLICY = "cancelled_by_policy"
+    STALE_PENDING = "stale_pending"
+    SCOPE_INVALID = "scope_invalid"
+    INTERNAL_ERROR = "internal_error"
+
+
 class FileStorageBackend(StrEnum):
     """Physical storage class for a private file asset."""
 

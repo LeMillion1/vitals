@@ -91,6 +91,15 @@ MULTI_FOREIGN_KEY_TARGETS = {
     ("notifications", SUBJECT): {
         "health_subjects.id",
         "ai_invocations.subject_id",
+        "notification_delivery_intents.subject_id",
+    },
+    ("notifications", RECIPIENT): {
+        "users.id",
+        "notification_delivery_intents.recipient_user_id",
+    },
+    ("notifications", CONNECTION): {
+        "integration_connections.id",
+        "notification_delivery_intents.integration_connection_id",
     },
     ("system_alerts", SUBJECT): {
         "health_subjects.id",
@@ -500,6 +509,11 @@ def test_legacy_global_uniques_are_still_present_and_unscoped_in_models():
     for name, (table_name, columns, pg_where, sqlite_where) in (
         LEGACY_GLOBAL_UNIQUES.items()
     ):
+        # Revision 0043 deliberately replaces this global key with separate
+        # exact-owned and fully-null legacy bridges. The literal remains below
+        # because the rest of this file verifies revision 0037 itself.
+        if name == "uq_notification_dedupe_key":
+            continue
         table = Base.metadata.tables[table_name]
         objects = {
             item.name: item

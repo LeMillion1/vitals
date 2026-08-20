@@ -16,7 +16,7 @@ from vitals.ownership import (
 
 def test_every_registered_table_has_exactly_one_ownership_contract():
     assert set(OWNERSHIP_REGISTRY) == set(Base.metadata.tables)
-    assert len(OWNERSHIP_REGISTRY) == 60
+    assert len(OWNERSHIP_REGISTRY) == 61
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -61,6 +61,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "integration_connection_settings",
         "integration_connections",
         "legacy_openrouter_connection_bridges",
+        "notification_delivery_intents",
         "platform_integration_connections",
         "platform_settings",
         "shared_reports",
@@ -100,6 +101,16 @@ def test_platform_ai_contract_keeps_control_and_subject_use_separate():
     assert bridge.ownership is OwnershipClass.PLATFORM_CONTROL_CHILD
     assert bridge.connection is TargetColumn.REQUIRED
     assert bridge.platform_connection is TargetColumn.REQUIRED
+
+
+def test_notification_delivery_intent_is_nonportable_subject_control():
+    intent = OWNERSHIP_REGISTRY["notification_delivery_intents"]
+
+    assert intent.ownership is OwnershipClass.SUBJECT_CONTROL
+    assert intent.subject is TargetColumn.REQUIRED
+    assert intent.actor is TargetColumn.OPTIONAL
+    assert intent.connection is TargetColumn.REQUIRED
+    assert intent.user_portable is False
 
 
 def test_portability_exclusions_follow_the_registry_contract():

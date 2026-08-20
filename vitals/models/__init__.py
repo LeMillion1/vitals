@@ -95,8 +95,8 @@ from vitals.models.timeline import Annotation
 # Signals — free-text capture ("how it actually felt") + per-day context.
 from vitals.models.signals import DayContext, Signal
 
-# Proactive layer — journal of every message the app sent out.
-from vitals.models.proactive import Notification
+# Proactive layer — durable outbound claims plus sent-message journal.
+from vitals.models.proactive import Notification, NotificationDeliveryIntent
 
 # Doctor reports — frozen snapshots published behind a password.
 from vitals.models.share import SharedReport
@@ -165,5 +165,6 @@ __all__ = [
     "Signal",
     "DayContext",
     "Notification",
+    "NotificationDeliveryIntent",
     "SharedReport",
 ]
