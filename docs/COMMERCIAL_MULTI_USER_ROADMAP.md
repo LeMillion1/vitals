@@ -117,10 +117,10 @@ legacy secret file/process environment. If commit fails after that environment
 write, the outcome is treated as ambiguous: the credential is cleared and an
 operator must reconcile the intended database root before re-entering it. The
 kill switch and quotas govern migrated platform consumers only—currently Weekly
-Digest, Daily Brief, Signals parsing/recovery, and Telegram question replies.
-Historical subject-owned OpenRouter roots remain only for unmigrated
-document-parser consumers and
-readable legacy provenance until those invocation-ledger cutovers are complete.
+Digest, Daily Brief, Signals parsing/recovery, Telegram question replies, and
+Labs document recognition. Historical subject-owned OpenRouter roots remain only
+for unmigrated Body Scan parsing and readable legacy provenance until that last
+document-parser cutover is complete.
 
 Every paid call follows `prepare/reserve -> commit -> provider I/O -> fresh
 finalize/persist`. No database lock spans OpenRouter. `AIInvocation` reserves a
@@ -291,10 +291,15 @@ Implementation progress on `commercial/main`:
   manual/MCP source provenance; plateau evaluation uses subject-scoped
   phase/Weight/noise reads and actorless alert reconciliation.
   Labs manual, MCP, and upload-confirmation writes dual-write S+A; MCP inputs are
-  raw-first with C/F null, while parser facts currently validate the
-  subject/uploader, historical subject OpenRouter C, and lab-document F chain.
-  The platform-AI cutover preserves this C as legacy provenance and links new
-  parser attempts through `AIInvocation`. Direct Labs reads and
+  raw-first with C/F null. New document uploads commit exact S+A+F with C null
+  and reserve a raw-bound platform `LAB_DOCUMENT_PARSE` invocation before any
+  provider call. Local PDF conversion completes before charge; start/charge and
+  final accounting/extraction are separate short transactions around exactly one
+  usage-aware vision await, and transient finalization retries reuse the same
+  paid in-memory completion. Parser facts accept
+  that exact successful invocation graph or the historical subject/uploader,
+  subject-OpenRouter-C, and lab-document-F chain. Failed/in-flight placeholders
+  remain auditable but cannot enter replay. Direct Labs reads and
   mutations, derived alerts, startup marker seeding, and nightly replay use the
   same exact-one subject boundary.
   HRT doses, side effects, cycles, child plans, and templates now use the same

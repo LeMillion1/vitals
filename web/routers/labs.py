@@ -8,40 +8,32 @@ import logging
 import os
 import uuid
 from datetime import date as date_type
-from urllib.parse import urlencode
 from typing import Optional
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.config import load_config
 from vitals.enums import (
+    AIInvocationStatus,
     Domain,
-    FileAssetPurpose,
-    IntegrationConnectionType,
-    IntegrationProvider,
-    Source,
 )
 from vitals.i18n import t
-from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import (
+    ai_gateway_service,
     alerts_service,
     conflict_engine,
-    file_asset_service,
+    lab_document_ai_service,
     labs_service,
-    raw_payload_service,
 )
 from vitals.services.conflict_engine import ConflictBlocked
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
-from vitals.services.upload_ownership_service import require_live_upload_connection
 from web.deps import get_session, require_auth
 from web.ratelimit import rate_limit
 from web.templating import STATIC_DIR, templates
 from web.uploads import (
     DOC_EXTS,
-    file_ext,
     legacy_upload_disk_path,
     read_capped,
     validate_extension,
@@ -130,6 +122,10 @@ async def labs_dashboard(
     )
 
     out_of_range = sum(1 for r in latest if labs_service.is_out_of_range(r.flag))
+    ai_availability = await lab_document_ai_service.project_lab_ai_availability(
+        db,
+        actor_username=username,
+    )
     await db.commit()
 
     return templates.TemplateResponse(
@@ -143,7 +139,7 @@ async def labs_dashboard(
             "selected": selected,
             "series": {"points": history},
             "out_of_range": out_of_range,
-            "llm_configured": bool(load_config().openrouter_api_key),
+            "llm_configured": ai_availability.available,
             "today": today.isoformat(),
             "upload": request.query_params.get("upload"),
             "added": request.query_params.get("added"),
@@ -244,105 +240,59 @@ async def upload_document(
     the client, each getting its own preview."""
     from vitals.utils.timeutils import today_local
 
-    # This is a read-only preflight before any file bytes or PHI leave the
-    # process. Release its transaction before the OpenRouter await; roots are
-    # resolved again under the durable write transaction below.
-    preflight_ownership = await resolve_legacy_ownership_context(
-        db,
-        actor_username=username,
-        required_connections=(IntegrationProvider.OPENROUTER,),
-    )
-    await require_live_upload_connection(
-        db,
-        identity=preflight_ownership.owner_action(),
-        connection_id=preflight_ownership.connection_id(
-            IntegrationProvider.OPENROUTER
-        ),
-        provider=IntegrationProvider.OPENROUTER,
-        connection_type=IntegrationConnectionType.AI_GATEWAY,
-    )
-    await db.rollback()
-
-    # 415/413 surface as HTTP errors (handled by the client's error branch).
-    validate_extension(file.filename, DOC_EXTS)
+    # Validate/cap and persist private bytes before taking governance locks. The
+    # first database phase either durably attaches these bytes to F/raw or rolls
+    # back and removes them; no provider call happens until that phase commits.
+    ext = validate_extension(file.filename, DOC_EXTS)
     contents = await read_capped(file)
-
-    try:
-        llm = LLMClient()
-    except LLMNotConfigured:
-        return JSONResponse({"ok": False, "reason": "not_configured", "message": t("labs.upload_not_configured")})
-
-    try:
-        extracted = await labs_service.extract_from_file(
-            contents,
-            llm=llm,
-            content_type=file.content_type or "image/jpeg",
-            filename=file.filename,
+    media_type = (
+        "application/pdf"
+        if ext == ".pdf"
+        else (
+            file.content_type
+            if (file.content_type or "").lower().startswith("image/")
+            else "image/jpeg"
         )
-    except LLMNotConfigured:
-        return JSONResponse({"ok": False, "reason": "not_configured", "message": t("labs.upload_not_configured")})
-    except Exception as e:  # noqa: BLE001 — surface parse failures softly
-        logger.warning("Lab extraction failed for %s: %s", file.filename, e)
-        return JSONResponse({"ok": False, "reason": "error", "message": t("labs.upload_error")})
-
-    # Persist the original document for reference (served at /static/uploads/...).
-    # Written only once extraction succeeded: on the failure branches above no DB
-    # row references the file, so writing first left unreferenced files piling up
-    # on disk with nothing pointing at them.
-    ext = file_ext(file.filename) or ".bin"
+    )
     file_key = f"labs/{uuid.uuid4().hex}{ext}"
     file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    prepared = None
     try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "wb") as fh:
             fh.write(contents)
-
-        try:
-            lab_date = date_type.fromisoformat(str(extracted.get("date"))[:10])
-        except (ValueError, TypeError):
-            lab_date = today_local()
-        conflict_context, _prepared = await _prepared_owner_write(
-            db,
-            username=username,
-            evaluation_date=lab_date,
-        )
-        ownership = await resolve_legacy_ownership_context(
+        prepared = await lab_document_ai_service.prepare_lab_document_parse(
             db,
             actor_username=username,
-            required_connections=(IntegrationProvider.OPENROUTER,),
-        )
-        identity = ownership.owner_action()
-        if identity != conflict_context.identity:
-            raise ValueError("lab upload identity changed during extraction")
-        openrouter_connection_id = ownership.connection_id(
-            IntegrationProvider.OPENROUTER
-        )
-        await require_live_upload_connection(
-            db,
-            identity=identity,
-            connection_id=openrouter_connection_id,
-            provider=IntegrationProvider.OPENROUTER,
-            connection_type=IntegrationConnectionType.AI_GATEWAY,
-        )
-        asset = await file_asset_service.register_legacy_local(
-            db,
-            subject_id=identity.subject_id,
-            uploaded_by_user_id=identity.actor_user_id,
-            purpose=FileAssetPurpose.LAB_DOCUMENT,
             storage_ref=file_key,
-            media_type=file.content_type or None,
-            size_bytes=len(contents),
-            content_sha256=hashlib.sha256(contents).hexdigest(),
+            media_type=media_type,
+            byte_size=len(contents),
+            sha256_hex=hashlib.sha256(contents).hexdigest(),
         )
-        raw_row = await raw_payload_service.upsert_owned_raw_payload(
-            db,
-            identity=identity,
-            integration_connection_id=openrouter_connection_id,
-            file_asset_id=asset.id,
-            domain=Domain.LABS.value,
-            source=Source.LAB_PARSER.value,
-            external_id=file_key,
-            payload=extracted,
+    except (
+        ai_gateway_service.AIGatewayConfigurationError,
+        ai_gateway_service.AIQuotaExceededError,
+    ) as exc:
+        await db.rollback()
+        try:
+            os.remove(file_path)
+        except FileNotFoundError:
+            pass
+        reason = (
+            "quota"
+            if isinstance(exc, ai_gateway_service.AIQuotaExceededError)
+            else "not_configured"
+        )
+        return JSONResponse(
+            {
+                "ok": False,
+                "reason": reason,
+                "message": (
+                    t("labs.upload_quota")
+                    if reason == "quota"
+                    else t("labs.upload_not_configured")
+                ),
+            }
         )
     except BaseException:
         try:
@@ -368,10 +318,135 @@ async def upload_document(
         except BaseException:
             logger.exception("Could not reset session after lab-upload commit failure")
         logger.exception(
-            "Lab-upload commit outcome is ambiguous; preserved uploaded bytes"
+            "Lab-upload preparation commit is ambiguous; preserved uploaded bytes"
         )
         raise
 
+    assert prepared is not None
+    if prepared.reservation_status is AIInvocationStatus.SUCCEEDED:
+        extracted = prepared.existing_extracted
+    elif not prepared.dispatchable:
+        return JSONResponse(
+            {"ok": False, "reason": "pending", "message": t("labs.upload_error")}
+        )
+    else:
+        try:
+            prepared_content = (
+                lab_document_ai_service.prepare_lab_document_content(
+                    prepared,
+                    file_bytes=contents,
+                )
+            )
+        except lab_document_ai_service.LabDocumentAIValidationError:
+            try:
+                await lab_document_ai_service.cancel_prepared_lab_document_parse(
+                    db,
+                    prepared,
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                logger.warning(
+                    "Could not release a locally invalid lab AI reservation"
+                )
+            return JSONResponse(
+                {"ok": False, "reason": "error", "message": t("labs.upload_error")}
+            )
+        try:
+            lease = await lab_document_ai_service.start_lab_document_dispatch(
+                db,
+                prepared,
+                content=prepared_content,
+            )
+            await db.commit()
+        except (
+            ai_gateway_service.AIGatewayConfigurationError,
+            ai_gateway_service.AIQuotaExceededError,
+        ) as exc:
+            await db.rollback()
+            try:
+                await lab_document_ai_service.cancel_prepared_lab_document_parse(
+                    db,
+                    prepared,
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                logger.warning(
+                    "Could not release a zero-network lab AI reservation"
+                )
+            reason = (
+                "quota"
+                if isinstance(exc, ai_gateway_service.AIQuotaExceededError)
+                else "not_configured"
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "reason": reason,
+                    "message": (
+                        t("labs.upload_quota")
+                        if reason == "quota"
+                        else t("labs.upload_not_configured")
+                    ),
+                }
+            )
+        completion = await lab_document_ai_service.render_lab_document(
+            prepared,
+            lease,
+            file_bytes=contents,
+            content=prepared_content,
+        )
+        result = None
+        for attempt in range(2):
+            try:
+                result = await lab_document_ai_service.persist_lab_document_parse(
+                    db,
+                    prepared,
+                    completion,
+                )
+                break
+            except Exception:
+                await db.rollback()
+                if attempt == 0:
+                    logger.warning(
+                        "Retrying transient lab AI finalization with the same "
+                        "paid completion"
+                    )
+                    continue
+                logger.exception("Lab AI finalization failed after internal retry")
+                raise
+        assert result is not None
+        try:
+            await db.commit()
+        except BaseException:
+            # If COMMIT reached PostgreSQL, rolling back locally cannot undo it.
+            # Preserve the file and surface the ambiguity instead of inviting a
+            # second paid upload with the same medical document.
+            try:
+                await db.rollback()
+            except BaseException:
+                logger.exception("Could not reset failed lab AI finalization")
+            logger.exception("Lab AI finalization commit outcome is ambiguous")
+            raise
+        if result.status is not AIInvocationStatus.SUCCEEDED:
+            logger.warning(
+                "Lab AI extraction ended with status %s",
+                result.status.value,
+            )
+            return JSONResponse(
+                {"ok": False, "reason": "error", "message": t("labs.upload_error")}
+            )
+        extracted = result.extracted
+
+    if not isinstance(extracted, dict):
+        return JSONResponse(
+            {"ok": False, "reason": "error", "message": t("labs.upload_error")}
+        )
+    try:
+        lab_date = date_type.fromisoformat(str(extracted.get("date"))[:10])
+    except (ValueError, TypeError):
+        lab_date = today_local()
     rows = labs_service.normalize_extracted(extracted)
 
     return JSONResponse({
@@ -380,7 +455,7 @@ async def upload_document(
             "date": lab_date.isoformat(),
             "lab_name": extracted.get("lab_name"),
             "file_key": file_key,
-            "raw_payload_id": raw_row.id,
+            "raw_payload_id": prepared.raw_payload_id,
             "markers": rows,
         },
     })

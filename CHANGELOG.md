@@ -43,7 +43,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   a commit error after an environment write clears the credential and requires
   explicit reconciliation rather than guessing an ambiguous database outcome,
   and only migrated platform consumers (currently Weekly Digest, Daily Brief,
-  Signals parsing, and Telegram question replies) are governed;
+  Signals parsing, Telegram question replies, and Labs recognition) are governed;
   legacy subject OpenRouter roots remain available during their cutover.
 - Weekly digests now use that centrally funded gateway without granting the
   superadmin health-data access. Web, MCP, and scheduler generation reserve a
@@ -100,6 +100,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   IDs, so Telegram cannot copy a memory-only AI answer back into raw history.
   The remaining check/send/journal race still requires
   PR-09's durable outbound intent before registration opens.
+- Lab-document recognition now uses the centrally funded platform gateway and
+  no longer requires or writes a subject-owned OpenRouter connection. The
+  upload stores private bytes first, then commits exact S+A+F and a C-null raw
+  placeholder with a raw-bound WEB invocation; local PDF conversion completes
+  before start/charge, then one usage-aware vision call runs without a database
+  transaction. Sanitized accounting plus the verbatim validated extraction
+  replace the placeholder atomically, with the same paid in-memory completion
+  retried after a transient finalization rollback. Failed or ambiguous calls keep
+  the file/raw roots for audit without exposing provider errors, and the nightly
+  replay skips every platform raw unless its exact Labs invocation succeeded.
+  Confirmation and replay continue to accept validated historical C-backed
+  uploads, while the dashboard now reports redacted platform-root/quota
+  readiness instead of environment-key presence.
 - Browser sessions now use a strict versioned envelope while accepting existing
   signed bare-username cookies for their normal TTL. The public auth dependency
   remains compatible, and cookies contain no roles, subject IDs, grants, or PHI.

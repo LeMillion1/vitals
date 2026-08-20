@@ -85,7 +85,7 @@ pending and the scoped service refuses to mutate the global `active` flag.
 | Garmin API / Health Auto Export | S; optional triggering A; Garmin C; no F | Daily/activity/intraday copy S+A+C. |
 | Hevy | S; optional triggering A; Hevy C; no F | Workout copies S+A+C; exercises/sets copy S+C. |
 | Telegram | S+A+Telegram C; no F | Signals/day context copy the raw ownership. |
-| Lab document | S+A+lab F plus AIInvocation when AI parsing ran | Results/markers use raw S/A; F remains on raw. AIInvocation links the subject to the platform OpenRouter gateway and paid-call metadata. |
+| Lab document | S+A+lab F; C null; exact LAB_DOCUMENT_PARSE AIInvocation | Results/markers use raw S/A; F remains on raw. AIInvocation links the subject to the platform OpenRouter gateway and paid-call metadata. Historical subject-C uploads remain dual-read provenance only. |
 | Body-scan document | S+A+body F plus AIInvocation when AI parsing ran | Scan uses raw S/A/F; metrics copy S. Derived Weight follows the raw/invocation chain rather than pretending the platform gateway is a subject provider. |
 | Structured MCP lab/body input | S+A; C/F null | Normalized rows use the supplied write identity. |
 | VCF | S+A; C/F null | Curated variants link to that raw row. |
@@ -137,9 +137,10 @@ delete the ownership root.
 
 The Stage-2 upload slice now registers progress photos, lab documents, and body-
 scan documents in the same caller-owned database transaction as their normalized
-or raw rows. During the bridge, Lab/body raw rows carry S+A+historical subject
-OpenRouter C+F; the platform-AI cutover replaces new direct C writes with an
-AIInvocation link. Confirmation locks and
+or raw rows. New Labs raw rows carry S+A+F, C null, and a raw-bound platform
+AIInvocation; historical Labs and current Body Scan bridge rows retain their
+subject OpenRouter C+F until their respective dual-read/cutover completes.
+Confirmation locks and
 validates the S -> raw -> F chain and derives the storage reference from the
 server-side asset. Subject-scoped delete paths retire the asset before removing
 legacy-local bytes. A failure before COMMIT rolls metadata back and removes the
@@ -209,9 +210,16 @@ and writes an actorless health alert. Labs manual, MCP, and upload-confirmation
 writes now use the prepared boundary before marker/result/raw/file locks. Direct
 Labs CRUD and notes are exact-S, the fully-NULL bridge rejects partial roots,
 single and batch MCP writes persist Source.MCP raw rows before normalization, and
-parser replay currently validates S/A plus the historical subject OpenRouter C
-and LAB_DOCUMENT F
-chain. Labs out-of-range/retest reconciliation and the startup marker seed are
+parser replay validates either the historical S/A+subject-OpenRouter-C+F chain
+or the new S/A+F+C-null raw with one exact successful platform Labs invocation.
+Local PDF conversion finishes before start/charge. Reservation and charge commit
+before the single usage-aware vision call; accounting and the verbatim validated
+extraction replace the raw placeholder in one later transaction, and a transient
+rollback retries that same paid in-memory completion rather than dispatching
+again. Failed/in-flight placeholders are retained for audit but are skipped by
+replay and never normalized; malformed head rows cannot starve later eligible
+panels. Labs out-of-range/retest
+reconciliation and the startup marker seed are
 actorless subject actions. Labs chart/share/digest/overview/export consumers still
 belong to the subject-aware composition cutover and cannot serve a second writable
 subject. Direct WeightLog web/MCP create, edit, note, and delete paths now use the
@@ -368,9 +376,10 @@ configures one platform period plus one exactly aligned opaque-S period in a
 single caller-owned transaction. Its read model contains only gateway
 status/version, opaque S identifiers, dates, limits, and counters; it never joins
 subject profiles or generated artifacts. This control surface does not change
-the legacy subject OpenRouter dual-read/write entries elsewhere in this matrix:
-until each consumer adopts `AIInvocation`, the platform kill switch and quotas
-cannot be described as universal AI enforcement.
+the remaining legacy subject OpenRouter dual-read/write entries elsewhere in
+this matrix: until Body Scan and compatibility-only adapters adopt
+`AIInvocation`, the platform kill switch and quotas cannot be described as
+universal AI enforcement.
 
 Garmin and Hevy runtime ingestion now resolves S plus the provider C before
 network persistence, copies raw provenance into normalized parents and children,

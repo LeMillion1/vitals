@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.datastructures import Headers, UploadFile
 from starlette.requests import Request
 
+from vitals.integrations.llm_client import LLMCallResult
 from vitals.enums import (
     Domain,
     FileAssetPurpose,
@@ -38,7 +39,6 @@ from vitals.services import (
     raw_payload_service,
     supplements_service,
 )
-from vitals.services.upload_ownership_service import UploadOwnershipError
 
 
 RESULT_DATE = date(2026, 8, 19)
@@ -260,6 +260,7 @@ async def test_lab_upload_releases_preflight_transaction_before_llm(
     db_session,
     legacy_owner_roots,
     monkeypatch,
+    platform_ai_ready,
 ):
     from web.routers import labs as labs_router
 
@@ -270,8 +271,11 @@ async def test_lab_upload_releases_preflight_transaction_before_llm(
         observed.append(db_session.in_transaction())
         raise RuntimeError("synthetic stop before persistence")
 
-    monkeypatch.setattr(labs_router, "LLMClient", lambda: object())
-    monkeypatch.setattr(labs_service, "extract_from_file", extraction_probe)
+    monkeypatch.setattr(
+        labs_service,
+        "extract_from_file_with_usage",
+        extraction_probe,
+    )
     response = await labs_router.upload_document(
         request=Request(
             {"type": "http", "method": "POST", "path": "/labs/upload", "headers": []}
@@ -284,19 +288,20 @@ async def test_lab_upload_releases_preflight_transaction_before_llm(
     assert observed == [False]
     assert response.status_code == 200
     assert b'"reason":"error"' in response.body
-    assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 0
-    assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 1
+    assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 1
 
 
 @pytest.mark.parametrize(
     "connection_status",
     [IntegrationConnectionStatus.PENDING, IntegrationConnectionStatus.DISABLED],
 )
-async def test_lab_upload_rejects_inactive_openrouter_before_network(
+async def test_lab_upload_ignores_inactive_historical_subject_openrouter(
     db_session,
     legacy_owner_roots,
     monkeypatch,
     connection_status,
+    platform_ai_ready,
 ):
     from web.routers import labs as labs_router
 
@@ -307,26 +312,34 @@ async def test_lab_upload_rejects_inactive_openrouter_before_network(
     await db_session.commit()
     calls = []
 
-    def network_constructor():
+    async def extraction_probe(*args, **kwargs):
+        del args, kwargs
         calls.append("llm")
-        raise AssertionError("LLM construction must not happen")
-
-    monkeypatch.setattr(labs_router, "LLMClient", network_constructor)
-    with pytest.raises(UploadOwnershipError, match="inactive upload connection"):
-        await labs_router.upload_document(
-            request=Request(
-                {
-                    "type": "http",
-                    "method": "POST",
-                    "path": "/labs/upload",
-                    "headers": [],
-                }
-            ),
-            file=_upload(),
-            db=db_session,
-            username="tester",
+        return LLMCallResult(
+            value={"date": RESULT_DATE.isoformat(), "lab_name": None, "results": []},
+            upstream_request_id="subject-c-is-historical-only",
+            model="synthetic/model",
+            input_tokens=1,
+            output_tokens=1,
+            cost_microunits=1,
         )
-    assert calls == []
+
+    monkeypatch.setattr(
+        labs_service,
+        "extract_from_file_with_usage",
+        extraction_probe,
+    )
+    response = await labs_router.upload_document(
+        request=Request(
+            {"type": "http", "method": "POST", "path": "/labs/upload", "headers": []}
+        ),
+        file=_upload(),
+        db=db_session,
+        username="tester",
+    )
+    assert response.status_code == 200
+    assert b'"ok":true' in response.body
+    assert calls == ["llm"]
 
 
 async def test_startup_hormone_seed_receives_one_subject_system_capability(
@@ -596,6 +609,75 @@ async def test_owned_raw_replay_savepoint_isolates_partial_row_failure(
     await db_session.refresh(second)
     assert first.processed_at is None
     assert second.processed_at is not None
+
+
+async def test_owned_raw_replay_scans_past_full_malformed_head_batch(
+    db_session,
+    legacy_owner_roots,
+):
+    """Malformed C-backed roots stay isolated without starving a later valid raw."""
+
+    human = _identity(legacy_owner_roots)
+    connection = await _openrouter_connection(db_session, human.subject_id)
+    malformed = []
+    for index in range(raw_payload_service.REPARSE_BATCH + 1):
+        row = RawPayload(
+            subject_id=human.subject_id,
+            actor_user_id=human.actor_user_id,
+            integration_connection_id=connection.id,
+            file_asset_id=None,
+            domain=Domain.LABS.value,
+            source=Source.LAB_PARSER.value,
+            external_id=f"labs/malformed-head-{index}.png",
+            payload={
+                "date": RESULT_DATE.isoformat(),
+                "lab_name": "Malformed Synthetic Lab",
+                "results": [{"marker": f"Bad {index}", "value": index + 1}],
+            },
+            processed_at=None,
+        )
+        db_session.add(row)
+        malformed.append(row)
+    await db_session.flush()
+    valid = await _owned_parser_raw(
+        db_session,
+        identity=human,
+        connection=connection,
+        suffix="e-valid-after-malformed-head",
+        marker="Valid after malformed head",
+    )
+    malformed_ids = [row.id for row in malformed]
+    valid_id = valid.id
+    await db_session.commit()
+
+    system = _identity(legacy_owner_roots, system=True)
+    prepared = await _prepared(
+        db_session,
+        _context(system, on_date=BOUNDARY_DATE),
+    )
+    done = await labs_service.reparse_owned_pending(
+        db_session,
+        identity=system,
+        prepared_conflict_write=prepared,
+        limit=raw_payload_service.REPARSE_BATCH,
+    )
+
+    assert done == 1
+    result = await db_session.scalar(
+        select(LabResult).where(LabResult.raw_payload_id == valid_id)
+    )
+    assert result is not None and result.marker == "Valid after malformed head"
+    assert await db_session.scalar(
+        select(func.count()).select_from(LabResult).where(
+            LabResult.raw_payload_id.in_(malformed_ids)
+        )
+    ) == 0
+    malformed_processed = list(
+        await db_session.scalars(
+            select(RawPayload.processed_at).where(RawPayload.id.in_(malformed_ids))
+        )
+    )
+    assert malformed_processed == [None] * len(malformed_ids)
 
 
 @pytest.mark.integration

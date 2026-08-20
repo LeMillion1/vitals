@@ -9,6 +9,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
+    AIInvocationPurpose,
+    AIInvocationSource,
+    AIInvocationStatus,
     Domain,
     FileAssetPurpose,
     IntegrationConnectionStatus,
@@ -17,6 +20,8 @@ from vitals.enums import (
     Source,
     UserStatus,
 )
+from vitals.integrations.llm_client import LLMCallResult
+from vitals.models.ai import AIInvocation
 from vitals.models.body_scan import BodyScan, BodyScanMetric
 from vitals.models.identity import HealthSubject, User
 from vitals.models.labs import LabMarker, LabResult
@@ -25,9 +30,11 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import ProgressPhoto, WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.services import (
+    ai_gateway_service,
     body_scan_service,
     conflict_engine,
     file_asset_service,
+    lab_document_ai_service,
     labs_service,
     raw_payload_service,
     weight_service,
@@ -513,6 +520,24 @@ async def _fake_lab_extract(contents, *, llm, content_type, filename=None):
     }
 
 
+async def _fake_lab_extract_with_usage(
+    contents, *, llm, content_type, filename=None, model, max_tokens
+):
+    return LLMCallResult(
+        value=await _fake_lab_extract(
+            contents,
+            llm=llm,
+            content_type=content_type,
+            filename=filename,
+        ),
+        upstream_request_id="synthetic-lab-upload",
+        model=model,
+        input_tokens=10,
+        output_tokens=10,
+        cost_microunits=1,
+    )
+
+
 async def _fake_body_extract(contents, *, llm, content_type, filename=None):
     return {
         "date": "2026-08-19",
@@ -547,14 +572,20 @@ def synthetic_upload_cleanup():
 
 
 async def test_lab_precommit_failure_rolls_back_metadata_and_removes_bytes(
-    auth_client, db_session, monkeypatch, synthetic_upload_cleanup
+    auth_client,
+    db_session,
+    monkeypatch,
+    synthetic_upload_cleanup,
+    platform_ai_ready,
 ):
-    monkeypatch.setattr(labs_service, "extract_from_file", _fake_lab_extract)
-
-    async def fail_raw(*args, **kwargs):
+    async def fail_reservation(*args, **kwargs):
         raise RuntimeError("synthetic pre-commit failure")
 
-    monkeypatch.setattr(raw_payload_service, "upsert_owned_raw_payload", fail_raw)
+    monkeypatch.setattr(
+        ai_gateway_service,
+        "reserve_ai_invocation",
+        fail_reservation,
+    )
     before = _directory_snapshot("labs")
     with pytest.raises(RuntimeError, match="pre-commit"):
         await auth_client.post(
@@ -565,6 +596,162 @@ async def test_lab_precommit_failure_rolls_back_metadata_and_removes_bytes(
     assert _directory_snapshot("labs") == before
     assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 0
     assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
+
+
+async def test_lab_partial_file_write_failure_removes_sensitive_bytes(
+    auth_client,
+    db_session,
+    monkeypatch,
+    synthetic_upload_cleanup,
+):
+    """A short disk write must not leave an untracked medical document behind."""
+
+    real_open = open
+    uploads_root = os.path.realpath(os.path.join(STATIC_DIR, "uploads", "labs"))
+
+    class PartialWrite:
+        def __init__(self, path):
+            self._file = real_open(path, "wb")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self._file.close()
+
+        def write(self, contents):
+            self._file.write(contents[:4])
+            self._file.flush()
+            raise OSError("synthetic partial lab write")
+
+    def partial_open(path, mode="r", *args, **kwargs):
+        if mode == "wb" and os.path.realpath(path).startswith(uploads_root + os.sep):
+            return PartialWrite(path)
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", partial_open)
+    before = _directory_snapshot("labs")
+
+    with pytest.raises(OSError, match="partial lab write"):
+        await auth_client.post(
+            "/labs/upload",
+            files={"file": ("panel.png", b"synthetic-private-lab", "image/png")},
+        )
+
+    assert _directory_snapshot("labs") == before
+    assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
+
+
+async def test_lab_local_pdf_failure_releases_unpaid_invocation(
+    auth_client,
+    db_session,
+    monkeypatch,
+    synthetic_upload_cleanup,
+    platform_ai_ready,
+):
+    """PDF conversion before provider I/O must neither charge nor look ambiguous."""
+
+    provider_calls = []
+
+    def fail_pdf_conversion(_contents):
+        raise ValueError("synthetic malformed PDF")
+
+    class ProviderProbe:
+        def __init__(self, _config):
+            pass
+
+        async def extract_json_with_usage(self, *args, **kwargs):
+            del args, kwargs
+            provider_calls.append("provider")
+            raise AssertionError("provider must not run after local PDF failure")
+
+    monkeypatch.setattr(labs_service, "_pdf_pages_png", fail_pdf_conversion)
+    monkeypatch.setattr(
+        lab_document_ai_service,
+        "LLMClient",
+        ProviderProbe,
+    )
+
+    response = await auth_client.post(
+        "/labs/upload",
+        files={"file": ("broken.pdf", b"not-a-valid-pdf", "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert provider_calls == []
+    invocation = await db_session.scalar(select(AIInvocation))
+    assert invocation is not None
+    assert invocation.status == AIInvocationStatus.CANCELLED.value
+    assert invocation.charged_cost_microunits == 0
+    assert invocation.charged_units == 0
+
+
+async def test_lab_t3_transient_failure_reuses_completion_without_second_call(
+    auth_client,
+    db_session,
+    monkeypatch,
+    synthetic_upload_cleanup,
+    platform_ai_ready,
+):
+    """A rollback-safe paid completion is finalized again, never redispatched."""
+
+    provider_calls = 0
+    persist_attempts = 0
+
+    async def extraction_probe(
+        contents, *, llm, content_type, filename=None, model, max_tokens
+    ):
+        del contents, llm, content_type, filename, max_tokens
+        nonlocal provider_calls
+        provider_calls += 1
+        return LLMCallResult(
+            value={
+                "date": "2026-08-19",
+                "lab_name": "Synthetic Lab",
+                "results": [{"marker": "Ferritin", "value": 90}],
+            },
+            upstream_request_id="synthetic-t3-retry",
+            model=model,
+            input_tokens=10,
+            output_tokens=5,
+            cost_microunits=1,
+        )
+
+    real_persist = lab_document_ai_service.persist_lab_document_parse
+
+    async def transient_persist(session, prepared, completion):
+        nonlocal persist_attempts
+        persist_attempts += 1
+        result = await real_persist(session, prepared, completion)
+        if persist_attempts == 1:
+            raise RuntimeError("synthetic transient T3 failure")
+        return result
+
+    monkeypatch.setattr(
+        labs_service,
+        "extract_from_file_with_usage",
+        extraction_probe,
+    )
+    monkeypatch.setattr(
+        lab_document_ai_service,
+        "persist_lab_document_parse",
+        transient_persist,
+    )
+
+    response = await auth_client.post(
+        "/labs/upload",
+        files={"file": ("panel.png", b"synthetic-lab", "image/png")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert persist_attempts == 2
+    assert provider_calls == 1
+    invocation = await db_session.scalar(select(AIInvocation))
+    assert invocation is not None
+    assert invocation.status == AIInvocationStatus.SUCCEEDED.value
 
 
 async def test_progress_precommit_failure_rolls_back_metadata_and_removes_bytes(
@@ -610,6 +797,7 @@ async def test_document_commit_ambiguity_preserves_committed_metadata_and_bytes(
     fake_extract,
     file_name,
     synthetic_upload_cleanup,
+    platform_ai_ready,
 ):
     monkeypatch.setattr(extract_service, "extract_from_file", fake_extract)
     real_commit = db_session.commit
@@ -666,9 +854,17 @@ async def test_progress_commit_ambiguity_preserves_committed_metadata_and_bytes(
 
 
 async def test_web_document_upload_stamps_openrouter_connection(
-    auth_client, db_session, monkeypatch, synthetic_upload_cleanup
+    auth_client,
+    db_session,
+    monkeypatch,
+    synthetic_upload_cleanup,
+    platform_ai_ready,
 ):
-    monkeypatch.setattr(labs_service, "extract_from_file", _fake_lab_extract)
+    monkeypatch.setattr(
+        labs_service,
+        "extract_from_file_with_usage",
+        _fake_lab_extract_with_usage,
+    )
     response = await auth_client.post(
         "/labs/upload",
         files={"file": ("panel.png", b"synthetic-lab", "image/png")},
@@ -677,15 +873,27 @@ async def test_web_document_upload_stamps_openrouter_connection(
     payload = response.json()["lab"]
     raw = await db_session.get(RawPayload, payload["raw_payload_id"])
     asset = await db_session.get(FileAsset, raw.file_asset_id)
-    connection = await db_session.get(
-        IntegrationConnection, raw.integration_connection_id
+    invocation = await db_session.scalar(
+        select(AIInvocation).where(AIInvocation.raw_payload_id == raw.id)
     )
     owner = await db_session.get(User, raw.actor_user_id)
 
     assert raw.subject_id == asset.subject_id
     assert raw.actor_user_id == asset.uploaded_by_user_id
     assert owner is not None and owner.normalized_username == "tester"
-    assert connection is not None
-    assert connection.provider == IntegrationProvider.OPENROUTER.value
-    assert connection.subject_id == raw.subject_id
+    assert raw.integration_connection_id is None
+    assert invocation is not None
+    assert (
+        invocation.subject_id,
+        invocation.actor_user_id,
+        invocation.purpose,
+        invocation.source,
+        invocation.status,
+    ) == (
+        raw.subject_id,
+        raw.actor_user_id,
+        AIInvocationPurpose.LAB_DOCUMENT_PARSE.value,
+        AIInvocationSource.WEB.value,
+        AIInvocationStatus.SUCCEEDED.value,
+    )
     assert asset.storage_ref == payload["file_key"]

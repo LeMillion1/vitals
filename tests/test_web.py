@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from sqlalchemy import select
 
+from vitals.integrations.llm_client import LLMCallResult
 from vitals.models.app_settings import AppSetting
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.labs import LabResult
@@ -970,7 +971,7 @@ async def test_garmin_activities_card_shows_distance_calories_hr(auth_client, db
     assert "168" in response.text
 
 
-async def test_labs_dashboard_renders(auth_client, monkeypatch):
+async def test_labs_dashboard_renders(auth_client, monkeypatch, platform_ai_ready):
     """GET /labs returns the labs dashboard structure."""
     monkeypatch.setenv("VITALS_OPENROUTER_API_KEY", "")
     response = await auth_client.get("/labs", headers={"Accept": "text/html"})
@@ -1106,16 +1107,20 @@ async def test_labs_upload_without_llm_returns_json(auth_client):
     assert data["message"]
 
 
-async def test_labs_upload_extraction_failure_returns_error_json(auth_client, monkeypatch):
+async def test_labs_upload_extraction_failure_returns_error_json(
+    auth_client, monkeypatch, platform_ai_ready
+):
     """A file that fails vision extraction surfaces ok:false/reason:error in the
     JSON response (the original failure-signalling intent, now at single-file
     granularity — multi-file batching moved into a client-side queue)."""
     from vitals.services import labs_service
 
-    async def fake_extract(contents, *, llm, content_type, filename=None):
+    async def fake_extract(
+        contents, *, llm, content_type, filename=None, model, max_tokens
+    ):
         raise ValueError("could not parse")
 
-    monkeypatch.setattr(labs_service, "extract_from_file", fake_extract)
+    monkeypatch.setattr(labs_service, "extract_from_file_with_usage", fake_extract)
 
     r = await auth_client.post(
         "/labs/upload",
@@ -1127,10 +1132,10 @@ async def test_labs_upload_extraction_failure_returns_error_json(auth_client, mo
     assert data["reason"] == "error"
 
 
-async def test_failed_extraction_leaves_no_orphan_file(auth_client, monkeypatch):
-    """The document used to be written to disk before extraction ran, so every
-    failed parse left a file nothing in the DB referenced — unreachable from the
-    UI and accumulating silently. Nothing is written unless the parse succeeds."""
+async def test_failed_extraction_keeps_auditable_raw_and_file(
+    auth_client, db_session, monkeypatch, platform_ai_ready
+):
+    """A paid/ambiguous parse keeps its raw-first document graph for audit."""
     import os
 
     from vitals.services import labs_service
@@ -1139,10 +1144,12 @@ async def test_failed_extraction_leaves_no_orphan_file(auth_client, monkeypatch)
     uploads = os.path.join(STATIC_DIR, "uploads", "labs")
     before = set(os.listdir(uploads)) if os.path.isdir(uploads) else set()
 
-    async def fake_extract(contents, *, llm, content_type, filename=None):
+    async def fake_extract(
+        contents, *, llm, content_type, filename=None, model, max_tokens
+    ):
         raise ValueError("could not parse")
 
-    monkeypatch.setattr(labs_service, "extract_from_file", fake_extract)
+    monkeypatch.setattr(labs_service, "extract_from_file_with_usage", fake_extract)
 
     r = await auth_client.post(
         "/labs/upload",
@@ -1151,10 +1158,17 @@ async def test_failed_extraction_leaves_no_orphan_file(auth_client, monkeypatch)
     assert r.json()["ok"] is False
 
     after = set(os.listdir(uploads)) if os.path.isdir(uploads) else set()
-    assert after == before
+    added = after - before
+    assert len(added) == 1
+    raw = await db_session.scalar(select(RawPayload))
+    assert raw is not None and raw.processed_at is None
+    for name in added:
+        os.remove(os.path.join(uploads, name))
 
 
-async def test_labs_upload_returns_preview_without_persisting_results(auth_client, db_session, monkeypatch):
+async def test_labs_upload_returns_preview_without_persisting_results(
+    auth_client, db_session, monkeypatch, platform_ai_ready
+):
     """Regression: /labs/upload must extract and return an editable preview
     without writing any LabResult — the whole point of the preview step is that
     a misread value never reaches the DB until the owner confirms it."""
@@ -1166,10 +1180,19 @@ async def test_labs_upload_returns_preview_without_persisting_results(auth_clien
         "results": [{"marker": "Ferritin", "value": 95, "unit": "ng/mL", "ref_low": 30, "ref_high": 400}],
     }
 
-    async def fake_extract(contents, *, llm, content_type, filename=None):
-        return payload
+    async def fake_extract(
+        contents, *, llm, content_type, filename=None, model, max_tokens
+    ):
+        return LLMCallResult(
+            value=payload,
+            upstream_request_id="synthetic-lab-preview",
+            model=model,
+            input_tokens=10,
+            output_tokens=10,
+            cost_microunits=1,
+        )
 
-    monkeypatch.setattr(labs_service, "extract_from_file", fake_extract)
+    monkeypatch.setattr(labs_service, "extract_from_file_with_usage", fake_extract)
 
     r = await auth_client.post(
         "/labs/upload",
@@ -1191,7 +1214,9 @@ async def test_labs_upload_returns_preview_without_persisting_results(auth_clien
     assert raw is not None and raw.processed_at is None
 
 
-async def test_labs_confirm_persists_edited_markers(auth_client, db_session, monkeypatch):
+async def test_labs_confirm_persists_edited_markers(
+    auth_client, db_session, monkeypatch, platform_ai_ready
+):
     """Regression: /labs/confirm must save the owner's edits, not the raw OCR
     values — proves the edit-before-save step actually takes effect."""
     from vitals.services import labs_service
@@ -1202,10 +1227,19 @@ async def test_labs_confirm_persists_edited_markers(auth_client, db_session, mon
         "results": [{"marker": "Ferritin", "value": 95, "unit": "ng/mL", "ref_low": 30, "ref_high": 400}],
     }
 
-    async def fake_extract(contents, *, llm, content_type, filename=None):
-        return payload
+    async def fake_extract(
+        contents, *, llm, content_type, filename=None, model, max_tokens
+    ):
+        return LLMCallResult(
+            value=payload,
+            upstream_request_id="synthetic-lab-confirm",
+            model=model,
+            input_tokens=10,
+            output_tokens=10,
+            cost_microunits=1,
+        )
 
-    monkeypatch.setattr(labs_service, "extract_from_file", fake_extract)
+    monkeypatch.setattr(labs_service, "extract_from_file_with_usage", fake_extract)
 
     upload_r = await auth_client.post(
         "/labs/upload",

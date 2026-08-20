@@ -300,3 +300,53 @@ async def auth_client(client, legacy_owner_roots):
     r = await client.post("/login", data={"username": TEST_USERNAME, "password": TEST_PASSWORD})
     assert r.status_code == 303
     return client
+
+
+@pytest_asyncio.fixture
+async def platform_ai_ready(db_session, legacy_owner_roots, monkeypatch):
+    """Provision the synthetic installation gateway and aligned owner quota."""
+
+    from datetime import date
+
+    from vitals.enums import (
+        IntegrationConnectionStatus,
+        IntegrationConnectionType,
+        IntegrationProvider,
+    )
+    from vitals.models.ai import AIPlatformQuotaPeriod, AISubjectQuotaPeriod
+    from vitals.models.tenancy import PlatformIntegrationConnection
+
+    monkeypatch.setenv("VITALS_OPENROUTER_API_KEY", "synthetic-platform-ai-key")
+    root = PlatformIntegrationConnection(
+        provider=IntegrationProvider.OPENROUTER.value,
+        connection_type=IntegrationConnectionType.AI_GATEWAY.value,
+        external_account_discriminator="synthetic-test-platform-ai",
+        credential_ref="env:VITALS_OPENROUTER_API_KEY",
+        status=IntegrationConnectionStatus.ACTIVE.value,
+        config_version=1,
+        configured_by_user_id=legacy_owner_roots.user_id,
+    )
+    period_start = date(2020, 1, 1)
+    period_end = date(2100, 1, 1)
+    db_session.add_all(
+        [
+            root,
+            AIPlatformQuotaPeriod(
+                period_start=period_start,
+                period_end=period_end,
+                cost_limit_microunits=1_000_000_000,
+                unit_limit=1_000_000_000,
+                configured_by_user_id=legacy_owner_roots.user_id,
+            ),
+            AISubjectQuotaPeriod(
+                subject_id=legacy_owner_roots.subject_id,
+                period_start=period_start,
+                period_end=period_end,
+                cost_limit_microunits=1_000_000_000,
+                unit_limit=1_000_000_000,
+                configured_by_user_id=legacy_owner_roots.user_id,
+            ),
+        ]
+    )
+    await db_session.commit()
+    return root

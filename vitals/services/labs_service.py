@@ -36,6 +36,9 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
+    AIInvocationPurpose,
+    AIInvocationSource,
+    AIInvocationStatus,
     Domain,
     FileAssetPurpose,
     IntegrationConnectionStatus,
@@ -46,6 +49,8 @@ from vitals.enums import (
     Source,
 )
 from vitals.i18n import t
+from vitals.models.ai import AIInvocation
+from vitals.models.identity import HealthSubject
 from vitals.models.labs import DOMAIN, LabMarker, LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
@@ -750,6 +755,15 @@ async def _validate_parser_upload_chain(
 ) -> None:
     """Validate Labs-specific A/C/F provenance after raw/file locks."""
 
+    owner_user_id = await session.scalar(
+        select(HealthSubject.owner_user_id).where(
+            HealthSubject.id == identity.subject_id
+        )
+    )
+    if owner_user_id is None or raw.actor_user_id != owner_user_id:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "lab parser actor is not the subject owner"
+        )
     if raw.actor_user_id != asset.uploaded_by_user_id:
         raise conflict_engine.ConflictRawOwnershipError(
             "lab parser raw actor does not match the file uploader"
@@ -774,9 +788,52 @@ async def _validate_parser_upload_chain(
         raise conflict_engine.ConflictRawOwnershipError(
             "lab parser file provenance is inconsistent"
         )
+    platform_rows = list(
+        await session.scalars(
+            select(AIInvocation)
+            .where(
+                AIInvocation.raw_payload_id == raw.id,
+                AIInvocation.purpose
+                == AIInvocationPurpose.LAB_DOCUMENT_PARSE.value,
+            )
+            .order_by(AIInvocation.created_at, AIInvocation.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
     if raw.integration_connection_id is None:
+        succeeded = [
+            row
+            for row in platform_rows
+            if row.status == AIInvocationStatus.SUCCEEDED.value
+        ]
+        if len(succeeded) != 1:
+            raise conflict_engine.ConflictRawOwnershipError(
+                "lab parser raw lacks one successful platform AI invocation"
+            )
+        invocation = succeeded[0]
+        if (
+            invocation.subject_id != identity.subject_id
+            or invocation.actor_user_id != raw.actor_user_id
+            or invocation.source != AIInvocationSource.WEB.value
+            or invocation.raw_payload_id != raw.id
+        ):
+            raise conflict_engine.ConflictRawOwnershipError(
+                "lab parser platform AI provenance is inconsistent"
+            )
+        if (
+            not isinstance(raw.payload, dict)
+            or "_ai_parse" in raw.payload
+            or "_unparsed" in raw.payload
+            or not isinstance(raw.payload.get("results"), list)
+        ):
+            raise conflict_engine.ConflictRawOwnershipError(
+                "successful platform lab raw has no validated extraction"
+            )
+        return
+    if platform_rows:
         raise conflict_engine.ConflictRawOwnershipError(
-            "lab parser raw provenance has no AI gateway connection"
+            "lab parser raw mixes subject and platform AI provenance"
         )
     historical_statuses = tuple(
         status.value
@@ -1697,6 +1754,97 @@ async def extract_from_file(
         )
 
 
+async def extract_from_file_with_usage(
+    file_bytes: bytes,
+    *,
+    llm: Any,
+    content_type: str = "image/jpeg",
+    filename: Optional[str] = None,
+    model: str,
+    max_tokens: int,
+):
+    """Usage-aware variant used only by the platform AI dispatch adapter.
+
+    Media conversion is intentionally identical to :func:`extract_from_file`,
+    while the caller supplies the exact sealed model/output ceiling and receives
+    the in-memory ``LLMCallResult`` needed for sanitized quota accounting.
+    """
+
+    is_pdf = (content_type or "").lower() == "application/pdf" or (
+        filename or ""
+    ).lower().endswith(".pdf")
+    image_urls = prepare_file_for_extraction(
+        file_bytes,
+        content_type=content_type,
+        filename=filename,
+    )
+    return await extract_prepared_file_with_usage(
+        image_urls,
+        llm=llm,
+        model=model,
+        max_tokens=max_tokens,
+        is_document=is_pdf,
+    )
+
+
+def prepare_file_for_extraction(
+    file_bytes: bytes,
+    *,
+    content_type: str = "image/jpeg",
+    filename: Optional[str] = None,
+) -> tuple[str, ...]:
+    """Convert local document bytes before any paid provider dispatch.
+
+    PDF rendering is local and can fail for malformed or encrypted documents.
+    Platform-funded callers run this pure preprocessing phase before charging
+    an AI invocation so a zero-network validation error cannot consume quota.
+    The returned data URLs are memory-only and must never be persisted or
+    logged.
+    """
+
+    is_pdf = (content_type or "").lower() == "application/pdf" or (
+        filename or ""
+    ).lower().endswith(".pdf")
+    if is_pdf:
+        return tuple(
+            f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+            for png_bytes in _pdf_pages_png(file_bytes)
+        )
+    if not (content_type or "").startswith("image/"):
+        content_type = "image/jpeg"
+    b64 = base64.b64encode(file_bytes).decode("ascii")
+    return (f"data:{content_type};base64,{b64}",)
+
+
+async def extract_prepared_file_with_usage(
+    image_urls: tuple[str, ...],
+    *,
+    llm: Any,
+    model: str,
+    max_tokens: int,
+    is_document: bool = False,
+):
+    """Send a locally prepared document through one usage-aware AI call."""
+
+    if not image_urls:
+        raise ValueError("prepared lab document has no images")
+    if len(image_urls) == 1 and not is_document:
+        return await llm.extract_json_with_usage(
+            "Extract all lab markers from this report image.",
+            model=model,
+            system=_EXTRACT_SYSTEM,
+            image_url=image_urls[0],
+            max_tokens=max_tokens,
+        )
+    return await llm.extract_json_with_usage(
+        "Extract all lab markers from this report.",
+        model=model,
+        system=_EXTRACT_SYSTEM,
+        image_urls=list(image_urls),
+        max_tokens=max_tokens,
+    )
+
+
 def normalize_extracted(extracted: dict) -> list[dict]:
     """Pure: turn a raw vision dict into normalized, editable marker rows for the
     upload preview. Each row is ``{marker, value, unit, ref_low, ref_high}``.
@@ -2151,113 +2299,161 @@ async def reparse_owned_pending(
         .where(LabResult.raw_payload_id == RawPayload.id)
         .exists()
     )
-    rows = list(
-        await session.scalars(
-            select(RawPayload)
-            .where(
-                raw_scope,
-                RawPayload.domain == DOMAIN,
-                RawPayload.source == Source.LAB_PARSER.value,
-                RawPayload.processed_at.is_(None),
-                RawPayload.fetched_at >= cutoff,
-                ~has_normalized,
-            )
-            .order_by(RawPayload.id)
-            .limit(limit)
-            .with_for_update()
-            .execution_options(populate_existing=True)
+    succeeded_platform_parse = (
+        select(AIInvocation.id)
+        .where(
+            AIInvocation.subject_id == identity.subject_id,
+            AIInvocation.actor_user_id == RawPayload.actor_user_id,
+            AIInvocation.raw_payload_id == RawPayload.id,
+            AIInvocation.purpose
+            == AIInvocationPurpose.LAB_DOCUMENT_PARSE.value,
+            AIInvocation.source == AIInvocationSource.WEB.value,
+            AIInvocation.status == AIInvocationStatus.SUCCEEDED.value,
         )
+        .correlate(RawPayload)
+        .exists()
     )
+    eligible_parser_provenance = or_(
+        RawPayload.integration_connection_id.is_not(None),
+        and_(
+            RawPayload.subject_id == identity.subject_id,
+            RawPayload.integration_connection_id.is_(None),
+            RawPayload.file_asset_id.is_not(None),
+            succeeded_platform_parse,
+        ),
+    )
+    if include_legacy_unowned:
+        eligible_parser_provenance = or_(
+            eligible_parser_provenance,
+            and_(
+                RawPayload.subject_id.is_(None),
+                RawPayload.actor_user_id.is_(None),
+                RawPayload.integration_connection_id.is_(None),
+                RawPayload.file_asset_id.is_(None),
+            ),
+        )
     done = 0
-    for candidate in rows:
-        raw_id = candidate.id
-        try:
-            async with session.begin_nested():
-                is_legacy = candidate.subject_id is None
-                origin_identity = WriteIdentity(
-                    identity.subject_id,
-                    None if is_legacy else candidate.actor_user_id,
+    last_raw_id = 0
+    while done < limit:
+        # Failures remain pending for repair, but they do not consume the
+        # successful-work limit. Keyset pagination guarantees that a full head
+        # batch of corrupt historical rows cannot starve later valid panels.
+        rows = list(
+            await session.scalars(
+                select(RawPayload)
+                .where(
+                    raw_scope,
+                    RawPayload.id > last_raw_id,
+                    RawPayload.domain == DOMAIN,
+                    RawPayload.source == Source.LAB_PARSER.value,
+                    RawPayload.processed_at.is_(None),
+                    RawPayload.fetched_at >= cutoff,
+                    eligible_parser_provenance,
+                    ~has_normalized,
                 )
-                extracted = (
-                    candidate.payload if isinstance(candidate.payload, dict) else {}
-                )
-                on_date = _parse_date(extracted.get("date")) or boundary.evaluation_date
-                row_context = conflict_engine.ConflictWriteContext(
-                    identity=origin_identity,
-                    evaluation_date=on_date,
-                    legacy_bridge=(
-                        conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-                        if include_legacy_unowned
-                        else conflict_engine.LegacyConflictBridge.REJECT
-                    ),
-                )
-                prepared = await conflict_engine.prepare_scoped_write(
-                    session,
-                    context=row_context,
-                )
-                if is_legacy:
-                    await _lock_result_raw(
-                        session,
-                        raw_payload_id=candidate.id,
-                        context=row_context,
-                        source=Source.LAB_PARSER.value,
+                .order_by(RawPayload.id)
+                .limit(limit)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
+        if not rows:
+            break
+        last_raw_id = rows[-1].id
+        for candidate in rows:
+            raw_id = candidate.id
+            try:
+                async with session.begin_nested():
+                    is_legacy = candidate.subject_id is None
+                    origin_identity = WriteIdentity(
+                        identity.subject_id,
+                        None if is_legacy else candidate.actor_user_id,
                     )
-                    await _preflight_scoped_panel(
-                        session,
-                        markers=extracted.get("results") or [],
-                        context=row_context,
-                        override=False,
+                    extracted = (
+                        candidate.payload
+                        if isinstance(candidate.payload, dict)
+                        else {}
                     )
-                    for item in extracted.get("results") or []:
-                        marker = (item.get("marker") or "").strip()
-                        value = _num(item.get("value"))
-                        if not marker or value is None:
-                            continue
-                        await add_result(
+                    on_date = (
+                        _parse_date(extracted.get("date"))
+                        or boundary.evaluation_date
+                    )
+                    row_context = conflict_engine.ConflictWriteContext(
+                        identity=origin_identity,
+                        evaluation_date=on_date,
+                        legacy_bridge=(
+                            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+                            if include_legacy_unowned
+                            else conflict_engine.LegacyConflictBridge.REJECT
+                        ),
+                    )
+                    prepared = await conflict_engine.prepare_scoped_write(
+                        session,
+                        context=row_context,
+                    )
+                    if is_legacy:
+                        await _lock_result_raw(
                             session,
-                            on_date=on_date,
-                            marker=marker,
-                            value=value,
-                            unit=item.get("unit"),
-                            ref_low=_num(item.get("ref_low")),
-                            ref_high=_num(item.get("ref_high")),
-                            lab_name=extracted.get("lab_name"),
-                            source=Source.LAB_PARSER.value,
                             raw_payload_id=candidate.id,
+                            context=row_context,
+                            source=Source.LAB_PARSER.value,
+                        )
+                        await _preflight_scoped_panel(
+                            session,
+                            markers=extracted.get("results") or [],
+                            context=row_context,
+                            override=False,
+                        )
+                        for item in extracted.get("results") or []:
+                            marker = (item.get("marker") or "").strip()
+                            value = _num(item.get("value"))
+                            if not marker or value is None:
+                                continue
+                            await add_result(
+                                session,
+                                on_date=on_date,
+                                marker=marker,
+                                value=value,
+                                unit=item.get("unit"),
+                                ref_low=_num(item.get("ref_low")),
+                                ref_high=_num(item.get("ref_high")),
+                                lab_name=extracted.get("lab_name"),
+                                source=Source.LAB_PARSER.value,
+                                raw_payload_id=candidate.id,
+                                identity=origin_identity,
+                                include_legacy_unowned=True,
+                                prepared_conflict_write=prepared,
+                            )
+                        # A fully-unowned historical parser raw has no
+                        # authoritative provider/file roots to adopt. Keep the
+                        # raw legacy and bridge only the normalized facts.
+                    else:
+                        await ingest_extracted(
+                            session,
+                            extracted,
+                            file_key=candidate.external_id,
                             identity=origin_identity,
-                            include_legacy_unowned=True,
+                            existing_raw_payload=candidate,
                             prepared_conflict_write=prepared,
                         )
-                    # A fully-unowned historical parser raw has no authoritative
-                    # OpenRouter/FileAsset roots to adopt. Keep the raw legacy
-                    # owned and attach only the normalized fact to the resolved
-                    # singleton subject; later scoped CRUD may traverse this link
-                    # only through the explicit FULLY_UNOWNED bridge.
-                else:
-                    await ingest_extracted(
+                    await refresh_alerts(
                         session,
-                        extracted,
-                        file_key=candidate.external_id,
                         identity=origin_identity,
-                        existing_raw_payload=candidate,
+                        include_legacy_unowned=include_legacy_unowned,
                         prepared_conflict_write=prepared,
                     )
-                await refresh_alerts(
-                    session,
-                    identity=origin_identity,
-                    include_legacy_unowned=include_legacy_unowned,
-                    prepared_conflict_write=prepared,
+                    candidate.processed_at = now_local()
+                    await session.flush()
+            except Exception:
+                logger.warning(
+                    "owned Labs re-parse failed for raw payload %s",
+                    raw_id,
+                    exc_info=True,
                 )
-                candidate.processed_at = now_local()
-                await session.flush()
-        except Exception:
-            logger.warning(
-                "owned Labs re-parse failed for raw payload %s",
-                raw_id,
-                exc_info=True,
-            )
-            continue
-        done += 1
+                continue
+            done += 1
+            if done >= limit:
+                break
     return done
 
 
