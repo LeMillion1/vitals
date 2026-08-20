@@ -51,7 +51,7 @@ or multi-subject reads are enabled.
 | `signals`, `day_context` | Telegram, MCP, evening plan, raw reparse | Telegram facts copy S+A+Telegram C from exact raws; platform-AI recovery copies preserved raw roots, including the exact-one S-only adopted bridge. MCP gets S+A; planned/system rows have A/C null. |
 | `garmin_daily`, `garmin_activities`, `garmin_intraday` | scheduler, on-demand sync, HAE import, raw reparse | S+Garmin C required. Human-triggered runs get A; scheduler runs do not. Intraday replacement deletes only inside S+C. |
 | `garmin_weight_exports` | Core upsert and outbox lifecycle | S matches the validated Weight subject; C is the distinct Garmin destination. Q records the human requester and stays NULL for scheduler work. Linked Weight provenance keeps its own origin C/raw roots, and lifecycle updates never erase Q. |
-| `genetic_variants` | VCF/manual/MCP | Raw-first, then S+A and raw link on interpreted variants. Upsert keys are S-scoped. |
+| `genetic_variants` | VCF/manual/MCP | Raw-first versioned VCF evidence retains the bounded sample plus curated tail, then S+A facts link to that exact revision. Manual/MCP roots stay immutable; upsert keys are S-scoped. |
 | `raw_payloads` | all imports/connectors/uploads/Telegram | Raw ownership is written before normalized rows. Lookup is S/C scoped; refresh preserves historical A and rejects cross-S/C/F conflicts. Telegram keeps the complete current inbound message but reduces nested replied-to/callback bot output to operational IDs so a memory-only AI answer cannot be copied back into durable raw history. |
 | `glp1_*` | web/MCP | Human rows get S+A; automatic phase close is S-scoped and preserves A. MCP retains `Source.MCP`. |
 | `hevy_workouts`, `hevy_exercises`, `hevy_sets` | sync and raw reparse | Workout gets S+Hevy C; children copy S+C from the parent. Child rebuild/delete is parent-scoped. |
@@ -88,7 +88,7 @@ pending and the scoped service refuses to mutate the global `active` flag.
 | Lab document | S+A+lab F; C null; exact LAB_DOCUMENT_PARSE AIInvocation | Results/markers use raw S/A; F remains on raw. AIInvocation links the subject to the platform OpenRouter gateway and paid-call metadata. Historical subject-C uploads remain dual-read provenance only. |
 | Body-scan document | S+A+body F; C null; exact BODY_SCAN_PARSE AIInvocation | Scan uses raw S/A/F; metrics copy S. Derived Weight follows the raw/invocation chain with C null rather than pretending the platform gateway is a subject provider. Historical subject-C uploads remain dual-read provenance only. |
 | Structured MCP lab/body input | S+A; C/F null | Normalized rows use the supplied write identity. |
-| VCF | S+A; C/F null | Curated variants link to that raw row. |
+| VCF | S+A; C/F null | Versioned bounded sample + canonical curated tail; facts link to that exact content-addressed raw revision. |
 
 Upload confirmation must load the raw/file rows by S and must not trust a client
 pair of IDs or a client-provided storage key. VCF, backup JSON, Garmin HAE import,
@@ -163,10 +163,14 @@ VCF-origin normalized rows to that raw; re-import replaces parser fields and
 clears stale conflict markers while later human/MCP corrections retain the
 original actor/source/raw roots. Pending replay handles partially normalized
 batches, never rolls a newer fact back to older pending evidence, and rejects
-malformed or cross-subject raw graphs. The current payload keeps the first 50,000
-parsed rows plus a truncation flag, so lossless chunking, `(S, rsid)` uniqueness,
-scoped raw uniqueness, composite raw ownership FKs, backfill, and whole-lake
-composition remain required before registration can open.
+malformed or cross-subject raw graphs. Versioned payloads keep the first 50,000
+parsed rows plus canonical evidence for every curated tail hit; both collections
+participate in the revision hash and replay union. Legacy truncated payloads keep
+their explicit compatibility semantics, while v2 membership, overlap, flags,
+and partial-root adoption fail closed before mutation. Lossless whole-file
+chunking, `(S, rsid)` uniqueness, scoped raw uniqueness, composite raw ownership
+FKs, backfill, and whole-lake composition remain required before registration
+can open.
 
 `system_alerts` now has typed health, provider, and platform contexts, an
 exhaustive key/domain registry, and a fail-closed exact-one legacy bridge.

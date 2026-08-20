@@ -252,9 +252,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   conflict markers. Direct reads and deletes are subject-scoped, partial or
   malformed raw graphs fail closed, and nightly replay can complete a partially
   normalized VCF batch without letting older pending evidence replace a newer
-  fact. The bounded raw sample still records an explicit truncation flag;
-  lossless VCF chunking, scoped rsID/raw uniqueness, composite ownership FKs,
-  and whole-lake composition remain registration blockers.
+  fact. Versioned truncated raws now hash both the retained first-50k sample and
+  the canonical curated tail evidence, so a changed tail creates a new revision
+  and replay can rebuild every catalog fact without rewriting disappeared older
+  evidence. Malformed v2 evidence and partial legacy raw candidates are rejected
+  before adoption or mutation, including corruption outside a requested result
+  limit. Lossless whole-VCF chunking, scoped rsID/raw uniqueness, composite
+  ownership FKs, and whole-lake composition remain registration blockers.
 - ProgressPhoto upload, gallery, Timeline markers, protected downloads, and
   deletes now accept only an exact subject/owner/private-file graph. New photos
   derive their storage key from one exclusive locked FileAsset; the compatibility

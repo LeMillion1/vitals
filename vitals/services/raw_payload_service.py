@@ -242,7 +242,9 @@ async def _exact_scoped_rows(
                 RawPayload.source == source,
                 RawPayload.external_id == external_id,
             )
+            .order_by(RawPayload.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     )
 
@@ -273,7 +275,9 @@ async def _legacy_adoption_rows(
                 RawPayload.external_id == external_id,
                 or_(*adoption_scopes),
             )
+            .order_by(RawPayload.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     )
 
@@ -360,6 +364,7 @@ async def upsert_owned_raw_payload(
     source: str,
     external_id: str,
     payload: Any,
+    validate_locked_existing: Callable[[RawPayload], None] | None = None,
 ) -> RawPayload:
     """Insert, refresh, or safely adopt one subject-scoped raw payload.
 
@@ -369,6 +374,11 @@ async def upsert_owned_raw_payload(
     operation never rewrites a historical actor or a non-null connection/file
     reference. Fully scoped rows belonging to other subjects or connections are
     isolated and do not participate in adoption.
+
+    A domain with stricter compatibility rules may pass
+    ``validate_locked_existing``. It runs after the matching row is locked but
+    before any root, payload, or processing timestamp changes, so rejection is
+    fail-closed instead of mutate-then-validate.
 
     Every selected root and candidate is locked and the function flushes but
     never commits. There is intentionally no concurrent absent-row guarantee
@@ -386,6 +396,12 @@ async def upsert_owned_raw_payload(
         integration_connection_id=integration_connection_id,
         file_asset_id=file_asset_id,
     )
+    if validate_locked_existing is not None and not callable(
+        validate_locked_existing
+    ):
+        raise RawPayloadValidationError(
+            "validate_locked_existing must be callable or None"
+        )
 
     requested_connection = (
         await _load_connection_reference(
@@ -425,6 +441,8 @@ async def upsert_owned_raw_payload(
 
     if exact_rows:
         row = exact_rows[0]
+        if validate_locked_existing is not None:
+            validate_locked_existing(row)
         await _validate_existing_file_scope(
             session,
             row=row,
@@ -456,6 +474,8 @@ async def upsert_owned_raw_payload(
 
     if adoption_rows:
         row = adoption_rows[0]
+        if validate_locked_existing is not None:
+            validate_locked_existing(row)
         if row.subject_id not in {None, identity.subject_id}:
             raise RawPayloadConflictError(
                 "legacy raw payload belongs to another subject"

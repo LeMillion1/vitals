@@ -340,9 +340,12 @@ Implementation progress on `commercial/main`:
   replay pending partial batches.
   Re-import uses full parser replacement for an existing rsID so a reference
   genotype cannot retain an obsolete conflict marker, while replay cannot replace
-  a newer fact with older pending evidence. The first 50,000 parsed rows and an
-  explicit truncation flag remain the bounded compatibility payload;
-  a lossless chunk/import-batch design belongs to the scoped-key cutover.
+  a newer fact with older pending evidence. Versioned truncated raws retain the
+  first 50,000 parsed rows plus canonical evidence for every curated tail hit,
+  hash both collections, and rebuild the same catalog facts on replay. Partial
+  raw roots and malformed v2 evidence fail before adoption or normalization.
+  A lossless whole-file chunk/import-batch design still belongs to the scoped-key
+  cutover.
   Milestone web/MCP creates now dual-write S+A, direct reads and mutations use
   the same prepared exact-one subject boundary, and updates preserve the
   historical actor. Timeline, Today, and the external glance API consume

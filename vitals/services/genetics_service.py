@@ -10,8 +10,9 @@ import hashlib
 import json
 import logging
 import uuid
+from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Final, Optional, Sequence
 
 from sqlalchemy import and_, func, or_, select
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 MAX_RAW_VARIANTS = 50_000
 MAX_LIST_LIMIT = 100
+VCF_RAW_FORMAT_VERSION = 2
 PATCH_UNSET: Final = object()
 
 
@@ -183,6 +185,34 @@ async def _reject_partial_legacy_rows(
         )
 
 
+async def _reject_partial_legacy_raws(
+    session: AsyncSession,
+    *,
+    pending_since: datetime | None = None,
+) -> None:
+    stmt = select(RawPayload.id).where(
+        RawPayload.domain == DOMAIN,
+        RawPayload.source == Source.VCF_IMPORT.value,
+        RawPayload.subject_id.is_(None),
+        or_(
+            RawPayload.actor_user_id.is_not(None),
+            RawPayload.integration_connection_id.is_not(None),
+            RawPayload.file_asset_id.is_not(None),
+        ),
+    )
+    if pending_since is not None:
+        stmt = stmt.where(
+            RawPayload.processed_at.is_(None),
+            RawPayload.fetched_at >= pending_since,
+        )
+    if await session.scalar(
+        stmt.order_by(RawPayload.id).limit(1).with_for_update()
+    ) is not None:
+        raise GeneticsRawProvenanceError(
+            "VCF raw payload has partial legacy S/A/C/F provenance"
+        )
+
+
 async def list_variants(
     session: AsyncSession,
     *,
@@ -195,7 +225,7 @@ async def list_variants(
     gene = _validate_filter("gene", gene)
     rsid = _validate_filter("rsid", rsid)
     _validate_limit(limit)
-    stmt = select(GeneticVariant)
+    stmt = select(GeneticVariant).execution_options(populate_existing=True)
     if subject_id is not None:
         if not isinstance(subject_id, uuid.UUID):
             raise GeneticsValidationError("subject_id must be a UUID or None")
@@ -213,6 +243,47 @@ async def list_variants(
         stmt = stmt.where(func.lower(GeneticVariant.gene) == gene.lower())
     if rsid is not None:
         stmt = stmt.where(func.lower(GeneticVariant.rsid) == rsid.lower())
+    if subject_id is not None:
+        if include_legacy_unowned:
+            await _reject_partial_legacy_rows(
+                session,
+                gene=gene,
+                rsid=rsid,
+            )
+        high_water_id = int(
+            await session.scalar(
+                stmt.with_only_columns(func.max(GeneticVariant.id)).order_by(None)
+            )
+            or 0
+        )
+        last_validated_id = 0
+        while last_validated_id < high_water_id:
+            validation_rows = list(
+                await session.scalars(
+                    stmt.where(
+                        GeneticVariant.id > last_validated_id,
+                        GeneticVariant.id <= high_water_id,
+                    )
+                    .order_by(GeneticVariant.id)
+                    .limit(MAX_LIST_LIMIT)
+                )
+            )
+            if not validation_rows:
+                break
+            raw_rsid_cache: dict[int, frozenset[str]] = {}
+            for row in validation_rows:
+                await _validate_variant_graph(
+                    session,
+                    row=row,
+                    subject_id=subject_id,
+                    include_legacy_unowned=include_legacy_unowned,
+                    for_update=False,
+                    raw_rsid_cache=raw_rsid_cache,
+                )
+            last_validated_id = validation_rows[-1].id
+            if len(validation_rows) < MAX_LIST_LIMIT:
+                break
+
     stmt = stmt.order_by(
         func.lower(GeneticVariant.gene),
         func.lower(GeneticVariant.rsid),
@@ -222,12 +293,6 @@ async def list_variants(
         stmt = stmt.limit(limit)
     rows = list(await session.scalars(stmt))
     if subject_id is not None:
-        if include_legacy_unowned:
-            await _reject_partial_legacy_rows(
-                session,
-                gene=gene,
-                rsid=rsid,
-            )
         raw_rsid_cache: dict[int, frozenset[str]] = {}
         for row in rows:
             await _validate_variant_graph(
@@ -314,9 +379,13 @@ async def _load_raw(
         raise GeneticsRawProvenanceError(
             "raw_payload_id must identify a persisted VCF raw payload"
         )
-    stmt = select(RawPayload).where(RawPayload.id == raw_payload_id)
+    stmt = (
+        select(RawPayload)
+        .where(RawPayload.id == raw_payload_id)
+        .execution_options(populate_existing=True)
+    )
     if for_update:
-        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+        stmt = stmt.with_for_update()
     raw = await session.scalar(stmt)
     if raw is None:
         raise GeneticsRawProvenanceError("VCF raw payload does not exist")
@@ -348,26 +417,58 @@ def _validate_raw_shape(raw: RawPayload) -> None:
         )
     if not isinstance(raw.payload, dict):
         raise GeneticsRawProvenanceError("VCF raw payload must be a JSON object")
+    has_format_version = "format_version" in raw.payload
+    format_version = raw.payload.get("format_version")
+    if has_format_version and (
+        not isinstance(format_version, int)
+        or isinstance(format_version, bool)
+        or format_version != VCF_RAW_FORMAT_VERSION
+    ):
+        raise GeneticsRawProvenanceError("VCF raw format version is unsupported")
     filename = raw.payload.get("filename")
     if filename is not None and not isinstance(filename, str):
         raise GeneticsRawProvenanceError("VCF raw filename must be a string or null")
     if not isinstance(raw.payload.get("variants"), list):
         raise GeneticsRawProvenanceError("VCF raw payload has no parsed variant batch")
+    if format_version == VCF_RAW_FORMAT_VERSION and not isinstance(
+        raw.payload.get("curated_variants"),
+        list,
+    ):
+        raise GeneticsRawProvenanceError(
+            "versioned VCF raw payload has no curated variant evidence"
+        )
+    if (
+        format_version == VCF_RAW_FORMAT_VERSION
+        and "only_interpreted" not in raw.payload
+    ):
+        raise GeneticsRawProvenanceError(
+            "versioned VCF raw payload has no replay policy"
+        )
     only_interpreted = raw.payload.get("only_interpreted")
     if only_interpreted is not None and not isinstance(only_interpreted, bool):
         raise GeneticsRawProvenanceError(
             "VCF raw only_interpreted policy must be boolean"
+        )
+    if (
+        format_version == VCF_RAW_FORMAT_VERSION
+        and "truncated" not in raw.payload
+    ):
+        raise GeneticsRawProvenanceError(
+            "versioned VCF raw payload has no truncation policy"
         )
     truncated = raw.payload.get("truncated", False)
     if not isinstance(truncated, bool):
         raise GeneticsRawProvenanceError(
             "VCF raw truncation flag must be boolean"
         )
+    expected_external_id = _vcf_external_id(raw.payload)
     legacy_external_id = (filename or "vcf")[:128]
-    if raw.external_id not in {
-        legacy_external_id,
-        _vcf_external_id(raw.payload),
-    }:
+    valid_external_ids = (
+        {expected_external_id}
+        if format_version == VCF_RAW_FORMAT_VERSION
+        else {legacy_external_id, expected_external_id}
+    )
+    if raw.external_id not in valid_external_ids:
         raise GeneticsRawProvenanceError(
             "VCF raw revision does not match its external id"
         )
@@ -411,8 +512,9 @@ def _validate_raw_origin_rsid(
 
     A later explicit human/MCP correction may legitimately change the genotype
     while retaining immutable origin provenance, so persisted reads validate the
-    stable rsID membership rather than requiring value equality. An untruncated
-    raw cannot omit the linked rsID; a truncated first-50k sample may.
+    stable rsID membership rather than requiring value equality. Versioned raws
+    retain every curated tail hit and therefore require membership; only legacy
+    truncated first-50k payloads may omit one.
     """
 
     _validate_raw_shape(raw)
@@ -426,15 +528,18 @@ def _validate_raw_origin_rsid(
     )
     if raw_rsids is None:
         raw_rsids = frozenset(
-            _normalize_rsid(item.rsid) for item in _raw_payload_variants(raw)
+            _normalize_rsid(item.rsid)
+            for item in _raw_normalization_variants(raw)
         )
         if raw_rsid_cache is not None:
             raw_rsid_cache[raw.id] = raw_rsids
-    if _normalize_rsid(row.rsid) not in raw_rsids and not raw.payload.get(
-        "truncated", False
-    ):
+    strict_membership = (
+        raw.payload.get("format_version") == VCF_RAW_FORMAT_VERSION
+        or not raw.payload.get("truncated", False)
+    )
+    if _normalize_rsid(row.rsid) not in raw_rsids and strict_membership:
         raise GeneticsRawProvenanceError(
-            "VCF genetics fact rsID is absent from its untruncated raw payload"
+            "VCF genetics fact rsID is absent from its durable raw evidence"
         )
 
 
@@ -942,14 +1047,18 @@ def _materialize_variants(
     *,
     field_name: str,
 ) -> list[ParsedVariant]:
-    if isinstance(variants, (str, bytes)):
+    if not isinstance(variants, SequenceABC) or isinstance(variants, (str, bytes)):
         raise GeneticsValidationError(f"{field_name} must be a materialized sequence")
     materialized: list[ParsedVariant] = []
     for item in variants:
         if isinstance(item, ParsedVariant):
             parsed = item
         else:
-            if isinstance(item, (str, bytes)) or len(item) != 4:
+            if (
+                not isinstance(item, SequenceABC)
+                or isinstance(item, (str, bytes))
+                or len(item) != 4
+            ):
                 raise GeneticsValidationError(
                     f"each {field_name} row must contain rsid/ref/alt/genotype"
                 )
@@ -977,6 +1086,69 @@ def _raw_payload_variants(raw: RawPayload) -> list[ParsedVariant]:
         raw.payload["variants"],
         field_name="raw_variants",
     )
+
+
+def _raw_payload_curated_variants(raw: RawPayload) -> list[ParsedVariant]:
+    _validate_raw_shape(raw)
+    assert isinstance(raw.payload, dict)
+    if raw.payload.get("format_version") != VCF_RAW_FORMAT_VERSION:
+        return []
+    return _materialize_variants(
+        raw.payload["curated_variants"],
+        field_name="curated_variants",
+    )
+
+
+def _raw_normalization_variants(raw: RawPayload) -> list[ParsedVariant]:
+    """Rebuild every normalized candidate captured by one VCF revision.
+
+    Version 2 stores both the bounded first-50k sample and every curated tail
+    hit. Curated evidence may fill a truncated tail but may never contradict an
+    overlapping retained row. Legacy payloads keep their historical semantics.
+    """
+
+    try:
+        retained = _raw_payload_variants(raw)
+        curated_items = _raw_payload_curated_variants(raw)
+    except GeneticsValidationError as exc:
+        raise GeneticsRawProvenanceError(
+            "VCF raw payload contains malformed variant evidence"
+        ) from exc
+    if len(retained) > MAX_RAW_VARIANTS:
+        raise GeneticsRawProvenanceError(
+            "VCF raw payload exceeds the bounded retained variant limit"
+        )
+    if raw.payload.get("format_version") == VCF_RAW_FORMAT_VERSION:
+        curated_rsids = [item.rsid for item in curated_items]
+        if curated_rsids != sorted(set(curated_rsids)):
+            raise GeneticsRawProvenanceError(
+                "versioned VCF curated evidence must be unique and canonical"
+            )
+    by_rsid = {item.rsid: item for item in retained}
+    for curated in curated_items:
+        existing = by_rsid.get(curated.rsid)
+        if (
+            existing is None
+            and raw.payload.get("format_version") == VCF_RAW_FORMAT_VERSION
+            and not raw.payload["truncated"]
+        ):
+            raise GeneticsRawProvenanceError(
+                "untruncated curated evidence is absent from retained VCF rows"
+            )
+        if existing is not None and (
+            existing.ref,
+            existing.alt,
+            existing.genotype,
+        ) != (
+            curated.ref,
+            curated.alt,
+            curated.genotype,
+        ):
+            raise GeneticsRawProvenanceError(
+                "curated variant contradicts the retained raw VCF evidence"
+            )
+        by_rsid[curated.rsid] = curated
+    return [by_rsid[rsid] for rsid in sorted(by_rsid)]
 
 
 def _raw_only_interpreted(raw: RawPayload) -> bool:
@@ -1114,6 +1286,7 @@ async def ingest_vcf_batch(
     # newly linked evidence is affirmatively contradictory.
     raw_last = {item.rsid: item for item in raw_items}
     curated_last = {item.rsid: item for item in curated_items}
+    curated_items = [curated_last[rsid] for rsid in sorted(curated_last)]
     for rsid, curated in curated_last.items():
         raw = raw_last.get(rsid)
         if raw is None:
@@ -1156,6 +1329,7 @@ async def ingest_vcf_batch(
             "curated VCF rows must also be represented in the bounded raw batch"
         )
     payload = {
+        "format_version": VCF_RAW_FORMAT_VERSION,
         "filename": filename,
         "truncated": truncated,
         "only_interpreted": only_interpreted,
@@ -1163,7 +1337,24 @@ async def ingest_vcf_batch(
             [item.rsid, item.ref, item.alt, item.genotype]
             for item in raw_items
         ],
+        "curated_variants": [
+            [item.rsid, item.ref, item.alt, item.genotype]
+            for item in curated_items
+        ],
     }
+
+    def validate_locked_existing(candidate: RawPayload) -> None:
+        _validate_raw_shape(candidate)
+        _raw_normalization_variants(candidate)
+        _validate_raw_owner(
+            candidate,
+            subject_id=identity.subject_id,
+            actor_user_id=identity.actor_user_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+
+    if include_legacy_unowned:
+        await _reject_partial_legacy_raws(session)
     raw = await raw_payload_service.upsert_owned_raw_payload(
         session,
         identity=identity,
@@ -1173,6 +1364,7 @@ async def ingest_vcf_batch(
         source=Source.VCF_IMPORT.value,
         external_id=_vcf_external_id(payload),
         payload=payload,
+        validate_locked_existing=validate_locked_existing,
     )
     _validate_raw_shape(raw)
     _validate_raw_owner(
@@ -1209,16 +1401,17 @@ async def store_raw_vcf(
         raise GeneticsValidationError(
             "scoped VCF callers must use ingest_vcf_batch for atomic ingestion"
         )
+    payload = {
+        "filename": filename,
+        "truncated": truncated,
+        "variants": list(variants),
+    }
     return await raw_payload_service.upsert_raw_payload(
         session,
         domain=DOMAIN,
         source=Source.VCF_IMPORT.value,
-        external_id=(filename or "vcf")[:128],
-        payload={
-            "filename": filename,
-            "truncated": truncated,
-            "variants": list(variants),
-        },
+        external_id=_vcf_external_id(payload),
+        payload=payload,
     )
 
 
@@ -1327,6 +1520,10 @@ async def reparse_owned_pending(
         or since_days < 0
     ):
         raise GeneticsValidationError("since_days must be a non-negative integer")
+    cutoff = now_local() - timedelta(days=since_days)
+    if include_legacy_unowned:
+        await _reject_partial_legacy_raws(session, pending_since=cutoff)
+
     raw_scope = RawPayload.subject_id == identity.subject_id
     if include_legacy_unowned:
         raw_scope = or_(
@@ -1338,7 +1535,6 @@ async def reparse_owned_pending(
                 RawPayload.file_asset_id.is_(None),
             ),
         )
-    cutoff = now_local() - timedelta(days=since_days)
     raw_ids = list(
         await session.scalars(
             select(RawPayload.id)
@@ -1430,7 +1626,7 @@ async def reparse_owned_pending(
                 )
                 await _replace_vcf_rows(
                     session,
-                    parsed=_raw_payload_variants(raw),
+                    parsed=_raw_normalization_variants(raw),
                     only_interpreted=_raw_only_interpreted(raw),
                     raw=raw,
                     context=context,
@@ -1438,6 +1634,8 @@ async def reparse_owned_pending(
                 )
                 raw.processed_at = now_local()
                 await session.flush()
+        except (GeneticsServiceError, conflict_engine.ConflictScopeError):
+            raise
         except Exception:
             logger.warning(
                 "owned genetics re-parse failed for raw payload %s",
