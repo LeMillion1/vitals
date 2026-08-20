@@ -55,6 +55,10 @@ from vitals.services.normalized_ownership_backfill_service import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
     NORMALIZED_MANUAL_TABLES,
 )
+from vitals.services.provider_raw_ownership_backfill_service import (
+    PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    PROVIDER_RAW_OWNERSHIP_BACKFILL_TABLES,
+)
 from vitals.services.raw_ownership_backfill_service import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
     RawOwnershipBackfillIdentityError,
@@ -874,6 +878,124 @@ async def test_hrt_child_replacement_rejects_invalid_ids_before_mutation(
                 "metadata": {"version": "1.0", "kind": "full_backup"},
                 "raw_payloads": [],
                 "hrt_cycle_items": [row],
+            },
+        )
+    assert called is False
+
+
+async def test_full_import_blocks_nonempty_provider_stage3d_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [
+                {
+                    "id": 11,
+                    "domain": Domain.GARMIN.value,
+                    "source": Source.GARMIN_API.value,
+                    "external_id": "daily:2026-08-21",
+                    "payload": {"calendarDate": "2026-08-21"},
+                    "_vitals_subject_bound": True,
+                }
+            ],
+            "garmin_daily": [
+                {
+                    "id": 37,
+                    "raw_payload_id": 11,
+                    "date": "2026-08-21",
+                    "domain": Domain.GARMIN.value,
+                    "source": Source.GARMIN_API.value,
+                    "steps": 1234,
+                    "_vitals_subject_bound": True,
+                }
+            ],
+        },
+    )
+
+    raw = await db_session.get(RawPayload, 11)
+    daily = await db_session.get(GarminDaily, 37)
+    assert raw is not None and daily is not None
+    assert (
+        raw.subject_id,
+        raw.actor_user_id,
+        raw.integration_connection_id,
+        raw.file_asset_id,
+    ) == (legacy_owner_roots.subject_id, None, None, None)
+    assert (
+        daily.subject_id,
+        daily.actor_user_id,
+        daily.integration_connection_id,
+    ) == (legacy_owner_roots.subject_id, None, None)
+
+    checkpoints = {
+        row.phase_key: row
+        for row in await db_session.scalars(
+            select(OwnershipBackfillCheckpoint).where(
+                OwnershipBackfillCheckpoint.phase_key.in_(
+                    tuple(
+                        PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()
+                    )
+                )
+            )
+        )
+    }
+    assert len(checkpoints) == len(PROVIDER_RAW_OWNERSHIP_BACKFILL_TABLES) == 4
+    daily_checkpoint = checkpoints[
+        PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["garmin_daily"]
+    ]
+    assert (
+        daily_checkpoint.status,
+        daily_checkpoint.scan_high_watermark_id,
+        daily_checkpoint.snapshot_rows,
+        daily_checkpoint.last_scanned_id,
+        daily_checkpoint.scanned_rows,
+        daily_checkpoint.completed_at,
+    ) == ("restore_blocked", 37, 1, 0, 0, None)
+    assert all(
+        checkpoint.status == "completed"
+        and checkpoint.scan_high_watermark_id == 0
+        and checkpoint.snapshot_rows == 0
+        and checkpoint.completed_at is not None
+        for phase, checkpoint in checkpoints.items()
+        if phase != daily_checkpoint.phase_key
+    )
+
+
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_provider_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_block(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "block_provider_raw_ownership_backfill_for_portability_v1_restore",
+        unexpected_block,
+    )
+    row = {
+        "date": "2026-08-21",
+        "domain": Domain.GARMIN.value,
+        "source": Source.GARMIN_API.value,
+    }
+    if bad_id is not None:
+        row["id"] = bad_id
+    with pytest.raises(PortabilityError, match="positive integer id"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                "garmin_daily": [row],
             },
         )
     assert called is False

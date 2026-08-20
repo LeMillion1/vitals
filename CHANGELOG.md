@@ -61,6 +61,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   verification, strict child-scope tests, and an atomic backup-v1 checkpoint reset
   preserve bounded stop/resume behavior. Body-scan, Hevy, and compound children
   remain in later provenance-aware phases.
+- Added Stage 3D for the fixed raw-linked provider catalog:
+  `garmin_daily`, `garmin_activities`, `garmin_intraday`, and `hevy_workouts`.
+  Historical rows gain only S and the connection already proven by their exact
+  Stage-3A raw link; actor provenance is validated but never rewritten. The
+  operator rejects partial/foreign roots, mismatched natural keys, unreviewed
+  connection lifecycles, and unsafe Hevy child graphs, and finalizes only after
+  locked data/ownership verification. Non-empty backup-v1 restores become
+  terminal `RESTORE_BLOCKED` because stripped connection provenance cannot be
+  guessed; empty provider snapshots complete safely.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before

@@ -88,6 +88,11 @@ from vitals.services.normalized_ownership_backfill_service import (
     NormalizedOwnershipBackfillError,
     reset_normalized_manual_backfill_for_portability_v1_restore,
 )
+from vitals.services.provider_raw_ownership_backfill_service import (
+    PROVIDER_RAW_OWNERSHIP_BACKFILL_TABLES,
+    ProviderRawOwnershipBackfillError,
+    block_provider_raw_ownership_backfill_for_portability_v1_restore,
+)
 from vitals.services.raw_ownership_backfill_service import (
     RawOwnershipBackfillError,
     block_raw_ownership_backfill_for_portability_v1_restore,
@@ -469,6 +474,34 @@ def _hrt_child_replacement_snapshot_bounds(
     return bounds
 
 
+def _provider_raw_replacement_snapshot_bounds(
+    payload: dict[str, Any],
+) -> dict[str, tuple[int, int]]:
+    """Return exact Stage-3D provider-table bounds before restore mutation."""
+
+    bounds: dict[str, tuple[int, int]] = {}
+    for table_name in PROVIDER_RAW_OWNERSHIP_BACKFILL_TABLES:
+        rows = payload.get(table_name) or ()
+        high_watermark = 0
+        for index, row in enumerate(rows):
+            row_id = row.get("id")
+            if (
+                not isinstance(row_id, int)
+                or isinstance(row_id, bool)
+                or not 1 <= row_id <= _POSTGRES_INTEGER_MAX
+            ):
+                raise _contract_error(
+                    "import.error.generic",
+                    exc=(
+                        f"{table_name} record #{index} must carry a positive "
+                        "integer id within the PostgreSQL INTEGER range"
+                    ),
+                )
+            high_watermark = max(high_watermark, row_id)
+        bounds[table_name] = (high_watermark, len(rows))
+    return bounds
+
+
 async def _refuse_retained_raw_references(session: AsyncSession) -> None:
     """Fail before mutation when retained control state still binds any raw."""
 
@@ -538,6 +571,9 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
         _normalized_manual_replacement_snapshot_bounds(payload)
     )
     hrt_child_snapshot_bounds = _hrt_child_replacement_snapshot_bounds(payload)
+    provider_raw_snapshot_bounds = _provider_raw_replacement_snapshot_bounds(
+        payload
+    )
 
     try:
         # Freeze identity before deriving the local subject and keep governance
@@ -589,6 +625,16 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                 raise _contract_error(
                     "import.error.generic",
                     exc="HRT child ownership restore reset was rejected",
+                ) from exc
+            try:
+                await block_provider_raw_ownership_backfill_for_portability_v1_restore(
+                    session,
+                    snapshot_bounds=provider_raw_snapshot_bounds,
+                )
+            except ProviderRawOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="provider ownership restore block was rejected",
                 ) from exc
         preserved = await _secret_settings(session)
 

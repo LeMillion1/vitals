@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -559,6 +559,36 @@ immediately. The reset is private and cannot authorize other children. Body
 scan metrics, Hevy exercise/set children, and HRT compound components remain
 deferred to phases that can validate their raw/file/provider or mixed-catalog
 parents.
+
+## Stage-3D provider/raw-linked ownership operation
+
+The fixed `stage3.provider_raw_linked.v1` phase covers `garmin_daily`,
+`garmin_activities`, `garmin_intraday`, and `hevy_workouts`. It requires
+completed raw, Stage-3B, and Stage-3C checkpoints and assigns only the exact S/C
+already proven by each normalized row's reviewed raw link. Nullable historical A
+is validated independently and never rewritten. Exact domain/source, raw
+external IDs and payload keys, provider/account connection roots, and future
+scoped natural keys fail closed on mismatch; intraday intentionally has no
+invented sample uniqueness.
+
+One frozen-history exception preserves actual old behavior: an HAE daily row may
+retain a same-date Garmin API raw link. The reverse mismatch and all live-tail
+cross-source links are invalid. Hevy exercise/set roots are validation-only in
+this phase; `(NULL,NULL)`, `(parent S,NULL)` from backup v1, and exact parent S/C
+are transitional reviewed shapes, while partial or foreign roots fail.
+
+`scripts/backfill_provider_raw_subject_ownership.py` has the same read-only
+default, bounded status/apply controls, independent table checkpoints, no-PHI
+JSON projection, and commit-per-batch contract as prior phases. The complete
+provider writer set remains paused through final locked rehash. Because normal
+Garmin intraday sync replaces whole series, later completed-status checks
+validate all current rows but do not require old frozen sample IDs to remain.
+
+Backup v1 preserves raw links but strips both raw and normalized C. Import
+therefore atomically records a non-empty provider table as `RESTORE_BLOCKED`
+after the prior phase resets and before replacement; ordinary apply cannot guess
+or clear it. Empty tables record `COMPLETED`. Future backup v2 or an explicit
+reviewed remap must provide the missing connection provenance.
 
 ## Completion gates
 

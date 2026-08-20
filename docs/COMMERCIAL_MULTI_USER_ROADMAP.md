@@ -441,8 +441,16 @@ Implementation progress on `commercial/main`:
   Backup v1 resets them atomically after the raw and normalized checkpoint
   transitions. The remaining body-scan, Hevy, and compound children wait for
   their provenance-aware parent phases.
+- Stage 3D uses `stage3.provider_raw_linked.v1` for exactly `garmin_daily`,
+  `garmin_activities`, `garmin_intraday`, and `hevy_workouts`. Each normalized
+  S/C pair is copied only from its exact completed-Stage-3A raw link; A is never
+  invented or rewritten. Raw external IDs, provider/type roots, future scoped
+  keys, and transitional Hevy children are validated under a full provider-writer
+  maintenance pause. Backup v1 cannot reconstruct C, so every non-empty restored
+  provider checkpoint is `RESTORE_BLOCKED` pending a provenance-bearing backup
+  or reviewed remap; empty snapshots complete.
 - Remaining bounded backfill phases and whole-lake validation, scoped
-  provider/raw/file-sensitive normalized rows, remaining inherited children,
+  remaining raw/file-sensitive normalized rows, remaining inherited children,
   artifacts,
   natural-key/alert/outbox-unique cutover, remaining health-alert and conflict
   writers, subject-aware composition/reporting (including Labs/Genetics charts,

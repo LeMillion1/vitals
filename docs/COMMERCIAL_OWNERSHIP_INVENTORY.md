@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -464,13 +464,50 @@ checkpoint transitions; empty tables complete immediately. `body_scan_metrics`,
 `hevy_exercises`, `hevy_sets`, and `hrt_compound_components` remain deferred
 until their raw/file/provider or mixed-catalog parents are reviewed.
 
+Stage 3D continues step 4 with `stage3.provider_raw_linked.v1` over exactly
+`garmin_daily`, `garmin_activities`, `garmin_intraday`, and `hevy_workouts`.
+Every candidate must link an exact reviewed raw row: daily Garmin API and HAE
+use `daily:<date>` / `hae:<date>`, activities use
+`activity:<external_id>`, intraday samples share their `daily:<date>` raw, and
+Hevy raw/payload/normalized external IDs agree. Historical all-null or exact-S
+rows gain only the raw's exact S/C; A remains the original nullable attribution
+and is never forced to equal a later refresh raw. Foreign or partial roots fail.
+
+The sole historical cross-channel exception is an HAE daily row retaining an
+older Garmin API `daily:<same date>` raw; the reverse mismatch and every live
+tail mismatch fail. Future duplicate gates are `(C,date)` for daily and
+`(C,external_id)` for activities/workouts; intraday deliberately has no unique
+sample key. Hevy descendants are validated read-only and remain transitional
+until their child phase. Intraday is a replace-whole-series table, so the initial
+completion snapshot is frozen under the writer pause, while later completed
+status validates the current strict rows rather than requiring deleted historical
+sample IDs to survive forever.
+
+The fixed-target operator is:
+
+```bash
+python scripts/backfill_provider_raw_subject_ownership.py
+python scripts/backfill_provider_raw_subject_ownership.py --apply
+python scripts/backfill_provider_raw_subject_ownership.py \
+  --apply --batch-size 500 --max-batches 10
+```
+
+Stage 3A, all Stage-3B tables, and both Stage-3C tables must be completed before
+ordinary apply. All Garmin/HAE/Hevy writers remain paused throughout the
+multi-batch window. Backup v1 strips C from both raw and normalized rows; the
+same import transaction therefore records every non-empty Stage-3D table as
+`RESTORE_BLOCKED`, while empty tables complete. No Stage-3D CLI reset or remap
+exists.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
-before DDL once the checkpoint contained durable state. This validates only the
-Stage-3A raw slice. Stage-3B has a separate rehearsal; the remaining
-provider/artifact normalized rows, child and control phases, and Stage 4 gates
-remain pending.
+before DDL once the checkpoint contained durable state. Stage-3B and Stage-3C
+have separate PostgreSQL rehearsals. The Stage-3D PostgreSQL rehearsal covers
+the same migration boundary, fixed-catalog stop/resume, restore refusal, and an
+actual two-session normalized/raw-link race that fails before ownership or
+checkpoint mutation. Remaining raw/file-sensitive normalized rows, inherited
+children, artifacts, control phases, and the Stage 4 gates remain pending.
 
 ### Stage 4 — Ownership validation
 
