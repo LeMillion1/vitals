@@ -70,12 +70,19 @@ privacy, and legal decision permits it.
     while every invocation still requires ordinary subject authorization and
     records its subject, actor/system origin, purpose, model, usage, and exact
     platform gateway. Paying for AI never grants the administrator PHI access.
+14. **Authentication primitives come from a standards-based IdP.** Vitals does
+    not become a password, recovery, email-verification, TOTP, or passkey
+    implementation. An external OIDC provider proves the principal; Vitals maps
+    the immutable `(issuer, subject)` pair to a local user and remains the sole
+    authority for subject selection, roles, relationships, consent, support
+    grants, sessions, and every PHI decision.
 
 ## Target domain model
 
 | Concept | Purpose |
 | --- | --- |
-| `User` | Stable identity, normalized login/email, password hash, status, session version, MFA and verification state. |
+| `User` | Stable local principal, display/login projection, status, and session version. The legacy bcrypt hash remains only during the bounded compatibility cutover. |
+| `ExternalIdentity` | Immutable OIDC `(issuer, subject)` binding plus bounded verification/authentication metadata. It stores no password, MFA seed, recovery code, or provider token. |
 | `UserRole` | Additive `member`, `doctor`, `trainer`, and `platform_superadmin` assignments with grant provenance. |
 | `HealthSubject` | Owner of PHI, profile timezone, lifecycle state, and subject-scoped preferences. Usually self-owned, but not conflated with the acting user. |
 | `ProfessionalProfile` | Doctor/trainer type, verification status, jurisdiction, and credential metadata. Self-selected intent never means verified access. |
@@ -448,28 +455,48 @@ Rollback: feature flag the new policy adapter only while no second subject can
 register. RLS can be disabled in a controlled rollback without dropping scope
 columns.
 
-### PR 05 — Database authentication, sessions, MFA, and closed registration
+### PR 05 — OIDC authentication, local sessions, and closed registration
 
 Scope:
 
-- move login from environment-only identity to database users;
-- store revocable auth sessions, per-user MFA factors/recovery codes, password
-  reset, email verification, and rate-limit namespaces;
+- replace environment-only login with an OIDC Authorization Code + PKCE boundary
+  backed by a self-hosted identity provider; ZITADEL is the provisional default
+  and Keycloak remains a standards-compatible alternative;
+- delegate password hashing, password reset, email verification, brute-force
+  protection, TOTP, WebAuthn/passkeys, recovery codes, and IdP login sessions to
+  that provider instead of reimplementing authentication cryptography in Vitals;
+- map the validated immutable `(issuer, sub)` identity to a local `User` and
+  store only revocable Vitals application sessions, selected-subject state,
+  session/token versions, and bounded recent-authentication/step-up evidence;
+- validate discovery, exact issuer and audience, authorization-response issuer,
+  state, nonce, PKCE, JWKS rotation, token times, authentication context, and
+  logout/revocation without trusting email or display name as an identity key;
 - rotate/invalidate legacy browser and MCP tokens at cutover;
 - add `registration_mode = disabled | invite_only | admin_approved | open`, with
-  every mode except `disabled` still feature-gated off initially;
+  every mode except `disabled` still feature-gated off initially; the IdP may
+  authenticate or self-register an account, but Vitals alone decides whether a
+  local user/subject may be provisioned;
 - harden CSRF with tokens/Fetch Metadata for Internet-facing mutation routes.
 
 Tests:
 
-- session fixation, password change, user suspension, MFA replay, recovery, and
-  session-version invalidation;
+- session fixation, OIDC mix-up, login CSRF, code interception, stale JWKS,
+  issuer/audience/nonce mismatch, user suspension, MFA/step-up freshness,
+  upstream logout, and local session-version invalidation;
+- provider conformance tests run against the pinned ZITADEL deployment and the
+  generic OIDC adapter; no test-only identity claim may bypass token validation;
 - no role escalation through registration form payloads;
 - anonymous-surface contract remains explicit and fail closed.
 
 Rollback: compatibility login is retained for one release behind an operator-only
 emergency flag; rollback invalidates all new sessions rather than accepting both
 credential models indefinitely.
+
+Release gate: pin and inventory the IdP image, verify backup/restore and upgrade
+procedures, complete an AGPL/commercial-distribution review for ZITADEL, and keep
+Vitals coupled only through OIDC/OAuth metadata and claims. A provider-specific
+management API may automate invitations, but it must not become the PHI policy
+engine.
 
 ### PR 06 — Private files, portability, and settings separation
 
@@ -619,6 +646,14 @@ Scope:
   client credentials, authorization-response issuer validation, PKCE, and
   Client ID Metadata Documents; do not build new registration around deprecated
   OAuth Dynamic Client Registration;
+- reuse the browser IdP for principal authentication only when its authorization
+  server contract satisfies the MCP profile. If the pinned IdP does not advertise
+  and safely validate Client ID Metadata Documents, put a narrow standards-based
+  authorization adapter in front of it; never weaken the `2026-07-28` target to
+  whatever vendor-specific endpoint happens to exist;
+- treat metadata-document fetching as hostile SSRF input: HTTPS only, public
+  destinations, bounded redirects/body/time, exact document URL/client-id match,
+  strict redirect URI validation, and cache/revalidation rules are mandatory;
 - propagate the principal into MCP tool context and re-authorize every call;
 - make tool listing and direct invocation enforce the same module/policy rules;
 - route MCP through core services and preserve `Source.MCP` plus actor;
@@ -789,7 +824,7 @@ Additional gates:
 - [x] Bootstrap current owner and introduce `AccessContext`.
 - [ ] Backfill subject ownership across the lake.
 - [ ] Pass cross-subject service isolation and PostgreSQL RLS gates.
-- [ ] Cut over database auth and per-user sessions/MFA.
+- [ ] Cut over OIDC authentication and per-user Vitals sessions/step-up state.
 - [ ] Isolate files, settings, portability, connectors, scheduler, and messaging.
 - [ ] Add verified professionals, relationships, and consent.
 - [ ] Replace MCP/external auth with subject-scoped revocable grants.
@@ -809,6 +844,7 @@ Additional gates:
 | 2026-08-19 | Roles are additive; professional access requires relationship + consent. | A doctor/trainer may also be a member, and self-asserted roles must not expose PHI. |
 | 2026-08-19 | Platform superadmins have no standing PHI access. | Support needs are real, but invisible impersonation or global MCP access is unacceptable. Scoped, time-limited grants preserve repair capability and accountability. |
 | 2026-08-20 | OpenRouter is one superadmin-managed platform gateway, while every paid use is a subject-owned `AIInvocation`. | The platform pays for all users, but provider billing/configuration must not become a PHI grant. A separate platform root preserves subject-connection composite FKs and lets quotas, provenance, and no-standing-admin-access be enforced independently. |
+| 2026-08-20 | Delegate login credentials and MFA to a self-hosted OIDC IdP; keep Vitals authorization local. | ZITADEL is the provisional default and Keycloak remains compatible, but neither an IdP role nor a token claim grants PHI directly. Vitals maps immutable issuer/subject identities into revocable local sessions and `AccessContext`; licensing, pinned-image operations, and MCP Client ID Metadata Document conformance remain release gates. |
 | 2026-08-19 | Patient-visible care-team threads precede any hidden professional channel. | This is the safest useful communication model and avoids inventing a private clinical channel without product/legal approval. |
 | 2026-08-19 | Registration is implemented only after isolation, then opened last. | A working signup form before complete subject isolation creates a direct health-data breach risk. |
 | 2026-08-19 | Preserve legacy browser cookies through their existing TTL using a strict versioned compatibility envelope. | A flag-day logout is unnecessary in the bootstrap PR, but unknown token shapes and authorization facts in signed-readable cookies must fail closed. |
