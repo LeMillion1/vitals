@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -526,6 +526,39 @@ tables complete immediately and nonempty tables require the operator to rebuild
 their evidence. This private reset is not exposed by the CLI and does not apply
 to provider/raw/file phases. All covered writers stay paused across the entire
 multi-batch maintenance window.
+
+## Stage-3C inherited HRT-child ownership operation
+
+The fixed `stage3.inherited_children.hrt.v1` phase covers only
+`hrt_cycle_items` and `hrt_cycle_template_items`. Ordinary preflight/apply
+requires Stage 3A and every Stage-3B table checkpoint to be `COMPLETED`. A
+historical child with null S copies the exact S of its reviewed cycle/template
+parent; exact-S history is unchanged, while missing, foreign, or malformed
+parent/child graphs fail closed. No actor, connection, file, raw link, compound
+ownership, or medical value is inferred or rewritten.
+
+An unowned custom compound is a transitional legacy reference only for a child
+inside the frozen snapshot. A child above the watermark must point to an exact
+same-subject custom compound (or an intact checked-in global system compound).
+Stage 3C therefore closes the child-S bridge; strict conflict resolution for a
+historical unowned custom compound remains gated on the later mixed-catalog
+phase.
+
+`scripts/backfill_hrt_child_subject_ownership.py` defaults to read-only status
+and exposes only `--apply`, bounded `--batch-size`, and bounded
+`--max-batches`. The two tables have independent fixed checkpoint keys and are
+processed in parent-group order. Finalization uses PK-ordered locks and verifies
+both data and ownership checksums for the complete group; completed status and
+repeat apply continue to reject ownership drift while allowing later legitimate
+business edits.
+
+Backup v1 replaces both portable child tables and rebinds their S. In the same
+transaction, after raw and Stage-3B checkpoint handling, it resets exactly these
+two Stage-3C checkpoints to incoming ID/count snapshots; empty tables complete
+immediately. The reset is private and cannot authorize other children. Body
+scan metrics, Hevy exercise/set children, and HRT compound components remain
+deferred to phases that can validate their raw/file/provider or mixed-catalog
+parents.
 
 ## Completion gates
 

@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -432,6 +432,37 @@ valid historical provenance, while rotated/current accounts are never guessed.
 That compatibility bridge is not an ingress authority: every new
 provider/parser write remains on the strict live S/A/C-or-artifact dual-write
 boundary.
+
+Stage 3C continues step 4 with the fixed inherited-child group
+`stage3.inherited_children.hrt.v1`. It covers exactly `hrt_cycle_items` and
+`hrt_cycle_template_items`, in that order. Stage 3A and all 17 Stage-3B table
+checkpoints must already be `COMPLETED`. A historical child with `S=NULL` gains
+only the exact S of its reviewed cycle/template parent; an exact-S child is
+unchanged, and a foreign S fails closed. The operation never creates A/C/F or
+changes schedules, compounds, timestamps, or other medical values. Cycle-item
+compound links are validation-only and cannot be used to infer ownership. A
+fully unowned custom compound is tolerated only for a child inside the frozen
+historical snapshot; an appended live child requires a same-subject custom
+compound. Strict conflict resolution for the historical custom-compound case
+still waits for the separate mixed-catalog phase.
+
+Each child table has its own deterministic checkpoint. The fixed-target
+operator is:
+
+```bash
+python scripts/backfill_hrt_child_subject_ownership.py
+python scripts/backfill_hrt_child_subject_ownership.py --apply
+python scripts/backfill_hrt_child_subject_ownership.py \
+  --apply --batch-size 500 --max-batches 10
+```
+
+The command has no table, phase, reset, delete, or database-URL selector. The
+HRT writers remain paused for the complete multi-batch window; finalization
+locks and rehashes the complete two-table snapshot. Backup v1 atomically resets
+the two checkpoints to incoming ID/count bounds after the raw and Stage-3B
+checkpoint transitions; empty tables complete immediately. `body_scan_metrics`,
+`hevy_exercises`, `hevy_sets`, and `hrt_compound_components` remain deferred
+until their raw/file/provider or mixed-catalog parents are reviewed.
 
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent

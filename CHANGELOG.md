@@ -52,6 +52,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   names, counts, result codes, and checksums, with no health values or identity
   IDs; all covered writers must remain paused for the multi-batch maintenance
   window.
+- Added Stage 3C for the two HRT children whose subject is inherited solely from
+  the already-reviewed Stage 3B cycle or template parent. The fixed
+  `stage3.inherited_children.hrt.v1` operator backfills only
+  `hrt_cycle_items` and `hrt_cycle_template_items`, never invents actor,
+  connection, file, or raw provenance, and rejects foreign parents or unsafe
+  compound references. Independent checkpoints, final locked checksum
+  verification, strict child-scope tests, and an atomic backup-v1 checkpoint reset
+  preserve bounded stop/resume behavior. Body-scan, Hevy, and compound children
+  remain in later provenance-aware phases.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before

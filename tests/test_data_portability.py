@@ -27,6 +27,12 @@ from vitals.models.app_settings import AppSetting
 from vitals.models.garmin import GarminActivity, GarminDaily, GarminIntraday
 from vitals.models.glp1 import Injection
 from vitals.models.hevy import HevyExercise, HevySet, HevyWorkout
+from vitals.models.hrt import (
+    HrtCycle,
+    HrtCycleItem,
+    HrtCycleTemplate,
+    HrtCycleTemplateItem,
+)
 from vitals.models.labs import LabResult
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.proactive import NotificationDeliveryIntent
@@ -40,6 +46,10 @@ from vitals.services.data_portability_service import (
     export_full,
     export_llm,
     import_full,
+)
+from vitals.services.hrt_child_ownership_backfill_service import (
+    HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    HRT_CHILD_OWNERSHIP_BACKFILL_TABLES,
 )
 from vitals.services.normalized_ownership_backfill_service import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
@@ -707,6 +717,166 @@ async def test_full_import_atomically_rebases_normalized_stage3b_checkpoints(
             )
         )
     )
+
+
+async def test_full_import_atomically_rebases_hrt_child_stage3c_checkpoints(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+    await db_session.commit()
+
+    checkpoints = list(
+        await db_session.scalars(
+            select(OwnershipBackfillCheckpoint).where(
+                OwnershipBackfillCheckpoint.phase_key.in_(
+                    tuple(HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+                )
+            )
+        )
+    )
+    assert len(checkpoints) == len(HRT_CHILD_OWNERSHIP_BACKFILL_TABLES) == 2
+    assert all(
+        checkpoint.status == "completed"
+        and checkpoint.scan_high_watermark_id == 0
+        and checkpoint.snapshot_rows == 0
+        and checkpoint.completed_at is not None
+        for checkpoint in checkpoints
+    )
+
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "hrt_cycles": [
+                {
+                    "id": 31,
+                    "domain": Domain.HRT.value,
+                    "source": Source.MANUAL.value,
+                    "name": "Historical cycle",
+                    "kind": "course",
+                    "start_date": "2026-01-01",
+                }
+            ],
+            "hrt_cycle_items": [
+                {
+                    "id": 37,
+                    "cycle_id": 31,
+                    "compound_key": "testosterone_enanthate",
+                    "unit": "mg",
+                    "start_offset_days": 0,
+                    "schedule": [
+                        {
+                            "dose": 125,
+                            "interval_days": 3.5,
+                            "duration_days": 28,
+                        }
+                    ],
+                }
+            ],
+            "hrt_cycle_templates": [
+                {
+                    "id": 41,
+                    "domain": Domain.HRT.value,
+                    "source": Source.MANUAL.value,
+                    "name": "Historical template",
+                    "kind": "course",
+                }
+            ],
+            "hrt_cycle_template_items": [
+                {
+                    "id": 43,
+                    "template_id": 41,
+                    "compound_key": "testosterone_enanthate",
+                    "unit": "mg",
+                    "start_offset_days": 0,
+                    "schedule": [
+                        {
+                            "dose": 125,
+                            "interval_days": 3.5,
+                            "duration_days": 28,
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    cycle = await db_session.get(HrtCycle, 31)
+    cycle_item = await db_session.get(HrtCycleItem, 37)
+    template = await db_session.get(HrtCycleTemplate, 41)
+    template_item = await db_session.get(HrtCycleTemplateItem, 43)
+    assert cycle is not None and cycle_item is not None
+    assert template is not None and template_item is not None
+    assert cycle.subject_id == legacy_owner_roots.subject_id
+    assert template.subject_id == legacy_owner_roots.subject_id
+    assert cycle_item.subject_id == legacy_owner_roots.subject_id
+    assert template_item.subject_id == legacy_owner_roots.subject_id
+
+    expected = {
+        "hrt_cycle_items": (37, 1),
+        "hrt_cycle_template_items": (43, 1),
+    }
+    for table_name, phase_key in (
+        HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.items()
+    ):
+        checkpoint = await db_session.get(
+            OwnershipBackfillCheckpoint, phase_key
+        )
+        assert checkpoint is not None
+        assert (
+            checkpoint.status,
+            checkpoint.scan_high_watermark_id,
+            checkpoint.snapshot_rows,
+            checkpoint.last_scanned_id,
+            checkpoint.scanned_rows,
+            checkpoint.completed_at,
+        ) == ("running", *expected[table_name], 0, 0, None)
+
+
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_hrt_child_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_reset(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_hrt_child_backfill_for_portability_v1_restore",
+        unexpected_reset,
+    )
+    row = {
+        "cycle_id": 1,
+        "compound_key": "testosterone_enanthate",
+        "unit": "mg",
+        "schedule": [],
+    }
+    if bad_id is not None:
+        row["id"] = bad_id
+    with pytest.raises(PortabilityError, match="positive integer id"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                "hrt_cycle_items": [row],
+            },
+        )
+    assert called is False
 
 
 @pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))

@@ -432,8 +432,18 @@ Implementation progress on `commercial/main`:
   All 17 writers remain paused for the complete multi-batch maintenance window,
   and final per-table rehashing proves that business data and timestamps did not
   change.
+- Stage 3C uses `stage3.inherited_children.hrt.v1` for exactly
+  `hrt_cycle_items` and `hrt_cycle_template_items`. It requires completed Stage
+  3A and all Stage-3B checkpoints, copies only the reviewed parent S into
+  historical null-S children, and rejects foreign parent/child or unsafe
+  compound graphs. The two independent checkpoints retain the bounded
+  status/apply, stop/resume, final locked rehash, and no-PHI JSON contracts.
+  Backup v1 resets them atomically after the raw and normalized checkpoint
+  transitions. The remaining body-scan, Hevy, and compound children wait for
+  their provenance-aware parent phases.
 - Remaining bounded backfill phases and whole-lake validation, scoped
-  provider/raw/file-sensitive normalized rows, inherited children, artifacts,
+  provider/raw/file-sensitive normalized rows, remaining inherited children,
+  artifacts,
   natural-key/alert/outbox-unique cutover, remaining health-alert and conflict
   writers, subject-aware composition/reporting (including Labs/Genetics charts,
   share snapshot inputs, digests, overview, remaining Today composition, and
