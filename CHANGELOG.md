@@ -26,6 +26,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   concurrent PostgreSQL startup with an advisory lock, and records only bounded
   operational audit metadata. A config/identity/hash mismatch now stops startup
   instead of silently creating or rewriting an administrator.
+- Split the mixed proactive settings aggregate into a subject schedule/nudge
+  policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
+  sync/pulse/export policy. Startup materializes complete scoped rows before
+  scheduler registration; strict runtime reads never fall back to global
+  defaults, human reads/writes require the active owner actor, and the legacy
+  row is mirrored only while governance still proves exactly one subject.
+  A shared guarded zero-subject transaction (`BEGIN IMMEDIATE` on SQLite and the
+  identity advisory lock on PostgreSQL) keeps pre-bootstrap compatibility from
+  racing identity creation. Per-subject timezone dispatch remains a separate
+  PR-09 gate.
+- Added a durable, subject-owned Telegram delivery intent protocol. Every owned
+  new-message path commits a payload-free `PENDING` claim, freshly revalidates
+  the subject, recipient, current Telegram connection, module state, quiet hours,
+  and budget before committing `DISPATCHING`, performs exactly one network call
+  without an open database transaction, and atomically records `SENT` plus the
+  matching Notification journal. Uncertain transport outcomes become terminal
+  `AMBIGUOUS` claims and are never retried; stale claims are reconciled without
+  provider I/O. A stale raw-backed reply/echo that provably never acquired a
+  dispatch lease may be re-armed from deterministic domain state; an uncertain
+  or policy-cancelled claim cannot. Scoped occurrence keys, raw/category
+  uniqueness, and conservative
+  cooldown/budget accounting prevent duplicate sends across workers and channel
+  rotation. The intent stores no text, buttons, chat identifier, credential, or
+  free-form provider error—only a bounded lifecycle code. Existing journal
+  content, callback edits/withdrawals, and the
+  exact-one environment-backed Telegram transport remain explicit PR-09 follow-up
+  gates rather than being presented as multi-recipient or PHI-free delivery.
 - Added framework-independent immutable access-policy values. Ownership permits
   access to the selected subject; doctor/trainer access requires an exact live
   relationship-consent scope, and superadmin support access requires an exact

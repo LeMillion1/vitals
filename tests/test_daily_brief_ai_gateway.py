@@ -32,7 +32,7 @@ from vitals.models.proactive import Notification
 from vitals.models.tenancy import IntegrationConnection, PlatformIntegrationConnection
 from vitals.services import ai_gateway_service, digest_service, garmin_service
 from vitals.services.legacy_ownership import LegacyOwnershipError
-from vitals.services.proactive import brief, channels, inbound
+from vitals.services.proactive import brief, channels, delivery, inbound
 from web.config import get_web_config
 
 pytestmark = pytest.mark.usefixtures("all_modules_on")
@@ -823,7 +823,13 @@ async def test_scheduler_uses_platform_gateway_without_subject_openrouter_root(
 
         async def send(self, text, *, buttons=None, reply_to=None):
             self.sent.append(text)
-            return "synthetic-message"
+            return "903"
+
+        async def edit(self, message_id, text, *, buttons=None):
+            return None
+
+        async def answer_callback(self, callback_id, text=""):
+            return None
 
     notifier = Notifier()
     parser_calls = 0
@@ -836,8 +842,24 @@ async def test_scheduler_uses_platform_gateway_without_subject_openrouter_root(
         parser_calls += 1
         return []
 
+    async def build_bound(session, ownership, **kwargs):
+        del session, kwargs
+        notifier.binding = channels.DeliveryEndpointBinding(
+            subject_id=ownership.subject_id,
+            recipient_user_id=ownership.recipient_user_id,
+            integration_connection_id=ownership.connection_id,
+            channel=notifier.channel,
+        )
+        return notifier
+
+    def resolve_bound(binding, credential_ref, **kwargs):
+        del credential_ref, kwargs
+        notifier.binding = binding
+        return notifier
+
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
-    monkeypatch.setattr(channels, "build_notifier", lambda: notifier)
+    monkeypatch.setattr(channels, "build_legacy_bound_notifier", build_bound)
+    monkeypatch.setattr(channels, "resolve_legacy_bound_notifier", resolve_bound)
     monkeypatch.setattr(garmin_service, "sync_job", no_sync)
     monkeypatch.setattr(inbound, "reparse_pending", no_reparse)
 
@@ -888,9 +910,7 @@ async def test_test_send_uses_one_frozen_date_for_artifact_and_delivery_key(
     db_session,
     monkeypatch,
 ):
-    from web.main import app
     from web.routers import reports
-    from web.routers.telegram import get_notifier
 
     _install_runtime(monkeypatch, db_session)
 
@@ -898,9 +918,33 @@ async def test_test_send_uses_one_frozen_date_for_artifact_and_delivery_key(
         channel = IntegrationProvider.TELEGRAM.value
 
         async def send(self, text, *, buttons=None, reply_to=None):
-            return "midnight-message"
+            return "902"
 
-    app.dependency_overrides[get_notifier] = lambda: Notifier()
+        async def edit(self, message_id, text, *, buttons=None):
+            return None
+
+        async def answer_callback(self, callback_id, text=""):
+            return None
+
+    notifier = Notifier()
+
+    async def build_bound(session, ownership, **kwargs):
+        del session, kwargs
+        notifier.binding = channels.DeliveryEndpointBinding(
+            subject_id=ownership.subject_id,
+            recipient_user_id=ownership.recipient_user_id,
+            integration_connection_id=ownership.connection_id,
+            channel=notifier.channel,
+        )
+        return notifier
+
+    def resolve_bound(binding, credential_ref, **kwargs):
+        del credential_ref, kwargs
+        notifier.binding = binding
+        return notifier
+
+    monkeypatch.setattr(channels, "build_legacy_bound_notifier", build_bound)
+    monkeypatch.setattr(channels, "resolve_legacy_bound_notifier", resolve_bound)
     samples = iter((DAY, DAY + timedelta(days=1)))
     monkeypatch.setattr(reports, "today_local", lambda: next(samples))
     response = await auth_client.post(
@@ -911,8 +955,11 @@ async def test_test_send_uses_one_frozen_date_for_artifact_and_delivery_key(
     artifact = (await db_session.scalars(select(WeeklyDigest))).one()
     notification = (await db_session.scalars(select(Notification))).one()
     assert artifact.date == DAY
-    assert notification.dedupe_key is not None
-    assert notification.dedupe_key.startswith(f"brief_test:{DAY.isoformat()}:")
+    assert notification.dedupe_key == delivery.make_delivery_idempotency_key(
+        "brief-test",
+        DAY,
+        WEB_TOKEN,
+    )
 
 
 def test_identity_production_callsites_cannot_reach_legacy_complete_text():

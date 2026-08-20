@@ -105,10 +105,21 @@ The first reviewed mappings are deliberately small:
 
 Reads are new-first with legacy fallback. Writes update both rows in one caller-
 owned transaction. `twofa_secret`, credentials, token material, unknown keys, and
-the mixed `proactive` object are not copied by a generic bridge. The proactive
-object must first be split into subject, Telegram-connection, and Garmin-
-connection fields. Redis keys must include the corresponding user/S/C UUID before
-a second subject exists.
+the mixed `proactive` object are not copied by a generic bridge. Its specialized
+cutover is now explicit: brief/evening times and nudge categories live in
+`SubjectSetting('proactive_subject_policy')`; quiet hours and the initiative
+budget live on the Telegram recipient C as `proactive_delivery_policy`; Garmin
+sync, pulse, and weight-export policy live on the Garmin account C as
+`garmin_proactive_policy`. Runtime reads are strict new-only. Startup splits the
+legacy/default aggregate while governance proves exactly one S, rejects partial
+or drifted state, and only that exact-one bridge may mirror a normalized save to
+`AppSetting('proactive')`. Multi-subject reads require the exact active owner
+actor and writes never touch the global row. Redis keys must include the
+corresponding user/S/C UUID before a second subject exists.
+
+The startup scheduler still consumes the exact-one aggregate. Replacing its
+global cron registry with per-subject, timezone-aware due dispatchers remains a
+PR-09 gate; the storage split does not claim that dispatcher cutover.
 
 The language, module-toggle, custom-chart, week-template, and Garmin Weight export
 product paths now
@@ -283,13 +294,34 @@ callback is durably parked before its action, successful callbacks are marked
 processed, and a recovery pass can replay a parked action after rollback. During
 the current bridge, new Daily Brief generation uses platform `AIInvocation`
 provenance and never writes a subject OpenRouter C; historical C-backed rows
-remain readable. The Notification separately carries the delivery C. Dedupe and daily budget
-remain stable across channel rotation, while a key already owned by another
-subject fails before network delivery. The global notification unique index is
-still a concurrency/cutover blocker until its scoped replacement lands. Inbound
-normalization and callback mutations recover from the durable raw update, but an
-immediate reply/echo remains best-effort: PR-09 must persist an outbound intent
-with pending/sent/ambiguous states before commercial registration can open.
+remain readable. The Notification separately carries the delivery C. Dedupe and
+daily budget remain stable across channel rotation, while the same logical key
+may be used by different subjects without collision. New owned messages now use
+a durable `NotificationDeliveryIntent`: T1 commits a payload-free PENDING claim;
+T2 locks and revalidates S, recipient Q, the current Telegram C, module policy,
+quiet hours, and initiative budget before committing DISPATCHING; the network
+call has no database transaction; and T3 atomically marks SENT and inserts the
+exact linked Notification. Transport uncertainty is terminal AMBIGUOUS and is
+never retried. Stale reconciliation performs no provider I/O, and PENDING,
+DISPATCHING, SENT, and AMBIGUOUS all count conservatively for budget/cooldown.
+Scoped owned and fully-null legacy journal indexes replace the global dedupe
+index, while raw/category uniqueness prevents alternate keys from sending the
+same reply or echo twice.
+
+Generic reconciliation cancels only stale non-raw claims. A stale raw-backed
+reply/echo PENDING claim—or a stale cancellation whose lifecycle proves no
+dispatch began—may be re-armed on the same row after exact graph validation.
+Commands reconstruct their fixed response, Signals reconstruct the current
+raw-linked echo, and a question whose in-memory answer was lost uses the fixed
+redacted fallback without another OpenRouter call. DISPATCHING, SENT,
+AMBIGUOUS, and policy-cancelled claims are never re-opened.
+
+The intent carries no text, buttons, recipient address, credential, or free-form
+error. Ordinary Notification journals still contain the sent brief/nudge/echo
+content, so the wider PHI-free-notification exit criterion is not yet claimed.
+The current environment Telegram token/private recipient can be bound only while
+the exact-one legacy bridge proves S/Q/C; a durable per-recipient credential
+mapping and callback/edit/withdrawal mutation intents remain PR-09 gates.
 
 The live signal parser and scheduled recovery now reserve a raw-bound
 `AIInvocation` against the installation-wide platform gateway. T1 locks
@@ -306,9 +338,11 @@ S-only/C-null, use an opaque per-S entity key, and may link the exact failed
 invocation. Historical subject-C and fully-null alerts are only resolved, never
 rewritten with invented roots.
 Parser echoes carry the invocation link and revalidate the logical Telegram
-message before and after transport; a concurrently superseded echo is suppressed
-or neutralized. A durable outbound intent and scoped replacement for the global
-active-alert unique index remain PR-09 registration blockers.
+message before both delivery transactions; a concurrently superseded echo is
+suppressed, while a post-send edit is best-effort neutralized. Their raw-bound
+delivery intent prevents another new-message send. A scoped replacement for the
+global active-alert unique index and durable Telegram edit intent remain PR-09
+registration blockers.
 
 Telegram questions use the same installation gateway with a distinct
 `QUESTION_REPLY` invocation bound to the exact raw, human owner A, and TELEGRAM
@@ -326,20 +360,21 @@ invocation, while failed, ambiguous, and pre-dispatch-cancelled attempts retain
 their exact terminal linkage. Recovery queries every unjournaled invocation
 independently of an opaque raw-scan cursor, so a busy Telegram history cannot
 strand a paid result. Delivery rechecks the module, current owner/recipient C,
-and immutable edit ordering after transport and attempts to withdraw a stale
-answer. The unavoidable check/send/journal and send/withdraw windows remain the
-shared PR-09 durable outbound-intent blocker; no at-most-once Telegram claim is
-asserted in Stage 2.
+and immutable edit ordering before dispatch. The exact raw/category intent makes
+the new-message provider call at-most-once and journals the terminal invocation
+without storing the answer text. If the source is edited after dispatch,
+withdrawal remains a best-effort Telegram mutation; durable edit/withdrawal
+reconciliation is still a PR-09 blocker.
 
 The scheduled morning brief freezes its exact-S compatibility context and
 reserves platform quota, commits authorization/charge before exactly one
 OpenRouter call, then finalizes sanitized accounting and its invocation-linked
 artifact in a fresh transaction. Missing configuration/quota yields an
 invocation-null deterministic header; provider failure yields a header linked to
-the exact conservatively charged terminal invocation. Delivery-policy reads end
-before Telegram and a successful send is journalled in a fresh caller-owned
-transaction. The unchanged concurrent prepare/send/journal window still requires
-PR-09's durable outbound claim. Isolated actorless S-only
+the exact conservatively charged terminal invocation. Delivery uses the shared
+durable intent protocol, so policy and dispatch state commit before Telegram and
+the journal is linked atomically afterward; concurrent workers cannot produce a
+second provider call. Isolated actorless S-only
 `brief_empty_day` reconciliation then follows canonical governance -> S -> key/row
 order. Empty outcomes use the same alert phase without calling either provider.
 

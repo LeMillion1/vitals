@@ -101,7 +101,11 @@ def test_every_mapped_tool_name_is_a_real_tool():
         assert callable(getattr(mcp_router, name, None)), f"{name} is not a tool"
 
 
-async def test_disabled_modules_drop_out_of_the_tool_list(db_session, monkeypatch):
+async def test_disabled_modules_drop_out_of_the_tool_list(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
     """Optional modules default to off, so the surface starts trimmed; turning one
     on brings exactly its own tools back."""
     listed = {t.name for t in await mcp_router.mcp.list_tools()}
@@ -110,7 +114,12 @@ async def test_disabled_modules_drop_out_of_the_tool_list(db_session, monkeypatc
 
     from vitals.services import modules_service
 
-    await modules_service.set_module_enabled(db_session, key="hrt", enabled=True)
+    await modules_service.set_module_enabled(
+        db_session,
+        key="hrt",
+        enabled=True,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     await db_session.commit()
 
     listed = {t.name for t in await mcp_router.mcp.list_tools()}

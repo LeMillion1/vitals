@@ -724,6 +724,44 @@ async def test_parser_alert_is_subject_scoped_and_legacy_roots_are_not_fabricate
     assert (legacy.subject_id, legacy.integration_connection_id) == (None, None)
 
 
+async def test_malformed_reply_provenance_isolated_during_alert_reconciliation(
+    db_session,
+    legacy_owner_roots,
+):
+    await _configure_platform(db_session, legacy_owner_roots)
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix="malformed-reply-provenance",
+        payload={
+            "message": {
+                "message_id": 4001,
+                "text": "голова болит",
+                "reply_to_message": "invalid",
+            }
+        },
+    )
+    await db_session.commit()
+
+    alert = await signal_ai_service.reconcile_signal_parser_alert(
+        db_session,
+        ownership=ownership,
+    )
+    await db_session.commit()
+
+    assert alert is not None
+    assert alert.subject_id == ownership.subject_id
+    await db_session.refresh(raw)
+    assert raw.processed_at is None
+    assert await db_session.scalar(
+        select(func.count()).select_from(AIInvocation).where(
+            AIInvocation.raw_payload_id == raw.id
+        )
+    ) == 0
+
+
 async def test_recovery_uses_same_pre_four_am_health_day(
     db_session,
     legacy_owner_roots,

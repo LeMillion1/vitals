@@ -3,11 +3,12 @@ no-op path for the write tool."""
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
-from vitals.models.app_settings import AppSetting  # noqa: E402
-from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY  # noqa: E402
+from vitals.models.identity import HealthSubject  # noqa: E402
+from vitals.services import modules_service  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -15,9 +16,22 @@ async def _legacy_mcp_owner(legacy_owner_roots):
     """MCP v1 runs only after startup has materialized its sole owner roots."""
 
 
-async def _enable_timeline(db_session):
-    db_session.add(AppSetting(key=SETTINGS_KEY, value={k: True for k in MODULE_REGISTRY}))
+async def _set_timeline_enabled(db_session, *, enabled: bool):
+    subject_ids = list(
+        await db_session.scalars(select(HealthSubject.id).order_by(HealthSubject.id))
+    )
+    assert len(subject_ids) == 1
+    await modules_service.set_module_enabled(
+        db_session,
+        key="timeline",
+        enabled=enabled,
+        subject_id=subject_ids[0],
+    )
     await db_session.commit()
+
+
+async def _enable_timeline(db_session):
+    await _set_timeline_enabled(db_session, enabled=True)
 
 
 async def test_log_event_and_get_timeline(db_session, session_factory, monkeypatch):
@@ -49,14 +63,7 @@ async def test_log_event_and_get_timeline(db_session, session_factory, monkeypat
 async def test_log_event_noop_when_module_disabled(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
-    from vitals.models.app_settings import AppSetting
-    from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY
-
-    db_session.add(AppSetting(
-        key=SETTINGS_KEY,
-        value={k: (k not in ("timeline",)) for k in MODULE_REGISTRY},
-    ))
-    await db_session.commit()
+    await _set_timeline_enabled(db_session, enabled=False)
 
     res = await mcp_router.log_event(title="Should not save", on_date="2026-06-01")
     assert res == {"error": "module 'timeline' is disabled"}

@@ -196,8 +196,18 @@ async def signals_module_on(db_session):
     otherwise ``delivery.send`` correctly refuses to send anything.
     """
     from vitals.services import modules_service
+    from sqlalchemy import select
+    from vitals.models.identity import HealthSubject
 
     await modules_service.set_module_enabled(db_session, key="signals", enabled=True)
+    subject_ids = list(await db_session.scalars(select(HealthSubject.id)))
+    for subject_id in subject_ids:
+        await modules_service.set_module_enabled(
+            db_session,
+            key="signals",
+            enabled=True,
+            subject_id=subject_id,
+        )
     await db_session.commit()
 
 
@@ -210,11 +220,23 @@ async def all_modules_on(db_session):
     state explicitly so module-gating behavior remains testable elsewhere.
     """
     from vitals.models.app_settings import AppSetting
+    from vitals.models.identity import HealthSubject
+    from vitals.models.scoped_settings import SubjectSetting
     from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY
+    from sqlalchemy import select
 
+    enabled = {key: True for key in MODULE_REGISTRY}
     await db_session.merge(
-        AppSetting(key=SETTINGS_KEY, value={key: True for key in MODULE_REGISTRY})
+        AppSetting(key=SETTINGS_KEY, value=enabled)
     )
+    for subject_id in await db_session.scalars(select(HealthSubject.id)):
+        await db_session.merge(
+            SubjectSetting(
+                subject_id=subject_id,
+                key=SETTINGS_KEY,
+                value=enabled,
+            )
+        )
     await db_session.commit()
 
 
@@ -238,12 +260,24 @@ async def client(db_session, redis):
     # mirrors the 0012 migration seed (create_all doesn't run migrations, and the
     # fail-safe default is Optional OFF, which would otherwise hide/redirect them).
     from vitals.models.app_settings import AppSetting
+    from vitals.models.identity import HealthSubject
+    from vitals.models.scoped_settings import SubjectSetting
     from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY
     from vitals.services.language_service import SETTINGS_KEY as LANG_SETTINGS_KEY
+    from sqlalchemy import select
 
     # merge(), not add(): another fixture may already have written these rows
     # (``signals_module_on`` does), and a blind insert would collide on the PK.
-    await db_session.merge(AppSetting(key=SETTINGS_KEY, value={k: True for k in MODULE_REGISTRY}))
+    enabled = {key: True for key in MODULE_REGISTRY}
+    await db_session.merge(AppSetting(key=SETTINGS_KEY, value=enabled))
+    for subject_id in await db_session.scalars(select(HealthSubject.id)):
+        await db_session.merge(
+            SubjectSetting(
+                subject_id=subject_id,
+                key=SETTINGS_KEY,
+                value=enabled,
+            )
+        )
     await db_session.merge(AppSetting(key=LANG_SETTINGS_KEY, value="ru"))
     await db_session.commit()
 
@@ -285,6 +319,34 @@ async def legacy_owner_roots(db_session):
     )
     await bootstrap_legacy_resource_roots(
         db_session, subject_id=identity.subject_id
+    )
+    from vitals.services import modules_service
+    from vitals.services.scoped_settings_service import (
+        ScopedSettingKey,
+        SettingScope,
+        set_scoped_setting,
+    )
+
+    enabled_modules = await modules_service.get_enabled_modules(
+        db_session,
+        subject_id=identity.subject_id,
+    )
+    await set_scoped_setting(
+        db_session,
+        scope=SettingScope.SUBJECT,
+        key=ScopedSettingKey.ENABLED_MODULES,
+        subject_id=identity.subject_id,
+        value=enabled_modules,
+    )
+    from vitals.services.proactive import prefs
+
+    preference_scope = await prefs.resolve_legacy_preferences_scope(
+        db_session,
+        actor_username=web_config.auth_username,
+    )
+    await prefs.initialize_legacy_preferences(
+        db_session,
+        scope=preference_scope,
     )
     await db_session.commit()
     return identity

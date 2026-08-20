@@ -559,6 +559,34 @@ def plan_dedupe_key(on_date: date_type) -> str:
     return f"evening-plan:{on_date.isoformat()}"
 
 
+async def _complete_prepared_delivery(session_factory, prepared_delivery) -> None:
+    """Finish one committed T1 capability without spanning provider I/O."""
+
+    from vitals.services.proactive import channels, delivery
+
+    async with session_factory() as session:
+        dispatch_lease = await delivery.start_delivery_dispatch(
+            session,
+            prepared_delivery,
+            notifier_resolver=channels.resolve_legacy_bound_notifier,
+        )
+        await session.commit()
+    if dispatch_lease is None:
+        return
+
+    completion = await delivery.dispatch_delivery(dispatch_lease)
+    for finalize_try in range(2):
+        async with session_factory() as session:
+            try:
+                await delivery.finalize_delivery(session, completion)
+                await session.commit()
+                return
+            except Exception:
+                await session.rollback()
+                if finalize_try:
+                    raise
+
+
 # ── The 23:45 job ─────────────────────────────────────────────────────────────
 async def evening_job(session_factory, redis=None) -> None:
     """Close today, then ask about tomorrow — in that order, as two messages.
@@ -577,19 +605,25 @@ async def evening_job(session_factory, redis=None) -> None:
     from vitals.services import garmin_service
     from vitals.services.proactive import channels, delivery
 
-    notifier = channels.build_notifier()
+    today = today_local()
+    tomorrow = today + timedelta(days=1)
+    recap_legacy_key = dedupe_key(today)
+    recap_delivery_key = delivery.make_delivery_idempotency_key(
+        "evening",
+        today,
+    )
+    plan_legacy_key = plan_dedupe_key(today)
+    plan_delivery_key = delivery.make_delivery_idempotency_key(
+        "evening-plan",
+        today,
+    )
+
+    # Compose from one committed domain snapshot before reserving delivery.
     async with session_factory() as session:
         ownership = await channels.resolve_legacy_channel_ownership(
             session,
             actor_username=None,
         )
-        today = today_local()
-        tomorrow = today + timedelta(days=1)
-
-        # ── Today, in hindsight ───────────────────────────────────────────────
-        # The recap keyboard is the one-tap version of «Как день?» directly above
-        # it, about the day that just ended — the only moment that question can
-        # be answered rather than guessed.
         recap_answers, recap_answered = await resolve(
             session,
             today,
@@ -603,20 +637,67 @@ async def evening_job(session_factory, redis=None) -> None:
             ),
             compose.Block(compose.KIND_ASK, ASK_DAY, 20),
         ]
-        await delivery.send(
+        recap_text = compose.render(recap_blocks)
+        recap_buttons = exception_buttons(
+            recap_answers,
+            today,
+            recap_answered,
+            RECAP_QUESTIONS,
+        ) or None
+        await session.commit()
+
+    # ── Today, in hindsight ───────────────────────────────────────────────
+    # The recap keyboard is the one-tap version of «Как день?» directly above
+    # it, about the day that just ended — the only moment that question can
+    # be answered rather than guessed.
+    async with session_factory() as session:
+        ownership = await channels.resolve_legacy_channel_ownership(
             session,
-            notifier,
-            text=compose.render(recap_blocks),
+            actor_username=None,
+        )
+        bound_notifier = await channels.build_legacy_bound_notifier(
+            session,
+            ownership,
+        )
+        prepared_recap = await delivery.prepare_delivery_intent(
+            session,
+            bound_notifier,
+            text=recap_text,
             category=delivery.CATEGORY_EVENING,
-            dedupe_key=dedupe_key(today),
-            buttons=exception_buttons(
-                recap_answers, today, recap_answered, RECAP_QUESTIONS
-            )
-            or None,
+            idempotency_key=recap_delivery_key,
+            legacy_dedupe_key=recap_legacy_key,
+            buttons=recap_buttons,
             ownership=ownership,
         )
+        await session.commit()
+    if prepared_recap is not None:
+        await _complete_prepared_delivery(session_factory, prepared_recap)
 
-        # ── Tomorrow, as planned ──────────────────────────────────────────────
+    # Do not let the plan leapfrog an uncertain/cancelled/no-channel recap.
+    # Existing legacy and durable SENT journals both satisfy this exact gate.
+    async with session_factory() as session:
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session,
+            actor_username=None,
+        )
+        recap_journal = await delivery.confirmed_delivery_journal(
+            session,
+            idempotency_key=recap_delivery_key,
+            legacy_dedupe_key=recap_legacy_key,
+            category=delivery.CATEGORY_EVENING,
+            ownership=ownership,
+        )
+        await session.commit()
+    if recap_journal is None:
+        return
+
+    # ── Tomorrow, as planned ──────────────────────────────────────────────
+    # Persist the domain plan in its own transaction before delivery T1.
+    async with session_factory() as session:
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session,
+            actor_username=None,
+        )
         planned = guess_for(
             await get_week_template(
                 session,
@@ -640,14 +721,27 @@ async def evening_job(session_factory, redis=None) -> None:
         tomorrow_line = f"{LINE_TOMORROW}{describe(answers)}"
         if buttons:
             tomorrow_line += f"\n{HINT_FIX}"
+        await session.commit()
 
-        await delivery.send(
+    async with session_factory() as session:
+        ownership = await channels.resolve_legacy_channel_ownership(
             session,
-            notifier,
+            actor_username=None,
+        )
+        bound_notifier = await channels.build_legacy_bound_notifier(
+            session,
+            ownership,
+        )
+        prepared_plan = await delivery.prepare_delivery_intent(
+            session,
+            bound_notifier,
             text=tomorrow_line,
             category=delivery.CATEGORY_EVENING,
-            dedupe_key=plan_dedupe_key(today),
+            idempotency_key=plan_delivery_key,
+            legacy_dedupe_key=plan_legacy_key,
             buttons=buttons,
             ownership=ownership,
         )
         await session.commit()
+    if prepared_plan is not None:
+        await _complete_prepared_delivery(session_factory, prepared_plan)

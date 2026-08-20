@@ -656,9 +656,9 @@ async def handle_legacy_active_weight_changed(
     mutation. Only a genuinely pre-identity schema may enter the legacy path.
     """
 
-    await acquire_identity_governance_lock(session)
-    subject_id = await session.scalar(select(HealthSubject.id).limit(1))
-    if subject_id is not None:
+    try:
+        await proactive_prefs.get_pre_identity_legacy_prefs(session)
+    except proactive_prefs.ProactivePreferencesError:
         return False
     await handle_active_weight_changed(session, now=now)
     return True
@@ -1021,6 +1021,7 @@ async def set_enabled(
     now: Optional[datetime] = None,
 ) -> bool:
     """Persist the opt-in switch. Flushes; the caller owns the commit."""
+    settings = await proactive_prefs.get_pre_identity_legacy_prefs(session)
     await _acquire_operation_lock(session)
     clean = bool(enabled)
     row = await session.get(AppSetting, SETTING_KEY)
@@ -1030,7 +1031,11 @@ async def set_enabled(
         row.value = clean
     if clean:
         # Populate the status card immediately; enabling never performs network I/O.
-        await reconcile_latest(session, now=now)
+        await reconcile_latest(
+            session,
+            now=now,
+            max_age_days=settings["garmin_weight_max_age_days"],
+        )
     else:
         # Cancel any fresh-value preflight atomically with opt-out. Cleanup and
         # ambiguous-POST records remain recorded, but no job runs while disabled.
@@ -1297,12 +1302,21 @@ async def reconcile_latest(
     max_age_days: Optional[int] = None,
 ) -> Optional[GarminWeightExport]:
     """Project only the latest fresh direct measurement into the outbox."""
-    await _acquire_operation_lock(session)
     clock = now or now_local()
-    if max_age_days is None:
-        settings = await proactive_prefs.get_prefs(session)
-        max_age_days = settings["garmin_weight_max_age_days"]
     context = _active_export_context()
+    if context is None:
+        settings = await proactive_prefs.get_pre_identity_legacy_prefs(session)
+        if max_age_days is None:
+            max_age_days = settings["garmin_weight_max_age_days"]
+    await _acquire_operation_lock(session)
+    if max_age_days is None:
+        if context is not None:
+            policy = await proactive_prefs.get_garmin_policy(
+                session,
+                subject_id=context.identity.subject_id,
+                integration_connection_id=context.integration_connection_id,
+            )
+            max_age_days = policy.weight_max_age_days
     if context is None:
         result = await session.execute(
             select(WeightLog)
@@ -1605,9 +1619,9 @@ async def handle_legacy_active_weight_deleted(
 ) -> bool:
     """Quarantine deletion projection for databases without identity roots."""
 
-    await acquire_identity_governance_lock(session)
-    subject_id = await session.scalar(select(HealthSubject.id).limit(1))
-    if subject_id is not None:
+    try:
+        await proactive_prefs.get_pre_identity_legacy_prefs(session)
+    except proactive_prefs.ProactivePreferencesError:
         return False
     await handle_active_weight_deleted(
         session,
@@ -1972,6 +1986,7 @@ async def _finalize_response_identity(
 ) -> dict[str, Any]:
     """Record a POST response token unless that dispatch was already superseded."""
     if _active_export_context() is None:
+        await proactive_prefs.get_pre_identity_legacy_prefs(session)
         await _acquire_operation_lock(session)
         await session.refresh(row)
     else:
@@ -1997,6 +2012,7 @@ async def _revalidate_dispatch_identity(
 ) -> bool:
     """Refresh a dispatched POST marker while allowing local intent to evolve."""
     if _active_export_context() is None:
+        await proactive_prefs.get_pre_identity_legacy_prefs(session)
         await _acquire_operation_lock(session)
         await session.refresh(row)
     else:
@@ -2405,6 +2421,7 @@ async def _revalidate_network_attempt(
 ) -> bool:
     """Re-read a committed lease after vendor I/O, under the shared DB lock."""
     if _active_export_context() is None:
+        await proactive_prefs.get_pre_identity_legacy_prefs(session)
         await _acquire_operation_lock(session)
         await session.refresh(row)
     else:
@@ -2425,6 +2442,7 @@ async def _authorize_scoped_vendor_lease(
     """Freshly validate roots immediately before a scoped vendor request."""
 
     if _active_export_context() is None:
+        await proactive_prefs.get_pre_identity_legacy_prefs(session)
         return True
     try:
         await _reprepare_active_export(session, historical=False)
@@ -2448,6 +2466,7 @@ async def _authorize_scoped_vendor_dispatch(
     require_enabled: bool,
 ) -> bool:
     if _active_export_context() is None:
+        await proactive_prefs.get_pre_identity_legacy_prefs(session)
         return True
     try:
         await _reprepare_active_export(session, historical=False)
@@ -2475,16 +2494,28 @@ async def export_latest(
     The caller owns the final commit, but a duplicate-blocking ``unverified``
     marker is committed immediately before every non-idempotent POST.
     """
+    context = _active_export_context()
+    if context is None:
+        settings = await proactive_prefs.get_pre_identity_legacy_prefs(session)
     await _acquire_operation_lock(session)
     if require_enabled and not await is_enabled(session):
         return {"status": "disabled", "sent": False}
     clock = now or now_local()
-    settings = await proactive_prefs.get_prefs(session)
-    base_minutes = settings["garmin_weight_export_minutes"]
+    if context is None:
+        base_minutes = settings["garmin_weight_export_minutes"]
+        max_age_days = settings["garmin_weight_max_age_days"]
+    else:
+        policy = await proactive_prefs.get_garmin_policy(
+            session,
+            subject_id=context.identity.subject_id,
+            integration_connection_id=context.integration_connection_id,
+        )
+        base_minutes = policy.weight_export_minutes
+        max_age_days = policy.weight_max_age_days
     projected = await reconcile_latest(
         session,
         now=clock,
-        max_age_days=settings["garmin_weight_max_age_days"],
+        max_age_days=max_age_days,
     )
     row = await _next_protected_operation(session, now=clock, force=force)
     if row is None:
@@ -2723,6 +2754,8 @@ async def send_now(session: AsyncSession, *, redis=None) -> dict[str, Any]:
     """Explicit user-triggered reconciliation. The caller owns the commit."""
     from vitals.integrations.garmin_client import GarminClient
 
+    if _active_export_context() is None:
+        await proactive_prefs.get_pre_identity_legacy_prefs(session)
     if not await is_enabled(session):
         return {"status": "disabled", "sent": False}
     client = GarminClient.from_config(redis=redis)
@@ -2849,12 +2882,14 @@ async def _export_job_pre_identity_legacy(session, *, redis=None) -> None:
     from vitals.services.garmin_service import refresh_token_cache_alert
     from vitals.services.language_service import get_language
 
+    await proactive_prefs.get_pre_identity_legacy_prefs(session)
     if not await is_enabled(session):
         return
     # Governance is already held by export_job. Release it before Redis or the
     # provider client boundary; export_latest acquires its own advisory lease.
     await session.commit()
     current_lang.set(await get_language(session, redis))
+    await session.commit()
     client = GarminClient.from_config(redis=redis)
     if not client.is_configured:
         return
@@ -2878,6 +2913,9 @@ async def export_job(session_factory, redis=None) -> None:
             )
         )
         if not subject_ids:
+            # Re-enter through the shared guarded zero-subject boundary. The
+            # cardinality probe above opened an unrecognized read transaction.
+            await session.rollback()
             await _export_job_pre_identity_legacy(session, redis=redis)
             return
         if len(subject_ids) != 1:

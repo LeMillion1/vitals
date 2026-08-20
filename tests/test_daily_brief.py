@@ -89,6 +89,9 @@ class FakeNotifier:
     async def answer_callback(self, callback_id, text="") -> None:
         pass
 
+    async def edit(self, message_id, text, *, buttons=None) -> None:
+        pass
+
 
 async def _telegram_ownership(session) -> ProactiveOwnershipContext:
     legacy = await resolve_legacy_ownership_context(
@@ -97,6 +100,64 @@ async def _telegram_ownership(session) -> ProactiveOwnershipContext:
         required_connections=(IntegrationProvider.TELEGRAM,),
     )
     return channels.ownership_from_legacy(legacy)
+
+
+def _patch_bound_delivery(monkeypatch, notifier) -> None:
+    """Bind one fake transport to the exact S/Q/C passed by production code."""
+
+    async def build_bound(session, ownership, **kwargs):
+        del session, kwargs
+        notifier.binding = channels.DeliveryEndpointBinding(
+            subject_id=ownership.subject_id,
+            recipient_user_id=ownership.recipient_user_id,
+            integration_connection_id=ownership.connection_id,
+            channel=notifier.channel,
+        )
+        return notifier
+
+    def resolve_bound(binding, credential_ref, **kwargs):
+        del credential_ref, kwargs
+        notifier.binding = binding
+        return notifier
+
+    monkeypatch.setattr(channels, "build_legacy_bound_notifier", build_bound)
+    monkeypatch.setattr(channels, "resolve_legacy_bound_notifier", resolve_bound)
+
+
+async def _durably_send(
+    session,
+    notifier,
+    *,
+    ownership,
+    text,
+    category,
+    idempotency_key,
+    legacy_dedupe_key=None,
+):
+    bound = await channels.build_legacy_bound_notifier(session, ownership)
+    prepared = await delivery.prepare_delivery_intent(
+        session,
+        bound,
+        text=text,
+        category=category,
+        idempotency_key=idempotency_key,
+        legacy_dedupe_key=legacy_dedupe_key,
+        ownership=ownership,
+    )
+    await session.commit()
+    assert prepared is not None
+    lease = await delivery.start_delivery_dispatch(
+        session,
+        prepared,
+        notifier_resolver=channels.resolve_legacy_bound_notifier,
+    )
+    await session.commit()
+    assert lease is not None
+    completion = await delivery.dispatch_delivery(lease)
+    journal = await delivery.finalize_delivery(session, completion)
+    await session.commit()
+    assert journal is not None
+    return journal
 
 
 async def _seed_day(db_session, *, on_date=DAY, weight_kg=88.0):
@@ -546,7 +607,10 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     assert "Сон 80" in notifier.sent[0]["text"]
     journal = (await db_session.execute(select(Notification))).scalars().all()
     assert [n.category for n in journal] == [delivery.CATEGORY_BRIEF]
-    assert journal[0].dedupe_key == brief.dedupe_key(DAY)
+    assert journal[0].dedupe_key == delivery.make_delivery_idempotency_key(
+        "brief",
+        DAY,
+    )
     assert journal[0].external_id == "901"
     channel_ownership = await _telegram_ownership(db_session)
     stored = (await db_session.execute(select(WeeklyDigest))).scalars().one()
@@ -611,13 +675,15 @@ async def test_already_sent_replay_clears_stale_alert_without_network(
     """A post-journal alert failure is repaired by the next hourly replay."""
     ownership = await _telegram_ownership(db_session)
     sent = FakeNotifier()
-    notification = await delivery.send(
+    _patch_bound_delivery(monkeypatch, sent)
+    notification = await _durably_send(
         db_session,
         sent,
+        ownership=ownership,
         text="already delivered",
         category=delivery.CATEGORY_BRIEF,
-        dedupe_key=brief.dedupe_key(DAY),
-        ownership=ownership,
+        idempotency_key=delivery.make_delivery_idempotency_key("brief", DAY),
+        legacy_dedupe_key=brief.dedupe_key(DAY),
     )
     assert notification is not None
     stale = await alerts_service.raise_alert(
@@ -840,7 +906,7 @@ def _patch_job(monkeypatch, notifier, llm):
         return None
 
     monkeypatch.setattr(garmin_service, "sync_job", _no_sync)
-    monkeypatch.setattr(channels, "build_notifier", lambda *a, **kw: notifier)
+    _patch_bound_delivery(monkeypatch, notifier)
     monkeypatch.setattr(llm_client, "LLMClient", lambda *a, **kw: llm)
 
 
@@ -917,12 +983,10 @@ async def test_test_send_goes_out_off_budget(auth_client, db_session, monkeypatc
     """The point of this button is catching broken formatting, so it must send even
     after the day's budget is spent — and it isn't the bot talking first."""
     from vitals.utils.timeutils import now_local
-    from web.main import app
     from web.routers import reports as reports_router
-    from web.routers.telegram import get_notifier
 
     notifier = FakeNotifier()
-    app.dependency_overrides[get_notifier] = lambda: notifier
+    _patch_bound_delivery(monkeypatch, notifier)
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
     monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(db_session)
@@ -936,7 +1000,12 @@ async def test_test_send_goes_out_off_budget(auth_client, db_session, monkeypatc
             )
         )
     await db_session.commit()
-    assert await delivery.sent_today(db_session) >= delivery.DAILY_BUDGET
+    ownership = await _telegram_ownership(db_session)
+    assert (
+        await delivery.sent_today(db_session, ownership=ownership)
+        >= delivery.DAILY_BUDGET
+    )
+    await db_session.commit()
 
     r = await auth_client.post(
         "/reports/brief/test",
@@ -952,12 +1021,10 @@ async def test_test_send_is_not_duplicated_by_a_second_tap(auth_client, db_sessi
     category with no dupe protection. A repeat call within the same day (a
     double-tap, or a retried request) must not fire a second Telegram message
     or pay for a second LLM call."""
-    from web.main import app
     from web.routers import reports as reports_router
-    from web.routers.telegram import get_notifier
 
     notifier = FakeNotifier()
-    app.dependency_overrides[get_notifier] = lambda: notifier
+    _patch_bound_delivery(monkeypatch, notifier)
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
     monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(db_session)
@@ -986,11 +1053,61 @@ async def test_test_send_is_not_duplicated_by_a_second_tap(auth_client, db_sessi
     ) == (ownership.recipient_user_id, ownership.connection_id)
 
 
-async def test_test_send_without_a_channel_says_so(auth_client, db_session, monkeypatch):
-    from web.main import app
-    from web.routers.telegram import get_notifier
+async def test_test_send_reports_an_existing_pending_claim_without_network(
+    auth_client,
+    db_session,
+    monkeypatch,
+):
+    from web.routers import reports as reports_router
 
-    app.dependency_overrides[get_notifier] = lambda: None
+    notifier = FakeNotifier()
+    _patch_bound_delivery(monkeypatch, notifier)
+    monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
+    request_token = "test_token_pending_1234567890"
+    ownership = await _telegram_ownership(db_session)
+    bound = await channels.build_legacy_bound_notifier(db_session, ownership)
+    prepared = await delivery.prepare_delivery_intent(
+        db_session,
+        bound,
+        text="reserved test payload",
+        category=delivery.CATEGORY_TEST,
+        idempotency_key=delivery.make_delivery_idempotency_key(
+            "brief-test",
+            DAY,
+            request_token,
+        ),
+        ownership=ownership,
+        actor_user_id=ownership.recipient_user_id,
+    )
+    assert prepared is not None
+    await db_session.commit()
+
+    response = await auth_client.post(
+        "/reports/brief/test",
+        data={"request_token": request_token},
+    )
+
+    assert response.headers["location"] == "/reports?brief=pending"
+    assert notifier.sent == []
+    assert list(await db_session.scalars(select(WeeklyDigest))) == []
+
+
+async def test_test_send_without_a_channel_says_so(auth_client, db_session, monkeypatch):
+    from vitals.services.proactive import channels
+    from web.routers import reports as reports_router
+
+    async def no_bound_channel(session, ownership, **kwargs):
+        del session, ownership, kwargs
+        return None
+
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        no_bound_channel,
+    )
+    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
+    await _seed_day(db_session)
     r = await auth_client.post(
         "/reports/brief/test",
         data={"request_token": "test_token_12345678901234569"},

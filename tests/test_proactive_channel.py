@@ -5,23 +5,33 @@ accepts a forged call, a retry that logs the same evening twice, a budget that
 counts replies and quietly gags the bot mid-conversation — none of those show up
 as an error anywhere, so each gets a test.
 """
-import uuid
+import asyncio
 import inspect
-from datetime import date, datetime
+import uuid
+from datetime import UTC, date, datetime
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from vitals.enums import IntegrationConnectionStatus, IntegrationConnectionType, IntegrationProvider
+from vitals.enums import (
+    AIInvocationSource,
+    AIInvocationStatus,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    NotificationDeliveryErrorCode,
+    NotificationDeliveryStatus,
+)
 from vitals.integrations.llm_client import LLMCallResult
 from vitals.models.ai import AIInvocation, AIPlatformQuotaPeriod, AISubjectQuotaPeriod
-from vitals.models.proactive import Notification
+from vitals.models.proactive import Notification, NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import Signal
 from vitals.services import signals_service
 from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.services.proactive import (
+    channels,
     day_plan,
     delivery,
     inbound,
@@ -50,10 +60,14 @@ class FakeNotifier:
 
     channel = "telegram"
 
-    def __init__(self, *, fail: bool = False):
+    def __init__(self, *, binding=None, fail: bool = False):
+        if binding is not None:
+            self.binding = binding
         self.sent: list[dict] = []
         self.acks: list[tuple[str, str]] = []
         self.edits: list[dict] = []
+        self.bound_builds = 0
+        self.resolved_builds = 0
         self._fail = fail
         self._next_id = 700
 
@@ -87,9 +101,11 @@ def bot_env(monkeypatch):
 async def bot_client(client, bot_env, legacy_owner_roots, db_session):
     """Anonymous webhook client with owner roots and a fake delivery channel."""
     from web.main import app
-    from web.routers.telegram import get_notifier
+    from web.routers.telegram import (
+        get_bound_notifier_builder,
+        get_bound_notifier_resolver,
+    )
 
-    fake = FakeNotifier()
     db_session.add(
         PlatformIntegrationConnection(
             provider=IntegrationProvider.OPENROUTER.value,
@@ -121,8 +137,28 @@ async def bot_client(client, bot_env, legacy_owner_roots, db_session):
         ]
     )
     await db_session.commit()
-    app.dependency_overrides[get_notifier] = lambda: fake
-    yield client, fake
+    ownership = await _telegram_ownership(db_session)
+    fake = FakeNotifier(binding=_delivery_binding(ownership))
+
+    async def _build_fake(_session, resolved, *, config=None):
+        del _session, config
+        fake.bound_builds += 1
+        assert resolved == ownership
+        assert fake.binding == _delivery_binding(resolved)
+        return fake
+
+    def _resolve_fake(binding, _credential_ref):
+        fake.resolved_builds += 1
+        assert binding == fake.binding
+        return fake
+
+    app.dependency_overrides[get_bound_notifier_builder] = lambda: _build_fake
+    app.dependency_overrides[get_bound_notifier_resolver] = lambda: _resolve_fake
+    try:
+        yield client, fake
+    finally:
+        app.dependency_overrides.pop(get_bound_notifier_builder, None)
+        app.dependency_overrides.pop(get_bound_notifier_resolver, None)
 
 
 @pytest.fixture
@@ -267,6 +303,46 @@ async def _telegram_ownership(session):
     return channels.ownership_from_legacy(legacy)
 
 
+def _delivery_binding(ownership):
+    return channels.DeliveryEndpointBinding(
+        subject_id=ownership.subject_id,
+        recipient_user_id=ownership.recipient_user_id,
+        integration_connection_id=ownership.connection_id,
+        channel=IntegrationProvider.TELEGRAM.value,
+    )
+
+
+def _notifier_resolver(notifier):
+    def _resolve(binding, _credential_ref):
+        assert binding == notifier.binding
+        return notifier
+
+    return _resolve
+
+
+async def _journal_owned_message(
+    session,
+    ownership,
+    *,
+    text,
+    category,
+    external_id,
+):
+    row = Notification(
+        subject_id=ownership.subject_id,
+        recipient_user_id=ownership.recipient_user_id,
+        integration_connection_id=ownership.connection_id,
+        sent_at=NOON,
+        category=category,
+        channel=IntegrationProvider.TELEGRAM.value,
+        external_id=str(external_id),
+        payload={"text": text, "buttons": None},
+    )
+    session.add(row)
+    await session.commit()
+    return row
+
+
 # ── The door ──────────────────────────────────────────────────────────────────
 async def test_wrong_secret_header_is_rejected(bot_client):
     c, fake = bot_client
@@ -274,6 +350,7 @@ async def test_wrong_secret_header_is_rejected(bot_client):
                      headers={"X-Telegram-Bot-Api-Secret-Token": "nope"})
     assert r.status_code == 401
     assert fake.sent == []
+    assert fake.bound_builds == 0
 
 
 async def test_missing_secret_header_is_rejected(bot_client):
@@ -353,6 +430,38 @@ async def test_cross_origin_header_does_not_block_the_webhook(bot_client, parses
 
     assert r.status_code == 200
     assert len(fake.sent) == 1
+
+
+async def test_t2_uses_fresh_resolver_not_the_notifier_retained_from_t1(bot_client):
+    from web.main import app
+    from web.routers.telegram import get_bound_notifier_builder
+
+    client, fresh = bot_client
+    retained = FakeNotifier(binding=fresh.binding)
+
+    async def _build_retained(_session, _ownership, *, config=None):
+        del _session, _ownership, config
+        retained.bound_builds += 1
+        return retained
+
+    original_override = app.dependency_overrides[get_bound_notifier_builder]
+    app.dependency_overrides[get_bound_notifier_builder] = (
+        lambda: _build_retained
+    )
+    try:
+        response = await client.post(
+            f"/tg/{WEBHOOK_PATH}",
+            json=_text_update(201, "/start", message_id=601),
+            headers=HEADERS,
+        )
+    finally:
+        app.dependency_overrides[get_bound_notifier_builder] = original_override
+
+    assert response.status_code == 200
+    assert retained.bound_builds == 1
+    assert retained.sent == []
+    assert fresh.resolved_builds == 1
+    assert [row["text"] for row in fresh.sent] == [inbound.COMMAND_REPLY]
 
 
 # ── Capture + echo ────────────────────────────────────────────────────────────
@@ -503,9 +612,445 @@ async def test_concurrent_edit_neutralizes_an_already_sent_stale_echo(
     assert fake.edits[0]["message_id"] == str(fake.sent[0]["id"])
     assert "последнюю версию" in fake.edits[0]["text"]
     journal = (await db_session.scalars(select(Notification))).one()
-    assert "последнюю версию" in journal.payload["text"]
+    assert journal.payload["text"] == "Записал:\n• headache 4/5"
+
+
+async def test_t3_rollback_retries_same_completion_without_a_second_send(
+    bot_client,
+    parses_to,
+    db_session,
+    monkeypatch,
+):
+    c, fake = bot_client
+    parses_to([{"kind": "symptom", "key": "headache", "value_num": 4}])
+    real_finalize = delivery.finalize_delivery
+    finalize_calls = 0
+
+    async def _fail_first_finalize(session, completion):
+        nonlocal finalize_calls
+        finalize_calls += 1
+        journal = await real_finalize(session, completion)
+        if finalize_calls == 1:
+            raise RuntimeError("synthetic rollback after physical send")
+        return journal
+
+    monkeypatch.setattr(delivery, "finalize_delivery", _fail_first_finalize)
+
+    response = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_text_update(101, "голова болит", message_id=501),
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert finalize_calls == 2
+    assert len(fake.sent) == 1
+    journal = (await db_session.scalars(select(Notification))).one()
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert journal.delivery_intent_id == intent.id
+    assert intent.status == NotificationDeliveryStatus.SENT.value
     rows = list(await db_session.scalars(select(Signal)))
     assert len(rows) == 1 and rows[0].misparse is False
+
+
+async def test_missing_bound_notifier_defers_platform_signal_until_recovery(
+    bot_client,
+    parses_to,
+    db_session,
+):
+    from web.main import app
+    from web.routers.telegram import get_bound_notifier_builder
+
+    client, fake = bot_client
+    provider_calls = 0
+
+    def _parsed(_text):
+        nonlocal provider_calls
+        provider_calls += 1
+        return [{"kind": "symptom", "key": "headache", "value_num": 4}]
+
+    parses_to(_parsed)
+
+    async def _build_missing(_session, _ownership, *, config=None):
+        del _session, _ownership, config
+        return None
+
+    original_builder = app.dependency_overrides[get_bound_notifier_builder]
+    app.dependency_overrides[get_bound_notifier_builder] = (
+        lambda: _build_missing
+    )
+    update = _text_update(123, "голова болит", message_id=523)
+    try:
+        first = await client.post(
+            f"/tg/{WEBHOOK_PATH}",
+            json=update,
+            headers=HEADERS,
+        )
+    finally:
+        app.dependency_overrides[get_bound_notifier_builder] = original_builder
+
+    assert first.status_code == 200
+    raw = (await db_session.scalars(select(RawPayload))).one()
+    assert raw.processed_at is None
+    assert provider_calls == 0
+    assert fake.sent == []
+    assert list(await db_session.scalars(select(AIInvocation))) == []
+    assert list(await db_session.scalars(select(Signal))) == []
+    assert list(await db_session.scalars(select(NotificationDeliveryIntent))) == []
+
+    recovered = await client.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert recovered.status_code == 200
+    await db_session.refresh(raw)
+    assert raw.processed_at is not None
+    assert provider_calls == 1
+    assert len(fake.sent) == 1
+    invocation = (await db_session.scalars(select(AIInvocation))).one()
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert invocation.status == AIInvocationStatus.SUCCEEDED.value
+    assert intent.ai_invocation_id == invocation.id
+    assert intent.status == NotificationDeliveryStatus.SENT.value
+
+
+async def test_platform_signal_composed_t1_retries_same_ai_completion_once(
+    bot_client,
+    parses_to,
+    db_session,
+    monkeypatch,
+):
+    client, fake = bot_client
+    provider_calls = 0
+
+    def _parsed(_text):
+        nonlocal provider_calls
+        provider_calls += 1
+        return [{"kind": "symptom", "key": "headache", "value_num": 4}]
+
+    parses_to(_parsed)
+    real_prepare = delivery.prepare_delivery_intent
+    prepare_calls = 0
+
+    async def _fail_first_composed_t1(*args, **kwargs):
+        nonlocal prepare_calls
+        prepared = await real_prepare(*args, **kwargs)
+        prepare_calls += 1
+        if prepare_calls == 1:
+            raise RuntimeError("synthetic composed T1 rollback")
+        return prepared
+
+    monkeypatch.setattr(
+        delivery,
+        "prepare_delivery_intent",
+        _fail_first_composed_t1,
+    )
+
+    response = await client.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_text_update(111, "голова болит", message_id=511),
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert provider_calls == 1
+    assert prepare_calls == 2
+    assert len(fake.sent) == 1
+    signal = (await db_session.scalars(select(Signal))).one()
+    invocation = (await db_session.scalars(select(AIInvocation))).one()
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert signal.raw_id == invocation.raw_payload_id == intent.raw_payload_id
+    assert invocation.status == AIInvocationStatus.SUCCEEDED.value
+    assert intent.ai_invocation_id == invocation.id
+    assert intent.status == NotificationDeliveryStatus.SENT.value
+
+
+async def test_platform_signal_prepare_failure_rolls_back_facts_marker_and_intent(
+    bot_client,
+    parses_to,
+    db_session,
+    monkeypatch,
+):
+    client, fake = bot_client
+    provider_calls = 0
+
+    def _parsed(_text):
+        nonlocal provider_calls
+        provider_calls += 1
+        return [{"kind": "symptom", "key": "headache", "value_num": 4}]
+
+    parses_to(_parsed)
+    real_prepare = delivery.prepare_delivery_intent
+
+    async def _always_fail_composed_t1(*args, **kwargs):
+        await real_prepare(*args, **kwargs)
+        raise RuntimeError("synthetic persistent composed T1 rollback")
+
+    monkeypatch.setattr(
+        delivery,
+        "prepare_delivery_intent",
+        _always_fail_composed_t1,
+    )
+
+    response = await client.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_text_update(112, "голова болит", message_id=512),
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert provider_calls == 1
+    assert fake.sent == []
+    assert list(await db_session.scalars(select(Signal))) == []
+    assert list(await db_session.scalars(select(NotificationDeliveryIntent))) == []
+    raw = (await db_session.scalars(select(RawPayload))).one()
+    invocation = (await db_session.scalars(select(AIInvocation))).one()
+    assert raw.processed_at is None
+    assert invocation.status == AIInvocationStatus.DISPATCHING.value
+
+
+async def test_duplicate_during_signal_provider_waits_for_terminal_ai_linked_t1(
+    bot_client,
+    parses_to,
+    db_session,
+):
+    client, fake = bot_client
+    provider_started = asyncio.Event()
+    release_provider = asyncio.Event()
+    provider_calls = 0
+
+    async def _parsed(_text):
+        nonlocal provider_calls
+        provider_calls += 1
+        provider_started.set()
+        await release_provider.wait()
+        return [{"kind": "symptom", "key": "headache", "value_num": 4}]
+
+    parses_to(_parsed)
+    update = _text_update(113, "голова болит", message_id=513)
+    first = asyncio.create_task(
+        client.post(f"/tg/{WEBHOOK_PATH}", json=update, headers=HEADERS)
+    )
+    await asyncio.wait_for(provider_started.wait(), timeout=2)
+
+    duplicate = await client.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+    assert duplicate.status_code == 200
+    assert provider_calls == 1
+    assert fake.sent == []
+    assert list(await db_session.scalars(select(NotificationDeliveryIntent))) == []
+
+    release_provider.set()
+    assert (await first).status_code == 200
+    assert provider_calls == 1
+    assert len(fake.sent) == 1
+    signal = (await db_session.scalars(select(Signal))).one()
+    invocation = (await db_session.scalars(select(AIInvocation))).one()
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert signal.raw_id == invocation.raw_payload_id == intent.raw_payload_id
+    assert invocation.status == AIInvocationStatus.SUCCEEDED.value
+    assert intent.ai_invocation_id == invocation.id
+    assert intent.status == NotificationDeliveryStatus.SENT.value
+
+
+async def test_live_signal_with_existing_dispatching_parse_emits_no_echo(
+    bot_client,
+    db_session,
+):
+    _client, fake = bot_client
+    ownership = await _telegram_ownership(db_session)
+    raw = await signals_service.store_raw_text(
+        db_session,
+        text="голова болит",
+        external_id="tg:117",
+        source=inbound.SOURCE,
+        identity=ownership.owner_action(),
+        integration_connection_id=ownership.connection_id,
+    )
+    prepared = await signal_ai_service.prepare_live_signal_parse(
+        db_session,
+        ownership=ownership,
+        raw_payload_id=raw.id,
+        on_date=inbound._day_from_raw(raw),
+    )
+    await db_session.commit()
+    await signal_ai_service.start_signal_dispatch(db_session, prepared)
+    await db_session.commit()
+
+    await inbound.handle_text(
+        db_session,
+        "голова болит",
+        notifier=fake,
+        message_id=517,
+        ownership=ownership,
+        raw=raw,
+        notifier_resolver=_notifier_resolver(fake),
+    )
+
+    invocation = (await db_session.scalars(select(AIInvocation))).one()
+    assert invocation.status == AIInvocationStatus.DISPATCHING.value
+    assert raw.processed_at is None
+    assert fake.sent == []
+    assert list(await db_session.scalars(select(NotificationDeliveryIntent))) == []
+
+
+async def test_live_signal_does_not_impersonate_scheduler_prepared_parse(
+    bot_client,
+    db_session,
+):
+    _client, fake = bot_client
+    ownership = await _telegram_ownership(db_session)
+    raw = await signals_service.store_raw_text(
+        db_session,
+        text="голова болит",
+        external_id="tg:118",
+        source=inbound.SOURCE,
+        identity=ownership.owner_action(),
+        integration_connection_id=ownership.connection_id,
+    )
+    prepared = await signal_ai_service.prepare_signal_recovery(
+        db_session,
+        ownership=ownership,
+        raw_payload_id=raw.id,
+    )
+    await db_session.commit()
+    assert prepared.dispatchable is True
+
+    await inbound.handle_text(
+        db_session,
+        "голова болит",
+        notifier=fake,
+        message_id=518,
+        ownership=ownership,
+        raw=raw,
+        notifier_resolver=_notifier_resolver(fake),
+    )
+
+    invocation = (await db_session.scalars(select(AIInvocation))).one()
+    assert invocation.source == AIInvocationSource.SCHEDULER.value
+    assert invocation.status == AIInvocationStatus.PREPARED.value
+    assert raw.processed_at is None
+    assert fake.sent == []
+    assert list(await db_session.scalars(select(NotificationDeliveryIntent))) == []
+
+
+async def test_injected_signal_prepare_failure_rolls_back_then_duplicate_recovers(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    ownership = await _telegram_ownership(db_session)
+    notifier = FakeNotifier(binding=_delivery_binding(ownership))
+    update = _text_update(115, "голова болит", message_id=515)
+    parser_calls = 0
+
+    async def _parse(_text):
+        nonlocal parser_calls
+        parser_calls += 1
+        return [{"kind": "symptom", "key": "headache", "value_num": 4}]
+
+    real_prepare = delivery.prepare_delivery_intent
+
+    async def _fail_after_prepare(*args, **kwargs):
+        await real_prepare(*args, **kwargs)
+        raise RuntimeError("synthetic injected signal T1 rollback")
+
+    monkeypatch.setattr(delivery, "prepare_delivery_intent", _fail_after_prepare)
+    with pytest.raises(inbound.DurableInboundProcessingError):
+        await inbound.handle_update(
+            db_session,
+            update,
+            notifier=notifier,
+            parse=_parse,
+            ownership=ownership,
+            notifier_resolver=_notifier_resolver(notifier),
+        )
+    await db_session.rollback()
+
+    raw = (await db_session.scalars(select(RawPayload))).one()
+    assert raw.processed_at is None
+    assert list(await db_session.scalars(select(Signal))) == []
+    assert list(await db_session.scalars(select(NotificationDeliveryIntent))) == []
+    assert notifier.sent == []
+
+    monkeypatch.setattr(delivery, "prepare_delivery_intent", real_prepare)
+    await inbound.handle_update(
+        db_session,
+        update,
+        notifier=notifier,
+        parse=_parse,
+        ownership=ownership,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
+
+    await db_session.refresh(raw)
+    assert raw.processed_at is not None
+    signal = (await db_session.scalars(select(Signal))).one()
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert signal.raw_id == intent.raw_payload_id == raw.id
+    assert intent.status == NotificationDeliveryStatus.SENT.value
+    assert parser_calls == 2
+    assert len(notifier.sent) == 1
+
+
+async def test_crash_after_signal_t1_is_rearmed_by_bounded_recovery(
+    bot_client,
+    parses_to,
+    db_session,
+    session_factory,
+    monkeypatch,
+):
+    c, fake = bot_client
+    parses_to([{"kind": "symptom", "key": "headache", "value_num": 4}])
+    real_start = delivery.start_delivery_dispatch
+
+    async def _crash_after_t1(*_args, **_kwargs):
+        raise RuntimeError("synthetic process death after T1")
+
+    monkeypatch.setattr(delivery, "start_delivery_dispatch", _crash_after_t1)
+    update = _text_update(102, "голова болит", message_id=502)
+    response = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+    assert response.status_code == 200
+    assert fake.sent == []
+
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    raw = (await db_session.scalars(select(RawPayload))).one()
+    assert intent.status == NotificationDeliveryStatus.PENDING.value
+    assert intent.category == delivery.CATEGORY_ECHO
+    intent.updated_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+    monkeypatch.setattr(delivery, "start_delivery_dispatch", real_start)
+    ownership = await _telegram_ownership(db_session)
+
+    async def _build_bound(_session, resolved, *, config=None):
+        del _session, config
+        assert resolved == ownership
+        return fake
+
+    monkeypatch.setattr(channels, "build_legacy_bound_notifier", _build_bound)
+    await inbound.question_reply_recovery_job(
+        session_factory,
+        None,
+        notifier_resolver=_notifier_resolver(fake),
+    )
+
+    assert len(fake.sent) == 1
+    assert fake.sent[0]["text"] == "Записал:\n• headache 4/5"
+    await db_session.refresh(intent)
+    assert intent.status == NotificationDeliveryStatus.SENT.value
+    journal = (await db_session.scalars(select(Notification))).one()
+    assert journal.delivery_intent_id == intent.id
+    assert journal.payload["text"] == "Записал:\n• headache 4/5"
+    assert raw.processed_at is not None
 
 
 async def test_raw_capture_preserves_inbound_and_nested_user_message(
@@ -611,7 +1156,13 @@ async def test_the_off_switch_stops_the_parse_and_the_reply_but_keeps_the_text(
     from vitals.services import modules_service
 
     c, fake = bot_client
-    await modules_service.set_module_enabled(db_session, key="signals", enabled=False)
+    ownership = await _telegram_ownership(db_session)
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=False,
+        subject_id=ownership.subject_id,
+    )
     await db_session.commit()
 
     def _never(*a, **kw):
@@ -642,7 +1193,13 @@ async def test_a_tap_while_the_module_is_off_is_ignored(bot_client, db_session):
     from vitals.services import modules_service
 
     c, fake = bot_client
-    await modules_service.set_module_enabled(db_session, key="signals", enabled=False)
+    ownership = await _telegram_ownership(db_session)
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=False,
+        subject_id=ownership.subject_id,
+    )
     await db_session.commit()
     tomorrow = date(2026, 7, 27)
 
@@ -901,10 +1458,12 @@ async def test_module_off_edit_still_supersedes_the_old_batch(
         json=_text_update(87, "голова раскалывается", message_id=58),
         headers=HEADERS,
     )
+    ownership = await _telegram_ownership(db_session)
     await modules_service.set_module_enabled(
         db_session,
         key="signals",
         enabled=False,
+        subject_id=ownership.subject_id,
     )
     await db_session.commit()
 
@@ -949,7 +1508,7 @@ async def test_superseded_stale_command_or_question_never_replies(
         edited.raw,
         ownership=ownership,
     )
-    fake = FakeNotifier()
+    fake = FakeNotifier(binding=_delivery_binding(ownership))
 
     await inbound.handle_text(
         db_session,
@@ -1022,11 +1581,13 @@ async def test_a_failure_after_durable_capture_is_acknowledged_and_recoverable(
     bot_client,
     db_session,
     monkeypatch,
+    caplog,
 ):
     c, _ = bot_client
+    phi = "synthetic health text [SQL parameters: private]"
 
     async def _boom(*args, **kwargs):
-        raise RuntimeError("something broke after raw capture")
+        raise RuntimeError(phi)
 
     monkeypatch.setattr(inbound, "handle_text", _boom)
     update = _text_update(2, "спать хочу")
@@ -1042,6 +1603,9 @@ async def test_a_failure_after_durable_capture_is_acknowledged_and_recoverable(
     )
     assert raw is not None and raw.payload == update
     assert raw.processed_at is None
+    assert phi not in caplog.text
+    assert "code=post_capture_failure" in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
 
 
 async def test_a_message_after_midnight_lands_on_the_day_that_just_ended(db_session):
@@ -1143,6 +1707,368 @@ async def test_a_retried_slash_command_is_answered_once(bot_client, db_session):
     # Marked done: «/start» is not a message waiting to become signals, so the
     # re-parse sweep must never hand it to the parser.
     assert raw is not None and raw.processed_at is not None
+
+
+async def test_command_prepare_failure_rolls_back_marker_then_duplicate_builds_t1(
+    bot_client,
+    db_session,
+    monkeypatch,
+):
+    client, fake = bot_client
+    update = _text_update(114, "/start", message_id=514)
+    real_prepare = delivery.prepare_delivery_intent
+
+    async def _fail_after_prepare(*args, **kwargs):
+        await real_prepare(*args, **kwargs)
+        raise RuntimeError("synthetic command T1 rollback")
+
+    monkeypatch.setattr(delivery, "prepare_delivery_intent", _fail_after_prepare)
+    first = await client.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert first.status_code == 200
+    raw = (await db_session.scalars(select(RawPayload))).one()
+    assert raw.processed_at is None
+    assert list(await db_session.scalars(select(NotificationDeliveryIntent))) == []
+    assert fake.sent == []
+
+    monkeypatch.setattr(delivery, "prepare_delivery_intent", real_prepare)
+    duplicate = await client.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert duplicate.status_code == 200
+    await db_session.refresh(raw)
+    assert raw.processed_at is not None
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert intent.raw_payload_id == raw.id
+    assert intent.status == NotificationDeliveryStatus.SENT.value
+    assert [row["text"] for row in fake.sent] == [inbound.COMMAND_REPLY]
+
+
+async def test_disable_after_initial_gate_terminalizes_command_without_later_send(
+    bot_client,
+    db_session,
+    monkeypatch,
+):
+    from vitals.services import modules_service
+
+    client, fake = bot_client
+    ownership = await _telegram_ownership(db_session)
+    real_bot_enabled = inbound.prefs.bot_enabled
+    gate_calls = 0
+
+    async def _disable_after_true_gate(session, *, subject_id=None, strict=False):
+        nonlocal gate_calls
+        enabled = await real_bot_enabled(
+            session,
+            subject_id=subject_id,
+            strict=strict,
+        )
+        gate_calls += 1
+        if gate_calls == 1:
+            assert enabled is True
+            await modules_service.set_module_enabled(
+                session,
+                key="signals",
+                enabled=False,
+                subject_id=ownership.subject_id,
+            )
+            return True
+        return enabled
+
+    monkeypatch.setattr(inbound.prefs, "bot_enabled", _disable_after_true_gate)
+    update = _text_update(116, "/start", message_id=516)
+    first = await client.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert first.status_code == 200
+    raw = (await db_session.scalars(select(RawPayload))).one()
+    assert raw.processed_at is not None
+    assert fake.sent == []
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
+    assert intent.error_code == NotificationDeliveryErrorCode.CANCELLED_BY_POLICY.value
+
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=True,
+        subject_id=ownership.subject_id,
+    )
+    await db_session.commit()
+    monkeypatch.setattr(inbound.prefs, "bot_enabled", real_bot_enabled)
+    duplicate = await client.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert duplicate.status_code == 200
+    await db_session.refresh(intent)
+    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
+    assert fake.sent == []
+
+
+async def test_disable_before_signal_scope_cannot_resurrect_terminal_ai_echo(
+    bot_client,
+    parses_to,
+    db_session,
+    monkeypatch,
+):
+    from vitals.services import modules_service
+
+    client, fake = bot_client
+    ownership = await _telegram_ownership(db_session)
+    parses_to([{"kind": "symptom", "key": "headache", "value_num": 4}])
+    real_bot_enabled = inbound.prefs.bot_enabled
+    gate_calls = 0
+
+    async def _disable_after_true_gate(session, *, subject_id=None, strict=False):
+        nonlocal gate_calls
+        enabled = await real_bot_enabled(
+            session,
+            subject_id=subject_id,
+            strict=strict,
+        )
+        gate_calls += 1
+        if gate_calls == 1:
+            assert enabled is True
+            await modules_service.set_module_enabled(
+                session,
+                key="signals",
+                enabled=False,
+                subject_id=ownership.subject_id,
+            )
+            return True
+        return enabled
+
+    monkeypatch.setattr(inbound.prefs, "bot_enabled", _disable_after_true_gate)
+    update = _text_update(122, "голова болит", message_id=522)
+    first = await client.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert first.status_code == 200
+    raw = (await db_session.scalars(select(RawPayload))).one()
+    invocation = (await db_session.scalars(select(AIInvocation))).one()
+    assert raw.processed_at is not None
+    assert invocation.status == AIInvocationStatus.SUCCEEDED.value
+    assert len(list(await db_session.scalars(select(Signal)))) == 1
+    assert fake.sent == []
+
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=True,
+        subject_id=ownership.subject_id,
+    )
+    await db_session.commit()
+    monkeypatch.setattr(inbound.prefs, "bot_enabled", real_bot_enabled)
+    duplicate = await client.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert duplicate.status_code == 200
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
+    assert intent.error_code == NotificationDeliveryErrorCode.CANCELLED_BY_POLICY.value
+    assert fake.sent == []
+
+
+async def test_command_scoped_existing_claim_commits_terminal_raw_without_resend(
+    bot_client,
+    db_session,
+):
+    _client, fake = bot_client
+    ownership = await _telegram_ownership(db_session)
+    update = _text_update(119, "/start", message_id=519)
+    claim = await inbound._claim_update_raw(
+        db_session,
+        external_id="tg:119",
+        payload=update,
+        ownership=ownership,
+    )
+    key = delivery.make_delivery_idempotency_key(
+        "telegram-command-reply",
+        claim.raw.id,
+    )
+    prepared = await delivery.prepare_delivery_intent(
+        db_session,
+        fake,
+        text=inbound.COMMAND_REPLY,
+        category=delivery.CATEGORY_REPLY,
+        idempotency_key=key,
+        reply_to="519",
+        ownership=ownership,
+        raw_payload_id=claim.raw.id,
+    )
+    assert prepared is not None
+    await db_session.commit()
+
+    await inbound.handle_text(
+        db_session,
+        "/start",
+        notifier=fake,
+        message_id=519,
+        ownership=ownership,
+        raw=claim.raw,
+        notifier_resolver=_notifier_resolver(fake),
+    )
+
+    await db_session.refresh(claim.raw)
+    assert claim.raw.processed_at is not None
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert intent.idempotency_key == key
+    assert intent.status == NotificationDeliveryStatus.PENDING.value
+    assert fake.sent == []
+    assert list(await db_session.scalars(select(Notification))) == []
+
+
+async def test_processed_command_and_signal_duplicates_do_not_retro_send(
+    db_session,
+    legacy_owner_roots,
+):
+    ownership = await _telegram_ownership(db_session)
+    notifier = FakeNotifier(binding=_delivery_binding(ownership))
+    updates = (
+        _text_update(120, "/start", message_id=520),
+        _text_update(121, "голова болит", message_id=521),
+    )
+    for update in updates:
+        claim = await inbound._claim_update_raw(
+            db_session,
+            external_id=f"tg:{update['update_id']}",
+            payload=update,
+            ownership=ownership,
+        )
+        claim.raw.processed_at = NOON
+        await db_session.commit()
+
+    async def _never_parse(_text):
+        raise AssertionError("historical processed raw must not be reparsed")
+
+    for update in updates:
+        await inbound.handle_update(
+            db_session,
+            update,
+            notifier=notifier,
+            parse=_never_parse,
+            ownership=ownership,
+            notifier_resolver=_notifier_resolver(notifier),
+        )
+
+    assert notifier.sent == []
+    assert list(await db_session.scalars(select(Signal))) == []
+    assert list(await db_session.scalars(select(NotificationDeliveryIntent))) == []
+
+
+async def test_crash_after_command_t1_is_rearmed_by_stale_duplicate(
+    bot_client,
+    db_session,
+    monkeypatch,
+):
+    c, fake = bot_client
+    real_start = delivery.start_delivery_dispatch
+
+    async def _crash_after_t1(*_args, **_kwargs):
+        raise RuntimeError("synthetic process death after T1")
+
+    monkeypatch.setattr(delivery, "start_delivery_dispatch", _crash_after_t1)
+    update = _text_update(103, "/start", message_id=503)
+    first = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+    assert first.status_code == 200
+    assert fake.sent == []
+
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert intent.status == NotificationDeliveryStatus.PENDING.value
+    intent.updated_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+    monkeypatch.setattr(delivery, "start_delivery_dispatch", real_start)
+
+    duplicate = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert duplicate.status_code == 200
+    assert [row["text"] for row in fake.sent] == [inbound.COMMAND_REPLY]
+    await db_session.refresh(intent)
+    assert intent.status == NotificationDeliveryStatus.SENT.value
+    journal = (await db_session.scalars(select(Notification))).one()
+    assert journal.delivery_intent_id == intent.id
+
+
+async def test_zero_io_cancelled_command_waits_until_stale_before_rearm(
+    bot_client,
+    db_session,
+    monkeypatch,
+):
+    c, fake = bot_client
+    real_start = delivery.start_delivery_dispatch
+
+    async def _cancel_without_transport(session, prepared, **_kwargs):
+        return await real_start(
+            session,
+            prepared,
+            notifier_resolver=lambda *_args: None,
+        )
+
+    monkeypatch.setattr(delivery, "start_delivery_dispatch", _cancel_without_transport)
+    update = _text_update(104, "/start", message_id=504)
+    first = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+    assert first.status_code == 200
+    assert fake.sent == []
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
+    assert intent.error_code == "scope_invalid"
+    monkeypatch.setattr(delivery, "start_delivery_dispatch", real_start)
+
+    immediate = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+    assert immediate.status_code == 200
+    assert fake.sent == []
+    await db_session.refresh(intent)
+    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
+
+    stale_at = datetime(2000, 1, 1, tzinfo=UTC)
+    intent.completed_at = stale_at
+    intent.updated_at = stale_at
+    await db_session.commit()
+    recovered = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=update,
+        headers=HEADERS,
+    )
+
+    assert recovered.status_code == 200
+    assert [row["text"] for row in fake.sent] == [inbound.COMMAND_REPLY]
+    await db_session.refresh(intent)
+    assert intent.status == NotificationDeliveryStatus.SENT.value
 
 
 async def test_a_tap_outside_the_question_registry_is_dropped(bot_client, db_session):
@@ -1273,9 +2199,13 @@ async def test_reply_to_our_message_is_answered_not_captured(
     c, fake = bot_client
     parses_to([{"kind": "state", "key": "sleepiness", "value_num": 5}])
     ownership = await _telegram_ownership(db_session)
-    sent = await delivery.send(db_session, fake, text="Утро: сон 6:10, HRV 42.",
-                               category=delivery.CATEGORY_BRIEF, now=NOON,
-                               ownership=ownership)
+    sent = await _journal_owned_message(
+        db_session,
+        ownership,
+        text="Утро: сон 6:10, HRV 42.",
+        category=delivery.CATEGORY_BRIEF,
+        external_id=701,
+    )
     question_replies["value"] = "HRV чуть ниже твоей нормы."
     real_send = fake.send
 
@@ -1301,9 +2231,13 @@ async def test_reply_falls_back_to_a_line_when_the_model_is_down(
 ):
     c, fake = bot_client
     ownership = await _telegram_ownership(db_session)
-    sent = await delivery.send(db_session, fake, text="Утро: сон 6:10.",
-                               category=delivery.CATEGORY_BRIEF, now=NOON,
-                               ownership=ownership)
+    sent = await _journal_owned_message(
+        db_session,
+        ownership,
+        text="Утро: сон 6:10.",
+        category=delivery.CATEGORY_BRIEF,
+        external_id=701,
+    )
 
     question_replies["error"] = RuntimeError("sensitive upstream detail")
 
@@ -1407,13 +2341,23 @@ async def test_a_question_without_a_reply_still_sees_what_the_bot_just_said(
     no message attached, and the answer was a guess about the 2nd of the month."""
     c, fake = bot_client
     ownership = await _telegram_ownership(db_session)
-    await delivery.send(db_session, fake, text="Утро: разбор дня.",
-                        category=delivery.CATEGORY_BRIEF, now=NOON,
-                        ownership=ownership)
-    await delivery.send(db_session, fake, text="Записал:\n• спать охота → sleepiness 3/5\n"
-                                              "• энергос → sugar 1 serving в 17:00",
-                        category=delivery.CATEGORY_ECHO, now=NOON,
-                        ownership=ownership)
+    await _journal_owned_message(
+        db_session,
+        ownership,
+        text="Утро: разбор дня.",
+        category=delivery.CATEGORY_BRIEF,
+        external_id=701,
+    )
+    await _journal_owned_message(
+        db_session,
+        ownership,
+        text=(
+            "Записал:\n• спать охота → sleepiness 3/5\n"
+            "• энергос → sugar 1 serving в 17:00"
+        ),
+        category=delivery.CATEGORY_ECHO,
+        external_id=702,
+    )
     question_replies["value"] = "sugar — ключ для сахара, 1 порция."
 
     await c.post(f"/tg/{WEBHOOK_PATH}",

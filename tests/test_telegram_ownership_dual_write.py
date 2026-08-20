@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.enums import (
@@ -24,14 +26,14 @@ from vitals.enums import (
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.milestones import DOMAIN as INSIGHTS_DOMAIN, WeeklyDigest
-from vitals.models.proactive import Notification
+from vitals.models.proactive import Notification, NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
-from vitals.models.scoped_settings import SubjectSetting
+from vitals.models.scoped_settings import IntegrationConnectionSetting, SubjectSetting
 from vitals.models.signals import DayContext, Signal
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.services import alerts_service, digest_service, signals_service
-from vitals.services.proactive import day_plan, delivery, inbound, nudges
+from vitals.services.proactive import channels, day_plan, delivery, inbound, nudges, prefs
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
 
@@ -55,6 +57,76 @@ class _Notifier:
     async def send(self, text, *, buttons=None, reply_to=None) -> str:
         self._next_id += 1
         return str(self._next_id)
+
+    async def edit(self, message_id, text, *, buttons=None) -> None:
+        pass
+
+    async def answer_callback(self, callback_id, text="") -> None:
+        pass
+
+
+def _bind_notifier(graph: _Graph, notifier: _Notifier) -> _Notifier:
+    notifier.binding = channels.DeliveryEndpointBinding(
+        subject_id=graph.subject.id,
+        recipient_user_id=graph.user.id,
+        integration_connection_id=graph.connection.id,
+        channel=IntegrationProvider.TELEGRAM.value,
+    )
+    return notifier
+
+
+async def _durably_send(
+    session: AsyncSession,
+    graph: _Graph,
+    notifier: _Notifier,
+    *,
+    text: str,
+    category: str,
+    occurrence: str,
+    legacy_dedupe_key: str | None = None,
+    now: datetime | None = None,
+    actor_user_id: uuid.UUID | None = None,
+    raw_payload_id: int | None = None,
+) -> Notification:
+    bound = _bind_notifier(graph, notifier)
+    policy_key = (
+        delivery.make_delivery_policy_key("ownership-test", occurrence)
+        if category == delivery.CATEGORY_NUDGE
+        else None
+    )
+    prepared = await delivery.prepare_delivery_intent(
+        session,
+        bound,
+        text=text,
+        category=category,
+        idempotency_key=delivery.make_delivery_idempotency_key(
+            "ownership-test",
+            occurrence,
+        ),
+        policy_key=policy_key,
+        legacy_dedupe_key=legacy_dedupe_key,
+        now=now,
+        ownership=graph.ownership,
+        actor_user_id=actor_user_id,
+        raw_payload_id=raw_payload_id,
+    )
+    assert prepared is not None
+    await session.commit()
+    lease = await delivery.start_delivery_dispatch(
+        session,
+        prepared,
+        now=now,
+        notifier_resolver=lambda binding, _credential_ref: (
+            notifier if notifier.binding == binding else None
+        ),
+    )
+    assert lease is not None
+    await session.commit()
+    completion = await delivery.dispatch_delivery(lease)
+    journal = await delivery.finalize_delivery(session, completion)
+    assert journal is not None
+    await session.commit()
+    return journal
 
 
 async def _graph(session, label: str) -> _Graph:
@@ -85,10 +157,22 @@ async def _graph(session, label: str) -> _Graph:
         provider=IntegrationProvider.TELEGRAM.value,
         connection_type=IntegrationConnectionType.RECIPIENT.value,
         external_account_discriminator=f"synthetic:{label}",
+        credential_ref=channels.LEGACY_TELEGRAM_CREDENTIAL_REF,
         status=IntegrationConnectionStatus.ACTIVE.value,
     )
     session.add(connection)
     await session.flush()
+    session.add(
+        IntegrationConnectionSetting(
+            integration_connection_id=connection.id,
+            key=prefs.TELEGRAM_DELIVERY_POLICY_KEY,
+            value={
+                "quiet_start": prefs.DEFAULTS["quiet_start"],
+                "quiet_end": prefs.DEFAULTS["quiet_end"],
+                "daily_budget": prefs.DEFAULTS["daily_budget"],
+            },
+        )
+    )
     return _Graph(
         user=user,
         subject=subject,
@@ -852,11 +936,12 @@ async def test_legacy_null_rows_are_visible_only_through_verified_bridge(
         "legacy-message",
         ownership=legacy,
     ) is legacy_notification
-    assert await delivery.find_sent(
-        db_session,
-        "partial-message",
-        ownership=legacy,
-    ) is None
+    with pytest.raises(delivery.DeliveryStateError, match="malformed ownership"):
+        await delivery.find_sent(
+            db_session,
+            "partial-message",
+            ownership=legacy,
+        )
 
 
 async def test_context_callback_records_telegram_provenance(db_session):
@@ -1282,19 +1367,21 @@ async def test_recovery_classifies_commands_questions_and_bot_replies_before_par
 ):
     graph = await _graph(db_session, "recovery-classifier")
     notifier = _Notifier()
-    brief = await delivery.send(
+    brief = await _durably_send(
         db_session,
+        graph,
         notifier,
         text="brief",
         category=delivery.CATEGORY_BRIEF,
-        ownership=graph.ownership,
+        occurrence="recovery-brief",
     )
-    evening = await delivery.send(
+    evening = await _durably_send(
         db_session,
+        graph,
         notifier,
         text="how was the day?",
         category=delivery.CATEGORY_EVENING,
-        ownership=graph.ownership,
+        occurrence="recovery-evening",
     )
     assert brief is not None and evening is not None
     updates = [
@@ -1714,7 +1801,7 @@ async def test_postgres_newer_edit_wins_while_older_parser_is_in_flight(
             }
         ]
 
-    notifier = _RaceNotifier()
+    notifier = _bind_notifier(graph, _RaceNotifier())
     older = _telegram_text_update(
         5101,
         "older version",
@@ -1774,7 +1861,7 @@ async def test_postgres_edit_processed_before_late_original_cannot_resurrect_fac
         expire_on_commit=False,
         class_=AsyncSession,
     )
-    notifier = _RaceNotifier()
+    notifier = _bind_notifier(graph, _RaceNotifier())
 
     async def _parse(text):
         return [
@@ -1835,33 +1922,40 @@ async def test_delivery_journal_and_reply_lookup_are_fully_scoped(
 ):
     first = await _graph(db_session, "first")
     second = await _graph(db_session, "second")
-    first_notifier = _Notifier()
-    second_notifier = _Notifier()
-
-    first_row = await delivery.send(
-        db_session,
-        first_notifier,
-        text="first",
+    first_row = Notification(
+        subject_id=first.subject.id,
+        recipient_user_id=first.user.id,
+        integration_connection_id=first.connection.id,
+        sent_at=datetime(2026, 8, 19, 12),
         category=delivery.CATEGORY_REPLY,
         dedupe_key="first-key",
-        ownership=first.ownership,
+        channel=IntegrationProvider.TELEGRAM.value,
+        external_id="701",
+        payload={"text": "first"},
     )
-    second_row = await delivery.send(
-        db_session,
-        second_notifier,
-        text="second",
+    second_row = Notification(
+        subject_id=second.subject.id,
+        recipient_user_id=second.user.id,
+        integration_connection_id=second.connection.id,
+        sent_at=datetime(2026, 8, 19, 12),
         category=delivery.CATEGORY_REPLY,
         dedupe_key="second-key",
-        ownership=second.ownership,
+        channel=IntegrationProvider.TELEGRAM.value,
+        external_id="701",
+        payload={"text": "second"},
     )
-    manual_row = await delivery.send(
-        db_session,
-        first_notifier,
-        text="manual test",
-        category=delivery.CATEGORY_TEST,
-        ownership=first.ownership,
+    manual_row = Notification(
+        subject_id=first.subject.id,
         actor_user_id=first.user.id,
+        recipient_user_id=first.user.id,
+        integration_connection_id=first.connection.id,
+        sent_at=datetime(2026, 8, 19, 12, 1),
+        category=delivery.CATEGORY_TEST,
+        channel=IntegrationProvider.TELEGRAM.value,
+        external_id="702",
+        payload={"text": "manual test"},
     )
+    db_session.add_all([first_row, second_row, manual_row])
     await db_session.commit()
 
     assert first_row is not None and second_row is not None and manual_row is not None
@@ -1888,51 +1982,47 @@ async def test_delivery_journal_and_reply_lookup_are_fully_scoped(
         "first-key",
         ownership=second.ownership,
     ) is False
+    forged = _bind_notifier(first, _Notifier())
     with pytest.raises(ValueError, match="actor must be the recipient"):
-        await delivery.send(
+        await delivery.prepare_delivery_intent(
             db_session,
-            first_notifier,
+            forged,
             text="forged actor",
             category=delivery.CATEGORY_TEST,
+            idempotency_key=delivery.make_delivery_idempotency_key(
+                "ownership-test",
+                "forged-actor",
+            ),
             ownership=first.ownership,
             actor_user_id=second.user.id,
         )
 
 
-async def test_foreign_global_dedupe_fails_before_network_send(
+async def test_multi_subject_legacy_transport_fails_before_network_send(
     db_session,
     signals_module_on,
 ):
     first = await _graph(db_session, "dedupe-first")
-    second = await _graph(db_session, "dedupe-second")
-    await delivery.send(
-        db_session,
-        _Notifier(),
-        text="first subject",
-        category=delivery.CATEGORY_BRIEF,
-        dedupe_key="brief:shared-date",
-        ownership=first.ownership,
-    )
-    await db_session.commit()
+    await _graph(db_session, "dedupe-second")
 
-    second_notifier = _Notifier()
-    with pytest.raises(
-        delivery.NotificationOwnershipConflictError,
-        match="another ownership scope",
-    ):
-        await delivery.send(
+    notifier = _bind_notifier(first, _Notifier())
+    with pytest.raises(delivery.DeliveryPolicyUnavailableError, match="exactly one"):
+        await delivery.prepare_delivery_intent(
             db_session,
-            second_notifier,
-            text="second subject",
+            notifier,
+            text="must not leave the process",
             category=delivery.CATEGORY_BRIEF,
-            dedupe_key="brief:shared-date",
-            ownership=second.ownership,
+            idempotency_key=delivery.make_delivery_idempotency_key(
+                "ownership-test",
+                "multi-subject",
+            ),
+            ownership=first.ownership,
         )
-    assert second_notifier._next_id == 700
-    assert len(list(await db_session.scalars(select(Notification)))) == 1
+    assert notifier._next_id == 700
+    assert list(await db_session.scalars(select(Notification))) == []
 
 
-async def test_partial_root_dedupe_fails_before_network_send(db_session):
+async def test_partial_root_dedupe_is_rejected_by_the_schema(db_session):
     graph = await _graph(db_session, "partial-dedupe")
     db_session.add(
         Notification(
@@ -1946,30 +2036,13 @@ async def test_partial_root_dedupe_fails_before_network_send(db_session):
             payload={"text": "legacy"},
         )
     )
-    await db_session.commit()
-    assert await delivery.sent_today(
-        db_session,
-        on_date=DAY,
-        ownership=graph.ownership,
-    ) == 0
-
-    notifier = _Notifier()
-    with pytest.raises(
-        delivery.NotificationOwnershipConflictError,
-        match="another ownership scope",
-    ):
-        await delivery.send(
-            db_session,
-            notifier,
-            text="must not leave the process",
-            category=delivery.CATEGORY_BRIEF,
-            dedupe_key="brief:partial-root",
-            ownership=graph.ownership,
-        )
-    assert notifier._next_id == 700
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
+    assert list(await db_session.scalars(select(Notification))) == []
 
 
-async def test_cross_subject_connection_cannot_suppress_delivery(db_session):
+async def test_cross_subject_notification_connection_cannot_leak_or_send(db_session):
     first = await _graph(db_session, "cross-c-first")
     second = await _graph(db_session, "cross-c-second")
     db_session.add(
@@ -1990,15 +2063,23 @@ async def test_cross_subject_connection_cannot_suppress_delivery(db_session):
         on_date=DAY,
         ownership=first.ownership,
     ) == 0
-
-    notifier = _Notifier()
-    with pytest.raises(delivery.NotificationOwnershipConflictError):
-        await delivery.send(
+    with pytest.raises(delivery.DeliveryStateError, match="connection graph"):
+        await delivery.already_sent(
+            db_session,
+            "brief:cross-c",
+            ownership=first.ownership,
+        )
+    notifier = _bind_notifier(first, _Notifier())
+    with pytest.raises(delivery.DeliveryPolicyUnavailableError, match="exactly one"):
+        await delivery.prepare_delivery_intent(
             db_session,
             notifier,
-            text="must still fail before send",
+            text="must not leave the process",
             category=delivery.CATEGORY_BRIEF,
-            dedupe_key="brief:cross-c",
+            idempotency_key=delivery.make_delivery_idempotency_key(
+                "ownership-test",
+                "cross-subject-connection",
+            ),
             ownership=first.ownership,
         )
     assert notifier._next_id == 700
@@ -2043,16 +2124,18 @@ async def test_invalid_historical_notification_cannot_suppress_or_start_cooldown
     )
     await db_session.commit()
 
-    assert await delivery.sent_today(
-        db_session,
-        on_date=DAY,
-        ownership=graph.ownership,
-    ) == 0
-    assert await delivery.already_sent(
-        db_session,
-        dedupe,
-        ownership=graph.ownership,
-    ) is False
+    with pytest.raises(delivery.DeliveryStateError, match="connection graph"):
+        await delivery.sent_today(
+            db_session,
+            on_date=DAY,
+            ownership=graph.ownership,
+        )
+    with pytest.raises(delivery.DeliveryStateError, match="connection graph"):
+        await delivery.already_sent(
+            db_session,
+            dedupe,
+            ownership=graph.ownership,
+        )
     assert await nudges.last_sent_at(
         db_session,
         key,
@@ -2060,15 +2143,14 @@ async def test_invalid_historical_notification_cannot_suppress_or_start_cooldown
     ) is None
 
     notifier = _Notifier()
-    with pytest.raises(delivery.NotificationOwnershipConflictError):
-        await delivery.send(
+    policy_key = delivery.make_delivery_policy_key("nudge", key)
+    with pytest.raises(delivery.DeliveryError):
+        await delivery.delivery_policy_claimed_since(
             db_session,
-            notifier,
-            text="must fail before network",
-            category=delivery.CATEGORY_NUDGE,
-            dedupe_key=dedupe,
-            now=datetime(2026, 8, 19, 12, 30),
+            policy_key=policy_key,
+            not_before=datetime(2026, 8, 19, 11, tzinfo=timezone.utc),
             ownership=graph.ownership,
+            legacy_dedupe_prefix=f"nudge:{key}:",
         )
     assert notifier._next_id == 700
 
@@ -2077,7 +2159,13 @@ async def test_delivery_revalidates_subject_recipient_and_connection_before_netw
     db_session,
 ):
     first = await _graph(db_session, "scope-first")
-    second = await _graph(db_session, "scope-second")
+    foreign_user = User(
+        username="scope-foreign-user",
+        normalized_username="scope-foreign-user",
+        password_hash="synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(foreign_user)
     wrong_provider = IntegrationConnection(
         subject_id=first.subject.id,
         provider=IntegrationProvider.OPENROUTER.value,
@@ -2091,13 +2179,13 @@ async def test_delivery_revalidates_subject_recipient_and_connection_before_netw
     invalid_contexts = (
         ProactiveOwnershipContext(
             subject_id=first.subject.id,
-            recipient_user_id=second.user.id,
+            recipient_user_id=foreign_user.id,
             connection_id=first.connection.id,
         ),
         ProactiveOwnershipContext(
             subject_id=first.subject.id,
             recipient_user_id=first.user.id,
-            connection_id=second.connection.id,
+            connection_id=uuid.uuid4(),
         ),
         ProactiveOwnershipContext(
             subject_id=first.subject.id,
@@ -2105,14 +2193,25 @@ async def test_delivery_revalidates_subject_recipient_and_connection_before_netw
             connection_id=wrong_provider.id,
         ),
     )
-    for ownership in invalid_contexts:
+    for index, ownership in enumerate(invalid_contexts):
         notifier = _Notifier()
-        with pytest.raises(delivery.ProactiveOwnershipScopeError):
-            await delivery.send(
+        notifier.binding = channels.DeliveryEndpointBinding(
+            subject_id=ownership.subject_id,
+            recipient_user_id=ownership.recipient_user_id,
+            integration_connection_id=ownership.connection_id,
+            channel=IntegrationProvider.TELEGRAM.value,
+        )
+        with pytest.raises(delivery.DeliveryScopeError):
+            await delivery.prepare_delivery_intent(
                 db_session,
                 notifier,
                 text="forged scope",
                 category=delivery.CATEGORY_REPLY,
+                idempotency_key=delivery.make_delivery_idempotency_key(
+                    "ownership-test",
+                    "forged-scope",
+                    index,
+                ),
                 ownership=ownership,
             )
         assert notifier._next_id == 700
@@ -2129,13 +2228,18 @@ async def test_delivery_revalidates_subject_recipient_and_connection_before_netw
             else None
         )
         await db_session.flush()
-        notifier = _Notifier()
-        with pytest.raises(delivery.ProactiveOwnershipScopeError, match="inactive"):
-            await delivery.send(
+        notifier = _bind_notifier(first, _Notifier())
+        with pytest.raises(delivery.DeliveryScopeError):
+            await delivery.prepare_delivery_intent(
                 db_session,
                 notifier,
                 text="inactive channel",
                 category=delivery.CATEGORY_REPLY,
+                idempotency_key=delivery.make_delivery_idempotency_key(
+                    "ownership-test",
+                    "inactive-channel",
+                    inactive_status,
+                ),
                 ownership=first.ownership,
             )
         assert notifier._next_id == 700
@@ -2156,6 +2260,21 @@ async def test_connection_rotation_does_not_reset_budget_or_dedupe(
     historical_status,
 ):
     graph = await _graph(db_session, "rotated")
+    legacy_key = "brief:rotation-day"
+    delivery_key = delivery.make_delivery_idempotency_key(
+        "ownership-test",
+        "rotation-day",
+    )
+    sent = await _durably_send(
+        db_session,
+        graph,
+        _Notifier(),
+        text="before rotation",
+        category=delivery.CATEGORY_BRIEF,
+        occurrence="rotation-day",
+        legacy_dedupe_key=legacy_key,
+        now=datetime(2026, 8, 19, 12, 0),
+    )
     replacement = IntegrationConnection(
         subject_id=graph.subject.id,
         provider=IntegrationProvider.TELEGRAM.value,
@@ -2170,16 +2289,6 @@ async def test_connection_rotation_does_not_reset_budget_or_dedupe(
         recipient_user_id=graph.user.id,
         connection_id=replacement.id,
     )
-    sent = await delivery.send(
-        db_session,
-        _Notifier(),
-        text="before rotation",
-        category=delivery.CATEGORY_BRIEF,
-        dedupe_key="brief:rotation-day",
-        now=datetime(2026, 8, 19, 12, 0),
-        ownership=graph.ownership,
-    )
-    assert sent is not None
     graph.connection.status = historical_status
     graph.connection.retired_at = (
         datetime.now(timezone.utc)
@@ -2195,8 +2304,9 @@ async def test_connection_rotation_does_not_reset_budget_or_dedupe(
     ) == 1
     assert await delivery.already_sent(
         db_session,
-        "brief:rotation-day",
+        delivery_key,
         ownership=rotated,
+        legacy_dedupe_key=legacy_key,
     ) is True
     assert await delivery.find_sent(
         db_session,
@@ -2226,6 +2336,7 @@ async def test_raw_commit_survives_normalized_and_journal_rollback(
         identity=graph.ownership.owner_action(),
         integration_connection_id=graph.connection.id,
     )
+    await db_session.commit()
     await signals_service.create_signals(
         db_session,
         items=_one_signal(""),
@@ -2233,15 +2344,29 @@ async def test_raw_commit_survives_normalized_and_journal_rollback(
         identity=graph.ownership.owner_action(),
         integration_connection_id=graph.connection.id,
     )
-    sent = await delivery.send(
+    notifier = _bind_notifier(graph, _Notifier())
+    prepared = await delivery.prepare_delivery_intent(
         db_session,
-        _Notifier(),
+        notifier,
         text="will roll back",
         category=delivery.CATEGORY_ECHO,
+        idempotency_key=delivery.make_delivery_idempotency_key(
+            "ownership-test",
+            "rollback-echo",
+        ),
         ownership=graph.ownership,
+        raw_payload_id=raw.id,
     )
-    assert sent is not None
+    assert prepared is not None
 
+    await db_session.rollback()
+
+    with pytest.raises(delivery.DeliveryCapabilityError):
+        await delivery.start_delivery_dispatch(
+            db_session,
+            prepared,
+            notifier_resolver=lambda *_: notifier,
+        )
     await db_session.rollback()
 
     kept_raw = await db_session.scalar(
@@ -2255,3 +2380,6 @@ async def test_raw_commit_survives_normalized_and_journal_rollback(
     ) == expected_roots
     assert list(await db_session.scalars(select(Signal))) == []
     assert list(await db_session.scalars(select(Notification))) == []
+    assert list(
+        await db_session.scalars(select(NotificationDeliveryIntent))
+    ) == []

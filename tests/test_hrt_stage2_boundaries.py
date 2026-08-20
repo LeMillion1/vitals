@@ -29,7 +29,12 @@ def _use_test_factory(session_factory, monkeypatch):
 @pytest.fixture(autouse=True)
 async def _enable_hrt(session_factory, legacy_owner_roots):
     async with session_factory() as session:
-        await modules_service.set_module_enabled(session, key="hrt", enabled=True)
+        await modules_service.set_module_enabled(
+            session,
+            key="hrt",
+            enabled=True,
+            subject_id=legacy_owner_roots.subject_id,
+        )
         await hrt_catalog.sync_catalog(session)
         await session.commit()
 

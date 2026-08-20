@@ -2503,31 +2503,70 @@ async def pulse_job(
     from vitals.integrations.garmin_client import GarminClient
     from vitals.services.legacy_ownership import (
         LegacyOwnershipError,
+        LegacySubjectResolutionError,
         resolve_legacy_ownership_context,
     )
     from vitals.services.proactive import prefs
 
     async with session_factory() as session:
-        settings = await prefs.get_prefs(session)
-        if not settings["pulse_seconds"]:
-            return
-        if not settings["pulse_start_hour"] <= now_local().hour < settings["pulse_end_hour"]:
-            return
-
-        client = GarminClient.from_config(redis=redis)
-        if not client.is_configured:
-            return
+        ownership = None
         try:
             ownership = await resolve_legacy_ownership_context(
                 session,
                 actor_username=actor_username,
                 required_connections=(IntegrationProvider.GARMIN,),
             )
+        except LegacySubjectResolutionError:
+            # The read-only exact-one resolver autobegins an unguarded
+            # transaction. Close it before entering the explicit zero-subject
+            # compatibility guard (BEGIN IMMEDIATE on SQLite / advisory on PG).
+            await session.rollback()
+            try:
+                settings = await prefs.get_pre_identity_legacy_prefs(session)
+            except prefs.ProactivePreferencesError:
+                logger.warning(
+                    "Garmin pulse skipped: pre-identity preferences are unavailable",
+                    exc_info=True,
+                )
+                return
+            pulse_seconds = settings["pulse_seconds"]
+            pulse_start_hour = settings["pulse_start_hour"]
+            pulse_end_hour = settings["pulse_end_hour"]
         except LegacyOwnershipError:
             logger.warning(
                 "Garmin pulse skipped: legacy ownership is unavailable",
                 exc_info=True,
             )
+            return
+        if ownership is not None:
+            try:
+                policy = await prefs.get_garmin_policy(
+                    session,
+                    subject_id=ownership.subject_id,
+                    integration_connection_id=ownership.connection_id(
+                        IntegrationProvider.GARMIN
+                    ),
+                )
+            except prefs.ProactivePreferencesError:
+                logger.warning(
+                    "Garmin pulse skipped: scoped preferences are unavailable",
+                    exc_info=True,
+                )
+                return
+            pulse_seconds = policy.pulse_seconds
+            pulse_start_hour = policy.pulse_start_hour
+            pulse_end_hour = policy.pulse_end_hour
+        if not pulse_seconds:
+            return
+        if not pulse_start_hour <= now_local().hour < pulse_end_hour:
+            return
+
+        client = GarminClient.from_config(redis=redis)
+        if not client.is_configured:
+            return
+        if ownership is None:
+            await pulse(session, client)
+            await session.commit()
             return
         try:
             await pulse_owned(

@@ -4033,6 +4033,10 @@ async def get_proactive_state(limit: int = 10) -> dict:
             session,
             actor_username=get_web_config().auth_username,
         )
+        preference_scope = await prefs.resolve_legacy_preferences_scope(
+            session,
+            actor_username=get_web_config().auth_username,
+        )
         sent = list(
             reversed(
                 await delivery.recent_sent(
@@ -4048,7 +4052,13 @@ async def get_proactive_state(limit: int = 10) -> dict:
         )
         return {
             "enabled": bool(enabled_modules.get("signals")),
-            "prefs": await prefs.get_prefs(session),
+            "prefs": (
+                await prefs.get_preferences_bundle(
+                    session,
+                    scope=preference_scope,
+                    actor_username=get_web_config().auth_username,
+                )
+            ).as_flat_dict(),
             "week_template": await day_plan.get_week_template(
                 session,
                 subject_id=ownership.subject_id,

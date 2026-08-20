@@ -9,7 +9,11 @@ from sqlalchemy import func, select
 
 from vitals.enums import UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
+from vitals.models.scoped_settings import SubjectSetting
+from vitals.services import modules_service
 from vitals.services.identity_bootstrap import LegacyOwnerIdentityMismatchError
+from vitals.services.proactive import prefs
+from vitals.services.scoped_settings_service import ScopedSettingKey
 from vitals.utils.passwords import hash_password
 from web.main import _bootstrap_legacy_identity
 
@@ -21,7 +25,10 @@ async def _count(session, model: type) -> int:
 async def test_startup_boundary_commits_the_configured_legacy_owner(
     db_session, session_factory
 ):
-    await _bootstrap_legacy_identity(session_factory, timezone="Asia/Almaty")
+    preference_bundle = await _bootstrap_legacy_identity(
+        session_factory,
+        timezone="Asia/Almaty",
+    )
 
     user = await db_session.scalar(select(User))
     assert user is not None
@@ -29,6 +36,17 @@ async def test_startup_boundary_commits_the_configured_legacy_owner(
     assert user.status == UserStatus.ACTIVE.value
     assert await _count(db_session, UserRole) == 2
     assert await _count(db_session, HealthSubject) == 1
+    subject_id = await db_session.scalar(select(HealthSubject.id))
+    assert subject_id is not None
+    module_policy = await db_session.scalar(
+        select(SubjectSetting).where(
+            SubjectSetting.subject_id == subject_id,
+            SubjectSetting.key == ScopedSettingKey.ENABLED_MODULES.value,
+        )
+    )
+    assert module_policy is not None
+    assert module_policy.value == modules_service.DEFAULT_STATE
+    assert preference_bundle.as_flat_dict() == prefs.sanitize(None)
 
 
 async def test_startup_boundary_rolls_back_and_propagates_identity_mismatch(

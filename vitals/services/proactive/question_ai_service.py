@@ -40,7 +40,7 @@ from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import ai_gateway_service
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.proactive import prefs
+from vitals.services.proactive import delivery, prefs
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 from vitals.utils.timeutils import now_local
 
@@ -644,7 +644,14 @@ async def delivery_is_journaled(
             AIInvocation,
             AIInvocation.id == Notification.ai_invocation_id,
         )
-        .where(Notification.dedupe_key == delivery_dedupe_key(raw_payload_id))
+        .where(
+            Notification.dedupe_key.in_(
+                (
+                    delivery_dedupe_key(raw_payload_id),
+                    legacy_delivery_dedupe_key(raw_payload_id),
+                )
+            )
+        )
     )
     value = row.one_or_none()
     if value is None:
@@ -856,6 +863,17 @@ def delivery_dedupe_key(raw_payload_id: int) -> str:
 
     if isinstance(raw_payload_id, bool) or not isinstance(raw_payload_id, int) or raw_payload_id < 1:
         raise QuestionAIError("raw_payload_id must be a positive integer")
+    return delivery.make_delivery_idempotency_key(
+        "telegram-question-reply",
+        raw_payload_id,
+    )
+
+
+def legacy_delivery_dedupe_key(raw_payload_id: int) -> str:
+    """Return the pre-durable journal key used only for compatibility reads."""
+
+    if isinstance(raw_payload_id, bool) or not isinstance(raw_payload_id, int) or raw_payload_id < 1:
+        raise QuestionAIError("raw_payload_id must be a positive integer")
     return "question-reply:" + hashlib.sha256(
         f"delivery|{raw_payload_id}".encode()
     ).hexdigest()
@@ -957,7 +975,7 @@ async def raw_is_superseded(
 __all__ = [
     "PreparedQuestionReply", "QuestionAIError", "QuestionAIInputError", "QuestionAIOwnershipError",
     "QuestionAIModuleDisabledError", "QuestionAIStateError", "QuestionReplyResult", "invocation_is_journaled",
-    "cancel_prepared_question_reply", "delivery_dedupe_key", "delivery_is_journaled", "persist_question_reply", "prepare_live_question_reply",
+    "cancel_prepared_question_reply", "delivery_dedupe_key", "delivery_is_journaled", "legacy_delivery_dedupe_key", "persist_question_reply", "prepare_live_question_reply",
     "raw_is_superseded",
     "recovered_terminal_result", "render_question_reply", "start_question_dispatch",
 ]

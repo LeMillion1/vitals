@@ -724,7 +724,7 @@ async def test_settings_restart_endpoint(auth_client, monkeypatch):
 
 
 async def test_settings_save_proactive_flags_adjusted_values(auth_client):
-    """prefs.sanitize() (called inside prefs.set_prefs) silently clamps
+    """prefs.sanitize() (called inside set_preferences_bundle) silently clamps
     out-of-range input. The redirect must say so instead of a bare "saved",
     or the user has no way to know their number was changed underneath them."""
     r = await auth_client.post(

@@ -1478,11 +1478,16 @@ async def _raw_is_signal_candidate(
     text = _raw_text(raw)
     if text.startswith("/"):
         return False
-    reply_id = (
-        (message.get("reply_to_message") or {}).get("message_id")
-        if isinstance(message, dict)
-        else None
+    reply_message = (
+        message.get("reply_to_message") if isinstance(message, dict) else None
     )
+    if reply_message is None:
+        reply_message = {}
+    if not isinstance(reply_message, dict):
+        raise SignalAIValidationError(
+            "Telegram reply provenance is invalid"
+        )
+    reply_id = reply_message.get("message_id")
     answered = (
         await delivery.find_sent(session, str(reply_id), ownership=ownership)
         if reply_id is not None

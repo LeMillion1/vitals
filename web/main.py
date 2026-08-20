@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -37,8 +38,15 @@ from web.uploads import storage_refs_for_route_key
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from vitals.services.proactive.prefs import ProactivePreferencesBundle
 
-async def _bootstrap_legacy_identity(session_factory, *, timezone: str) -> None:
+
+async def _bootstrap_legacy_identity(
+    session_factory,
+    *,
+    timezone: str,
+) -> ProactivePreferencesBundle:
     """Materialize the environment-backed owner and safe resource roots.
 
     The compatibility login remains environment-backed in this rollout phase,
@@ -49,6 +57,13 @@ async def _bootstrap_legacy_identity(session_factory, *, timezone: str) -> None:
     """
 
     from vitals.services.identity_bootstrap import bootstrap_legacy_owner
+    from vitals.services.proactive import prefs
+    from vitals.services import modules_service
+    from vitals.services.scoped_settings_service import (
+        ScopedSettingKey,
+        SettingScope,
+        set_scoped_setting,
+    )
     from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
     from web.config import get_web_config
 
@@ -65,7 +80,35 @@ async def _bootstrap_legacy_identity(session_factory, *, timezone: str) -> None:
                 session,
                 subject_id=identity.subject_id,
             )
+            # Durable delivery deliberately refuses the legacy/default module
+            # fallback. Materialize the normalized exact-one value before any
+            # scheduler or sender can run, while the bootstrap transaction still
+            # holds identity governance and the sole subject root.
+            enabled_modules = await modules_service.get_enabled_modules(
+                session,
+                subject_id=identity.subject_id,
+            )
+            await set_scoped_setting(
+                session,
+                scope=SettingScope.SUBJECT,
+                key=ScopedSettingKey.ENABLED_MODULES,
+                subject_id=identity.subject_id,
+                value=enabled_modules,
+            )
+            preference_scope = await prefs.resolve_legacy_preferences_scope(
+                session,
+                actor_username=None,
+            )
+            await prefs.initialize_legacy_preferences(
+                session,
+                scope=preference_scope,
+            )
+            preference_bundle = await prefs.get_exact_one_preferences_bundle(
+                session,
+                scope=preference_scope,
+            )
             await session.commit()
+            return preference_bundle
         except Exception:
             await session.rollback()
             raise
@@ -87,14 +130,16 @@ async def lifespan(app: FastAPI):
     from vitals.scheduler.scheduler import seed_heartbeats, setup_scheduler
     from vitals.services import conflict_catalog, conflict_engine, hrt_catalog
     from vitals.services.conflict_registrations import register_all_resolvers
-    from vitals.services.proactive import prefs
 
     config = load_config()
 
     # Fail startup closed if the legacy credential cannot be reconciled with the
     # durable identity.  This runs before catalogs, scheduler registration, or
     # connector work so a partially initialized process never serves requests.
-    await _bootstrap_legacy_identity(session_factory, timezone=config.timezone)
+    preference_bundle = await _bootstrap_legacy_identity(
+        session_factory,
+        timezone=config.timezone,
+    )
 
     # Register cross-domain conflict resolvers (supplements/genetics/skincare/...).
     register_all_resolvers()
@@ -104,7 +149,7 @@ async def lifespan(app: FastAPI):
     async with session_factory() as session:
         # Job schedules come from the DB (Settings → proactive), so the registry is
         # attached here rather than before the session opens.
-        register_all_jobs(await prefs.get_prefs(session))
+        register_all_jobs(preference_bundle.as_flat_dict())
         await conflict_catalog.sync_catalog(session)
         # Upsert the curated HRT compound catalog (vitals/data/hrt_compounds.yaml).
         await hrt_catalog.sync_catalog(session)

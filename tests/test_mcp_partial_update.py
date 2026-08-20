@@ -30,7 +30,12 @@ async def _optional_modules_on(session_factory, legacy_owner_roots):
 
     async with session_factory() as session:
         for key in sorted(modules_service.OPTIONAL_KEYS):
-            await modules_service.set_module_enabled(session, key=key, enabled=True)
+            await modules_service.set_module_enabled(
+                session,
+                key=key,
+                enabled=True,
+                subject_id=legacy_owner_roots.subject_id,
+            )
         await session.commit()
 
 

@@ -27,7 +27,6 @@ from vitals.enums import (
     UserStatus,
 )
 from vitals.models.body_scan import BodyScan, BodyScanMetric
-from vitals.models.app_settings import AppSetting
 from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
@@ -43,7 +42,7 @@ from vitals.services import (
     raw_payload_service,
     weight_service,
 )
-from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY
+from vitals.services import modules_service
 from vitals.utils.timeutils import now_local
 
 
@@ -89,8 +88,15 @@ async def _prepared_weight(
 
 
 async def _enable_body_comp(session: AsyncSession) -> None:
-    session.add(
-        AppSetting(key=SETTINGS_KEY, value={key: True for key in MODULE_REGISTRY})
+    subject_ids = list(
+        await session.scalars(select(HealthSubject.id).order_by(HealthSubject.id))
+    )
+    assert len(subject_ids) == 1
+    await modules_service.set_module_enabled(
+        session,
+        key="body_comp",
+        enabled=True,
+        subject_id=subject_ids[0],
     )
     await session.commit()
 

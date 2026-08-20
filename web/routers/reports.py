@@ -31,7 +31,6 @@ from vitals.services.proactive import brief, channels, delivery
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.ratelimit import rate_limit
-from web.routers.telegram import get_notifier
 from web.templating import templates
 
 logger = logging.getLogger(__name__)
@@ -308,13 +307,10 @@ async def send_test_brief(
     ),
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
-    notifier=Depends(get_notifier),
     _rl: None = Depends(rate_limit("brief_test", limit=5, window=300)),
 ):
     """One live send, to catch what only a real Telegram message shows — broken
     formatting, a message too long, a channel that isn't actually wired up."""
-    if notifier is None:
-        return _redirect(request, "?brief=no_channel")
     request_date = today_local()
     try:
         request_token = brief.validate_request_token(request_token)
@@ -322,17 +318,42 @@ async def send_test_brief(
             db,
             actor_username=username,
         )
-        test_dedupe_key = (
+        legacy_test_dedupe_key = (
             f"brief_test:{request_date.isoformat()}:"
             f"{hashlib.sha256(request_token.encode()).hexdigest()}"
         )
-        if await delivery.already_sent(
+        test_delivery_key = delivery.make_delivery_idempotency_key(
+            "brief-test",
+            request_date,
+            request_token,
+        )
+        if await delivery.confirmed_delivery_journal(
             db,
-            test_dedupe_key,
+            idempotency_key=test_delivery_key,
+            category=delivery.CATEGORY_TEST,
+            ownership=ownership,
+            legacy_dedupe_key=legacy_test_dedupe_key,
+            actor_user_id=ownership.recipient_user_id,
+        ) is not None:
+            await db.commit()
+            return _redirect(request, "?brief=sent")
+        if await delivery.delivery_claim_exists(
+            db,
+            idempotency_key=test_delivery_key,
             ownership=ownership,
         ):
             await db.commit()
-            return _redirect(request, "?brief=sent")
+            return _redirect(request, "?brief=pending")
+        endpoint_available = await channels.build_legacy_bound_notifier(
+            db,
+            ownership,
+        )
+        if endpoint_available is None:
+            await db.commit()
+            return _redirect(request, "?brief=no_channel")
+        # Availability is only a preflight. T1 below resolves a fresh bound
+        # client, and T2 resolves again after its current-policy/C recheck.
+        del endpoint_available
         await db.commit()
         row, outcome = await _run_brief_generation(
             db,
@@ -345,30 +366,74 @@ async def send_test_brief(
             return _redirect(request, "?brief=pending")
         if row is None:
             return _redirect(request, "?brief=empty")
-        prepared_delivery = await delivery._prepare_delivery(
+        ownership = await channels.resolve_legacy_channel_ownership(
             db,
-            notifier,
+            actor_username=username,
+        )
+        bound_notifier = await channels.build_legacy_bound_notifier(
+            db,
+            ownership,
+        )
+        if bound_notifier is None:
+            await db.commit()
+            return _redirect(request, "?brief=no_channel")
+        prepared_delivery = await delivery.prepare_delivery_intent(
+            db,
+            bound_notifier,
             text=row.content,
             category=delivery.CATEGORY_TEST,
-            dedupe_key=test_dedupe_key,
+            idempotency_key=test_delivery_key,
+            legacy_dedupe_key=legacy_test_dedupe_key,
             ownership=ownership,
             actor_user_id=ownership.recipient_user_id,
         )
         await db.commit()
         if prepared_delivery is None:
-            return _redirect(request, "?brief=error")
-        delivered = await delivery._transmit_prepared_delivery(
-            notifier,
-            prepared_delivery,
-        )
-        if delivered is None:
-            return _redirect(request, "?brief=error")
-        await delivery._journal_prepared_delivery(
+            ownership = await channels.resolve_legacy_channel_ownership(
+                db,
+                actor_username=username,
+            )
+            if await delivery.confirmed_delivery_journal(
+                db,
+                idempotency_key=test_delivery_key,
+                category=delivery.CATEGORY_TEST,
+                ownership=ownership,
+                legacy_dedupe_key=legacy_test_dedupe_key,
+                actor_user_id=ownership.recipient_user_id,
+            ) is not None:
+                await db.commit()
+                return _redirect(request, "?brief=sent")
+            claimed = await delivery.delivery_claim_exists(
+                db,
+                idempotency_key=test_delivery_key,
+                ownership=ownership,
+            )
+            await db.commit()
+            return _redirect(
+                request,
+                "?brief=pending" if claimed else "?brief=error",
+            )
+        dispatch_lease = await delivery.start_delivery_dispatch(
             db,
             prepared_delivery,
-            external_id=delivered.external_id,
+            notifier_resolver=channels.resolve_legacy_bound_notifier,
         )
         await db.commit()
+        if dispatch_lease is None:
+            return _redirect(request, "?brief=error")
+        completion = await delivery.dispatch_delivery(dispatch_lease)
+        journal = None
+        for finalize_try in range(2):
+            try:
+                journal = await delivery.finalize_delivery(db, completion)
+                await db.commit()
+                break
+            except Exception:
+                await db.rollback()
+                if finalize_try:
+                    raise
+        if journal is None:
+            return _redirect(request, "?brief=error")
     except (
         ai_gateway_service.AIGatewayAuthorizationError,
         LegacyOwnershipError,

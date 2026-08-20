@@ -133,13 +133,18 @@ async def _garmin_silent(session: AsyncSession, ctx: dict) -> bool:
     gap = (ctx["today"] - row.date).days
     if gap < GARMIN_SILENT_DAYS:
         return False
-    last = await last_sent_at(
-        session,
-        GARMIN_SILENT_KEY,
-        ownership=ctx.get("ownership"),
-    )
-    if last is not None and last.date() >= row.date + timedelta(days=GARMIN_SILENT_DAYS):
-        return False
+    ctx["garmin_episode_start"] = row.date + timedelta(days=GARMIN_SILENT_DAYS)
+    if ctx.get("ownership") is None:
+        last = await last_sent_at(
+            session,
+            GARMIN_SILENT_KEY,
+            ownership=None,
+        )
+        if (
+            last is not None
+            and last.date() >= row.date + timedelta(days=GARMIN_SILENT_DAYS)
+        ):
+            return False
     ctx["garmin_last_date"] = row.date
     ctx["garmin_gap_days"] = gap
     return True
@@ -190,8 +195,14 @@ async def last_sent_at(
     *,
     ownership: ProactiveOwnershipContext | None = None,
 ) -> Optional[datetime]:
+    legacy_prefix = f"nudge:{key}:"
+    escaped_prefix = (
+        legacy_prefix.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
     query = select(Notification.sent_at).where(
-        Notification.dedupe_key.like(f"nudge:{key}:%")
+        Notification.dedupe_key.like(f"{escaped_prefix}%", escape="\\")
     )
     if ownership is not None:
         query = query.where(
@@ -217,7 +228,9 @@ async def run(
     """Walk the registry once. Returns the journal rows for what actually went out.
 
     A condition that raises is skipped, not fatal: one broken rule must not take
-    the other nudges — or the job — down with it. Does not commit.
+    the other nudges — or the job — down with it. The zero-subject compatibility
+    path leaves commit ownership with its caller; the owned path commits each
+    durable T1/T2/T3 boundary so no Telegram await spans a database transaction.
     """
     now = now or now_local()
     ctx: dict = {
@@ -225,38 +238,134 @@ async def run(
         "today": today or now.date(),
         "ownership": ownership,
     }
-    categories = (await prefs.get_prefs(session))["nudges"]
+    if ownership is None:
+        categories = (await prefs.get_pre_identity_legacy_prefs(session))[
+            "nudges"
+        ]
+        enabled_categories = {
+            key for key, enabled in categories.items() if enabled
+        }
+    else:
+        enabled_categories = (
+            await prefs.get_subject_policy(
+                session,
+                subject_id=ownership.subject_id,
+            )
+        ).enabled_nudge_categories
 
     sent: list[Notification] = []
     for spec in NUDGES:
-        if not categories.get(spec.category, True):
+        if spec.category not in enabled_categories:
             continue
-        last = await last_sent_at(
-            session,
-            spec.key,
-            ownership=ownership,
-        )
-        if last is not None and now - last < timedelta(hours=spec.cooldown_h):
-            continue
+        policy_at = None
+        if ownership is not None:
+            policy_at, subject_local_now = await delivery.delivery_policy_clock(
+                session,
+                ownership=ownership,
+                now=now,
+            )
+            ctx["now"] = subject_local_now.replace(tzinfo=None)
+            ctx["today"] = today or subject_local_now.date()
+        else:
+            last = await last_sent_at(
+                session,
+                spec.key,
+                ownership=None,
+            )
+            if last is not None and now - last < timedelta(hours=spec.cooldown_h):
+                continue
         try:
             if not await spec.condition(session, ctx):
                 continue
             text = spec.render(ctx)
         except Exception:  # noqa: BLE001
-            logger.warning("nudge %s failed to evaluate; skipped", spec.key, exc_info=True)
+            logger.warning("nudge %s failed to evaluate; skipped", spec.key)
             continue
 
-        row = await delivery.send(
+        if ownership is None:
+            row = await delivery.send(
+                session,
+                notifier,
+                text=text,
+                category=delivery.CATEGORY_NUDGE,
+                dedupe_key=dedupe_key(spec.key, now),
+                now=now,
+                ownership=None,
+            )
+            if row is not None:
+                sent.append(row)
+            continue
+
+        assert policy_at is not None
+        policy_key = delivery.make_delivery_policy_key("nudge", spec.key)
+        not_before = policy_at - timedelta(hours=spec.cooldown_h)
+        episode_start = ctx.pop("garmin_episode_start", None)
+        if spec.key == GARMIN_SILENT_KEY and episode_start is not None:
+            episode_at, _ = await delivery.delivery_policy_clock(
+                session,
+                ownership=ownership,
+                now=datetime.combine(episode_start, datetime.min.time()),
+            )
+            not_before = min(not_before, episode_at)
+        claimed = await delivery.delivery_policy_claimed_since(
             session,
-            notifier,
+            policy_key=policy_key,
+            not_before=not_before,
+            ownership=ownership,
+            legacy_dedupe_prefix=f"nudge:{spec.key}:",
+        )
+        if claimed:
+            await session.commit()
+            continue
+
+        bound_notifier = await channels.build_legacy_bound_notifier(
+            session,
+            ownership,
+        )
+        subject_local_now = ctx["now"]
+        legacy_key = dedupe_key(spec.key, subject_local_now)
+        prepared_delivery = await delivery.prepare_delivery_intent(
+            session,
+            bound_notifier,
             text=text,
             category=delivery.CATEGORY_NUDGE,
-            dedupe_key=dedupe_key(spec.key, now),
-            now=now,
+            idempotency_key=delivery.make_delivery_idempotency_key(
+                "nudge",
+                spec.key,
+                subject_local_now.date(),
+                subject_local_now.hour,
+            ),
+            policy_key=policy_key,
+            legacy_dedupe_key=legacy_key,
+            now=policy_at,
             ownership=ownership,
         )
-        if row is not None:
-            sent.append(row)
+        await session.commit()
+        if prepared_delivery is None:
+            continue
+
+        dispatch_lease = await delivery.start_delivery_dispatch(
+            session,
+            prepared_delivery,
+            now=policy_at,
+            notifier_resolver=channels.resolve_legacy_bound_notifier,
+        )
+        await session.commit()
+        if dispatch_lease is None:
+            continue
+
+        completion = await delivery.dispatch_delivery(dispatch_lease)
+        for finalize_try in range(2):
+            try:
+                row = await delivery.finalize_delivery(session, completion)
+                await session.commit()
+                if row is not None:
+                    sent.append(row)
+                break
+            except Exception:
+                await session.rollback()
+                if finalize_try:
+                    raise
     return sent
 
 
@@ -265,11 +374,9 @@ async def nudges_job(session_factory, redis=None) -> None:
     nothing, and the ones that would send are still subject to the daily budget
     (which the brief and the evening block have already taken two of).
 
-    No channel configured → not even a DB session: this is the state the app is
-    in before the bot exists, and it must cost nothing."""
-    notifier = channels.build_notifier()
-    if notifier is None:
-        return
+    Transport availability is proved only after resolving exact S/Q/C ownership;
+    the strict builder returns ``None`` without reserving or sending when the
+    recipient credential is unavailable."""
     async with session_factory() as session:
         ownership = await channels.resolve_legacy_channel_ownership(
             session,
@@ -277,7 +384,7 @@ async def nudges_job(session_factory, redis=None) -> None:
         )
         await run(
             session,
-            notifier,
+            None,
             ownership=ownership,
         )
         await session.commit()

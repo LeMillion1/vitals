@@ -271,8 +271,12 @@ Implementation progress on `commercial/main`:
   reconcile an actorless S-only/C-null warning afterward.
   Fully-null historical raws may gain only S through the exact-one bridge;
   partial graphs fail closed. Echoes link the terminal invocation and revalidate
-  concurrent edits before and after transport. Signal composition and the
-  durable outbound-intent state machine remain deferred. Telegram question
+  concurrent edits before dispatch. Owned Telegram sends now use a durable
+  subject/recipient/raw-bound intent: PENDING and DISPATCHING are committed
+  before one network call, SENT is atomically linked to its journal afterward,
+  and ambiguous delivery is terminal and conservatively counted. A stale
+  raw-backed claim with proof that dispatch never began can be re-armed from
+  deterministic domain state; uncertain dispatch is never retried. Telegram question
   replies now use a distinct raw-bound platform invocation with one lifetime
   paid attempt. Raw classification and reservation are atomic, no database
   transaction spans the usage-aware provider call, and terminal accounting
@@ -281,8 +285,8 @@ Implementation progress on `commercial/main`:
   optional terminal invocation. DB-backed invocation gaps and an opaque cursor
   recover past long non-question histories without buying a second attempt;
   concurrent edits, owner/recipient changes, and module disable are rechecked
-  after transport. A durable at-most-once outbound claim and atomic emergency
-  withdrawal remain PR-09 blockers. All seven conflict
+  before transport. The raw/category intent provides an at-most-once new-message
+  claim; atomic emergency edit/withdrawal remains a PR-09 blocker. All seven conflict
   resolver domains read within one subject and date. Curated conflict-rule
   activation is stored per subject. The
   Supplements, Nutrition, Skincare, GLP-1, and Labs web/MCP write paths use an

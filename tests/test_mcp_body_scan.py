@@ -6,11 +6,12 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from sqlalchemy import select
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
-from vitals.models.app_settings import AppSetting  # noqa: E402
-from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY  # noqa: E402
+from vitals.models.identity import HealthSubject  # noqa: E402
+from vitals.services import modules_service  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -19,7 +20,16 @@ def _materialize_legacy_owner(legacy_owner_roots):
 
 
 async def _enable_body_comp(db_session):
-    db_session.add(AppSetting(key=SETTINGS_KEY, value={k: True for k in MODULE_REGISTRY}))
+    subject_ids = list(
+        await db_session.scalars(select(HealthSubject.id).order_by(HealthSubject.id))
+    )
+    assert len(subject_ids) == 1
+    await modules_service.set_module_enabled(
+        db_session,
+        key="body_comp",
+        enabled=True,
+        subject_id=subject_ids[0],
+    )
     await db_session.commit()
 
 

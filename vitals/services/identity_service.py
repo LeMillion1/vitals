@@ -23,12 +23,15 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import AuditOutcome, UserRoleName, UserStatus
-from vitals.models.identity import AuditEvent, User, UserRole
+from vitals.models.identity import AuditEvent, HealthSubject, User, UserRole
 
 # Stable two-int PostgreSQL advisory-lock namespace.  Never use Python's hash(),
 # whose result changes between processes.  0x5649544C spells "VITL".
 IDENTITY_GOVERNANCE_LOCK_NAMESPACE = 0x5649544C
 IDENTITY_GOVERNANCE_LOCK_KEY = 1
+_PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY = (
+    "vitals.identity.pre_identity_compatibility_transaction"
+)
 
 _BCRYPT_RE = re.compile(
     r"^\$2[aby]\$(?P<cost>\d{2})\$[./A-Za-z0-9]{53}$"
@@ -44,6 +47,10 @@ class IdentityServiceError(RuntimeError):
 
 class IdentityValidationError(ValueError):
     """An identity input cannot be represented safely."""
+
+
+class PreIdentityCompatibilityError(IdentityServiceError):
+    """A zero-subject compatibility operation cannot prove a safe snapshot."""
 
 
 class UnsupportedIdentityDatabaseError(IdentityServiceError):
@@ -138,6 +145,88 @@ async def acquire_identity_governance_lock(session: AsyncSession) -> None:
             "lock_key": IDENTITY_GOVERNANCE_LOCK_KEY,
         },
     )
+
+
+async def authorize_pre_identity_compatibility_transaction(
+    session: AsyncSession,
+) -> object:
+    """Authorize and return one guarded root transaction with zero subjects.
+
+    PostgreSQL uses the shared transaction-scoped governance advisory lock.
+    SQLite governance is intentionally a no-op, so its equivalent is a fresh
+    ``BEGIN IMMEDIATE``. Re-entry is allowed only for the exact root transaction
+    this function authorized; arbitrary pre-open or nested transactions fail
+    closed. Pending, dirty, or deleted subject state is never autoflushed or
+    treated as an authoritative zero-subject database.
+    """
+
+    sync_session = session.sync_session
+    if sync_session.get_nested_transaction() is not None:
+        raise PreIdentityCompatibilityError(
+            "pre-identity compatibility requires a fresh outer transaction"
+        )
+
+    subject_state = (
+        tuple(sync_session.new)
+        + tuple(sync_session.dirty)
+        + tuple(sync_session.deleted)
+    )
+    if any(isinstance(row, HealthSubject) for row in subject_state):
+        raise PreIdentityCompatibilityError(
+            "pre-identity compatibility rejects pending subject identity state"
+        )
+
+    transaction = sync_session.get_transaction()
+    authorized = sync_session.info.get(
+        _PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY
+    )
+    if transaction is not None:
+        if transaction is authorized and transaction.is_active:
+            pass
+        elif (
+            not transaction.is_active
+            or bool(getattr(transaction, "_connections", {None: None}))
+        ):
+            raise PreIdentityCompatibilityError(
+                "pre-identity compatibility requires a fresh guarded transaction"
+            )
+        else:
+            # ``Session.add()`` creates a logical root before any database work.
+            # It remains safe to guard that exact connectionless root, which is
+            # how unrelated pending ORM state can stay pending and unflushed.
+            authorized = None
+    if transaction is None or authorized is None:
+        pending_transaction = transaction
+        with session.no_autoflush:
+            if session.get_bind().dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            else:
+                await acquire_identity_governance_lock(session)
+        transaction = sync_session.get_transaction()
+        if (
+            transaction is None
+            or not transaction.is_active
+            or (
+                pending_transaction is not None
+                and transaction is not pending_transaction
+            )
+        ):
+            raise PreIdentityCompatibilityError(
+                "pre-identity compatibility could not establish a guarded transaction"
+            )
+        sync_session.info[
+            _PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY
+        ] = transaction
+
+    with session.no_autoflush:
+        subject_id = await session.scalar(
+            select(HealthSubject.id).order_by(HealthSubject.id).limit(1)
+        )
+    if subject_id is not None:
+        raise PreIdentityCompatibilityError(
+            "pre-identity compatibility is closed after identity bootstrap"
+        )
+    return transaction
 
 
 async def _user_for_update(session: AsyncSession, user_id: uuid.UUID) -> User:
@@ -400,9 +489,11 @@ __all__ = [
     "NormalizedUsername",
     "PasswordHashDowngradeError",
     "PasswordHashMismatchError",
+    "PreIdentityCompatibilityError",
     "UnsupportedIdentityDatabaseError",
     "UserNotFoundError",
     "acquire_identity_governance_lock",
+    "authorize_pre_identity_compatibility_transaction",
     "assign_role",
     "bcrypt_cost",
     "change_user_status",

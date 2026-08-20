@@ -15,10 +15,10 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import select
 
-from vitals.enums import IntegrationProvider, Source
+from vitals.enums import IntegrationProvider, NotificationDeliveryStatus, Source
 from vitals.models.app_settings import AppSetting
-from vitals.models.proactive import Notification
-from vitals.models.signals import Signal
+from vitals.models.proactive import Notification, NotificationDeliveryIntent
+from vitals.models.signals import DayContext, Signal
 from vitals.services import garmin_service, signals_service
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.services.proactive import brief, channels, day_plan, delivery, inbound
@@ -58,6 +58,9 @@ class FakeNotifier:
     async def answer_callback(self, callback_id, text="") -> None:
         pass
 
+    async def edit(self, message_id, text, *, buttons=None) -> None:
+        pass
+
 
 class FakeLLM:
     digest_model = "fake/digest"
@@ -74,7 +77,23 @@ class FakeLLM:
 def _patch_evening(monkeypatch, notifier):
     from vitals.services.proactive import channels
 
-    monkeypatch.setattr(channels, "build_notifier", lambda *a, **kw: notifier)
+    async def build_bound(session, ownership, **kwargs):
+        del session, kwargs
+        notifier.binding = channels.DeliveryEndpointBinding(
+            subject_id=ownership.subject_id,
+            recipient_user_id=ownership.recipient_user_id,
+            integration_connection_id=ownership.connection_id,
+            channel=notifier.channel,
+        )
+        return notifier
+
+    def resolve_bound(binding, credential_ref, **kwargs):
+        del credential_ref, kwargs
+        notifier.binding = binding
+        return notifier
+
+    monkeypatch.setattr(channels, "build_legacy_bound_notifier", build_bound)
+    monkeypatch.setattr(channels, "resolve_legacy_bound_notifier", resolve_bound)
     monkeypatch.setattr(day_plan, "today_local", lambda: DAY)
 
 
@@ -118,8 +137,8 @@ async def test_evening_block_asks_about_calendar_tomorrow(
     journal = (await db_session.execute(select(Notification))).scalars().all()
     assert [n.category for n in journal] == [delivery.CATEGORY_EVENING] * 2
     assert [n.dedupe_key for n in journal] == [
-        day_plan.dedupe_key(DAY),
-        day_plan.plan_dedupe_key(DAY),
+        delivery.make_delivery_idempotency_key("evening", DAY),
+        delivery.make_delivery_idempotency_key("evening-plan", DAY),
     ]
 
 
@@ -149,6 +168,66 @@ async def test_evening_block_runs_twice_and_sends_once(
 
     # Two messages — the recap and the plan — and a replay adds neither.
     assert len(notifier.sent) == 2
+
+
+async def test_pending_recap_claim_blocks_plan_without_leapfrogging(
+    db_session,
+    session_factory,
+    monkeypatch,
+):
+    notifier = FakeNotifier()
+    _patch_evening(monkeypatch, notifier)
+    ownership = await _telegram_ownership(db_session)
+    bound = await channels.build_legacy_bound_notifier(db_session, ownership)
+    prepared = await delivery.prepare_delivery_intent(
+        db_session,
+        bound,
+        text="reserved recap payload",
+        category=delivery.CATEGORY_EVENING,
+        idempotency_key=delivery.make_delivery_idempotency_key("evening", DAY),
+        legacy_dedupe_key=day_plan.dedupe_key(DAY),
+        ownership=ownership,
+    )
+    assert prepared is not None
+    await db_session.commit()
+
+    await day_plan.evening_job(session_factory)
+
+    assert notifier.sent == []
+    assert await db_session.scalar(
+        select(DayContext).where(DayContext.date == TOMORROW)
+    ) is None
+    intent = await db_session.scalar(select(NotificationDeliveryIntent))
+    assert intent.status == NotificationDeliveryStatus.PENDING.value
+
+
+async def test_ambiguous_recap_blocks_plan_and_is_never_retried(
+    db_session,
+    session_factory,
+    monkeypatch,
+):
+    class AmbiguousNotifier(FakeNotifier):
+        async def send(self, text, *, buttons=None, reply_to=None) -> str:
+            self.sent.append({"text": text, "buttons": buttons})
+            return "invalid-provider-id"
+
+    notifier = AmbiguousNotifier()
+    _patch_evening(monkeypatch, notifier)
+
+    await day_plan.evening_job(session_factory)
+    await day_plan.evening_job(session_factory)
+
+    assert len(notifier.sent) == 1
+    assert await db_session.scalar(
+        select(DayContext).where(DayContext.date == TOMORROW)
+    ) is None
+    intents = list(
+        await db_session.scalars(select(NotificationDeliveryIntent))
+    )
+    assert [intent.status for intent in intents] == [
+        NotificationDeliveryStatus.AMBIGUOUS.value
+    ]
+    assert list(await db_session.scalars(select(Notification))) == []
 
 
 async def test_evening_block_keeps_asking_what_is_still_unanswered(
@@ -434,7 +513,7 @@ async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
         return None
 
     monkeypatch.setattr(garmin_service, "sync_job", _no_sync)
-    monkeypatch.setattr(channels, "build_notifier", lambda *a, **kw: notifier)
+    _patch_evening(monkeypatch, notifier)
     monkeypatch.setattr(llm_client, "LLMClient", lambda *a, **kw: FakeLLM())
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
     monkeypatch.setattr(day_plan, "today_local", lambda: DAY)
@@ -458,9 +537,31 @@ async def test_a_reply_to_the_evening_block_is_captured_not_answered(
     """«Как день?» is a question *to him* — his reply is data, and routing it to the
     Q&A path would answer it instead of recording it."""
     notifier = FakeNotifier()
-    sent = await delivery.send(
-        db_session, notifier, text="Как день?", category=delivery.CATEGORY_EVENING
+    _patch_evening(monkeypatch, notifier)
+    ownership = await _telegram_ownership(db_session)
+    bound = await channels.build_legacy_bound_notifier(db_session, ownership)
+    prepared = await delivery.prepare_delivery_intent(
+        db_session,
+        bound,
+        text="Как день?",
+        category=delivery.CATEGORY_EVENING,
+        idempotency_key=delivery.make_delivery_idempotency_key(
+            "evening-reply-context",
+            DAY,
+        ),
+        ownership=ownership,
     )
+    await db_session.commit()
+    lease = await delivery.start_delivery_dispatch(
+        db_session,
+        prepared,
+        notifier_resolver=channels.resolve_legacy_bound_notifier,
+    )
+    await db_session.commit()
+    completion = await delivery.dispatch_delivery(lease)
+    sent = await delivery.finalize_delivery(db_session, completion)
+    await db_session.commit()
+    assert sent is not None
 
     async def _never(*a, **kw):
         raise AssertionError("the evening answer must not go to the Q&A path")
@@ -478,6 +579,7 @@ async def test_a_reply_to_the_evening_block_is_captured_not_answered(
         reply_to_message_id=sent.external_id,
         parse=_parse,
         on_date=DAY,
+        ownership=ownership,
     )
     await db_session.commit()
 

@@ -903,7 +903,12 @@ async def test_mcp_v1_stamps_owner_and_mcp_source(
 
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     for key in ("timeline", "supplements"):
-        await modules_service.set_module_enabled(db_session, key=key, enabled=True)
+        await modules_service.set_module_enabled(
+            db_session,
+            key=key,
+            enabled=True,
+            subject_id=legacy_owner_roots.subject_id,
+        )
     await db_session.commit()
 
     event_payload = await mcp_router.log_event(
@@ -944,7 +949,12 @@ async def test_mcp_v1_fails_closed_before_cross_subject_id_use(
 
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     for key in ("timeline", "supplements"):
-        await modules_service.set_module_enabled(db_session, key=key, enabled=True)
+        await modules_service.set_module_enabled(
+            db_session,
+            key=key,
+            enabled=True,
+            subject_id=legacy_owner_roots.subject_id,
+        )
     second = await _identity(db_session, "mcp-second-subject")
     foreign = await _add_owned_supplement(
         db_session,

@@ -36,6 +36,9 @@ from vitals.services import (
     garmin_weight_service,
     weight_service,
 )
+from vitals.services.identity_service import (
+    authorize_pre_identity_compatibility_transaction,
+)
 from vitals.services.proactive import prefs
 
 DAY = date(2026, 8, 15)
@@ -108,12 +111,21 @@ class FakeWeightClient:
 
 
 async def _manual_weight(db_session, value: float, *, on_date: date = DAY):
+    # These legacy export tests intentionally exercise a database before the
+    # commercial identity bootstrap. Authorize that exact zero-subject root
+    # before the local write opens any other database transaction.
+    await authorize_pre_identity_compatibility_transaction(db_session)
     return await weight_service.log_weight(
         db_session,
         on_date=on_date,
         weight_kg=value,
         source=Source.MANUAL.value,
     )
+
+
+async def _delete_weight(db_session, row_id: int) -> bool:
+    await authorize_pre_identity_compatibility_transaction(db_session)
+    return await weight_service.delete_weight_log(db_session, row_id)
 
 
 async def _outbox(
@@ -260,6 +272,7 @@ async def test_retry_preflight_keeps_previous_alert_until_recovery(db_session):
     failed_client = FakeWeightClient(fail_fetch=RuntimeError("Garmin unavailable"))
     await garmin_weight_service.export_latest(db_session, failed_client, now=NOW)
     await db_session.commit()
+    await authorize_pre_identity_compatibility_transaction(db_session)
     assert await alerts_service.list_active(db_session, domain="garmin")
 
     fetch_started = asyncio.Event()
@@ -316,6 +329,7 @@ async def test_latest_garmin_import_is_not_echoed_and_older_manual_is_not_backfi
     db_session,
 ):
     await _manual_weight(db_session, 85.0, on_date=DAY - timedelta(days=1))
+    await authorize_pre_identity_compatibility_transaction(db_session)
     await weight_service.log_weight(
         db_session,
         on_date=DAY,
@@ -368,12 +382,7 @@ async def test_unconfigured_job_does_not_reconcile_retry_or_alert(
             raise AssertionError("an unconfigured job must not touch Garmin")
 
     async with session_factory() as session:
-        await weight_service.log_weight(
-            session,
-            on_date=DAY,
-            weight_kg=84.5,
-            source=Source.MANUAL.value,
-        )
+        await _manual_weight(session, 84.5)
         await garmin_weight_service.set_enabled(session, True, now=NOW)
         row = await _outbox(session)
         row.attempts = 3
@@ -466,7 +475,7 @@ async def test_unverified_never_claims_one_match_from_a_multi_entry_day(db_sessi
     assert result["status"] == WEIGHT_EXPORT_UNVERIFIED
     assert row.remote_owned is False
 
-    await weight_service.delete_weight_log(db_session, local.id)
+    await _delete_weight(db_session, local.id)
     result = await garmin_weight_service.export_latest(
         db_session, client, now=NOW + timedelta(minutes=16), force=True
     )
@@ -477,6 +486,7 @@ async def test_unverified_never_claims_one_match_from_a_multi_entry_day(db_sessi
 async def test_delete_pending_without_verified_ownership_never_deletes_by_weight(
     db_session,
 ):
+    await authorize_pre_identity_compatibility_transaction(db_session)
     db_session.add(
         GarminWeightExport(
             date=DAY,
@@ -560,6 +570,7 @@ async def test_unverified_dispatch_marker_survives_rollback_and_blocks_duplicate
     # Simulate process loss after Garmin accepted the request but before the
     # caller's final commit. The pre-dispatch state must already be durable.
     await db_session.rollback()
+    await authorize_pre_identity_compatibility_transaction(db_session)
     assert (await _outbox(db_session)).status == WEIGHT_EXPORT_UNVERIFIED
     client.rows[DAY] = []  # eventual-consistency lag must not reopen POST
 
@@ -590,7 +601,7 @@ async def test_equal_record_appearing_after_post_is_never_claimed_as_owned(db_se
     assert row.remote_owned is False
     assert row.remote_sample_pk is None
 
-    await weight_service.delete_weight_log(db_session, local.id)
+    await _delete_weight(db_session, local.id)
     await garmin_weight_service.export_latest(
         db_session, client, now=NOW + timedelta(minutes=1), force=True
     )
@@ -845,7 +856,7 @@ async def test_delete_owned_latest_removes_remote_and_never_backfills_older_weig
     await garmin_weight_service.set_enabled(db_session, True, now=NOW)
     await garmin_weight_service.export_latest(db_session, client, now=NOW)
 
-    assert await weight_service.delete_weight_log(db_session, latest.id) is True
+    assert await _delete_weight(db_session, latest.id) is True
     result = await garmin_weight_service.export_latest(
         db_session, client, now=NOW + timedelta(minutes=1), force=True
     )
@@ -869,7 +880,7 @@ async def test_delete_external_match_never_deletes_the_garmin_record(db_session)
     await garmin_weight_service.set_enabled(db_session, True, now=NOW)
     await garmin_weight_service.export_latest(db_session, client, now=NOW)
 
-    assert await weight_service.delete_weight_log(db_session, local.id) is True
+    assert await _delete_weight(db_session, local.id) is True
     result = await garmin_weight_service.export_latest(
         db_session, client, now=NOW + timedelta(minutes=1), force=True
     )
@@ -885,7 +896,7 @@ async def test_delete_failure_keeps_cleanup_intent_and_recovers_without_post(db_
     client = FakeWeightClient()
     await garmin_weight_service.set_enabled(db_session, True, now=NOW)
     await garmin_weight_service.export_latest(db_session, client, now=NOW)
-    await weight_service.delete_weight_log(db_session, local.id)
+    await _delete_weight(db_session, local.id)
     client.fail_delete = TimeoutError("delete outcome unknown")
 
     failed = await garmin_weight_service.export_latest(
@@ -911,7 +922,7 @@ async def test_deleting_unverified_post_never_claims_or_deletes_readback_record(
     result = await garmin_weight_service.export_latest(db_session, client, now=NOW)
     assert result["status"] == WEIGHT_EXPORT_UNVERIFIED
 
-    await weight_service.delete_weight_log(db_session, local.id)
+    await _delete_weight(db_session, local.id)
     client.fail_readback = None
     result = await garmin_weight_service.export_latest(
         db_session, client, now=NOW + timedelta(minutes=1), force=True
@@ -928,7 +939,7 @@ async def test_deleted_unverified_post_stays_unresolved_until_remote_appears(db_
     client.fail_readback = RuntimeError("read-back unavailable")
     result = await garmin_weight_service.export_latest(db_session, client, now=NOW)
     assert result["status"] == WEIGHT_EXPORT_UNVERIFIED
-    await weight_service.delete_weight_log(db_session, local.id)
+    await _delete_weight(db_session, local.id)
     assert "deleted" in (await _outbox(db_session)).last_error.lower()
 
     client.fail_readback = None
@@ -954,7 +965,7 @@ async def test_delete_same_day_correction_restores_prior_local_value(db_session)
     await garmin_weight_service.set_enabled(db_session, True, now=NOW)
     await garmin_weight_service.export_latest(db_session, client, now=NOW)
 
-    assert await weight_service.delete_weight_log(db_session, latest.id) is True
+    assert await _delete_weight(db_session, latest.id) is True
     result = await garmin_weight_service.export_latest(
         db_session, client, now=NOW + timedelta(minutes=1), force=True
     )
@@ -993,7 +1004,7 @@ async def test_deleting_future_weight_does_not_poison_the_no_backfill_watermark(
         db_session, 83.0, on_date=DAY + timedelta(days=365)
     )
 
-    assert await weight_service.delete_weight_log(db_session, future.id) is True
+    assert await _delete_weight(db_session, future.id) is True
     current = await garmin_weight_service.reconcile_latest(db_session, now=NOW)
 
     assert current is not None
@@ -1667,6 +1678,7 @@ async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(db_
 
 async def test_alert_keeps_the_highest_priority_outstanding_issue(db_session):
     older = DAY - timedelta(days=1)
+    await authorize_pre_identity_compatibility_transaction(db_session)
     db_session.add(
         GarminWeightExport(
             date=older,
@@ -1702,7 +1714,7 @@ async def test_deleting_a_conflicted_local_weight_resolves_its_alert(db_session)
     assert result["status"] == WEIGHT_EXPORT_CONFLICT
     assert await alerts_service.list_active(db_session, domain="garmin")
 
-    assert await weight_service.delete_weight_log(db_session, local.id) is True
+    assert await _delete_weight(db_session, local.id) is True
 
     assert await alerts_service.list_active(db_session, domain="garmin") == []
     assert (await _outbox(db_session)).status == WEIGHT_EXPORT_DELETED

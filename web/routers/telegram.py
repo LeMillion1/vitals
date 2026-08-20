@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from secrets import compare_digest
-from typing import Optional
+from typing import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,10 +42,19 @@ router = APIRouter(prefix="/tg", tags=["telegram"], include_in_schema=False)
 _RATE_LIMIT = login_rate_limit(bucket="telegram", limit=60, window=60)
 
 
-async def get_notifier() -> Optional[channels.Notifier]:
-    """The reply channel for this request. A dependency so tests can swap it for
-    a fake without patching module internals."""
-    return channels.build_notifier()
+BoundNotifierBuilder = Callable[..., Awaitable[channels.BoundNotifier | None]]
+
+
+async def get_bound_notifier_builder() -> BoundNotifierBuilder:
+    """Return a deferred exact-endpoint builder for the authenticated webhook."""
+
+    return channels.build_legacy_bound_notifier
+
+
+async def get_bound_notifier_resolver() -> channels.BoundNotifierResolver:
+    """Return the fresh T2 credential/current-endpoint resolver."""
+
+    return channels.resolve_legacy_bound_notifier
 
 
 @router.post("/{secret_path}", dependencies=[Depends(_RATE_LIMIT)])
@@ -53,7 +62,10 @@ async def telegram_webhook(
     secret_path: str,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    notifier: Optional[channels.Notifier] = Depends(get_notifier),
+    notifier_builder: BoundNotifierBuilder = Depends(get_bound_notifier_builder),
+    notifier_resolver: channels.BoundNotifierResolver = Depends(
+        get_bound_notifier_resolver
+    ),
 ) -> dict:
     config = load_config()
     expected_path = config.telegram_webhook_path
@@ -91,22 +103,32 @@ async def telegram_webhook(
             session,
             actor_username=get_web_config().auth_username,
         )
+        notifier = await notifier_builder(
+            session,
+            ownership,
+            config=config,
+        )
         await inbound.handle_update(
             session,
             update,
             notifier=notifier,
             ownership=ownership,
+            notifier_resolver=notifier_resolver,
         )
     except inbound.DurableInboundProcessingError:
         # The complete update is already committed. A retry is now a no-op and
         # the recovery sweep owns normalization, so acknowledging avoids a retry
         # storm without losing data.
-        logger.exception("telegram update failed after durable capture")
+        logger.warning(
+            "telegram update processing stopped (code=post_capture_failure)"
+        )
         await session.rollback()
     except Exception:
         # Resolution, module-gate, and raw-claim failures happen before a durable
         # copy exists. Returning success here would lose the update permanently.
-        logger.exception("telegram update failed before durable capture")
+        logger.warning(
+            "telegram update processing stopped (code=pre_capture_failure)"
+        )
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

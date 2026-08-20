@@ -21,12 +21,14 @@ from vitals.enums import (
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
+    NotificationDeliveryErrorCode,
+    NotificationDeliveryStatus,
     Source,
 )
 from vitals.integrations.llm_client import LLMCallResult
 from vitals.i18n import t
 from vitals.models.ai import AIInvocation, AIPlatformQuotaPeriod, AISubjectQuotaPeriod
-from vitals.models.proactive import Notification
+from vitals.models.proactive import Notification, NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import IntegrationConnection, PlatformIntegrationConnection
 from vitals.services import ai_gateway_service, modules_service
@@ -61,7 +63,13 @@ def _runtime(monkeypatch):
 class _Notifier:
     channel = IntegrationProvider.TELEGRAM.value
 
-    def __init__(self):
+    def __init__(self, ownership: ProactiveOwnershipContext):
+        self.binding = channels.DeliveryEndpointBinding(
+            subject_id=ownership.subject_id,
+            recipient_user_id=ownership.recipient_user_id,
+            integration_connection_id=ownership.connection_id,
+            channel=self.channel,
+        )
         self.sent: list[dict[str, object]] = []
         self.edited: list[dict[str, object]] = []
 
@@ -73,6 +81,40 @@ class _Notifier:
         self.edited.append(
             {"external_id": external_id, "text": text, "buttons": buttons}
         )
+
+    async def answer_callback(self, callback_id, text="") -> None:
+        del callback_id, text
+
+
+def _notifier_builder(notifier, ownership):
+    async def _build(_session, resolved, *, config=None):
+        del _session, config
+        assert (
+            resolved.subject_id,
+            resolved.recipient_user_id,
+            resolved.connection_id,
+        ) == (
+            ownership.subject_id,
+            ownership.recipient_user_id,
+            ownership.connection_id,
+        )
+        assert notifier.binding == channels.DeliveryEndpointBinding(
+            subject_id=resolved.subject_id,
+            recipient_user_id=resolved.recipient_user_id,
+            integration_connection_id=resolved.connection_id,
+            channel=IntegrationProvider.TELEGRAM.value,
+        )
+        return notifier
+
+    return _build
+
+
+def _notifier_resolver(notifier):
+    def _resolve(binding, _credential_ref):
+        assert binding == notifier.binding
+        return notifier
+
+    return _resolve
 
 
 async def _configure_platform(session, roots, *, quota_limit=100_000_000, periods=True):
@@ -286,20 +328,24 @@ async def test_t1_t2_provider_t3_has_exact_roots_accounting_and_redacted_capabil
         50,
         invocation.reserved_cost_microunits,
     )
-    prepared_delivery = await delivery._prepare_delivery(
+    invocation_id = invocation.id
+    await db_session.commit()
+    prepared_delivery = await delivery.prepare_delivery_intent(
         db_session,
-        _Notifier(),
+        _Notifier(ownership),
         text=ANSWER,
         category=delivery.CATEGORY_REPLY,
+        idempotency_key=question_ai_service.delivery_dedupe_key(raw.id),
         ownership=ownership,
-        ai_invocation_id=invocation.id,
+        raw_payload_id=raw.id,
+        ai_invocation_id=invocation_id,
         redact_journal_content=True,
-        journal_raw_payload_id=raw.id,
     )
     assert prepared_delivery is not None
     assert ANSWER not in repr(prepared_delivery)
     with pytest.raises(TypeError):
         pickle.dumps(prepared_delivery)
+    await db_session.rollback()
 
     other_raw = await _raw(
         db_session,
@@ -308,17 +354,21 @@ async def test_t1_t2_provider_t3_has_exact_roots_accounting_and_redacted_capabil
         suffix="wrong-journal-raw",
     )
     other_raw.processed_at = NOW.replace(tzinfo=None)
-    await db_session.flush()
-    with pytest.raises(delivery.ProactiveOwnershipScopeError):
-        await delivery._prepare_delivery(
+    await db_session.commit()
+    with pytest.raises(delivery.DeliveryScopeError):
+        await delivery.prepare_delivery_intent(
             db_session,
-            _Notifier(),
+            _Notifier(ownership),
             text=ANSWER,
             category=delivery.CATEGORY_REPLY,
+            idempotency_key=delivery.make_delivery_idempotency_key(
+                "test-question-wrong-raw",
+                other_raw.id,
+            ),
             ownership=ownership,
-            ai_invocation_id=invocation.id,
+            raw_payload_id=other_raw.id,
+            ai_invocation_id=invocation_id,
             redact_journal_content=True,
-            journal_raw_payload_id=other_raw.id,
         )
 
 
@@ -362,15 +412,17 @@ async def test_inbound_reply_journals_only_redacted_payload_and_duplicate_never_
     await db_session.commit()
     observed = _observed()
     monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
-    notifier = _Notifier()
+    notifier = _Notifier(ownership)
 
     await inbound._answer_reply(
         db_session, QUESTION, None, notifier=notifier, message_id=123,
         ownership=ownership, raw=raw,
+        notifier_resolver=_notifier_resolver(notifier),
     )
     await inbound._answer_reply(
         db_session, QUESTION, None, notifier=notifier, message_id=123,
         ownership=ownership, raw=raw,
+        notifier_resolver=_notifier_resolver(notifier),
     )
 
     assert observed["calls"] == 1
@@ -392,6 +444,176 @@ async def test_inbound_reply_journals_only_redacted_payload_and_duplicate_never_
     for value in (QUESTION, ANSWER, PROMPT_CONTEXT, PROMPT_FACTS, SECRET):
         assert value not in serialized
     assert root.id == invocation.platform_integration_connection_id
+    assert len(row.dedupe_key) == 64
+    assert set(row.dedupe_key) <= set("0123456789abcdef")
+
+
+async def test_crash_after_question_delivery_t1_rearms_only_generic_redacted_fallback(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    await _configure_platform(db_session, legacy_owner_roots)
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    raw = await _raw(db_session, legacy_owner_roots, ownership, suffix="t1-crash")
+    await db_session.commit()
+    observed = _observed()
+    monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
+    notifier = _Notifier(ownership)
+    real_start = delivery.start_delivery_dispatch
+
+    async def _crash_after_t1(*_args, **_kwargs):
+        raise RuntimeError("synthetic process death after T1")
+
+    monkeypatch.setattr(delivery, "start_delivery_dispatch", _crash_after_t1)
+    with pytest.raises(RuntimeError, match="process death"):
+        await inbound._answer_reply(
+            db_session,
+            QUESTION,
+            None,
+            notifier=notifier,
+            message_id=raw.payload["message"]["message_id"],
+            ownership=ownership,
+            raw=raw,
+            notifier_resolver=_notifier_resolver(notifier),
+        )
+    await db_session.rollback()
+    assert observed["calls"] == 1
+    assert notifier.sent == []
+
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert intent.status == NotificationDeliveryStatus.PENDING.value
+    intent.updated_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+    monkeypatch.setattr(delivery, "start_delivery_dispatch", real_start)
+
+    recovered = await inbound._recover_claimed_question(
+        db_session,
+        raw=raw,
+        notifier=notifier,
+        ownership=ownership,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
+
+    assert recovered is True
+    assert observed["calls"] == 1
+    assert notifier.sent == [
+        {
+            "text": inbound._NO_LLM_REPLY,
+            "buttons": None,
+            "reply_to": str(raw.payload["message"]["message_id"]),
+        }
+    ]
+    await db_session.refresh(intent)
+    assert intent.status == NotificationDeliveryStatus.SENT.value
+    journal = (await db_session.scalars(select(Notification))).one()
+    assert journal.delivery_intent_id == intent.id
+    assert journal.payload == {
+        "content_redacted": True,
+        "raw_payload_id": raw.id,
+    }
+    for private in (QUESTION, ANSWER, SECRET):
+        assert private not in repr(journal.payload)
+
+
+@pytest.mark.parametrize(
+    "delivery_status",
+    (
+        NotificationDeliveryStatus.PENDING,
+        NotificationDeliveryStatus.DISPATCHING,
+        NotificationDeliveryStatus.SENT,
+        NotificationDeliveryStatus.AMBIGUOUS,
+        NotificationDeliveryStatus.CANCELLED,
+    ),
+)
+async def test_every_durable_claim_state_suppresses_question_recovery_and_network(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    delivery_status,
+):
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix=f"delivery-{delivery_status.value}",
+    )
+    raw.processed_at = NOW.replace(tzinfo=None)
+    await db_session.commit()
+    notifier = _Notifier(ownership)
+    prepared = await delivery.prepare_delivery_intent(
+        db_session,
+        notifier,
+        text=inbound._NO_LLM_REPLY,
+        category=delivery.CATEGORY_REPLY,
+        idempotency_key=question_ai_service.delivery_dedupe_key(raw.id),
+        legacy_dedupe_key=question_ai_service.legacy_delivery_dedupe_key(raw.id),
+        reply_to=str(raw.payload["message"]["message_id"]),
+        ownership=ownership,
+        raw_payload_id=raw.id,
+        redact_journal_content=True,
+    )
+    assert prepared is not None
+    await db_session.commit()
+
+    transport_attempts = 0
+    if delivery_status is not NotificationDeliveryStatus.PENDING:
+        if delivery_status is NotificationDeliveryStatus.CANCELLED:
+            lease = await delivery.start_delivery_dispatch(
+                db_session,
+                prepared,
+                notifier_resolver=lambda _binding, _credential_ref: None,
+            )
+            assert lease is None
+            await db_session.commit()
+        else:
+            lease = await delivery.start_delivery_dispatch(
+                db_session,
+                prepared,
+                notifier_resolver=lambda _binding, _credential_ref: notifier,
+            )
+            assert lease is not None
+            await db_session.commit()
+            if delivery_status in {
+                NotificationDeliveryStatus.SENT,
+                NotificationDeliveryStatus.AMBIGUOUS,
+            }:
+                if delivery_status is NotificationDeliveryStatus.AMBIGUOUS:
+                    async def _ambiguous_send(text, *, buttons=None, reply_to=None):
+                        nonlocal transport_attempts
+                        del text, buttons, reply_to
+                        transport_attempts += 1
+                        raise RuntimeError("synthetic transport failure")
+
+                    notifier.send = _ambiguous_send
+                completion = await delivery.dispatch_delivery(lease)
+                if delivery_status is NotificationDeliveryStatus.SENT:
+                    transport_attempts = len(notifier.sent)
+                await delivery.finalize_delivery(db_session, completion)
+                await db_session.commit()
+
+    observed = _observed()
+    monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
+    attempts_before_recovery = transport_attempts + len(notifier.sent)
+    recovered = await inbound._recover_claimed_question(
+        db_session,
+        raw=raw,
+        notifier=notifier,
+        ownership=ownership,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
+
+    assert recovered is False
+    assert observed["calls"] == 0
+    assert transport_attempts + len(notifier.sent) == attempts_before_recovery
+    claim = await delivery.delivery_claim_for_raw(
+        db_session,
+        raw_payload_id=raw.id,
+        category=delivery.CATEGORY_REPLY,
+        ownership=ownership,
+    )
+    assert claim is not None and claim.status == delivery_status.value
 
 
 async def test_reply_to_ai_answer_redacts_nested_bot_text_before_raw_persistence(
@@ -410,7 +632,7 @@ async def test_reply_to_ai_answer_redacts_nested_bot_text_before_raw_persistence
     await db_session.commit()
     observed = _observed()
     monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
-    notifier = _Notifier()
+    notifier = _Notifier(ownership)
     await inbound._answer_reply(
         db_session,
         QUESTION,
@@ -419,6 +641,7 @@ async def test_reply_to_ai_answer_redacts_nested_bot_text_before_raw_persistence
         message_id=first_raw.payload["message"]["message_id"],
         ownership=ownership,
         raw=first_raw,
+        notifier_resolver=_notifier_resolver(notifier),
     )
 
     update = {
@@ -443,6 +666,7 @@ async def test_reply_to_ai_answer_redacts_nested_bot_text_before_raw_persistence
         update,
         notifier=notifier,
         ownership=ownership,
+        notifier_resolver=_notifier_resolver(notifier),
     )
 
     stored = await db_session.scalar(
@@ -476,11 +700,12 @@ async def test_inherited_prepared_or_dispatching_invocation_is_never_dispatched(
         await db_session.commit()
     observed = _observed()
     monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
-    notifier = _Notifier()
+    notifier = _Notifier(ownership)
 
     await inbound._answer_reply(
         db_session, QUESTION, None, notifier=notifier, message_id=1,
         ownership=ownership, raw=raw,
+        notifier_resolver=_notifier_resolver(notifier),
     )
     assert observed["calls"] == 0 and notifier.sent == []
     invocation = await db_session.get(AIInvocation, prepared.invocation_id)
@@ -500,11 +725,12 @@ async def test_configuration_or_quota_never_calls_provider_and_uses_unpaid_fallb
     await db_session.commit()
     observed = _observed()
     monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
-    notifier = _Notifier()
+    notifier = _Notifier(ownership)
 
     await inbound._answer_reply(
         db_session, QUESTION, None, notifier=notifier, message_id=1,
         ownership=ownership, raw=raw,
+        notifier_resolver=_notifier_resolver(notifier),
     )
     assert observed["calls"] == 0
     assert notifier.sent == [{"text": inbound._NO_LLM_REPLY, "buttons": None, "reply_to": "1"}]
@@ -537,6 +763,7 @@ async def test_t2_failure_cancels_reservation_and_immediately_journals_fallback(
                 session,
                 key="signals",
                 enabled=False,
+                subject_id=ownership.subject_id,
             )
             await session.commit()
             return await original_start(session, prepared)
@@ -545,7 +772,7 @@ async def test_t2_failure_cancels_reservation_and_immediately_journals_fallback(
         )
 
     monkeypatch.setattr(question_ai_service, "start_question_dispatch", fail_start)
-    notifier = _Notifier()
+    notifier = _Notifier(ownership)
     await inbound._answer_reply(
         db_session,
         QUESTION,
@@ -554,6 +781,7 @@ async def test_t2_failure_cancels_reservation_and_immediately_journals_fallback(
         message_id=1,
         ownership=ownership,
         raw=raw,
+        notifier_resolver=_notifier_resolver(notifier),
     )
 
     assert observed["calls"] == 0
@@ -576,6 +804,80 @@ async def test_t2_failure_cancels_reservation_and_immediately_journals_fallback(
         }
 
 
+async def test_disable_after_question_t3_cannot_resurrect_fallback_on_reenable(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    await _configure_platform(db_session, legacy_owner_roots)
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix="disable-after-t3",
+    )
+    await db_session.commit()
+    observed = _observed()
+    monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
+    real_persist = question_ai_service.persist_question_reply
+
+    async def _persist_then_disable(session, prepared, completion):
+        result = await real_persist(session, prepared, completion)
+        await modules_service.set_module_enabled(
+            session,
+            key="signals",
+            enabled=False,
+            subject_id=ownership.subject_id,
+        )
+        return result
+
+    monkeypatch.setattr(
+        question_ai_service,
+        "persist_question_reply",
+        _persist_then_disable,
+    )
+    notifier = _Notifier(ownership)
+    await inbound._answer_reply(
+        db_session,
+        QUESTION,
+        None,
+        notifier=notifier,
+        message_id=1,
+        ownership=ownership,
+        raw=raw,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
+
+    invocation = (await db_session.scalars(select(AIInvocation))).one()
+    intent = (await db_session.scalars(select(NotificationDeliveryIntent))).one()
+    assert observed["calls"] == 1
+    assert invocation.status == AIInvocationStatus.SUCCEEDED.value
+    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
+    assert intent.error_code == NotificationDeliveryErrorCode.CANCELLED_BY_POLICY.value
+    assert notifier.sent == []
+
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=True,
+        subject_id=ownership.subject_id,
+    )
+    await db_session.commit()
+    recovered = await inbound._recover_claimed_question(
+        db_session,
+        raw=raw,
+        notifier=notifier,
+        ownership=ownership,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
+
+    assert recovered is False
+    await db_session.refresh(intent)
+    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
+    assert notifier.sent == []
+
+
 async def test_no_notifier_and_disabled_module_are_zero_network_paths(
     db_session, legacy_owner_roots, monkeypatch
 ):
@@ -592,9 +894,14 @@ async def test_no_notifier_and_disabled_module_are_zero_network_paths(
     assert observed["calls"] == 0
     assert await db_session.scalar(select(func.count()).select_from(AIInvocation)) == 0
 
-    await modules_service.set_module_enabled(db_session, key="signals", enabled=False)
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=False,
+        subject_id=ownership.subject_id,
+    )
     await db_session.commit()
-    notifier = _Notifier()
+    notifier = _Notifier(ownership)
     update = {
         "update_id": 999001,
         "message": {
@@ -603,7 +910,13 @@ async def test_no_notifier_and_disabled_module_are_zero_network_paths(
             "from": {"id": 424242, "is_bot": False}, "text": QUESTION,
         },
     }
-    await inbound.handle_update(db_session, update, notifier=notifier, ownership=ownership)
+    await inbound.handle_update(
+        db_session,
+        update,
+        notifier=notifier,
+        ownership=ownership,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
     assert observed["calls"] == 0 and notifier.sent == []
     assert await db_session.scalar(select(func.count()).select_from(AIInvocation)) == 0
 
@@ -636,11 +949,12 @@ async def test_module_disabled_during_send_withdraws_answer_and_redacts_journal(
                 db_session,
                 key="signals",
                 enabled=False,
+                subject_id=ownership.subject_id,
             )
             await db_session.commit()
             return external_id
 
-    notifier = DisablingNotifier()
+    notifier = DisablingNotifier(ownership)
     await inbound._answer_reply(
         db_session,
         QUESTION,
@@ -649,6 +963,7 @@ async def test_module_disabled_during_send_withdraws_answer_and_redacts_journal(
         message_id=1,
         ownership=ownership,
         raw=raw,
+        notifier_resolver=_notifier_resolver(notifier),
     )
 
     assert observed["calls"] == 1
@@ -675,9 +990,11 @@ async def test_tampered_question_journal_fails_closed(db_session, legacy_owner_r
     raw = await _raw(db_session, legacy_owner_roots, ownership, suffix=f"journal-{tamper}")
     await db_session.commit()
     monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, _observed()))
+    notifier = _Notifier(ownership)
     await inbound._answer_reply(
-        db_session, QUESTION, None, notifier=_Notifier(), message_id=1,
+        db_session, QUESTION, None, notifier=notifier, message_id=1,
         ownership=ownership, raw=raw,
+        notifier_resolver=_notifier_resolver(notifier),
     )
     row = await db_session.scalar(select(Notification))
     assert row is not None
@@ -723,9 +1040,11 @@ async def test_historical_raw_telegram_connection_can_answer_through_current_con
     )
     await db_session.commit()
     monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, _observed()))
+    notifier = _Notifier(ownership)
     await inbound._answer_reply(
-        db_session, QUESTION, None, notifier=_Notifier(), message_id=1,
+        db_session, QUESTION, None, notifier=notifier, message_id=1,
         ownership=ownership, raw=raw,
+        notifier_resolver=_notifier_resolver(notifier),
     )
     invocation = await db_session.scalar(select(AIInvocation))
     journal = await db_session.scalar(select(Notification))
@@ -803,10 +1122,18 @@ async def test_recovery_cursor_scans_past_non_question_head_rows(
     await db_session.commit()
     observed = _observed()
     monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
-    notifier = _Notifier()
-    monkeypatch.setattr(channels, "build_notifier", lambda: notifier)
+    notifier = _Notifier(ownership)
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        _notifier_builder(notifier, ownership),
+    )
 
-    await inbound.question_reply_recovery_job(session_factory, redis)
+    await inbound.question_reply_recovery_job(
+        session_factory,
+        redis,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
 
     assert observed["calls"] == 1
     assert notifier.sent == [
@@ -862,10 +1189,18 @@ async def test_recovery_without_redis_scans_beyond_cached_scan_limit(
     await db_session.commit()
     observed = _observed()
     monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
-    notifier = _Notifier()
-    monkeypatch.setattr(channels, "build_notifier", lambda: notifier)
+    notifier = _Notifier(ownership)
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        _notifier_builder(notifier, ownership),
+    )
 
-    await inbound.question_reply_recovery_job(session_factory, None)
+    await inbound.question_reply_recovery_job(
+        session_factory,
+        None,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
 
     assert observed["calls"] == 1
     journal = await db_session.scalar(
@@ -875,6 +1210,466 @@ async def test_recovery_without_redis_scans_beyond_cached_scan_limit(
         )
     )
     assert journal is not None
+
+
+async def test_malformed_unclaimed_reply_isolated_before_later_question_recovery(
+    db_session,
+    legacy_owner_roots,
+    session_factory,
+    redis,
+    monkeypatch,
+):
+    await _configure_platform(db_session, legacy_owner_roots)
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    malformed_raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix="malformed-unclaimed-reply",
+        payload={
+            "update_id": 45_001,
+            "message": {
+                "message_id": 45_002,
+                "date": int(NOW.timestamp()),
+                "chat": {"id": 424242, "type": "private"},
+                "from": {"id": 424242, "is_bot": False},
+                "text": QUESTION,
+                "reply_to_message": "not-an-object",
+            },
+        },
+    )
+    valid_raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix="question-after-malformed-unclaimed-reply",
+    )
+    valid_reply_to = str(valid_raw.payload["message"]["message_id"])
+    await db_session.commit()
+    observed = _observed()
+    monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
+    monkeypatch.setattr(inbound, "_QUESTION_RECOVERY_PAGE_SIZE", 2)
+    monkeypatch.setattr(inbound, "_QUESTION_RECOVERY_SCAN_LIMIT", 2)
+    notifier = _Notifier(ownership)
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        _notifier_builder(notifier, ownership),
+    )
+
+    await inbound.question_reply_recovery_job(
+        session_factory,
+        redis,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
+
+    assert observed["calls"] == 1
+    assert notifier.sent == [
+        {"text": ANSWER, "buttons": None, "reply_to": valid_reply_to}
+    ]
+    await db_session.refresh(malformed_raw)
+    assert malformed_raw.processed_at is None
+    journal = await db_session.scalar(
+        select(Notification).where(
+            Notification.dedupe_key
+            == question_ai_service.delivery_dedupe_key(valid_raw.id)
+        )
+    )
+    assert journal is not None
+
+
+@pytest.mark.parametrize("cursor_mode", ("none", "persistent", "write_failure"))
+async def test_stale_delivery_recovery_scans_past_unclassifiable_intent_pages(
+    db_session,
+    legacy_owner_roots,
+    session_factory,
+    redis,
+    monkeypatch,
+    cursor_mode,
+):
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    notifier = _Notifier(ownership)
+    monkeypatch.setattr(inbound, "_QUESTION_RECOVERY_PAGE_SIZE", 2)
+    monkeypatch.setattr(inbound, "_QUESTION_RECOVERY_SCAN_LIMIT", 2)
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        _notifier_builder(notifier, ownership),
+    )
+
+    invalid_intent_ids = []
+    for index in range(3):
+        raw = await _raw(
+            db_session,
+            legacy_owner_roots,
+            ownership,
+            suffix=f"unclassifiable-stale-intent-{index}",
+            payload={
+                "update_id": 50_000 + index,
+                "message": {
+                    "message_id": 60_000 + index,
+                    "date": int(NOW.timestamp()),
+                    "chat": {"id": 424242, "type": "private"},
+                    "from": {"id": 424242, "is_bot": False},
+                    "text": "голова болит",
+                },
+            },
+        )
+        raw.processed_at = NOW.replace(tzinfo=None)
+        await db_session.commit()
+        prepared = await delivery.prepare_delivery_intent(
+            db_session,
+            notifier,
+            text=inbound._NO_LLM_REPLY,
+            category=delivery.CATEGORY_REPLY,
+            idempotency_key=question_ai_service.delivery_dedupe_key(raw.id),
+            legacy_dedupe_key=question_ai_service.legacy_delivery_dedupe_key(
+                raw.id
+            ),
+            reply_to=str(raw.payload["message"]["message_id"]),
+            ownership=ownership,
+            raw_payload_id=raw.id,
+            redact_journal_content=True,
+        )
+        assert prepared is not None
+        await db_session.commit()
+        intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
+        assert intent is not None
+        invalid_intent_ids.append(intent.id)
+        intent.updated_at = datetime(1990, 1, 1, tzinfo=UTC)
+        await db_session.commit()
+
+    command_raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix="valid-command-past-stale-intent-head",
+        payload={
+            "update_id": 50_100,
+            "message": {
+                "message_id": 60_100,
+                "date": int(NOW.timestamp()),
+                "chat": {"id": 424242, "type": "private"},
+                "from": {"id": 424242, "is_bot": False},
+                "text": "/start",
+            },
+        },
+    )
+    command_raw.processed_at = NOW.replace(tzinfo=None)
+    command_reply_to = str(command_raw.payload["message"]["message_id"])
+    await db_session.commit()
+    command_key = delivery.make_delivery_idempotency_key(
+        "telegram-command-reply",
+        command_raw.id,
+    )
+    prepared_command = await delivery.prepare_delivery_intent(
+        db_session,
+        notifier,
+        text=inbound.COMMAND_REPLY,
+        category=delivery.CATEGORY_REPLY,
+        idempotency_key=command_key,
+        reply_to=command_reply_to,
+        ownership=ownership,
+        raw_payload_id=command_raw.id,
+    )
+    assert prepared_command is not None
+    await db_session.commit()
+    command_intent = await db_session.get(
+        NotificationDeliveryIntent,
+        prepared_command.intent_id,
+    )
+    assert command_intent is not None
+    command_intent.updated_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+
+    first_page = await inbound._recoverable_raw_delivery_candidates(
+        db_session,
+        ownership=ownership,
+        stale_before=datetime(2020, 1, 1, tzinfo=UTC),
+        after=None,
+        limit=2,
+    )
+    second_page = await inbound._recoverable_raw_delivery_candidates(
+        db_session,
+        ownership=ownership,
+        stale_before=datetime(2020, 1, 1, tzinfo=UTC),
+        after=(first_page[-1].updated_at, first_page[-1].intent_id),
+        limit=2,
+    )
+    assert [row.intent_id for row in [*first_page, *second_page]] == [
+        *sorted(invalid_intent_ids),
+        prepared_command.intent_id,
+    ]
+    await db_session.commit()
+
+    if cursor_mode == "write_failure":
+        class WriteFailingRedis:
+            async def get(self, _key):
+                return b""
+
+            async def set(self, _key, _value):
+                raise RuntimeError("synthetic Redis write failure")
+
+        cursor_store = WriteFailingRedis()
+    else:
+        cursor_store = redis if cursor_mode == "persistent" else None
+    await inbound.question_reply_recovery_job(
+        session_factory,
+        cursor_store,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
+    if cursor_mode == "persistent":
+        assert notifier.sent == []
+        await inbound.question_reply_recovery_job(
+            session_factory,
+            cursor_store,
+            notifier_resolver=_notifier_resolver(notifier),
+        )
+
+    assert notifier.sent == [
+        {
+            "text": inbound.COMMAND_REPLY,
+            "buttons": None,
+            "reply_to": command_reply_to,
+        }
+    ]
+    db_session.expire_all()
+    command_intent = await db_session.get(
+        NotificationDeliveryIntent,
+        prepared_command.intent_id,
+    )
+    assert command_intent is not None
+    assert command_intent.status == NotificationDeliveryStatus.SENT.value
+    invalid_statuses = list(
+        await db_session.scalars(
+            select(NotificationDeliveryIntent.status).where(
+                NotificationDeliveryIntent.id.in_(invalid_intent_ids)
+            )
+        )
+    )
+    assert invalid_statuses == [NotificationDeliveryStatus.PENDING.value] * 3
+
+
+@pytest.mark.parametrize("missing_notifier", (False, True))
+async def test_disabled_recovery_policy_cancels_stale_claim_and_blocks_reenable(
+    db_session,
+    legacy_owner_roots,
+    session_factory,
+    monkeypatch,
+    missing_notifier,
+):
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix="disabled-stale-delivery",
+    )
+    raw.processed_at = NOW.replace(tzinfo=None)
+    await db_session.commit()
+    notifier = _Notifier(ownership)
+    prepared = await delivery.prepare_delivery_intent(
+        db_session,
+        notifier,
+        text=inbound._NO_LLM_REPLY,
+        category=delivery.CATEGORY_REPLY,
+        idempotency_key=question_ai_service.delivery_dedupe_key(raw.id),
+        legacy_dedupe_key=question_ai_service.legacy_delivery_dedupe_key(raw.id),
+        reply_to=str(raw.payload["message"]["message_id"]),
+        ownership=ownership,
+        raw_payload_id=raw.id,
+        redact_journal_content=True,
+    )
+    assert prepared is not None
+    await db_session.commit()
+    intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
+    assert intent is not None
+    intent.updated_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=False,
+        subject_id=ownership.subject_id,
+    )
+    await db_session.commit()
+    builder = _notifier_builder(notifier, ownership)
+    if missing_notifier:
+        async def builder(_session, _ownership, *, config=None):
+            del _session, _ownership, config
+            return None
+
+    monkeypatch.setattr(channels, "build_legacy_bound_notifier", builder)
+
+    await inbound.question_reply_recovery_job(
+        session_factory,
+        None,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
+
+    db_session.expire_all()
+    intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
+    assert intent is not None
+    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
+    assert intent.error_code == NotificationDeliveryErrorCode.CANCELLED_BY_POLICY.value
+    assert intent.completed_at is not None
+    assert notifier.sent == []
+    assert await db_session.scalar(select(func.count()).select_from(Notification)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(AIInvocation)) == 0
+
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        _notifier_builder(notifier, ownership),
+    )
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=True,
+        subject_id=ownership.subject_id,
+    )
+    await db_session.commit()
+    await inbound.question_reply_recovery_job(
+        session_factory,
+        None,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
+
+    db_session.expire_all()
+    intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
+    assert intent is not None
+    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
+    assert intent.error_code == NotificationDeliveryErrorCode.CANCELLED_BY_POLICY.value
+    assert notifier.sent == []
+    assert await db_session.scalar(select(func.count()).select_from(Notification)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(AIInvocation)) == 0
+
+
+async def test_malformed_echo_candidate_isolated_before_later_command_recovery(
+    db_session,
+    legacy_owner_roots,
+    session_factory,
+    redis,
+    monkeypatch,
+):
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    notifier = _Notifier(ownership)
+    monkeypatch.setattr(inbound, "_QUESTION_RECOVERY_PAGE_SIZE", 2)
+    monkeypatch.setattr(inbound, "_QUESTION_RECOVERY_SCAN_LIMIT", 2)
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        _notifier_builder(notifier, ownership),
+    )
+    malformed_raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix="malformed-stale-echo",
+        payload={
+            "update_id": 70_001,
+            "message": {
+                "message_id": 70_002,
+                "date": int(NOW.timestamp()),
+                "chat": {"id": 424242, "type": "private"},
+                "from": {"id": 424242, "is_bot": False},
+                "text": "голова болит",
+                "reply_to_message": "not-an-object",
+            },
+        },
+    )
+    malformed_raw.processed_at = NOW.replace(tzinfo=None)
+    await db_session.commit()
+    malformed_prepared = await delivery.prepare_delivery_intent(
+        db_session,
+        notifier,
+        text=inbound._NO_SIGNAL_FACTS_REPLY,
+        category=delivery.CATEGORY_ECHO,
+        idempotency_key=delivery.make_delivery_idempotency_key(
+            "telegram-signal-echo",
+            malformed_raw.id,
+        ),
+        reply_to=str(malformed_raw.payload["message"]["message_id"]),
+        ownership=ownership,
+        raw_payload_id=malformed_raw.id,
+    )
+    assert malformed_prepared is not None
+    await db_session.commit()
+    malformed_intent = await db_session.get(
+        NotificationDeliveryIntent,
+        malformed_prepared.intent_id,
+    )
+    assert malformed_intent is not None
+    malformed_intent.updated_at = datetime(1990, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+
+    command_raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix="command-after-malformed-echo",
+        payload={
+            "update_id": 70_003,
+            "message": {
+                "message_id": 70_004,
+                "date": int(NOW.timestamp()),
+                "chat": {"id": 424242, "type": "private"},
+                "from": {"id": 424242, "is_bot": False},
+                "text": "/start",
+            },
+        },
+    )
+    command_raw.processed_at = NOW.replace(tzinfo=None)
+    await db_session.commit()
+    command_prepared = await delivery.prepare_delivery_intent(
+        db_session,
+        notifier,
+        text=inbound.COMMAND_REPLY,
+        category=delivery.CATEGORY_REPLY,
+        idempotency_key=delivery.make_delivery_idempotency_key(
+            "telegram-command-reply",
+            command_raw.id,
+        ),
+        reply_to=str(command_raw.payload["message"]["message_id"]),
+        ownership=ownership,
+        raw_payload_id=command_raw.id,
+    )
+    assert command_prepared is not None
+    await db_session.commit()
+    command_intent = await db_session.get(
+        NotificationDeliveryIntent,
+        command_prepared.intent_id,
+    )
+    assert command_intent is not None
+    command_intent.updated_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+
+    await inbound.question_reply_recovery_job(
+        session_factory,
+        redis,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
+
+    assert notifier.sent == [
+        {
+            "text": inbound.COMMAND_REPLY,
+            "buttons": None,
+            "reply_to": str(command_raw.payload["message"]["message_id"]),
+        }
+    ]
+    db_session.expire_all()
+    malformed_intent = await db_session.get(
+        NotificationDeliveryIntent,
+        malformed_prepared.intent_id,
+    )
+    command_intent = await db_session.get(
+        NotificationDeliveryIntent,
+        command_prepared.intent_id,
+    )
+    assert malformed_intent is not None
+    assert malformed_intent.status == NotificationDeliveryStatus.PENDING.value
+    assert command_intent is not None
+    assert command_intent.status == NotificationDeliveryStatus.SENT.value
 
 
 async def test_recovery_without_redis_does_not_count_journaled_questions_as_work(
@@ -901,7 +1696,7 @@ async def test_recovery_without_redis_does_not_count_journaled_questions_as_work
                 integration_connection_id=ownership.connection_id,
                 sent_at=NOW.replace(tzinfo=None),
                 category=delivery.CATEGORY_REPLY,
-                dedupe_key=question_ai_service.delivery_dedupe_key(raw.id),
+                dedupe_key=question_ai_service.legacy_delivery_dedupe_key(raw.id),
                 channel=IntegrationProvider.TELEGRAM.value,
                 external_id=f"historical-reply-{index}",
                 payload={"content_redacted": True, "raw_payload_id": raw.id},
@@ -916,10 +1711,18 @@ async def test_recovery_without_redis_does_not_count_journaled_questions_as_work
     await db_session.commit()
     observed = _observed()
     monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
-    notifier = _Notifier()
-    monkeypatch.setattr(channels, "build_notifier", lambda: notifier)
+    notifier = _Notifier(ownership)
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        _notifier_builder(notifier, ownership),
+    )
 
-    await inbound.question_reply_recovery_job(session_factory, None)
+    await inbound.question_reply_recovery_job(
+        session_factory,
+        None,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
 
     assert observed["calls"] == 1
     assert await db_session.scalar(
@@ -960,10 +1763,18 @@ async def test_terminal_unjournaled_invocation_bypasses_raw_scan_cursor(
         str(raw.id + 1000),
     )
     monkeypatch.setattr(question_ai_service, "LLMClient", _llm(db_session, observed))
-    notifier = _Notifier()
-    monkeypatch.setattr(channels, "build_notifier", lambda: notifier)
+    notifier = _Notifier(ownership)
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        _notifier_builder(notifier, ownership),
+    )
 
-    await inbound.question_reply_recovery_job(session_factory, redis)
+    await inbound.question_reply_recovery_job(
+        session_factory,
+        redis,
+        notifier_resolver=_notifier_resolver(notifier),
+    )
 
     assert observed["calls"] == 1
     assert notifier.sent == [
@@ -978,6 +1789,171 @@ async def test_terminal_unjournaled_invocation_bypasses_raw_scan_cursor(
         "content_redacted": True,
         "raw_payload_id": raw.id,
     }
+
+
+@pytest.mark.integration
+async def test_postgres_concurrent_stale_delivery_recovery_sends_once(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix="concurrent-delivery-recovery",
+    )
+    raw.processed_at = NOW.replace(tzinfo=None)
+    notifier = _Notifier(ownership)
+    prepared = await delivery.prepare_delivery_intent(
+        db_session,
+        notifier,
+        text=ANSWER,
+        category=delivery.CATEGORY_REPLY,
+        idempotency_key=question_ai_service.delivery_dedupe_key(raw.id),
+        legacy_dedupe_key=question_ai_service.legacy_delivery_dedupe_key(raw.id),
+        reply_to=str(raw.payload["message"]["message_id"]),
+        ownership=ownership,
+        raw_payload_id=raw.id,
+        redact_journal_content=True,
+    )
+    assert prepared is not None
+    await db_session.commit()
+    intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
+    assert intent is not None
+    intent.updated_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        _notifier_builder(notifier, ownership),
+    )
+    assert db_session.bind is not None
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+
+    results = await asyncio.gather(
+        inbound._run_question_recovery_raw(
+            factory,
+            raw_payload_id=raw.id,
+            stale_before=datetime(2001, 1, 1, tzinfo=UTC),
+            notifier_resolver=_notifier_resolver(notifier),
+        ),
+        inbound._run_question_recovery_raw(
+            factory,
+            raw_payload_id=raw.id,
+            stale_before=datetime(2001, 1, 1, tzinfo=UTC),
+            notifier_resolver=_notifier_resolver(notifier),
+        ),
+    )
+
+    assert sum(results) == 1
+    assert notifier.sent == [
+        {
+            "text": inbound._NO_LLM_REPLY,
+            "buttons": None,
+            "reply_to": str(raw.payload["message"]["message_id"]),
+        }
+    ]
+    db_session.expire_all()
+    intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
+    assert intent is not None and intent.status == NotificationDeliveryStatus.SENT.value
+    assert await db_session.scalar(select(func.count()).select_from(Notification)) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("transport_mode", "expected_error_code"),
+    (
+        ("exception", NotificationDeliveryErrorCode.TRANSPORT_ERROR.value),
+        ("invalid_response", NotificationDeliveryErrorCode.INVALID_RESPONSE.value),
+    ),
+)
+async def test_postgres_concurrent_stale_delivery_recovery_attempts_ambiguous_once(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    transport_mode,
+    expected_error_code,
+):
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix=f"concurrent-ambiguous-{transport_mode}",
+    )
+    raw.processed_at = NOW.replace(tzinfo=None)
+    notifier = _Notifier(ownership)
+    prepared = await delivery.prepare_delivery_intent(
+        db_session,
+        notifier,
+        text=ANSWER,
+        category=delivery.CATEGORY_REPLY,
+        idempotency_key=question_ai_service.delivery_dedupe_key(raw.id),
+        legacy_dedupe_key=question_ai_service.legacy_delivery_dedupe_key(raw.id),
+        reply_to=str(raw.payload["message"]["message_id"]),
+        ownership=ownership,
+        raw_payload_id=raw.id,
+        redact_journal_content=True,
+    )
+    assert prepared is not None
+    await db_session.commit()
+    intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
+    assert intent is not None
+    intent.updated_at = datetime(2000, 1, 1, tzinfo=UTC)
+    await db_session.commit()
+
+    transport_calls = 0
+
+    async def _ambiguous_send(text, *, buttons=None, reply_to=None):
+        nonlocal transport_calls
+        del text, buttons, reply_to
+        transport_calls += 1
+        if transport_mode == "exception":
+            raise RuntimeError("synthetic Telegram transport failure")
+        return "invalid-message-id"
+
+    notifier.send = _ambiguous_send
+    monkeypatch.setattr(
+        channels,
+        "build_legacy_bound_notifier",
+        _notifier_builder(notifier, ownership),
+    )
+    assert db_session.bind is not None
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+
+    results = await asyncio.gather(
+        inbound._run_question_recovery_raw(
+            factory,
+            raw_payload_id=raw.id,
+            stale_before=datetime(2001, 1, 1, tzinfo=UTC),
+            notifier_resolver=_notifier_resolver(notifier),
+        ),
+        inbound._run_question_recovery_raw(
+            factory,
+            raw_payload_id=raw.id,
+            stale_before=datetime(2001, 1, 1, tzinfo=UTC),
+            notifier_resolver=_notifier_resolver(notifier),
+        ),
+    )
+
+    assert sum(results) == 1
+    assert transport_calls == 1
+    db_session.expire_all()
+    intent = await db_session.get(NotificationDeliveryIntent, prepared.intent_id)
+    assert intent is not None
+    assert intent.status == NotificationDeliveryStatus.AMBIGUOUS.value
+    assert intent.error_code == expected_error_code
+    assert await db_session.scalar(select(func.count()).select_from(Notification)) == 0
 
 
 @pytest.mark.integration

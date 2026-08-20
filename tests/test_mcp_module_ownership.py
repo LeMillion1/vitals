@@ -29,6 +29,13 @@ async def test_module_tools_read_and_atomically_dual_write_subject_state(
     await db_session.merge(
         AppSetting(key=modules_service.SETTINGS_KEY, value=initial)
     )
+    await db_session.merge(
+        SubjectSetting(
+            subject_id=legacy_owner_roots.subject_id,
+            key=modules_service.SETTINGS_KEY,
+            value=initial,
+        )
+    )
     await db_session.commit()
     await modules_service.prime_cache(
         redis,

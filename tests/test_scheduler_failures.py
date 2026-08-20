@@ -238,11 +238,23 @@ def test_job_failure_family_registry_is_complete_and_matches_alert_keys():
         job_id
         for job_id, family in scheduler_mod.JOB_FAILURE_FAMILY_BY_ID.items()
         if family is scheduler_mod.JobFailureFamily.PLATFORM
-    } == {"raw_payload_sweep", "share_purge", "ai_invocation_reconcile"}
-    reconciliation = scheduler_mod._registry["ai_invocation_reconcile"]
-    assert reconciliation.trigger == "interval"
-    assert reconciliation.trigger_kwargs == {"minutes": 15}
-    assert reconciliation.failure_family is scheduler_mod.JobFailureFamily.PLATFORM
+    } == {
+        "raw_payload_sweep",
+        "share_purge",
+        "ai_invocation_reconcile",
+        "notification_delivery_reconcile",
+    }
+    for job_id in (
+        "ai_invocation_reconcile",
+        "notification_delivery_reconcile",
+    ):
+        reconciliation = scheduler_mod._registry[job_id]
+        assert reconciliation.trigger == "interval"
+        assert reconciliation.trigger_kwargs == {"minutes": 15}
+        assert (
+            reconciliation.failure_family
+            is scheduler_mod.JobFailureFamily.PLATFORM
+        )
 
 
 # ── The keepalive itself ─────────────────────────────────────────────────────

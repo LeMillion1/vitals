@@ -30,9 +30,10 @@ import json
 import logging
 import uuid
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date as date_type, datetime, timedelta, timezone
-from typing import Any, Optional
+from enum import Enum
+from typing import Any, Awaitable, Callable, Optional
 
 from sqlalchemy import and_, func, or_, select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +47,8 @@ from vitals.enums import (
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
+    NotificationDeliveryErrorCode,
+    NotificationDeliveryStatus,
     Severity,
     SignalKind,
     Source,
@@ -54,7 +57,7 @@ from vitals.i18n import t
 from vitals.integrations.llm_client import LLMClient
 from vitals.models.ai import AIInvocation
 from vitals.models.identity import HealthSubject
-from vitals.models.proactive import Notification
+from vitals.models.proactive import Notification, NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import Signal
 from vitals.models.system_alert import SystemAlert
@@ -73,9 +76,13 @@ from vitals.services.proactive import (
     question_ai_service,
     signal_ai_service,
 )
-from vitals.services.proactive.channels import Notifier
+from vitals.services.proactive.channels import (
+    BoundNotifier,
+    BoundNotifierResolver,
+    Notifier,
+)
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
-from vitals.utils.timeutils import now_local, to_local_naive
+from vitals.utils.timeutils import now_local, now_utc, to_local_naive
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +125,17 @@ _REPLY_MAX_TOKENS = 800
 # followed by a nudge that landed in between; more starts pulling in yesterday.
 _CONTEXT_MESSAGES = 3
 _NO_LLM_REPLY = "Сейчас не отвечу — модель недоступна. Загляни в приложение."
+_PARSER_PENDING_REPLY = "Сохранил как есть — разобрать не смог. Посмотрю позже."
+_NO_SIGNAL_FACTS_REPLY = (
+    "Записал. Фактов для графиков тут не нашёл — "
+    "если что-то важное, скажи прямо."
+)
 # The recovery cursor contains only an opaque subject UUID and raw integer id.
 # Paid/in-flight invocation gaps are queried independently of this cursor; the
 # cursor exists solely so a long history of ordinary Telegram facts
 # cannot keep an older pre-reservation question outside a fixed newest-N window.
 _QUESTION_RECOVERY_CURSOR_PREFIX = "question-reply-recovery:cursor:"
+_DELIVERY_RECOVERY_CURSOR_PREFIX = "raw-delivery-recovery:cursor:"
 _QUESTION_RECOVERY_PAGE_SIZE = 100
 _QUESTION_RECOVERY_SCAN_LIMIT = 1000
 _QUESTION_RECOVERY_WORK_LIMIT = 20
@@ -249,6 +262,38 @@ class _RawClaim:
     created: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _ClaimedRawDelivery:
+    category: str
+    status: str
+    ai_invocation_id: uuid.UUID | None
+    error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoverableDeliveryCandidate:
+    updated_at: datetime
+    intent_id: uuid.UUID
+    raw_payload_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DeliveredRaw:
+    journal: Notification
+    notifier: BoundNotifier
+
+
+@dataclass(slots=True)
+class _RawDeliveryRecoveryProgress:
+    claimed_work: bool = False
+
+
+class _RawRecoveryState(Enum):
+    UNCLAIMED = "unclaimed"
+    AUTHORITATIVE = "authoritative"
+    RECOVERED = "recovered"
+
+
 def _require_parser_alert_context(
     context: alerts_service.ProviderAlertContext,
     *,
@@ -344,8 +389,8 @@ async def _reconcile_parser_alert_best_effort(
     except Exception:
         await session.rollback()
         logger.warning(
-            "could not reconcile the OpenRouter signal-parser alert",
-            exc_info=True,
+            "could not reconcile the OpenRouter signal-parser alert "
+            "(code=alert_reconcile_failed)",
         )
 
 
@@ -669,6 +714,7 @@ async def handle_update(
     parse: Optional[signals_service.Parser] = None,
     ownership: ProactiveOwnershipContext,
     parser_alert_context: alerts_service.ProviderAlertContext | None = None,
+    notifier_resolver: BoundNotifierResolver | None = None,
 ) -> None:
     """Entry point for one Telegram update. Safe to call twice with the same one."""
     update_id = update.get("update_id")
@@ -700,11 +746,14 @@ async def handle_update(
             )
             await session.commit()
             if enabled and not callback:
-                await _recover_claimed_question(
+                await _recover_claimed_text(
                     session,
                     raw=claim.raw,
                     notifier=notifier,
                     ownership=ownership,
+                    parse=parse,
+                    parser_alert_context=parser_alert_context,
+                    notifier_resolver=notifier_resolver,
                 )
             return
 
@@ -765,12 +814,13 @@ async def handle_update(
             raw=claim.raw,
             edited=False,
             parser_alert_context=parser_alert_context,
+            notifier_resolver=notifier_resolver,
         )
-    except Exception as exc:
+    except Exception:
         if parked:
             raise DurableInboundProcessingError(
                 "Telegram update failed after durable raw capture"
-            ) from exc
+            ) from None
         raise
 
 
@@ -886,7 +936,9 @@ async def _handle_callback(
         try:
             await notifier.answer_callback(callback_id, toast)
         except Exception:
-            logger.warning("could not acknowledge tap %s", callback_id, exc_info=True)
+            logger.warning(
+                "could not acknowledge Telegram callback (code=callback_failed)"
+            )
 
     if notifier is not None and answered is not None:
         await _redraw(
@@ -938,7 +990,7 @@ async def _redraw(
         # The answer is already stored; a channel that refused the edit (the
         # message is old, or nothing actually changed) is worth a log, not a
         # failed update Telegram would then retry for hours.
-        logger.warning("could not redraw message %s", message_id, exc_info=True)
+        logger.warning("could not redraw Telegram message (code=edit_failed)")
 
 
 async def _apply_context(
@@ -969,13 +1021,15 @@ async def _apply_context(
         _, iso_date, key, value = data.split(":", 3)
         on_date = date_type.fromisoformat(iso_date)
     except ValueError:
-        logger.warning("unparseable context payload: %s", data)
+        logger.warning("unparseable Telegram context payload (code=invalid_callback)")
         return None
 
     question = day_plan.QUESTIONS_BY_KEY.get(key)
     answer = day_plan.decode(value)
     if question is None or answer not in question.labels:
-        logger.warning("context payload outside the question registry: %s", data)
+        logger.warning(
+            "Telegram context payload outside registry (code=invalid_callback)"
+        )
         return None
 
     await day_plan.record_answer(
@@ -1039,7 +1093,14 @@ async def _raw_text_is_signal_candidate(
     text = str((_text_from_raw(raw) or "")).strip()
     if text.startswith("/"):
         return False
-    reply_id = (message.get("reply_to_message") or {}).get("message_id")
+    reply_message = message.get("reply_to_message")
+    if reply_message is None:
+        reply_message = {}
+    if not isinstance(reply_message, dict):
+        raise InboundOwnershipError(
+            "Telegram recovery reply provenance is invalid"
+        )
+    reply_id = reply_message.get("message_id")
     answered = (
         await delivery.find_sent(
             session,
@@ -1146,6 +1207,7 @@ async def _mark_raw_processed(
     *,
     ownership: ProactiveOwnershipContext,
     allow_subject_adopted_unowned: bool = False,
+    commit_success: bool = True,
 ) -> bool:
     try:
         locked = await _lock_pending_raw_for_completion(
@@ -1160,8 +1222,9 @@ async def _mark_raw_processed(
         return False
     locked.processed_at = now_local()
     await session.flush()
-    # Commands/questions must not become facts if the later outbound call fails.
-    await session.commit()
+    if commit_success:
+        # Commands/questions must not become facts if the later outbound call fails.
+        await session.commit()
     return True
 
 
@@ -1196,19 +1259,26 @@ def _is_prior_message_version(candidate: RawPayload, current: RawPayload) -> boo
     return candidate.id < current.id
 
 
-async def _signal_echo_is_current(
+async def _raw_delivery_is_current(
     session: AsyncSession,
     *,
     ownership: ProactiveOwnershipContext,
     raw_payload_id: int,
     ai_invocation_id: uuid.UUID | None,
+    ai_purpose: AIInvocationPurpose | None,
+    expected_processed: bool,
+    reject_misparse: bool,
 ) -> bool:
-    """Lock one logical message and reject an echo superseded by a later edit."""
+    """Lock one logical message and validate its exact delivery provenance."""
 
     if isinstance(raw_payload_id, bool) or not isinstance(raw_payload_id, int):
-        raise InboundOwnershipError("signal echo raw id is invalid")
+        raise InboundOwnershipError("delivery raw id is invalid")
     if ai_invocation_id is not None and not isinstance(ai_invocation_id, uuid.UUID):
-        raise InboundOwnershipError("signal echo invocation id is invalid")
+        raise InboundOwnershipError("delivery invocation id is invalid")
+    if (ai_invocation_id is None) != (ai_purpose is None):
+        raise InboundOwnershipError("delivery invocation purpose is inconsistent")
+    if not isinstance(expected_processed, bool) or not isinstance(reject_misparse, bool):
+        raise TypeError("delivery raw state expectations must be bools")
     await acquire_identity_governance_lock(session)
     await _lock_subject_root(session, ownership=ownership)
     raw = await session.scalar(
@@ -1217,7 +1287,7 @@ async def _signal_echo_is_current(
         .execution_options(populate_existing=True)
     )
     if raw is None:
-        raise InboundOwnershipError("signal echo raw does not exist")
+        raise InboundOwnershipError("delivery raw does not exist")
     candidates = list(
         await session.scalars(
             select(RawPayload)
@@ -1257,7 +1327,7 @@ async def _signal_echo_is_current(
     )
     current = next((row for row in locked if row.id == raw.id), None)
     if current is None:
-        raise InboundOwnershipError("signal echo raw disappeared")
+        raise InboundOwnershipError("delivery raw disappeared")
     for candidate in locked:
         await _validate_raw_root(
             session,
@@ -1267,6 +1337,8 @@ async def _signal_echo_is_current(
             allow_subject_adopted_unowned=True,
         )
     if any(_is_prior_message_version(current, row) for row in locked):
+        return False
+    if (current.processed_at is not None) != expected_processed:
         return False
     if ai_invocation_id is not None:
         invocation = (
@@ -1278,30 +1350,32 @@ async def _signal_echo_is_current(
                     AIInvocation.purpose,
                     AIInvocation.source,
                     AIInvocation.status,
-                ).where(AIInvocation.id == ai_invocation_id)
+                )
+                .where(AIInvocation.id == ai_invocation_id)
+                .with_for_update()
             )
         ).one_or_none()
         if invocation is None:
-            raise InboundOwnershipError("signal echo invocation does not exist")
+            raise InboundOwnershipError("delivery invocation does not exist")
         subject_id, actor_id, linked_raw_id, purpose, source, status = invocation
+        allowed_statuses = {
+            AIInvocationStatus.SUCCEEDED.value,
+            AIInvocationStatus.FAILED.value,
+            AIInvocationStatus.AMBIGUOUS.value,
+        }
+        if ai_purpose is AIInvocationPurpose.QUESTION_REPLY:
+            allowed_statuses.add(AIInvocationStatus.CANCELLED.value)
         if (
             subject_id != ownership.subject_id
             or actor_id != ownership.recipient_user_id
             or linked_raw_id != raw_payload_id
-            or purpose != AIInvocationPurpose.SIGNAL_PARSE.value
+            or purpose != ai_purpose.value
             or source != AIInvocationSource.TELEGRAM.value
-            or status
-            not in {
-                AIInvocationStatus.SUCCEEDED.value,
-                AIInvocationStatus.FAILED.value,
-                AIInvocationStatus.AMBIGUOUS.value,
-            }
+            or status not in allowed_statuses
         ):
-            raise InboundOwnershipError("signal echo invocation provenance is invalid")
-        if status != AIInvocationStatus.SUCCEEDED.value and current.processed_at is not None:
-            return False
-    elif current.processed_at is not None:
-        return False
+            raise InboundOwnershipError("delivery invocation provenance is invalid")
+    if not reject_misparse:
+        return True
     stale_fact = await session.scalar(
         select(Signal.id).where(
             Signal.raw_id == raw_payload_id,
@@ -1309,6 +1383,464 @@ async def _signal_echo_is_current(
         ).limit(1)
     )
     return stale_fact is None
+
+
+async def _deliver_owned_raw(
+    session: AsyncSession,
+    notifier: Notifier | None,
+    *,
+    ownership: ProactiveOwnershipContext,
+    raw_payload_id: int,
+    text: str,
+    category: str,
+    idempotency_key: str,
+    ai_invocation_id: uuid.UUID | None = None,
+    legacy_dedupe_key: str | None = None,
+    buttons=None,
+    reply_to: str | None = None,
+    redact_journal_content: bool = False,
+    is_current: Callable[[], Awaitable[bool]],
+    rearm_stale_before: datetime | None = None,
+    notifier_resolver: BoundNotifierResolver | None = None,
+    preparation_scope: delivery.DeliveryPreparationScope | None = None,
+    recovery_progress: _RawDeliveryRecoveryProgress | None = None,
+) -> _DeliveredRaw | None:
+    """Perform one raw-backed delivery with no database transaction on I/O."""
+
+    if preparation_scope is not None and rearm_stale_before is not None:
+        raise InboundOwnershipError(
+            "stale delivery recovery cannot consume a fresh preparation scope"
+        )
+    if recovery_progress is not None and rearm_stale_before is None:
+        raise InboundOwnershipError(
+            "delivery recovery progress requires a stale re-arm"
+        )
+    if notifier is None and rearm_stale_before is None:
+        if preparation_scope is not None:
+            await session.rollback()
+            raise InboundOwnershipError(
+                "scoped delivery requires an exact bound notifier"
+            )
+        await session.commit()
+        return None
+    if notifier is not None and not isinstance(notifier, BoundNotifier):
+        raise InboundOwnershipError("owned delivery requires an exact bound notifier")
+
+    prepare = (
+        delivery.prepare_delivery_intent
+        if rearm_stale_before is None
+        else delivery.rearm_stale_raw_delivery_intent
+    )
+    prepare_kwargs = {}
+    if rearm_stale_before is not None:
+        prepare_kwargs["stale_before"] = rearm_stale_before
+    elif preparation_scope is not None:
+        prepare_kwargs["preparation_scope"] = preparation_scope
+    prepared = await prepare(
+        session,
+        notifier,
+        text=text,
+        category=category,
+        idempotency_key=idempotency_key,
+        legacy_dedupe_key=legacy_dedupe_key,
+        buttons=buttons,
+        reply_to=reply_to,
+        ownership=ownership,
+        raw_payload_id=raw_payload_id,
+        ai_invocation_id=ai_invocation_id,
+        redact_journal_content=redact_journal_content,
+        **prepare_kwargs,
+    )
+    if prepared is None and preparation_scope is not None:
+        # Reply/echo continuations have no quiet-hours or budget rejection. None
+        # therefore means either an exact authoritative claim/journal already
+        # exists or the module was disabled under the frozen scope. In both cases
+        # the domain terminal marker must commit: rolling it back would resurrect
+        # the raw on re-enable and could create a later send against policy.
+        if not await prefs.bot_enabled(
+            session,
+            subject_id=ownership.subject_id,
+            strict=True,
+        ):
+            current_raw = await session.get(
+                RawPayload,
+                raw_payload_id,
+                populate_existing=True,
+            )
+            if current_raw is None:
+                raise InboundOwnershipError(
+                    "disabled scoped delivery raw disappeared"
+                )
+            current_raw.processed_at = current_raw.processed_at or now_local()
+            await session.flush()
+        await session.commit()
+        return None
+    if prepared is not None and not await is_current():
+        # T1 and its new PENDING row disappear together.
+        await session.rollback()
+        return None
+    await session.commit()
+    if recovery_progress is not None and prepared is not None:
+        recovery_progress.claimed_work = True
+    if prepared is None:
+        return None
+
+    if notifier_resolver is None:
+        from vitals.services.proactive import channels
+
+        notifier_resolver = channels.resolve_legacy_bound_notifier
+    dispatched_notifier: BoundNotifier | None = None
+
+    def _resolve_current_notifier(binding, credential_ref):
+        nonlocal dispatched_notifier
+        candidate = notifier_resolver(binding, credential_ref)
+        if candidate is not None and not isinstance(candidate, BoundNotifier):
+            raise InboundOwnershipError(
+                "delivery resolver returned an unbound notifier"
+            )
+        dispatched_notifier = candidate
+        return candidate
+
+    lease = await delivery.start_delivery_dispatch(
+        session,
+        prepared,
+        notifier_resolver=_resolve_current_notifier,
+    )
+    if lease is not None and not await is_current():
+        # Roll back DISPATCHING so the committed durable claim remains PENDING.
+        await session.rollback()
+        return None
+    await session.commit()
+    if lease is None:
+        return None
+
+    completion = await delivery.dispatch_delivery(lease)
+    for attempt in range(2):
+        try:
+            journal = await delivery.finalize_delivery(session, completion)
+            await session.commit()
+            if journal is None:
+                return None
+            if dispatched_notifier is None:
+                raise InboundOwnershipError(
+                    "sent delivery lost its resolved notifier"
+                )
+            return _DeliveredRaw(journal=journal, notifier=dispatched_notifier)
+        except Exception:
+            await session.rollback()
+            if attempt == 0:
+                continue
+
+    # A commit can succeed server-side and still raise to the client. Read back
+    # only the exact validated terminal claim; the network capability is already
+    # consumed and is never recreated or dispatched again.
+    try:
+        claim = await delivery.delivery_claim_for_raw(
+            session,
+            raw_payload_id=raw_payload_id,
+            category=category,
+            ownership=ownership,
+        )
+        if claim is not None and claim.status == NotificationDeliveryStatus.SENT.value:
+            journal = await session.scalar(
+                select(Notification).where(
+                    Notification.delivery_intent_id == claim.id
+                )
+            )
+            if journal is None:
+                raise InboundOwnershipError(
+                    "sent delivery claim has no linked journal"
+                )
+            await session.commit()
+            if dispatched_notifier is None:
+                raise InboundOwnershipError(
+                    "sent delivery lost its resolved notifier"
+                )
+            return _DeliveredRaw(journal=journal, notifier=dispatched_notifier)
+        if (
+            claim is not None
+            and claim.status == NotificationDeliveryStatus.AMBIGUOUS.value
+        ):
+            await session.commit()
+            return None
+        await session.rollback()
+    except Exception:
+        await session.rollback()
+    raise InboundOwnershipError("delivery finalization could not be confirmed") from None
+
+
+async def _deliver_owned_signal_echo(
+    session: AsyncSession,
+    notifier: Notifier | None,
+    *,
+    ownership: ProactiveOwnershipContext,
+    raw_payload_id: int,
+    text: str,
+    processed: bool,
+    ai_invocation_id: uuid.UUID | None,
+    buttons=None,
+    reply_to: str | None = None,
+    rearm_stale_before: datetime | None = None,
+    notifier_resolver: BoundNotifierResolver | None = None,
+    preparation_scope: delivery.DeliveryPreparationScope | None = None,
+    recovery_progress: _RawDeliveryRecoveryProgress | None = None,
+) -> Notification | None:
+    async def _is_current() -> bool:
+        return await _raw_delivery_is_current(
+            session,
+            ownership=ownership,
+            raw_payload_id=raw_payload_id,
+            ai_invocation_id=ai_invocation_id,
+            ai_purpose=(
+                AIInvocationPurpose.SIGNAL_PARSE
+                if ai_invocation_id is not None
+                else None
+            ),
+            expected_processed=processed,
+            reject_misparse=True,
+        )
+
+    delivered = await _deliver_owned_raw(
+        session,
+        notifier,
+        ownership=ownership,
+        raw_payload_id=raw_payload_id,
+        text=text,
+        category=delivery.CATEGORY_ECHO,
+        idempotency_key=delivery.make_delivery_idempotency_key(
+            "telegram-signal-echo",
+            raw_payload_id,
+        ),
+        ai_invocation_id=ai_invocation_id,
+        buttons=buttons,
+        reply_to=reply_to,
+        is_current=_is_current,
+        rearm_stale_before=rearm_stale_before,
+        notifier_resolver=notifier_resolver,
+        preparation_scope=preparation_scope,
+        recovery_progress=recovery_progress,
+    )
+    if delivered is None:
+        return None
+    journal = delivered.journal
+
+    try:
+        still_current = await _is_current()
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        still_current = False
+        logger.warning(
+            "could not revalidate a delivered signal echo (code=revalidation_failed)",
+        )
+    if still_current:
+        return journal
+    try:
+        await delivered.notifier.edit(
+            journal.external_id,
+            t("telegram.signal_echo_superseded"),
+            buttons=None,
+        )
+    except Exception:
+        logger.warning(
+            "could not neutralize a superseded signal echo (code=edit_failed)",
+        )
+    return journal
+
+
+def _signal_echo_payload(
+    *,
+    processed: bool,
+    rows: tuple[Signal, ...] | list[Signal],
+) -> tuple[str, list[tuple[str, str]] | None]:
+    if not processed:
+        return _PARSER_PENDING_REPLY, None
+    if not rows:
+        return _NO_SIGNAL_FACTS_REPLY, None
+    return (
+        render_echo(list(rows)),
+        [("не то", f"{CB_MISPARSE}{rows[0].batch_id}")],
+    )
+
+
+async def _platform_signal_t1_state(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext,
+    raw_payload_id: int,
+    invocation_id: uuid.UUID,
+) -> str:
+    """Read back a failed/ambiguous composed T1 without recreating provider I/O."""
+
+    claim = await delivery.delivery_claim_for_raw(
+        session,
+        raw_payload_id=raw_payload_id,
+        category=delivery.CATEGORY_ECHO,
+        ownership=ownership,
+    )
+    raw = await session.get(RawPayload, raw_payload_id, populate_existing=True)
+    if raw is None:
+        raise InboundOwnershipError("platform signal completion raw disappeared")
+    await _validate_raw_root(
+        session,
+        raw,
+        ownership=ownership,
+        lock_connection=False,
+    )
+    invocation = (
+        await session.execute(
+            select(
+                AIInvocation.subject_id,
+                AIInvocation.actor_user_id,
+                AIInvocation.raw_payload_id,
+                AIInvocation.purpose,
+                AIInvocation.source,
+                AIInvocation.status,
+            ).where(AIInvocation.id == invocation_id)
+        )
+    ).one_or_none()
+    if invocation is None:
+        raise InboundOwnershipError("platform signal invocation disappeared")
+    subject_id, actor_id, linked_raw_id, purpose, source, status = invocation
+    if (
+        subject_id != ownership.subject_id
+        or actor_id != ownership.recipient_user_id
+        or linked_raw_id != raw_payload_id
+        or purpose != AIInvocationPurpose.SIGNAL_PARSE.value
+        or source != AIInvocationSource.TELEGRAM.value
+        or status not in {item.value for item in AIInvocationStatus}
+    ):
+        raise InboundOwnershipError(
+            "platform signal completion provenance is invalid"
+        )
+    signal_count = int(
+        await session.scalar(
+            select(func.count()).select_from(Signal).where(
+                Signal.raw_id == raw_payload_id
+            )
+        )
+        or 0
+    )
+    if status == AIInvocationStatus.DISPATCHING.value:
+        if claim is None and raw.processed_at is None and signal_count == 0:
+            return "retryable"
+        if claim is not None:
+            # A concurrent no-claim duplicate may have won the one bounded
+            # parser-pending echo while this provider call was in flight.
+            return "authoritative"
+        raise InboundOwnershipError(
+            "dispatching signal invocation has unexpected domain state"
+        )
+    if status in {
+        AIInvocationStatus.SUCCEEDED.value,
+        AIInvocationStatus.FAILED.value,
+        AIInvocationStatus.AMBIGUOUS.value,
+    }:
+        if claim is not None:
+            if claim.ai_invocation_id != invocation_id:
+                raise InboundOwnershipError(
+                    "platform signal intent has different AI provenance"
+                )
+            return "authoritative"
+        if raw.processed_at is not None:
+            # The completion committed as stale after a newer edit/domain winner.
+            return "authoritative"
+        raise InboundOwnershipError(
+            "terminal signal invocation has no atomic delivery claim"
+        )
+    raise InboundOwnershipError(
+        "platform signal invocation has non-terminal completion state"
+    )
+
+
+async def _persist_and_deliver_platform_signal(
+    session: AsyncSession,
+    *,
+    prepared_parse: signal_ai_service.PreparedSignalParse,
+    completion,
+    notifier: Notifier | None,
+    ownership: ProactiveOwnershipContext,
+    message_id: Any | None,
+    notifier_resolver: BoundNotifierResolver | None,
+) -> None:
+    """Retry the same memory-only AI completion once; never call its provider twice."""
+
+    if notifier is not None and not isinstance(notifier, BoundNotifier):
+        raise InboundOwnershipError(
+            "owned delivery requires an exact bound notifier"
+        )
+    invocation_id = completion.invocation_id
+    raw_payload_id = prepared_parse.raw_payload_id
+    for attempt in range(2):
+        try:
+            preparation_scope = (
+                await delivery.lock_delivery_preparation_scope(
+                    session,
+                    notifier,
+                    category=delivery.CATEGORY_ECHO,
+                    ownership=ownership,
+                )
+                if notifier is not None
+                else None
+            )
+            parse_result = await signal_ai_service.persist_signal_parse(
+                session,
+                prepared_parse,
+                completion,
+            )
+            if parse_result.stale or notifier is None:
+                await session.commit()
+                return
+            echo_text, buttons = _signal_echo_payload(
+                processed=parse_result.processed,
+                rows=parse_result.signals,
+            )
+            terminal_invocation_id = (
+                parse_result.invocation_id
+                if parse_result.status
+                in {
+                    AIInvocationStatus.SUCCEEDED,
+                    AIInvocationStatus.FAILED,
+                    AIInvocationStatus.AMBIGUOUS,
+                }
+                else None
+            )
+            await _deliver_owned_signal_echo(
+                session,
+                notifier,
+                ownership=ownership,
+                raw_payload_id=raw_payload_id,
+                text=echo_text,
+                processed=parse_result.processed,
+                ai_invocation_id=terminal_invocation_id,
+                buttons=buttons,
+                reply_to=str(message_id) if message_id else None,
+                notifier_resolver=notifier_resolver,
+                preparation_scope=preparation_scope,
+            )
+            return
+        except Exception:
+            await session.rollback()
+            try:
+                state = await _platform_signal_t1_state(
+                    session,
+                    ownership=ownership,
+                    raw_payload_id=raw_payload_id,
+                    invocation_id=invocation_id,
+                )
+            except Exception:
+                await session.rollback()
+                raise InboundOwnershipError(
+                    "platform signal completion outcome could not be confirmed"
+                ) from None
+            await session.rollback()
+            if state == "authoritative":
+                return
+            if state == "retryable" and attempt == 0:
+                continue
+            raise InboundOwnershipError(
+                "platform signal completion could not be committed"
+            ) from None
 
 
 def _same_message_versions(
@@ -1455,6 +1987,7 @@ async def handle_text(
     raw: RawPayload | None = None,
     edited: bool = False,
     parser_alert_context: alerts_service.ProviderAlertContext | None = None,
+    notifier_resolver: BoundNotifierResolver | None = None,
 ) -> None:
     """The channel-agnostic entry point (C8): already text, whatever produced it."""
     if ownership is not None and not isinstance(
@@ -1490,19 +2023,13 @@ async def handle_text(
     # a new bot: capturing it costs a model call and answers "разобрать не смог",
     # which reads as broken on the first ever message.
     if text.startswith("/"):
-        # Stored anyway, and marked done on the spot: the raw row is what a
-        # webhook retry trips over, and without it Telegram's second delivery of
-        # the same ``/start`` gets a second identical answer. ``processed`` keeps
-        # the re-parse sweep from feeding «/start» to the parser later.
-        if raw is not None:
-            if not await _mark_raw_processed(
-                session,
-                raw,
-                ownership=ownership,
-            ):
-                return
-        else:
-            await signals_service.store_raw_text(
+        if ownership is None:
+            # Preserve the zero-subject injected compatibility path. It has no
+            # durable delivery authority and therefore keeps the former local
+            # raw+direct-send transaction behavior.
+            if raw is not None:
+                raise TypeError("a claimed raw requires proactive ownership")
+            raw = await signals_service.store_raw_text(
                 session,
                 text=text,
                 external_id=external_id,
@@ -1511,14 +2038,76 @@ async def handle_text(
                 identity=owner_identity,
                 integration_connection_id=connection_id,
             )
-        await delivery.send(
-            session,
-            notifier,
-            text=COMMAND_REPLY,
-            category=delivery.CATEGORY_REPLY,
-            reply_to=str(message_id) if message_id else None,
-            ownership=ownership,
-        )
+            await delivery.send(
+                session,
+                notifier,
+                text=COMMAND_REPLY,
+                category=delivery.CATEGORY_REPLY,
+                reply_to=str(message_id) if message_id else None,
+                ownership=None,
+            )
+        else:
+            if notifier is not None and not isinstance(notifier, BoundNotifier):
+                raise InboundOwnershipError(
+                    "owned delivery requires an exact bound notifier"
+                )
+            if raw is None:
+                raw = await signals_service.store_raw_text(
+                    session,
+                    text=text,
+                    external_id=external_id,
+                    source=SOURCE,
+                    processed=False,
+                    identity=owner_identity,
+                    integration_connection_id=connection_id,
+                )
+                # Raw-first remains durable before any composed outbound T1.
+                await session.commit()
+
+            preparation_scope = await delivery.lock_delivery_preparation_scope(
+                session,
+                notifier,
+                category=delivery.CATEGORY_REPLY,
+                ownership=ownership,
+            )
+            if preparation_scope is None:
+                await session.rollback()
+                return
+            if not await _mark_raw_processed(
+                session,
+                raw,
+                ownership=ownership,
+                commit_success=False,
+            ):
+                return
+
+            async def _command_is_current() -> bool:
+                return await _raw_delivery_is_current(
+                    session,
+                    ownership=ownership,
+                    raw_payload_id=raw.id,
+                    ai_invocation_id=None,
+                    ai_purpose=None,
+                    expected_processed=True,
+                    reject_misparse=False,
+                )
+
+            await _deliver_owned_raw(
+                session,
+                notifier,
+                ownership=ownership,
+                raw_payload_id=raw.id,
+                text=COMMAND_REPLY,
+                category=delivery.CATEGORY_REPLY,
+                idempotency_key=delivery.make_delivery_idempotency_key(
+                    "telegram-command-reply",
+                    raw.id,
+                ),
+                reply_to=str(message_id) if message_id else None,
+                is_current=_command_is_current,
+                notifier_resolver=notifier_resolver,
+                preparation_scope=preparation_scope,
+            )
         return
 
     answered = (
@@ -1544,7 +2133,7 @@ async def handle_text(
         # into signals, so the re-parse sweep must not pick it up and turn «почему
         # пульс низкий?» into a symptom row.
         if raw is None:
-            await signals_service.store_raw_text(
+            raw = await signals_service.store_raw_text(
                 session,
                 text=text,
                 external_id=external_id,
@@ -1561,6 +2150,7 @@ async def handle_text(
             message_id=message_id,
             ownership=ownership,
             raw=raw,
+            notifier_resolver=notifier_resolver,
         )
         return
 
@@ -1574,6 +2164,13 @@ async def handle_text(
                 identity=owner_identity,
                 integration_connection_id=connection_id,
             )
+        if notifier is None:
+            # A platform-funded parse is useful here only when its terminal
+            # result can atomically claim the exact outbound occurrence. Keep
+            # the raw pending so a later authenticated delivery endpoint can
+            # recover it without paying for an answer that cannot be sent.
+            await session.commit()
+            return
         # Classification/raw reads above intentionally precede AI authorization.
         # Close them so T1 begins with governance -> S -> owner -> C -> raw.
         await session.commit()
@@ -1586,6 +2183,13 @@ async def handle_text(
         await session.commit()
         parse_result: signal_ai_service.SignalParseResult
         if prepared_parse.fallback is signal_ai_service.SignalParseFallback.ALREADY_PROCESSED:
+            return
+        if prepared_parse.fallback is signal_ai_service.SignalParseFallback.PENDING:
+            # Another authorized worker already owns the provider lease, or a
+            # scheduler-owned PREPARED reservation is waiting for its recovery
+            # path. An ai=NULL echo here would win raw/category uniqueness and
+            # prevent that invocation's terminal T1 from linking its delivery.
+            await session.commit()
             return
         if prepared_parse.dispatchable:
             try:
@@ -1616,12 +2220,28 @@ async def handle_text(
                     prepared_parse,
                     lease,
                 )
-                parse_result = await signal_ai_service.persist_signal_parse(
+                await _persist_and_deliver_platform_signal(
                     session,
-                    prepared_parse,
-                    completion,
+                    prepared_parse=prepared_parse,
+                    completion=completion,
+                    notifier=notifier,
+                    ownership=ownership,
+                    message_id=message_id,
+                    notifier_resolver=notifier_resolver,
                 )
-                await session.commit()
+                try:
+                    await signal_ai_service.reconcile_signal_parser_alert(
+                        session,
+                        ownership=ownership,
+                    )
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    logger.warning(
+                        "could not reconcile the platform signal-parser alert "
+                        "(code=alert_reconcile_failed)",
+                    )
+                return
         else:
             parse_result = signal_ai_service.SignalParseResult(
                 invocation_id=prepared_parse.invocation_id,
@@ -1630,34 +2250,12 @@ async def handle_text(
                 stale=False,
                 fallback=prepared_parse.fallback,
             )
-        try:
-            await signal_ai_service.reconcile_signal_parser_alert(
-                session,
-                ownership=ownership,
-            )
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            logger.warning(
-                "could not reconcile the platform signal-parser alert",
-                exc_info=True,
-            )
         if parse_result.stale:
             return
-        if not parse_result.processed:
-            echo_text = "Сохранил как есть — разобрать не смог. Посмотрю позже."
-            buttons = None
-        elif not parse_result.signals:
-            echo_text = (
-                "Записал. Фактов для графиков тут не нашёл — "
-                "если что-то важное, скажи прямо."
-            )
-            buttons = None
-        else:
-            echo_text = render_echo(parse_result.signals)
-            buttons = [
-                ("не то", f"{CB_MISPARSE}{parse_result.signals[0].batch_id}")
-            ]
+        echo_text, buttons = _signal_echo_payload(
+            processed=parse_result.processed,
+            rows=parse_result.signals,
+        )
         terminal_invocation_id = (
             parse_result.invocation_id
             if parse_result.status
@@ -1668,75 +2266,30 @@ async def handle_text(
             }
             else None
         )
-        if not await _signal_echo_is_current(
+        await _deliver_owned_signal_echo(
             session,
+            notifier,
             ownership=ownership,
             raw_payload_id=prepared_parse.raw_payload_id,
-            ai_invocation_id=terminal_invocation_id,
-        ):
-            await session.commit()
-            return
-        prepared_delivery = await delivery._prepare_delivery(
-            session,
-            notifier,
             text=echo_text,
-            category=delivery.CATEGORY_ECHO,
+            processed=parse_result.processed,
+            ai_invocation_id=terminal_invocation_id,
             buttons=buttons,
             reply_to=str(message_id) if message_id else None,
-            ownership=ownership,
-            ai_invocation_id=terminal_invocation_id,
+            notifier_resolver=notifier_resolver,
         )
-        await session.commit()
-        if prepared_delivery is None:
-            return
-        assert notifier is not None
-        delivered = await delivery._transmit_prepared_delivery(
-            notifier,
-            prepared_delivery,
-        )
-        if delivered is None:
-            return
-        journal_delivery = prepared_delivery
         try:
-            still_current = await _signal_echo_is_current(
+            await signal_ai_service.reconcile_signal_parser_alert(
                 session,
                 ownership=ownership,
-                raw_payload_id=prepared_parse.raw_payload_id,
-                ai_invocation_id=terminal_invocation_id,
             )
             await session.commit()
         except Exception:
             await session.rollback()
-            still_current = False
             logger.warning(
-                "could not revalidate a delivered signal echo",
-                exc_info=True,
+                "could not reconcile the platform signal-parser alert "
+                "(code=alert_reconcile_failed)",
             )
-        if not still_current:
-            replacement_text = t("telegram.signal_echo_superseded")
-            try:
-                await notifier.edit(
-                    delivered.external_id,
-                    replacement_text,
-                    buttons=None,
-                )
-            except Exception:
-                logger.warning(
-                    "could not neutralize a superseded signal echo",
-                    exc_info=True,
-                )
-            else:
-                journal_delivery = replace(
-                    prepared_delivery,
-                    text=replacement_text,
-                    buttons=None,
-                )
-        await delivery._journal_prepared_delivery(
-            session,
-            journal_delivery,
-            external_id=delivered.external_id,
-        )
-        await session.commit()
         return
 
     parser = parse
@@ -1756,6 +2309,14 @@ async def handle_text(
         raise InboundOwnershipError(
             "parser alert context requires proactive ownership"
         )
+    if (
+        ownership is not None
+        and notifier is not None
+        and not isinstance(notifier, BoundNotifier)
+    ):
+        raise InboundOwnershipError(
+            "owned delivery requires an exact bound notifier"
+        )
 
     async def _before_live_parse(
         parse_session: AsyncSession,
@@ -1774,6 +2335,7 @@ async def handle_text(
 
     outcome = signals_service.ParserOutcome()
     claimed_raw = raw is not None
+    preparation_scope: delivery.DeliveryPreparationScope | None = None
     if raw is None:
         raw = await signals_service.store_raw_text(
             session,
@@ -1783,6 +2345,31 @@ async def handle_text(
             identity=owner_identity,
             integration_connection_id=connection_id,
         )
+
+    async def _before_signal_normalize(
+        normalize_session: AsyncSession,
+        normalize_raw: RawPayload,
+    ) -> None:
+        nonlocal preparation_scope
+        if ownership is not None and notifier is not None:
+            preparation_scope = await delivery.lock_delivery_preparation_scope(
+                normalize_session,
+                notifier,
+                category=delivery.CATEGORY_ECHO,
+                ownership=ownership,
+            )
+            if preparation_scope is None:
+                raise InboundOwnershipError(
+                    "signal delivery preparation scope is unavailable"
+                )
+        if claimed_raw:
+            assert ownership is not None
+            await _lock_pending_raw_for_completion(
+                normalize_session,
+                normalize_raw,
+                ownership=ownership,
+            )
+
     try:
         rows = await signals_service.ingest_stored_text(
             session,
@@ -1795,16 +2382,8 @@ async def handle_text(
             integration_connection_id=connection_id,
             before_parse=_before_live_parse,
             before_normalize=(
-                (
-                    lambda normalize_session, normalize_raw: (
-                        _lock_pending_raw_for_completion(
-                            normalize_session,
-                            normalize_raw,
-                            ownership=ownership,
-                        )
-                    )
-                )
-                if claimed_raw
+                _before_signal_normalize
+                if ownership is not None
                 else None
             ),
             parser_outcome=outcome,
@@ -1813,51 +2392,48 @@ async def handle_text(
         await session.commit()
         return
 
-    # Signals/raw terminal state must win durability before any Telegram send.
-    # An edit waiting on the subject lock can then supersede the complete batch.
     parser_pending = not rows and raw.processed_at is None
-    await session.commit()
+
+    echo_text, buttons = _signal_echo_payload(
+        processed=not parser_pending,
+        rows=rows,
+    )
+
+    if ownership is None:
+        await session.commit()
+        await delivery.send(
+            session,
+            notifier,
+            text=echo_text,
+            category=delivery.CATEGORY_ECHO,
+            buttons=buttons,
+            reply_to=str(message_id) if message_id else None,
+            ownership=None,
+        )
+        await _reconcile_parser_alert_best_effort(
+            session,
+            context=parser_alert_context,
+            outcome=outcome,
+        )
+        return
+
+    await _deliver_owned_signal_echo(
+        session,
+        notifier,
+        ownership=ownership,
+        raw_payload_id=raw.id,
+        text=echo_text,
+        processed=not parser_pending,
+        ai_invocation_id=None,
+        buttons=buttons,
+        reply_to=str(message_id) if message_id else None,
+        notifier_resolver=notifier_resolver,
+        preparation_scope=preparation_scope,
+    )
     await _reconcile_parser_alert_best_effort(
         session,
         context=parser_alert_context,
         outcome=outcome,
-    )
-
-    if parser_pending:
-        await delivery.send(
-            session,
-            notifier,
-            text="Сохранил как есть — разобрать не смог. Посмотрю позже.",
-            category=delivery.CATEGORY_ECHO,
-            reply_to=str(message_id) if message_id else None,
-            ownership=ownership,
-        )
-        return
-
-    if not rows:
-        # Not an error, and it must not read like one. The evening block asks «как
-        # день?» and «весь день за компом» is a perfectly good answer that simply
-        # holds no state, symptom or exposure — the schema has nowhere to put it.
-        # The text is saved either way and the re-parse sweep sees it again, so
-        # the honest thing to say is that it is written down.
-        await delivery.send(
-            session,
-            notifier,
-            text="Записал. Фактов для графиков тут не нашёл — если что-то важное, скажи прямо.",
-            category=delivery.CATEGORY_ECHO,
-            reply_to=str(message_id) if message_id else None,
-            ownership=ownership,
-        )
-        return
-
-    await delivery.send(
-        session,
-        notifier,
-        text=render_echo(rows),
-        category=delivery.CATEGORY_ECHO,
-        buttons=[("не то", f"{CB_MISPARSE}{rows[0].batch_id}")],
-        reply_to=str(message_id) if message_id else None,
-        ownership=ownership,
     )
 
 
@@ -1870,26 +2446,26 @@ async def _answer_reply(
     message_id: Optional[Any],
     ownership: ProactiveOwnershipContext | None,
     raw: RawPayload | None = None,
+    notifier_resolver: BoundNotifierResolver | None = None,
 ) -> None:
     """``answered`` is the message being replied to; for a question typed on its
     own the last few things we said stand in for it."""
-    if answered is not None:
-        context = (answered.payload or {}).get("text") or ""
-    else:
-        context = "\n\n".join(
-            text
-            for row in await delivery.recent_sent(
-                session,
-                limit=_CONTEXT_MESSAGES,
-                ownership=ownership,
-            )
-            if (text := (row.payload or {}).get("text"))
-        )
-    facts = await _day_facts(session, ownership=ownership)
-
     # Compatibility for zero-subject injected parsers: this intentionally keeps
     # the former dependency-injection seam and has no platform-AI authority.
     if ownership is None:
+        if answered is not None:
+            context = (answered.payload or {}).get("text") or ""
+        else:
+            context = "\n\n".join(
+                text
+                for row in await delivery.recent_sent(
+                    session,
+                    limit=_CONTEXT_MESSAGES,
+                    ownership=None,
+                )
+                if (text := (row.payload or {}).get("text"))
+            )
+        facts = await _day_facts(session, ownership=None)
         await session.commit()
         try:
             text = await answer_reply(question, context, facts)
@@ -1919,6 +2495,18 @@ async def _answer_reply(
     if raw is None:
         raise InboundOwnershipError("owned question replies require their claimed raw")
     raw_payload_id = raw.id
+    # Every durable state owns this raw/category occurrence. Check it before any
+    # paid AI work, and never reconstruct or retransmit a persisted claim.
+    await session.commit()
+    if await delivery.delivery_claim_for_raw(
+        session,
+        raw_payload_id=raw_payload_id,
+        category=delivery.CATEGORY_REPLY,
+        ownership=ownership,
+    ) is not None:
+        await session.commit()
+        return
+    await session.commit()
     # A reply has no durable artifact other than the journal.  Never spend a
     # platform-funded attempt when there is no channel on which it can appear.
     if notifier is None:
@@ -1926,6 +2514,8 @@ async def _answer_reply(
             await _mark_raw_processed(session, raw, ownership=ownership)
         await session.commit()
         return
+    if not isinstance(notifier, BoundNotifier):
+        raise InboundOwnershipError("owned question requires an exact bound notifier")
     # Materialize all composition/delivery reads before T1.  The next transaction
     # acquires governance -> S -> owner -> current Telegram C -> raw, so no
     # notification/digest read lock can invert that order.
@@ -1934,6 +2524,19 @@ async def _answer_reply(
     ):
         await session.commit()
         return
+    if answered is not None:
+        context = (answered.payload or {}).get("text") or ""
+    else:
+        context = "\n\n".join(
+            text
+            for row in await delivery.recent_sent(
+                session,
+                limit=_CONTEXT_MESSAGES,
+                ownership=ownership,
+            )
+            if (text := (row.payload or {}).get("text"))
+        )
+    facts = await _day_facts(session, ownership=ownership)
     await session.commit()
     result: question_ai_service.QuestionReplyResult | None = None
     prepared_question = None
@@ -2066,51 +2669,50 @@ async def _answer_reply(
         }
         else None
     )
-    if await question_ai_service.raw_is_superseded(
-        session, subject_id=ownership.subject_id, raw_payload_id=raw_payload_id
-    ):
-        await session.commit()
-        return
-    prepared_delivery = await delivery._prepare_delivery(
+    async def _question_is_current() -> bool:
+        return await _raw_delivery_is_current(
+            session,
+            ownership=ownership,
+            raw_payload_id=raw_payload_id,
+            ai_invocation_id=invocation_id,
+            ai_purpose=(
+                AIInvocationPurpose.QUESTION_REPLY
+                if invocation_id is not None
+                else None
+            ),
+            expected_processed=True,
+            reject_misparse=False,
+        )
+
+    delivered = await _deliver_owned_raw(
         session,
         notifier,
+        ownership=ownership,
+        raw_payload_id=raw_payload_id,
         text=text,
         category=delivery.CATEGORY_REPLY,
-        dedupe_key=question_ai_service.delivery_dedupe_key(raw_payload_id),
+        idempotency_key=question_ai_service.delivery_dedupe_key(raw_payload_id),
+        legacy_dedupe_key=question_ai_service.legacy_delivery_dedupe_key(
+            raw_payload_id
+        ),
         reply_to=str(message_id) if message_id else None,
-        ownership=ownership,
         ai_invocation_id=invocation_id,
         redact_journal_content=True,
-        journal_raw_payload_id=raw_payload_id,
-    )
-    # Delivery policy reads/locks are complete. Never retain their transaction
-    # across Telegram; journal a successful send in a fresh transaction. This
-    # preserves the known best-effort outbound race until durable claims exist.
-    await session.commit()
-    if prepared_delivery is None:
-        return
-    assert notifier is not None
-    delivered = await delivery._transmit_prepared_delivery(
-        notifier,
-        prepared_delivery,
+        is_current=_question_is_current,
+        notifier_resolver=notifier_resolver,
     )
     if delivered is None:
         return
+    journal = delivered.journal
+
+    # The exact physical send is terminal and journaled before a later edit can
+    # neutralize it. The journal remains the redacted original-send record.
     try:
-        await delivery._require_ownership_scope(
-            session,
-            ownership,
-            channel=notifier.channel,
-        )
+        still_current = await _question_is_current()
         still_enabled = await prefs.bot_enabled(
             session,
             subject_id=ownership.subject_id,
             strict=True,
-        )
-        still_current = not await question_ai_service.raw_is_superseded(
-            session,
-            subject_id=ownership.subject_id,
-            raw_payload_id=raw_payload_id,
         )
         await session.commit()
     except Exception:
@@ -2122,8 +2724,8 @@ async def _answer_reply(
         )
     if not (still_enabled and still_current):
         try:
-            await notifier.edit(
-                delivered.external_id,
+            await delivered.notifier.edit(
+                journal.external_id,
                 t("telegram.question_reply_withdrawn"),
                 buttons=None,
             )
@@ -2134,23 +2736,388 @@ async def _answer_reply(
             logger.warning(
                 "could not withdraw a stale Telegram question reply"
             )
-    await delivery._journal_prepared_delivery(
+
+
+async def _claimed_raw_delivery(
+    session: AsyncSession,
+    *,
+    raw_payload_id: int,
+    ownership: ProactiveOwnershipContext,
+) -> _ClaimedRawDelivery | None:
+    claims: list[NotificationDeliveryIntent] = []
+    for category in (delivery.CATEGORY_REPLY, delivery.CATEGORY_ECHO):
+        claim = await delivery.delivery_claim_for_raw(
+            session,
+            raw_payload_id=raw_payload_id,
+            category=category,
+            ownership=ownership,
+        )
+        if claim is not None:
+            claims.append(claim)
+    if len(claims) > 1:
+        raise InboundOwnershipError(
+            "Telegram raw has conflicting reply and echo delivery claims"
+        )
+    if not claims:
+        return None
+    claim = claims[0]
+    return _ClaimedRawDelivery(
+        category=claim.category,
+        status=claim.status,
+        ai_invocation_id=claim.ai_invocation_id,
+        error_code=claim.error_code,
+    )
+
+
+def _raw_reply_target(raw: RawPayload) -> str | None:
+    message, _edited = _message_from_raw(raw)
+    message_id = message.get("message_id")
+    return str(message_id) if message_id is not None else None
+
+
+async def _recovered_question_is_current(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext,
+    raw_payload_id: int,
+    ai_invocation_id: uuid.UUID | None,
+) -> bool:
+    return await _raw_delivery_is_current(
         session,
-        prepared_delivery,
-        external_id=delivered.external_id,
+        ownership=ownership,
+        raw_payload_id=raw_payload_id,
+        ai_invocation_id=ai_invocation_id,
+        ai_purpose=(
+            AIInvocationPurpose.QUESTION_REPLY
+            if ai_invocation_id is not None
+            else None
+        ),
+        expected_processed=True,
+        reject_misparse=False,
+    )
+
+
+async def _withdraw_recovered_question_if_stale(
+    session: AsyncSession,
+    notifier: BoundNotifier,
+    journal: Notification,
+    *,
+    ownership: ProactiveOwnershipContext,
+    raw_payload_id: int,
+    ai_invocation_id: uuid.UUID | None,
+) -> None:
+    try:
+        still_current = await _recovered_question_is_current(
+            session,
+            ownership=ownership,
+            raw_payload_id=raw_payload_id,
+            ai_invocation_id=ai_invocation_id,
+        )
+        still_enabled = await prefs.bot_enabled(
+            session,
+            subject_id=ownership.subject_id,
+            strict=True,
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        still_current = False
+        still_enabled = False
+        logger.warning(
+            "could not revalidate a recovered Telegram question reply "
+            "(code=revalidation_failed)"
+        )
+    if still_current and still_enabled:
+        return
+    try:
+        await notifier.edit(
+            journal.external_id,
+            t("telegram.question_reply_withdrawn"),
+            buttons=None,
+        )
+    except Exception:
+        logger.warning(
+            "could not withdraw a recovered Telegram question reply "
+            "(code=edit_failed)"
+        )
+
+
+async def _validate_recovered_signal_rows(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    ownership: ProactiveOwnershipContext,
+) -> list[Signal]:
+    rows = list(
+        await session.scalars(
+            select(Signal)
+            .where(Signal.raw_id == raw.id)
+            .order_by(Signal.id)
+            .execution_options(populate_existing=True)
+        )
+    )
+    batch_ids = {row.batch_id for row in rows}
+    if len(batch_ids) > 1:
+        raise InboundOwnershipError("recovered signal echo has multiple batches")
+    if any(
+        row.subject_id != ownership.subject_id
+        or row.actor_user_id not in {None, ownership.recipient_user_id}
+        or row.integration_connection_id != raw.integration_connection_id
+        or row.domain != Domain.SIGNALS.value
+        or row.source != SOURCE
+        or row.misparse
+        for row in rows
+    ):
+        raise InboundOwnershipError("recovered signal echo provenance is invalid")
+    return rows
+
+
+async def _recover_stale_raw_delivery(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    claim: _ClaimedRawDelivery,
+    notifier: Notifier | None,
+    ownership: ProactiveOwnershipContext,
+    stale_before: datetime,
+    notifier_resolver: BoundNotifierResolver | None = None,
+) -> bool:
+    """Re-arm one stale pre-network claim from deterministic durable domain state."""
+
+    if notifier is not None and not isinstance(notifier, BoundNotifier):
+        raise InboundOwnershipError("delivery recovery requires an exact bound notifier")
+    recoverable_cancel_codes = {
+        NotificationDeliveryErrorCode.STALE_PENDING.value,
+        NotificationDeliveryErrorCode.SCOPE_INVALID.value,
+    }
+    if claim.status not in {
+        NotificationDeliveryStatus.PENDING.value,
+        NotificationDeliveryStatus.CANCELLED.value,
+    } or (
+        claim.status == NotificationDeliveryStatus.CANCELLED.value
+        and claim.error_code not in recoverable_cancel_codes
+    ):
+        await session.commit()
+        return False
+
+    raw = await session.scalar(
+        select(RawPayload)
+        .where(RawPayload.id == raw.id)
+        .execution_options(populate_existing=True)
+    )
+    if raw is None:
+        raise InboundOwnershipError("delivery recovery raw disappeared")
+    await _validate_raw_root(session, raw, ownership=ownership)
+    message, _edited = _message_from_raw(raw)
+    raw_text = str(message.get("text") or "").strip()
+    reply_to = _raw_reply_target(raw)
+    ai_invocation_id = claim.ai_invocation_id
+    recovery_progress = _RawDeliveryRecoveryProgress()
+
+    if claim.category == delivery.CATEGORY_REPLY:
+        if raw_text.startswith("/"):
+            if ai_invocation_id is not None:
+                raise InboundOwnershipError("command delivery has AI provenance")
+
+            async def _command_is_current() -> bool:
+                return await _raw_delivery_is_current(
+                    session,
+                    ownership=ownership,
+                    raw_payload_id=raw.id,
+                    ai_invocation_id=None,
+                    ai_purpose=None,
+                    expected_processed=True,
+                    reject_misparse=False,
+                )
+
+            await session.commit()
+            delivered = await _deliver_owned_raw(
+                session,
+                notifier,
+                ownership=ownership,
+                raw_payload_id=raw.id,
+                text=COMMAND_REPLY,
+                category=delivery.CATEGORY_REPLY,
+                idempotency_key=delivery.make_delivery_idempotency_key(
+                    "telegram-command-reply",
+                    raw.id,
+                ),
+                reply_to=reply_to,
+                is_current=_command_is_current,
+                rearm_stale_before=stale_before,
+                notifier_resolver=notifier_resolver,
+                recovery_progress=recovery_progress,
+            )
+            journal = delivered.journal if delivered is not None else None
+        else:
+            reply_message = message.get("reply_to_message")
+            reply_message = reply_message if isinstance(reply_message, dict) else {}
+            reply_id = reply_message.get("message_id")
+            answered = (
+                await delivery.find_sent(
+                    session,
+                    str(reply_id),
+                    ownership=ownership,
+                )
+                if reply_id is not None
+                else None
+            )
+            if (
+                answered is not None
+                and answered.category == delivery.CATEGORY_EVENING
+            ) or (answered is None and not looks_like_question(raw_text)):
+                raise InboundOwnershipError(
+                    "question delivery raw no longer classifies as a question"
+                )
+
+            async def _question_is_current() -> bool:
+                return await _recovered_question_is_current(
+                    session,
+                    ownership=ownership,
+                    raw_payload_id=raw.id,
+                    ai_invocation_id=ai_invocation_id,
+                )
+
+            await session.commit()
+            delivered = await _deliver_owned_raw(
+                session,
+                notifier,
+                ownership=ownership,
+                raw_payload_id=raw.id,
+                text=_NO_LLM_REPLY,
+                category=delivery.CATEGORY_REPLY,
+                idempotency_key=question_ai_service.delivery_dedupe_key(raw.id),
+                legacy_dedupe_key=question_ai_service.legacy_delivery_dedupe_key(
+                    raw.id
+                ),
+                reply_to=reply_to,
+                ai_invocation_id=ai_invocation_id,
+                redact_journal_content=True,
+                is_current=_question_is_current,
+                rearm_stale_before=stale_before,
+                notifier_resolver=notifier_resolver,
+                recovery_progress=recovery_progress,
+            )
+            journal = delivered.journal if delivered is not None else None
+            if delivered is not None:
+                await _withdraw_recovered_question_if_stale(
+                    session,
+                    delivered.notifier,
+                    delivered.journal,
+                    ownership=ownership,
+                    raw_payload_id=raw.id,
+                    ai_invocation_id=ai_invocation_id,
+                )
+    elif claim.category == delivery.CATEGORY_ECHO:
+        if not await _raw_text_is_signal_candidate(
+            session,
+            raw,
+            ownership=ownership,
+        ):
+            raise InboundOwnershipError(
+                "echo delivery raw no longer classifies as a signal"
+            )
+        processed = raw.processed_at is not None
+        rows = await _validate_recovered_signal_rows(
+            session,
+            raw=raw,
+            ownership=ownership,
+        )
+        if rows and not processed:
+            raise InboundOwnershipError("pending signal raw already has normalized facts")
+        if not processed:
+            echo_text = _PARSER_PENDING_REPLY
+            buttons = None
+        elif not rows:
+            echo_text = _NO_SIGNAL_FACTS_REPLY
+            buttons = None
+        else:
+            echo_text = render_echo(rows)
+            buttons = [("не то", f"{CB_MISPARSE}{rows[0].batch_id}")]
+        await session.commit()
+        journal = await _deliver_owned_signal_echo(
+            session,
+            notifier,
+            ownership=ownership,
+            raw_payload_id=raw.id,
+            text=echo_text,
+            processed=processed,
+            ai_invocation_id=ai_invocation_id,
+            buttons=buttons,
+            reply_to=reply_to,
+            rearm_stale_before=stale_before,
+            notifier_resolver=notifier_resolver,
+            recovery_progress=recovery_progress,
+        )
+    else:
+        raise InboundOwnershipError("raw delivery recovery category is invalid")
+
+    if journal is not None:
+        return True
+    return recovery_progress.claimed_work
+
+
+async def _recover_existing_raw_delivery(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    notifier: Notifier | None,
+    ownership: ProactiveOwnershipContext,
+    stale_before: datetime | None = None,
+    notifier_resolver: BoundNotifierResolver | None = None,
+) -> tuple[bool, bool]:
+    claim = await _claimed_raw_delivery(
+        session,
+        raw_payload_id=raw.id,
+        ownership=ownership,
     )
     await session.commit()
+    if claim is None:
+        return False, False
+    if claim.status not in {
+        NotificationDeliveryStatus.PENDING.value,
+        NotificationDeliveryStatus.CANCELLED.value,
+    }:
+        return True, False
+    recovered = await _recover_stale_raw_delivery(
+        session,
+        raw=raw,
+        claim=claim,
+        notifier=notifier,
+        ownership=ownership,
+        notifier_resolver=notifier_resolver,
+        stale_before=(
+            stale_before
+            if stale_before is not None
+            else now_utc().astimezone(timezone.utc) - delivery.PENDING_STALE_AFTER
+        ),
+    )
+    return True, recovered
 
 
-async def _recover_claimed_question(
+async def _raw_recovery_state(
     session: AsyncSession,
     *,
     raw: RawPayload,
     notifier: Optional[Notifier],
     ownership: ProactiveOwnershipContext,
-) -> bool:
-    """Resume only an already-classified question; never reparse an old fact."""
-
+    stale_before: datetime | None = None,
+    notifier_resolver: BoundNotifierResolver | None = None,
+) -> _RawRecoveryState:
+    claimed, recovered = await _recover_existing_raw_delivery(
+        session,
+        raw=raw,
+        notifier=notifier,
+        ownership=ownership,
+        stale_before=stale_before,
+        notifier_resolver=notifier_resolver,
+    )
+    if claimed:
+        return (
+            _RawRecoveryState.RECOVERED
+            if recovered
+            else _RawRecoveryState.AUTHORITATIVE
+        )
     # A stable journal is a completed lineage, not recovery work. Validate it
     # before classification but do not consume the per-run work budget; this is
     # essential when Redis is unavailable and every scan starts from raw id 0.
@@ -2160,7 +3127,27 @@ async def _recover_claimed_question(
         ownership=ownership,
     ):
         await session.commit()
-        return False
+        return _RawRecoveryState.AUTHORITATIVE
+    current = await session.get(RawPayload, raw.id, populate_existing=True)
+    if current is None:
+        raise InboundOwnershipError("Telegram recovery raw disappeared")
+    await _validate_raw_root(
+        session,
+        current,
+        ownership=ownership,
+        lock_connection=False,
+    )
+    return _RawRecoveryState.UNCLAIMED
+
+
+async def _recover_unclaimed_question(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    notifier: Optional[Notifier],
+    ownership: ProactiveOwnershipContext,
+    notifier_resolver: BoundNotifierResolver | None = None,
+) -> bool:
     message, _edited = _message_from_raw(raw)
     question = (message.get("text") or "").strip()
     if not question or question.startswith("/"):
@@ -2170,7 +3157,14 @@ async def _recover_claimed_question(
     ):
         await session.commit()
         return False
-    reply_to = (message.get("reply_to_message") or {}).get("message_id")
+    reply_message = message.get("reply_to_message")
+    if reply_message is None:
+        reply_message = {}
+    if not isinstance(reply_message, dict):
+        raise InboundOwnershipError(
+            "Telegram recovery reply provenance is invalid"
+        )
+    reply_to = reply_message.get("message_id")
     answered = (
         await delivery.find_sent(session, str(reply_to), ownership=ownership)
         if reply_to is not None
@@ -2188,8 +3182,253 @@ async def _recover_claimed_question(
         message_id=message.get("message_id"),
         ownership=ownership,
         raw=raw,
+        notifier_resolver=notifier_resolver,
     )
     return True
+
+
+async def _recover_claimed_question(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    notifier: Optional[Notifier],
+    ownership: ProactiveOwnershipContext,
+    stale_before: datetime | None = None,
+    notifier_resolver: BoundNotifierResolver | None = None,
+) -> bool:
+    """Resume only question lineage while preserving the historical test seam."""
+
+    state = await _raw_recovery_state(
+        session,
+        raw=raw,
+        notifier=notifier,
+        ownership=ownership,
+        stale_before=stale_before,
+        notifier_resolver=notifier_resolver,
+    )
+    if state is not _RawRecoveryState.UNCLAIMED:
+        return state is _RawRecoveryState.RECOVERED
+    return await _recover_unclaimed_question(
+        session,
+        raw=raw,
+        notifier=notifier,
+        ownership=ownership,
+        notifier_resolver=notifier_resolver,
+    )
+
+
+async def _signal_invocation_gap(
+    session: AsyncSession,
+    *,
+    raw_payload_id: int,
+    ownership: ProactiveOwnershipContext,
+) -> tuple[str, uuid.UUID | None]:
+    rows = list(
+        await session.scalars(
+            select(AIInvocation)
+            .where(
+                AIInvocation.raw_payload_id == raw_payload_id,
+                AIInvocation.purpose == AIInvocationPurpose.SIGNAL_PARSE.value,
+            )
+            .order_by(AIInvocation.created_at, AIInvocation.id)
+            .execution_options(populate_existing=True)
+        )
+    )
+    live = 0
+    for row in rows:
+        if (
+            row.subject_id != ownership.subject_id
+            or row.raw_payload_id != raw_payload_id
+            or row.status not in {item.value for item in AIInvocationStatus}
+            or not (
+                (
+                    row.source == AIInvocationSource.TELEGRAM.value
+                    and row.actor_user_id == ownership.recipient_user_id
+                )
+                or (
+                    row.source == AIInvocationSource.SCHEDULER.value
+                    and row.actor_user_id is None
+                )
+            )
+        ):
+            raise InboundOwnershipError(
+                "signal recovery invocation provenance is invalid"
+            )
+        if row.status in {
+            AIInvocationStatus.PREPARED.value,
+            AIInvocationStatus.DISPATCHING.value,
+        }:
+            live += 1
+    if live > 1:
+        raise InboundOwnershipError(
+            "signal raw has multiple live parser invocations"
+        )
+    if not rows:
+        return "none", None
+    latest = rows[-1]
+    if latest.source != AIInvocationSource.TELEGRAM.value:
+        return "scheduler", None
+    if latest.status == AIInvocationStatus.DISPATCHING.value:
+        return "dispatching", latest.id
+    if latest.status == AIInvocationStatus.PREPARED.value:
+        return "prepared", latest.id
+    if latest.status in {
+        AIInvocationStatus.SUCCEEDED.value,
+        AIInvocationStatus.FAILED.value,
+        AIInvocationStatus.AMBIGUOUS.value,
+    }:
+        return "terminal", latest.id
+    return "cancelled", latest.id
+
+
+async def _recover_claimed_text(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    notifier: Optional[Notifier],
+    ownership: ProactiveOwnershipContext,
+    parse: signals_service.Parser | None = None,
+    parser_alert_context: alerts_service.ProviderAlertContext | None = None,
+    recover_unclaimed_signals: bool = True,
+    stale_before: datetime | None = None,
+    notifier_resolver: BoundNotifierResolver | None = None,
+) -> bool:
+    """Recover one canonical stored raw without trusting the retry envelope."""
+
+    state = await _raw_recovery_state(
+        session,
+        raw=raw,
+        notifier=notifier,
+        ownership=ownership,
+        stale_before=stale_before,
+        notifier_resolver=notifier_resolver,
+    )
+    if state is not _RawRecoveryState.UNCLAIMED:
+        return state is _RawRecoveryState.RECOVERED
+
+    raw = await session.get(RawPayload, raw.id, populate_existing=True)
+    if raw is None or raw.processed_at is not None:
+        if raw is None:
+            await session.commit()
+            return False
+    message, edited = _message_from_raw(raw)
+    text = str(message.get("text") or "").strip()
+    if not text:
+        await session.commit()
+        return False
+    if text.startswith("/"):
+        if raw.processed_at is not None:
+            await session.commit()
+            return False
+        is_signal = False
+    else:
+        is_signal = await _raw_text_is_signal_candidate(
+            session,
+            raw,
+            ownership=ownership,
+        )
+    if text.startswith("/") or is_signal:
+        gap_state, terminal_invocation_id = await _signal_invocation_gap(
+            session,
+            raw_payload_id=raw.id,
+            ownership=ownership,
+        )
+        if not is_signal and gap_state != "none":
+            raise InboundOwnershipError(
+                "command raw has signal-parser invocation provenance"
+            )
+        if is_signal and gap_state == "dispatching":
+            # The paid provider call is still in flight. Creating an ai=NULL
+            # pending echo here would win raw/category uniqueness and make its
+            # terminal T3 impossible to commit.
+            await session.commit()
+            return False
+        if is_signal and gap_state == "terminal":
+            assert terminal_invocation_id is not None
+            rows = await _validate_recovered_signal_rows(
+                session,
+                raw=raw,
+                ownership=ownership,
+            )
+            invocation_status = await session.scalar(
+                select(AIInvocation.status).where(
+                    AIInvocation.id == terminal_invocation_id
+                )
+            )
+            if (
+                invocation_status == AIInvocationStatus.SUCCEEDED.value
+                and raw.processed_at is None
+            ):
+                raise InboundOwnershipError(
+                    "successful signal invocation has a pending raw"
+                )
+            if raw.processed_at is not None and not rows and invocation_status in {
+                AIInvocationStatus.FAILED.value,
+                AIInvocationStatus.AMBIGUOUS.value,
+            }:
+                await session.commit()
+                return False
+            echo_text, buttons = _signal_echo_payload(
+                processed=raw.processed_at is not None,
+                rows=rows,
+            )
+            await session.commit()
+            await _deliver_owned_signal_echo(
+                session,
+                notifier,
+                ownership=ownership,
+                raw_payload_id=raw.id,
+                text=echo_text,
+                processed=raw.processed_at is not None,
+                ai_invocation_id=terminal_invocation_id,
+                buttons=buttons,
+                reply_to=_raw_reply_target(raw),
+                notifier_resolver=notifier_resolver,
+            )
+            return True
+        if is_signal and not recover_unclaimed_signals:
+            # The scheduled signal-reparse pipeline owns ordinary pending facts.
+            # This scan only repairs an exact terminal AI/no-intent gap; otherwise
+            # a long fact backlog would consume the question work budget.
+            await session.commit()
+            return False
+        if is_signal and raw.processed_at is not None:
+            # No live Telegram AI lineage means this is historical terminal
+            # domain state, not a queue for a retroactive echo.
+            await session.commit()
+            return False
+        # Classification above is read-only. Start the composed path with a fresh
+        # root so its preparation scope is acquired before raw/domain locks.
+        await session.commit()
+        reply_message = message.get("reply_to_message")
+        if reply_message is None:
+            reply_message = {}
+        if not isinstance(reply_message, dict):
+            raise InboundOwnershipError(
+                "Telegram recovery reply provenance is invalid"
+            )
+        await handle_text(
+            session,
+            text,
+            notifier=notifier,
+            message_id=message.get("message_id"),
+            reply_to_message_id=reply_message.get("message_id"),
+            parse=parse,
+            on_date=_day_from_raw(raw),
+            ownership=ownership,
+            raw=raw,
+            edited=edited,
+            parser_alert_context=parser_alert_context,
+            notifier_resolver=notifier_resolver,
+        )
+        return True
+    return await _recover_unclaimed_question(
+        session,
+        raw=raw,
+        notifier=notifier,
+        ownership=ownership,
+        notifier_resolver=notifier_resolver,
+    )
 
 
 def _question_recovery_cursor_key(subject_id: uuid.UUID) -> str:
@@ -2220,15 +3459,165 @@ async def _store_question_recovery_cursor(
     redis,
     subject_id: uuid.UUID,
     cursor: int,
-) -> None:
+) -> bool:
     if redis is None:
-        return
+        return False
     try:
         await redis.set(_question_recovery_cursor_key(subject_id), str(cursor))
+        return True
     except Exception:
-        # Invocation-backed gaps remain DB-discoverable. A lost scan cursor only
-        # restarts the bounded raw walk; it can never authorize a duplicate call.
+        # The current worker must stop treating this cursor as durable. It will
+        # continue its in-memory keyset walk without the per-run scan cap, so a
+        # repeatedly failing Redis write cannot strand pre-invocation raws.
         logger.warning("could not persist Telegram question recovery cursor")
+        return False
+
+
+def _delivery_recovery_cursor_key(subject_id: uuid.UUID) -> str:
+    return f"{_DELIVERY_RECOVERY_CURSOR_PREFIX}{subject_id}"
+
+
+def _delivery_cursor_time(value: datetime) -> datetime:
+    if not isinstance(value, datetime):
+        raise InboundOwnershipError("delivery recovery timestamp is invalid")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+async def _load_delivery_recovery_cursor(
+    redis,
+    subject_id: uuid.UUID,
+) -> tuple[tuple[datetime, uuid.UUID] | None, bool]:
+    if redis is None:
+        return None, False
+    try:
+        value = await redis.get(_delivery_recovery_cursor_key(subject_id))
+        if isinstance(value, bytes):
+            value = value.decode("ascii")
+        if value in {None, ""}:
+            return None, True
+        encoded_time, encoded_id = json.loads(value)
+        cursor_time = datetime.fromisoformat(encoded_time)
+        cursor_id = uuid.UUID(encoded_id)
+        return (_delivery_cursor_time(cursor_time), cursor_id), True
+    except (TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        logger.warning("invalid raw delivery recovery cursor; restarting scan")
+        return None, False
+    except Exception:
+        logger.warning("could not read raw delivery recovery cursor")
+        return None, False
+
+
+async def _store_delivery_recovery_cursor(
+    redis,
+    subject_id: uuid.UUID,
+    cursor: tuple[datetime, uuid.UUID] | None,
+) -> bool:
+    if redis is None:
+        return False
+    value = ""
+    if cursor is not None:
+        value = json.dumps(
+            [_delivery_cursor_time(cursor[0]).isoformat(), cursor[1].hex],
+            separators=(",", ":"),
+        )
+    try:
+        await redis.set(_delivery_recovery_cursor_key(subject_id), value)
+        return True
+    except Exception:
+        logger.warning("could not persist raw delivery recovery cursor")
+        return False
+
+
+async def _recoverable_raw_delivery_candidates(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext,
+    stale_before: datetime,
+    after: tuple[datetime, uuid.UUID] | None,
+    limit: int,
+) -> list[_RecoverableDeliveryCandidate]:
+    """Select one keyset page of never-dispatched raw delivery claims."""
+
+    if stale_before.tzinfo is None or stale_before.utcoffset() is None:
+        raise ValueError("delivery recovery cutoff must be timezone-aware")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+        raise ValueError("delivery recovery page limit must be between 1 and 1000")
+    recoverable_cancel_codes = {
+        NotificationDeliveryErrorCode.STALE_PENDING.value,
+        NotificationDeliveryErrorCode.SCOPE_INVALID.value,
+    }
+    predicates = [
+        NotificationDeliveryIntent.subject_id == ownership.subject_id,
+        NotificationDeliveryIntent.recipient_user_id
+        == ownership.recipient_user_id,
+        NotificationDeliveryIntent.channel == IntegrationProvider.TELEGRAM.value,
+        NotificationDeliveryIntent.raw_payload_id.is_not(None),
+        NotificationDeliveryIntent.category.in_(
+            (delivery.CATEGORY_REPLY, delivery.CATEGORY_ECHO)
+        ),
+        or_(
+            and_(
+                NotificationDeliveryIntent.status
+                == NotificationDeliveryStatus.PENDING.value,
+                NotificationDeliveryIntent.updated_at < stale_before,
+            ),
+            and_(
+                NotificationDeliveryIntent.status
+                == NotificationDeliveryStatus.CANCELLED.value,
+                NotificationDeliveryIntent.error_code.in_(recoverable_cancel_codes),
+                NotificationDeliveryIntent.completed_at < stale_before,
+                NotificationDeliveryIntent.updated_at < stale_before,
+            ),
+        ),
+    ]
+    if after is not None:
+        after_time, after_id = after
+        after_time = _delivery_cursor_time(after_time)
+        predicates.append(
+            or_(
+                NotificationDeliveryIntent.updated_at > after_time,
+                and_(
+                    NotificationDeliveryIntent.updated_at == after_time,
+                    NotificationDeliveryIntent.id > after_id,
+                ),
+            )
+        )
+    candidates = list(
+        await session.execute(
+            select(
+                NotificationDeliveryIntent.updated_at,
+                NotificationDeliveryIntent.id,
+                NotificationDeliveryIntent.raw_payload_id,
+            )
+            .where(*predicates)
+            .order_by(
+                NotificationDeliveryIntent.updated_at,
+                NotificationDeliveryIntent.id,
+            )
+            .limit(limit)
+        )
+    )
+    result: list[_RecoverableDeliveryCandidate] = []
+    for updated_at, intent_id, raw_payload_id in candidates:
+        if (
+            not isinstance(intent_id, uuid.UUID)
+            or isinstance(raw_payload_id, bool)
+            or not isinstance(raw_payload_id, int)
+            or raw_payload_id < 1
+        ):
+            raise InboundOwnershipError(
+                "delivery recovery candidate identity is invalid"
+            )
+        result.append(
+            _RecoverableDeliveryCandidate(
+                updated_at=_delivery_cursor_time(updated_at),
+                intent_id=intent_id,
+                raw_payload_id=raw_payload_id,
+            )
+        )
+    return result
 
 
 async def _unjournaled_question_invocation_raw_ids(
@@ -2296,7 +3685,9 @@ async def _run_question_recovery_raw(
     session_factory,
     *,
     raw_payload_id: int,
-    notifier: Notifier,
+    stale_before: datetime | None = None,
+    notifier_resolver: BoundNotifierResolver | None = None,
+    module_enabled: bool | None = None,
 ) -> bool:
     """Resolve fresh roots for one candidate and keep failures isolated."""
 
@@ -2307,29 +3698,52 @@ async def _run_question_recovery_raw(
             session,
             actor_username=None,
         )
-        if not await prefs.bot_enabled(
-            session,
-            subject_id=ownership.subject_id,
-            strict=True,
-        ):
-            await session.commit()
-            return False
+        if module_enabled is None:
+            module_enabled = await prefs.bot_enabled(
+                session,
+                subject_id=ownership.subject_id,
+                strict=True,
+            )
+        elif not isinstance(module_enabled, bool):
+            raise TypeError("module_enabled must be a bool or None")
         raw = await session.get(RawPayload, raw_payload_id)
         if raw is None:
             await session.commit()
             return False
         try:
-            return await _recover_claimed_question(
+            notifier = await channels.build_legacy_bound_notifier(
+                session,
+                ownership,
+            )
+            if notifier is None and module_enabled:
+                await session.commit()
+                return False
+            if not module_enabled:
+                claimed, recovered = await _recover_existing_raw_delivery(
+                    session,
+                    raw=raw,
+                    notifier=notifier,
+                    ownership=ownership,
+                    stale_before=stale_before,
+                    notifier_resolver=notifier_resolver,
+                )
+                return claimed and recovered
+            return await _recover_claimed_text(
                 session,
                 raw=raw,
                 notifier=notifier,
                 ownership=ownership,
+                recover_unclaimed_signals=False,
+                stale_before=stale_before,
+                notifier_resolver=notifier_resolver,
             )
         except (
             InboundOwnershipError,
             question_ai_service.QuestionAIError,
+            delivery.DeliveryError,
             delivery.NotificationOwnershipConflictError,
             delivery.ProactiveOwnershipScopeError,
+            channels.NotifierBindingError,
         ):
             await session.rollback()
             logger.warning(
@@ -2338,7 +3752,12 @@ async def _run_question_recovery_raw(
             return False
 
 
-async def question_reply_recovery_job(session_factory, redis=None) -> None:
+async def question_reply_recovery_job(
+    session_factory,
+    redis=None,
+    *,
+    notifier_resolver: BoundNotifierResolver | None = None,
+) -> None:
     """Bounded durable recovery for claimed Telegram questions.
 
     The worker never re-dispatches an inherited PREPARED invocation and never
@@ -2350,42 +3769,128 @@ async def question_reply_recovery_job(session_factory, redis=None) -> None:
 
     from vitals.services.proactive import channels
 
-    notifier = channels.build_notifier()
-    if notifier is None:
-        return
     async with session_factory() as session:
         ownership = await channels.resolve_legacy_channel_ownership(
             session, actor_username=None
         )
-        if not await prefs.bot_enabled(
+        endpoint_available = (
+            await channels.build_legacy_bound_notifier(session, ownership) is not None
+        )
+        module_enabled = await prefs.bot_enabled(
             session, subject_id=ownership.subject_id, strict=True
-        ):
+        )
+        if module_enabled and not endpoint_available:
             await session.commit()
             return
-        invocation_gap_ids = await _unjournaled_question_invocation_raw_ids(
-            session,
-            ownership=ownership,
+        stale_before = (
+            now_utc().astimezone(timezone.utc) - delivery.PENDING_STALE_AFTER
         )
-        raw_high_water_id = await session.scalar(
-            select(func.max(RawPayload.id)).where(
-                RawPayload.subject_id == ownership.subject_id,
-                RawPayload.actor_user_id == ownership.recipient_user_id,
-                RawPayload.domain == DOMAIN,
-                RawPayload.source == SOURCE,
+        invocation_gap_ids = (
+            await _unjournaled_question_invocation_raw_ids(
+                session,
+                ownership=ownership,
             )
+            if module_enabled
+            else []
+        )
+        raw_high_water_id = (
+            await session.scalar(
+                select(func.max(RawPayload.id)).where(
+                    RawPayload.subject_id == ownership.subject_id,
+                    RawPayload.actor_user_id == ownership.recipient_user_id,
+                    RawPayload.domain == DOMAIN,
+                    RawPayload.source == SOURCE,
+                )
+            )
+            if module_enabled
+            else None
         )
         await session.commit()
 
     work = 0
     processed_ids: set[int] = set()
+    delivery_cursor, delivery_cursor_persistent = (
+        await _load_delivery_recovery_cursor(redis, ownership.subject_id)
+    )
+    delivery_scanned = 0
+    while (
+        work < _QUESTION_RECOVERY_WORK_LIMIT
+        and (
+            not delivery_cursor_persistent
+            or delivery_scanned < _QUESTION_RECOVERY_SCAN_LIMIT
+        )
+    ):
+        page_limit = _QUESTION_RECOVERY_PAGE_SIZE
+        if delivery_cursor_persistent:
+            page_limit = min(
+                page_limit,
+                _QUESTION_RECOVERY_SCAN_LIMIT - delivery_scanned,
+            )
+        async with session_factory() as session:
+            page = await _recoverable_raw_delivery_candidates(
+                session,
+                ownership=ownership,
+                stale_before=stale_before,
+                after=delivery_cursor,
+                limit=page_limit,
+            )
+            await session.commit()
+        if not page:
+            if delivery_cursor_persistent:
+                delivery_cursor = None
+                delivery_cursor_persistent = await _store_delivery_recovery_cursor(
+                    redis,
+                    ownership.subject_id,
+                    None,
+                )
+            break
+        stopped_for_work = False
+        for candidate in page:
+            delivery_cursor = (candidate.updated_at, candidate.intent_id)
+            delivery_scanned += 1
+            raw_id = candidate.raw_payload_id
+            if raw_id not in processed_ids:
+                processed_ids.add(raw_id)
+                if await _run_question_recovery_raw(
+                    session_factory,
+                    raw_payload_id=raw_id,
+                    stale_before=stale_before,
+                    notifier_resolver=notifier_resolver,
+                    module_enabled=module_enabled,
+                ):
+                    work += 1
+            if work >= _QUESTION_RECOVERY_WORK_LIMIT:
+                stopped_for_work = True
+                break
+        if delivery_cursor_persistent:
+            delivery_cursor_persistent = await _store_delivery_recovery_cursor(
+                redis,
+                ownership.subject_id,
+                delivery_cursor,
+            )
+        if stopped_for_work:
+            break
+        if len(page) < page_limit:
+            if delivery_cursor_persistent:
+                delivery_cursor = None
+                delivery_cursor_persistent = await _store_delivery_recovery_cursor(
+                    redis,
+                    ownership.subject_id,
+                    None,
+                )
+            break
+    if not module_enabled:
+        return
     for raw_id in invocation_gap_ids:
         if work >= _QUESTION_RECOVERY_WORK_LIMIT:
             break
+        if raw_id in processed_ids:
+            continue
         processed_ids.add(raw_id)
         if await _run_question_recovery_raw(
             session_factory,
             raw_payload_id=raw_id,
-            notifier=notifier,
+            notifier_resolver=notifier_resolver,
         ):
             work += 1
 
@@ -2401,7 +3906,7 @@ async def question_reply_recovery_job(session_factory, redis=None) -> None:
         return
     if cursor > raw_high_water_id:
         cursor = 0
-        await _store_question_recovery_cursor(
+        cursor_persistent = await _store_question_recovery_cursor(
             redis,
             ownership.subject_id,
             cursor,
@@ -2441,16 +3946,17 @@ async def question_reply_recovery_job(session_factory, redis=None) -> None:
             if await _run_question_recovery_raw(
                 session_factory,
                 raw_payload_id=raw_id,
-                notifier=notifier,
+                notifier_resolver=notifier_resolver,
             ):
                 work += 1
                 if work >= _QUESTION_RECOVERY_WORK_LIMIT:
                     break
-        await _store_question_recovery_cursor(
-            redis,
-            ownership.subject_id,
-            cursor,
-        )
+        if cursor_persistent:
+            cursor_persistent = await _store_question_recovery_cursor(
+                redis,
+                ownership.subject_id,
+                cursor,
+            )
         if len(page) < _QUESTION_RECOVERY_PAGE_SIZE:
             break
 
@@ -2633,9 +4139,8 @@ async def _replay_pending_callbacks(
             except Exception:
                 await session.rollback()
                 logger.warning(
-                    "could not replay stored callback raw %s",
-                    raw.id,
-                    exc_info=True,
+                    "could not replay stored Telegram callback "
+                    "(code=callback_recovery_failed)",
                 )
             if recovered >= signals_service.REPARSE_BATCH:
                 break
@@ -2782,9 +4287,8 @@ async def _reparse_pending_platform(
             except Exception:
                 await session.rollback()
                 logger.warning(
-                    "platform signal recovery failed for raw %s",
-                    raw_id,
-                    exc_info=True,
+                    "platform signal recovery failed "
+                    "(code=signal_recovery_failed)",
                 )
             if attempted >= signals_service.REPARSE_BATCH:
                 break
@@ -2799,8 +4303,8 @@ async def _reparse_pending_platform(
     except Exception:
         await session.rollback()
         logger.warning(
-            "could not reconcile the platform signal-parser alert",
-            exc_info=True,
+            "could not reconcile the platform signal-parser alert "
+            "(code=alert_reconcile_failed)",
         )
     return made
 

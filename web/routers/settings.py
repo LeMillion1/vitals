@@ -301,7 +301,7 @@ async def _page(
     # Redis is external I/O. Read it before any database preparation can acquire
     # transaction-lifetime identity/outbox locks.
     breaker = await login_breaker_state(redis)
-    ownership = await resolve_legacy_ownership_context(
+    preference_scope = await prefs.resolve_legacy_preferences_scope(
         db,
         actor_username=username,
     )
@@ -309,7 +309,13 @@ async def _page(
         db,
         actor_username=username,
     )
-    proactive = await prefs.get_prefs(db)
+    proactive = (
+        await prefs.get_preferences_bundle(
+            db,
+            scope=preference_scope,
+            actor_username=username,
+        )
+    ).as_flat_dict()
     export_context = await garmin_weight_service.resolve_legacy_export_context(
         db,
         actor_username=username,
@@ -398,7 +404,7 @@ async def _page(
         "proactive": proactive,
         "week_template": await day_plan.get_week_template(
             db,
-            subject_id=ownership.subject_id,
+            subject_id=preference_scope.subject_id,
         ),
         "weekdays": day_plan.WEEKDAYS,
         # Only the questions a weekday can predict: the rest are asked, not set.
@@ -1013,20 +1019,28 @@ async def save_proactive(
         # Unchecked boxes don't post, so the checked list *is* the answer.
         "nudges": {c: c in nudges for c in prefs.NUDGE_CATEGORIES},
     }
-    ownership = await resolve_legacy_ownership_context(
+    preference_scope = await prefs.resolve_legacy_preferences_scope(
         db,
         actor_username=username,
     )
-    settings = await prefs.set_prefs(db, raw_prefs)
+    settings = (
+        await prefs.set_preferences_bundle(
+            db,
+            raw_prefs,
+            scope=preference_scope,
+            actor_username=username,
+        )
+    ).as_flat_dict()
     await day_plan.set_week_template(
         db,
         template,
-        subject_id=ownership.subject_id,
+        subject_id=preference_scope.subject_id,
     )
     await db.commit()
 
     apply_schedule(request.app, settings)
-    # prefs.sanitize() (called inside set_prefs) silently clamps out-of-range
+    # prefs.sanitize() (called inside set_preferences_bundle) silently clamps
+    # out-of-range
     # input — compare what was submitted to what actually got stored so the
     # user can be told, instead of seeing a plain "saved" while their number
     # was quietly changed underneath them.

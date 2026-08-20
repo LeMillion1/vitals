@@ -208,7 +208,17 @@ async def test_saving_reschedules_without_a_restart(auth_client, db_session):
         assert scheduler.get_job("garmin_pulse") is None
         assert scheduler.get_job("garmin_weight_export").trigger.interval.total_seconds() == 1200
 
-        stored = await prefs.get_prefs(db_session)
+        preference_scope = await prefs.resolve_legacy_preferences_scope(
+            db_session,
+            actor_username="tester",
+        )
+        stored = (
+            await prefs.get_preferences_bundle(
+                db_session,
+                scope=preference_scope,
+                actor_username="tester",
+            )
+        ).as_flat_dict()
         assert stored["daily_budget"] == 6
         assert stored["garmin_weight_export_minutes"] == 20
         assert stored["garmin_weight_max_age_days"] == 14

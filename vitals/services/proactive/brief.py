@@ -1560,6 +1560,8 @@ async def brief_job(session_factory, redis=None) -> None:
     from vitals.services.proactive import channels, delivery, inbound, prefs
 
     today = today_local()
+    legacy_delivery_key = dedupe_key(today)
+    delivery_key = delivery.make_delivery_idempotency_key("brief", today)
     # Before the Garmin pull, not after: on a normal day the brief left at 11:00
     # and every later fire in the window is a no-op that must not cost a login.
     async with session_factory() as session:
@@ -1567,19 +1569,28 @@ async def brief_job(session_factory, redis=None) -> None:
             session,
             actor_username=None,
         )
-        already_sent = await delivery.already_sent(
+        confirmed_journal = await delivery.confirmed_delivery_journal(
             session,
-            dedupe_key(today),
+            idempotency_key=delivery_key,
+            category=delivery.CATEGORY_BRIEF,
+            ownership=ownership,
+            legacy_dedupe_key=legacy_delivery_key,
+        )
+        claimed = confirmed_journal is not None or await delivery.delivery_claim_exists(
+            session,
+            idempotency_key=delivery_key,
             ownership=ownership,
         )
         brief_hour = None
-        if not already_sent:
-            brief_hour, _ = prefs.hhmm(
-                (await prefs.get_prefs(session))["brief_time"]
+        if not claimed:
+            subject_policy = await prefs.get_subject_policy(
+                session,
+                subject_id=ownership.subject_id,
             )
+            brief_hour = subject_policy.brief_time.hour
         # End all ownership/settings reads before Garmin can touch the network.
         await session.commit()
-    if already_sent:
+    if confirmed_journal is not None:
         # The journal is durable evidence that generation succeeded, but alert
         # reconciliation may have failed in a later transaction. Retry that local
         # bookkeeping on every replay without calling Garmin, OpenRouter, or the
@@ -1592,6 +1603,10 @@ async def brief_job(session_factory, redis=None) -> None:
             )
             await session.commit()
         return
+    if claimed:
+        # In-flight, ambiguous, and cancelled occurrences are authoritative
+        # claims but not evidence that generation/delivery succeeded.
+        return
     assert brief_hour is not None
     out_of_patience = now_local().hour >= last_attempt_hour(brief_hour)
 
@@ -1600,7 +1615,6 @@ async def brief_job(session_factory, redis=None) -> None:
     except Exception:
         logger.warning("garmin sync before the brief failed; using stored data", exc_info=True)
 
-    notifier = channels.build_notifier()
     async with session_factory() as session:
         ownership = await channels.resolve_legacy_channel_ownership(
             session,
@@ -1687,30 +1701,46 @@ async def brief_job(session_factory, redis=None) -> None:
     )
 
     async with session_factory() as session:
-        prepared_delivery = await delivery._prepare_delivery(
+        ownership = await channels.resolve_legacy_channel_ownership(
             session,
-            notifier,
+            actor_username=None,
+        )
+        bound_notifier = await channels.build_legacy_bound_notifier(
+            session,
+            ownership,
+        )
+        prepared_delivery = await delivery.prepare_delivery_intent(
+            session,
+            bound_notifier,
             text=text,
             category=delivery.CATEGORY_BRIEF,
-            dedupe_key=dedupe_key(today),
+            idempotency_key=delivery_key,
+            legacy_dedupe_key=legacy_delivery_key,
             buttons=buttons,
             ownership=ownership,
         )
         await session.commit()
 
     if prepared_delivery is not None:
-        delivered = await delivery._transmit_prepared_delivery(
-            notifier,
-            prepared_delivery,
-        )
-        if delivered is not None:
-            async with session_factory() as session:
-                await delivery._journal_prepared_delivery(
-                    session,
-                    prepared_delivery,
-                    external_id=delivered.external_id,
-                )
-                await session.commit()
+        async with session_factory() as session:
+            dispatch_lease = await delivery.start_delivery_dispatch(
+                session,
+                prepared_delivery,
+                notifier_resolver=channels.resolve_legacy_bound_notifier,
+            )
+            await session.commit()
+        if dispatch_lease is not None:
+            completion = await delivery.dispatch_delivery(dispatch_lease)
+            for finalize_try in range(2):
+                async with session_factory() as session:
+                    try:
+                        await delivery.finalize_delivery(session, completion)
+                        await session.commit()
+                        break
+                    except Exception:
+                        await session.rollback()
+                        if finalize_try:
+                            raise
 
     # Successful generation clears only this subject's actorless empty-day alert.
     # It is intentionally separate from both durable brief storage and delivery.

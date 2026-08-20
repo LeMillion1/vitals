@@ -57,7 +57,10 @@ async def test_sync_garmin_says_so_when_garmin_is_not_configured(monkeypatch):
     assert "not configured" in (await mcp_router.sync_garmin())["error"]
 
 
-async def test_sync_hevy_refuses_a_disabled_module_without_spending_quota(monkeypatch):
+async def test_sync_hevy_refuses_a_disabled_module_without_spending_quota(
+    legacy_owner_roots,
+    monkeypatch,
+):
     from vitals.services import hevy_service, modules_service
 
     called = []
@@ -74,7 +77,12 @@ async def test_sync_hevy_refuses_a_disabled_module_without_spending_quota(monkey
 
     session_factory = mcp_router.get_session_factory()
     async with session_factory() as session:
-        await modules_service.set_module_enabled(session, key="hevy", enabled=True)
+        await modules_service.set_module_enabled(
+            session,
+            key="hevy",
+            enabled=True,
+            subject_id=legacy_owner_roots.subject_id,
+        )
         await session.commit()
 
     assert (await mcp_router.sync_hevy())["created"] == 1

@@ -43,6 +43,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.proactive.day_plan import evening_job
     from vitals.services.proactive.nudges import nudges_job
     from vitals.services.proactive.inbound import question_reply_recovery_job
+    from vitals.services.proactive.delivery import delivery_reconciliation_job
     from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
     from vitals.services.share_service import purge_job as share_purge_job
     from vitals.services.ai_gateway_service import (
@@ -116,6 +117,16 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     register_job(
         "ai_invocation_reconcile",
         ai_invocation_reconciliation_job,
+        trigger="interval",
+        failure_family=JobFailureFamily.PLATFORM,
+        minutes=15,
+    )
+
+    # Durable notification-intent recovery is provider-free. It marks abandoned
+    # pending/dispatching state conservatively; it never retries Telegram I/O.
+    register_job(
+        "notification_delivery_reconcile",
+        delivery_reconciliation_job,
         trigger="interval",
         failure_family=JobFailureFamily.PLATFORM,
         minutes=15,

@@ -13,10 +13,12 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
-from vitals.models.proactive import Notification
+from vitals.enums import NotificationDeliveryStatus
+from vitals.models.proactive import Notification, NotificationDeliveryIntent
 from vitals.services import garmin_service, nutrition_service
-from vitals.services.proactive import delivery, nudges
+from vitals.services.proactive import channels, delivery, nudges
 from vitals.utils.timeutils import now_local
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
@@ -49,6 +51,9 @@ class FakeNotifier:
     async def answer_callback(self, callback_id, text="") -> None:
         pass
 
+    async def edit(self, message_id, text, *, buttons=None) -> None:
+        pass
+
 
 class PulseClient:
     """One method, one call — the light pulse's whole contract."""
@@ -69,6 +74,26 @@ class PulseClient:
 async def _seed_steps(db_session, steps: int, *, on_date=TODAY):
     await garmin_service.ingest_daily(db_session, on_date, {"summary": {"totalSteps": steps}})
     await db_session.commit()
+
+
+def _patch_owned_delivery(monkeypatch, notifier) -> None:
+    async def build_bound(session, ownership, **kwargs):
+        del session, kwargs
+        notifier.binding = channels.DeliveryEndpointBinding(
+            subject_id=ownership.subject_id,
+            recipient_user_id=ownership.recipient_user_id,
+            integration_connection_id=ownership.connection_id,
+            channel=notifier.channel,
+        )
+        return notifier
+
+    def resolve_bound(binding, credential_ref, **kwargs):
+        del credential_ref, kwargs
+        notifier.binding = binding
+        return notifier
+
+    monkeypatch.setattr(channels, "build_legacy_bound_notifier", build_bound)
+    monkeypatch.setattr(channels, "resolve_legacy_bound_notifier", resolve_bound)
 
 
 # ── Conditions stay quiet unless they actually hold ───────────────────────────
@@ -176,6 +201,127 @@ async def test_cooldown_holds_the_second_run(db_session):
     later = EVENING + timedelta(hours=25)
     await _seed_steps(db_session, 3000, on_date=later.date())
     assert len(await nudges.run(db_session, notifier, now=later)) == 1
+
+
+async def test_owned_nudge_uses_opaque_durable_claim_and_transaction_free_send(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    class TransactionCheckingNotifier(FakeNotifier):
+        async def send(self, text, *, buttons=None, reply_to=None) -> str:
+            assert not db_session.in_transaction()
+            return await super().send(
+                text,
+                buttons=buttons,
+                reply_to=reply_to,
+            )
+
+    notifier = TransactionCheckingNotifier()
+    _patch_owned_delivery(monkeypatch, notifier)
+    ownership = await channels.resolve_legacy_channel_ownership(
+        db_session,
+        actor_username=None,
+    )
+    await db_session.commit()
+    await _seed_steps(db_session, 3000)
+
+    sent = await nudges.run(
+        db_session,
+        notifier,
+        now=EVENING,
+        ownership=ownership,
+    )
+
+    assert len(sent) == 1
+    intent = await db_session.scalar(select(NotificationDeliveryIntent))
+    assert intent.status == NotificationDeliveryStatus.SENT.value
+    assert intent.idempotency_key == delivery.make_delivery_idempotency_key(
+        "nudge",
+        "steps_short",
+        EVENING.date(),
+        EVENING.hour,
+    )
+    assert intent.policy_key == delivery.make_delivery_policy_key(
+        "nudge",
+        "steps_short",
+    )
+    assert sent[0].delivery_intent_id == intent.id
+    assert sent[0].dedupe_key == intent.idempotency_key
+
+
+async def test_ambiguous_owned_nudge_claim_holds_cooldown_without_retry(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    class AmbiguousNotifier(FakeNotifier):
+        async def send(self, text, *, buttons=None, reply_to=None) -> str:
+            self.sent.append(text)
+            return "invalid-provider-id"
+
+    notifier = AmbiguousNotifier()
+    _patch_owned_delivery(monkeypatch, notifier)
+    ownership = await channels.resolve_legacy_channel_ownership(
+        db_session,
+        actor_username=None,
+    )
+    await db_session.commit()
+    await _seed_steps(db_session, 3000)
+
+    assert await nudges.run(
+        db_session,
+        notifier,
+        now=EVENING,
+        ownership=ownership,
+    ) == []
+    assert await nudges.run(
+        db_session,
+        notifier,
+        now=EVENING + timedelta(hours=1),
+        ownership=ownership,
+    ) == []
+
+    assert len(notifier.sent) == 1
+    intent = await db_session.scalar(select(NotificationDeliveryIntent))
+    assert intent.status == NotificationDeliveryStatus.AMBIGUOUS.value
+
+
+async def test_ambiguous_garmin_silence_claim_blocks_the_whole_episode(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    class AmbiguousNotifier(FakeNotifier):
+        async def send(self, text, *, buttons=None, reply_to=None) -> str:
+            self.sent.append(text)
+            return "invalid-provider-id"
+
+    notifier = AmbiguousNotifier()
+    _patch_owned_delivery(monkeypatch, notifier)
+    ownership = await channels.resolve_legacy_channel_ownership(
+        db_session,
+        actor_username=None,
+    )
+    await db_session.commit()
+    await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2))
+
+    assert await nudges.run(
+        db_session,
+        notifier,
+        now=AFTERNOON,
+        ownership=ownership,
+    ) == []
+    assert await nudges.run(
+        db_session,
+        notifier,
+        now=AFTERNOON + timedelta(days=2),
+        ownership=ownership,
+    ) == []
+
+    assert len(notifier.sent) == 1
+    intent = await db_session.scalar(select(NotificationDeliveryIntent))
+    assert intent.status == NotificationDeliveryStatus.AMBIGUOUS.value
 
 
 # ── The budget ────────────────────────────────────────────────────────────────
