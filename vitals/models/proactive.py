@@ -203,6 +203,12 @@ class NotificationDeliveryIntent(Base):
             "created_at",
         ),
         Index(
+            "uq_notification_delivery_intents_raw_category",
+            "raw_payload_id",
+            "category",
+            unique=True,
+        ),
+        Index(
             "ix_notification_delivery_intents_recipient_created",
             "recipient_user_id",
             "created_at",
