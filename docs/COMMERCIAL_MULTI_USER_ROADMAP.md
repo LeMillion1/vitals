@@ -442,12 +442,52 @@ Tests:
 Rollback: dual-read legacy credentials until each connection is verified. Copy,
 do not remove, Garmin token material before successful cutover.
 
-### PR 10 — MCP v2, external API, reports, and LLM isolation
+### PR 10 — MCP 2026-07-28, Python SDK v2, external API, reports, and LLM isolation
+
+Protocol source of truth:
+
+- [MCP specification 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28);
+- [MCP 2026-07-28 key changes](https://modelcontextprotocol.io/specification/2026-07-28/changelog);
+- [official MCP Python SDK v2](https://py.sdk.modelcontextprotocol.io/).
+
+The earlier label “MCP v2” meant Vitals' second-generation subject-aware
+authorization model. It now also means a real wire-protocol migration to the
+current `2026-07-28` standard. These are separate gates: using the new SDK does
+not prove subject authorization, and scoped tokens do not prove protocol
+compliance.
 
 Scope:
 
+- replace the pinned FastMCP compatibility server with an audited, exactly
+  pinned release of the official Tier-1 Python MCP SDK v2 that supports protocol
+  revision `2026-07-28`; keep the old dependency only until wire/tool parity is
+  proven, then remove it rather than operating two authorities indefinitely;
+- implement stateless, self-contained requests: carry
+  `io.modelcontextprotocol/protocolVersion`, client capabilities, and client
+  identity in request `_meta`; return server identity in result `_meta`; do not
+  use protocol sessions, `Mcp-Session-Id`, or the removed
+  `initialize`/`notifications/initialized` handshake as an authorization state;
+- implement mandatory `server/discover`, per-request version negotiation, and
+  typed `UnsupportedProtocolVersionError`; if the rollout temporarily serves
+  `2025-11-25` clients, isolate that compatibility adapter and never let it
+  bypass the same principal/policy checks;
+- expose remote MCP over the `2026-07-28` Streamable HTTP POST contract with the
+  required protocol/method/name headers; do not add deprecated HTTP+SSE, SSE
+  resumption, request redelivery, Roots, Sampling, or protocol Logging to the new
+  implementation;
+- emit required `resultType`, deterministic tool/resource/prompt listings,
+  private `cacheScope`, bounded `ttlMs`, JSON Schema 2020-12-compatible
+  input/output schemas, and structured results whose PHI fields remain inside
+  the authorized subject scope;
+- use `subscriptions/listen` only for explicitly negotiated change
+  notifications; use explicit server-minted handles for any cross-call workflow
+  state, with subject, principal, expiry, replay, and revocation binding;
 - issue short-lived OAuth/PAT tokens with stable user `sub`, subject, audience,
   `jti`, action/domain scopes, consent version, and revocation state;
+- implement the MCP OAuth 2.1 protected-resource metadata flow, issuer-bound
+  client credentials, authorization-response issuer validation, PKCE, and
+  Client ID Metadata Documents; do not build new registration around deprecated
+  OAuth Dynamic Client Registration;
 - propagate the principal into MCP tool context and re-authorize every call;
 - make tool listing and direct invocation enforce the same module/policy rules;
 - route MCP through core services and preserve `Source.MCP` plus actor;
@@ -457,14 +497,27 @@ Scope:
 
 Tests:
 
+- run wire-level compliance tests through the official Python SDK v2 client and
+  MCP Inspector fixtures, not only by calling decorated Python functions;
+- prove `server/discover`, supported/unsupported version negotiation, required
+  headers and `_meta`, stateless retry with a new request ID, `resultType`,
+  deterministic listings, private cache metadata, and bounded pagination;
+- prove the new endpoint works without `initialize` or `Mcp-Session-Id`, rejects
+  removed/deprecated flows, and never treats a transport handle or subscription
+  ID as authorization;
+- prove OAuth protected-resource discovery, PKCE, audience/issuer/client binding,
+  expiration, replay, consent and token revocation, and immediate user suspension;
 - token A cannot select subject B, even with a known row ID or direct tool call;
 - omitted-field partial updates retain data; writes retain provenance;
 - consent/token revocation, module disabling, and user suspension take effect
   immediately;
 - prompt/context snapshots contain one subject and bounded domains only.
 
-Rollback: keep MCP v1 disabled after identity cutover; do not fall back to a
-global token that cannot express the subject.
+Rollback: keep the legacy FastMCP endpoint disabled after identity/protocol
+cutover; do not fall back to a global token that cannot express the subject.
+During a bounded compatibility window, route an explicitly negotiated older
+protocol revision through the same authorization services and audit stream;
+never silently downgrade `2026-07-28` requests.
 
 ### PR 11 — Care-team messaging
 

@@ -29,7 +29,7 @@ or multi-subject reads are enabled.
   configured owner at the database boundary so writes are attributed and a
   second subject fails closed. Whole-lake MCP composition/export stays blocked
   for the later AccessContext cutover. This mapping is not subject authorization
-  and must not be presented as the MCP v2 token model.
+  and must not be presented as the MCP `2026-07-28` OAuth/principal model.
 - A legacy row with `subject_id IS NULL` may be attached to the sole legacy
   subject during a reviewed reconcile. A row already attached to another subject
   is never reassigned. Historical actor fields remain unchanged.
