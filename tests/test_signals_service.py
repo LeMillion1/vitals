@@ -102,13 +102,17 @@ async def test_raw_is_stored_even_when_the_parser_blows_up(db_session):
     assert raws[0].source == Source.TELEGRAM.value
 
 
-async def test_nonempty_junk_parser_output_stays_pending_and_alerts(db_session):
+async def test_nonempty_junk_parser_output_stays_pending_and_reports_failure(
+    db_session,
+):
+    outcome = svc.ParserOutcome()
     rows = await svc.ingest_text(
         db_session,
         text="голова болит",
         parse=_parse_fixed([{"kind": "symptm", "key": "headache"}]),
         external_id="tg:junk",
         on_date=D1,
+        parser_outcome=outcome,
     )
     await db_session.commit()
 
@@ -117,8 +121,10 @@ async def test_nonempty_junk_parser_output_stays_pending_and_alerts(db_session):
         select(RawPayload).where(RawPayload.external_id == "tg:junk")
     )
     assert raw is not None and raw.processed_at is None
-    active = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
-    assert any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active)
+    assert (outcome.successes, outcome.failures) == (0, 1)
+    assert await alerts_service.list_active(
+        db_session, domain=Domain.SIGNALS.value
+    ) == []
 
 
 async def test_signals_link_back_to_their_raw_row(db_session):
@@ -316,39 +322,55 @@ async def test_a_parsed_message_is_marked_done_a_failed_one_stays_pending(db_ses
     assert done.processed_at is not None
 
 
-# ── The parser-outage alert raises and clears (mirrors weight_service's
-# noise-alert raise/resolve — an alert that never clears itself just trains the
-# owner to ignore it) ───────────────────────────────────────────────────────────
-async def test_parser_failure_alert_raises_and_clears_on_recovery(db_session):
-    await svc.ingest_text(db_session, text="спать хочу", parse=_explode, on_date=D1)
+# ── Parser outcomes are returned to the production boundary.  This reusable
+# service never manufactures an unscoped/global alert. ─────────────────────────
+async def test_parser_failure_and_success_are_reported_without_global_alerts(
+    db_session,
+):
+    outcome = svc.ParserOutcome()
+    await svc.ingest_text(
+        db_session,
+        text="спать хочу",
+        parse=_explode,
+        on_date=D1,
+        parser_outcome=outcome,
+    )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
-    assert any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active)
 
-    # Parser back up → the very next successful parse clears it.
     await svc.ingest_text(
         db_session,
         text="голова болит",
         parse=_parse_fixed([{"kind": "symptom", "key": "headache"}]),
         on_date=D1,
+        parser_outcome=outcome,
     )
     await db_session.commit()
-    active2 = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
-    assert not any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active2)
+    assert (outcome.successes, outcome.failures) == (1, 1)
+    assert await alerts_service.list_active(
+        db_session, domain=Domain.SIGNALS.value
+    ) == []
 
 
-async def test_reparse_success_also_clears_the_parser_failure_alert(db_session):
-    """The sweep is the other way back to a working parser — same contract."""
+async def test_reparse_success_and_explicit_empty_report_success(db_session):
     await _unparsed_message(db_session)
-    active = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
-    assert any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active)
+    await svc.store_raw_text(db_session, text="не факт", external_id="tg:empty")
+    outcome = svc.ParserOutcome()
+
+    def _parse(text):
+        if text == "не факт":
+            return []
+        return [{"kind": "state", "key": "sleepiness"}]
 
     await svc.reparse_unparsed(
-        db_session, parse=_parse_fixed([{"kind": "state", "key": "sleepiness"}])
+        db_session,
+        parse=_parse,
+        parser_outcome=outcome,
     )
     await db_session.commit()
-    active2 = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
-    assert not any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active2)
+    assert (outcome.successes, outcome.failures) == (2, 0)
+    assert await alerts_service.list_active(
+        db_session, domain=Domain.SIGNALS.value
+    ) == []
 
 
 async def test_reparse_recovers_a_message_the_model_choked_on(db_session):
@@ -391,23 +413,38 @@ async def test_reparse_leaves_the_row_pending_when_the_model_is_still_down(db_se
     assert raw.processed_at is None
 
 
-async def test_reparse_keeps_nonempty_junk_pending_and_raises_alert(db_session):
+async def test_reparse_batch_any_failure_wins_over_success(db_session):
     raw = await svc.store_raw_text(
         db_session,
         text="голова болит",
         external_id="tg:reparse-junk",
     )
-
-    assert await svc.reparse_unparsed(
+    await svc.store_raw_text(
         db_session,
-        parse=_parse_fixed([{"kind": "symptm", "key": "headache"}]),
-    ) == []
+        text="устал",
+        external_id="tg:reparse-good",
+    )
+    outcome = svc.ParserOutcome()
+
+    def _mixed(text):
+        if text == "голова болит":
+            return [{"kind": "symptm", "key": "headache"}]
+        return [{"kind": "state", "key": "fatigue"}]
+
+    rows = await svc.reparse_unparsed(
+        db_session,
+        parse=_mixed,
+        parser_outcome=outcome,
+    )
     await db_session.commit()
 
+    assert [row.key for row in rows] == ["fatigue"]
+    assert (outcome.successes, outcome.failures) == (1, 1)
     await db_session.refresh(raw)
     assert raw.processed_at is None
-    active = await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value)
-    assert any(a.alert_key == svc.PARSER_FAILED_ALERT_KEY for a in active)
+    assert await alerts_service.list_active(
+        db_session, domain=Domain.SIGNALS.value
+    ) == []
 
 
 async def test_reparse_ignores_taps_and_anything_older_than_the_window(db_session):

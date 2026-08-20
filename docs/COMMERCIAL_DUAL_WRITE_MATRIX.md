@@ -65,7 +65,7 @@ or multi-subject reads are enabled.
 | `shared_reports` | create/open/revoke/purge | Create gets S+creator; human revoke gets revoker. Anonymous open and scheduled purge do not mutate actor fields. |
 | `skincare_*` | web/MCP/seed scripts | Human creates get S+A; product/log updates preserve A and are S-scoped. |
 | `supplements` | web/MCP | Human creates get S+A; updates retain A and MCP retains `Source.MCP`. |
-| `system_alerts` | domain services, jobs, web/MCP lifecycle | Health alerts get S; provider alerts also get C. Human override/resolve uses the named actor field; automatic resolution remains actorless. The scheduled `brief_empty_day` row is S-only and adopts only an exact-key fully-null legacy row through the exact-one bridge. |
+| `system_alerts` | domain services, jobs, web/MCP lifecycle | Health alerts get S; provider alerts also get C. Human override/resolve uses the named actor field; automatic resolution remains actorless. The scheduled `brief_empty_day` row is S-only. `signal_parser_failed` uses S plus the exact OpenRouter AI-gateway C, never Telegram C. Both adopt only their exact-key fully-null legacy row through the exact-one bridge. |
 
 Direct MCP note updates to weight, meals, GLP-1, skincare, body measurements,
 body scans, and labs must go through owned services or perform an explicit
@@ -266,6 +266,21 @@ still a concurrency/cutover blocker until its scoped replacement lands. Inbound
 normalization and callback mutations recover from the durable raw update, but an
 immediate reply/echo remains best-effort: PR-09 must persist an outbound intent
 with pending/sent/ambiguous states before commercial registration can open.
+
+The live signal parser freezes the exact OpenRouter AI-gateway C separately from
+the Telegram recipient C, validates it fresh, and closes the raw/ownership read
+transaction before the adapter await. Recovery performs nonlocking Telegram
+validation and completes edit/classification work before each parser await, then
+revalidates the canonical S -> historical Telegram C -> raw chain before
+normalization. Durable raw/Signal terminal state commits before a fresh
+governance -> S -> OpenRouter C -> alert-key/row transaction reconciles the
+actorless `signal_parser_failed` warning. Any attempted failure or junk result in
+a recovery batch raises; otherwise a success or explicit-empty result resolves,
+including a same-subject validated historical OpenRouter C after rotation.
+Skipped non-parser raws do not change alert state. Signals composition and the
+durable outbound-intent cutover remain deferred. Historical-C selection still
+relies on the single global active `(alert_key, entity_ref)` slot; replacing that
+index with scoped partial uniques remains a registration blocker.
 
 The scheduled morning brief freezes its exact-one legacy compatibility
 context, closes that read transaction before OpenRouter, persists the rendered

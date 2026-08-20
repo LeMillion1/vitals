@@ -42,16 +42,20 @@ from vitals.enums import (
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
+    Severity,
     SignalKind,
     Source,
 )
+from vitals.i18n import t
 from vitals.integrations.llm_client import LLMClient
 from vitals.models.identity import HealthSubject
 from vitals.models.milestones import WeeklyDigest
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import Signal
+from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import digest_service, signals_service
+from vitals.services import alerts_service, digest_service, signals_service
+from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.proactive import day_plan, delivery, prefs
 from vitals.services.proactive.channels import Notifier
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
@@ -256,6 +260,184 @@ class _RawClaim:
     created: bool
 
 
+def _require_parser_alert_context(
+    context: alerts_service.ProviderAlertContext,
+    *,
+    subject_id: uuid.UUID,
+) -> None:
+    if not isinstance(context, alerts_service.ProviderAlertContext):
+        raise InboundOwnershipError(
+            "parser alert context must be a ProviderAlertContext"
+        )
+    if context.identity.subject_id != subject_id:
+        raise InboundOwnershipError("parser alert context belongs to another subject")
+    if context.identity.actor_user_id is not None:
+        raise InboundOwnershipError("parser alert context must be actorless")
+    if context.provider is not IntegrationProvider.OPENROUTER:
+        raise InboundOwnershipError("parser alert context must use OpenRouter")
+
+
+async def _validate_parser_alert_connection(
+    session: AsyncSession,
+    *,
+    context: alerts_service.ProviderAlertContext,
+    subject_id: uuid.UUID,
+) -> None:
+    """Validate the exact frozen OpenRouter root before a parser network await."""
+
+    _require_parser_alert_context(context, subject_id=subject_id)
+    connection = (
+        await session.execute(
+            select(
+                IntegrationConnection.subject_id,
+                IntegrationConnection.provider,
+                IntegrationConnection.connection_type,
+                IntegrationConnection.status,
+            ).where(
+                IntegrationConnection.id == context.integration_connection_id
+            )
+        )
+    ).one_or_none()
+    if connection is None:
+        raise InboundOwnershipError("parser OpenRouter connection does not exist")
+    connection_subject, provider, connection_type, status = connection
+    if connection_subject != subject_id:
+        raise InboundOwnershipError(
+            "parser OpenRouter connection belongs to another subject"
+        )
+    if provider != IntegrationProvider.OPENROUTER.value:
+        raise InboundOwnershipError("parser connection is not OpenRouter")
+    if connection_type != IntegrationConnectionType.AI_GATEWAY.value:
+        raise InboundOwnershipError("parser connection is not an AI gateway")
+    known = {status.value for status in IntegrationConnectionStatus}
+    if status not in known:
+        raise InboundOwnershipError("parser connection lifecycle is unknown")
+    if status not in {
+        IntegrationConnectionStatus.LEGACY.value,
+        IntegrationConnectionStatus.ACTIVE.value,
+    }:
+        raise InboundOwnershipError(f"{status} OpenRouter connection cannot parse")
+
+
+async def _reconcile_parser_alert_best_effort(
+    session: AsyncSession,
+    *,
+    context: alerts_service.ProviderAlertContext | None,
+    outcome: signals_service.ParserOutcome,
+) -> None:
+    """Reconcile after durable parsing state; never unwind raw or Signal facts."""
+
+    if context is None or outcome.attempted == 0:
+        return
+    try:
+        if outcome.failures:
+            await alerts_service.raise_scoped_alert(
+                session,
+                context=context,
+                domain=Domain.SIGNALS,
+                severity=Severity.WARN,
+                message=t("alert.signal_parser_failed"),
+                alert_key=signals_service.PARSER_FAILED_ALERT_KEY,
+                legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+            )
+        else:
+            resolution_context = await _parser_alert_resolution_context(
+                session,
+                context=context,
+            )
+            await alerts_service.resolve_scoped_by_key(
+                session,
+                context=resolution_context,
+                alert_key=signals_service.PARSER_FAILED_ALERT_KEY,
+                legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+            )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.warning(
+            "could not reconcile the OpenRouter signal-parser alert",
+            exc_info=True,
+        )
+
+
+async def _parser_alert_resolution_context(
+    session: AsyncSession,
+    *,
+    context: alerts_service.ProviderAlertContext,
+) -> alerts_service.ProviderAlertContext:
+    """Select the exact current or historical OpenRouter C for parser recovery."""
+
+    # The current schema still has one global active (key, entity) slot. Serialize
+    # its ownership projection with subject creation and keep this transaction
+    # open into the scoped resolver's re-entrant governance -> S -> C -> row locks.
+    await acquire_identity_governance_lock(session)
+    rows = list(
+        await session.execute(
+            select(
+                SystemAlert.subject_id,
+                SystemAlert.integration_connection_id,
+            )
+            .where(
+                SystemAlert.alert_key == signals_service.PARSER_FAILED_ALERT_KEY,
+                SystemAlert.entity_ref == "",
+                SystemAlert.resolved_at.is_(None),
+            )
+            .limit(2)
+        )
+    )
+    if not rows:
+        return context
+    if len(rows) != 1:
+        raise InboundOwnershipError("parser alert ownership is ambiguous")
+    alert_subject_id, alert_connection_id = rows[0]
+    if alert_subject_id is None and alert_connection_id is None:
+        return context
+    if alert_subject_id != context.identity.subject_id:
+        raise InboundOwnershipError("parser alert belongs to another subject")
+    if alert_connection_id is None:
+        raise InboundOwnershipError("parser alert has a partial ownership root")
+    if alert_connection_id == context.integration_connection_id:
+        return context
+
+    connection = (
+        await session.execute(
+            select(
+                IntegrationConnection.subject_id,
+                IntegrationConnection.provider,
+                IntegrationConnection.connection_type,
+                IntegrationConnection.status,
+            ).where(IntegrationConnection.id == alert_connection_id)
+        )
+    ).one_or_none()
+    if connection is None:
+        raise InboundOwnershipError("historical parser connection does not exist")
+    connection_subject, provider, connection_type, status = connection
+    if connection_subject != context.identity.subject_id:
+        raise InboundOwnershipError(
+            "historical parser connection belongs to another subject"
+        )
+    if provider != IntegrationProvider.OPENROUTER.value:
+        raise InboundOwnershipError("historical parser connection is not OpenRouter")
+    if connection_type != IntegrationConnectionType.AI_GATEWAY.value:
+        raise InboundOwnershipError(
+            "historical parser connection is not an AI gateway"
+        )
+    if status not in {
+        IntegrationConnectionStatus.LEGACY.value,
+        IntegrationConnectionStatus.ACTIVE.value,
+        IntegrationConnectionStatus.DISABLED.value,
+        IntegrationConnectionStatus.RETIRED.value,
+    }:
+        raise InboundOwnershipError(
+            "historical parser connection cannot resolve alerts"
+        )
+    return alerts_service.ProviderAlertContext(
+        identity=context.identity,
+        provider=IntegrationProvider.OPENROUTER,
+        integration_connection_id=alert_connection_id,
+    )
+
+
 def _owned_or_legacy_raw_scope(ownership: ProactiveOwnershipContext):
     owned = RawPayload.subject_id == ownership.subject_id
     if ownership.include_legacy_unowned:
@@ -429,6 +611,7 @@ async def handle_update(
     notifier: Optional[Notifier],
     parse: Optional[signals_service.Parser] = None,
     ownership: ProactiveOwnershipContext,
+    parser_alert_context: alerts_service.ProviderAlertContext | None = None,
 ) -> None:
     """Entry point for one Telegram update. Safe to call twice with the same one."""
     update_id = update.get("update_id")
@@ -511,6 +694,7 @@ async def handle_update(
             ownership=ownership,
             raw=claim.raw,
             edited=False,
+            parser_alert_context=parser_alert_context,
         )
     except Exception as exc:
         if parked:
@@ -1079,6 +1263,7 @@ async def handle_text(
     ownership: ProactiveOwnershipContext | None = None,
     raw: RawPayload | None = None,
     edited: bool = False,
+    parser_alert_context: alerts_service.ProviderAlertContext | None = None,
 ) -> None:
     """The channel-agnostic entry point (C8): already text, whatever produced it."""
     if ownership is not None and not isinstance(
@@ -1194,15 +1379,44 @@ async def handle_text(
         )
         return
 
-    parser = parse or make_signal_parser(
-        await known_keys(
-            session,
-            subject_id=(ownership.subject_id if ownership is not None else None),
-            include_legacy_unowned=(
-                ownership.include_legacy_unowned if ownership is not None else False
-            ),
+    if parse is None and ownership is not None and parser_alert_context is None:
+        raise InboundOwnershipError(
+            "production signal parsing requires an OpenRouter alert context"
         )
-    )
+    parser = parse
+    if parser is None:
+        parser = make_signal_parser(
+            await known_keys(
+                session,
+                subject_id=(ownership.subject_id if ownership is not None else None),
+                include_legacy_unowned=(
+                    ownership.include_legacy_unowned
+                    if ownership is not None
+                    else False
+                ),
+            )
+        )
+    if parser_alert_context is not None and ownership is None:
+        raise InboundOwnershipError(
+            "parser alert context requires proactive ownership"
+        )
+
+    async def _before_live_parse(
+        parse_session: AsyncSession,
+        _raw: RawPayload,
+    ) -> None:
+        if parser_alert_context is not None:
+            assert ownership is not None
+            await _validate_parser_alert_connection(
+                parse_session,
+                context=parser_alert_context,
+                subject_id=ownership.subject_id,
+            )
+        # Raw ownership and the exact parser C are frozen. Release every read
+        # transaction before the OpenRouter adapter (or injected parser) awaits.
+        await parse_session.commit()
+
+    outcome = signals_service.ParserOutcome()
     claimed_raw = raw is not None
     if raw is None:
         raw = await signals_service.store_raw_text(
@@ -1223,6 +1437,7 @@ async def handle_text(
             source=SOURCE,
             identity=owner_identity,
             integration_connection_id=connection_id,
+            before_parse=_before_live_parse,
             before_normalize=(
                 (
                     lambda normalize_session, normalize_raw: (
@@ -1236,6 +1451,7 @@ async def handle_text(
                 if claimed_raw
                 else None
             ),
+            parser_outcome=outcome,
         )
     except signals_service.RawPayloadAlreadyProcessedError:
         await session.commit()
@@ -1245,6 +1461,11 @@ async def handle_text(
     # An edit waiting on the subject lock can then supersede the complete batch.
     parser_pending = not rows and raw.processed_at is None
     await session.commit()
+    await _reconcile_parser_alert_best_effort(
+        session,
+        context=parser_alert_context,
+        outcome=outcome,
+    )
 
     if parser_pending:
         await delivery.send(
@@ -1541,6 +1762,8 @@ async def reparse_pending(
     session: AsyncSession,
     *,
     ownership: ProactiveOwnershipContext | None = None,
+    parse: signals_service.Parser | None = None,
+    parser_alert_context: alerts_service.ProviderAlertContext | None = None,
 ) -> list:
     """Give the messages the parser choked on one more go (R3).
 
@@ -1550,14 +1773,48 @@ async def reparse_pending(
     """
     if ownership is not None:
         await _replay_pending_callbacks(session, ownership=ownership)
+    if parse is None and ownership is not None and parser_alert_context is None:
+        raise InboundOwnershipError(
+            "production signal recovery requires an OpenRouter alert context"
+        )
+    if parser_alert_context is not None and ownership is None:
+        raise InboundOwnershipError(
+            "parser alert context requires proactive ownership"
+        )
+    parser = parse or make_signal_parser(
+        await known_keys(
+            session,
+            subject_id=(ownership.subject_id if ownership is not None else None),
+            include_legacy_unowned=(
+                ownership.include_legacy_unowned
+                if ownership is not None
+                else False
+            ),
+        )
+    )
+    if parser_alert_context is not None:
+        assert ownership is not None
+        await _validate_parser_alert_connection(
+            session,
+            context=parser_alert_context,
+            subject_id=ownership.subject_id,
+        )
+    # Known-key and provider-root reads must not span the first parser await.
+    await session.commit()
 
     async def _before_reparse(
         reparse_session: AsyncSession,
         raw: RawPayload,
     ) -> None:
         if ownership is None:
+            await reparse_session.commit()
             return
-        await _validate_raw_root(reparse_session, raw, ownership=ownership)
+        await _validate_raw_root(
+            reparse_session,
+            raw,
+            ownership=ownership,
+            lock_connection=False,
+        )
         await _supersede_edited_message(
             reparse_session,
             raw,
@@ -1576,6 +1833,15 @@ async def reparse_pending(
             raise signals_service.RawPayloadAlreadyProcessedError(
                 "Telegram command/question raw is terminal without parsing"
             )
+        if parser_alert_context is not None:
+            await _validate_parser_alert_connection(
+                reparse_session,
+                context=parser_alert_context,
+                subject_id=ownership.subject_id,
+            )
+        # Classification and exact roots are frozen for this attempt. The parser
+        # receives no session and no Telegram/provider lock survives its await.
+        await reparse_session.commit()
 
     async def _before_normalize(
         reparse_session: AsyncSession,
@@ -1595,19 +1861,10 @@ async def reparse_pending(
     ) -> None:
         await reparse_session.commit()
 
-    return await signals_service.reparse_unparsed(
+    outcome = signals_service.ParserOutcome()
+    rows = await signals_service.reparse_unparsed(
         session,
-        parse=make_signal_parser(
-            await known_keys(
-                session,
-                subject_id=(ownership.subject_id if ownership is not None else None),
-                include_legacy_unowned=(
-                    ownership.include_legacy_unowned
-                    if ownership is not None
-                    else False
-                ),
-            )
-        ),
+        parse=parser,
         subject_id=ownership.subject_id if ownership is not None else None,
         # Historical Telegram raws remain part of their subject after recipient
         # connection rotation; each row validates and copies its own provenance.
@@ -1617,10 +1874,20 @@ async def reparse_pending(
         ),
         text_from_raw=_text_from_raw if ownership is not None else None,
         date_from_raw=_day_from_raw if ownership is not None else None,
-        before_parse=_before_reparse if ownership is not None else None,
+        before_parse=_before_reparse,
         before_normalize=_before_normalize if ownership is not None else None,
         after_normalize=_after_normalize if ownership is not None else None,
+        parser_outcome=outcome,
     )
+    # Every terminal raw/Signal mutation wins durability before alert state. A
+    # failed reconciliation is logged and retried by a later parser attempt.
+    await session.commit()
+    await _reconcile_parser_alert_best_effort(
+        session,
+        context=parser_alert_context,
+        outcome=outcome,
+    )
+    return rows
 
 
 def make_signal_parser(known: Optional[list[str]] = None) -> signals_service.Parser:

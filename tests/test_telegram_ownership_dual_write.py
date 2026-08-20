@@ -28,8 +28,9 @@ from vitals.models.proactive import Notification
 from vitals.models.raw_payload import RawPayload
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.models.signals import DayContext, Signal
+from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset, IntegrationConnection
-from vitals.services import signals_service
+from vitals.services import alerts_service, signals_service
 from vitals.services.proactive import day_plan, delivery, inbound, nudges
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
@@ -97,6 +98,34 @@ async def _graph(session, label: str) -> _Graph:
             recipient_user_id=user.id,
             connection_id=connection.id,
         ),
+    )
+
+
+async def _gateway(
+    session: AsyncSession,
+    graph: _Graph,
+    label: str,
+) -> IntegrationConnection:
+    connection = IntegrationConnection(
+        subject_id=graph.subject.id,
+        provider=IntegrationProvider.OPENROUTER.value,
+        connection_type=IntegrationConnectionType.AI_GATEWAY.value,
+        external_account_discriminator=f"synthetic:{label}",
+        status=IntegrationConnectionStatus.ACTIVE.value,
+    )
+    session.add(connection)
+    await session.flush()
+    return connection
+
+
+def _parser_context(
+    graph: _Graph,
+    connection: IntegrationConnection,
+) -> alerts_service.ProviderAlertContext:
+    return alerts_service.ProviderAlertContext(
+        identity=graph.ownership.system_action(),
+        provider=IntegrationProvider.OPENROUTER,
+        integration_connection_id=connection.id,
     )
 
 
@@ -1094,13 +1123,11 @@ async def test_recovery_crosses_retired_telegram_connection_rotation(
         recipient_user_id=graph.user.id,
         connection_id=replacement.id,
     )
-    monkeypatch.setattr(
-        inbound,
-        "make_signal_parser",
-        lambda known=None: _one_signal,
+    rows = await inbound.reparse_pending(
+        db_session,
+        ownership=current,
+        parse=_one_signal,
     )
-
-    rows = await inbound.reparse_pending(db_session, ownership=current)
     await db_session.commit()
 
     assert len(rows) == 1
@@ -1225,13 +1252,11 @@ async def test_pending_callbacks_cannot_starve_text_reparse(
         },
         ownership=graph.ownership,
     )
-    monkeypatch.setattr(
-        inbound,
-        "make_signal_parser",
-        lambda known=None: _one_signal,
+    rows = await inbound.reparse_pending(
+        db_session,
+        ownership=graph.ownership,
+        parse=_one_signal,
     )
-
-    rows = await inbound.reparse_pending(db_session, ownership=graph.ownership)
 
     assert len(rows) == 1 and rows[0].raw_id == text.raw.id
 
@@ -1286,11 +1311,10 @@ async def test_recovery_classifies_commands_questions_and_bot_replies_before_par
         assert text == "весь день за компом"
         return _one_signal(text)
 
-    monkeypatch.setattr(inbound, "make_signal_parser", lambda known=None: _parse)
-
     rows = await inbound.reparse_pending(
         db_session,
         ownership=graph.ownership,
+        parse=_parse,
     )
 
     assert parsed == ["весь день за компом"]
@@ -1298,6 +1322,75 @@ async def test_recovery_classifies_commands_questions_and_bot_replies_before_par
     for claim in claims:
         await db_session.refresh(claim.raw)
         assert claim.raw.processed_at is not None
+
+
+async def test_recovery_closes_all_database_work_before_parser_await(db_session):
+    graph = await _graph(db_session, "recovery-no-transaction")
+    gateway = await _gateway(db_session, graph, "recovery-no-transaction")
+    claim = await inbound._claim_update_raw(
+        db_session,
+        external_id="tg:recovery-no-transaction",
+        payload=_telegram_text_update(
+            1299,
+            "голова болит",
+            message_id=1299,
+        ),
+        ownership=graph.ownership,
+    )
+    transaction_states: list[bool] = []
+
+    async def _parse(text: str):
+        transaction_states.append(db_session.in_transaction())
+        return _one_signal(text)
+
+    rows = await inbound.reparse_pending(
+        db_session,
+        ownership=graph.ownership,
+        parse=_parse,
+        parser_alert_context=_parser_context(graph, gateway),
+    )
+
+    assert len(rows) == 1
+    assert transaction_states == [False]
+    await db_session.refresh(claim.raw)
+    assert claim.raw.processed_at is not None
+
+
+async def test_recovery_batch_any_failure_raises_scoped_provider_alert(db_session):
+    graph = await _graph(db_session, "recovery-failure-wins")
+    gateway = await _gateway(db_session, graph, "recovery-failure-wins")
+    for update_id, text in ((1300, "junk"), (1301, "valid")):
+        await inbound._claim_update_raw(
+            db_session,
+            external_id=f"tg:{update_id}",
+            payload=_telegram_text_update(update_id, text, message_id=update_id),
+            ownership=graph.ownership,
+        )
+
+    def _parse(text: str):
+        if text == "junk":
+            return [{"kind": "not-a-signal", "key": "ignored"}]
+        return _one_signal(text)
+
+    rows = await inbound.reparse_pending(
+        db_session,
+        ownership=graph.ownership,
+        parse=_parse,
+        parser_alert_context=_parser_context(graph, gateway),
+    )
+
+    assert len(rows) == 1
+    alert = await db_session.scalar(
+        select(SystemAlert).where(
+            SystemAlert.alert_key == signals_service.PARSER_FAILED_ALERT_KEY
+        )
+    )
+    assert alert is not None and alert.resolved_at is None
+    assert (
+        alert.subject_id,
+        alert.integration_connection_id,
+        alert.resolved_by_user_id,
+    ) == (graph.subject.id, gateway.id, None)
 
 
 @pytest.mark.integration
@@ -1363,6 +1456,214 @@ async def test_postgres_concurrent_same_update_is_claimed_and_processed_once(
     assert len(signals) == 1
     assert parse_calls == 1
     assert notifier.sent == 1
+
+
+@pytest.mark.integration
+async def test_postgres_recovery_parser_holds_no_subject_or_telegram_root_lock(
+    db_session,
+):
+    graph = await _graph(db_session, "recovery-unlocked")
+    gateway = await _gateway(db_session, graph, "recovery-unlocked")
+    await inbound._claim_update_raw(
+        db_session,
+        external_id="tg:recovery-unlocked",
+        payload=_telegram_text_update(5301, "голова болит", message_id=530),
+        ownership=graph.ownership,
+    )
+    await db_session.commit()
+    assert db_session.bind is not None
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    parser_started = asyncio.Event()
+    release_parser = asyncio.Event()
+    transaction_states: list[bool] = []
+
+    async def _recover() -> None:
+        async with factory() as session:
+            async def _parse(text: str):
+                transaction_states.append(session.in_transaction())
+                parser_started.set()
+                await release_parser.wait()
+                return _one_signal(text)
+
+            await inbound.reparse_pending(
+                session,
+                ownership=graph.ownership,
+                parse=_parse,
+                parser_alert_context=_parser_context(graph, gateway),
+            )
+
+    recovery = asyncio.create_task(_recover())
+    await asyncio.wait_for(parser_started.wait(), timeout=5)
+    async with factory() as contender:
+        await asyncio.wait_for(
+            contender.execute(
+                select(HealthSubject)
+                .where(HealthSubject.id == graph.subject.id)
+                .with_for_update()
+            ),
+            timeout=1,
+        )
+        await asyncio.wait_for(
+            contender.execute(
+                select(IntegrationConnection)
+                .where(IntegrationConnection.id == graph.connection.id)
+                .with_for_update()
+            ),
+            timeout=1,
+        )
+        await contender.commit()
+    release_parser.set()
+    await asyncio.wait_for(recovery, timeout=5)
+    assert transaction_states == [False]
+
+
+@pytest.mark.integration
+async def test_postgres_openrouter_rotation_in_flight_never_rebinds_parser_alert(
+    db_session,
+):
+    graph = await _graph(db_session, "parser-rotation")
+    old_gateway = await _gateway(db_session, graph, "parser-rotation-old")
+    await inbound._claim_update_raw(
+        db_session,
+        external_id="tg:parser-rotation",
+        payload=_telegram_text_update(5302, "голова болит", message_id=531),
+        ownership=graph.ownership,
+    )
+    await db_session.commit()
+    old_gateway_id = old_gateway.id
+    assert db_session.bind is not None
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    parser_started = asyncio.Event()
+    release_parser = asyncio.Event()
+
+    async def _recover() -> None:
+        async with factory() as session:
+            async def _parse(_text: str):
+                parser_started.set()
+                await release_parser.wait()
+                raise RuntimeError("synthetic OpenRouter outage")
+
+            await inbound.reparse_pending(
+                session,
+                ownership=graph.ownership,
+                parse=_parse,
+                parser_alert_context=_parser_context(graph, old_gateway),
+            )
+
+    recovery = asyncio.create_task(_recover())
+    await asyncio.wait_for(parser_started.wait(), timeout=5)
+    async with factory() as rotation:
+        old = await rotation.get(IntegrationConnection, old_gateway_id)
+        assert old is not None
+        old.status = IntegrationConnectionStatus.RETIRED.value
+        old.retired_at = datetime.now(timezone.utc)
+        replacement = IntegrationConnection(
+            subject_id=graph.subject.id,
+            provider=IntegrationProvider.OPENROUTER.value,
+            connection_type=IntegrationConnectionType.AI_GATEWAY.value,
+            external_account_discriminator="synthetic:parser-rotation-new",
+            status=IntegrationConnectionStatus.ACTIVE.value,
+        )
+        rotation.add(replacement)
+        await rotation.commit()
+        replacement_id = replacement.id
+    release_parser.set()
+    await asyncio.wait_for(recovery, timeout=5)
+
+    async with factory() as verify:
+        alerts = list(
+            await verify.scalars(
+                select(SystemAlert).where(
+                    SystemAlert.alert_key
+                    == signals_service.PARSER_FAILED_ALERT_KEY
+                )
+            )
+        )
+        raw = await verify.scalar(
+            select(RawPayload).where(
+                RawPayload.external_id == "tg:parser-rotation"
+            )
+        )
+    assert alerts == []
+    assert raw is not None and raw.processed_at is None
+    assert replacement_id != old_gateway_id
+
+
+@pytest.mark.integration
+async def test_postgres_preparse_validation_ignores_stale_identity_map(
+    db_session,
+):
+    graph = await _graph(db_session, "parser-stale-root")
+    old_gateway = await _gateway(db_session, graph, "parser-stale-root-old")
+    await inbound._claim_update_raw(
+        db_session,
+        external_id="tg:parser-stale-root",
+        payload=_telegram_text_update(5303, "голова болит", message_id=532),
+        ownership=graph.ownership,
+    )
+    await db_session.commit()
+    old_gateway_id = old_gateway.id
+    assert db_session.bind is not None
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    preloaded = asyncio.Event()
+    rotated = asyncio.Event()
+    parser_calls = 0
+
+    async def _recover() -> None:
+        nonlocal parser_calls
+        async with factory() as session:
+            stale = await session.get(IntegrationConnection, old_gateway_id)
+            assert stale is not None
+            assert stale.status == IntegrationConnectionStatus.ACTIVE.value
+            preloaded.set()
+            await rotated.wait()
+
+            async def _parse(_text: str):
+                nonlocal parser_calls
+                parser_calls += 1
+                return _one_signal(_text)
+
+            with pytest.raises(inbound.InboundOwnershipError, match="cannot parse"):
+                await inbound.reparse_pending(
+                    session,
+                    ownership=graph.ownership,
+                    parse=_parse,
+                    parser_alert_context=_parser_context(graph, old_gateway),
+                )
+            await session.rollback()
+
+    recovery = asyncio.create_task(_recover())
+    await asyncio.wait_for(preloaded.wait(), timeout=5)
+    async with factory() as rotation:
+        old = await rotation.get(IntegrationConnection, old_gateway_id)
+        assert old is not None
+        old.status = IntegrationConnectionStatus.RETIRED.value
+        old.retired_at = datetime.now(timezone.utc)
+        rotation.add(
+            IntegrationConnection(
+                subject_id=graph.subject.id,
+                provider=IntegrationProvider.OPENROUTER.value,
+                connection_type=IntegrationConnectionType.AI_GATEWAY.value,
+                external_account_discriminator="synthetic:parser-stale-root-new",
+                status=IntegrationConnectionStatus.ACTIVE.value,
+            )
+        )
+        await rotation.commit()
+    rotated.set()
+    await asyncio.wait_for(recovery, timeout=5)
+    assert parser_calls == 0
 
 
 @pytest.mark.integration

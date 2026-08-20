@@ -204,6 +204,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   bridge. Brief context, OpenRouter rendering, durable digest storage, Telegram
   delivery, its journal, and alert bookkeeping use separate caller-owned phases,
   so no database transaction or ownership lock spans provider network latency.
+- The Signals parser-outage warning now belongs to the exact subject and
+  OpenRouter AI-gateway connection, with actorless raise and recovery. Telegram
+  commits the complete raw update before parsing; live and replay parsing release
+  ownership transactions before OpenRouter, persist raw/Signal outcomes first,
+  and reconcile alerts best-effort afterward. Recovery on a replacement gateway
+  can clear the same-subject warning on its validated historical gateway, while
+  partial, foreign, pending, and ambiguous roots remain fail-closed. Outbound
+  echo intent and subject-aware composition remain later commercial cutovers.
 - Platform-only scheduler diagnostics are now excluded from the transitional
   Today and digest/brief composition readers. Operational exception text can no
   longer appear in a health card or be forwarded to the external LLM while the

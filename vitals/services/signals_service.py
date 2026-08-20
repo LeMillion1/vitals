@@ -39,11 +39,9 @@ from vitals.enums import (
     Domain,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
-    Severity,
     SignalKind,
     Source,
 )
-from vitals.i18n import t
 from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import DayContext, Signal
@@ -365,6 +363,29 @@ RawBeforeNormalize = Callable[[AsyncSession, RawPayload], Awaitable[None]]
 RawAfterNormalize = Callable[[AsyncSession, RawPayload], Awaitable[None]]
 
 
+@dataclass(slots=True)
+class ParserOutcome:
+    """Mutable batch summary; parsing stays separate from alert bookkeeping."""
+
+    successes: int = 0
+    failures: int = 0
+
+    @property
+    def attempted(self) -> int:
+        return self.successes + self.failures
+
+    def record_success(self) -> None:
+        self.successes += 1
+
+    def record_failure(self) -> None:
+        self.failures += 1
+
+
+def _validate_parser_outcome(outcome: ParserOutcome | None) -> None:
+    if outcome is not None and not isinstance(outcome, ParserOutcome):
+        raise SignalOwnershipError("parser_outcome must be a ParserOutcome or None")
+
+
 async def _lock_pending_raw_for_normalization(
     session: AsyncSession,
     *,
@@ -514,18 +535,6 @@ def _parser_items(parsed: object) -> tuple[list[dict], bool]:
     return [item for item in parsed if isinstance(item, dict)], False
 
 
-async def _raise_parser_failed_alert(session: AsyncSession) -> None:
-    from vitals.services import alerts_service
-
-    await alerts_service.raise_alert(
-        session,
-        domain=DOMAIN,
-        severity=Severity.WARN.value,
-        message=t("alert.signal_parser_failed"),
-        alert_key=PARSER_FAILED_ALERT_KEY,
-    )
-
-
 async def create_signals(
     session: AsyncSession,
     *,
@@ -614,6 +623,7 @@ async def ingest_text(
     source: str = Source.TELEGRAM.value,
     identity: WriteIdentity | None = None,
     integration_connection_id: uuid.UUID | None = None,
+    parser_outcome: ParserOutcome | None = None,
 ) -> list[Signal]:
     """The one entry point for incoming free text.
 
@@ -639,6 +649,7 @@ async def ingest_text(
         source=source,
         identity=identity,
         integration_connection_id=integration_connection_id,
+        parser_outcome=parser_outcome,
     )
 
 
@@ -652,7 +663,9 @@ async def ingest_stored_text(
     source: str = Source.TELEGRAM.value,
     identity: WriteIdentity | None = None,
     integration_connection_id: uuid.UUID | None = None,
+    before_parse: RawBeforeParse | None = None,
     before_normalize: RawBeforeNormalize | None = None,
+    parser_outcome: ParserOutcome | None = None,
 ) -> list[Signal]:
     """Normalize one raw row that was durably claimed by a channel boundary.
 
@@ -664,8 +677,7 @@ async def ingest_stored_text(
     remain pending.
     """
 
-    from vitals.services import alerts_service
-
+    _validate_parser_outcome(parser_outcome)
     if not isinstance(raw, RawPayload):
         raise SignalOwnershipError("raw must be a RawPayload")
     await _require_raw_ownership_scope(session, raw=raw)
@@ -678,6 +690,9 @@ async def ingest_stored_text(
         raise SignalOwnershipError(
             "raw payload belongs to another integration connection"
         )
+
+    if before_parse is not None:
+        await before_parse(session, raw)
 
     parse_error: Exception | None = None
     try:
@@ -707,7 +722,8 @@ async def ingest_stored_text(
 
     if parse_error is not None:
         # The durable raw stays pending so a later sweep can try again.
-        await _raise_parser_failed_alert(session)
+        if parser_outcome is not None:
+            parser_outcome.record_failure()
         return []
 
     items, explicitly_empty = _parser_items(parsed)
@@ -723,10 +739,12 @@ async def ingest_stored_text(
     )
     if not rows and not explicitly_empty:
         logger.warning("signal parser returned no usable facts; message kept raw")
-        await _raise_parser_failed_alert(session)
+        if parser_outcome is not None:
+            parser_outcome.record_failure()
         return []
 
-    await alerts_service.resolve_by_key(session, alert_key=PARSER_FAILED_ALERT_KEY)
+    if parser_outcome is not None:
+        parser_outcome.record_success()
     # An empty, successful parse is final too. Leaving it pending would pay for
     # the same model call forever and could starve actionable rows behind it.
     raw.processed_at = now_local()
@@ -755,6 +773,7 @@ async def reparse_unparsed(
     before_parse: RawBeforeParse | None = None,
     before_normalize: RawBeforeNormalize | None = None,
     after_normalize: RawAfterNormalize | None = None,
+    parser_outcome: ParserOutcome | None = None,
 ) -> list[Signal]:
     """Second pass over messages that never became rows (R3).
 
@@ -768,8 +787,7 @@ async def reparse_unparsed(
     is not the message's fault — and the window is what stops that from being
     forever.
     """
-    from vitals.services import alerts_service
-
+    _validate_parser_outcome(parser_outcome)
     cutoff = now_local() - timedelta(days=since_days)
     if subject_id is not None and not isinstance(subject_id, uuid.UUID):
         raise SignalOwnershipError("subject_id must be a UUID or None")
@@ -850,7 +868,8 @@ async def reparse_unparsed(
                     parsed = await parsed
             except Exception:
                 logger.warning("re-parse failed for raw %s", raw.id, exc_info=True)
-                await _raise_parser_failed_alert(session)
+                if parser_outcome is not None:
+                    parser_outcome.record_failure()
                 if attempted >= limit:
                     break
                 continue
@@ -881,17 +900,16 @@ async def reparse_unparsed(
                     "re-parser returned no usable facts for raw %s; kept pending",
                     raw.id,
                 )
-                await _raise_parser_failed_alert(session)
+                if parser_outcome is not None:
+                    parser_outcome.record_failure()
                 if after_normalize is not None:
                     await after_normalize(session, raw)
                 if attempted >= limit:
                     break
                 continue
 
-            # Same as ingest_text: a valid answer clears the outage alert.
-            await alerts_service.resolve_by_key(
-                session, alert_key=PARSER_FAILED_ALERT_KEY
-            )
+            if parser_outcome is not None:
+                parser_outcome.record_success()
             raw.processed_at = now_local()
             dirty = True
             made.extend(rows)

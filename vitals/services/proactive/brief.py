@@ -607,6 +607,13 @@ async def brief_job(session_factory, redis=None) -> None:
             recovered = await inbound.reparse_pending(
                 session,
                 ownership=ownership,
+                parser_alert_context=alerts_service.ProviderAlertContext(
+                    identity=ownership.system_action(),
+                    provider=IntegrationProvider.OPENROUTER,
+                    integration_connection_id=llm_ownership.connection_id(
+                        IntegrationProvider.OPENROUTER
+                    ),
+                ),
             )
             await session.commit()
             if recovered:

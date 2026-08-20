@@ -216,8 +216,14 @@ Implementation progress on `commercial/main`:
   subject alert context and exact-one fully-null bridge; its still-legacy
   exact-one composition, OpenRouter, digest persistence, Telegram, notification
   journalling, and alert bookkeeping are separate phases so network waits hold
-  no database transaction. All seven conflict resolver domains read within one
-  subject and date. Curated conflict-rule activation is stored per subject. The
+  no database transaction. The Signals parser-outage warning now uses the exact
+  subject and OpenRouter AI-gateway connection with no actor. Live and recovery
+  paths commit durable raw/Signal outcomes before best-effort alert bookkeeping,
+  hold no ownership transaction over the parser await, and resolve a validated
+  same-subject historical gateway after rotation. Signal composition and durable
+  outbound echo intent remain deferred. All seven conflict resolver domains read
+  within one subject and date. Curated conflict-rule activation is stored per
+  subject. The
   Supplements, Nutrition, Skincare, GLP-1, and Labs web/MCP write paths use an
   opaque prepared writer capability and locked target rows. Supplements replace
   one catalog row;

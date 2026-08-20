@@ -546,9 +546,11 @@ async def test_a_dead_parser_raises_an_alert_that_clears_on_recovery(
     from vitals.services import signals_service
 
     c, fake = bot_client
+    parser_tx_states: list[bool] = []
 
     def _boom(known=None):
         async def _parse(_text):
+            parser_tx_states.append(db_session.in_transaction())
             raise RuntimeError("upstream down")
 
         return _parse
@@ -562,6 +564,22 @@ async def test_a_dead_parser_raises_an_alert_that_clears_on_recovery(
     assert len(alerts) == 1, "one open alert while it's down, not one per message"
     assert alerts[0].alert_key == signals_service.PARSER_FAILED_ALERT_KEY
     assert alerts[0].severity == "warn"
+    from vitals.enums import IntegrationProvider
+    from vitals.models.tenancy import IntegrationConnection
+
+    openrouter = await db_session.scalar(
+        select(IntegrationConnection).where(
+            IntegrationConnection.provider == IntegrationProvider.OPENROUTER.value
+        )
+    )
+    assert openrouter is not None
+    assert (
+        alerts[0].subject_id,
+        alerts[0].integration_connection_id,
+        alerts[0].overridden_by_user_id,
+        alerts[0].resolved_by_user_id,
+    ) == (openrouter.subject_id, openrouter.id, None, None)
+    assert parser_tx_states == [False, False]
     # The message still survives: raw first, parse second.
     assert (await db_session.execute(
         select(RawPayload).where(RawPayload.external_id == "tg:1")
@@ -570,6 +588,7 @@ async def test_a_dead_parser_raises_an_alert_that_clears_on_recovery(
     # The parser recovers → the alert must not linger as a stale warning forever.
     def _recovered(known=None):
         async def _parse(_text):
+            parser_tx_states.append(db_session.in_transaction())
             return [{"kind": "state", "key": "sleepiness", "value_num": 5}]
 
         return _parse
@@ -581,6 +600,9 @@ async def test_a_dead_parser_raises_an_alert_that_clears_on_recovery(
         select(SystemAlert).where(SystemAlert.resolved_at.is_(None))
     )).scalars().all()
     assert not any(a.alert_key == signals_service.PARSER_FAILED_ALERT_KEY for a in active)
+    await db_session.refresh(alerts[0])
+    assert alerts[0].resolved_by_user_id is None
+    assert parser_tx_states == [False, False, False]
 
 
 async def test_repeated_update_id_is_not_processed_twice(bot_client, parses_to, db_session):
@@ -808,11 +830,13 @@ async def test_the_message_is_committed_before_the_model_is_called(db_session, m
     monkeypatch.setattr(AsyncSession, "commit", _counting_commit)
 
     durable: list[bool] = []
+    transaction_open: list[bool] = []
 
     async def _parse(_text):
         # Recorded, not asserted: ``ingest_text`` swallows anything the parser
         # raises, so an assertion here would be turned into a warning and lost.
         durable.append(bool(commits))
+        transaction_open.append(db_session.in_transaction())
         return []
 
     await inbound.handle_text(
@@ -820,6 +844,7 @@ async def test_the_message_is_committed_before_the_model_is_called(db_session, m
     )
 
     assert durable == [True]
+    assert transaction_open == [False]
 
 
 async def test_a_failure_before_durable_capture_returns_retryable_error(
