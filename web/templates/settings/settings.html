@@ -175,6 +175,7 @@
     </div>
 
     <!-- ─── AI / OPENROUTER ────────────────────────────────────────────────── -->
+    {% if can_manage_openrouter %}
     <div class="v-card v-setting-row p-6 space-y-5">
         {{ card_header(t("settings.ai_title")) }}
         <p class="v-text-body" style="color: var(--muted)">
@@ -232,6 +233,7 @@
             </div>
         </form>
     </div>
+    {% endif %}
 
     <!-- ─── HEVY ───────────────────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">

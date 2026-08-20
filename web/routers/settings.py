@@ -32,6 +32,7 @@ from vitals.services import (
     garmin_weight_service,
     language_service,
     modules_service,
+    platform_admin_service,
     twofa_service,
 )
 from vitals.services.modules_service import ModuleToggleError
@@ -141,6 +142,10 @@ async def _page(
         db,
         actor_username=username,
     )
+    can_manage_openrouter = await platform_admin_service.is_active_platform_admin(
+        db,
+        actor_username=username,
+    )
     proactive = await prefs.get_prefs(db)
     export_context = await garmin_weight_service.resolve_legacy_export_context(
         db,
@@ -176,13 +181,35 @@ async def _page(
         "user_program": read_key("VITALS_USER_PROGRAM"),
         "user_goals": read_key("VITALS_USER_GOALS"),
         # AI
-        "openrouter_api_key_set": bool(read_key("VITALS_OPENROUTER_API_KEY")),
-        "openrouter_base_url": read_key("VITALS_OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1",
-        "llm_model_digest": read_key("VITALS_LLM_MODEL_DIGEST") or "anthropic/claude-sonnet-4.6",
-        "llm_model_parser": read_key("VITALS_LLM_MODEL_PARSER") or "google/gemini-2.5-flash",
+        "can_manage_openrouter": can_manage_openrouter,
+        "openrouter_api_key_set": (
+            bool(read_key("VITALS_OPENROUTER_API_KEY"))
+            if can_manage_openrouter
+            else False
+        ),
+        "openrouter_base_url": (
+            read_key("VITALS_OPENROUTER_BASE_URL")
+            or "https://openrouter.ai/api/v1"
+            if can_manage_openrouter
+            else ""
+        ),
+        "llm_model_digest": (
+            read_key("VITALS_LLM_MODEL_DIGEST")
+            or "anthropic/claude-sonnet-4.6"
+            if can_manage_openrouter
+            else ""
+        ),
+        "llm_model_parser": (
+            read_key("VITALS_LLM_MODEL_PARSER")
+            or "google/gemini-2.5-flash"
+            if can_manage_openrouter
+            else ""
+        ),
         # Empty = "use the digest model", which is what keeps the brief working
         # before this is ever set. Placeholder, not a pre-filled default.
-        "llm_model_brief": read_key("VITALS_LLM_MODEL_BRIEF"),
+        "llm_model_brief": (
+            read_key("VITALS_LLM_MODEL_BRIEF") if can_manage_openrouter else ""
+        ),
         # Hevy
         "hevy_api_key_set": bool(read_key("VITALS_HEVY_API_KEY")),
         # Garmin
@@ -289,28 +316,51 @@ async def save_profile(
 async def save_ai(
     request: Request,
     username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
     openrouter_api_key: str = Form(""),
     openrouter_base_url: str = Form(""),
     llm_model_digest: str = Form(""),
     llm_model_parser: str = Form(""),
     llm_model_brief: str = Form(""),
 ):
+    try:
+        prepared_admin = await platform_admin_service.prepare_platform_admin(
+            db,
+            actor_username=username,
+        )
+    except platform_admin_service.PlatformAdminAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform administrator access required",
+        ) from exc
     updates: dict[str, str] = {}
+    changed_fields: set[str] = set()
     # Only overwrite the API key if user typed a real value (not the sentinel).
     if openrouter_api_key.strip() and not _is_sentinel(openrouter_api_key):
         updates["VITALS_OPENROUTER_API_KEY"] = openrouter_api_key.strip()
+        changed_fields.add("credential_ref")
     if openrouter_base_url.strip():
         updates["VITALS_OPENROUTER_BASE_URL"] = openrouter_base_url.strip()
+        changed_fields.add("base_url")
     if llm_model_digest.strip():
         updates["VITALS_LLM_MODEL_DIGEST"] = llm_model_digest.strip()
+        changed_fields.add("digest_model")
     if llm_model_parser.strip():
         updates["VITALS_LLM_MODEL_PARSER"] = llm_model_parser.strip()
+        changed_fields.add("parser_model")
     # Cleared on purpose = "use the digest model", so an empty value is written
     # rather than skipped like the others.
     updates["VITALS_LLM_MODEL_BRIEF"] = llm_model_brief.strip()
+    changed_fields.add("brief_model")
 
     if updates:
         write_keys(updates)
+        await platform_admin_service.record_openrouter_configuration_change(
+            db,
+            prepared=prepared_admin,
+            changed_fields=changed_fields,
+        )
+        await db.commit()
     return _redirect("?saved=ai")
 
 

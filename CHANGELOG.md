@@ -32,6 +32,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   live support grant and scope. Roles alone never expose another subject's PHI,
   wildcard scopes and implicit support-mode expansion are denied, and policy
   evaluation never imports the web or database layers.
+- OpenRouter configuration is now platform control-plane state: only an active
+  `platform_superadmin` sees the AI settings card or may update its global key,
+  endpoint, and model choices. Authorization is locked against concurrent role
+  changes, and the audit event records field names only—never secret or model
+  values. This role gate grants no prompt, artifact, or subject-data access.
 - Browser sessions now use a strict versioned envelope while accepting existing
   signed bare-username cookies for their normal TTL. The public auth dependency
   remains compatible, and cookies contain no roles, subject IDs, grants, or PHI.
