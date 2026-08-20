@@ -415,7 +415,25 @@ Implementation progress on `commercial/main`:
   row. Operators pause all raw writers for the complete multi-batch run; the
   final transition performs a bounded-page full-snapshot rehash and fails closed
   on cross-batch payload, count, or ownership drift.
+- Stage 3B uses the same payload-free checkpoint schema for the fixed
+  `stage3.normalized_manual.v1` catalog. It covers the 17 actor-optional
+  top-level tables whose historical ownership can be proved without inventing
+  a connector, raw, file, or control-plane root: HRT cycle/template parents and
+  dose/effect facts, annotations, body measurements, GLP-1 facts, lab markers,
+  meals, milestones, noise markers, skincare facts/products, and supplements.
+  Each table owns an independent immutable phase key, high watermark, cursor,
+  counts, and checksum chains; the operator aggregates that closed catalog but
+  cannot select an arbitrary table. Historical `(S=NULL,A=NULL)` rows gain only
+  the sole legacy S, while live rows above the watermark must already carry the
+  exact S and reviewed actor (except actorless subject-owned LabMarker seeds).
+  Stage 3A must be `COMPLETED` first. Backup-v1 replacement atomically re-bases
+  these fixed table checkpoints because it safely rebinds S while deliberately
+  dropping unprovable historical A; it never re-bases provider/raw/file phases.
+  All 17 writers remain paused for the complete multi-batch maintenance window,
+  and final per-table rehashing proves that business data and timestamps did not
+  change.
 - Remaining bounded backfill phases and whole-lake validation, scoped
+  provider/raw/file-sensitive normalized rows, inherited children, artifacts,
   natural-key/alert/outbox-unique cutover, remaining health-alert and conflict
   writers, subject-aware composition/reporting (including Labs/Genetics charts,
   share snapshot inputs, digests, overview, remaining Today composition, and

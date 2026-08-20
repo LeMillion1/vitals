@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -385,6 +385,47 @@ serialized. Remaining normalized, child, report/notification/alert/outbox,
 file, and setting phases require separate reviewed phase keys and are still
 pending.
 
+Stage 3B begins step 4 with the fixed group
+`stage3.normalized_manual.v1`. It covers exactly these 17 integer-PK tables:
+`hrt_cycles`, `hrt_cycle_templates`, `annotations`, `body_measurements`,
+`glp1_dose_phases`, `glp1_injections`, `glp1_side_effects`, `hrt_doses`,
+`hrt_side_effects`, `lab_markers`, `meal_logs`, `milestones`, `noise_markers`,
+`skincare_logs`, `skincare_observations`, `skincare_products`, and
+`supplements`. These rows require S, allow historical A to remain null, and do
+not require C/F/raw provenance inference. Provider/raw-sensitive, file-backed,
+mixed-catalog, child, artifact, alert, outbox, report, and setting tables remain
+outside this phase.
+
+Each catalog table has its own deterministic checkpoint key because one BIGINT
+cursor cannot represent 17 independent PK streams. The fixed-target operator is:
+
+```bash
+python scripts/backfill_normalized_subject_ownership.py
+python scripts/backfill_normalized_subject_ownership.py --apply
+python scripts/backfill_normalized_subject_ownership.py \
+  --apply --batch-size 500 --max-batches 10
+```
+
+The command exposes no table/phase/reset/delete/DB-URL selector. Stage 3A must
+already be `COMPLETED`. At or below each frozen watermark, only fully-null S/A
+history may gain the sole S; actor attribution is never invented. Exact S with
+null A remains valid history, and exact S plus the active owner is an unchanged
+dual-write row. Partial/foreign roots and unknown domain/source values fail
+closed. New rows above a watermark require strict live S+A, except reviewed
+actorless LabMarker seeds. HRT parent/child and dose/compound references are
+validated but not rewritten; `skincare_logs(date)`,
+`body_measurements(date)`, and `lab_markers(name)` duplicate candidates are hard
+gates. Every ownership-only update preserves `created_at`, `updated_at`, and all
+business/provenance values.
+
+All 17 writers stay paused from the first mutating batch through catalog
+completion. Final transition for each table takes PK-ordered locks and rehashes
+the frozen snapshot with bounded row materialization. Backup v1 replaces these
+portable tables after binding them to the sole local S and dropping A, so the
+same transaction resets their fixed checkpoints to a new reviewed snapshot;
+empty tables complete immediately. This reset is not available from the CLI and
+does not authorize provider/raw/file provenance.
+
 Historical actorless provider/parser rows may receive C only from the exact
 same-subject `legacy_singleton_v1` provider/type root; its retired lifecycle is
 valid historical provenance, while rotated/current accounts are never guessed.
@@ -392,11 +433,13 @@ That compatibility bridge is not an ingress authority: every new
 provider/parser write remains on the strict live S/A/C-or-artifact dual-write
 boundary.
 
-The synthetic PostgreSQL 15 rehearsal passed a real migration build through
+The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
 before DDL once the checkpoint contained durable state. This validates only the
-Stage-3A raw slice; the later Stage 3 phases and Stage 4 gates remain pending.
+Stage-3A raw slice. Stage-3B has a separate rehearsal; the remaining
+provider/artifact normalized rows, child and control phases, and Stage 4 gates
+remain pending.
 
 ### Stage 4 — Ownership validation
 

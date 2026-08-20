@@ -40,6 +40,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   idempotent completion, and populated-checkpoint downgrade refusal. Remaining
   ownership phases and whole-lake validation are still required before
   registration can open.
+- Added Stage 3B for the fixed catalog of 17 actor-optional normalized tables
+  whose historical subject can be proven without inventing connector, raw,
+  file, or control-plane provenance. Each table has an independent resumable
+  checkpoint and bounded PK scan; historical rows gain only the sole subject,
+  never a fabricated actor. The operator requires completed Stage 3A, rejects
+  partial/foreign ownership, unreviewed domain/source values, unsafe HRT parent
+  graphs, and future scoped-key duplicates, and rehashes the frozen data and
+  ownership snapshot before completion. Backup v1 atomically re-bases all 17
+  checkpoints to its incoming snapshots. The CLI exposes only fixed table
+  names, counts, result codes, and checksums, with no health values or identity
+  IDs; all covered writers must remain paused for the multi-batch maintenance
+  window.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before

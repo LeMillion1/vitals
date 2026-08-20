@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -488,6 +488,44 @@ reviewed manual recovery must provide the missing graph. An empty restore record
 an empty `COMPLETED` checkpoint. Replacement refuses before mutation if retained
 AI-invocation or durable-delivery rows still reference raw history. No checkpoint
 state authorizes S-only restored rows.
+
+## Stage-3B normalized-manual ownership operation
+
+The next fixed operator phase is `stage3.normalized_manual.v1`. It covers only
+the 17 reviewed top-level tables whose old rows need S, may retain historical
+`A=NULL`, and do not require C/F/raw reconstruction. HRT parent rows, annotations,
+body measurements, GLP-1 facts, HRT dose/effect facts, lab markers, meals,
+milestones, noise markers, skincare facts/products, and supplements form a
+closed compile-time catalog; provider/raw-sensitive, file-backed, mixed-catalog,
+child, report, notification, alert, outbox, and setting rows stay in later
+phases.
+
+`scripts/backfill_normalized_subject_ownership.py` defaults to read-only status.
+`--apply`, `--batch-size`, and `--max-batches` have the same bounds and
+commit-per-batch semantics as Stage 3A, but there is no caller-selectable table
+or phase. Every table has a separate deterministic checkpoint because its PK
+stream has an independent watermark. The CLI aggregates only fixed table names,
+counts, result codes, and checksum chains; S/A IDs, row IDs, cursors, dates,
+titles, notes, values, and exceptions never cross the operator boundary.
+
+Stage 3A completion is a hard dependency. Historical `(S=NULL,A=NULL)` becomes
+`(S=legacy,A=NULL)`; exact historical S-only and current S+owner rows remain
+unchanged. Partial or foreign roots, unreviewed domain/source values, future-key
+duplicates, foreign HRT child/compound roots, and non-dual-written rows above a
+watermark fail closed. LabMarker is the only live actorless exception because
+the reviewed system seed writes an exact subject row without a source column.
+No operation fabricates A, changes source/domain, invokes a domain service,
+reconciles alerts, or updates medical values. The backfill explicitly preserves
+`updated_at` and finalizes a table only after bounded PK-ordered rehashing proves
+the complete frozen data and ownership chains.
+
+Backup v1 replaces these portable rows after trusted S rebinding while omitting
+unprovable historical A. The import transaction therefore resets exactly the
+fixed Stage-3B table checkpoints to the incoming ID/count snapshots; empty
+tables complete immediately and nonempty tables require the operator to rebuild
+their evidence. This private reset is not exposed by the CLI and does not apply
+to provider/raw/file phases. All covered writers stay paused across the entire
+multi-batch maintenance window.
 
 ## Completion gates
 

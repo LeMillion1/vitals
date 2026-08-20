@@ -41,6 +41,10 @@ from vitals.services.data_portability_service import (
     export_llm,
     import_full,
 )
+from vitals.services.normalized_ownership_backfill_service import (
+    NORMALIZED_MANUAL_CHECKPOINT_PHASES,
+    NORMALIZED_MANUAL_TABLES,
+)
 from vitals.services.raw_ownership_backfill_service import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
     RawOwnershipBackfillIdentityError,
@@ -621,6 +625,88 @@ async def test_full_import_completes_an_empty_raw_snapshot(
     assert await db_session.scalar(
         select(RawPayload.id).where(RawPayload.id == old_raw_id)
     ) is None
+
+
+async def test_full_import_atomically_rebases_normalized_stage3b_checkpoints(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+    await db_session.commit()
+
+    checkpoints = list(
+        await db_session.scalars(
+            select(OwnershipBackfillCheckpoint).where(
+                OwnershipBackfillCheckpoint.phase_key.in_(
+                    tuple(NORMALIZED_MANUAL_CHECKPOINT_PHASES.values())
+                )
+            )
+        )
+    )
+    assert len(checkpoints) == len(NORMALIZED_MANUAL_TABLES) == 17
+    assert all(
+        checkpoint.status == "completed"
+        and checkpoint.scan_high_watermark_id == 0
+        and checkpoint.snapshot_rows == 0
+        and checkpoint.completed_at is not None
+        for checkpoint in checkpoints
+    )
+
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "body_measurements": [
+                {
+                    "id": 37,
+                    "date": "2026-08-21",
+                    "domain": Domain.WEIGHT.value,
+                    "source": Source.MANUAL.value,
+                    "waist_cm": 91.5,
+                    "_vitals_subject_bound": True,
+                }
+            ],
+        },
+    )
+
+    body_phase = NORMALIZED_MANUAL_CHECKPOINT_PHASES["body_measurements"]
+    body_checkpoint = await db_session.get(
+        OwnershipBackfillCheckpoint, body_phase
+    )
+    restored = await db_session.get(BodyMeasurement, 37)
+    assert body_checkpoint is not None and restored is not None
+    assert (
+        body_checkpoint.status,
+        body_checkpoint.scan_high_watermark_id,
+        body_checkpoint.snapshot_rows,
+        body_checkpoint.last_scanned_id,
+        body_checkpoint.scanned_rows,
+        body_checkpoint.completed_at,
+    ) == ("running", 37, 1, 0, 0, None)
+    assert restored.subject_id == legacy_owner_roots.subject_id
+    assert restored.actor_user_id is None
+    assert all(
+        checkpoint.status == "completed"
+        for checkpoint in await db_session.scalars(
+            select(OwnershipBackfillCheckpoint).where(
+                OwnershipBackfillCheckpoint.phase_key.in_(
+                    tuple(
+                        phase
+                        for table, phase in
+                        NORMALIZED_MANUAL_CHECKPOINT_PHASES.items()
+                        if table != "body_measurements"
+                    )
+                )
+            )
+        )
+    )
 
 
 @pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
