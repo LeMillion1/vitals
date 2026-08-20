@@ -30,6 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import Config, load_config
 from vitals.enums import (
+    AIInvocationPurpose,
+    AIInvocationSource,
+    AIInvocationStatus,
     Domain,
     FileAssetPurpose,
     FileAssetStatus,
@@ -41,6 +44,7 @@ from vitals.enums import (
     Source,
 )
 from vitals.i18n import t
+from vitals.models.ai import AIInvocation
 from vitals.models.weight import (
     DOMAIN,
     BodyMeasurement,
@@ -546,6 +550,130 @@ async def get_active_weight(
     return row
 
 
+async def _validate_body_scan_ai_origin(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    subject_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None,
+    for_update: bool,
+    require_live_file: bool,
+) -> None:
+    """Prove the mutually exclusive historical-C/platform-AI raw lineage."""
+
+    # The exact-one legacy bridge deliberately retains fully-null historical
+    # parser rows. It can never authorize a platform call or file root.
+    if all(
+        root is None
+        for root in (
+            raw.subject_id,
+            raw.actor_user_id,
+            raw.integration_connection_id,
+            raw.file_asset_id,
+        )
+    ):
+        return
+    if raw.file_asset_id is None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan Weight raw has no document provenance"
+        )
+    asset_stmt = select(FileAsset).where(FileAsset.id == raw.file_asset_id)
+    if for_update:
+        asset_stmt = asset_stmt.with_for_update()
+    asset = await session.scalar(
+        asset_stmt.execution_options(populate_existing=True)
+    )
+    live_file = (
+        asset is not None
+        and asset.status
+        in {
+            FileAssetStatus.LEGACY_PLACEHOLDER.value,
+            FileAssetStatus.PENDING.value,
+        }
+        and asset.deleted_at is None
+        and asset.purged_at is None
+    )
+    retired_file = (
+        asset is not None
+        and (
+            (
+                asset.status == FileAssetStatus.DELETED.value
+                and asset.deleted_at is not None
+                and asset.purged_at is None
+            )
+            or (
+                asset.status == FileAssetStatus.PURGED.value
+                and asset.deleted_at is not None
+                and asset.purged_at is not None
+            )
+        )
+    )
+    if (
+        asset is None
+        or asset.subject_id != subject_id
+        or asset.uploaded_by_user_id != actor_user_id
+        or asset.purpose != FileAssetPurpose.BODY_SCAN_DOCUMENT.value
+        or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
+        or (not live_file and (require_live_file or not retired_file))
+        or raw.external_id != asset.storage_ref
+    ):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "body-scan Weight document provenance is invalid"
+        )
+    stmt = select(AIInvocation).where(
+        AIInvocation.raw_payload_id == raw.id,
+        AIInvocation.purpose == AIInvocationPurpose.BODY_SCAN_PARSE.value,
+    ).order_by(AIInvocation.created_at, AIInvocation.id)
+    if for_update:
+        stmt = stmt.with_for_update()
+    invocations = list(
+        await session.scalars(stmt.execution_options(populate_existing=True))
+    )
+    if raw.integration_connection_id is not None:
+        if invocations:
+            raise conflict_engine.ConflictRawOwnershipError(
+                "body-scan Weight mixes subject and platform parser provenance"
+            )
+        return
+    if len(invocations) != 1:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "platform body-scan Weight requires one parser invocation"
+        )
+    invocation = invocations[0]
+    if (
+        invocation.subject_id != subject_id
+        or invocation.actor_user_id != actor_user_id
+        or invocation.raw_payload_id != raw.id
+        or invocation.source != AIInvocationSource.WEB.value
+        or invocation.status != AIInvocationStatus.SUCCEEDED.value
+    ):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "platform body-scan Weight parser provenance is invalid"
+        )
+
+
+async def _reject_body_scan_ai_invocation(
+    session: AsyncSession,
+    *,
+    raw_payload_id: int,
+    for_update: bool,
+) -> None:
+    stmt = (
+        select(AIInvocation.id)
+        .where(
+            AIInvocation.raw_payload_id == raw_payload_id,
+            AIInvocation.purpose == AIInvocationPurpose.BODY_SCAN_PARSE.value,
+        )
+        .limit(1)
+    )
+    if for_update:
+        stmt = stmt.with_for_update()
+    if await session.scalar(stmt) is not None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "MCP body-composition raw cannot claim an AI parser invocation"
+        )
+
+
 async def _validate_new_weight_provenance(
     session: AsyncSession,
     *,
@@ -668,6 +796,12 @@ async def _validate_new_weight_provenance(
         raise conflict_engine.ConflictRawOwnershipError(
             "MCP body-composition lineage must have null connection and file roots"
         )
+    if source == Source.BODY_SCAN.value and raw.source == Source.MCP.value:
+        await _reject_body_scan_ai_invocation(
+            session,
+            raw_payload_id=raw.id,
+            for_update=True,
+        )
     expected_raw_domain = (
         Domain.GARMIN.value
         if source == Source.GARMIN_API.value
@@ -676,6 +810,15 @@ async def _validate_new_weight_provenance(
     if raw.domain != expected_raw_domain:
         raise conflict_engine.ConflictRawOwnershipError(
             "weight raw payload belongs to a different domain"
+        )
+    if source == Source.BODY_SCAN.value and raw.source == Source.BODY_SCAN.value:
+        await _validate_body_scan_ai_origin(
+            session,
+            raw=raw,
+            subject_id=context.identity.subject_id,
+            actor_user_id=requested_actor,
+            for_update=True,
+            require_live_file=True,
         )
 
 
@@ -844,6 +987,21 @@ async def _validate_persisted_weight_provenance(
         ):
             raise conflict_engine.ConflictRawOwnershipError(
                 "body-scan weight raw provenance is incompatible"
+            )
+        if raw is not None and raw.source == Source.BODY_SCAN.value:
+            await _validate_body_scan_ai_origin(
+                session,
+                raw=raw,
+                subject_id=subject_id,
+                actor_user_id=row.actor_user_id,
+                for_update=False,
+                require_live_file=False,
+            )
+        elif raw is not None and raw.source == Source.MCP.value:
+            await _reject_body_scan_ai_invocation(
+                session,
+                raw_payload_id=raw.id,
+                for_update=False,
             )
         return
 

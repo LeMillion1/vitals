@@ -157,6 +157,7 @@
                     <form @submit.prevent="bsUpload($event)" hx-boost="false" class="space-y-4">
                         <label class="v-file-drop cursor-pointer">
                             <input type="file" name="file" accept="image/*,application/pdf" required class="sr-only"
+                                {% if not body_ai_ready %}disabled{% endif %}
                                 onchange="const h=this.closest('form').querySelector('.v-file-drop__hint'); h.textContent = this.files.length ? this.files[0].name : h.dataset.default;">
                             <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -166,10 +167,12 @@
                             <span class="v-file-drop__hint" data-default="{{ t('body.drop_text') }}">{{
                                 t("body.drop_text") }}</span>
                         </label>
-                        {% if not llm_configured %}
-                        <p class="v-text-micro" style="color: var(--bad)">{{ t("body.not_configured") }}</p>
+                        {% if not body_ai_ready %}
+                        <p class="v-text-micro" style="color: var(--bad)">{% if body_ai_availability_code == 'quota' %}{{ t("body.quota") }}{% else %}{{ t("body.not_configured") }}{% endif %}</p>
                         {% endif %}
-                        <button type="submit" class="v-btn w-full" :disabled="bsUploading">{{ t("body.upload_btn")
+                        <button type="submit" class="v-btn w-full"
+                            style="{% if not body_ai_ready %}opacity:.5;cursor:not-allowed{% endif %}"
+                            :disabled="bsUploading || {{ 'true' if not body_ai_ready else 'false' }}">{{ t("body.upload_btn")
                             }}</button>
                         <p x-show="bsError" x-text="bsError" class="v-text-micro" style="color: var(--bad)" x-cloak></p>
                     </form>

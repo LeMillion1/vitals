@@ -117,10 +117,10 @@ legacy secret file/process environment. If commit fails after that environment
 write, the outcome is treated as ambiguous: the credential is cleared and an
 operator must reconcile the intended database root before re-entering it. The
 kill switch and quotas govern migrated platform consumers only—currently Weekly
-Digest, Daily Brief, Signals parsing/recovery, Telegram question replies, and
-Labs document recognition. Historical subject-owned OpenRouter roots remain only
-for unmigrated Body Scan parsing and readable legacy provenance until that last
-document-parser cutover is complete.
+Digest, Daily Brief, Signals parsing/recovery, Telegram question replies, Labs
+document recognition, and Body Scan recognition. Historical subject-owned
+OpenRouter roots remain readable only as validated legacy provenance; no current
+document-parser network call depends on them.
 
 Every paid call follows `prepare/reserve -> commit -> provider I/O -> fresh
 finalize/persist`. No database lock spans OpenRouter. `AIInvocation` reserves a
@@ -322,6 +322,14 @@ Implementation progress on `commercial/main`:
   conflict evaluation, derived alerts, and nightly replay use that same exact-one
   subject boundary; replay isolates failures per raw row and MCP provenance keeps
   Source.MCP on raw/scan while the derived Weight remains Source.BODY_SCAN.
+  New Body Scan document parsing commits exact S+A+F, a C-null raw placeholder,
+  and one raw-bound platform `BODY_SCAN_PARSE` invocation before charge. Local
+  conversion precedes T2, one usage-aware vision call runs outside every DB
+  transaction, and T3 atomically finalizes accounting plus the strict verbatim
+  extraction. Confirm keeps the existing Weight/Garmin lock order and remains
+  editable; replay and derived Weight accept that exact successful invocation or
+  validated historical subject-C provenance, never a mixed graph. File retirement
+  denies document access while preserving the independent historical Weight fact.
   ProgressPhoto upload, gallery reads, Timeline markers, protected downloads,
   and deletes now validate one exact subject/owner/FileAsset graph. File assets
   are exclusive to one photo; deletion durably retires metadata before unlinking

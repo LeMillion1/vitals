@@ -17,27 +17,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
 from vitals.enums import (
+    AIInvocationStatus,
     Domain,
     FileAssetPurpose,
-    IntegrationConnectionType,
-    IntegrationProvider,
     Source,
 )
 from vitals.i18n import t
-from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import (
+    ai_gateway_service,
     alerts_service,
+    body_scan_ai_service,
     body_scan_service,
     conflict_engine,
     file_asset_service,
     garmin_weight_service,
-    raw_payload_service,
     weight_service,
 )
 from vitals.services.analytics import body_metrics
 from vitals.services.conflict_engine import ConflictBlocked
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
-from vitals.services.upload_ownership_service import require_live_upload_connection
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth, require_module
 from web.ratelimit import rate_limit
@@ -45,7 +42,6 @@ from web.templating import STATIC_DIR, templates
 from web.uploads import (
     DOC_EXTS,
     IMAGE_EXTS,
-    file_ext,
     legacy_upload_disk_path,
     read_capped,
     validate_extension,
@@ -154,12 +150,19 @@ async def _section_context(
             on_date=today,
         )
         prepared = prepared_weight_write.conflict_write
+        body_ai_availability = (
+            await body_scan_ai_service.project_body_scan_ai_availability(
+                db,
+                actor_username=username,
+            )
+        )
     else:
         conflict_context, prepared = await _prepare_aux_write(
             db,
             username=username,
             on_date=today,
         )
+        body_ai_availability = None
     identity = conflict_context.identity
 
     # Refresh noise alerts for today (+ body-scan alerts when the module is on)
@@ -325,7 +328,15 @@ async def _section_context(
         "bc_latest": bc_latest,
         "bc_headline": bc_headline,
         "bc_cat_order": BODY_CAT_ORDER,
-        "llm_configured": bool(load_config().openrouter_api_key),
+        "body_ai_ready": bool(
+            body_ai_availability is not None
+            and body_ai_availability.available
+        ),
+        "body_ai_availability_code": (
+            body_ai_availability.code.value
+            if body_ai_availability is not None
+            else "not_configured"
+        ),
     }
 
 
@@ -666,6 +677,25 @@ class BodyScanConfirm(BaseModel):
     metrics: list[BodyScanMetricIn] = []
 
 
+async def _cleanup_uncommitted_body_upload(
+    db: AsyncSession,
+    *,
+    file_path: str,
+) -> None:
+    """Best-effort rollback and byte cleanup before the first durable commit."""
+
+    try:
+        await db.rollback()
+    except BaseException:
+        logger.exception("Could not roll back failed body-upload transaction")
+    try:
+        os.remove(file_path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Could not clean up failed body upload %s: %s", file_path, exc)
+
+
 @router.post("/body-scan/upload")
 async def body_scan_upload(
     request: Request,
@@ -683,105 +713,56 @@ async def body_scan_upload(
     edits. Returns JSON the client renders as an editable table."""
     from vitals.utils.timeutils import today_local
 
-    # Admit the upload only through a live AI-gateway root, then release every
-    # database lock before file IO and the external extraction await. The durable
-    # write transaction below resolves and validates the roots again.
-    preflight_ownership = await resolve_legacy_ownership_context(
-        db,
-        actor_username=username,
-        required_connections=(IntegrationProvider.OPENROUTER,),
-    )
-    await require_live_upload_connection(
-        db,
-        identity=preflight_ownership.owner_action(),
-        connection_id=preflight_ownership.connection_id(
-            IntegrationProvider.OPENROUTER
-        ),
-        provider=IntegrationProvider.OPENROUTER,
-        connection_type=IntegrationConnectionType.AI_GATEWAY,
-    )
-    await db.rollback()
-
     # 415/413 surface as HTTP errors (handled by the client's error branch).
-    validate_extension(file.filename, DOC_EXTS)
+    ext = validate_extension(file.filename, DOC_EXTS)
     contents = await read_capped(file)
-
-    try:
-        llm = LLMClient()
-    except LLMNotConfigured:
-        return JSONResponse({"ok": False, "reason": "not_configured", "message": t("body.not_configured")})
-
-    try:
-        extracted = await body_scan_service.extract_from_file(
-            contents,
-            llm=llm,
-            content_type=file.content_type or "image/jpeg",
-            filename=file.filename,
+    media_type = (
+        "application/pdf"
+        if ext == ".pdf"
+        else (
+            file.content_type
+            if (file.content_type or "").lower().startswith("image/")
+            else "image/jpeg"
         )
-    except LLMNotConfigured:
-        return JSONResponse({"ok": False, "reason": "not_configured", "message": t("body.not_configured")})
-    except Exception as e:  # noqa: BLE001 — surface parse failures softly
-        logger.warning("Body-scan extraction failed for %s: %s", file.filename, e)
-        return JSONResponse({"ok": False, "reason": "error", "message": t("body.upload.error")})
-
-    # Persist the original sheet image for reference (served at /static/uploads/...).
-    # Written only once extraction succeeded — see the labs upload for why.
-    ext = file_ext(file.filename) or ".bin"
+    )
     file_key = f"body/{uuid.uuid4().hex}{ext}"
     file_path = legacy_upload_disk_path(STATIC_DIR, file_key)
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    prepared = None
     try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "wb") as fh:
             fh.write(contents)
-        ownership = await resolve_legacy_ownership_context(
+        prepared = await body_scan_ai_service.prepare_body_scan_parse(
             db,
             actor_username=username,
-            required_connections=(IntegrationProvider.OPENROUTER,),
-        )
-        identity = ownership.owner_action()
-        if identity != preflight_ownership.owner_action():
-            raise ValueError("body-scan upload identity changed during extraction")
-        openrouter_connection_id = ownership.connection_id(
-            IntegrationProvider.OPENROUTER
-        )
-        await require_live_upload_connection(
-            db,
-            identity=identity,
-            connection_id=openrouter_connection_id,
-            provider=IntegrationProvider.OPENROUTER,
-            connection_type=IntegrationConnectionType.AI_GATEWAY,
-        )
-        asset = await file_asset_service.register_legacy_local(
-            db,
-            subject_id=identity.subject_id,
-            uploaded_by_user_id=identity.actor_user_id,
-            purpose=FileAssetPurpose.BODY_SCAN_DOCUMENT,
             storage_ref=file_key,
-            media_type=file.content_type or None,
-            size_bytes=len(contents),
-            content_sha256=hashlib.sha256(contents).hexdigest(),
+            media_type=media_type,
+            byte_size=len(contents),
+            sha256_hex=hashlib.sha256(contents).hexdigest(),
         )
-        raw_row = await raw_payload_service.upsert_owned_raw_payload(
-            db,
-            identity=identity,
-            integration_connection_id=openrouter_connection_id,
-            file_asset_id=asset.id,
-            domain=Domain.BODY_COMPOSITION.value,
-            source=Source.BODY_SCAN.value,
-            external_id=file_key,
-            payload=extracted,
+    except (
+        ai_gateway_service.AIGatewayConfigurationError,
+        ai_gateway_service.AIQuotaExceededError,
+    ) as exc:
+        await _cleanup_uncommitted_body_upload(db, file_path=file_path)
+        reason = (
+            "quota"
+            if isinstance(exc, ai_gateway_service.AIQuotaExceededError)
+            else "not_configured"
+        )
+        return JSONResponse(
+            {
+                "ok": False,
+                "reason": reason,
+                "message": (
+                    t("body.quota")
+                    if reason == "quota"
+                    else t("body.not_configured")
+                ),
+            }
         )
     except BaseException:
-        try:
-            await db.rollback()
-        except BaseException:
-            logger.exception("Could not roll back failed body-upload transaction")
-        try:
-            os.remove(file_path)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            logger.warning("Could not clean up failed body upload %s: %s", file_path, exc)
+        await _cleanup_uncommitted_body_upload(db, file_path=file_path)
         raise
 
     try:
@@ -792,10 +773,128 @@ async def body_scan_upload(
         except BaseException:
             logger.exception("Could not reset session after body-upload commit failure")
         logger.exception(
-            "Body-upload commit outcome is ambiguous; preserved uploaded bytes"
+            "Body-scan preparation commit is ambiguous; preserved uploaded bytes"
         )
         raise
 
+    assert prepared is not None
+    if prepared.reservation_status is AIInvocationStatus.SUCCEEDED:
+        extracted = prepared.existing_extracted
+    elif not prepared.dispatchable:
+        return JSONResponse(
+            {"ok": False, "reason": "pending", "message": t("body.upload.error")}
+        )
+    else:
+        try:
+            prepared_content = body_scan_ai_service.prepare_body_scan_content(
+                prepared,
+                file_bytes=contents,
+            )
+        except body_scan_ai_service.BodyScanAIValidationError:
+            try:
+                await body_scan_ai_service.cancel_prepared_body_scan_parse(
+                    db,
+                    prepared,
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                logger.warning(
+                    "Could not release a locally invalid body-scan AI reservation"
+                )
+            return JSONResponse(
+                {"ok": False, "reason": "error", "message": t("body.upload.error")}
+            )
+        try:
+            lease = await body_scan_ai_service.start_body_scan_dispatch(
+                db,
+                prepared,
+                content=prepared_content,
+            )
+            await db.commit()
+        except (
+            ai_gateway_service.AIGatewayConfigurationError,
+            ai_gateway_service.AIQuotaExceededError,
+        ) as exc:
+            await db.rollback()
+            try:
+                await body_scan_ai_service.cancel_prepared_body_scan_parse(
+                    db,
+                    prepared,
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                logger.warning(
+                    "Could not release a zero-network body-scan AI reservation"
+                )
+            reason = (
+                "quota"
+                if isinstance(exc, ai_gateway_service.AIQuotaExceededError)
+                else "not_configured"
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "reason": reason,
+                    "message": (
+                        t("body.quota")
+                        if reason == "quota"
+                        else t("body.not_configured")
+                    ),
+                }
+            )
+        completion = await body_scan_ai_service.render_body_scan(
+            prepared,
+            lease,
+            file_bytes=contents,
+            content=prepared_content,
+        )
+        result = None
+        for attempt in range(2):
+            try:
+                result = await body_scan_ai_service.persist_body_scan_parse(
+                    db,
+                    prepared,
+                    completion,
+                )
+                break
+            except Exception:
+                await db.rollback()
+                if attempt == 0:
+                    logger.warning(
+                        "Retrying transient body-scan AI finalization with the "
+                        "same paid completion"
+                    )
+                    continue
+                logger.exception(
+                    "Body-scan AI finalization failed after internal retry"
+                )
+                raise
+        assert result is not None
+        try:
+            await db.commit()
+        except BaseException:
+            try:
+                await db.rollback()
+            except BaseException:
+                logger.exception("Could not reset failed body-scan AI finalization")
+            logger.exception("Body-scan AI finalization commit outcome is ambiguous")
+            raise
+        if result.status is not AIInvocationStatus.SUCCEEDED:
+            logger.warning(
+                "Body-scan AI extraction ended with status %s",
+                result.status.value,
+            )
+            return JSONResponse(
+                {"ok": False, "reason": "error", "message": t("body.upload.error")}
+            )
+        extracted = result.extracted
+
+    if not isinstance(extracted, dict):
+        return JSONResponse(
+            {"ok": False, "reason": "error", "message": t("body.upload.error")}
+        )
     rows = body_scan_service.normalize_extracted(extracted)
     raw_date = date or extracted.get("date")
     try:
@@ -809,7 +908,7 @@ async def body_scan_upload(
             "date": scan_date,
             "device": extracted.get("device"),
             "file_key": file_key,
-            "raw_payload_id": raw_row.id,
+            "raw_payload_id": prepared.raw_payload_id,
             "metrics": rows,
         },
     })

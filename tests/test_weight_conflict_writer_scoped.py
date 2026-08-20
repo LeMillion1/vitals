@@ -12,6 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.enums import (
     Domain,
+    FileAssetPurpose,
+    FileAssetStatus,
+    FileStorageBackend,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
@@ -24,7 +27,7 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.system_alert import SystemAlert
-from vitals.models.tenancy import IntegrationConnection
+from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.services import conflict_engine, weight_service
@@ -119,11 +122,13 @@ async def _raw(
     domain: Domain,
     source: Source,
     external_id: str,
+    file_asset: FileAsset | None = None,
 ) -> RawPayload:
     row = RawPayload(
         subject_id=identity.subject_id,
         actor_user_id=identity.actor_user_id,
         integration_connection_id=connection.id,
+        file_asset_id=file_asset.id if file_asset is not None else None,
         domain=domain.value,
         source=source.value,
         external_id=external_id,
@@ -432,6 +437,16 @@ async def test_manual_mcp_garmin_and_body_scan_provenance(
         identity,
         IntegrationProvider.OPENROUTER,
     )
+    scan_asset = FileAsset(
+        subject_id=identity.subject_id,
+        uploaded_by_user_id=identity.actor_user_id,
+        purpose=FileAssetPurpose.BODY_SCAN_DOCUMENT.value,
+        storage_backend=FileStorageBackend.LEGACY_LOCAL.value,
+        storage_ref="body/synthetic-scan.png",
+        status=FileAssetStatus.LEGACY_PLACEHOLDER.value,
+    )
+    db_session.add(scan_asset)
+    await db_session.flush()
     garmin_raw = await _raw(
         db_session,
         identity=identity,
@@ -447,6 +462,7 @@ async def test_manual_mcp_garmin_and_body_scan_provenance(
         domain=Domain.BODY_COMPOSITION,
         source=Source.BODY_SCAN,
         external_id="body/synthetic-scan.png",
+        file_asset=scan_asset,
     )
 
     async def write(

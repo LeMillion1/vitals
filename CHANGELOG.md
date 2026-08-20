@@ -43,8 +43,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   a commit error after an environment write clears the credential and requires
   explicit reconciliation rather than guessing an ambiguous database outcome,
   and only migrated platform consumers (currently Weekly Digest, Daily Brief,
-  Signals parsing, Telegram question replies, and Labs recognition) are governed;
-  legacy subject OpenRouter roots remain available during their cutover.
+  Signals parsing, Telegram question replies, Labs recognition, and Body Scan
+  recognition) are governed; legacy subject OpenRouter roots remain
+  readable only as validated historical provenance during their cutover.
 - Weekly digests now use that centrally funded gateway without granting the
   superadmin health-data access. Web, MCP, and scheduler generation reserve a
   subject-owned `AIInvocation`, commit before exactly one OpenRouter call, then
@@ -113,6 +114,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Confirmation and replay continue to accept validated historical C-backed
   uploads, while the dashboard now reports redacted platform-root/quota
   readiness instead of environment-key presence.
+- Body-scan document recognition now uses the same centrally funded platform
+  gateway and no longer creates or requires a subject-owned OpenRouter
+  connection. The upload commits exact S+A+F, a C-null raw placeholder, and one
+  raw-bound WEB invocation before local image/PDF preprocessing and charge;
+  exactly one usage-aware vision call then runs without a database transaction.
+  Sanitized accounting and a strictly validated verbatim extraction finalize
+  atomically, while confirmation remains a separate editable Weight transaction.
+  Replay and derived Weight accept only an exact successful platform invocation
+  or the validated historical subject-C chain, reject mixed provenance, and keep
+  retained Weight readable after the source document is monotonically retired.
+  The dashboard now projects redacted platform-root/quota readiness rather than
+  environment-key presence.
 - Browser sessions now use a strict versioned envelope while accepting existing
   signed bare-username cookies for their normal TTL. The public auth dependency
   remains compatible, and cookies contain no roles, subject IDs, grants, or PHI.

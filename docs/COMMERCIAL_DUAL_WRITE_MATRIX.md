@@ -42,7 +42,7 @@ or multi-subject reads are enabled.
 | Tables | Runtime writers | Stage-2 ownership rule |
 | --- | --- | --- |
 | `annotations` | timeline web/service and MCP event/note tools | New human rows get S+A; updates retain A and require the same S. MCP creates retain `Source.MCP`. |
-| `weight_logs` | manual/MCP saves, Garmin bridge, body-scan bridge | S always; human writes get A, provider writes get provider C, derived writes retain source ownership. |
+| `weight_logs` | manual/MCP saves, Garmin bridge, body-scan bridge | S always; human writes get A, Garmin facts get Garmin C, and new Body Scan derivations use C null plus their raw-bound platform invocation. Historical subject-C rows remain readable provenance. |
 | `body_measurements` | manual/MCP and lean-mass recompute | Human creates get S+A; derived recompute preserves ownership. |
 | `progress_photos` | protected upload/weight service | S+A+F; the file asset is registered before the fact row. |
 | `noise_markers` | web/MCP | New rows get S+A; delete is S-scoped. |
@@ -86,7 +86,7 @@ pending and the scoped service refuses to mutate the global `active` flag.
 | Hevy | S; optional triggering A; Hevy C; no F | Workout copies S+A+C; exercises/sets copy S+C. |
 | Telegram | S+A+Telegram C; no F | Signals/day context copy the raw ownership. |
 | Lab document | S+A+lab F; C null; exact LAB_DOCUMENT_PARSE AIInvocation | Results/markers use raw S/A; F remains on raw. AIInvocation links the subject to the platform OpenRouter gateway and paid-call metadata. Historical subject-C uploads remain dual-read provenance only. |
-| Body-scan document | S+A+body F plus AIInvocation when AI parsing ran | Scan uses raw S/A/F; metrics copy S. Derived Weight follows the raw/invocation chain rather than pretending the platform gateway is a subject provider. |
+| Body-scan document | S+A+body F; C null; exact BODY_SCAN_PARSE AIInvocation | Scan uses raw S/A/F; metrics copy S. Derived Weight follows the raw/invocation chain with C null rather than pretending the platform gateway is a subject provider. Historical subject-C uploads remain dual-read provenance only. |
 | Structured MCP lab/body input | S+A; C/F null | Normalized rows use the supplied write identity. |
 | VCF | S+A; C/F null | Curated variants link to that raw row. |
 
@@ -137,9 +137,9 @@ delete the ownership root.
 
 The Stage-2 upload slice now registers progress photos, lab documents, and body-
 scan documents in the same caller-owned database transaction as their normalized
-or raw rows. New Labs raw rows carry S+A+F, C null, and a raw-bound platform
-AIInvocation; historical Labs and current Body Scan bridge rows retain their
-subject OpenRouter C+F until their respective dual-read/cutover completes.
+or raw rows. New Labs and Body Scan raw rows carry S+A+F, C null, and a raw-bound
+platform AIInvocation; historical subject-OpenRouter C+F rows remain validated
+dual-read provenance only.
 Confirmation locks and
 validates the S -> raw -> F chain and derives the storage reference from the
 server-side asset. Subject-scoped delete paths retire the asset before removing
@@ -239,14 +239,22 @@ original actor/source on correction, and allow only a fully NULL S/A legacy row
 through the exact-one bridge. Measurement writes use the scoped conflict proof;
 noise reconciliation writes an actorless health alert. The authenticated Weight
 page propagates S through Weight, measurement, noise, GLP-1, Timeline, and BIA
-selectors. BodyScan upload confirmation, MCP raw-first ingest, direct reads,
-notes/deletes, conflict evaluation, derived Weight projection, passive alerts,
-and nightly replay now validate one exact S/A/C/F/raw/metric graph. The legacy
+selectors. New Body Scan uploads commit exact S+A+F, a C-null raw placeholder,
+and one raw-bound platform `BODY_SCAN_PARSE` invocation. Image/PDF preprocessing
+finishes before charge; exactly one usage-aware call runs without a database
+transaction; and terminal accounting plus the strict verbatim extraction commit
+atomically. Confirmation remains a separate editable transaction in canonical
+governance -> Garmin advisory -> S/A -> raw/F/invocation -> scan/metrics ->
+derived Weight/outbox order. Direct reads, notes/deletes, conflict evaluation,
+passive alerts, and replay validate that exact graph or historical subject-C
+provenance and reject mixed roots. Retiring the source file denies document
+access without invalidating the independent retained Weight fact. The legacy
 bridge admits only a fully NULL historical raw root and keeps that provenance
 explicit when normalizing subject-owned facts. MCP keeps Source.MCP on both raw
-and scan, while the linked derived Weight correctly retains Source.BODY_SCAN. The global
-active-weight/body-measurement/outbox date keys, BodyScan composite-FK/backfill and
-raw-key cutovers, and unscoped chart, share, digest, overview, and export consumers
+and scan, cannot claim a platform parser invocation, and its linked derived
+Weight correctly retains Source.BODY_SCAN. The global active-weight/body-
+measurement/outbox date keys, BodyScan composite-FK/backfill and raw-key
+cutovers, and unscoped chart, share, digest, overview, and export consumers
 remain explicit release blockers.
 Other domain writers and transitional legacy fallbacks stay on the reviewed
 inventory, so registration and every path to a second writable subject remain
@@ -375,11 +383,10 @@ gateway, preserves a disabled root across ordinary configuration saves, and
 configures one platform period plus one exactly aligned opaque-S period in a
 single caller-owned transaction. Its read model contains only gateway
 status/version, opaque S identifiers, dates, limits, and counters; it never joins
-subject profiles or generated artifacts. This control surface does not change
-the remaining legacy subject OpenRouter dual-read/write entries elsewhere in
-this matrix: until Body Scan and compatibility-only adapters adopt
-`AIInvocation`, the platform kill switch and quotas cannot be described as
-universal AI enforcement.
+subject profiles or generated artifacts. Every production OpenRouter call now
+enters the platform invocation gateway. Historical subject OpenRouter roots stay
+readable only as validated provenance; compatibility-only non-network adapters
+do not weaken the platform kill switch or quota boundary.
 
 Garmin and Hevy runtime ingestion now resolves S plus the provider C before
 network persistence, copies raw provenance into normalized parents and children,

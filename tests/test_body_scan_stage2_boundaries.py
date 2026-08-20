@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.datastructures import Headers, UploadFile
 from starlette.requests import Request
 
+from vitals.integrations.llm_client import LLMCallResult
 from vitals.enums import (
     Domain,
     FileAssetPurpose,
@@ -35,6 +36,7 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.services import (
+    body_scan_ai_service,
     body_scan_service,
     conflict_engine,
     file_asset_service,
@@ -42,7 +44,6 @@ from vitals.services import (
     weight_service,
 )
 from vitals.services.modules_service import MODULE_REGISTRY, SETTINGS_KEY
-from vitals.services.upload_ownership_service import UploadOwnershipError
 from vitals.utils.timeutils import now_local
 
 
@@ -424,19 +425,24 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
     legacy_owner_roots,
     tmp_path,
     monkeypatch,
+    platform_ai_ready,
 ):
     from web.routers import weight as weight_router
 
-    class SyntheticLLM:
-        pass
-
-    async def extracted(*args, **kwargs):
-        del args, kwargs
-        return {
-            "date": SCAN_DATE.isoformat(),
-            "device": "Synthetic Web BIA",
-            "metrics": _metrics(weight=78.3),
-        }
+    async def extracted(image_urls, *, llm, model, max_tokens):
+        del image_urls, llm, max_tokens
+        return LLMCallResult(
+            value={
+                "date": SCAN_DATE.isoformat(),
+                "device": "Synthetic Web BIA",
+                "metrics": _metrics(weight=78.3),
+            },
+            upstream_request_id="synthetic-body-boundary",
+            model=model,
+            input_tokens=10,
+            output_tokens=10,
+            cost_microunits=1,
+        )
 
     original_save = body_scan_service.save_scan
     original_refresh = body_scan_service.refresh_alerts
@@ -474,8 +480,11 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
         return await original_refresh(*args, **kwargs)
 
     monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
-    monkeypatch.setattr(weight_router, "LLMClient", SyntheticLLM)
-    monkeypatch.setattr(body_scan_service, "extract_from_file", extracted)
+    monkeypatch.setattr(
+        body_scan_service,
+        "extract_prepared_file_with_usage",
+        extracted,
+    )
     monkeypatch.setattr(body_scan_service, "save_scan", save_probe)
     monkeypatch.setattr(body_scan_service, "refresh_alerts", refresh_probe)
     upload = UploadFile(
@@ -550,38 +559,41 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
     assert await db_session.scalar(select(func.count()).select_from(WeightLog)) == 1
 
 
-async def test_web_upload_revalidates_live_openrouter_after_extraction(
+async def test_web_upload_ignores_disabled_historical_subject_openrouter(
     db_session,
     legacy_owner_roots,
     tmp_path,
     monkeypatch,
+    platform_ai_ready,
 ):
     from web.routers import weight as weight_router
 
-    class SyntheticLLM:
-        pass
-
     identity = _identity(legacy_owner_roots)
     connection = await _openrouter_connection(db_session, identity.subject_id)
-    connection_id = connection.id
+    connection.status = IntegrationConnectionStatus.DISABLED.value
+    await db_session.commit()
 
-    async def extracted(*args, **kwargs):
-        del args, kwargs
-        await db_session.execute(
-            update(IntegrationConnection)
-            .where(IntegrationConnection.id == connection_id)
-            .values(status=IntegrationConnectionStatus.DISABLED.value)
+    async def extracted(image_urls, *, llm, model, max_tokens):
+        del image_urls, llm, max_tokens
+        return LLMCallResult(
+            value={
+                "date": SCAN_DATE.isoformat(),
+                "device": "Synthetic platform BIA",
+                "metrics": _metrics(),
+            },
+            upstream_request_id="synthetic-platform-body-scan",
+            model=model,
+            input_tokens=10,
+            output_tokens=10,
+            cost_microunits=1,
         )
-        await db_session.commit()
-        return {
-            "date": SCAN_DATE.isoformat(),
-            "device": "Synthetic revoked BIA",
-            "metrics": _metrics(),
-        }
 
     monkeypatch.setattr(weight_router, "STATIC_DIR", tmp_path)
-    monkeypatch.setattr(weight_router, "LLMClient", SyntheticLLM)
-    monkeypatch.setattr(body_scan_service, "extract_from_file", extracted)
+    monkeypatch.setattr(
+        body_scan_service,
+        "extract_prepared_file_with_usage",
+        extracted,
+    )
     upload = UploadFile(
         BytesIO(b"synthetic-revoked-body-scan"),
         filename="scan.png",
@@ -596,18 +608,18 @@ async def test_web_upload_revalidates_live_openrouter_after_extraction(
         }
     )
 
-    with pytest.raises(UploadOwnershipError, match="inactive upload connection"):
-        await weight_router.body_scan_upload(
-            request=request,
-            file=upload,
-            date=None,
-            db=db_session,
-            username="tester",
-        )
+    response = await weight_router.body_scan_upload(
+        request=request,
+        file=upload,
+        date=None,
+        db=db_session,
+        username="tester",
+    )
 
-    assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
-    assert await db_session.scalar(select(func.count()).select_from(FileAsset)) == 0
-    assert not any(path.is_file() for path in tmp_path.rglob("*"))
+    assert json.loads(response.body)["ok"] is True
+    raw = await db_session.scalar(select(RawPayload))
+    assert raw is not None and raw.integration_connection_id is None
+    assert raw.subject_id == identity.subject_id
 
 
 async def test_subject_a_reads_notes_delete_history_catalog_and_bia_exclude_b(

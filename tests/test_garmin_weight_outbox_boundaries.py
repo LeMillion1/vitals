@@ -11,6 +11,9 @@ from sqlalchemy import select
 
 from vitals.enums import (
     Domain,
+    FileAssetPurpose,
+    FileAssetStatus,
+    FileStorageBackend,
     IntegrationConnectionStatus,
     IntegrationProvider,
     Source,
@@ -22,7 +25,7 @@ from vitals.models.garmin import GarminWeightExport
 from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.scoped_settings import IntegrationConnectionSetting
-from vitals.models.tenancy import IntegrationConnection
+from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.services import (
@@ -104,10 +107,21 @@ async def test_weight_capability_projects_exact_destination_without_rewriting_sc
         subject_id=identity.subject_id,
         provider=IntegrationProvider.OPENROUTER,
     )
+    asset = FileAsset(
+        subject_id=identity.subject_id,
+        uploaded_by_user_id=identity.actor_user_id,
+        purpose=FileAssetPurpose.BODY_SCAN_DOCUMENT.value,
+        storage_backend=FileStorageBackend.LEGACY_LOCAL.value,
+        storage_ref="synthetic/body-scan.png",
+        status=FileAssetStatus.LEGACY_PLACEHOLDER.value,
+    )
+    db_session.add(asset)
+    await db_session.flush()
     raw = RawPayload(
         subject_id=identity.subject_id,
         actor_user_id=identity.actor_user_id,
         integration_connection_id=openrouter.id,
+        file_asset_id=asset.id,
         domain=Domain.BODY_COMPOSITION.value,
         source=Source.BODY_SCAN.value,
         external_id="synthetic/body-scan.png",
