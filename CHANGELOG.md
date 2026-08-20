@@ -98,8 +98,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   source provenance. Checklist replacement is serialized under the prepared
   conflict capability and excludes the prior subject-day state before evaluating
   retinoid/peel rules; note and delete paths reject foreign or partial legacy
-  rows. The destructive historical Skincare seed script now refuses to run once
-  commercial identity bootstrap exists.
+  rows. The destructive historical Skincare and full demo seed scripts now refuse
+  to run once commercial identity bootstrap exists.
 - GLP-1 injection, dose-phase, and side-effect web/MCP paths now stamp and filter
   the selected subject while preserving manual versus MCP provenance. Injection
   edits merge only after a scoped row lock, phase creation evaluates the proposed

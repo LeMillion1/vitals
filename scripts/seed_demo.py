@@ -20,7 +20,8 @@ os.environ.setdefault("VITALS_DATABASE_URL", "sqlite+aiosqlite:///local_vitals.d
 os.environ.setdefault("VITALS_REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("VITALS_TIMEZONE", "Europe/Chisinau")
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
 from vitals.database import create_session_factory
@@ -49,22 +50,81 @@ from vitals.models.garmin import (
 from vitals.models.genetics import GeneticVariant
 from vitals.models.glp1 import DosePhase, Injection
 from vitals.models.hevy import HevyExercise, HevySet, HevyWorkout
+from vitals.models.identity import HealthSubject
 from vitals.models.labs import LabMarker, LabResult
 from vitals.models.milestones import Milestone, WeeklyDigest
 from vitals.models.nutrition import MealLog
 from vitals.models.skincare import SkincareLog, SkincareProduct
 from vitals.models.supplements import Supplement
 from vitals.models.weight import BodyMeasurement, WeightLog
+from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.utils.timeutils import today_local
 
 random.seed(42)
 
 TODAY = today_local()
+_AUTHORIZED_TRANSACTION_KEY = "vitals.seed_demo.authorized_transaction"
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _authorize_destructive_demo_seed(
+    session: AsyncSession,
+) -> None:
+    """Authorize this exact fresh transaction for destructive legacy seeding.
+
+    PostgreSQL uses the shared identity-governance advisory lock.  The local
+    SQLite utility needs an actual writer lock because identity governance is a
+    deliberate no-op on SQLite; ``BEGIN IMMEDIATE`` makes identity bootstrap and
+    the subject check/delete sequence serialize in database order.  Refusing an
+    already-open, unrecognized transaction also prevents caller state from being
+    autoflushed before the safety decision.
+    """
+
+    transaction = session.get_transaction()
+    authorized = session.info.get(_AUTHORIZED_TRANSACTION_KEY)
+    if transaction is not None:
+        if transaction is not authorized or not transaction.is_active:
+            raise RuntimeError(
+                "seed_demo destructive writers require a fresh transaction"
+            )
+        identity_changes = tuple(session.new) + tuple(session.dirty) + tuple(
+            session.deleted
+        )
+        if any(isinstance(row, HealthSubject) for row in identity_changes):
+            raise RuntimeError(
+                "seed_demo cannot share a transaction with identity changes"
+            )
+        with session.no_autoflush:
+            subject_id = await session.scalar(select(HealthSubject.id).limit(1))
+        if subject_id is not None:
+            raise RuntimeError(
+                "seed_demo is a destructive legacy utility and cannot run "
+                "after commercial identity bootstrap"
+            )
+        return
+
+    dialect = session.get_bind().dialect.name
+    if dialect == "sqlite":
+        await session.execute(text("BEGIN IMMEDIATE"))
+    else:
+        await acquire_identity_governance_lock(session)
+
+    transaction = session.get_transaction()
+    if transaction is None or not transaction.is_active:
+        raise RuntimeError("seed_demo could not establish a guarded transaction")
+    with session.no_autoflush:
+        subject_id = await session.scalar(select(HealthSubject.id).limit(1))
+    if subject_id is not None:
+        raise RuntimeError(
+            "seed_demo is a destructive legacy utility and cannot run "
+            "after commercial identity bootstrap"
+        )
+    session.info[_AUTHORIZED_TRANSACTION_KEY] = transaction
+
 
 def _d(days_ago: int) -> date:
     return TODAY - timedelta(days=days_ago)
@@ -82,6 +142,7 @@ def _weight_curve(days_ago: int) -> float:
 # ---------------------------------------------------------------------------
 
 async def seed_supplements(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(Supplement))
     items = [
         Supplement(name="Creatine Monohydrate", key="creatine", dose="5 g",
@@ -111,6 +172,7 @@ async def seed_supplements(session):
 
 
 async def seed_genetics(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(GeneticVariant))
     items = [
         GeneticVariant(gene="MTHFR", rsid="rs1801133", genotype="CT",
@@ -146,6 +208,7 @@ async def seed_genetics(session):
 
 
 async def seed_lab_markers(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(LabMarker))
     markers = [
         LabMarker(name="Glucose (fasting)", category="metabolic",
@@ -171,6 +234,7 @@ async def seed_lab_markers(session):
 
 
 async def seed_conflict_rules(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(ConflictRule))
     rules = [
         ConflictRule(
@@ -203,6 +267,7 @@ async def seed_conflict_rules(session):
 
 
 async def seed_dose_phases(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(DosePhase))
     phases = [
         DosePhase(
@@ -222,6 +287,7 @@ async def seed_dose_phases(session):
 
 
 async def seed_weight(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(WeightLog))
     days = sorted(random.sample(range(1, 91), 20), reverse=True)
     for d in days:
@@ -232,6 +298,7 @@ async def seed_weight(session):
 
 
 async def seed_measurements(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(BodyMeasurement))
     data = [
         (90, 40.5, 95.0, 22.1, None),
@@ -324,6 +391,7 @@ def _seed_night(session, d):
 
 
 async def seed_garmin(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(GarminIntraday))
     await session.execute(delete(GarminDaily))
     # Intraday curves only for the two most recent days: at ~576 rows a day they
@@ -360,6 +428,7 @@ async def seed_garmin(session):
 
 
 async def seed_meals(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(MealLog))
     meal_templates = [
         ("Oatmeal with banana and whey", time(8, 30), 420, 32, 8, 62),
@@ -389,6 +458,7 @@ async def seed_meals(session):
 
 
 async def seed_skincare(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(SkincareLog))
     await session.execute(delete(SkincareProduct))
     for i in range(7, 0, -1):
@@ -449,6 +519,7 @@ async def seed_skincare(session):
 
 
 async def seed_injections(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(Injection))
     sites = list(InjectionSite)
     for i in range(4):
@@ -464,6 +535,7 @@ async def seed_injections(session):
 
 
 async def seed_labs(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(LabResult))
     panel_date = _d(21)
     results = [
@@ -484,6 +556,7 @@ async def seed_labs(session):
 
 
 async def seed_workouts(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(HevyWorkout))
 
     programs = [
@@ -615,6 +688,7 @@ async def seed_workouts(session):
 
 
 async def seed_milestones(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(Milestone))
     items = [
         Milestone(domain=Domain.WEIGHT, name="Reach 85 kg",
@@ -636,6 +710,7 @@ async def seed_milestones(session):
 
 
 async def seed_digests(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(WeeklyDigest))
 
     digest_ru = (
@@ -737,6 +812,7 @@ async def seed_digests(session):
 
 
 async def seed_app_settings(session):
+    await _authorize_destructive_demo_seed(session)
     await session.execute(delete(AppSetting))
     session.add_all([
         AppSetting(
@@ -758,61 +834,68 @@ async def seed_app_settings(session):
 # Main
 # ---------------------------------------------------------------------------
 
+async def seed_demo(session: AsyncSession) -> None:
+    """Replace all legacy demo data only before identity bootstrap."""
+
+    await _authorize_destructive_demo_seed(session)
+
+    print("Seeding demo data (persona: Alex, 27, 185 cm, fat loss)...")
+
+    await seed_supplements(session)
+    print("  + Supplements (7)")
+
+    await seed_genetics(session)
+    print("  + Genetic variants (4)")
+
+    await seed_lab_markers(session)
+    print("  + Lab markers (6)")
+
+    await seed_conflict_rules(session)
+    print("  + Conflict rules (3)")
+
+    await seed_dose_phases(session)
+    print("  + GLP-1 dose phases (2)")
+
+    await seed_weight(session)
+    print("  + Weight logs (~20)")
+
+    await seed_measurements(session)
+    print("  + Body measurements (4)")
+
+    await seed_garmin(session)
+    print("  + Garmin daily (14 days)")
+
+    await seed_meals(session)
+    print("  + Meal logs (8 days incl. today)")
+
+    await seed_skincare(session)
+    print("  + Skincare logs (7 days) + products (6)")
+
+    await seed_injections(session)
+    print("  + GLP-1 injections (4)")
+
+    await seed_labs(session)
+    print("  + Lab results (1 panel, 6 markers)")
+
+    await seed_workouts(session)
+    print("  + Hevy workouts (6 sessions)")
+
+    await seed_milestones(session)
+    print("  + Milestones (4)")
+
+    await seed_digests(session)
+    print("  + Weekly digests (2: ru + en)")
+
+    await seed_app_settings(session)
+    print("  + App settings (all modules enabled)")
+
+
 async def main():
     config = load_config()
     factory = create_session_factory(config)
 
     async with factory() as session:
-        print("Seeding demo data (persona: Alex, 27, 185 cm, fat loss)...")
-
-        await seed_supplements(session)
-        print("  + Supplements (7)")
-
-        await seed_genetics(session)
-        print("  + Genetic variants (4)")
-
-        await seed_lab_markers(session)
-        print("  + Lab markers (6)")
-
-        await seed_conflict_rules(session)
-        print("  + Conflict rules (3)")
-
-        await seed_dose_phases(session)
-        print("  + GLP-1 dose phases (2)")
-
-        await seed_weight(session)
-        print("  + Weight logs (~20)")
-
-        await seed_measurements(session)
-        print("  + Body measurements (4)")
-
-        await seed_garmin(session)
-        print("  + Garmin daily (14 days)")
-
-        await seed_meals(session)
-        print("  + Meal logs (8 days incl. today)")
-
-        await seed_skincare(session)
-        print("  + Skincare logs (7 days) + products (6)")
-
-        await seed_injections(session)
-        print("  + GLP-1 injections (4)")
-
-        await seed_labs(session)
-        print("  + Lab results (1 panel, 6 markers)")
-
-        await seed_workouts(session)
-        print("  + Hevy workouts (6 sessions)")
-
-        await seed_milestones(session)
-        print("  + Milestones (4)")
-
-        await seed_digests(session)
-        print("  + Weekly digests (2: ru + en)")
-
-        await seed_app_settings(session)
-        print("  + App settings (all modules enabled)")
-
+        await seed_demo(session)
         await session.commit()
         print("\nDone! Start the server: python run_local.py")
 
