@@ -26,6 +26,13 @@ _COLUMN_TARGETS = {
     "file_asset_id": "file_assets.id",
 }
 
+_MULTI_FOREIGN_KEY_TARGETS = {
+    (WeeklyDigest, "subject_id"): {
+        "health_subjects.id",
+        "ai_invocations.subject_id",
+    },
+}
+
 _MODEL_COLUMNS = {
     BodyScan: {"subject_id", "actor_user_id", "file_asset_id"},
     BodyScanMetric: {"subject_id"},
@@ -110,10 +117,17 @@ def test_protocol_models_have_exact_nullable_ownership_foreign_keys(
         assert isinstance(column.type, Uuid)
         assert column.type.as_uuid is True
         assert column.nullable is True
-        assert len(column.foreign_keys) == 1
-        foreign_key = next(iter(column.foreign_keys))
-        assert foreign_key.target_fullname == _COLUMN_TARGETS[column_name]
-        assert foreign_key.ondelete == "RESTRICT"
+        expected_targets = _MULTI_FOREIGN_KEY_TARGETS.get(
+            (model, column_name),
+            {_COLUMN_TARGETS[column_name]},
+        )
+        foreign_keys = list(column.foreign_keys)
+        assert {foreign_key.target_fullname for foreign_key in foreign_keys} == (
+            expected_targets
+        )
+        assert all(
+            foreign_key.ondelete == "RESTRICT" for foreign_key in foreign_keys
+        )
 
         index_name = f"ix_{table.name}_{column_name}"
         assert index_name in indexes

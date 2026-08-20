@@ -11,10 +11,22 @@
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date as date_type
 from typing import Any, Optional
 
-from sqlalchemy import JSON, Date, Float, Index, String, Text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Date,
+    Float,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -73,7 +85,23 @@ class WeeklyDigest(
 
     __tablename__ = "weekly_digests"
     __table_args__ = (
+        UniqueConstraint(
+            "ai_invocation_id",
+            name="uq_weekly_digests_ai_invocation_id",
+        ),
+        ForeignKeyConstraint(
+            ["ai_invocation_id", "subject_id"],
+            ["ai_invocations.id", "ai_invocations.subject_id"],
+            ondelete="RESTRICT",
+            name="fk_weekly_digests_ai_invocation_subject",
+        ),
+        CheckConstraint(
+            "ai_invocation_id IS NULL OR "
+            "(subject_id IS NOT NULL AND integration_connection_id IS NULL)",
+            name="ck_weekly_digests_ai_invocation_ownership",
+        ),
         insights_index(__tablename__),
+        Index("ix_weekly_digests_ai_invocation_id", "ai_invocation_id"),
         Index("ix_weekly_digests_subject_date", "subject_id", "date"),
         Index(
             "ix_weekly_digests_subject_domain_date",
@@ -87,6 +115,9 @@ class WeeklyDigest(
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    ai_invocation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True), nullable=True
+    )
     kind: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=DigestKind.WEEKLY.value
     )

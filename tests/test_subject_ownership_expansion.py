@@ -87,6 +87,13 @@ COLUMN_TARGETS = {
     RESOLVED_BY: "users.id",
 }
 
+MULTI_FOREIGN_KEY_TARGETS = {
+    ("weekly_digests", SUBJECT): {
+        "health_subjects.id",
+        "ai_invocations.subject_id",
+    },
+}
+
 EXPECTED_INSIGHTS_TABLES = (
     "annotations",
     "body_measurements",
@@ -407,10 +414,18 @@ def test_all_36_models_have_exact_nullable_uuid_fk_and_simple_index_contract():
             assert column.type.as_uuid is True
             assert column.nullable is True
 
+            expected_targets = MULTI_FOREIGN_KEY_TARGETS.get(
+                (table_name, column_name),
+                {COLUMN_TARGETS[column_name]},
+            )
             foreign_keys = list(column.foreign_keys)
-            assert len(foreign_keys) == 1
-            assert foreign_keys[0].target_fullname == COLUMN_TARGETS[column_name]
-            assert foreign_keys[0].ondelete == "RESTRICT"
+            assert {
+                foreign_key.target_fullname for foreign_key in foreign_keys
+            } == expected_targets
+            assert all(
+                foreign_key.ondelete == "RESTRICT"
+                for foreign_key in foreign_keys
+            )
 
             index_name = f"ix_{table_name}_{column_name}"
             assert index_name in indexes
