@@ -38,7 +38,7 @@ from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
 # owner flips in Settings, and it defaults off.
-pytestmark = pytest.mark.usefixtures("all_modules_on", "legacy_owner_roots")
+pytestmark = pytest.mark.usefixtures("all_modules_on")
 
 DAY = date(2026, 7, 26)
 
@@ -115,6 +115,7 @@ async def _seed_day(db_session, *, on_date=DAY, weight_kg=88.0):
 )
 async def test_brief_rejects_inactive_llm_connection_before_network(
     db_session,
+    legacy_owner_roots,
     inactive_status,
 ):
     ownership = await resolve_legacy_ownership_context(
@@ -129,7 +130,7 @@ async def test_brief_rejects_inactive_llm_connection_before_network(
     await db_session.flush()
     llm = FakeLLM()
 
-    with pytest.raises(brief.BriefOwnershipError, match="inactive"):
+    with pytest.raises(brief.BriefOwnershipError, match="phased gateway"):
         await brief.generate_brief(
             db_session,
             llm,
@@ -280,14 +281,9 @@ async def test_brief_is_stored_as_its_own_kind(db_session):
     await db_session.commit()
 
     assert row.kind == DigestKind.DAILY_BRIEF.value
-    owner = await digest_service.prepare_legacy_digest_owner(
-        db_session,
-        actor_username="tester",
-    )
     assert (
         await digest_service.latest_digest(
             db_session,
-            prepared_owner=owner,
         )
         is None
     )
@@ -295,13 +291,11 @@ async def test_brief_is_stored_as_its_own_kind(db_session):
         await digest_service.latest_digest(
             db_session,
             kind=DigestKind.DAILY_BRIEF.value,
-            prepared_owner=owner,
         )
     ).id == row.id
     assert (
         await digest_service.list_digests(
             db_session,
-            prepared_owner=owner,
         )
         == []
     )
@@ -408,7 +402,7 @@ async def test_a_scored_night_is_untouched(db_session):
 
 
 async def test_job_waits_for_the_night_instead_of_briefing_over_it(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     """Inside the wait window an un-scored night costs nothing: no message, no
     stored brief, no model call, no empty-day alert — the next hourly fire looks
@@ -440,7 +434,7 @@ async def test_job_waits_for_the_night_instead_of_briefing_over_it(
 
 
 async def test_job_stops_waiting_at_the_end_of_the_window(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     """Waiting forever is its own failure: the last fire sends what there is,
     minus the numbers the night never produced."""
@@ -508,7 +502,7 @@ async def test_a_weight_from_months_ago_does_not_keep_the_brief_talking(db_sessi
 
 
 async def test_job_stays_quiet_on_an_empty_day_and_says_so_in_the_web(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     """Silence beats "нет данных" three mornings running — but the gap still
     has to be visible somewhere, so it becomes a passive info alert."""
@@ -530,7 +524,7 @@ async def test_job_stays_quiet_on_an_empty_day_and_says_so_in_the_web(
 
 
 async def test_job_sends_once_a_day_and_clears_the_empty_alert(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     """A re-run of the 11:00 job is a no-op, not a second ping: Telegram retries
     and APScheduler misfires both replay a job."""
@@ -555,11 +549,6 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     assert journal[0].dedupe_key == brief.dedupe_key(DAY)
     assert journal[0].external_id == "901"
     channel_ownership = await _telegram_ownership(db_session)
-    llm_ownership = await resolve_legacy_ownership_context(
-        db_session,
-        actor_username=None,
-        required_connections=(IntegrationProvider.OPENROUTER,),
-    )
     stored = (await db_session.execute(select(WeeklyDigest))).scalars().one()
     assert (
         stored.subject_id,
@@ -568,7 +557,7 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     ) == (
         channel_ownership.subject_id,
         None,
-        llm_ownership.connection_id(IntegrationProvider.OPENROUTER),
+        None,
     )
     assert (
         journal[0].subject_id,
@@ -587,7 +576,7 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
 
 
 async def test_brief_network_awaits_have_no_open_database_transaction(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     """Neither OpenRouter nor Telegram may inherit ownership/read transactions."""
 
@@ -617,7 +606,7 @@ async def test_brief_network_awaits_have_no_open_database_transaction(
 
 
 async def test_already_sent_replay_clears_stale_alert_without_network(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     """A post-journal alert failure is repaired by the next hourly replay."""
     ownership = await _telegram_ownership(db_session)
@@ -665,6 +654,7 @@ async def test_already_sent_replay_clears_stale_alert_without_network(
 
 async def test_empty_alert_clear_adopts_only_the_matching_fully_unowned_row(
     db_session,
+    legacy_owner_roots,
 ):
     ownership = await _telegram_ownership(db_session)
     legacy_brief = await alerts_service.raise_alert(
@@ -700,7 +690,9 @@ async def test_empty_alert_clear_adopts_only_the_matching_fully_unowned_row(
     assert other.resolved_at is None
 
 
-async def test_empty_alert_bridge_rejects_partial_ownership(db_session):
+async def test_empty_alert_bridge_rejects_partial_ownership(
+    db_session, legacy_owner_roots
+):
     ownership = await _telegram_ownership(db_session)
     llm_ownership = await resolve_legacy_ownership_context(
         db_session,
@@ -730,7 +722,9 @@ async def test_empty_alert_bridge_rejects_partial_ownership(db_session):
     assert partial.subject_id is None
 
 
-async def test_empty_alert_bridge_rejects_a_second_subject(db_session):
+async def test_empty_alert_bridge_rejects_a_second_subject(
+    db_session, legacy_owner_roots
+):
     ownership = await _telegram_ownership(db_session)
     suffix = uuid.uuid4().hex
     owner = User(
@@ -758,7 +752,9 @@ async def test_empty_alert_bridge_rejects_a_second_subject(db_session):
         )
 
 
-async def test_empty_alert_reconciliation_rejects_actor_attribution(db_session):
+async def test_empty_alert_reconciliation_rejects_actor_attribution(
+    db_session, legacy_owner_roots
+):
     ownership = await _telegram_ownership(db_session)
 
     with pytest.raises(brief.BriefOwnershipError, match="actorless"):
@@ -770,7 +766,7 @@ async def test_empty_alert_reconciliation_rejects_actor_attribution(db_session):
 
 
 async def test_the_brief_says_what_its_buttons_are_for(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     """Telegram renders the keyboard under the *whole* message, so four unlabelled
     taps ("зал", "лёгкий/обычный/тяжёлый день") arrive attached to nothing — and
@@ -791,7 +787,7 @@ async def test_the_brief_says_what_its_buttons_are_for(
 
 
 async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     """The hint leaves with the last button — a line pointing at a keyboard that
     isn't there is worse than no line."""
@@ -817,7 +813,7 @@ async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(
 
 
 async def test_job_sends_the_brief_even_when_garmin_sync_explodes(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     """B6 pulls Garmin first, but a failed pull is not a reason to go quiet — the
     brief goes out on whatever is already in the lake."""
@@ -854,23 +850,21 @@ async def test_build_button_shows_the_brief_and_sends_nothing(
 ):
     from web.routers import reports as reports_router
 
-    monkeypatch.setattr(reports_router, "LLMClient", lambda *a, **kw: FakeLLM())
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(db_session)
 
-    r = await auth_client.post("/reports/brief")
+    r = await auth_client.post(
+        "/reports/brief",
+        data={"request_token": "build_token_1234567890123456"},
+    )
     assert r.status_code == 303
-    assert r.headers["location"] == "/reports?brief=ok"
+    assert r.headers["location"] == "/reports?brief=header"
 
     rows = (await db_session.execute(select(WeeklyDigest))).scalars().all()
     assert [row.kind for row in rows] == [DigestKind.DAILY_BRIEF.value]
     assert rows[0].source == Source.MANUAL.value
     ownership = await _telegram_ownership(db_session)
-    llm_ownership = await resolve_legacy_ownership_context(
-        db_session,
-        actor_username=None,
-        required_connections=(IntegrationProvider.OPENROUTER,),
-    )
     assert (
         rows[0].subject_id,
         rows[0].actor_user_id,
@@ -878,12 +872,12 @@ async def test_build_button_shows_the_brief_and_sends_nothing(
     ) == (
         ownership.subject_id,
         ownership.recipient_user_id,
-        llm_ownership.connection_id(IntegrationProvider.OPENROUTER),
+        None,
     )
     assert (await db_session.execute(select(Notification))).scalars().all() == []
 
     page = await auth_client.get("/reports")
-    assert "Восстановление в норме" in page.text
+    assert "Сон 80" in page.text
 
 
 async def test_build_button_does_not_require_a_delivery_channel(
@@ -903,17 +897,20 @@ async def test_build_button_does_not_require_a_delivery_channel(
     await db_session.delete(telegram)
     await db_session.commit()
 
-    monkeypatch.setattr(reports_router, "LLMClient", lambda *a, **kw: FakeLLM())
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(db_session)
 
-    response = await auth_client.post("/reports/brief")
+    response = await auth_client.post(
+        "/reports/brief",
+        data={"request_token": "build_token_1234567890123457"},
+    )
     assert response.status_code == 303
-    assert response.headers["location"] == "/reports?brief=ok"
+    assert response.headers["location"] == "/reports?brief=header"
     stored = (await db_session.execute(select(WeeklyDigest))).scalars().one()
     assert stored.subject_id is not None
     assert stored.actor_user_id is not None
-    assert stored.integration_connection_id is not None
+    assert stored.integration_connection_id is None
 
 
 async def test_test_send_goes_out_off_budget(auth_client, db_session, monkeypatch):
@@ -926,8 +923,8 @@ async def test_test_send_goes_out_off_budget(auth_client, db_session, monkeypatc
 
     notifier = FakeNotifier()
     app.dependency_overrides[get_notifier] = lambda: notifier
-    monkeypatch.setattr(reports_router, "LLMClient", lambda *a, **kw: FakeLLM())
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(db_session)
 
     # Today's budget, fully spent (dated *now*, which is what the budget counts).
@@ -941,7 +938,10 @@ async def test_test_send_goes_out_off_budget(auth_client, db_session, monkeypatc
     await db_session.commit()
     assert await delivery.sent_today(db_session) >= delivery.DAILY_BUDGET
 
-    r = await auth_client.post("/reports/brief/test")
+    r = await auth_client.post(
+        "/reports/brief/test",
+        data={"request_token": "test_token_12345678901234567"},
+    )
     assert r.headers["location"] == "/reports?brief=sent"
     assert len(notifier.sent) == 1
     assert notifier.sent[0]["text"].startswith("Сон 80")
@@ -958,31 +958,27 @@ async def test_test_send_is_not_duplicated_by_a_second_tap(auth_client, db_sessi
 
     notifier = FakeNotifier()
     app.dependency_overrides[get_notifier] = lambda: notifier
-    monkeypatch.setattr(reports_router, "LLMClient", lambda *a, **kw: FakeLLM())
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    monkeypatch.setattr(reports_router, "today_local", lambda: DAY)
     await _seed_day(db_session)
 
-    r1 = await auth_client.post("/reports/brief/test")
-    r2 = await auth_client.post("/reports/brief/test")
+    form = {"request_token": "test_token_12345678901234568"}
+    r1 = await auth_client.post("/reports/brief/test", data=form)
+    r2 = await auth_client.post("/reports/brief/test", data=form)
 
     assert r1.headers["location"] == "/reports?brief=sent"
-    assert r2.headers["location"] == "/reports?brief=error"  # deduped, not a real error
+    assert r2.headers["location"] == "/reports?brief=sent"
     assert len(notifier.sent) == 1
     journal = (await db_session.execute(select(Notification))).scalars().all()
     assert [n.category for n in journal] == [delivery.CATEGORY_TEST]
     digest = (await db_session.execute(select(WeeklyDigest))).scalars().one()
     ownership = await _telegram_ownership(db_session)
-    llm_ownership = await resolve_legacy_ownership_context(
-        db_session,
-        actor_username=None,
-        required_connections=(IntegrationProvider.OPENROUTER,),
-    )
     assert (
         digest.actor_user_id,
         digest.integration_connection_id,
     ) == (
         ownership.recipient_user_id,
-        llm_ownership.connection_id(IntegrationProvider.OPENROUTER),
+        None,
     )
     assert (
         journal[0].actor_user_id,
@@ -995,5 +991,8 @@ async def test_test_send_without_a_channel_says_so(auth_client, db_session, monk
     from web.routers.telegram import get_notifier
 
     app.dependency_overrides[get_notifier] = lambda: None
-    r = await auth_client.post("/reports/brief/test")
+    r = await auth_client.post(
+        "/reports/brief/test",
+        data={"request_token": "test_token_12345678901234569"},
+    )
     assert r.headers["location"] == "/reports?brief=no_channel"

@@ -1,12 +1,12 @@
 """The morning brief: the first thing the product ever says on its own.
 
-Assembly is the composer's job (:mod:`compose`); this module owns the two things
-around it — the model's single paragraph, and what happens when there is nothing
-worth saying.
+Assembly is the composer's job (:mod:`compose`); this module owns the platform-
+funded model paragraph, its durable invocation lifecycle, and what happens when
+there is nothing worth saying.
 
-  * **The model can fail and the brief still arrives.** Any exception from the LLM
-    (no key, no balance, upstream down, blank completion) drops the narrative
-    block and nothing else.
+  * **The model can fail and the brief still arrives.** A missing platform root or
+    quota and every sanitized terminal invocation state produce a header-only
+    artifact without a second paid attempt for the same product key.
   * **An empty day is silence, not a brief.** No fresh Garmin row and no recovery
     numbers → nothing is sent and a passive ``info`` alert shows the gap in the
     web instead.
@@ -14,25 +14,32 @@ worth saying.
 The brief is stored in ``weekly_digests`` with ``kind='daily_brief'``, so
 /reports shows it and MCP can read the history, without a second table.
 
-Sending is deliberately *not* done here: :func:`generate_brief` builds and
-persists, and the caller decides what to do with it — the job sends it under the
-budget, the "Собрать бриф" button shows it in the web and sends nothing, the
-"Отправить тестовое" button sends one off-budget copy. One function, three
-callers, no flags.
+Sending is deliberately *not* done here. Production callers use the phased
+prepare/commit, start/commit, provider-call, finalize-and-persist flow, then
+decide whether to display or deliver the artifact. The old :func:`generate_brief`
+wrapper is quarantined for zero-subject injected-client compatibility tests.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import uuid
-from dataclasses import dataclass
-from datetime import date as date_type, timedelta
+from dataclasses import dataclass, replace
+from datetime import date as date_type, timedelta, timezone
+from enum import StrEnum
 from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.config import load_config
 from vitals.enums import (
+    AIInvocationErrorCode,
+    AIInvocationPurpose,
+    AIInvocationSource,
+    AIInvocationStatus,
     DigestKind,
     Domain,
     IntegrationConnectionStatus,
@@ -42,14 +49,21 @@ from vitals.enums import (
     Source,
 )
 from vitals.i18n import t
+from vitals.integrations.llm_client import LLMCallResult, LLMClient
+from vitals.models.ai import AIInvocation, AIPlatformQuotaPeriod, AISubjectQuotaPeriod
+from vitals.models.identity import HealthSubject
 from vitals.models.milestones import DOMAIN as DIGEST_DOMAIN, WeeklyDigest
 from vitals.models.system_alert import SystemAlert
-from vitals.models.tenancy import IntegrationConnection
+from vitals.models.tenancy import IntegrationConnection, PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, digest_service
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services import ai_gateway_service, alerts_service, digest_service
+from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.legacy_ownership import (
+    LegacyOwnershipError,
+    resolve_legacy_ownership_context,
+)
 from vitals.services.proactive import compose, day_plan
-from vitals.utils.timeutils import now_local, today_local
+from vitals.utils.timeutils import now_local, now_utc, today_local
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +72,144 @@ EMPTY_DAY_ALERT_KEY = "brief_empty_day"
 
 class BriefOwnershipError(ValueError):
     """A stored brief would cross its subject, actor, or LLM provenance root."""
+
+
+class BriefInvocationStateError(BriefOwnershipError):
+    """A Daily Brief request cannot safely perform another paid dispatch."""
+
+
+class BriefSurface(StrEnum):
+    """Bounded Daily Brief products with independent idempotency semantics."""
+
+    BUILD = "build"
+    TEST = "test"
+    SCHEDULER = "scheduler"
+
+
+class BriefAIFallback(StrEnum):
+    """Sanitized reasons why a deterministic header has no AI narrative."""
+
+    NONE = "none"
+    NOT_CONFIGURED = "not_configured"
+    QUOTA = "quota"
+    INPUT_TOO_LARGE = "input_too_large"
+
+
+@dataclass(frozen=True, slots=True)
+class BriefAIAvailability:
+    """Redacted owner-scoped projection; reserve/start remain authoritative."""
+
+    available: bool
+    code: BriefAIFallback
+
+
+class PreparedBrief:
+    """Opaque PHI-bearing snapshot bound to one Daily Brief product request."""
+
+    __slots__ = (
+        "_actor_username",
+        "_artifact_source",
+        "_base_content",
+        "_context_json_text",
+        "_dispatchable",
+        "_existing_artifact_id",
+        "_fallback",
+        "_fingerprint",
+        "_invocation_id",
+        "_invocation_source",
+        "_model",
+        "_on_date",
+        "_owner_user_id",
+        "_policy_version",
+        "_prompt",
+        "_request_key",
+        "_reservation_status",
+        "_seal",
+        "_subject_id",
+        "_actor_user_id",
+        "_surface",
+    )
+
+    def __new__(cls, *args, **kwargs):
+        del args, kwargs
+        raise BriefOwnershipError("prepared briefs are service-issued only")
+
+    @classmethod
+    def _issue(cls, **values) -> "PreparedBrief":
+        prepared = object.__new__(cls)
+        for name, value in values.items():
+            object.__setattr__(prepared, name, value)
+        object.__setattr__(
+            prepared,
+            "_fingerprint",
+            (
+                values["_actor_username"],
+                values["_subject_id"],
+                values["_actor_user_id"],
+                values["_artifact_source"],
+                values["_invocation_source"],
+                values["_surface"],
+                values["_on_date"],
+                values["_model"],
+                values["_request_key"],
+                values["_owner_user_id"],
+                values["_policy_version"],
+                values["_invocation_id"],
+                values["_reservation_status"],
+                values["_dispatchable"],
+                values["_existing_artifact_id"],
+                values["_fallback"],
+                hashlib.sha256(values["_context_json_text"].encode()).digest(),
+                hashlib.sha256(values["_prompt"].encode()).digest(),
+                hashlib.sha256(values["_base_content"].encode()).digest(),
+            ),
+        )
+        object.__setattr__(prepared, "_seal", _PREPARED_BRIEF_SEAL)
+        return prepared
+
+    def __setattr__(self, name, value) -> None:
+        del name, value
+        raise AttributeError("PreparedBrief is immutable")
+
+    def __repr__(self) -> str:
+        return (
+            f"<PreparedBrief invocation_id={self._invocation_id} "
+            f"status={getattr(self._reservation_status, 'value', None)} redacted>"
+        )
+
+    def __reduce__(self):
+        raise TypeError("PreparedBrief is not pickleable")
+
+    @property
+    def invocation_id(self) -> uuid.UUID | None:
+        return self._invocation_id
+
+    @property
+    def reservation_status(self) -> AIInvocationStatus | None:
+        return self._reservation_status
+
+    @property
+    def dispatchable(self) -> bool:
+        return self._dispatchable
+
+    @property
+    def existing_artifact_id(self) -> int | None:
+        return self._existing_artifact_id
+
+    @property
+    def fallback(self) -> BriefAIFallback:
+        return self._fallback
+
+    @property
+    def base_content(self) -> str:
+        return self._base_content
+
+    @property
+    def context(self) -> dict:
+        return json.loads(self._context_json_text)
+
+
+_PREPARED_BRIEF_SEAL = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +266,28 @@ async def _require_llm_connection_scope(
 # only restate them. Enough headroom that a reasoning model's thinking tokens
 # don't eat the visible answer (the bug that truncated the weekly digest in prod).
 _BRIEF_MAX_TOKENS = 2000
+_BRIEF_POLICY_VERSION = "daily-brief:v2"
+# This namespace is the durable product identity, not a prompt-policy version.
+# Never rotate it for a model/template/policy deployment: one surface/date/token
+# must continue to resolve to one invocation for its entire lifetime.
+_BRIEF_IDEMPOTENCY_NAMESPACE = "daily-brief-product:v1"
+_BRIEF_RESERVED_COST_MICROUNITS = 2_000_000
+_BRIEF_MAX_INPUT_BYTES = 250_000
+_BRIEF_RESERVATION_OVERHEAD_UNITS = 512
+_BRIEF_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{22,96}$")
+_BRIEF_CONTEXT_PROVENANCE_KEY = "_daily_brief_generation"
+
+_ARTIFACT_SOURCE_BY_INVOCATION_SOURCE = {
+    AIInvocationSource.WEB: Source.MANUAL.value,
+    AIInvocationSource.SCHEDULER: Source.SCHEDULER.value,
+}
+_TERMINAL_HEADER_STATUSES = frozenset(
+    {
+        AIInvocationStatus.FAILED,
+        AIInvocationStatus.AMBIGUOUS,
+        AIInvocationStatus.CANCELLED,
+    }
+)
 
 # The window his personal norm is averaged over, and the fewest days in it that
 # still make an average. Two weeks is long enough to absorb one bad night and
@@ -305,6 +479,743 @@ def build_prompt(ctx: dict) -> str:
     )
 
 
+def _as_invocation_source(value: AIInvocationSource | str) -> AIInvocationSource:
+    try:
+        source = AIInvocationSource(value)
+    except (TypeError, ValueError) as exc:
+        raise BriefOwnershipError("unsupported Daily Brief invocation source") from exc
+    if source not in _ARTIFACT_SOURCE_BY_INVOCATION_SOURCE:
+        raise BriefOwnershipError("surface cannot generate a Daily Brief")
+    return source
+
+
+def _as_surface(value: BriefSurface | str) -> BriefSurface:
+    try:
+        return BriefSurface(value)
+    except (TypeError, ValueError) as exc:
+        raise BriefOwnershipError("unsupported Daily Brief surface") from exc
+
+
+def _request_key(
+    *,
+    source: AIInvocationSource,
+    surface: BriefSurface,
+    on_date: date_type,
+    request_token: str | None,
+) -> str:
+    if source is AIInvocationSource.SCHEDULER:
+        if surface is not BriefSurface.SCHEDULER or request_token is not None:
+            raise BriefOwnershipError("scheduled briefs use the deterministic product key")
+        token_part = "scheduled"
+    else:
+        if surface not in {BriefSurface.BUILD, BriefSurface.TEST}:
+            raise BriefOwnershipError("web briefs require a manual surface")
+        token_part = validate_request_token(request_token)
+    material = "|".join(
+        (
+            _BRIEF_IDEMPOTENCY_NAMESPACE,
+            surface.value,
+            on_date.isoformat(),
+            token_part,
+        )
+    )
+    return f"dbp:v1:{hashlib.sha256(material.encode()).hexdigest()}"
+
+
+def validate_request_token(request_token: str | None) -> str:
+    """Return one bounded opaque web token before any hash/query use."""
+
+    if not isinstance(request_token, str) or not _BRIEF_TOKEN_RE.fullmatch(
+        request_token
+    ):
+        raise BriefOwnershipError("Daily Brief request token is invalid")
+    return request_token
+
+
+def _require_prepared_brief(prepared: PreparedBrief) -> PreparedBrief:
+    if not isinstance(prepared, PreparedBrief) or prepared._seal is not _PREPARED_BRIEF_SEAL:
+        raise BriefOwnershipError("prepared Daily Brief capability is invalid")
+    expected = (
+        prepared._actor_username,
+        prepared._subject_id,
+        prepared._actor_user_id,
+        prepared._artifact_source,
+        prepared._invocation_source,
+        prepared._surface,
+        prepared._on_date,
+        prepared._model,
+        prepared._request_key,
+        prepared._owner_user_id,
+        prepared._policy_version,
+        prepared._invocation_id,
+        prepared._reservation_status,
+        prepared._dispatchable,
+        prepared._existing_artifact_id,
+        prepared._fallback,
+        hashlib.sha256(prepared._context_json_text.encode()).digest(),
+        hashlib.sha256(prepared._prompt.encode()).digest(),
+        hashlib.sha256(prepared._base_content.encode()).digest(),
+    )
+    if prepared._fingerprint != expected:
+        raise BriefOwnershipError("prepared Daily Brief capability was modified")
+    return prepared
+
+
+def _resolve_openrouter_credential(credential_ref: str) -> str | None:
+    if credential_ref not in ai_gateway_service.ALLOWED_CREDENTIAL_REFS:
+        return None
+    credential = load_config().openrouter_api_key.strip()
+    return credential or None
+
+
+async def project_ai_availability(
+    session: AsyncSession,
+    *,
+    actor_username: str,
+) -> BriefAIAvailability:
+    """Project redacted current owner capacity without exposing limits or PHI."""
+
+    owner = await digest_service.prepare_digest_owner(
+        session,
+        actor_username=actor_username,
+    )
+    billing_date = now_utc().date()
+    roots = list(
+        await session.scalars(
+            select(PlatformIntegrationConnection)
+            .where(
+                PlatformIntegrationConnection.status
+                == IntegrationConnectionStatus.ACTIVE.value
+            )
+            .limit(2)
+        )
+    )
+    if len(roots) != 1 or _resolve_openrouter_credential(roots[0].credential_ref) is None:
+        return BriefAIAvailability(False, BriefAIFallback.NOT_CONFIGURED)
+    platform_periods = list(
+        await session.scalars(
+            select(AIPlatformQuotaPeriod).where(
+                AIPlatformQuotaPeriod.period_start <= billing_date,
+                AIPlatformQuotaPeriod.period_end > billing_date,
+            )
+        )
+    )
+    subject_periods = list(
+        await session.scalars(
+            select(AISubjectQuotaPeriod).where(
+                AISubjectQuotaPeriod.subject_id == owner.identity.subject_id,
+                AISubjectQuotaPeriod.period_start <= billing_date,
+                AISubjectQuotaPeriod.period_end > billing_date,
+            )
+        )
+    )
+    if (
+        len(platform_periods) != 1
+        or len(subject_periods) != 1
+        or subject_periods[0].period_start != platform_periods[0].period_start
+        or subject_periods[0].period_end != platform_periods[0].period_end
+    ):
+        return BriefAIAvailability(False, BriefAIFallback.NOT_CONFIGURED)
+    # This projection cannot know the next PHI-bearing prompt size. It reports
+    # root/credential/aligned-period readiness only; reserve is authoritative for
+    # the actual conservative per-request capacity check.
+    return BriefAIAvailability(True, BriefAIFallback.NONE)
+
+
+def _render_base_content(ctx: dict) -> str:
+    blocks = compose.header_blocks(ctx)
+    day = day_plan.day_block(ctx.get("day"))
+    if day is not None:
+        blocks.append(day)
+    return compose.render(blocks)
+
+
+def _context_with_provenance(
+    prepared: PreparedBrief,
+    *,
+    mode: str,
+    status: AIInvocationStatus | None,
+) -> dict:
+    context = json.loads(prepared._context_json_text)
+    context[_BRIEF_CONTEXT_PROVENANCE_KEY] = {
+        "policy": prepared._policy_version,
+        "surface": prepared._surface.value,
+        "request_key": prepared._request_key,
+        "model": prepared._model,
+        "mode": mode,
+        "invocation_status": status.value if status is not None else None,
+        "fallback": prepared._fallback.value,
+    }
+    return context
+
+
+async def _existing_unfunded_artifact(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None,
+    artifact_source: str,
+    on_date: date_type,
+    request_key: str,
+) -> WeeklyDigest | None:
+    rows = list(
+        await session.scalars(
+            select(WeeklyDigest)
+            .where(
+                WeeklyDigest.subject_id == subject_id,
+                WeeklyDigest.actor_user_id.is_(actor_user_id)
+                if actor_user_id is None
+                else WeeklyDigest.actor_user_id == actor_user_id,
+                WeeklyDigest.integration_connection_id.is_(None),
+                WeeklyDigest.ai_invocation_id.is_(None),
+                WeeklyDigest.date == on_date,
+                WeeklyDigest.kind == DigestKind.DAILY_BRIEF.value,
+                WeeklyDigest.source == artifact_source,
+            )
+            .order_by(WeeklyDigest.id)
+        )
+    )
+    matches = [
+        row
+        for row in rows
+        if isinstance(row.context_json, dict)
+        and isinstance(row.context_json.get(_BRIEF_CONTEXT_PROVENANCE_KEY), dict)
+        and row.context_json[_BRIEF_CONTEXT_PROVENANCE_KEY].get("request_key")
+        == request_key
+    ]
+    if len(matches) > 1:
+        raise BriefInvocationStateError("Daily Brief fallback is duplicated")
+    return matches[0] if matches else None
+
+
+async def prepare_brief(
+    session: AsyncSession,
+    *,
+    actor_username: str | None,
+    invocation_source: AIInvocationSource | str,
+    surface: BriefSurface | str,
+    request_token: str | None = None,
+    on_date: date_type | None = None,
+) -> PreparedBrief | None:
+    """Freeze exact-S PHI and reserve one platform-funded narrative call."""
+
+    source = _as_invocation_source(invocation_source)
+    product_surface = _as_surface(surface)
+    if source is AIInvocationSource.SCHEDULER:
+        if actor_username is not None:
+            raise BriefOwnershipError("scheduled Daily Brief must be actorless")
+    elif actor_username is None:
+        raise BriefOwnershipError("web Daily Brief requires its human actor")
+    owner = await digest_service.prepare_digest_owner(
+        session,
+        actor_username=actor_username,
+    )
+    identity = owner.identity
+    owner_user_id = owner.owner_user_id
+    artifact_source = _ARTIFACT_SOURCE_BY_INVOCATION_SOURCE[source]
+    frozen_date = on_date or today_local()
+    config = load_config()
+    model = (config.llm_model_brief or config.llm_model_digest).strip()
+    if not model or len(model) > 128:
+        raise BriefOwnershipError("Daily Brief model is invalid")
+    product_key = _request_key(
+        source=source,
+        surface=product_surface,
+        on_date=frozen_date,
+        request_token=request_token,
+    )
+    policy_version = _BRIEF_POLICY_VERSION
+    ctx = await build_context(
+        session,
+        on_date=frozen_date,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
+    if compose.is_empty_day(ctx, on_date=frozen_date):
+        logger.info("Daily Brief skipped: empty day")
+        return None
+    if compose.night_pending(ctx, on_date=frozen_date):
+        logger.info("Daily Brief recovery omitted: night is not scored")
+        ctx = compose.drop_unscored_night(ctx)
+    prompt = build_prompt(ctx)
+    prompt_units = len((BRIEF_SYSTEM + "\n" + prompt).encode())
+    reserved_units = (
+        prompt_units + _BRIEF_MAX_TOKENS + _BRIEF_RESERVATION_OVERHEAD_UNITS
+    )
+    context_text = json.dumps(ctx, ensure_ascii=False, separators=(",", ":"))
+    base_content = _render_base_content(ctx)
+
+    unfunded = await _existing_unfunded_artifact(
+        session,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
+        artifact_source=artifact_source,
+        on_date=frozen_date,
+        request_key=product_key,
+    )
+    if unfunded is not None:
+        return PreparedBrief._issue(
+            _actor_username=actor_username,
+            _subject_id=identity.subject_id,
+            _actor_user_id=identity.actor_user_id,
+            _artifact_source=artifact_source,
+            _invocation_source=source,
+            _surface=product_surface,
+            _on_date=frozen_date,
+            _model=model,
+            _request_key=product_key,
+            _owner_user_id=owner_user_id,
+            _policy_version=policy_version,
+            _invocation_id=None,
+            _reservation_status=None,
+            _dispatchable=False,
+            _existing_artifact_id=unfunded.id,
+            _fallback=BriefAIFallback.NOT_CONFIGURED,
+            _context_json_text=context_text,
+            _prompt=prompt,
+            _base_content=base_content,
+        )
+
+    invocation = await session.scalar(
+        select(AIInvocation)
+        .where(
+            AIInvocation.subject_id == identity.subject_id,
+            AIInvocation.purpose == AIInvocationPurpose.DAILY_BRIEF.value,
+            AIInvocation.idempotency_key == product_key,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if invocation is not None:
+        if (
+            invocation.actor_user_id != identity.actor_user_id
+            or invocation.source != source.value
+        ):
+            raise BriefInvocationStateError(
+                "Daily Brief request provenance is inconsistent"
+            )
+        status = AIInvocationStatus(invocation.status)
+        frozen_model = invocation.model
+        artifact_id = await session.scalar(
+            select(WeeklyDigest.id).where(
+                WeeklyDigest.subject_id == identity.subject_id,
+                WeeklyDigest.ai_invocation_id == invocation.id,
+            )
+        )
+        if artifact_id is not None:
+            return PreparedBrief._issue(
+                _actor_username=actor_username,
+                _subject_id=identity.subject_id,
+                _actor_user_id=identity.actor_user_id,
+                _artifact_source=artifact_source,
+                _invocation_source=source,
+                _surface=product_surface,
+                _on_date=frozen_date,
+                _model=frozen_model,
+                _request_key=product_key,
+                _owner_user_id=owner_user_id,
+                _policy_version=policy_version,
+                _invocation_id=invocation.id,
+                _reservation_status=status,
+                _dispatchable=False,
+                _existing_artifact_id=artifact_id,
+                _fallback=BriefAIFallback.NONE,
+                _context_json_text=context_text,
+                _prompt=prompt,
+                _base_content=base_content,
+            )
+        if status is AIInvocationStatus.SUCCEEDED:
+            raise BriefInvocationStateError(
+                "succeeded Daily Brief invocation is missing its artifact"
+            )
+        if status is AIInvocationStatus.PREPARED:
+            created_at = invocation.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            stale = (
+                created_at < now_utc() - ai_gateway_service.PREPARED_STALE_AFTER
+                or model != frozen_model
+            )
+            if not stale:
+                try:
+                    reservation = await ai_gateway_service.reserve_ai_invocation(
+                        session,
+                        identity=identity,
+                        purpose=AIInvocationPurpose.DAILY_BRIEF,
+                        source=source,
+                        model=frozen_model,
+                        idempotency_key=product_key,
+                        reserved_cost_microunits=_BRIEF_RESERVED_COST_MICROUNITS,
+                        reserved_units=reserved_units,
+                    )
+                except (
+                    ai_gateway_service.AIGatewayConfigurationError,
+                    ai_gateway_service.AIIdempotencyConflictError,
+                    ai_gateway_service.AIQuotaExceededError,
+                ):
+                    stale = True
+                else:
+                    status = reservation.status
+            if stale:
+                invocation = await ai_gateway_service.cancel_reserved_ai_invocation(
+                    session,
+                    identity=identity,
+                    invocation_id=invocation.id,
+                    error_code=AIInvocationErrorCode.CANCELLED_BY_POLICY,
+                )
+                status = AIInvocationStatus(invocation.status)
+        return PreparedBrief._issue(
+            _actor_username=actor_username,
+            _subject_id=identity.subject_id,
+            _actor_user_id=identity.actor_user_id,
+            _artifact_source=artifact_source,
+            _invocation_source=source,
+            _surface=product_surface,
+            _on_date=frozen_date,
+            _model=frozen_model,
+            _request_key=product_key,
+            _owner_user_id=owner_user_id,
+            _policy_version=policy_version,
+            _invocation_id=invocation.id,
+            _reservation_status=status,
+            _dispatchable=status is AIInvocationStatus.PREPARED,
+            _existing_artifact_id=None,
+            _fallback=BriefAIFallback.NONE,
+            _context_json_text=context_text,
+            _prompt=prompt,
+            _base_content=base_content,
+        )
+
+    fallback = BriefAIFallback.NONE
+    if prompt_units > _BRIEF_MAX_INPUT_BYTES:
+        fallback = BriefAIFallback.INPUT_TOO_LARGE
+        reservation = None
+    else:
+        try:
+            reservation = await ai_gateway_service.reserve_ai_invocation(
+                session,
+                identity=identity,
+                purpose=AIInvocationPurpose.DAILY_BRIEF,
+                source=source,
+                model=model,
+                idempotency_key=product_key,
+                reserved_cost_microunits=_BRIEF_RESERVED_COST_MICROUNITS,
+                reserved_units=reserved_units,
+            )
+        except ai_gateway_service.AIQuotaExceededError:
+            fallback = BriefAIFallback.QUOTA
+            reservation = None
+        except ai_gateway_service.AIGatewayConfigurationError:
+            fallback = BriefAIFallback.NOT_CONFIGURED
+            reservation = None
+    return PreparedBrief._issue(
+        _actor_username=actor_username,
+        _subject_id=identity.subject_id,
+        _actor_user_id=identity.actor_user_id,
+        _artifact_source=artifact_source,
+        _invocation_source=source,
+        _surface=product_surface,
+        _on_date=frozen_date,
+        _model=model,
+        _request_key=product_key,
+        _owner_user_id=owner_user_id,
+        _policy_version=policy_version,
+        _invocation_id=reservation.invocation_id if reservation is not None else None,
+        _reservation_status=reservation.status if reservation is not None else None,
+        _dispatchable=reservation.dispatchable if reservation is not None else False,
+        _existing_artifact_id=None,
+        _fallback=fallback,
+        _context_json_text=context_text,
+        _prompt=prompt,
+        _base_content=base_content,
+    )
+
+
+async def start_brief_dispatch(
+    session: AsyncSession,
+    prepared: PreparedBrief,
+    *,
+    credential_resolver=None,
+) -> ai_gateway_service.AIDispatchLease:
+    snapshot = _require_prepared_brief(prepared)
+    if not snapshot._dispatchable or snapshot._invocation_id is None:
+        raise BriefInvocationStateError("Daily Brief is not dispatchable")
+    identity = WriteIdentity(
+        subject_id=snapshot._subject_id,
+        actor_user_id=snapshot._actor_user_id,
+    )
+    if snapshot._invocation_source is AIInvocationSource.SCHEDULER:
+        # The gateway correctly keeps scheduler provenance actorless. Revalidate
+        # the frozen owner separately so an owner suspension/rotation between T1
+        # and T2 cannot authorize platform spend. This takes canonical
+        # governance -> subject -> owner locks before gateway root/quota locks.
+        await digest_service.prepare_digest_owner_for_identity(
+            session,
+            identity=identity,
+            owner_user_id=snapshot._owner_user_id,
+        )
+    return await ai_gateway_service.start_ai_dispatch(
+        session,
+        identity=identity,
+        invocation_id=snapshot._invocation_id,
+        credential_resolver=credential_resolver or _resolve_openrouter_credential,
+    )
+
+
+async def render_brief(
+    prepared: PreparedBrief,
+    lease: ai_gateway_service.AIDispatchLease,
+) -> ai_gateway_service.AICompletion[LLMCallResult[str]]:
+    """Perform exactly one platform-funded provider call without DB access."""
+
+    snapshot = _require_prepared_brief(prepared)
+
+    async def provider_call(
+        request: ai_gateway_service.AIDispatchRequest,
+    ) -> LLMCallResult[str]:
+        if (
+            request.invocation_id != snapshot._invocation_id
+            or request.model != snapshot._model
+        ):
+            raise BriefInvocationStateError("Daily Brief dispatch provenance changed")
+        config = replace(load_config(), openrouter_api_key=request.credential)
+        return await LLMClient(config).complete_text_with_usage(
+            snapshot._prompt,
+            model=request.model,
+            system=BRIEF_SYSTEM,
+            max_tokens=_BRIEF_MAX_TOKENS,
+        )
+
+    def usage_extractor(
+        result: LLMCallResult[str],
+    ) -> ai_gateway_service.SanitizedAIUsage:
+        if (
+            not isinstance(result, LLMCallResult)
+            or not isinstance(result.value, str)
+            or not result.value.strip()
+            or result.input_tokens is None
+            or result.output_tokens is None
+            or result.cost_microunits is None
+        ):
+            raise ValueError("Daily Brief provider usage is incomplete")
+        return ai_gateway_service.SanitizedAIUsage(
+            upstream_request_id=result.upstream_request_id,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cost_microunits=result.cost_microunits,
+        )
+
+    return await ai_gateway_service.dispatch_ai(
+        lease,
+        provider_call=provider_call,
+        usage_extractor=usage_extractor,
+    )
+
+
+async def _require_fresh_owner(
+    session: AsyncSession,
+    prepared: PreparedBrief,
+) -> WriteIdentity:
+    owner = await digest_service.prepare_digest_owner(
+        session,
+        actor_username=prepared._actor_username,
+    )
+    identity = owner.identity
+    if (
+        identity.subject_id != prepared._subject_id
+        or identity.actor_user_id != prepared._actor_user_id
+        or owner.owner_user_id != prepared._owner_user_id
+    ):
+        raise BriefOwnershipError("Daily Brief owner changed")
+    return identity
+
+
+async def _existing_for_prepared(
+    session: AsyncSession,
+    prepared: PreparedBrief,
+) -> WeeklyDigest | None:
+    if prepared._invocation_id is not None:
+        return await session.scalar(
+            select(WeeklyDigest).where(
+                WeeklyDigest.subject_id == prepared._subject_id,
+                WeeklyDigest.ai_invocation_id == prepared._invocation_id,
+            )
+        )
+    return await _existing_unfunded_artifact(
+        session,
+        subject_id=prepared._subject_id,
+        actor_user_id=prepared._actor_user_id,
+        artifact_source=prepared._artifact_source,
+        on_date=prepared._on_date,
+        request_key=prepared._request_key,
+    )
+
+
+async def _insert_brief_artifact(
+    session: AsyncSession,
+    prepared: PreparedBrief,
+    *,
+    invocation: AIInvocation | None,
+    narrative: str | None,
+) -> WeeklyDigest:
+    status = AIInvocationStatus(invocation.status) if invocation is not None else None
+    if narrative is not None:
+        content = f"{prepared._base_content}\n\n{narrative.strip()}"
+        model = prepared._model
+        mode = "ai"
+    else:
+        content = prepared._base_content
+        model = None
+        mode = "header_only"
+    row = WeeklyDigest(
+        subject_id=prepared._subject_id,
+        actor_user_id=prepared._actor_user_id,
+        integration_connection_id=None,
+        ai_invocation_id=invocation.id if invocation is not None else None,
+        date=prepared._on_date,
+        domain=DIGEST_DOMAIN,
+        source=prepared._artifact_source,
+        kind=DigestKind.DAILY_BRIEF.value,
+        content=content,
+        context_json=_context_with_provenance(prepared, mode=mode, status=status),
+        model=model,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def persist_brief(
+    session: AsyncSession,
+    prepared: PreparedBrief,
+    completion: ai_gateway_service.AICompletion[LLMCallResult[str]] | None,
+) -> WeeklyDigest:
+    """Finalize accounting and persist one narrative or deterministic header."""
+
+    snapshot = _require_prepared_brief(prepared)
+    # A sealed paid completion must always reach terminal accounting, even when
+    # the human was suspended or ownership changed during provider I/O. Current
+    # authorization still gates T1/T2, non-AI writes, cancellation, and reads.
+    if completion is None:
+        await _require_fresh_owner(session, snapshot)
+    existing = await _existing_for_prepared(session, snapshot)
+    if existing is not None:
+        return existing
+    invocation = None
+    narrative = None
+    if snapshot._invocation_id is not None:
+        if completion is not None:
+            if completion.invocation_id != snapshot._invocation_id:
+                raise BriefInvocationStateError(
+                    "Daily Brief completion belongs to another invocation"
+                )
+            invocation = await ai_gateway_service.finalize_ai_invocation(
+                session,
+                completion=completion,
+            )
+        else:
+            invocation = await session.scalar(
+                select(AIInvocation)
+                .where(AIInvocation.id == snapshot._invocation_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        if invocation is None or (
+            invocation.subject_id != snapshot._subject_id
+            or invocation.actor_user_id != snapshot._actor_user_id
+            or invocation.purpose != AIInvocationPurpose.DAILY_BRIEF.value
+            or invocation.source != snapshot._invocation_source.value
+            or invocation.model != snapshot._model
+        ):
+            raise BriefInvocationStateError("Daily Brief invocation provenance changed")
+        status = AIInvocationStatus(invocation.status)
+        if status is AIInvocationStatus.SUCCEEDED:
+            if completion is None:
+                raise BriefInvocationStateError(
+                    "succeeded Daily Brief payload is unavailable"
+                )
+            result = completion.payload
+            if (
+                not isinstance(result, LLMCallResult)
+                or not isinstance(result.value, str)
+                or not result.value.strip()
+            ):
+                raise BriefInvocationStateError(
+                    "successful Daily Brief payload is missing"
+                )
+            narrative = result.value.strip()
+        elif status not in _TERMINAL_HEADER_STATUSES:
+            raise BriefInvocationStateError(
+                "live Daily Brief invocation cannot have an artifact"
+            )
+    elif completion is not None:
+        raise BriefInvocationStateError("unfunded Daily Brief cannot finalize AI")
+    return await _insert_brief_artifact(
+        session,
+        snapshot,
+        invocation=invocation,
+        narrative=narrative,
+    )
+
+
+async def cancel_and_persist_header_brief(
+    session: AsyncSession,
+    prepared: PreparedBrief,
+) -> WeeklyDigest:
+    """Release a zero-network reservation and preserve its header provenance."""
+
+    snapshot = _require_prepared_brief(prepared)
+    await _require_fresh_owner(session, snapshot)
+    existing = await _existing_for_prepared(session, snapshot)
+    if existing is not None:
+        return existing
+    if snapshot._invocation_id is None:
+        return await _insert_brief_artifact(
+            session,
+            snapshot,
+            invocation=None,
+            narrative=None,
+        )
+    invocation = await session.scalar(
+        select(AIInvocation)
+        .where(AIInvocation.id == snapshot._invocation_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if invocation is None:
+        raise BriefInvocationStateError("Daily Brief invocation is missing")
+    status = AIInvocationStatus(invocation.status)
+    if status is AIInvocationStatus.PREPARED:
+        invocation = await ai_gateway_service.cancel_reserved_ai_invocation(
+            session,
+            identity=WriteIdentity(
+                subject_id=snapshot._subject_id,
+                actor_user_id=snapshot._actor_user_id,
+            ),
+            invocation_id=snapshot._invocation_id,
+            error_code=AIInvocationErrorCode.CANCELLED_BY_POLICY,
+        )
+    elif status not in _TERMINAL_HEADER_STATUSES:
+        raise BriefInvocationStateError(
+            "paid or succeeded Daily Brief cannot be cancelled"
+        )
+    return await _insert_brief_artifact(
+        session,
+        snapshot,
+        invocation=invocation,
+        narrative=None,
+    )
+
+
+async def existing_brief_for_prepared(
+    session: AsyncSession,
+    prepared: PreparedBrief,
+) -> WeeklyDigest | None:
+    snapshot = _require_prepared_brief(prepared)
+    await _require_fresh_owner(session, snapshot)
+    return await _existing_for_prepared(session, snapshot)
+
+
 async def narrative(llm: Any, ctx: dict) -> str:
     """The model's one block. Returns "" on any failure — never raises."""
     try:
@@ -315,7 +1226,7 @@ async def narrative(llm: Any, ctx: dict) -> str:
             max_tokens=_BRIEF_MAX_TOKENS,
         )
     except Exception:
-        logger.warning("brief narrative unavailable; sending the header alone", exc_info=True)
+        logger.warning("brief narrative unavailable (code=provider_error)")
         return ""
 
 
@@ -329,19 +1240,23 @@ async def generate_brief(
     include_legacy_unowned: bool = False,
     llm_connection_id: uuid.UUID | None = None,
 ) -> Optional[WeeklyDigest]:
-    """Build the brief and store it. ``None`` = empty day, nothing built.
-
-    Scheduler callers use the explicit prepare/render/persist phases below so
-    their database transaction ends before the OpenRouter await. This compact
-    wrapper remains caller-transactional and never commits.
-    """
+    """Zero-subject injected-client compatibility; never a production AI path."""
+    await acquire_identity_governance_lock(session)
+    if identity is not None or llm_connection_id is not None:
+        raise BriefOwnershipError(
+            "identity-bearing Daily Brief generation requires phased gateway APIs"
+        )
+    if await session.scalar(select(HealthSubject.id).limit(1)) is not None:
+        raise BriefOwnershipError(
+            "identity-bearing Daily Brief generation requires phased gateway APIs"
+        )
     prepared = await _prepare_brief(
         session,
         on_date=on_date,
         source=source,
-        identity=identity,
+        identity=None,
         include_legacy_unowned=include_legacy_unowned,
-        llm_connection_id=llm_connection_id,
+        llm_connection_id=None,
     )
     if prepared is None:
         return None
@@ -513,6 +1428,117 @@ async def night_scored(session: AsyncSession, on_date: date_type) -> bool:
     return any(getattr(row, key, None) is not None for key in compose.NIGHT_SCORED_KEYS)
 
 
+async def _run_scheduled_brief_generation(
+    session_factory,
+    *,
+    on_date: date_type,
+) -> tuple[WeeklyDigest | None, PreparedBrief | None, str]:
+    """Run scheduler T1/T2/provider/T3 with ambiguous-commit reconciliation."""
+
+    prepared = None
+    for prepare_try in range(2):
+        async with session_factory() as session:
+            prepared = await prepare_brief(
+                session,
+                actor_username=None,
+                invocation_source=AIInvocationSource.SCHEDULER,
+                surface=BriefSurface.SCHEDULER,
+                on_date=on_date,
+            )
+            try:
+                await session.commit()
+                break
+            except Exception:
+                await session.rollback()
+                if prepare_try:
+                    raise
+    if prepared is None:
+        return None, None, "empty"
+
+    if prepared.existing_artifact_id is not None:
+        async with session_factory() as session:
+            row = await existing_brief_for_prepared(session, prepared)
+            await session.commit()
+        return row, prepared, "existing"
+    if not prepared.dispatchable:
+        if prepared.reservation_status is AIInvocationStatus.DISPATCHING:
+            return None, prepared, "pending"
+        async with session_factory() as session:
+            row = await persist_brief(session, prepared, None)
+            await session.commit()
+        return row, prepared, "header"
+
+    lease = None
+    for start_try in range(2):
+        async with session_factory() as session:
+            try:
+                lease = await start_brief_dispatch(session, prepared)
+            except ai_gateway_service.AIGatewayConfigurationError:
+                await session.rollback()
+                async with session_factory() as fallback_session:
+                    row = await cancel_and_persist_header_brief(
+                        fallback_session,
+                        prepared,
+                    )
+                    await fallback_session.commit()
+                return row, prepared, "header"
+            except ai_gateway_service.AIInvocationStateError:
+                await session.rollback()
+                lease = None
+            else:
+                try:
+                    await session.commit()
+                    break
+                except Exception:
+                    # Drop the credential-bearing lease on an ambiguous COMMIT.
+                    lease = None
+                    await session.rollback()
+        if lease is None:
+            async with session_factory() as recovery_session:
+                prepared = await prepare_brief(
+                    recovery_session,
+                    actor_username=None,
+                    invocation_source=AIInvocationSource.SCHEDULER,
+                    surface=BriefSurface.SCHEDULER,
+                    on_date=on_date,
+                )
+                await recovery_session.commit()
+            if prepared is None:
+                return None, None, "empty"
+            if prepared.existing_artifact_id is not None:
+                async with session_factory() as reload_session:
+                    row = await existing_brief_for_prepared(
+                        reload_session,
+                        prepared,
+                    )
+                    await reload_session.commit()
+                return row, prepared, "existing"
+            if not prepared.dispatchable:
+                if prepared.reservation_status is AIInvocationStatus.DISPATCHING:
+                    return None, prepared, "pending"
+                async with session_factory() as header_session:
+                    row = await persist_brief(header_session, prepared, None)
+                    await header_session.commit()
+                return row, prepared, "header"
+            if start_try:
+                return None, prepared, "pending"
+    if lease is None:  # pragma: no cover - all ordinary branches return or assign
+        return None, prepared, "pending"
+
+    completion = await render_brief(prepared, lease)
+    for persist_try in range(2):
+        async with session_factory() as session:
+            try:
+                row = await persist_brief(session, prepared, completion)
+                await session.commit()
+                return row, prepared, "ok" if row.model is not None else "header"
+            except Exception:
+                await session.rollback()
+                if persist_try:
+                    raise
+    raise RuntimeError("scheduled Daily Brief persistence did not resolve")
+
+
 # ── Scheduler job ─────────────────────────────────────────────────────────────
 async def brief_job(session_factory, redis=None) -> None:
     """The 11:00 brief — fired hourly across the wait window, sent once.
@@ -532,7 +1558,6 @@ async def brief_job(session_factory, redis=None) -> None:
     waking rather than on the hour of the clock. The last fire gives up and sends
     what there is, minus the numbers the night never produced.
     """
-    from vitals.integrations.llm_client import LLMClient
     from vitals.services import garmin_service
     from vitals.services.language_service import get_language
     from vitals.i18n import current_lang
@@ -585,13 +1610,6 @@ async def brief_job(session_factory, redis=None) -> None:
             session,
             actor_username=None,
         )
-        llm_ownership = await resolve_legacy_ownership_context(
-            session,
-            actor_username=None,
-            required_connections=(IntegrationProvider.OPENROUTER,),
-        )
-        if llm_ownership.subject_id != ownership.subject_id:
-            raise BriefOwnershipError("channel and LLM ownership subjects differ")
         current_lang.set(
             await get_language(
                 session,
@@ -604,23 +1622,56 @@ async def brief_job(session_factory, redis=None) -> None:
         # behind its own guard: a recovered row belongs in the lake before the
         # brief reads it, and a model that is still down must not cost the brief.
         try:
-            recovered = await inbound.reparse_pending(
+            llm_ownership = await resolve_legacy_ownership_context(
                 session,
-                ownership=ownership,
-                parser_alert_context=alerts_service.ProviderAlertContext(
-                    identity=ownership.system_action(),
-                    provider=IntegrationProvider.OPENROUTER,
-                    integration_connection_id=llm_ownership.connection_id(
-                        IntegrationProvider.OPENROUTER
-                    ),
-                ),
+                actor_username=None,
+                required_connections=(IntegrationProvider.OPENROUTER,),
             )
-            await session.commit()
-            if recovered:
-                logger.info("re-parsed %d stored message(s) before the brief", len(recovered))
-        except Exception:
+        except LegacyOwnershipError:
             await session.rollback()
-            logger.warning("re-parse sweep before the brief failed", exc_info=True)
+            logger.info("pre-brief signal reparse skipped (code=legacy_ai_unavailable)")
+        else:
+            if llm_ownership.subject_id != ownership.subject_id:
+                await session.rollback()
+                logger.info("pre-brief signal reparse skipped (code=scope_mismatch)")
+            else:
+                try:
+                    recovered = await inbound.reparse_pending(
+                        session,
+                        ownership=ownership,
+                        parser_alert_context=alerts_service.ProviderAlertContext(
+                            identity=ownership.system_action(),
+                            provider=IntegrationProvider.OPENROUTER,
+                            integration_connection_id=llm_ownership.connection_id(
+                                IntegrationProvider.OPENROUTER
+                            ),
+                        ),
+                    )
+                    await session.commit()
+                    if recovered:
+                        logger.info(
+                            "re-parsed %d stored message(s) before the brief",
+                            len(recovered),
+                        )
+                except Exception:
+                    await session.rollback()
+                    logger.warning(
+                        "pre-brief signal reparse failed (code=internal_error)"
+                    )
+
+        # Re-establish the exact channel/language read roots after an optional
+        # legacy reparse rollback; platform Daily Brief auth is independent.
+        ownership = await channels.resolve_legacy_channel_ownership(
+            session,
+            actor_username=None,
+        )
+        current_lang.set(
+            await get_language(
+                session,
+                redis,
+                user_id=ownership.recipient_user_id,
+            )
+        )
 
         # Nothing is built, so nothing is stored and no model call is spent: an
         # un-scored night is not an empty day either, so it raises no alert — the
@@ -630,21 +1681,14 @@ async def brief_job(session_factory, redis=None) -> None:
             await session.commit()
             return
 
-        prepared = await _prepare_brief(
-            session,
-            source=Source.SCHEDULER.value,
-            identity=ownership.system_action(),
-            include_legacy_unowned=ownership.include_legacy_unowned,
-            llm_connection_id=llm_ownership.connection_id(
-                IntegrationProvider.OPENROUTER
-            ),
-        )
-        # The exact-one compatibility outcome is complete. Close its read
-        # transaction before either the narrative model or Telegram is awaited.
         await session.commit()
 
     system_identity = ownership.system_action()
-    if prepared is None:
+    row, prepared, generation_outcome = await _run_scheduled_brief_generation(
+        session_factory,
+        on_date=today,
+    )
+    if generation_outcome == "empty":
         async with session_factory() as session:
             await _reconcile_empty_day_alert(
                 session,
@@ -653,24 +1697,20 @@ async def brief_job(session_factory, redis=None) -> None:
             )
             await session.commit()
         return
-
-    # OpenRouter sees only the frozen compatibility context and no live
-    # AsyncSession. Persist its result durably in a fresh caller-owned transaction.
-    rendered = await _render_brief(LLMClient(), prepared)
-    async with session_factory() as session:
-        await _persist_brief(session, rendered)
-        await session.commit()
+    if generation_outcome == "pending" or row is None or prepared is None:
+        return
 
     # Nothing answered for today → the header shows the template's guess and
     # the buttons are how it gets corrected in one tap.
-    buttons = day_plan.buttons_from_context(prepared.context.get("day"), today)
+    stored_context = row.context_json if isinstance(row.context_json, dict) else {}
+    buttons = day_plan.buttons_from_context(stored_context.get("day"), today)
     # The hint rides on the *sent* message, not on the stored brief: /reports
     # shows the same content with no keyboard under it, and a line pointing at
     # buttons that aren't there is worse than no line at all.
     text = (
-        f"{rendered.content}\n\n{day_plan.HINT_FIX}"
+        f"{row.content}\n\n{day_plan.HINT_FIX}"
         if buttons
-        else rendered.content
+        else row.content
     )
 
     async with session_factory() as session:

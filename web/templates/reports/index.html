@@ -149,11 +149,13 @@
         {% call card_header(t("reports.brief_title")) %}
         <div class="flex items-center gap-2 flex-wrap">
             <form action="/reports/brief" method="POST" hx-disabled-elt="find button[type='submit']">
+                <input type="hidden" name="request_token" value="{{ brief_build_token }}">
                 <button type="submit" class="v-btn text-xs">
                     {{ t("reports.brief_build") }}
                 </button>
             </form>
             <form action="/reports/brief/test" method="POST" hx-disabled-elt="find button[type='submit']">
+                <input type="hidden" name="request_token" value="{{ brief_test_token }}">
                 <button type="submit" class="v-btn-ghost text-xs" {% if not channel_configured %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
                     {% if channel_configured %}{{ t("reports.brief_test") }}{% else %}{{ t("reports.brief_no_channel") }}{% endif %}
                 </button>
@@ -162,6 +164,9 @@
         {% endcall %}
 
         <p class="v-text-label">{{ t("reports.brief_hint") }}</p>
+        {% if not brief_ai_available %}
+        <p class="v-text-label">{{ t("reports.brief_ai_unavailable_hint") }}</p>
+        {% endif %}
 
         {% if brief == 'ok' %}
         <div class="v-alert info">{{ t("reports.brief_ok") }}</div>
@@ -169,6 +174,10 @@
         <div class="v-alert info">{{ t("reports.brief_sent") }}</div>
         {% elif brief == 'empty' %}
         <div class="v-alert info">{{ t("reports.brief_empty") }}</div>
+        {% elif brief == 'header' %}
+        <div class="v-alert info">{{ t("reports.brief_header_only") }}</div>
+        {% elif brief == 'pending' %}
+        <div class="v-alert info">{{ t("reports.brief_pending") }}</div>
         {% elif brief == 'no_channel' %}
         <div class="v-alert warn">{{ t("reports.brief_no_channel_hint") }}</div>
         {% elif brief == 'error' %}

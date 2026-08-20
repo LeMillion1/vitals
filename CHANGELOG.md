@@ -42,7 +42,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   platform/opaque-subject quota periods. Configuration changes are versioned,
   a commit error after an environment write clears the credential and requires
   explicit reconciliation rather than guessing an ambiguous database outcome,
-  and only migrated platform consumers (currently Weekly Digest) are governed;
+  and only migrated platform consumers (currently Weekly Digest and Daily Brief) are governed;
   legacy subject OpenRouter roots remain available during their cutover.
 - Weekly digests now use that centrally funded gateway without granting the
   superadmin health-data access. Web, MCP, and scheduler generation reserve a
@@ -58,6 +58,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Backup v1 leaves generated digests and their accounting provenance in place
   rather than exporting broken ownership links; the curated LLM export continues
   to include their narrative content.
+- Daily Brief now uses the same centrally funded invocation gateway at web-build,
+  web test-send, and actorless scheduler boundaries. Each opaque form token (or
+  deterministic scheduler date key) has a stable product identity across model
+  and prompt-policy changes and can dispatch at most once; an incompatible
+  prepared model is cancelled to a linked header instead of buying a replacement.
+  Database locks never span OpenRouter, failed or ambiguous attempts retain
+  conservative charges and produce a linked deterministic header, and missing
+  platform capacity still produces an invocation-free header. Telegram test and
+  reply delivery use prepare/network/journal phases; their existing concurrent
+  outbound-claim gap remains tracked separately. Legacy subject-OpenRouter brief
+  rows stay readable.
 - Browser sessions now use a strict versioned envelope while accepting existing
   signed bare-username cookies for their normal TTL. The public auth dependency
   remains compatible, and cookies contain no roles, subject IDs, grants, or PHI.

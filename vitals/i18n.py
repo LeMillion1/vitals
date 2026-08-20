@@ -821,7 +821,10 @@ _EN: dict[str, str] = {
     "reports.brief_ok": "Brief assembled — below. Nothing was sent.",
     "reports.brief_sent": "Test message sent to Telegram.",
     "reports.brief_empty": "Empty day: no fresh Garmin data. The bot stays quiet on a morning like this.",
-    "reports.brief_error": "Couldn't assemble the brief. Check your OpenRouter balance/key and the logs.",
+    "reports.brief_header_only": "The useful deterministic brief was assembled without an AI narrative.",
+    "reports.brief_pending": "The AI narrative is already in progress. Retry shortly.",
+    "reports.brief_ai_unavailable_hint": "The platform AI narrative is unavailable right now; Build still produces the deterministic brief.",
+    "reports.brief_error": "Couldn't assemble the brief. Retry shortly or ask the platform administrator to check AI availability.",
     "reports.no_briefs": "No briefs yet. They arrive at 11:00, or via the \"Build brief\" button.",
 
     # ── For the doctor: the owner's screen ────────────────────────────────
@@ -1068,7 +1071,7 @@ _EN: dict[str, str] = {
     "settings.platform_ai.status.active": "Active",
     "settings.platform_ai.status.disabled": "Disabled",
     "settings.platform_ai.status.unconfigured": "Not configured",
-    "settings.platform_ai.kill_switch_scope": "The kill switch and quotas currently govern migrated platform consumers, beginning with Weekly Digest. Legacy AI paths remain on their preserved subject-owned OpenRouter connections until their cutover.",
+    "settings.platform_ai.kill_switch_scope": "The kill switch and quotas currently govern migrated platform consumers, including Weekly Digest and Daily Brief. Legacy parser and reply paths remain on preserved subject-owned OpenRouter connections until their cutover.",
     "settings.platform_ai.enable": "Enable gateway",
     "settings.platform_ai.disable": "Disable gateway",
     "settings.platform_ai.configuration_title": "Provider configuration",
@@ -2379,7 +2382,10 @@ _RU: dict[str, str] = {
     "reports.brief_ok": "Бриф собран — ниже. Не отправлен.",
     "reports.brief_sent": "Тестовое сообщение отправлено в Telegram.",
     "reports.brief_empty": "Пустой день: нет свежих данных Garmin. Бот в такое утро молчит.",
-    "reports.brief_error": "Не удалось собрать бриф. Проверьте баланс/ключ OpenRouter и логи.",
+    "reports.brief_header_only": "Полезная детерминированная часть брифа собрана без AI-разбора.",
+    "reports.brief_pending": "AI-разбор уже собирается. Повторите немного позже.",
+    "reports.brief_ai_unavailable_hint": "Платформенный AI-разбор сейчас недоступен; кнопка «Собрать» всё равно создаст детерминированный бриф.",
+    "reports.brief_error": "Не удалось собрать бриф. Повторите позже или попросите администратора платформы проверить доступность AI.",
     "reports.no_briefs": "Брифов ещё нет. Они приходят в 11:00 или по кнопке «Собрать бриф».",
 
     # ── Для врача: экран владельца ────────────────────────────────────────
@@ -2622,7 +2628,7 @@ _RU: dict[str, str] = {
     "settings.platform_ai.status.active": "Активен",
     "settings.platform_ai.status.disabled": "Отключён",
     "settings.platform_ai.status.unconfigured": "Не настроен",
-    "settings.platform_ai.kill_switch_scope": "Отключение и квоты пока действуют на переведённых платформенных потребителей, начиная с еженедельного дайджеста. Старые AI-пути сохраняют подключения OpenRouter, привязанные к субъектам, до своего перевода.",
+    "settings.platform_ai.kill_switch_scope": "Отключение и квоты действуют на переведённых платформенных потребителей, включая еженедельный дайджест и утренний бриф. Старые пути парсера и ответов сохраняют подключения OpenRouter, привязанные к субъектам, до своего перевода.",
     "settings.platform_ai.enable": "Включить шлюз",
     "settings.platform_ai.disable": "Отключить шлюз",
     "settings.platform_ai.configuration_title": "Конфигурация провайдера",

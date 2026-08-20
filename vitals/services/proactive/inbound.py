@@ -49,7 +49,6 @@ from vitals.enums import (
 from vitals.i18n import t
 from vitals.integrations.llm_client import LLMClient
 from vitals.models.identity import HealthSubject
-from vitals.models.milestones import WeeklyDigest
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import Signal
 from vitals.models.system_alert import SystemAlert
@@ -1528,16 +1527,20 @@ async def _answer_reply(
             )
             if (text := (row.payload or {}).get("text"))
         )
+    facts = await _day_facts(session, ownership=ownership)
+    # Raw question state and every PHI/provenance read are durable/materialized.
+    # Release governance/S/owner locks before the still-legacy provider await.
+    await session.commit()
     try:
         text = await answer_reply(
             question,
             context,
-            await _day_facts(session, ownership=ownership),
+            facts,
         )
     except Exception:
-        logger.warning("could not answer a reply", exc_info=True)
+        logger.warning("could not answer a reply (code=provider_error)")
         text = _NO_LLM_REPLY
-    await delivery.send(
+    prepared_delivery = await delivery._prepare_delivery(
         session,
         notifier,
         text=text or _NO_LLM_REPLY,
@@ -1545,6 +1548,25 @@ async def _answer_reply(
         reply_to=str(message_id) if message_id else None,
         ownership=ownership,
     )
+    # Delivery policy reads/locks are complete. Never retain their transaction
+    # across Telegram; journal a successful send in a fresh transaction. This
+    # preserves the known best-effort outbound race until durable claims exist.
+    await session.commit()
+    if prepared_delivery is None:
+        return
+    assert notifier is not None
+    delivered = await delivery._transmit_prepared_delivery(
+        notifier,
+        prepared_delivery,
+    )
+    if delivered is None:
+        return
+    await delivery._journal_prepared_delivery(
+        session,
+        prepared_delivery,
+        external_id=delivered.external_id,
+    )
+    await session.commit()
 
 
 async def _day_facts(
@@ -1566,62 +1588,22 @@ async def _day_facts(
             kind=DigestKind.DAILY_BRIEF.value,
         )
     else:
-        owner_user_id = (
-            select(HealthSubject.owner_user_id)
-            .where(HealthSubject.id == ownership.subject_id)
-            .scalar_subquery()
+        prepared_owner = await digest_service.prepare_digest_owner_for_identity(
+            session,
+            identity=ownership.system_action(),
+            owner_user_id=ownership.recipient_user_id,
         )
-        valid_gateway = (
-            select(IntegrationConnection.id)
-            .where(
-                IntegrationConnection.id
-                == WeeklyDigest.integration_connection_id,
-                IntegrationConnection.subject_id == ownership.subject_id,
-                IntegrationConnection.provider
-                == IntegrationProvider.OPENROUTER.value,
-                IntegrationConnection.connection_type
-                == IntegrationConnectionType.AI_GATEWAY.value,
-                IntegrationConnection.status.in_(
-                    _HISTORICAL_CONNECTION_STATUSES
-                ),
-            )
-            .exists()
-        )
-        digest_scope = and_(
-            WeeklyDigest.subject_id == ownership.subject_id,
-            or_(
-                WeeklyDigest.actor_user_id.is_(None),
-                WeeklyDigest.actor_user_id == owner_user_id,
-            ),
-            or_(
-                WeeklyDigest.integration_connection_id.is_(None),
-                valid_gateway,
-            ),
-        )
-        if ownership.include_legacy_unowned:
-            digest_scope = or_(
-                digest_scope,
-                and_(
-                    WeeklyDigest.subject_id.is_(None),
-                    WeeklyDigest.actor_user_id.is_(None),
-                    WeeklyDigest.integration_connection_id.is_(None),
-                ),
-            )
-        digest = await session.scalar(
-            select(WeeklyDigest)
-            .where(
-                digest_scope,
-                WeeklyDigest.kind == DigestKind.DAILY_BRIEF.value,
-            )
-            .order_by(WeeklyDigest.date.desc(), WeeklyDigest.id.desc())
-            .limit(1)
+        digest = await digest_service.latest_digest(
+            session,
+            kind=DigestKind.DAILY_BRIEF.value,
+            prepared_owner=prepared_owner,
         )
     if digest is None or not digest.context_json:
         return ""
     try:
         return json.dumps(digest.context_json, ensure_ascii=False, default=str)[:_DAY_FACTS_LIMIT]
     except (TypeError, ValueError):
-        logger.warning("brief context is not serialisable; answering without it", exc_info=True)
+        logger.warning("brief context is not serialisable (code=invalid_context)")
         return ""
 
 

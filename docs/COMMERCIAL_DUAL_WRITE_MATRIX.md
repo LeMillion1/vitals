@@ -60,7 +60,7 @@ or multi-subject reads are enabled.
 | `lab_markers`, `lab_results` | upload/parser, manual/MCP, reparse, hormone seed | S always; human/import parser rows get A, system seed does not. Raw and result S must match. |
 | `meal_logs` | web/MCP | S+A and existing MCP provenance. |
 | `milestones` | reports web/MCP | Create gets S+A; updates retain A; direct reads/mutations and progress inputs use the selected S. |
-| `weekly_digests` | web/MCP/schedulers/brief | S always; human generation gets A, scheduler does not. New weekly narratives link to a subject-owned `AIInvocation`, set subject C null, and obtain provider/config/quota provenance from the installation-wide platform OpenRouter gateway. Historical weekly and current daily-brief rows preserve their validated subject OpenRouter C during the bridge; deterministic fallbacks have no invocation. |
+| `weekly_digests` | web/MCP/schedulers/brief | S always; human generation gets A, scheduler does not. New weekly and Daily Brief narratives link to a subject-owned `AIInvocation`, set subject C null, and obtain provider/config/quota provenance from the installation-wide platform OpenRouter gateway. Failed/ambiguous/cancelled Daily Brief attempts link a model-null deterministic header to that exact invocation; platform-unavailable headers have both provider roots null. Historical subject-OpenRouter rows remain readable bridge provenance. |
 | `notifications` | proactive delivery | S + recipient user + Telegram C; explicit human test actions may get A, scheduled/reply delivery does not infer one. |
 | `shared_reports` | create/open/revoke/purge | Create gets S+creator; human revoke gets revoker. Anonymous open and scheduled purge do not mutate actor fields. |
 | `skincare_*` | web/MCP/seed scripts | Human creates get S+A; product/log updates preserve A and are S-scoped. |
@@ -261,9 +261,9 @@ brief rows with fully NULL roots are visible only after the exact-one-subject
 resolver enables the compatibility flag; partial-root rows are rejected. A
 callback is durably parked before its action, successful callbacks are marked
 processed, and a recovery pass can replay a parked action after rollback. During
-the current bridge, brief narrative provenance uses the historical subject
-OpenRouter C only when an LLM tail was produced;
-the Notification separately carries the delivery C. Dedupe and daily budget
+the current bridge, new Daily Brief generation uses platform `AIInvocation`
+provenance and never writes a subject OpenRouter C; historical C-backed rows
+remain readable. The Notification separately carries the delivery C. Dedupe and daily budget
 remain stable across channel rotation, while a key already owned by another
 subject fails before network delivery. The global notification unique index is
 still a concurrency/cutover blocker until its scoped replacement lands. Inbound
@@ -290,10 +290,15 @@ gateway. Historical-C selection still
 relies on the single global active `(alert_key, entity_ref)` slot; replacing that
 index with scoped partial uniques remains a registration blocker.
 
-The scheduled morning brief freezes its exact-one legacy compatibility
-context, closes that read transaction before OpenRouter, persists the rendered
-digest, and ends delivery-policy reads before Telegram. A successful send is
-journalled in a fresh caller-owned transaction. Isolated actorless S-only
+The scheduled morning brief freezes its exact-S compatibility context and
+reserves platform quota, commits authorization/charge before exactly one
+OpenRouter call, then finalizes sanitized accounting and its invocation-linked
+artifact in a fresh transaction. Missing configuration/quota yields an
+invocation-null deterministic header; provider failure yields a header linked to
+the exact conservatively charged terminal invocation. Delivery-policy reads end
+before Telegram and a successful send is journalled in a fresh caller-owned
+transaction. The unchanged concurrent prepare/send/journal window still requires
+PR-09's durable outbound claim. Isolated actorless S-only
 `brief_empty_day` reconciliation then follows canonical governance -> S -> key/row
 order. Empty outcomes use the same alert phase without calling either provider.
 
@@ -323,6 +328,12 @@ Product status is resolved before comparing mutable gateway roots, quota periods
 or reservation ceilings: a succeeded artifact and an in-flight paid call remain
 idempotent across rotation, while an incompatible PREPARED reservation is
 released before the next attempt is reserved.
+Daily Brief uses a separate immutable product-key namespace derived only from
+surface, report date, and the bounded opaque form token (scheduler uses no
+token). Mutable model and prompt-policy versions remain provenance/fingerprint
+inputs, never product identity: an existing terminal row keeps its resolved
+model, while a PREPARED model mismatch is cancelled to a header and cannot
+create a replacement invocation.
 Configuration failure before dispatch releases the reservation when authority
 still permits it, and the platform reconciliation job releases PREPARED rows
 older than 15 minutes while marking hour-old paid DISPATCHING rows ambiguous.

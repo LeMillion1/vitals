@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import secrets
 from datetime import date as date_type
 from typing import Optional
 
@@ -15,9 +17,7 @@ from vitals.enums import (
     AIInvocationStatus,
     DigestKind,
     Domain,
-    IntegrationProvider,
 )
-from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
 from vitals.services import (
     ai_gateway_service,
     conflict_engine,
@@ -26,7 +26,6 @@ from vitals.services import (
 )
 from vitals.services.legacy_ownership import (
     LegacyOwnershipError,
-    resolve_legacy_ownership_context,
 )
 from vitals.services.proactive import brief, channels, delivery
 from vitals.utils.timeutils import today_local
@@ -79,6 +78,10 @@ async def reports_dashboard(
         prepared_owner=digest_owner,
     )
     config = load_config()
+    ai_availability = await brief.project_ai_availability(
+        db,
+        actor_username=username,
+    )
 
     return templates.TemplateResponse(
         request,
@@ -90,8 +93,11 @@ async def reports_dashboard(
             "history": history,
             "latest_brief": latest_brief,
             "goal_domains": GOAL_DOMAINS,
-            "llm_configured": bool(config.openrouter_api_key),
+            "llm_configured": ai_availability.available,
+            "brief_ai_available": ai_availability.available,
             "channel_configured": bool(config.telegram_bot_token and config.telegram_chat_id),
+            "brief_build_token": secrets.token_urlsafe(24),
+            "brief_test_token": secrets.token_urlsafe(24),
             "today": today_local().isoformat(),
             "digest": request.query_params.get("digest"),
             "brief": request.query_params.get("brief"),
@@ -249,37 +255,57 @@ async def generate_digest_now(
 @router.post("/brief")
 async def build_brief_now(
     request: Request,
+    request_token: str = Form(
+        ...,
+        min_length=22,
+        max_length=96,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    ),
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
     _rl: None = Depends(rate_limit("brief_build", limit=10, window=60)),
 ):
-    """Assemble today's brief and show it here. Sends nothing — this is the button
-    for cranking the prompt as many times as you like."""
+    """Assemble one intentionally requested brief and show it without sending."""
+    request_date = today_local()
     try:
-        llm_ownership = await resolve_legacy_ownership_context(
+        row, outcome = await _run_brief_generation(
             db,
             actor_username=username,
-            required_connections=(IntegrationProvider.OPENROUTER,),
+            surface=brief.BriefSurface.BUILD,
+            request_token=request_token,
+            on_date=request_date,
         )
-        row = await brief.generate_brief(
-            db,
-            LLMClient(),
-            identity=llm_ownership.owner_action(),
-            include_legacy_unowned=True,
-            llm_connection_id=llm_ownership.connection_id(
-                IntegrationProvider.OPENROUTER
-            ),
-        )
-        await db.commit()
-    except Exception as e:  # noqa: BLE001 — same soft-fail as the digest button
-        logger.warning("Brief build failed: %s", e)
+    except (
+        ai_gateway_service.AIGatewayAuthorizationError,
+        LegacyOwnershipError,
+        digest_service.DigestOwnershipError,
+        brief.BriefOwnershipError,
+    ):
+        await db.rollback()
+        raise
+    except Exception:  # noqa: BLE001 — sanitized soft failure
+        await db.rollback()
+        logger.warning("Daily Brief build failed (code=internal_error)")
         return _redirect(request, "?brief=error")
-    return _redirect(request, "?brief=ok" if row is not None else "?brief=empty")
+    if outcome == "pending":
+        return _redirect(request, "?brief=pending")
+    if row is None:
+        return _redirect(request, "?brief=empty")
+    return _redirect(
+        request,
+        "?brief=header" if row.model is None else "?brief=ok",
+    )
 
 
 @router.post("/brief/test")
 async def send_test_brief(
     request: Request,
+    request_token: str = Form(
+        ...,
+        min_length=22,
+        max_length=96,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    ),
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
     notifier=Depends(get_notifier),
@@ -289,46 +315,189 @@ async def send_test_brief(
     formatting, a message too long, a channel that isn't actually wired up."""
     if notifier is None:
         return _redirect(request, "?brief=no_channel")
+    request_date = today_local()
     try:
+        request_token = brief.validate_request_token(request_token)
         ownership = await channels.resolve_legacy_channel_ownership(
             db,
             actor_username=username,
         )
-        test_dedupe_key = f"brief_test:{today_local().isoformat()}"
+        test_dedupe_key = (
+            f"brief_test:{request_date.isoformat()}:"
+            f"{hashlib.sha256(request_token.encode()).hexdigest()}"
+        )
         if await delivery.already_sent(
             db,
             test_dedupe_key,
             ownership=ownership,
         ):
-            return _redirect(request, "?brief=error")
-        llm_ownership = await resolve_legacy_ownership_context(
+            await db.commit()
+            return _redirect(request, "?brief=sent")
+        await db.commit()
+        row, outcome = await _run_brief_generation(
             db,
             actor_username=username,
-            required_connections=(IntegrationProvider.OPENROUTER,),
+            surface=brief.BriefSurface.TEST,
+            request_token=request_token,
+            on_date=request_date,
         )
-        row = await brief.generate_brief(
-            db,
-            LLMClient(),
-            identity=ownership.owner_action(),
-            include_legacy_unowned=ownership.include_legacy_unowned,
-            llm_connection_id=llm_ownership.connection_id(
-                IntegrationProvider.OPENROUTER
-            ),
-        )
+        if outcome == "pending":
+            return _redirect(request, "?brief=pending")
         if row is None:
-            await db.commit()
             return _redirect(request, "?brief=empty")
-        sent = await delivery.send(
-            db, notifier, text=row.content, category=delivery.CATEGORY_TEST,
+        prepared_delivery = await delivery._prepare_delivery(
+            db,
+            notifier,
+            text=row.content,
+            category=delivery.CATEGORY_TEST,
             dedupe_key=test_dedupe_key,
             ownership=ownership,
             actor_user_id=ownership.recipient_user_id,
         )
         await db.commit()
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Test brief failed: %s", e)
+        if prepared_delivery is None:
+            return _redirect(request, "?brief=error")
+        delivered = await delivery._transmit_prepared_delivery(
+            notifier,
+            prepared_delivery,
+        )
+        if delivered is None:
+            return _redirect(request, "?brief=error")
+        await delivery._journal_prepared_delivery(
+            db,
+            prepared_delivery,
+            external_id=delivered.external_id,
+        )
+        await db.commit()
+    except (
+        ai_gateway_service.AIGatewayAuthorizationError,
+        LegacyOwnershipError,
+        digest_service.DigestOwnershipError,
+        brief.BriefOwnershipError,
+    ):
+        await db.rollback()
+        raise
+    except Exception:  # noqa: BLE001 — sanitized soft failure
+        await db.rollback()
+        logger.warning("Daily Brief test failed (code=internal_error)")
         return _redirect(request, "?brief=error")
-    return _redirect(request, "?brief=sent" if sent is not None else "?brief=error")
+    return _redirect(request, "?brief=sent")
+
+
+async def _run_brief_generation(
+    session: AsyncSession,
+    *,
+    actor_username: str,
+    surface: brief.BriefSurface,
+    request_token: str,
+    on_date: date_type,
+) -> tuple[object | None, str]:
+    """Own T1/T2/T3 commits while provider I/O stays transaction-free."""
+
+    prepared = None
+    for prepare_try in range(2):
+        prepared = await brief.prepare_brief(
+            session,
+            actor_username=actor_username,
+            invocation_source=AIInvocationSource.WEB,
+            surface=surface,
+            request_token=request_token,
+            on_date=on_date,
+        )
+        try:
+            await session.commit()
+            break
+        except Exception:
+            await session.rollback()
+            if prepare_try:
+                raise
+    if prepared is None:
+        return None, "empty"
+    if prepared.existing_artifact_id is not None:
+        row = await brief.existing_brief_for_prepared(session, prepared)
+        await session.commit()
+        return row, "existing"
+    if not prepared.dispatchable:
+        if prepared.reservation_status is AIInvocationStatus.DISPATCHING:
+            return None, "pending"
+        row = await brief.persist_brief(session, prepared, None)
+        await session.commit()
+        return row, "header"
+
+    lease = None
+    for start_try in range(2):
+        try:
+            lease = await brief.start_brief_dispatch(session, prepared)
+        except ai_gateway_service.AIGatewayConfigurationError:
+            await session.rollback()
+            row = await brief.cancel_and_persist_header_brief(session, prepared)
+            await session.commit()
+            return row, "header"
+        except ai_gateway_service.AIInvocationStateError:
+            await session.rollback()
+            recovered = await brief.prepare_brief(
+                session,
+                actor_username=actor_username,
+                invocation_source=AIInvocationSource.WEB,
+                surface=surface,
+                request_token=request_token,
+                on_date=on_date,
+            )
+            await session.commit()
+            if recovered is None:
+                return None, "empty"
+            if recovered.existing_artifact_id is not None:
+                row = await brief.existing_brief_for_prepared(session, recovered)
+                await session.commit()
+                return row, "existing"
+            if recovered.reservation_status is AIInvocationStatus.DISPATCHING:
+                return None, "pending"
+            row = await brief.persist_brief(session, recovered, None)
+            await session.commit()
+            return row, "header"
+        try:
+            await session.commit()
+            break
+        except Exception:
+            # A lease whose COMMIT outcome is ambiguous is never dispatched.
+            lease = None
+            await session.rollback()
+            prepared = await brief.prepare_brief(
+                session,
+                actor_username=actor_username,
+                invocation_source=AIInvocationSource.WEB,
+                surface=surface,
+                request_token=request_token,
+                on_date=on_date,
+            )
+            await session.commit()
+            if prepared is None:
+                return None, "empty"
+            if prepared.existing_artifact_id is not None:
+                row = await brief.existing_brief_for_prepared(session, prepared)
+                await session.commit()
+                return row, "existing"
+            if not prepared.dispatchable:
+                if prepared.reservation_status is AIInvocationStatus.DISPATCHING:
+                    return None, "pending"
+                row = await brief.persist_brief(session, prepared, None)
+                await session.commit()
+                return row, "header"
+            if start_try:
+                return None, "pending"
+    if lease is None:  # pragma: no cover - every branch returns or assigns
+        return None, "pending"
+    completion = await brief.render_brief(prepared, lease)
+    for persist_try in range(2):
+        try:
+            row = await brief.persist_brief(session, prepared, completion)
+            await session.commit()
+            return row, "ok" if row.model is not None else "header"
+        except Exception:
+            await session.rollback()
+            if persist_try:
+                raise
+    raise RuntimeError("Daily Brief persistence did not resolve")
 
 
 def _redirect(request: Request, suffix: str = "") -> RedirectResponse:

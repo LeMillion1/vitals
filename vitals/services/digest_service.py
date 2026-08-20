@@ -235,6 +235,12 @@ class PreparedDigestOwner:
             actor_user_id=self._actor_user_id,
         )
 
+    @property
+    def owner_user_id(self) -> uuid.UUID:
+        """Return the non-PHI owner authority frozen by this proof."""
+
+        return self._owner_user_id
+
 
 _PREPARED_DIGEST_OWNER_SEAL = object()
 
@@ -3078,15 +3084,35 @@ async def _validate_digest_rows(
             if (
                 invocation.subject_id != root.subject_id
                 or invocation.actor_user_id != root.actor_user_id
-                or invocation.status != AIInvocationStatus.SUCCEEDED.value
                 or expected_purpose is None
                 or invocation.purpose != expected_purpose
                 or expected_source is None
                 or invocation.source != expected_source
-                or root.model != invocation.model
             ):
                 raise DigestOwnershipError(
                     f"digest {root.id} has invalid AI invocation provenance"
+                )
+            if root.kind == DigestKind.WEEKLY.value:
+                valid_lifecycle = (
+                    invocation.status == AIInvocationStatus.SUCCEEDED.value
+                    and root.model == invocation.model
+                )
+            else:
+                valid_lifecycle = (
+                    invocation.status == AIInvocationStatus.SUCCEEDED.value
+                    and root.model == invocation.model
+                ) or (
+                    invocation.status
+                    in {
+                        AIInvocationStatus.FAILED.value,
+                        AIInvocationStatus.AMBIGUOUS.value,
+                        AIInvocationStatus.CANCELLED.value,
+                    }
+                    and root.model is None
+                )
+            if not valid_lifecycle:
+                raise DigestOwnershipError(
+                    f"digest {root.id} has invalid AI invocation lifecycle"
                 )
             continue
         if root.kind == DigestKind.WEEKLY.value:
@@ -3177,6 +3203,71 @@ async def prepare_digest_owner(
         subject_id=subject.id,
         owner_user_id=owner.id,
         actor_user_id=ownership.actor_user_id,
+    )
+
+
+async def prepare_digest_owner_for_identity(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity,
+    owner_user_id: uuid.UUID,
+) -> PreparedDigestOwner:
+    """Prepare a full fail-closed digest read proof for a core-owned identity.
+
+    Delivery/inbound services already hold an exact subject/recipient binding and
+    must not reach into web configuration to turn that binding back into a
+    username. This path performs the same governance, S, owner, and complete
+    digest-root validation as :func:`prepare_digest_owner`.
+    """
+
+    if not isinstance(identity, WriteIdentity) or not isinstance(
+        owner_user_id, uuid.UUID
+    ):
+        raise DigestOwnershipError("digest core owner identity is invalid")
+    await acquire_identity_governance_lock(session)
+    with session.no_autoflush:
+        subject_ids = list(
+            await session.scalars(
+                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+            )
+        )
+        if subject_ids != [identity.subject_id]:
+            raise DigestOwnershipError(
+                "digest compatibility requires exactly one health subject"
+            )
+        subject = await session.scalar(
+            select(HealthSubject)
+            .where(HealthSubject.id == identity.subject_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        owner = await session.scalar(
+            select(User)
+            .where(User.id == owner_user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if (
+            subject is None
+            or subject.owner_user_id != owner_user_id
+            or owner is None
+            or owner.status != UserStatus.ACTIVE.value
+            or (
+                identity.actor_user_id is not None
+                and identity.actor_user_id != owner_user_id
+            )
+        ):
+            raise DigestOwnershipError("digest core owner is missing or inactive")
+    await _validate_digest_rows(
+        session,
+        subject_id=identity.subject_id,
+        owner_user_id=owner_user_id,
+    )
+    return PreparedDigestOwner._issue(
+        session=session,
+        subject_id=identity.subject_id,
+        owner_user_id=owner_user_id,
+        actor_user_id=identity.actor_user_id,
     )
 
 

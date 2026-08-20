@@ -1125,10 +1125,18 @@ async def test_reply_to_our_message_is_answered_not_captured(
     asked = {}
 
     async def _answer(question, context, facts=""):
+        assert not db_session.in_transaction()
         asked["question"], asked["context"] = question, context
         return "HRV чуть ниже твоей нормы."
 
     monkeypatch.setattr(inbound, "answer_reply", _answer)
+    real_send = fake.send
+
+    async def _send_without_transaction(text, *, buttons=None, reply_to=None):
+        assert not db_session.in_transaction()
+        return await real_send(text, buttons=buttons, reply_to=reply_to)
+
+    monkeypatch.setattr(fake, "send", _send_without_transaction)
 
     await c.post(f"/tg/{WEBHOOK_PATH}",
                  json=_text_update(1, "а HRV это плохо?", reply_to=int(sent.external_id)),
@@ -1236,6 +1244,7 @@ async def test_the_question_path_is_given_the_days_numbers(
         ),
         date=date(2026, 7, 26),
         domain=INSIGHTS_DOMAIN,
+        source="scheduler",
         kind=DigestKind.DAILY_BRIEF.value,
         content="Утро: разбор дня.",
         context_json={"hrv": 42, "sleep_hours": 6.1},

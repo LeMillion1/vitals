@@ -389,7 +389,10 @@ async def _seed_brief_day(db_session):
     await db_session.commit()
 
 
-async def test_brief_prefers_his_answer_to_the_template(db_session, monkeypatch):
+async def test_brief_prefers_his_answer_to_the_template(
+    db_session,
+    legacy_owner_roots,
+):
     """And only for the question he actually answered: one tap must not silently
     cancel the rest of the guess he was correcting."""
     await _seed_brief_day(db_session)
@@ -397,19 +400,24 @@ async def test_brief_prefers_his_answer_to_the_template(db_session, monkeypatch)
     await day_plan.record_answer(db_session, DAY, "gym", True)
     await db_session.commit()
 
-    llm = FakeLLM()
-    row = await brief.generate_brief(db_session, llm, on_date=DAY)
-    await db_session.commit()
+    context = await brief.build_context(
+        db_session,
+        on_date=DAY,
+        subject_id=legacy_owner_roots.subject_id,
+        include_legacy_unowned=True,
+    )
+    content = brief._render_base_content(context)
+    prompt = brief.build_prompt(context)
 
-    assert "Сегодня: удалёнка · зал" in row.content
-    assert "по шаблону" not in row.content
+    assert "Сегодня: удалёнка · зал" in content
+    assert "по шаблону" not in content
     # …and the model is told this is his answer, not a guess.
-    assert '"source": "manual"' in llm.calls[0]["prompt"]
+    assert '"source": "manual"' in prompt
 
     # B6: answering one question must not retract the other. The keyboard keeps
     # offering "где" and stops offering "зал" — and never asks how heavy today
     # will be, which is the evening's question about the day it can already see.
-    payloads = {p for _, p in day_plan.buttons_from_context(row.context_json["day"], DAY)}
+    payloads = {p for _, p in day_plan.buttons_from_context(context["day"], DAY)}
     assert not [p for p in payloads if ":gym:" in p]
     assert f"ctx:{DAY.isoformat()}:where:office" in payloads
     assert not [p for p in payloads if ":load:" in p]

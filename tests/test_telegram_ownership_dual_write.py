@@ -30,7 +30,7 @@ from vitals.models.scoped_settings import SubjectSetting
 from vitals.models.signals import DayContext, Signal
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset, IntegrationConnection
-from vitals.services import alerts_service, signals_service
+from vitals.services import alerts_service, digest_service, signals_service
 from vitals.services.proactive import day_plan, delivery, inbound, nudges
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
@@ -455,7 +455,7 @@ async def test_signal_and_day_context_reads_reject_partial_or_cross_roots(
         )
 
 
-async def test_day_facts_reject_foreign_actor_and_gateway_roots(db_session):
+async def test_day_facts_fails_closed_on_foreign_actor_and_gateway_roots(db_session):
     first = await _graph(db_session, "digest-scope-first")
     second = await _graph(db_session, "digest-scope-second")
     first_gateway = IntegrationConnection(
@@ -510,13 +510,11 @@ async def test_day_facts_reject_foreign_actor_and_gateway_roots(db_session):
     )
     await db_session.commit()
 
-    facts = await inbound._day_facts(
-        db_session,
-        ownership=first.ownership,
-    )
-
-    assert "visible" in facts
-    assert "must not leak" not in facts
+    with pytest.raises(digest_service.DigestOwnershipError):
+        await inbound._day_facts(
+            db_session,
+            ownership=first.ownership,
+        )
 
 
 @pytest.mark.parametrize(

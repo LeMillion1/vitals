@@ -117,9 +117,9 @@ legacy secret file/process environment. If commit fails after that environment
 write, the outcome is treated as ambiguous: the credential is cleared and an
 operator must reconcile the intended database root before re-entering it. The
 kill switch and quotas govern migrated platform consumers only—currently Weekly
-Digest. Historical subject-owned OpenRouter roots must remain live for the
-unmigrated brief/parser consumers until their own invocation-ledger cutovers are
-complete.
+Digest and Daily Brief. Historical subject-owned OpenRouter roots remain only
+for unmigrated parser/reply consumers and readable legacy provenance until those
+invocation-ledger cutovers are complete.
 
 Every paid call follows `prepare/reserve -> commit -> provider I/O -> fresh
 finalize/persist`. No database lock spans OpenRouter. `AIInvocation` reserves a
@@ -248,9 +248,12 @@ Implementation progress on `commercial/main`:
   provider, and platform namespaces; generic web/MCP lifecycle actions aggregate
   current and retired provider roots, and provider/scheduler writers use an exact
   reviewed scope. The scheduled empty-day brief writer now uses an actorless
-  subject alert context and exact-one fully-null bridge; its still-legacy
-  exact-one composition, OpenRouter, digest persistence, Telegram, notification
-  journalling, and alert bookkeeping are separate phases so network waits hold
+  subject alert context and exact-one fully-null bridge. Daily Brief web and
+  scheduler generation now reserve the centrally funded gateway, close both
+  reservation and dispatch transactions before exactly one provider call, and
+  atomically finalize sanitized accounting with the artifact. Header-only
+  fallback remains useful without platform capacity. Telegram, notification
+  journalling, and alert bookkeeping remain separate phases so network waits hold
   no database transaction. As a transitional Stage-2 bridge, the Signals
   parser-outage warning still uses the exact subject OpenRouter AI-gateway
   connection with no actor; the platform-AI cutover replaces it with a separate
@@ -529,6 +532,8 @@ Tests:
 - concurrent quota reservations and retries buy at most one call, gateway
   rotation keeps the exact historical provenance of an already-dispatched call,
   and revocation before dispatch causes zero network calls;
+- Daily Brief product identity remains stable across mutable model/prompt policy
+  configuration, and a stale prepared model is cancelled without replacement;
 - a failed connector does not roll back or block another connection;
 - per-connection rate limits, leases, outbox claims, ambiguous-send recovery, and
   token directories cannot collide or double-send a confirmed intent;
