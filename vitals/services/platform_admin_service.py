@@ -137,6 +137,19 @@ def _require_prepared(
     return prepared
 
 
+def require_prepared_platform_admin(
+    session: AsyncSession,
+    prepared: PreparedPlatformAdmin,
+) -> uuid.UUID:
+    """Validate a control-plane capability and return only its opaque actor ID.
+
+    Domain control-plane services use this narrow seam instead of inspecting the
+    capability. It grants no health-subject read or invocation authorization.
+    """
+
+    return _require_prepared(session, prepared).user_id
+
+
 async def is_active_platform_admin(
     session: AsyncSession,
     *,
@@ -246,4 +259,5 @@ __all__ = [
     "is_active_platform_admin",
     "prepare_platform_admin",
     "record_openrouter_configuration_change",
+    "require_prepared_platform_admin",
 ]

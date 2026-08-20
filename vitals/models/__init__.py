@@ -21,7 +21,12 @@ from vitals.models.tenancy import (
     IntegrationConnection,
     PlatformIntegrationConnection,
 )
-from vitals.models.ai import AIInvocation, LegacyOpenRouterConnectionBridge
+from vitals.models.ai import (
+    AIInvocation,
+    AIPlatformQuotaPeriod,
+    AISubjectQuotaPeriod,
+    LegacyOpenRouterConnectionBridge,
+)
 from vitals.models.scoped_settings import (
     IntegrationConnectionSetting,
     PlatformSetting,
@@ -114,6 +119,8 @@ __all__ = [
     "IntegrationConnection",
     "PlatformIntegrationConnection",
     "AIInvocation",
+    "AIPlatformQuotaPeriod",
+    "AISubjectQuotaPeriod",
     "LegacyOpenRouterConnectionBridge",
     "FileAsset",
     "PlatformSetting",

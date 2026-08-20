@@ -5,10 +5,11 @@ the wall clock through these helpers, never ``datetime.now()``/``utcnow()``
 directly, so a container running in UTC can't skew "today" / date windows.
 
 The timezone comes from ``VITALS_TIMEZONE`` (default Europe/Chisinau) and is
-resolved lazily and cached. We return **naive** values (tzinfo stripped) on
-purpose so they stay directly comparable with the naive ``Date``/``DateTime``
-columns used across the schema. The container also pins ``TZ`` as defence in
-depth.
+resolved lazily and cached. Health-calendar helpers return **naive** values
+(tzinfo stripped) on purpose so they stay directly comparable with the naive
+``Date``/``DateTime`` columns used across the schema. ``now_utc()`` is the
+explicit aware exception for external-provider billing boundaries. The
+container also pins ``TZ`` as defence in depth.
 
 ``set_timezone()`` exists for tests (``freezegun`` covers the clock; this covers
 the zone) — production reads the env once.
@@ -47,6 +48,16 @@ def set_timezone(name: str) -> None:
 def now_local() -> datetime:
     """Current local wall-clock time as a naive datetime."""
     return datetime.now(_zone()).replace(tzinfo=None)
+
+
+def now_utc() -> datetime:
+    """Current aware UTC time for provider/billing boundaries.
+
+    Health-day semantics continue to use :func:`now_local`; this helper exists
+    for external-provider periods that are explicitly defined in UTC.
+    """
+
+    return datetime.now(timezone.utc)
 
 
 def today_local() -> date:

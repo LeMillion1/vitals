@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from datetime import date as date_type
 from typing import Optional
 
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -79,6 +81,25 @@ class AIInvocation(Base):
             ondelete="RESTRICT",
             name="fk_ai_invocations_platform_connection_config",
         ),
+        ForeignKeyConstraint(
+            ["quota_period_start", "quota_period_end"],
+            [
+                "ai_platform_quota_periods.period_start",
+                "ai_platform_quota_periods.period_end",
+            ],
+            ondelete="RESTRICT",
+            name="fk_ai_invocations_platform_quota_period",
+        ),
+        ForeignKeyConstraint(
+            ["subject_id", "quota_period_start", "quota_period_end"],
+            [
+                "ai_subject_quota_periods.subject_id",
+                "ai_subject_quota_periods.period_start",
+                "ai_subject_quota_periods.period_end",
+            ],
+            ondelete="RESTRICT",
+            name="fk_ai_invocations_subject_quota_period",
+        ),
         CheckConstraint(
             f"purpose IN ({_values(AIInvocationPurpose)})",
             name="ck_ai_invocations_purpose",
@@ -86,6 +107,11 @@ class AIInvocation(Base):
         CheckConstraint(
             f"source IN ({_values(AIInvocationSource)})",
             name="ck_ai_invocations_source",
+        ),
+        CheckConstraint(
+            "(source = 'scheduler' AND actor_user_id IS NULL) OR "
+            "(source <> 'scheduler' AND actor_user_id IS NOT NULL)",
+            name="ck_ai_invocations_source_actor",
         ),
         CheckConstraint(
             f"status IN ({_values(AIInvocationStatus)})",
@@ -120,12 +146,38 @@ class AIInvocation(Base):
             name="ck_ai_invocations_cost_microunits_nonnegative",
         ),
         CheckConstraint(
+            "quota_period_end > quota_period_start",
+            name="ck_ai_invocations_quota_period_positive",
+        ),
+        CheckConstraint(
+            "reserved_cost_microunits >= 0 AND reserved_units >= 0 AND "
+            "(reserved_cost_microunits > 0 OR reserved_units > 0)",
+            name="ck_ai_invocations_reservation_positive",
+        ),
+        CheckConstraint(
+            "charged_cost_microunits >= 0 AND charged_units >= 0 AND "
+            "charged_cost_microunits <= reserved_cost_microunits AND "
+            "charged_units <= reserved_units",
+            name="ck_ai_invocations_charge_within_reservation",
+        ),
+        CheckConstraint(
+            "cost_microunits IS NULL OR "
+            "cost_microunits <= reserved_cost_microunits",
+            name="ck_ai_invocations_actual_cost_within_reservation",
+        ),
+        CheckConstraint(
+            "coalesce(input_tokens, 0) + coalesce(output_tokens, 0) "
+            "<= reserved_units",
+            name="ck_ai_invocations_actual_units_within_reservation",
+        ),
+        CheckConstraint(
             "(status = 'prepared' AND started_at IS NULL AND finished_at IS NULL) OR "
             "(status = 'dispatching' AND started_at IS NOT NULL "
             "AND finished_at IS NULL) OR "
             "(status IN ('succeeded', 'failed', 'ambiguous') "
             "AND started_at IS NOT NULL AND finished_at IS NOT NULL) OR "
-            "(status = 'cancelled' AND finished_at IS NOT NULL)",
+            "(status = 'cancelled' AND started_at IS NULL "
+            "AND finished_at IS NOT NULL)",
             name="ck_ai_invocations_lifecycle_timestamps",
         ),
         CheckConstraint(
@@ -138,6 +190,14 @@ class AIInvocation(Base):
             "(status NOT IN ('failed', 'ambiguous', 'cancelled') "
             "AND error_code IS NULL)",
             name="ck_ai_invocations_error_state",
+        ),
+        CheckConstraint(
+            "(status IN ('prepared', 'cancelled') "
+            "AND charged_cost_microunits = 0 AND charged_units = 0) OR "
+            "(status IN ('dispatching', 'succeeded', 'failed', 'ambiguous') "
+            "AND charged_cost_microunits = reserved_cost_microunits "
+            "AND charged_units = reserved_units)",
+            name="ck_ai_invocations_accounting_state",
         ),
         Index(
             "ix_ai_invocations_subject_created",
@@ -177,6 +237,16 @@ class AIInvocation(Base):
     model: Mapped[str] = mapped_column(String(128), nullable=False)
     config_version: Mapped[int] = mapped_column(Integer, nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    quota_period_start: Mapped[date_type] = mapped_column(Date, nullable=False)
+    quota_period_end: Mapped[date_type] = mapped_column(Date, nullable=False)
+    reserved_cost_microunits: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reserved_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    charged_cost_microunits: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    charged_units: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
     status: Mapped[str] = mapped_column(
         String(24),
         nullable=False,
@@ -195,6 +265,119 @@ class AIInvocation(Base):
         DateTime(timezone=True), nullable=True
     )
     error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class AIPlatformQuotaPeriod(Base):
+    """One half-open installation billing period with hard shared counters."""
+
+    __tablename__ = "ai_platform_quota_periods"
+    __table_args__ = (
+        CheckConstraint(
+            "period_end > period_start",
+            name="ck_ai_platform_quota_periods_positive_period",
+        ),
+        CheckConstraint(
+            "cost_limit_microunits >= 0 AND unit_limit >= 0",
+            name="ck_ai_platform_quota_periods_nonnegative_limits",
+        ),
+        CheckConstraint(
+            "reserved_cost_microunits >= 0 AND charged_cost_microunits >= 0 "
+            "AND reserved_units >= 0 AND charged_units >= 0",
+            name="ck_ai_platform_quota_periods_nonnegative_counters",
+        ),
+        CheckConstraint(
+            "reserved_cost_microunits + charged_cost_microunits "
+            "<= cost_limit_microunits AND "
+            "reserved_units + charged_units <= unit_limit",
+            name="ck_ai_platform_quota_periods_within_limits",
+        ),
+        Index("ix_ai_platform_quota_periods_end", "period_end"),
+    )
+
+    period_start: Mapped[date_type] = mapped_column(Date, primary_key=True)
+    period_end: Mapped[date_type] = mapped_column(Date, primary_key=True)
+    cost_limit_microunits: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    unit_limit: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reserved_cost_microunits: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    charged_cost_microunits: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    reserved_units: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    charged_units: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    configured_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class AISubjectQuotaPeriod(Base):
+    """One half-open subject billing period; no nullable platform sentinel."""
+
+    __tablename__ = "ai_subject_quota_periods"
+    __table_args__ = (
+        CheckConstraint(
+            "period_end > period_start",
+            name="ck_ai_subject_quota_periods_positive_period",
+        ),
+        CheckConstraint(
+            "cost_limit_microunits >= 0 AND unit_limit >= 0",
+            name="ck_ai_subject_quota_periods_nonnegative_limits",
+        ),
+        CheckConstraint(
+            "reserved_cost_microunits >= 0 AND charged_cost_microunits >= 0 "
+            "AND reserved_units >= 0 AND charged_units >= 0",
+            name="ck_ai_subject_quota_periods_nonnegative_counters",
+        ),
+        CheckConstraint(
+            "reserved_cost_microunits + charged_cost_microunits "
+            "<= cost_limit_microunits AND "
+            "reserved_units + charged_units <= unit_limit",
+            name="ck_ai_subject_quota_periods_within_limits",
+        ),
+        Index(
+            "ix_ai_subject_quota_periods_end",
+            "subject_id",
+            "period_end",
+        ),
+    )
+
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("health_subjects.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    period_start: Mapped[date_type] = mapped_column(Date, primary_key=True)
+    period_end: Mapped[date_type] = mapped_column(Date, primary_key=True)
+    cost_limit_microunits: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    unit_limit: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reserved_cost_microunits: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    charged_cost_microunits: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    reserved_units: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    charged_units: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    configured_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -223,4 +406,9 @@ class LegacyOpenRouterConnectionBridge(Base):
     created_at: Mapped[datetime] = _created_at()
 
 
-__all__ = ["AIInvocation", "LegacyOpenRouterConnectionBridge"]
+__all__ = [
+    "AIInvocation",
+    "AIPlatformQuotaPeriod",
+    "AISubjectQuotaPeriod",
+    "LegacyOpenRouterConnectionBridge",
+]

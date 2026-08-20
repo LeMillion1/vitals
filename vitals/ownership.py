@@ -119,6 +119,15 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         platform_connection=TargetColumn.REQUIRED,
         user_portable=False,
     ),
+    "ai_platform_quota_periods": OwnershipSpec(
+        OwnershipClass.PLATFORM_CONTROL,
+        user_portable=False,
+    ),
+    "ai_subject_quota_periods": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "annotations": _SUBJECT,
     "app_settings": OwnershipSpec(
         OwnershipClass.LEGACY_COMPAT,

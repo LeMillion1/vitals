@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import importlib
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -25,7 +25,12 @@ from vitals.enums import (
     IntegrationProvider,
     UserStatus,
 )
-from vitals.models.ai import AIInvocation, LegacyOpenRouterConnectionBridge
+from vitals.models.ai import (
+    AIInvocation,
+    AIPlatformQuotaPeriod,
+    AISubjectQuotaPeriod,
+    LegacyOpenRouterConnectionBridge,
+)
 from vitals.models.identity import HealthSubject, User
 from vitals.models.tenancy import (
     IntegrationConnection,
@@ -34,6 +39,8 @@ from vitals.models.tenancy import (
 
 
 NOW = datetime(2026, 8, 20, 10, tzinfo=UTC)
+PERIOD_START = date(2026, 8, 1)
+PERIOD_END = date(2026, 9, 1)
 PLATFORM_TABLES = {
     "platform_integration_connections",
     "ai_invocations",
@@ -58,6 +65,40 @@ async def _subject(db_session: Any, slug: str) -> tuple[User, HealthSubject]:
     db_session.add(subject)
     await db_session.flush()
     return user, subject
+
+
+async def _quota_periods(
+    db_session: Any,
+    *,
+    configured_by_user_id: uuid.UUID,
+    subject_ids: tuple[uuid.UUID, ...],
+) -> None:
+    platform = await db_session.get(
+        AIPlatformQuotaPeriod,
+        (PERIOD_START, PERIOD_END),
+    )
+    if platform is None:
+        db_session.add(
+            AIPlatformQuotaPeriod(
+                period_start=PERIOD_START,
+                period_end=PERIOD_END,
+                cost_limit_microunits=100_000,
+                unit_limit=100_000,
+                configured_by_user_id=configured_by_user_id,
+            )
+        )
+    for subject_id in subject_ids:
+        db_session.add(
+            AISubjectQuotaPeriod(
+                subject_id=subject_id,
+                period_start=PERIOD_START,
+                period_end=PERIOD_END,
+                cost_limit_microunits=100_000,
+                unit_limit=100_000,
+                configured_by_user_id=configured_by_user_id,
+            )
+        )
+    await db_session.flush()
 
 
 def _platform_connection(**changes: Any) -> PlatformIntegrationConnection:
@@ -89,6 +130,12 @@ def _invocation(
         "model": "synthetic/model-v1",
         "config_version": 1,
         "idempotency_key": f"opaque-{uuid.uuid4().hex}",
+        "quota_period_start": PERIOD_START,
+        "quota_period_end": PERIOD_END,
+        "reserved_cost_microunits": 100,
+        "reserved_units": 1_000,
+        "charged_cost_microunits": 0,
+        "charged_units": 0,
         "status": AIInvocationStatus.PREPARED.value,
     }
     values.update(changes)
@@ -120,6 +167,12 @@ def test_metadata_has_platform_root_without_subject_or_phi_columns():
         "input_tokens",
         "output_tokens",
         "cost_microunits",
+        "quota_period_start",
+        "quota_period_end",
+        "reserved_cost_microunits",
+        "reserved_units",
+        "charged_cost_microunits",
+        "charged_units",
         "started_at",
         "finished_at",
         "error_code",
@@ -258,6 +311,11 @@ async def test_invocations_are_subject_isolated_and_idempotent(db_session):
     gateway = _platform_connection()
     db_session.add(gateway)
     await db_session.flush()
+    await _quota_periods(
+        db_session,
+        configured_by_user_id=first_user.id,
+        subject_ids=(first_subject.id, second_subject.id),
+    )
 
     key = "opaque-shared-request"
     db_session.add_all(
@@ -284,6 +342,11 @@ async def test_duplicate_subject_purpose_idempotency_is_rejected(db_session):
     gateway = _platform_connection()
     db_session.add(gateway)
     await db_session.flush()
+    await _quota_periods(
+        db_session,
+        configured_by_user_id=user.id,
+        subject_ids=(subject.id,),
+    )
     key = "opaque-one-paid-attempt"
     db_session.add_all(
         [
@@ -338,6 +401,11 @@ async def test_invalid_invocation_state_is_rejected(db_session, changes):
     gateway = _platform_connection()
     db_session.add(gateway)
     await db_session.flush()
+    await _quota_periods(
+        db_session,
+        configured_by_user_id=user.id,
+        subject_ids=(subject.id,),
+    )
     db_session.add(
         _invocation(
             subject_id=subject.id,
@@ -359,6 +427,11 @@ async def test_postgres_rejects_invocation_with_a_different_gateway_config_versi
     gateway = _platform_connection(config_version=3)
     db_session.add(gateway)
     await db_session.flush()
+    await _quota_periods(
+        db_session,
+        configured_by_user_id=user.id,
+        subject_ids=(subject.id,),
+    )
     db_session.add(
         _invocation(
             subject_id=subject.id,
@@ -567,7 +640,6 @@ def test_0039_upgrade_downgrade_round_trip_and_model_shape(monkeypatch):
             assert PLATFORM_TABLES <= set(inspector.get_table_names())
             for model in (
                 PlatformIntegrationConnection,
-                AIInvocation,
                 LegacyOpenRouterConnectionBridge,
             ):
                 assert {
@@ -633,6 +705,19 @@ def test_0039_upgrade_downgrade_round_trip_and_model_shape(monkeypatch):
                     for constraint in model.__table__.constraints
                     if isinstance(constraint, ForeignKeyConstraint)
                 }
+
+            legacy_invocation_columns = set(AIInvocation.__table__.columns.keys()) - {
+                "quota_period_start",
+                "quota_period_end",
+                "reserved_cost_microunits",
+                "reserved_units",
+                "charged_cost_microunits",
+                "charged_units",
+            }
+            assert {
+                column["name"]
+                for column in inspector.get_columns("ai_invocations")
+            } == legacy_invocation_columns
 
             migration.downgrade()
             assert set(inspect(connection).get_table_names()) == tables_before
