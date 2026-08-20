@@ -2,12 +2,18 @@
 grey-market fields), side effects, conflict resolver, and the dashboard route."""
 from __future__ import annotations
 
+import asyncio
+import math
+import uuid
 from datetime import date
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from vitals.services import hrt_catalog, hrt_service
+from vitals.models.hrt import DOMAIN, HrtCompound, HrtCompoundComponent
+from vitals.services import conflict_engine, hrt_catalog, hrt_cycle_service, hrt_service
 from vitals.utils.timeutils import today_local
 
 
@@ -45,6 +51,133 @@ async def test_sync_catalog_loads_blend_components(db_session):
     await db_session.commit()
     sust2 = await hrt_service.get_compound(db_session, "sustanon_250")
     assert len(sust2.components) == 4
+
+
+async def test_sync_catalog_rejects_custom_key_collision_without_mutation(db_session):
+    row = HrtCompound(
+        domain=DOMAIN,
+        source="manual",
+        key="testosterone_enanthate",
+        name="Protected custom definition",
+        compound_class="testosterone",
+        route="intramuscular",
+        dose_unit="mg",
+        half_life_hours=1.0,
+        active_fraction=1.0,
+    )
+    row.components = [HrtCompoundComponent(ester="custom", mg=17.0)]
+    db_session.add(row)
+    await db_session.flush()
+
+    with pytest.raises(
+        hrt_catalog.HrtCatalogCollisionError,
+        match="protected custom-key collision",
+    ):
+        await hrt_catalog.sync_catalog(db_session)
+
+    assert row.name == "Protected custom definition"
+    assert [(component.ester, component.mg) for component in row.components] == [
+        ("custom", 17.0)
+    ]
+    assert await db_session.scalar(select(func.count()).select_from(HrtCompound)) == 1
+
+
+async def test_scoped_curated_reads_require_exact_domain_and_source(db_session):
+    definition = dict(hrt_catalog.load_compound_catalog())["oxandrolone"]
+    row = HrtCompound(
+        key="oxandrolone",
+        domain="labs",
+        source="system",
+        **hrt_catalog._normalize_values(definition),
+    )
+    db_session.add(row)
+    await db_session.flush()
+    subject_id = uuid.uuid4()
+
+    assert (
+        await hrt_service.get_compound(
+            db_session,
+            "oxandrolone",
+            subject_id=subject_id,
+        )
+        is None
+    )
+    with pytest.raises(
+        conflict_engine.ConflictScopeError,
+        match="another subject scope",
+    ):
+        await hrt_cycle_service._resolve_scoped_compound(
+            db_session,
+            "oxandrolone",
+            subject_id=subject_id,
+            include_legacy_unowned=False,
+        )
+
+
+@pytest.mark.integration
+async def test_postgres_catalog_sync_serializes_custom_recategorization(
+    db_session,
+    monkeypatch,
+):
+    if db_session.bind.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL row-lock semantics")
+    await hrt_catalog.sync_catalog(db_session)
+    await db_session.commit()
+
+    rows_locked = asyncio.Event()
+    release_sync = asyncio.Event()
+    writer_started = asyncio.Event()
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+
+    async def pause_after_locks():
+        rows_locked.set()
+        await release_sync.wait()
+
+    monkeypatch.setattr(
+        hrt_catalog,
+        "_after_catalog_rows_locked_for_test",
+        pause_after_locks,
+    )
+
+    async def synchronize():
+        async with factory() as session:
+            await hrt_catalog.sync_catalog(session)
+            await session.commit()
+
+    async def recategorize():
+        async with factory() as session:
+            writer_started.set()
+            await session.execute(
+                update(HrtCompound)
+                .where(HrtCompound.key == "testosterone_enanthate")
+                .values(
+                    source="manual",
+                    name="Protected concurrent custom definition",
+                )
+            )
+            await session.commit()
+
+    sync_task = asyncio.create_task(synchronize())
+    await asyncio.wait_for(rows_locked.wait(), timeout=5)
+    writer_task = asyncio.create_task(recategorize())
+    await asyncio.wait_for(writer_started.wait(), timeout=5)
+    done, _pending = await asyncio.wait({writer_task}, timeout=0.1)
+    assert not done, "the custom recategorization must wait for catalog row locks"
+    release_sync.set()
+    await asyncio.wait_for(sync_task, timeout=5)
+    await asyncio.wait_for(writer_task, timeout=5)
+
+    async with factory() as session:
+        row = await session.scalar(
+            select(HrtCompound).where(
+                HrtCompound.key == "testosterone_enanthate"
+            )
+        )
+        assert row is not None
+        assert (row.source, row.name) == (
+            "manual",
+            "Protected concurrent custom definition",
+        )
 
 
 # ── Dose logging ──────────────────────────────────────────────────────────────
@@ -213,6 +346,38 @@ def test_validate_entry_rejects_component_without_mg():
     with pytest.raises(ValueError):
         hrt_catalog._validate_entry(
             "x", {**_VALID_ENTRY, "components": [{"ester": "propionate"}]}
+        )
+
+
+@pytest.mark.parametrize("value", [0, "propionate", {}])
+def test_validate_entry_rejects_nonlist_components(value):
+    with pytest.raises(ValueError, match="components must be a list"):
+        hrt_catalog._validate_entry("x", {**_VALID_ENTRY, "components": value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("half_life_hours", 0),
+        ("active_fraction", float("nan")),
+        ("conc_mg_ml", float("inf")),
+        ("tablet_mg", -1),
+    ],
+)
+def test_validate_entry_rejects_nonpositive_or_nonfinite_numbers(field, value):
+    with pytest.raises(ValueError, match="positive finite"):
+        hrt_catalog._validate_entry("x", {**_VALID_ENTRY, field: value})
+
+
+@pytest.mark.parametrize("value", [0, -1, math.inf, math.nan, True])
+def test_validate_entry_rejects_invalid_component_amount(value):
+    with pytest.raises(ValueError, match="positive finite"):
+        hrt_catalog._validate_entry(
+            "x",
+            {
+                **_VALID_ENTRY,
+                "components": [{"ester": "propionate", "mg": value}],
+            },
         )
 
 

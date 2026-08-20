@@ -260,6 +260,8 @@ async def _resolve_scoped_compound(
     curated_global = and_(
         HrtCompound.subject_id.is_(None),
         HrtCompound.actor_user_id.is_(None),
+        HrtCompound.domain == DOMAIN,
+        HrtCompound.source == Source.SYSTEM.value,
         HrtCompound.key.in_(curated_keys),
     )
     permitted = or_(same_subject, curated_global)

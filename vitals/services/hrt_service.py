@@ -154,6 +154,15 @@ def _curated_compound_keys() -> tuple[str, ...]:
 def _require_curated_compound_integrity(row: HrtCompound) -> None:
     from vitals.services.hrt_catalog import _normalize_values, load_compound_catalog
 
+    if not (
+        row.domain == DOMAIN
+        and row.source == Source.SYSTEM.value
+        and row.subject_id is None
+        and row.actor_user_id is None
+    ):
+        raise HrtCatalogIntegrityError(
+            "persisted HRT catalog compound has invalid ownership provenance"
+        )
     definition = dict(load_compound_catalog()).get(row.key)
     if definition is None:
         raise HrtCatalogIntegrityError(
@@ -185,6 +194,7 @@ async def _get_curated_compound(
             HrtCompound.key == key,
             HrtCompound.subject_id.is_(None),
             HrtCompound.actor_user_id.is_(None),
+            HrtCompound.domain == DOMAIN,
             HrtCompound.source == Source.SYSTEM.value,
         )
     )
@@ -213,6 +223,7 @@ async def _curated_compound_for_write(
     # catalog row exists.  This is not a custom compound and is never persisted.
     return HrtCompound(
         key=key,
+        domain=DOMAIN,
         name=definition["name"],
         name_ru=definition.get("name_ru"),
         compound_class=definition["compound_class"],
@@ -255,6 +266,7 @@ async def list_compounds(
             HrtCompound.key.in_(_curated_compound_keys()),
             HrtCompound.subject_id.is_(None),
             HrtCompound.actor_user_id.is_(None),
+            HrtCompound.domain == DOMAIN,
             HrtCompound.source == Source.SYSTEM.value,
         )
     if active_only:
@@ -851,6 +863,8 @@ def _scoped_compound_join(
     curated_global = and_(
         HrtCompound.subject_id.is_(None),
         HrtCompound.actor_user_id.is_(None),
+        HrtCompound.domain == DOMAIN,
+        HrtCompound.source == Source.SYSTEM.value,
         HrtCompound.key.in_(curated_keys),
     )
     permitted = or_(same_subject, curated_global)

@@ -28,6 +28,8 @@ from vitals.models.garmin import GarminActivity, GarminDaily, GarminIntraday
 from vitals.models.glp1 import Injection
 from vitals.models.hevy import HevyExercise, HevySet, HevyWorkout
 from vitals.models.hrt import (
+    HrtCompound,
+    HrtCompoundComponent,
     HrtCycle,
     HrtCycleItem,
     HrtCycleTemplate,
@@ -54,6 +56,10 @@ from vitals.services.hevy_child_ownership_backfill_service import (
 from vitals.services.hrt_child_ownership_backfill_service import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     HRT_CHILD_OWNERSHIP_BACKFILL_TABLES,
+)
+from vitals.services.hrt_compound_ownership_backfill_service import (
+    HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES,
 )
 from vitals.services.normalized_ownership_backfill_service import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
@@ -1107,6 +1113,125 @@ async def test_hevy_child_replacement_rejects_invalid_ids_before_mutation(
     row = {"workout_id": 1, "exercise_index": 0, "title": "Synthetic"}
     if table_name == "hevy_sets":
         row = {"exercise_id": 1, "set_index": 0, "set_type": "normal"}
+    if bad_id is not None:
+        row["id"] = bad_id
+    with pytest.raises(PortabilityError, match="positive integer id"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                table_name: [row],
+            },
+        )
+    assert called is False
+
+
+async def test_full_import_rebases_nonempty_hrt_compound_stage3f_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "hrt_compounds": [
+                {
+                    "id": 31,
+                    "domain": Domain.HRT.value,
+                    "source": Source.MANUAL.value,
+                    "key": "synthetic_custom_blend",
+                    "name": "Synthetic custom blend",
+                    "compound_class": "testosterone",
+                    "route": "injection",
+                    "dose_unit": "mg",
+                    "active_fraction": 1.0,
+                    "active": True,
+                    "_vitals_subject_bound": True,
+                }
+            ],
+            "hrt_compound_components": [
+                {
+                    "id": 37,
+                    "compound_id": 31,
+                    "ester": "synthetic_ester",
+                    "mg": 100.0,
+                    "_vitals_subject_bound": True,
+                }
+            ],
+        },
+    )
+
+    compound = await db_session.get(HrtCompound, 31)
+    component = await db_session.get(HrtCompoundComponent, 37)
+    assert compound is not None and component is not None
+    assert (
+        compound.subject_id,
+        compound.actor_user_id,
+        component.subject_id,
+    ) == (legacy_owner_roots.subject_id, None, legacy_owner_roots.subject_id)
+
+    checkpoints = {
+        row.phase_key: row
+        for row in await db_session.scalars(
+            select(OwnershipBackfillCheckpoint).where(
+                OwnershipBackfillCheckpoint.phase_key.in_(
+                    tuple(
+                        HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()
+                    )
+                )
+            )
+        )
+    }
+    assert len(checkpoints) == len(HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES) == 2
+    for table_name, high_watermark in (
+        ("hrt_compounds", 31),
+        ("hrt_compound_components", 37),
+    ):
+        checkpoint = checkpoints[
+            HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES[table_name]
+        ]
+        assert (
+            checkpoint.status,
+            checkpoint.scan_high_watermark_id,
+            checkpoint.snapshot_rows,
+            checkpoint.last_scanned_id,
+            checkpoint.scanned_rows,
+            checkpoint.completed_at,
+        ) == ("running", high_watermark, 1, 0, 0, None)
+
+
+@pytest.mark.parametrize("table_name", HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES)
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_hrt_compound_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    table_name,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_reset(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_hrt_compound_backfill_for_portability_v1_restore",
+        unexpected_reset,
+    )
+    row = {
+        "domain": Domain.HRT.value,
+        "source": Source.MANUAL.value,
+        "key": "synthetic_custom",
+        "name": "Synthetic custom",
+        "compound_class": "testosterone",
+        "route": "injection",
+    }
+    if table_name == "hrt_compound_components":
+        row = {"compound_id": 1, "ester": "synthetic", "mg": 1.0}
     if bad_id is not None:
         row["id"] = bad_id
     with pytest.raises(PortabilityError, match="positive integer id"):

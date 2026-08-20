@@ -77,6 +77,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   both child tables wholesale, completion freezes the migration snapshot while
   later status validates the current strict graph. Non-empty backup-v1 child
   snapshots become `RESTORE_BLOCKED`; empty snapshots complete.
+- Added Stage 3F for the mixed HRT compound catalog. The fixed
+  `stage3.mixed_catalog.hrt.v1` operation classifies exact checked-in system
+  compounds as global while assigning the sole subject only to reviewed
+  historical manual/MCP compounds and their components. It preserves every
+  actor and medical/catalog field, validates linked dose and cycle snapshots,
+  uses fixed keyset pages, freezes custom ownership evidence across later
+  catalog reseeds, and permits backup-v1 stop/resume because the retained
+  source/key marker proves the system-versus-custom split. Catalog
+  synchronization now refuses a custom row that collides with a checked-in key
+  before changing any definition or component. Catalog rows are locked before
+  that decision, custom keys must be canonical lowercase slugs, and scoped
+  curated reads require exact HRT/system provenance.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before

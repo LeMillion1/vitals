@@ -456,8 +456,20 @@ Implementation progress on `commercial/main`:
   initial snapshot is finalized under a full Hevy writer pause and later status
   validates the current strict graph. Backup v1 records non-empty child
   checkpoints as `RESTORE_BLOCKED`; empty snapshots complete.
+- Stage 3F uses `stage3.mixed_catalog.hrt.v1` for exactly `hrt_compounds`
+  followed by `hrt_compound_components`. Checked-in `system` definitions remain
+  global and must match the current YAML scalars and complete component
+  multiset. Historical `manual`/`mcp` definitions outside the curated key set
+  gain only the sole S; A and every medical value remain unchanged, and custom
+  components inherit only their exact parent S. Linked doses and cycle items
+  are validation-only and must retain a matching snapshot key. Initial
+  completion freezes all-row data while durable post-completion evidence covers
+  the custom subset only, allowing legitimate curated catalog reseeds without
+  hiding custom deletion, reparenting, or ownership drift. Backup v1 preserves
+  the reviewed source/key marker, so its exact two checkpoints reset to bounded
+  RUNNING/empty-COMPLETED states rather than guessing any C/F provenance.
 - Remaining bounded backfill phases and whole-lake validation, scoped
-  remaining raw/file-sensitive normalized rows, remaining inherited children,
+  remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,
   natural-key/alert/outbox-unique cutover, remaining health-alert and conflict
   writers, subject-aware composition/reporting (including Labs/Genetics charts,

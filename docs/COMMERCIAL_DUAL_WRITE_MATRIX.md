@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -613,6 +613,50 @@ keys, UUIDs, workout content, measurements, errors, or database configuration.
 Backup v1 strips C while rebinding child S, so import atomically records each
 non-empty Stage-3E table as `RESTORE_BLOCKED` after the Stage-3D transition;
 empty tables complete. There is no Stage-3E remap/reset operator.
+
+## Stage-3F HRT mixed-catalog ownership operation
+
+The fixed `stage3.mixed_catalog.hrt.v1` phase covers `hrt_compounds` followed
+by `hrt_compound_components`. A global catalog parent is valid only with exact
+`domain=hrt`, `source=system`, null S/A, a checked-in key, exact catalog-owned
+scalars, and the complete YAML component multiset with null child S. A custom
+parent is valid only with `source=manual|mcp`, `domain=hrt`, and a non-curated
+key. Frozen fully-unowned custom parents gain only the sole S; existing nullable
+or owner A is preserved. Live-tail custom rows require exact S+A. A custom
+component inherits only the locked parent's S, while a catalog component stays
+global. The phase never creates A/C/F/raw provenance or rewrites medical data.
+
+Linked HRT doses and cycle items are locked validation inputs: their
+`compound_key` snapshot must match the linked parent, and a custom parent must
+share their exact subject. Key-only template items remain free-text history and
+are not ownership evidence. Catalog synchronization is paused for the complete
+multi-batch window and now refuses any custom/partial row occupying a checked-in
+key before changing catalog data.
+
+Initial finalization locks and rehashes both complete snapshots. Durable
+post-completion ownership evidence intentionally covers only frozen custom
+parents/components; current system rows are instead revalidated against the
+current YAML. This permits checked-in catalog/component reseeds while still
+detecting custom deletion, reparenting, reclassification, or S/A drift. Normal
+apply requires exact completed Stage 3A–3E evidence. Backup-v1 restore may use
+the explicit reset-created Stage-3F group with the prior phases' exact restore
+states because source/key and the subject-bound marker preserve this phase's
+classification; nonempty snapshots resume as RUNNING and empty snapshots
+complete. This checkpoint is migration evidence, not authorization for global
+HRT reads, catalog activation, sharing, or custom CRUD.
+
+`scripts/backfill_hrt_compound_subject_ownership.py` is read-only by default
+and exposes only bounded `--apply`, `--batch-size`, and `--max-batches`
+controls. Its versioned JSON contains fixed phase/table counts, result codes,
+and checksums only—never compound/component IDs, keys, names, doses, routes,
+UUIDs, timestamps, exception text, or database configuration.
+
+Every full-graph validation, live-tail scan, consumer check, and final rehash is
+PK-keyset paged; the batch limit therefore bounds materialized rows as well as
+mutations. Persisted checkpoint validators require equal before/after data
+digests and exact dependency/group state pairs. Custom keys must match the
+canonical lowercase slug contract, and catalog synchronization takes ordered
+row locks before collision validation or mutation.
 
 ## Completion gates
 

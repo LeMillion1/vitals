@@ -14,6 +14,7 @@ blend definition is catalog-owned, not user data).
 from __future__ import annotations
 
 import logging
+import math
 from functools import lru_cache
 from pathlib import Path
 
@@ -21,8 +22,8 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import DoseUnit, Route
-from vitals.models.hrt import HrtCompound, HrtCompoundComponent
+from vitals.enums import DoseUnit, Route, Source
+from vitals.models.hrt import DOMAIN, HrtCompound, HrtCompoundComponent
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,18 @@ _CATALOG_FIELDS = (
 _REQUIRED_KEYS = ("name", "compound_class", "route", "half_life_hours", "active_fraction")
 
 
+class HrtCatalogCollisionError(ValueError):
+    """A checked-in catalog key is occupied by a non-catalog row."""
+
+
+def _require_positive_finite(key: str, field: str, value: object) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key}: {field} must be a positive finite number")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"{key}: {field} must be a positive finite number")
+
+
 def _validate_entry(key: str, entry: dict) -> None:
     if not isinstance(entry, dict):
         raise ValueError(f"hrt_compounds.yaml: entry {key!r} is not a mapping")
@@ -66,9 +79,26 @@ def _validate_entry(key: str, entry: dict) -> None:
     arom = entry.get("aromatizes")
     if arom is not None and str(arom).lower() not in _VALID_AROMATIZES:
         raise ValueError(f"{key}: invalid aromatizes {arom!r}")
-    for comp in entry.get("components", []) or []:
-        if "ester" not in comp or "mg" not in comp:
+    for field in (
+        "conc_mg_ml",
+        "tablet_mg",
+        "half_life_hours",
+        "active_fraction",
+    ):
+        value = entry.get(field)
+        if value is not None:
+            _require_positive_finite(key, field, value)
+    components = entry.get("components")
+    if components is None:
+        components = []
+    elif not isinstance(components, list):
+        raise ValueError(f"{key}: components must be a list")
+    for comp in components:
+        if not isinstance(comp, dict) or "ester" not in comp or "mg" not in comp:
             raise ValueError(f"{key}: component missing ester/mg: {comp!r}")
+        if not isinstance(comp["ester"], str) or not comp["ester"].strip():
+            raise ValueError(f"{key}: component ester must be non-empty")
+        _require_positive_finite(key, "component mg", comp["mg"])
 
 
 @lru_cache(maxsize=1)
@@ -99,6 +129,10 @@ def _normalize_values(entry: dict) -> dict:
     return values
 
 
+async def _after_catalog_rows_locked_for_test() -> None:
+    """Deterministic concurrency-test seam after the catalog row locks."""
+
+
 async def sync_catalog(session: AsyncSession) -> dict[str, int]:
     """Idempotent upsert of ``hrt_compounds.yaml`` into ``hrt_compounds``, keyed
     on ``key``. Catalog-owned scalar fields are refreshed on existing rows;
@@ -106,8 +140,31 @@ async def sync_catalog(session: AsyncSession) -> dict[str, int]:
     replaced to match the YAML. Rows are stamped ``source='system'`` so they're
     distinguishable from user-added compounds (``source='manual'``)."""
     catalog = load_compound_catalog()
-    result = await session.execute(select(HrtCompound))
+    catalog_keys = tuple(key for key, _entry in catalog)
+    result = await session.execute(
+        select(HrtCompound)
+        .where(HrtCompound.key.in_(catalog_keys))
+        .order_by(HrtCompound.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     existing = {row.key: row for row in result.scalars().all()}
+    await _after_catalog_rows_locked_for_test()
+
+    # Validate the entire key namespace before changing any row. A manual/MCP
+    # compound may legitimately predate a newly curated key; catalog startup
+    # must never overwrite that user's medical definition or its components.
+    for key, _entry in catalog:
+        row = existing.get(key)
+        if row is not None and not (
+            row.domain == DOMAIN
+            and row.source == Source.SYSTEM.value
+            and row.subject_id is None
+            and row.actor_user_id is None
+        ):
+            raise HrtCatalogCollisionError(
+                "HRT catalog synchronization found a protected custom-key collision"
+            )
 
     inserted = 0
     updated = 0
@@ -116,7 +173,12 @@ async def sync_catalog(session: AsyncSession) -> dict[str, int]:
         components = entry.get("components") or []
         row = existing.get(key)
         if row is None:
-            row = HrtCompound(key=key, source="system", **values)
+            row = HrtCompound(
+                key=key,
+                domain=DOMAIN,
+                source=Source.SYSTEM.value,
+                **values,
+            )
             session.add(row)
             inserted += 1
         else:

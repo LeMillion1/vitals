@@ -996,18 +996,14 @@ async def test_checked_in_hrt_catalog_is_global_without_bridge(
     legacy_owner_roots,
     link_kind,
 ):
-    from vitals.services.hrt_catalog import load_compound_catalog
+    from vitals.services import hrt_catalog
 
-    key, definition = load_compound_catalog()[0]
-    catalog_compound = _hrt_compound(
-        source=Source.MANUAL,
-        key=key,
-        compound_class=definition["compound_class"],
-        route=definition["route"],
-        aromatizes=definition.get("aromatizes"),
+    key, definition = hrt_catalog.load_compound_catalog()[0]
+    await hrt_catalog.sync_catalog(db_session)
+    catalog_compound = await db_session.scalar(
+        select(HrtCompound).where(HrtCompound.key == key)
     )
-    db_session.add(catalog_compound)
-    await db_session.flush()
+    assert catalog_compound is not None
     await _seed_hrt_linked_fact(
         db_session,
         roots=legacy_owner_roots,

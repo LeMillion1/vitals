@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -524,6 +524,36 @@ strips C; the same import transaction records non-empty Stage-3E snapshots as
 `RESTORE_BLOCKED` after Stage-3D handling, while empty snapshots complete. No
 Stage-3E remap/reset CLI exists.
 
+Stage 3F continues with `stage3.mixed_catalog.hrt.v1` over exactly
+`hrt_compounds` and `hrt_compound_components`. Checked-in HRT/system definitions
+remain global and must match their current YAML scalars and complete component
+multiset. Reviewed historical manual/MCP definitions outside the curated key
+set gain only the sole S, preserve nullable A, and pass that S to their exact
+components. Dose/cycle-item links and snapshot keys are validation-only; no
+actor, connection, file, raw link, or medical value is invented.
+
+The initial full snapshot is locked and rehashed under an HRT/catalog writer
+pause. After completion, the durable frozen ownership checksum covers custom
+parents/components only; current global definitions are validated against the
+current checked-in catalog so a legitimate catalog reseed can replace component
+IDs without hiding custom history loss or ownership drift. Backup v1 retains
+source/key and its subject-bound marker, so import resets the exact two Stage-3F
+checkpoints to bounded RUNNING/empty-COMPLETED states after the Stage-3E
+transition and before replacement. Catalog synchronization fails closed on any
+custom row colliding with a curated key and never co-opts its medical data.
+The fixed-target `scripts/backfill_hrt_compound_subject_ownership.py` command is
+read-only by default, commits at most one bounded batch per transaction, and
+emits only allowlisted counts, result codes, and checksums. Stage 3F does not
+claim HRT activation, sharing, custom-CRUD, or conflict-reader cutover; those
+remain subject-scoping work after the data phase.
+
+All Stage-3F whole-graph checks and rehashes use fixed PK keyset pages. The
+service rejects unequal persisted data-digest chains, impossible prior/own
+checkpoint pairs, reverse parent/component restore bounds, and noncanonical
+custom keys. Catalog synchronization locks matching rows before its collision
+decision; a PostgreSQL two-session regression proves a concurrent custom
+recategorization cannot be overwritten.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -533,7 +563,12 @@ the same migration boundary, fixed-catalog stop/resume, restore refusal, and an
 actual two-session normalized/raw-link race that fails before ownership or
 checkpoint mutation. The Stage-3E rehearsal adds volatile Hevy child rebuilds,
 and its PostgreSQL service gate exercises workout-FK, exercise-FK, and child
-disappearance races before ownership/checkpoint mutation. Remaining
+disappearance races before ownership/checkpoint mutation. The Stage-3F
+PostgreSQL rehearsal covers normal and backup-v1 restore dependencies,
+custom-versus-curated stop/resume, post-completion catalog churn, and populated
+downgrade refusal; its service gate adds parent-classification, component-FK,
+consumer-FK, snapshot-key, component-disappearance, and catalog-recategorization
+races. Remaining
 raw/file-sensitive normalized rows, inherited children, artifacts, control
 phases, and the Stage 4 gates remain pending.
 
