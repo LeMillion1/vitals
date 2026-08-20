@@ -16,7 +16,7 @@ from vitals.ownership import (
 
 def test_every_registered_table_has_exactly_one_ownership_contract():
     assert set(OWNERSHIP_REGISTRY) == set(Base.metadata.tables)
-    assert len(OWNERSHIP_REGISTRY) == 55
+    assert len(OWNERSHIP_REGISTRY) == 58
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -52,11 +52,14 @@ def test_subject_data_never_has_an_unscoped_target_contract():
 
 def test_control_plane_and_live_links_are_not_user_portable():
     expected = {
+        "ai_invocations",
         "audit_events",
         "file_assets",
         "health_subjects",
         "integration_connection_settings",
         "integration_connections",
+        "legacy_openrouter_connection_bridges",
+        "platform_integration_connections",
         "platform_settings",
         "shared_reports",
         "subject_settings",
@@ -71,6 +74,23 @@ def test_control_plane_and_live_links_are_not_user_portable():
         for table_name, spec in OWNERSHIP_REGISTRY.items()
         if not spec.user_portable
     } == expected
+
+
+def test_platform_ai_contract_keeps_control_and_subject_use_separate():
+    platform = OWNERSHIP_REGISTRY["platform_integration_connections"]
+    invocation = OWNERSHIP_REGISTRY["ai_invocations"]
+    bridge = OWNERSHIP_REGISTRY["legacy_openrouter_connection_bridges"]
+
+    assert platform.ownership is OwnershipClass.PLATFORM_CONTROL
+    assert platform.subject is TargetColumn.NONE
+    assert platform.platform_connection is TargetColumn.NONE
+    assert invocation.ownership is OwnershipClass.SUBJECT_CONTROL
+    assert invocation.subject is TargetColumn.REQUIRED
+    assert invocation.actor is TargetColumn.OPTIONAL
+    assert invocation.platform_connection is TargetColumn.REQUIRED
+    assert bridge.ownership is OwnershipClass.PLATFORM_CONTROL_CHILD
+    assert bridge.connection is TargetColumn.REQUIRED
+    assert bridge.platform_connection is TargetColumn.REQUIRED
 
 
 def test_portability_exclusions_follow_the_registry_contract():

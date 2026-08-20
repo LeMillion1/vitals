@@ -1,9 +1,10 @@
-"""Subject-bound roots for integrations and private file artifacts.
+"""Durable platform/subject integration roots and private file artifacts.
 
-These models establish durable ownership only.  They intentionally do not hold
-provider secrets, access tokens, scheduler cursors, file bytes, or network
-state.  Legacy rows are registered by an application bootstrap after the
-identity owner exists; Alembic therefore creates schema only.
+These models establish durable ownership only. They intentionally do not hold
+provider secrets, access tokens, scheduler cursors, file bytes, or network state.
+Subject ``IntegrationConnection`` rows remain subject-bound; the OpenRouter
+platform root is structurally separate. Legacy rows are registered by an
+application bootstrap after the identity owner exists; Alembic creates schema only.
 """
 from __future__ import annotations
 
@@ -17,10 +18,12 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -58,6 +61,105 @@ def _updated_at() -> Mapped[datetime]:
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class PlatformIntegrationConnection(Base):
+    """Installation-owned provider root with no health-subject ownership.
+
+    The row contains only an opaque credential resolver handle. Secret material,
+    prompts, responses, and other PHI belong neither here nor in generic settings.
+    ``external_account_discriminator`` and ``config_version`` are immutable root
+    identity after insert. The future platform-gateway service is the sole write
+    boundary for that contract: rotation must atomically retire the current row
+    and insert a replacement with a new discriminator in the same database
+    transaction. Historical AI invocations therefore retain the exact platform
+    root and frozen configuration version that paid for them. The composite
+    invocation foreign key also prevents config-version drift after first use;
+    discriminator immutability remains an explicit service invariant.
+    """
+
+    __tablename__ = "platform_integration_connections"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "connection_type",
+            "external_account_discriminator",
+            name="uq_platform_integration_connections_provider_type_discriminator",
+        ),
+        UniqueConstraint(
+            "id",
+            "config_version",
+            name="uq_platform_integration_connections_id_config_version",
+        ),
+        CheckConstraint(
+            "provider = 'openrouter' AND connection_type = 'ai_gateway'",
+            name="ck_platform_integration_connections_provider_type_pair",
+        ),
+        CheckConstraint(
+            f"status IN ({_values(IntegrationConnectionStatus)})",
+            name="ck_platform_integration_connections_status",
+        ),
+        CheckConstraint(
+            "length(trim(external_account_discriminator)) > 0",
+            name="ck_platform_integration_connections_discriminator_not_blank",
+        ),
+        CheckConstraint(
+            "length(trim(credential_ref)) > 0",
+            name="ck_platform_integration_connections_credential_ref_not_blank",
+        ),
+        CheckConstraint(
+            "config_version >= 1",
+            name="ck_platform_integration_connections_config_version_positive",
+        ),
+        CheckConstraint(
+            "(status = 'retired' AND retired_at IS NOT NULL) OR "
+            "(status <> 'retired' AND retired_at IS NULL)",
+            name="ck_platform_integration_connections_retirement_state",
+        ),
+        Index(
+            "uq_platform_integration_connections_current_provider_type",
+            "provider",
+            "connection_type",
+            unique=True,
+            postgresql_where=text("status <> 'retired'"),
+            sqlite_where=text("status <> 'retired'"),
+        ),
+        Index(
+            "ix_platform_integration_connections_provider_status",
+            "provider",
+            "status",
+        ),
+        Index(
+            "ix_platform_integration_connections_configured_by_user_id",
+            "configured_by_user_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    connection_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_account_discriminator: Mapped[str] = mapped_column(
+        String(128), nullable=False
+    )
+    credential_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        server_default=IntegrationConnectionStatus.PENDING.value,
+    )
+    config_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
+    configured_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    retired_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
 
 
 class IntegrationConnection(Base):
@@ -258,4 +360,8 @@ class FileAsset(Base):
     updated_at: Mapped[datetime] = _updated_at()
 
 
-__all__ = ["FileAsset", "IntegrationConnection"]
+__all__ = [
+    "FileAsset",
+    "IntegrationConnection",
+    "PlatformIntegrationConnection",
+]

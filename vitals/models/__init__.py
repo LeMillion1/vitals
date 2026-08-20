@@ -16,7 +16,12 @@ from vitals.models.identity import (
     User,
     UserRole,
 )
-from vitals.models.tenancy import FileAsset, IntegrationConnection
+from vitals.models.tenancy import (
+    FileAsset,
+    IntegrationConnection,
+    PlatformIntegrationConnection,
+)
+from vitals.models.ai import AIInvocation, LegacyOpenRouterConnectionBridge
 from vitals.models.scoped_settings import (
     IntegrationConnectionSetting,
     PlatformSetting,
@@ -107,6 +112,9 @@ __all__ = [
     "SupportAccessScope",
     "AuditEvent",
     "IntegrationConnection",
+    "PlatformIntegrationConnection",
+    "AIInvocation",
+    "LegacyOpenRouterConnectionBridge",
     "FileAsset",
     "PlatformSetting",
     "UserSetting",

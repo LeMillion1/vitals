@@ -65,7 +65,7 @@ class AuditOutcome(StrEnum):
 
 
 class IntegrationProvider(StrEnum):
-    """External systems represented by a subject-bound connection root."""
+    """External systems represented by a subject or platform connection root."""
 
     GARMIN = "garmin"
     HEVY = "hevy"
@@ -94,6 +94,49 @@ class IntegrationConnectionStatus(StrEnum):
     ACTIVE = "active"
     DISABLED = "disabled"
     RETIRED = "retired"
+
+
+class AIInvocationPurpose(StrEnum):
+    """Bounded product purpose for one paid platform AI operation."""
+
+    WEEKLY_DIGEST = "weekly_digest"
+    DAILY_BRIEF = "daily_brief"
+    LAB_DOCUMENT_PARSE = "lab_document_parse"
+    BODY_SCAN_PARSE = "body_scan_parse"
+    SIGNAL_PARSE = "signal_parse"
+    QUESTION_REPLY = "question_reply"
+
+
+class AIInvocationSource(StrEnum):
+    """Authenticated surface or system boundary that initiated an AI call."""
+
+    WEB = "web"
+    MCP = "mcp"
+    SCHEDULER = "scheduler"
+    TELEGRAM = "telegram"
+
+
+class AIInvocationStatus(StrEnum):
+    """Durable lifecycle of one idempotent, potentially paid AI attempt."""
+
+    PREPARED = "prepared"
+    DISPATCHING = "dispatching"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    AMBIGUOUS = "ambiguous"
+    CANCELLED = "cancelled"
+
+
+class AIInvocationErrorCode(StrEnum):
+    """Allowlisted operational failure codes; never free-form provider detail."""
+
+    PROVIDER_UNCONFIGURED = "provider_unconfigured"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    TIMEOUT = "timeout"
+    INVALID_RESPONSE = "invalid_response"
+    CANCELLED_BY_POLICY = "cancelled_by_policy"
+    QUOTA_EXCEEDED = "quota_exceeded"
+    INTERNAL_ERROR = "internal_error"
 
 
 class FileStorageBackend(StrEnum):

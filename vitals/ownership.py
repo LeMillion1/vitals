@@ -22,6 +22,8 @@ class OwnershipClass(StrEnum):
     """Where a table belongs in the authorization/data hierarchy."""
 
     PLATFORM_JOURNAL = "platform_journal"
+    PLATFORM_CONTROL = "platform_control"
+    PLATFORM_CONTROL_CHILD = "platform_control_child"
     ACCOUNT_CONTROL = "account_control"
     SUBJECT_ROOT = "subject_root"
     SUBJECT_CONTROL = "subject_control"
@@ -72,11 +74,18 @@ class OwnershipSpec:
     subject: TargetColumn = TargetColumn.NONE
     actor: TargetColumn = TargetColumn.NONE
     connection: TargetColumn = TargetColumn.NONE
+    platform_connection: TargetColumn = TargetColumn.NONE
     file_asset: TargetColumn = TargetColumn.NONE
     user_portable: bool = True
 
     def __post_init__(self) -> None:
-        values = (self.subject, self.actor, self.connection, self.file_asset)
+        values = (
+            self.subject,
+            self.actor,
+            self.connection,
+            self.platform_connection,
+            self.file_asset,
+        )
         if any(not isinstance(value, TargetColumn) for value in values):
             raise TypeError("ownership columns must use TargetColumn values")
         if not isinstance(self.ownership, OwnershipClass):
@@ -103,6 +112,13 @@ _SUBJECT_CHILD = OwnershipSpec(
 # Keep this literal and reviewable. Dynamic inference is unsafe: it would happily
 # classify a newly introduced PHI table by the columns its author forgot to add.
 _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
+    "ai_invocations": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.OPTIONAL,
+        platform_connection=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "annotations": _SUBJECT,
     "app_settings": OwnershipSpec(
         OwnershipClass.LEGACY_COMPAT,
@@ -213,6 +229,12 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
     ),
     "lab_markers": _SUBJECT,
     "lab_results": _SUBJECT,
+    "legacy_openrouter_connection_bridges": OwnershipSpec(
+        OwnershipClass.PLATFORM_CONTROL_CHILD,
+        connection=TargetColumn.REQUIRED,
+        platform_connection=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "meal_logs": _SUBJECT,
     "milestones": _SUBJECT,
     "noise_markers": _SUBJECT,
@@ -224,6 +246,10 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
     ),
     "platform_settings": OwnershipSpec(
         OwnershipClass.ACCOUNT_CONTROL,
+        user_portable=False,
+    ),
+    "platform_integration_connections": OwnershipSpec(
+        OwnershipClass.PLATFORM_CONTROL,
         user_portable=False,
     ),
     "progress_photos": OwnershipSpec(
