@@ -117,9 +117,9 @@ legacy secret file/process environment. If commit fails after that environment
 write, the outcome is treated as ambiguous: the credential is cleared and an
 operator must reconcile the intended database root before re-entering it. The
 kill switch and quotas govern migrated platform consumers only—currently Weekly
-Digest and Daily Brief. Historical subject-owned OpenRouter roots remain only
-for unmigrated parser/reply consumers and readable legacy provenance until those
-invocation-ledger cutovers are complete.
+Digest, Daily Brief, and Signals parsing/recovery. Historical subject-owned
+OpenRouter roots remain only for unmigrated reply/document-parser consumers and
+readable legacy provenance until those invocation-ledger cutovers are complete.
 
 Every paid call follows `prepare/reserve -> commit -> provider I/O -> fresh
 finalize/persist`. No database lock spans OpenRouter. `AIInvocation` reserves a
@@ -254,16 +254,19 @@ Implementation progress on `commercial/main`:
   atomically finalize sanitized accounting with the artifact. Header-only
   fallback remains useful without platform capacity. Telegram, notification
   journalling, and alert bookkeeping remain separate phases so network waits hold
-  no database transaction. As a transitional Stage-2 bridge, the Signals
-  parser-outage warning still uses the exact subject OpenRouter AI-gateway
-  connection with no actor; the platform-AI cutover replaces it with a separate
-  platform gateway reference plus subject-owned invocation. Live and recovery
-  paths commit durable raw/Signal outcomes before best-effort alert bookkeeping,
-  hold no ownership transaction over the parser await, and resolve a validated
-  same-subject historical gateway after rotation. Signal composition and durable
-  outbound echo intent remain deferred. All seven conflict resolver domains read
-  within one subject and date. Curated conflict-rule activation is stored per
-  subject. The
+  no database transaction. Signals live parsing and scheduled recovery now use
+  raw-bound subject `AIInvocation` rows against the same platform gateway, with
+  three bounded attempts, exact usage accounting, keyset backlog selection that
+  scans past deterministic invalid head rows, and no subject OpenRouter
+  dependency. Live and recovery paths commit reserve and charge phases before
+  the single parser await, atomically finalize successful raw/Signal state, and
+  reconcile an actorless S-only/C-null warning afterward.
+  Fully-null historical raws may gain only S through the exact-one bridge;
+  partial graphs fail closed. Echoes link the terminal invocation and revalidate
+  concurrent edits before and after transport. Signal composition and the
+  durable outbound-intent state machine remain deferred. All seven conflict
+  resolver domains read within one subject and date. Curated conflict-rule
+  activation is stored per subject. The
   Supplements, Nutrition, Skincare, GLP-1, and Labs web/MCP write paths use an
   opaque prepared writer capability and locked target rows. Supplements replace
   one catalog row;

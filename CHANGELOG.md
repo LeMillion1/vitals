@@ -69,6 +69,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   reply delivery use prepare/network/journal phases; their existing concurrent
   outbound-claim gap remains tracked separately. Legacy subject-OpenRouter brief
   rows stay readable.
+- Telegram Signals parsing and scheduled raw recovery now use the centrally
+  funded platform gateway without requiring a subject-owned OpenRouter
+  connection. Each raw message receives up to three subject-bound invocation
+  attempts with sanitized usage accounting; reservation and charge transactions
+  close before the single bounded model call, while successful normalization and
+  terminal accounting commit atomically. Parser alerts are S-scoped with C null,
+  may reference the exact failed/ambiguous invocation, and retire legacy alerts
+  without inventing missing ownership roots. Recovery skips exhausted head rows,
+  preserves the 04:00 health-day boundary, and accepts only the exact-one
+  fully-null historical bridge. Echo delivery records the invocation and
+  revalidates Telegram edits before and after transport so a late stale echo is
+  suppressed or neutralized; the general durable outbound-intent cutover remains
+  tracked under PR-09. Keyset recovery also scans past malformed or oversized
+  immutable raws, so they remain available for audit without starving later
+  valid messages or aborting unrelated parser-alert reconciliation.
 - Browser sessions now use a strict versioned envelope while accepting existing
   signed bare-username cookies for their normal TTL. The public auth dependency
   remains compatible, and cookies contain no roles, subject IDs, grants, or PHI.

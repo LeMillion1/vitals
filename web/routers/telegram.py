@@ -27,12 +27,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
-from vitals.enums import IntegrationProvider
-from vitals.services import alerts_service
-from vitals.services.legacy_ownership import (
-    LegacyOwnershipError,
-    resolve_legacy_ownership_context,
-)
 from vitals.services.proactive import channels, inbound
 from web.config import get_web_config
 from web.deps import get_session
@@ -97,39 +91,11 @@ async def telegram_webhook(
             session,
             actor_username=get_web_config().auth_username,
         )
-        parser_alert_context = None
-        try:
-            parser_ownership = await resolve_legacy_ownership_context(
-                session,
-                actor_username=None,
-                required_connections=(IntegrationProvider.OPENROUTER,),
-            )
-        except LegacyOwnershipError:
-            # Commands, callbacks, and questions do not need the signal parser.
-            # A fact-shaped update is already durable before handle_update fails
-            # closed on the missing provider context.
-            logger.warning(
-                "signal parser ownership is unavailable for Telegram",
-                exc_info=True,
-            )
-        else:
-            if parser_ownership.subject_id != ownership.subject_id:
-                raise inbound.InboundOwnershipError(
-                    "Telegram and OpenRouter ownership subjects differ"
-                )
-            parser_alert_context = alerts_service.ProviderAlertContext(
-                identity=ownership.system_action(),
-                provider=IntegrationProvider.OPENROUTER,
-                integration_connection_id=parser_ownership.connection_id(
-                    IntegrationProvider.OPENROUTER
-                ),
-            )
         await inbound.handle_update(
             session,
             update,
             notifier=notifier,
             ownership=ownership,
-            parser_alert_context=parser_alert_context,
         )
     except inbound.DurableInboundProcessingError:
         # The complete update is already committed. A retry is now a no-op and

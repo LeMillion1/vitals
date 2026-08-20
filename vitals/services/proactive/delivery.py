@@ -37,10 +37,14 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
+    AIInvocationPurpose,
+    AIInvocationSource,
+    AIInvocationStatus,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     UserStatus,
 )
+from vitals.models.ai import AIInvocation
 from vitals.models.identity import HealthSubject, User
 from vitals.models.proactive import Notification
 from vitals.models.tenancy import IntegrationConnection
@@ -183,6 +187,7 @@ class _PreparedDelivery:
     channel: str
     ownership: ProactiveOwnershipContext | None
     actor_user_id: uuid.UUID | None
+    ai_invocation_id: uuid.UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +272,57 @@ async def _require_ownership_scope(
         raise ProactiveOwnershipScopeError(
             "inactive proactive delivery connection cannot send"
         )
+
+
+async def _require_ai_invocation_scope(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext | None,
+    category: str,
+    ai_invocation_id: uuid.UUID | None,
+) -> None:
+    if ai_invocation_id is None:
+        return
+    if not isinstance(ai_invocation_id, uuid.UUID):
+        raise TypeError("ai_invocation_id must be a UUID or None")
+    if ownership is None or category not in {CATEGORY_ECHO, CATEGORY_REPLY}:
+        raise ProactiveOwnershipScopeError(
+            "AI delivery provenance requires an owned reply or echo"
+        )
+    expected_purpose = (
+        AIInvocationPurpose.SIGNAL_PARSE
+        if category == CATEGORY_ECHO
+        else AIInvocationPurpose.QUESTION_REPLY
+    )
+    row = (
+        await session.execute(
+            select(
+                AIInvocation.subject_id,
+                AIInvocation.actor_user_id,
+                AIInvocation.purpose,
+                AIInvocation.source,
+                AIInvocation.status,
+                AIInvocation.raw_payload_id,
+            ).where(AIInvocation.id == ai_invocation_id)
+        )
+    ).one_or_none()
+    if row is None:
+        raise ProactiveOwnershipScopeError("AI delivery invocation does not exist")
+    subject_id, actor_user_id, purpose, source, status, raw_payload_id = row
+    if (
+        subject_id != ownership.subject_id
+        or actor_user_id != ownership.recipient_user_id
+        or purpose != expected_purpose.value
+        or source != AIInvocationSource.TELEGRAM.value
+        or status
+        not in {
+            AIInvocationStatus.SUCCEEDED.value,
+            AIInvocationStatus.FAILED.value,
+            AIInvocationStatus.AMBIGUOUS.value,
+        }
+        or raw_payload_id is None
+    ):
+        raise ProactiveOwnershipScopeError("AI delivery invocation provenance is invalid")
 
 
 def in_quiet_hours(
@@ -382,6 +438,7 @@ async def _prepare_delivery(
     now: Optional[datetime] = None,
     ownership: ProactiveOwnershipContext | None = None,
     actor_user_id: uuid.UUID | None = None,
+    ai_invocation_id: uuid.UUID | None = None,
 ) -> _PreparedDelivery | None:
     """Apply delivery policy without calling the transport or mutating state.
 
@@ -399,6 +456,12 @@ async def _prepare_delivery(
             ownership,
             channel=notifier.channel,
         )
+    await _require_ai_invocation_scope(
+        session,
+        ownership=ownership,
+        category=category,
+        ai_invocation_id=ai_invocation_id,
+    )
     if not await prefs.bot_enabled(
         session,
         subject_id=(ownership.subject_id if ownership is not None else None),
@@ -461,6 +524,7 @@ async def _prepare_delivery(
         channel=notifier.channel,
         ownership=ownership,
         actor_user_id=actor_user_id,
+        ai_invocation_id=ai_invocation_id,
     )
 
 
@@ -511,6 +575,12 @@ async def _journal_prepared_delivery(
             prepared.ownership,
             channel=prepared.channel,
         )
+    await _require_ai_invocation_scope(
+        session,
+        ownership=prepared.ownership,
+        category=prepared.category,
+        ai_invocation_id=prepared.ai_invocation_id,
+    )
     row = Notification(
         subject_id=(
             prepared.ownership.subject_id
@@ -533,6 +603,7 @@ async def _journal_prepared_delivery(
         dedupe_key=prepared.dedupe_key,
         channel=prepared.channel,
         external_id=external_id or None,
+        ai_invocation_id=prepared.ai_invocation_id,
         payload={
             "text": prepared.text,
             "buttons": (
@@ -559,6 +630,7 @@ async def send(
     now: Optional[datetime] = None,
     ownership: ProactiveOwnershipContext | None = None,
     actor_user_id: uuid.UUID | None = None,
+    ai_invocation_id: uuid.UUID | None = None,
 ) -> Optional[Notification]:
     """Send if allowed, and journal what was sent. ``None`` = nothing went out."""
     prepared = await _prepare_delivery(
@@ -572,6 +644,7 @@ async def send(
         now=now,
         ownership=ownership,
         actor_user_id=actor_user_id,
+        ai_invocation_id=ai_invocation_id,
     )
     if prepared is None:
         return None

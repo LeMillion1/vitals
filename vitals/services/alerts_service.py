@@ -425,6 +425,10 @@ HEALTH_ALERT_KEYS = frozenset(
         "hrt.labs_due",
         "hrt.injection_due",
         "brief_empty_day",
+        # New platform-funded parser alerts are health-subject scoped (C=NULL).
+        # The same key intentionally remains in the historical OpenRouter
+        # provider registry below so old subject-C alerts can be resolved.
+        "signal_parser_failed",
         "scheduler.job_failed:glp1_plateau",
         "scheduler.job_failed:hrt_reminders",
         "scheduler.job_failed:nutrition_day_end",
@@ -1319,6 +1323,62 @@ async def resolve_scoped_by_key(
         return None
     await _validate_row_semantics(session, row, context)
     _adopt_legacy_row(row, context, legacy_bridge)
+    _stamp_resolution(row, _actor_user_id(context))
+    await session.flush()
+    return row
+
+
+async def resolve_fully_unowned_by_key_preserving_roots(
+    session: AsyncSession,
+    *,
+    context: HealthAlertContext,
+    alert_key: str,
+    entity_ref: str = "",
+) -> SystemAlert | None:
+    """Resolve one legacy health alert without fabricating ownership roots.
+
+    This narrow migration seam is for automated cleanup of a historical row
+    whose ``S`` and ``C`` were never recorded.  Exact-one governance proves
+    which installation may retire it, but that proof does not reconstruct its
+    original subject or provider provenance.  New alerts must use the regular
+    scoped APIs.
+    """
+
+    if not isinstance(context, HealthAlertContext):
+        raise AlertValidationError("legacy root preservation requires health context")
+    _require_key(alert_key)
+    _require_entity_ref(entity_ref)
+    await _prepare_context(
+        session,
+        context=context,
+        legacy_bridge=LegacyAlertBridge.FULLY_UNOWNED,
+        fresh_provider_write=False,
+        lock_roots=True,
+    )
+    await _allowed_domains_for_key(session, context, alert_key)
+    await _acquire_alert_key_lock(session, alert_key)
+    rows = list(
+        await session.scalars(
+            select(SystemAlert)
+            .where(
+                SystemAlert.subject_id.is_(None),
+                SystemAlert.integration_connection_id.is_(None),
+                SystemAlert.alert_key == alert_key,
+                SystemAlert.entity_ref == entity_ref,
+                SystemAlert.resolved_at.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+    if len(rows) > 1:
+        raise AlertAmbiguousMatchError(
+            "multiple fully-unowned alerts share one active natural key"
+        )
+    if not rows:
+        return None
+    row = rows[0]
+    await _validate_row_semantics(session, row, context)
     _stamp_resolution(row, _actor_user_id(context))
     await session.flush()
     return row

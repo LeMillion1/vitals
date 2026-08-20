@@ -48,7 +48,7 @@ or multi-subject reads are enabled.
 | `noise_markers` | web/MCP | New rows get S+A; delete is S-scoped. |
 | `body_scans`, `body_scan_metrics` | upload confirm, structured MCP, raw reparse | Scan ownership comes from the trusted upload/raw boundary; metrics copy S from the scan. |
 | `conflict_rules` | curated catalog sync and subject toggle | Curated rows stay global. Subject activation moves to `SubjectSetting` with temporary legacy dual-write. |
-| `signals`, `day_context` | Telegram, MCP, evening plan, raw reparse | Telegram facts get S+A+Telegram C; MCP gets S+A; planned/system rows have A/C null; reparse copies raw ownership. |
+| `signals`, `day_context` | Telegram, MCP, evening plan, raw reparse | Telegram facts copy S+A+Telegram C from exact raws; platform-AI recovery copies preserved raw roots, including the exact-one S-only adopted bridge. MCP gets S+A; planned/system rows have A/C null. |
 | `garmin_daily`, `garmin_activities`, `garmin_intraday` | scheduler, on-demand sync, HAE import, raw reparse | S+Garmin C required. Human-triggered runs get A; scheduler runs do not. Intraday replacement deletes only inside S+C. |
 | `garmin_weight_exports` | Core upsert and outbox lifecycle | S matches the validated Weight subject; C is the distinct Garmin destination. Q records the human requester and stays NULL for scheduler work. Linked Weight provenance keeps its own origin C/raw roots, and lifecycle updates never erase Q. |
 | `genetic_variants` | VCF/manual/MCP | Raw-first, then S+A and raw link on interpreted variants. Upsert keys are S-scoped. |
@@ -61,11 +61,11 @@ or multi-subject reads are enabled.
 | `meal_logs` | web/MCP | S+A and existing MCP provenance. |
 | `milestones` | reports web/MCP | Create gets S+A; updates retain A; direct reads/mutations and progress inputs use the selected S. |
 | `weekly_digests` | web/MCP/schedulers/brief | S always; human generation gets A, scheduler does not. New weekly and Daily Brief narratives link to a subject-owned `AIInvocation`, set subject C null, and obtain provider/config/quota provenance from the installation-wide platform OpenRouter gateway. Failed/ambiguous/cancelled Daily Brief attempts link a model-null deterministic header to that exact invocation; platform-unavailable headers have both provider roots null. Historical subject-OpenRouter rows remain readable bridge provenance. |
-| `notifications` | proactive delivery | S + recipient user + Telegram C; explicit human test actions may get A, scheduled/reply delivery does not infer one. |
+| `notifications` | proactive delivery | S + recipient user + Telegram C; explicit human test actions may get A, scheduled/reply delivery does not infer one. AI parser echoes additionally link the exact terminal subject invocation. |
 | `shared_reports` | create/open/revoke/purge | Create gets S+creator; human revoke gets revoker. Anonymous open and scheduled purge do not mutate actor fields. |
 | `skincare_*` | web/MCP/seed scripts | Human creates get S+A; product/log updates preserve A and are S-scoped. |
 | `supplements` | web/MCP | Human creates get S+A; updates retain A and MCP retains `Source.MCP`. |
-| `system_alerts` | domain services, jobs, web/MCP lifecycle | Health alerts get S; subject-provider alerts get subject C; platform-provider alerts use a separate platform-gateway reference. Human override/resolve uses the named actor field; automatic resolution remains actorless. The scheduled `brief_empty_day` row is S-only. `signal_parser_failed` is subject-visible but references the platform OpenRouter gateway, never Telegram C. Legacy subject-C and fully-null rows remain read-only bridge provenance until backfill. |
+| `system_alerts` | domain services, jobs, web/MCP lifecycle | Health alerts get S; subject-provider alerts get subject C; platform-provider alerts use a separate platform-gateway reference. Human override/resolve uses the named actor field; automatic resolution remains actorless. The scheduled `brief_empty_day` row is S-only. New `signal_parser_failed` rows are S-only/C-null and may link the exact failed or ambiguous platform invocation. Historical subject-C and fully-null rows are resolved through explicit bridges without fabricating missing roots. |
 
 Direct MCP note updates to weight, meals, GLP-1, skincare, body measurements,
 body scans, and labs must go through owned services or perform an explicit
@@ -271,24 +271,24 @@ normalization and callback mutations recover from the durable raw update, but an
 immediate reply/echo remains best-effort: PR-09 must persist an outbound intent
 with pending/sent/ambiguous states before commercial registration can open.
 
-The live signal parser currently freezes the exact subject OpenRouter AI-gateway
-C separately from the Telegram recipient C, validates it fresh, and closes the
-raw/ownership read
-transaction before the adapter await. Recovery performs nonlocking Telegram
-validation and completes edit/classification work before each parser await, then
-revalidates the canonical S -> historical Telegram C -> raw chain before
-normalization. Durable raw/Signal terminal state commits before a fresh
-governance -> S -> OpenRouter C -> alert-key/row transaction reconciles the
-actorless `signal_parser_failed` warning. Any attempted failure or junk result in
-a recovery batch raises; otherwise a success or explicit-empty result resolves,
-including a same-subject validated historical OpenRouter C after rotation.
-Skipped non-parser raws do not change alert state. Signals composition and the
-durable outbound-intent cutover remain deferred. This subject-C contract is
-transitional: the platform-AI cutover will reserve an `AIInvocation` before the
-parser await and reconcile `signal_parser_failed` against the separate platform
-gateway. Historical-C selection still
-relies on the single global active `(alert_key, entity_ref)` slot; replacing that
-index with scoped partial uniques remains a registration blocker.
+The live signal parser and scheduled recovery now reserve a raw-bound
+`AIInvocation` against the installation-wide platform gateway. T1 locks
+governance -> S/owner -> Telegram C -> raw, freezes the exact health day and
+bounded prompt, then reserves quota; T2 freshly revalidates and charges. Both
+transactions commit before exactly one usage-aware provider call. T3 re-locks
+the roots and atomically finalizes accounting plus Signal normalization and the
+raw terminal marker. Failed or ambiguous calls retain the raw for at most three
+attempts; keyset recovery scans past exhausted, in-flight, malformed, and
+oversized head rows so later messages cannot starve. A fully-null historical raw
+may gain only S under the exact-one bridge, preserving unknown A/C/F, and partial
+or reverse ownership fails closed. New `signal_parser_failed` alerts are
+S-only/C-null, use an opaque per-S entity key, and may link the exact failed
+invocation. Historical subject-C and fully-null alerts are only resolved, never
+rewritten with invented roots.
+Parser echoes carry the invocation link and revalidate the logical Telegram
+message before and after transport; a concurrently superseded echo is suppressed
+or neutralized. A durable outbound intent and scoped replacement for the global
+active-alert unique index remain PR-09 registration blockers.
 
 The scheduled morning brief freezes its exact-S compatibility context and
 reserves platform quota, commits authorization/charge before exactly one

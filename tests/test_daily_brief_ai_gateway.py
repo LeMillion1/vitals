@@ -843,7 +843,9 @@ async def test_scheduler_uses_platform_gateway_without_subject_openrouter_root(
 
     await brief.brief_job(session_factory)
 
-    assert parser_calls == 0
+    # Signal recovery is now independently platform-funded and no longer
+    # disappears merely because the historical subject OpenRouter root is gone.
+    assert parser_calls == 1
     assert len(notifier.sent) == 1
     assert observed["calls"] == 1
     invocation = (await db_session.scalars(select(AIInvocation))).one()

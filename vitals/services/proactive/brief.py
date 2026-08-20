@@ -58,10 +58,6 @@ from vitals.models.tenancy import IntegrationConnection, PlatformIntegrationConn
 from vitals.ownership import WriteIdentity
 from vitals.services import ai_gateway_service, alerts_service, digest_service
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.legacy_ownership import (
-    LegacyOwnershipError,
-    resolve_legacy_ownership_context,
-)
 from vitals.services.proactive import compose, day_plan
 from vitals.utils.timeutils import now_local, now_utc, today_local
 
@@ -1622,42 +1618,19 @@ async def brief_job(session_factory, redis=None) -> None:
         # behind its own guard: a recovered row belongs in the lake before the
         # brief reads it, and a model that is still down must not cost the brief.
         try:
-            llm_ownership = await resolve_legacy_ownership_context(
+            recovered = await inbound.reparse_pending(
                 session,
-                actor_username=None,
-                required_connections=(IntegrationProvider.OPENROUTER,),
+                ownership=ownership,
             )
-        except LegacyOwnershipError:
+            await session.commit()
+            if recovered:
+                logger.info(
+                    "re-parsed %d stored message(s) before the brief",
+                    len(recovered),
+                )
+        except Exception:
             await session.rollback()
-            logger.info("pre-brief signal reparse skipped (code=legacy_ai_unavailable)")
-        else:
-            if llm_ownership.subject_id != ownership.subject_id:
-                await session.rollback()
-                logger.info("pre-brief signal reparse skipped (code=scope_mismatch)")
-            else:
-                try:
-                    recovered = await inbound.reparse_pending(
-                        session,
-                        ownership=ownership,
-                        parser_alert_context=alerts_service.ProviderAlertContext(
-                            identity=ownership.system_action(),
-                            provider=IntegrationProvider.OPENROUTER,
-                            integration_connection_id=llm_ownership.connection_id(
-                                IntegrationProvider.OPENROUTER
-                            ),
-                        ),
-                    )
-                    await session.commit()
-                    if recovered:
-                        logger.info(
-                            "re-parsed %d stored message(s) before the brief",
-                            len(recovered),
-                        )
-                except Exception:
-                    await session.rollback()
-                    logger.warning(
-                        "pre-brief signal reparse failed (code=internal_error)"
-                    )
+            logger.warning("pre-brief signal reparse failed (code=internal_error)")
 
         # Re-establish the exact channel/language read roots after an optional
         # legacy reparse rollback; platform Daily Brief auth is independent.

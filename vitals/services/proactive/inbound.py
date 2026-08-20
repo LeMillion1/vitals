@@ -29,14 +29,17 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import and_, or_, select, update as sql_update
+from sqlalchemy import and_, func, or_, select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
+    AIInvocationPurpose,
+    AIInvocationSource,
+    AIInvocationStatus,
     DigestKind,
     Domain,
     IntegrationConnectionStatus,
@@ -48,14 +51,20 @@ from vitals.enums import (
 )
 from vitals.i18n import t
 from vitals.integrations.llm_client import LLMClient
+from vitals.models.ai import AIInvocation
 from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import Signal
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import alerts_service, digest_service, signals_service
+from vitals.services import (
+    ai_gateway_service,
+    alerts_service,
+    digest_service,
+    signals_service,
+)
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.proactive import day_plan, delivery, prefs
+from vitals.services.proactive import day_plan, delivery, prefs, signal_ai_service
 from vitals.services.proactive.channels import Notifier
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 from vitals.utils.timeutils import now_local, to_local_naive
@@ -84,42 +93,7 @@ COMMAND_REPLY = (
 # the registry can be consolidated; the cap keeps the prompt small.
 _KNOWN_KEYS_LIMIT = 40
 
-_PARSER_SYSTEM = """\
-Ты разбираешь короткие сообщения владельца дашборда здоровья на отдельные факты.
-
-Верни JSON вида {"signals": [...]}. Каждый элемент:
-- kind: "state" | "symptom" | "exposure"
-    state — как человеку и как ему шёл день; имеет интенсивность. Это и самочувствие
-      («энергии ноль», «спать хочу»), и то, каким день был по факту:
-      «нихуя не делал, весь день за компом» → sedentary,
-      «мотался по городу весь день» → on_feet,
-      «работал допоздна» → long_work_day, «завал на работе» → workload_high,
-      «нервный день» → stress. Про день отвечают именно так — не теряй это.
-    symptom — то, что случилось и имеет тяжесть («голова раскалывается», «тошнит»)
-    exposure — то, что человек принял или сделал разово («кофе в 22», «выпил два бокала»)
-- key: короткий английский слаг (sleepiness, headache, caffeine_late, alcohol,
-  sedentary, on_feet, long_work_day, workload_high, stress)
-- value_num: для exposure — количество; для state/symptom — сила по шкале ниже.
-  Шкалу выводи ИЗ САМИХ СЛОВ, а не из темы. 3 — это «мешает», а не «я не знаю»:
-    1 — вскользь, почти незаметно («чуть-чуть клонит в сон»)
-    2 — заметно, но не мешает; смягчение («устал немного», «че-то хочу спать»,
-        «какая-то апатия» — «какой-то», «немного», «слегка», «чуть» = 2)
-    3 — голая констатация без усилителя и без смягчения («болит голова»,
-        «поругались», «устал»)
-    4 — усилитель («очень», «сильно», «весь день», «еле», «жутко»)
-    5 — предел: мат, гипербола, «не могу», «чуть не» («пиздец устал»,
-        «раскалывается», «чуть не расплакался», «вырубает»)
-  Несколько усилителей подряд не поднимают выше 5 и не опускают ниже 1.
-- unit: единица для exposure ("mg", "ml", "min"), иначе null
-- at_time: "HH:MM", если время названо или однозначно следует из фразы, иначе null
-- note: кусок исходной фразы, из которого взят этот факт
-
-Одно сообщение может дать несколько фактов — верни их все.
-События дня (болезнь, поездка, смена протокола) сюда НЕ идут — для них есть
-отдельный раздел, пропускай их.
-Если фактов нет (болтовня, вопрос, благодарность) — верни {"signals": []}.
-Ничего не выдумывай: чего нет в сообщении, того нет в ответе.\
-"""
+_PARSER_SYSTEM = signal_ai_service.PARSER_SYSTEM
 
 _REPLY_SYSTEM = """\
 Ты отвечаешь на вопрос владельца дашборда здоровья.
@@ -461,6 +435,7 @@ async def _lock_subject_root(
         select(HealthSubject)
         .where(HealthSubject.id == ownership.subject_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if subject is None:
         raise InboundOwnershipError("Telegram subject does not exist")
@@ -514,6 +489,7 @@ async def _validate_raw_root(
     *,
     ownership: ProactiveOwnershipContext,
     lock_connection: bool = True,
+    allow_subject_adopted_unowned: bool = False,
 ) -> None:
     if raw.subject_id is None:
         if not ownership.include_legacy_unowned or any(
@@ -530,6 +506,24 @@ async def _validate_raw_root(
         raise InboundOwnershipError("Telegram raw cannot reference a file asset")
     if raw.subject_id != ownership.subject_id:
         raise InboundOwnershipError("Telegram raw belongs to another subject")
+    if raw.actor_user_id is None and raw.integration_connection_id is None:
+        if not (
+            allow_subject_adopted_unowned
+            and ownership.include_legacy_unowned
+        ):
+            raise InboundOwnershipError(
+                "subject-adopted Telegram raw requires the exact-one bridge"
+            )
+        subject_ids = list(
+            await session.scalars(
+                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+            )
+        )
+        if subject_ids != [ownership.subject_id]:
+            raise InboundOwnershipError(
+                "subject-adopted Telegram raw requires exactly one subject"
+            )
+        return
     if raw.actor_user_id != ownership.recipient_user_id:
         raise InboundOwnershipError(
             "owned Telegram raw actor is not the subject owner"
@@ -992,6 +986,7 @@ async def _lock_pending_raw_for_completion(
     raw: RawPayload,
     *,
     ownership: ProactiveOwnershipContext,
+    allow_subject_adopted_unowned: bool = False,
 ) -> RawPayload:
     """Lock S -> historical C -> raw and reject a superseded stale instance."""
 
@@ -1053,6 +1048,7 @@ async def _lock_pending_raw_for_completion(
             candidate,
             ownership=ownership,
             lock_connection=False,
+            allow_subject_adopted_unowned=allow_subject_adopted_unowned,
         )
     if locked.processed_at is not None:
         raise signals_service.RawPayloadAlreadyProcessedError(
@@ -1072,12 +1068,14 @@ async def _mark_raw_processed(
     raw: RawPayload,
     *,
     ownership: ProactiveOwnershipContext,
+    allow_subject_adopted_unowned: bool = False,
 ) -> bool:
     try:
         locked = await _lock_pending_raw_for_completion(
             session,
             raw,
             ownership=ownership,
+            allow_subject_adopted_unowned=allow_subject_adopted_unowned,
         )
     except signals_service.RawPayloadAlreadyProcessedError:
         # Release the root locks; a newer edit already owns the terminal state.
@@ -1121,6 +1119,121 @@ def _is_prior_message_version(candidate: RawPayload, current: RawPayload) -> boo
     return candidate.id < current.id
 
 
+async def _signal_echo_is_current(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext,
+    raw_payload_id: int,
+    ai_invocation_id: uuid.UUID | None,
+) -> bool:
+    """Lock one logical message and reject an echo superseded by a later edit."""
+
+    if isinstance(raw_payload_id, bool) or not isinstance(raw_payload_id, int):
+        raise InboundOwnershipError("signal echo raw id is invalid")
+    if ai_invocation_id is not None and not isinstance(ai_invocation_id, uuid.UUID):
+        raise InboundOwnershipError("signal echo invocation id is invalid")
+    await acquire_identity_governance_lock(session)
+    await _lock_subject_root(session, ownership=ownership)
+    raw = await session.scalar(
+        select(RawPayload)
+        .where(RawPayload.id == raw_payload_id)
+        .execution_options(populate_existing=True)
+    )
+    if raw is None:
+        raise InboundOwnershipError("signal echo raw does not exist")
+    candidates = list(
+        await session.scalars(
+            select(RawPayload)
+            .where(
+                _owned_or_legacy_raw_scope(ownership),
+                RawPayload.domain == DOMAIN,
+                RawPayload.source == SOURCE,
+            )
+            .order_by(RawPayload.id)
+        )
+    )
+    versions = _same_message_versions(raw, candidates)
+    connection_ids = sorted(
+        {
+            candidate.integration_connection_id
+            for candidate in [raw, *versions]
+            if candidate.integration_connection_id is not None
+        }
+        | {ownership.connection_id},
+        key=str,
+    )
+    for connection_id in connection_ids:
+        await _load_telegram_connection(
+            session,
+            connection_id=connection_id,
+            subject_id=ownership.subject_id,
+            allow_historical=connection_id != ownership.connection_id,
+        )
+    locked = list(
+        await session.scalars(
+            select(RawPayload)
+            .where(RawPayload.id.in_({raw.id, *(row.id for row in versions)}))
+            .order_by(RawPayload.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+    current = next((row for row in locked if row.id == raw.id), None)
+    if current is None:
+        raise InboundOwnershipError("signal echo raw disappeared")
+    for candidate in locked:
+        await _validate_raw_root(
+            session,
+            candidate,
+            ownership=ownership,
+            lock_connection=False,
+            allow_subject_adopted_unowned=True,
+        )
+    if any(_is_prior_message_version(current, row) for row in locked):
+        return False
+    if ai_invocation_id is not None:
+        invocation = (
+            await session.execute(
+                select(
+                    AIInvocation.subject_id,
+                    AIInvocation.actor_user_id,
+                    AIInvocation.raw_payload_id,
+                    AIInvocation.purpose,
+                    AIInvocation.source,
+                    AIInvocation.status,
+                ).where(AIInvocation.id == ai_invocation_id)
+            )
+        ).one_or_none()
+        if invocation is None:
+            raise InboundOwnershipError("signal echo invocation does not exist")
+        subject_id, actor_id, linked_raw_id, purpose, source, status = invocation
+        if (
+            subject_id != ownership.subject_id
+            or actor_id != ownership.recipient_user_id
+            or linked_raw_id != raw_payload_id
+            or purpose != AIInvocationPurpose.SIGNAL_PARSE.value
+            or source != AIInvocationSource.TELEGRAM.value
+            or status
+            not in {
+                AIInvocationStatus.SUCCEEDED.value,
+                AIInvocationStatus.FAILED.value,
+                AIInvocationStatus.AMBIGUOUS.value,
+            }
+        ):
+            raise InboundOwnershipError("signal echo invocation provenance is invalid")
+        if status != AIInvocationStatus.SUCCEEDED.value and current.processed_at is not None:
+            return False
+    elif current.processed_at is not None:
+        return False
+    stale_fact = await session.scalar(
+        select(Signal.id).where(
+            Signal.raw_id == raw_payload_id,
+            Signal.misparse.is_(True),
+        ).limit(1)
+    )
+    return stale_fact is None
+
+
 def _same_message_versions(
     raw: RawPayload,
     candidates: list[RawPayload],
@@ -1140,6 +1253,7 @@ async def _supersede_edited_message(
     raw: RawPayload,
     *,
     ownership: ProactiveOwnershipContext,
+    allow_subject_adopted_unowned: bool = False,
 ) -> int:
     """Deactivate facts from earlier versions of the same Telegram message."""
 
@@ -1206,6 +1320,7 @@ async def _supersede_edited_message(
             candidate,
             ownership=ownership,
             lock_connection=False,
+            allow_subject_adopted_unowned=allow_subject_adopted_unowned,
         )
     if current.processed_at is not None or later:
         # A later edit already superseded this version while it was waiting, or
@@ -1378,10 +1493,181 @@ async def handle_text(
         )
         return
 
-    if parse is None and ownership is not None and parser_alert_context is None:
-        raise InboundOwnershipError(
-            "production signal parsing requires an OpenRouter alert context"
+    if parse is None and ownership is not None:
+        if raw is None:
+            raw = await signals_service.store_raw_text(
+                session,
+                text=text,
+                external_id=external_id,
+                source=SOURCE,
+                identity=owner_identity,
+                integration_connection_id=connection_id,
+            )
+        # Classification/raw reads above intentionally precede AI authorization.
+        # Close them so T1 begins with governance -> S -> owner -> C -> raw.
+        await session.commit()
+        prepared_parse = await signal_ai_service.prepare_live_signal_parse(
+            session,
+            ownership=ownership,
+            raw_payload_id=raw.id,
+            on_date=on_date or conversation_day(),
         )
+        await session.commit()
+        parse_result: signal_ai_service.SignalParseResult
+        if prepared_parse.fallback is signal_ai_service.SignalParseFallback.ALREADY_PROCESSED:
+            return
+        if prepared_parse.dispatchable:
+            try:
+                lease = await signal_ai_service.start_signal_dispatch(
+                    session,
+                    prepared_parse,
+                )
+                await session.commit()
+            except ai_gateway_service.AIGatewayConfigurationError:
+                await session.rollback()
+                try:
+                    await signal_ai_service.cancel_prepared_signal_parse(
+                        session,
+                        prepared_parse,
+                    )
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                parse_result = signal_ai_service.SignalParseResult(
+                    invocation_id=None,
+                    status=None,
+                    processed=False,
+                    stale=False,
+                    fallback=signal_ai_service.SignalParseFallback.NOT_CONFIGURED,
+                )
+            else:
+                completion = await signal_ai_service.render_signal_parse(
+                    prepared_parse,
+                    lease,
+                )
+                parse_result = await signal_ai_service.persist_signal_parse(
+                    session,
+                    prepared_parse,
+                    completion,
+                )
+                await session.commit()
+        else:
+            parse_result = signal_ai_service.SignalParseResult(
+                invocation_id=prepared_parse.invocation_id,
+                status=prepared_parse.reservation_status,
+                processed=False,
+                stale=False,
+                fallback=prepared_parse.fallback,
+            )
+        try:
+            await signal_ai_service.reconcile_signal_parser_alert(
+                session,
+                ownership=ownership,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            logger.warning(
+                "could not reconcile the platform signal-parser alert",
+                exc_info=True,
+            )
+        if parse_result.stale:
+            return
+        if not parse_result.processed:
+            echo_text = "Сохранил как есть — разобрать не смог. Посмотрю позже."
+            buttons = None
+        elif not parse_result.signals:
+            echo_text = (
+                "Записал. Фактов для графиков тут не нашёл — "
+                "если что-то важное, скажи прямо."
+            )
+            buttons = None
+        else:
+            echo_text = render_echo(parse_result.signals)
+            buttons = [
+                ("не то", f"{CB_MISPARSE}{parse_result.signals[0].batch_id}")
+            ]
+        terminal_invocation_id = (
+            parse_result.invocation_id
+            if parse_result.status
+            in {
+                AIInvocationStatus.SUCCEEDED,
+                AIInvocationStatus.FAILED,
+                AIInvocationStatus.AMBIGUOUS,
+            }
+            else None
+        )
+        if not await _signal_echo_is_current(
+            session,
+            ownership=ownership,
+            raw_payload_id=prepared_parse.raw_payload_id,
+            ai_invocation_id=terminal_invocation_id,
+        ):
+            await session.commit()
+            return
+        prepared_delivery = await delivery._prepare_delivery(
+            session,
+            notifier,
+            text=echo_text,
+            category=delivery.CATEGORY_ECHO,
+            buttons=buttons,
+            reply_to=str(message_id) if message_id else None,
+            ownership=ownership,
+            ai_invocation_id=terminal_invocation_id,
+        )
+        await session.commit()
+        if prepared_delivery is None:
+            return
+        assert notifier is not None
+        delivered = await delivery._transmit_prepared_delivery(
+            notifier,
+            prepared_delivery,
+        )
+        if delivered is None:
+            return
+        journal_delivery = prepared_delivery
+        try:
+            still_current = await _signal_echo_is_current(
+                session,
+                ownership=ownership,
+                raw_payload_id=prepared_parse.raw_payload_id,
+                ai_invocation_id=terminal_invocation_id,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            still_current = False
+            logger.warning(
+                "could not revalidate a delivered signal echo",
+                exc_info=True,
+            )
+        if not still_current:
+            replacement_text = t("telegram.signal_echo_superseded")
+            try:
+                await notifier.edit(
+                    delivered.external_id,
+                    replacement_text,
+                    buttons=None,
+                )
+            except Exception:
+                logger.warning(
+                    "could not neutralize a superseded signal echo",
+                    exc_info=True,
+                )
+            else:
+                journal_delivery = replace(
+                    prepared_delivery,
+                    text=replacement_text,
+                    buttons=None,
+                )
+        await delivery._journal_prepared_delivery(
+            session,
+            journal_delivery,
+            external_id=delivered.external_id,
+        )
+        await session.commit()
+        return
+
     parser = parse
     if parser is None:
         parser = make_signal_parser(
@@ -1671,13 +1957,34 @@ async def _replay_pending_callbacks(
         RawPayload.domain == DOMAIN,
         RawPayload.source == SOURCE,
         RawPayload.processed_at.is_(None),
+        or_(
+            RawPayload.payload["callback_query"].as_string().is_not(None),
+            RawPayload.payload["data"].as_string().is_not(None),
+        ),
     )
     recovered = 0
     last_id = 0
+    high_water_id = await session.scalar(
+        select(func.max(RawPayload.id)).where(
+            _owned_or_legacy_raw_scope(ownership),
+            RawPayload.domain == DOMAIN,
+            RawPayload.source == SOURCE,
+            RawPayload.processed_at.is_(None),
+            or_(
+                RawPayload.payload["callback_query"].as_string().is_not(None),
+                RawPayload.payload["data"].as_string().is_not(None),
+            ),
+        )
+    )
     while recovered < signals_service.REPARSE_BATCH:
+        if high_water_id is None:
+            break
         page = list(
             await session.scalars(
-                base.where(RawPayload.id > last_id)
+                base.where(
+                    RawPayload.id > last_id,
+                    RawPayload.id <= high_water_id,
+                )
                 .order_by(RawPayload.id)
                 .limit(signals_service.REPARSE_BATCH)
             )
@@ -1740,6 +2047,164 @@ async def _replay_pending_callbacks(
     return recovered
 
 
+async def _reparse_pending_platform(
+    session: AsyncSession,
+    *,
+    ownership: ProactiveOwnershipContext,
+) -> list[Signal]:
+    """Recover bounded pending Telegram facts through the platform AI gateway."""
+
+    await _replay_pending_callbacks(session, ownership=ownership)
+    made: list[Signal] = []
+    attempted = 0
+    after_id: int | None = None
+    high_water_id = await signal_ai_service.signal_recovery_high_water_id(
+        session,
+        ownership=ownership,
+    )
+    await session.commit()
+    while (
+        high_water_id is not None
+        and attempted < signals_service.REPARSE_BATCH
+    ):
+        candidate_ids = await signal_ai_service.pending_signal_recovery_ids(
+            session,
+            ownership=ownership,
+            limit=signals_service.REPARSE_BATCH,
+            after_id=after_id,
+            through_id=high_water_id,
+        )
+        # Candidate discovery is deliberately unlocked. Each raw begins again
+        # with governance and authoritative root locks below.
+        await session.commit()
+        if not candidate_ids:
+            break
+        after_id = candidate_ids[-1]
+        for raw_id in candidate_ids:
+            try:
+                await acquire_identity_governance_lock(session)
+                await _lock_subject_root(session, ownership=ownership)
+                raw = await session.scalar(
+                    select(RawPayload)
+                    .where(RawPayload.id == raw_id)
+                    .execution_options(populate_existing=True)
+                )
+                if raw is None:
+                    await session.rollback()
+                    continue
+                raw = await _lock_pending_raw_for_completion(
+                    session,
+                    raw,
+                    ownership=ownership,
+                    allow_subject_adopted_unowned=True,
+                )
+                await _supersede_edited_message(
+                    session,
+                    raw,
+                    ownership=ownership,
+                    allow_subject_adopted_unowned=True,
+                )
+                try:
+                    signal_ai_service.validate_signal_raw_input(raw)
+                except signal_ai_service.SignalAIValidationError:
+                    raw.processed_at = now_local()
+                    await session.flush()
+                    await session.commit()
+                    attempted += 1
+                    continue
+                if not await _raw_text_is_signal_candidate(
+                    session,
+                    raw,
+                    ownership=ownership,
+                ):
+                    await _mark_raw_processed(
+                        session,
+                        raw,
+                        ownership=ownership,
+                        allow_subject_adopted_unowned=True,
+                    )
+                    await session.commit()
+                    attempted += 1
+                    continue
+                attempted += 1
+                await session.commit()
+
+                prepared = await signal_ai_service.prepare_signal_recovery(
+                    session,
+                    ownership=ownership,
+                    raw_payload_id=raw_id,
+                )
+                await session.commit()
+                if not prepared.dispatchable:
+                    if (
+                        prepared.fallback
+                        is signal_ai_service.SignalParseFallback.INPUT_TOO_LARGE
+                    ):
+                        current = await session.get(RawPayload, raw_id)
+                        if current is not None:
+                            await _mark_raw_processed(
+                                session,
+                                current,
+                                ownership=ownership,
+                                allow_subject_adopted_unowned=True,
+                            )
+                    continue
+                try:
+                    lease = await signal_ai_service.start_signal_dispatch(
+                        session,
+                        prepared,
+                    )
+                    await session.commit()
+                except ai_gateway_service.AIGatewayConfigurationError:
+                    await session.rollback()
+                    try:
+                        await signal_ai_service.cancel_prepared_signal_parse(
+                            session,
+                            prepared,
+                        )
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                    continue
+                completion = await signal_ai_service.render_signal_parse(
+                    prepared,
+                    lease,
+                )
+                result = await signal_ai_service.persist_signal_parse(
+                    session,
+                    prepared,
+                    completion,
+                )
+                await session.commit()
+                made.extend(result.signals)
+            except signals_service.RawPayloadAlreadyProcessedError:
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logger.warning(
+                    "platform signal recovery failed for raw %s",
+                    raw_id,
+                    exc_info=True,
+                )
+            if attempted >= signals_service.REPARSE_BATCH:
+                break
+        if len(candidate_ids) < signals_service.REPARSE_BATCH:
+            break
+    try:
+        await signal_ai_service.reconcile_signal_parser_alert(
+            session,
+            ownership=ownership,
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.warning(
+            "could not reconcile the platform signal-parser alert",
+            exc_info=True,
+        )
+    return made
+
+
 async def reparse_pending(
     session: AsyncSession,
     *,
@@ -1753,6 +2218,11 @@ async def reparse_pending(
     morning-brief job rather than from a schedule of its own, so a recovered row
     is in the lake *before* the brief reads it.
     """
+    if ownership is not None and parse is None:
+        return await _reparse_pending_platform(
+            session,
+            ownership=ownership,
+        )
     if ownership is not None:
         await _replay_pending_callbacks(session, ownership=ownership)
     if parse is None and ownership is not None and parser_alert_context is None:

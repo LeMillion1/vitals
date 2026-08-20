@@ -5,17 +5,23 @@ accepts a forged call, a retry that logs the same evening twice, a budget that
 counts replies and quietly gags the bot mid-conversation — none of those show up
 as an error anywhere, so each gets a test.
 """
+import uuid
+import inspect
 from datetime import date, datetime
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
+from vitals.enums import IntegrationConnectionStatus, IntegrationConnectionType, IntegrationProvider
+from vitals.integrations.llm_client import LLMCallResult
+from vitals.models.ai import AIInvocation, AIPlatformQuotaPeriod, AISubjectQuotaPeriod
 from vitals.models.proactive import Notification
 from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import Signal
 from vitals.services import signals_service
-from vitals.services.proactive import day_plan, delivery, inbound
+from vitals.models.tenancy import PlatformIntegrationConnection
+from vitals.services.proactive import day_plan, delivery, inbound, signal_ai_service
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
 # owner flips in Settings, and it defaults off.
@@ -68,15 +74,47 @@ def bot_env(monkeypatch):
     monkeypatch.setenv("VITALS_TELEGRAM_CHAT_ID", CHAT_ID)
     monkeypatch.setenv("VITALS_TELEGRAM_WEBHOOK_PATH", WEBHOOK_PATH)
     monkeypatch.setenv("VITALS_TELEGRAM_WEBHOOK_SECRET", WEBHOOK_SECRET)
+    monkeypatch.setenv("VITALS_OPENROUTER_API_KEY", "synthetic-platform-key")
 
 
 @pytest_asyncio.fixture
-async def bot_client(client, bot_env, legacy_owner_roots):
+async def bot_client(client, bot_env, legacy_owner_roots, db_session):
     """Anonymous webhook client with owner roots and a fake delivery channel."""
     from web.main import app
     from web.routers.telegram import get_notifier
 
     fake = FakeNotifier()
+    db_session.add(
+        PlatformIntegrationConnection(
+            provider=IntegrationProvider.OPENROUTER.value,
+            connection_type=IntegrationConnectionType.AI_GATEWAY.value,
+            external_account_discriminator=f"test:{uuid.uuid4().hex}",
+            credential_ref="env:VITALS_OPENROUTER_API_KEY",
+            status=IntegrationConnectionStatus.ACTIVE.value,
+            config_version=1,
+            configured_by_user_id=legacy_owner_roots.user_id,
+        )
+    )
+    db_session.add_all(
+        [
+            AIPlatformQuotaPeriod(
+                period_start=date(2020, 1, 1),
+                period_end=date(2035, 1, 1),
+                cost_limit_microunits=100_000_000,
+                unit_limit=10_000_000,
+                configured_by_user_id=legacy_owner_roots.user_id,
+            ),
+            AISubjectQuotaPeriod(
+                subject_id=legacy_owner_roots.subject_id,
+                period_start=date(2020, 1, 1),
+                period_end=date(2035, 1, 1),
+                cost_limit_microunits=100_000_000,
+                unit_limit=10_000_000,
+                configured_by_user_id=legacy_owner_roots.user_id,
+            ),
+        ]
+    )
+    await db_session.commit()
     app.dependency_overrides[get_notifier] = lambda: fake
     yield client, fake
 
@@ -84,14 +122,36 @@ async def bot_client(client, bot_env, legacy_owner_roots):
 @pytest.fixture
 def parses_to(monkeypatch):
     """Pin what the "LLM" returns for any message; no network, no key."""
-    items: list[dict] = []
+    response = [lambda _text: []]
 
     def _set(new_items):
-        items[:] = new_items
+        if callable(new_items):
+            response[0] = new_items
+        else:
+            frozen = list(new_items)
+            response[0] = lambda _text: list(frozen)
 
-    monkeypatch.setattr(
-        inbound, "make_signal_parser", lambda known=None: (lambda _text: list(items))
-    )
+    class _FakeSignalLLM:
+        def __init__(self, _config):
+            pass
+
+        async def extract_json_with_usage(
+            self, text, *, model, system, max_tokens
+        ):
+            del system, max_tokens
+            value = response[0](text)
+            if inspect.isawaitable(value):
+                value = await value
+            return LLMCallResult(
+                value={"signals": list(value)},
+                upstream_request_id="signal-test-request",
+                model=model,
+                input_tokens=10,
+                output_tokens=10,
+                cost_microunits=10,
+            )
+
+    monkeypatch.setattr(signal_ai_service, "LLMClient", _FakeSignalLLM)
     return _set
 
 
@@ -355,6 +415,59 @@ async def test_text_becomes_signals_plus_an_echo_with_an_undo_button(
         ownership.recipient_user_id,
         ownership.connection_id,
     )
+    invocation = (await db_session.scalars(select(AIInvocation))).one()
+    assert journal[0].ai_invocation_id == invocation.id
+
+
+async def test_concurrent_edit_neutralizes_an_already_sent_stale_echo(
+    bot_client,
+    parses_to,
+    db_session,
+):
+    c, fake = bot_client
+    parses_to(
+        [{"kind": "symptom", "key": "headache", "value_num": 4}]
+    )
+    original_send = fake.send
+
+    async def send_then_edit_arrives(text, *, buttons=None, reply_to=None):
+        external_id = await original_send(
+            text,
+            buttons=buttons,
+            reply_to=reply_to,
+        )
+        ownership = await _telegram_ownership(db_session)
+        edited = _edited_text_update(2, "спать хочу", message_id=5)
+        db_session.add(
+            RawPayload(
+                subject_id=ownership.subject_id,
+                actor_user_id=ownership.recipient_user_id,
+                integration_connection_id=ownership.connection_id,
+                domain="signals",
+                source="telegram",
+                external_id="tg:2",
+                payload=edited,
+            )
+        )
+        await db_session.commit()
+        return external_id
+
+    fake.send = send_then_edit_arrives
+    response = await c.post(
+        f"/tg/{WEBHOOK_PATH}",
+        json=_text_update(1, "голова болит", message_id=5),
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert len(fake.sent) == 1
+    assert len(fake.edits) == 1
+    assert fake.edits[0]["message_id"] == str(fake.sent[0]["id"])
+    assert "последнюю версию" in fake.edits[0]["text"]
+    journal = (await db_session.scalars(select(Notification))).one()
+    assert "последнюю версию" in journal.payload["text"]
+    rows = list(await db_session.scalars(select(Signal)))
+    assert len(rows) == 1 and rows[0].misparse is False
 
 
 async def test_raw_capture_preserves_complete_message_reply_and_timestamps(
@@ -537,7 +650,7 @@ async def test_callback_gate_failure_after_claim_keeps_pending_raw_for_replay(
 
 
 async def test_a_dead_parser_raises_an_alert_that_clears_on_recovery(
-    bot_client, db_session, monkeypatch
+    bot_client, db_session, parses_to
 ):
     """No key, no balance, upstream down — swallowed whole, a week of that is
     indistinguishable from a week of messages that held no facts. And once the
@@ -548,37 +661,30 @@ async def test_a_dead_parser_raises_an_alert_that_clears_on_recovery(
     c, fake = bot_client
     parser_tx_states: list[bool] = []
 
-    def _boom(known=None):
-        async def _parse(_text):
-            parser_tx_states.append(db_session.in_transaction())
-            raise RuntimeError("upstream down")
+    async def _boom(_text):
+        parser_tx_states.append(db_session.in_transaction())
+        raise RuntimeError("upstream down")
 
-        return _parse
-
-    monkeypatch.setattr(inbound, "make_signal_parser", _boom)
+    parses_to(_boom)
 
     await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "башка трещит"), headers=HEADERS)
     await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(2, "спать хочу"), headers=HEADERS)
 
-    alerts = (await db_session.execute(select(SystemAlert))).scalars().all()
+    alerts = (
+        await db_session.execute(
+            select(SystemAlert).where(SystemAlert.resolved_at.is_(None))
+        )
+    ).scalars().all()
     assert len(alerts) == 1, "one open alert while it's down, not one per message"
     assert alerts[0].alert_key == signals_service.PARSER_FAILED_ALERT_KEY
     assert alerts[0].severity == "warn"
-    from vitals.enums import IntegrationProvider
-    from vitals.models.tenancy import IntegrationConnection
-
-    openrouter = await db_session.scalar(
-        select(IntegrationConnection).where(
-            IntegrationConnection.provider == IntegrationProvider.OPENROUTER.value
-        )
-    )
-    assert openrouter is not None
     assert (
         alerts[0].subject_id,
         alerts[0].integration_connection_id,
+        alerts[0].ai_invocation_id is not None,
         alerts[0].overridden_by_user_id,
         alerts[0].resolved_by_user_id,
-    ) == (openrouter.subject_id, openrouter.id, None, None)
+    ) == (alerts[0].subject_id, None, True, None, None)
     assert parser_tx_states == [False, False]
     # The message still survives: raw first, parse second.
     assert (await db_session.execute(
@@ -586,15 +692,15 @@ async def test_a_dead_parser_raises_an_alert_that_clears_on_recovery(
     )).scalars().first() is not None
 
     # The parser recovers → the alert must not linger as a stale warning forever.
-    def _recovered(known=None):
-        async def _parse(_text):
-            parser_tx_states.append(db_session.in_transaction())
-            return [{"kind": "state", "key": "sleepiness", "value_num": 5}]
+    async def _recovered(_text):
+        parser_tx_states.append(db_session.in_transaction())
+        return [{"kind": "state", "key": "sleepiness", "value_num": 5}]
 
-        return _parse
-
-    monkeypatch.setattr(inbound, "make_signal_parser", _recovered)
-    await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(3, "спать хочу"), headers=HEADERS)
+    parses_to(_recovered)
+    ownership = await _telegram_ownership(db_session)
+    await db_session.commit()
+    recovered = await inbound.reparse_pending(db_session, ownership=ownership)
+    assert [row.key for row in recovered] == ["sleepiness"]
 
     active = (await db_session.execute(
         select(SystemAlert).where(SystemAlert.resolved_at.is_(None))
@@ -633,16 +739,16 @@ async def test_repeated_update_id_is_not_processed_twice(bot_client, parses_to, 
 
 async def test_edited_message_supersedes_prior_facts_but_keeps_history(
     bot_client,
+    parses_to,
     db_session,
-    monkeypatch,
 ):
     c, _ = bot_client
 
-    async def _parse(text):
+    def _parse(text):
         key = "headache" if "голова" in text else "sleepiness"
         return [{"kind": "symptom", "key": key, "value_num": 3, "note": text}]
 
-    monkeypatch.setattr(inbound, "make_signal_parser", lambda known=None: _parse)
+    parses_to(_parse)
     await c.post(
         f"/tg/{WEBHOOK_PATH}",
         json=_text_update(81, "голова болит", message_id=55),
@@ -700,19 +806,19 @@ async def test_edit_into_command_or_question_still_supersedes_prior_fact(
 
 async def test_edit_keeps_original_message_health_day_across_rollover(
     bot_client,
+    parses_to,
     db_session,
-    monkeypatch,
 ):
     from datetime import timezone
     from freezegun import freeze_time
 
     c, _ = bot_client
 
-    async def _parse(text):
+    def _parse(text):
         key = "headache" if "голова" in text else "sleepiness"
         return [{"kind": "symptom", "key": key, "value_num": 3}]
 
-    monkeypatch.setattr(inbound, "make_signal_parser", lambda known=None: _parse)
+    parses_to(_parse)
     original_timestamp = int(
         datetime(2026, 7, 26, 20, 30, tzinfo=timezone.utc).timestamp()
     )

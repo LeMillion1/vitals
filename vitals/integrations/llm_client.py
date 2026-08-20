@@ -264,6 +264,7 @@ class LLMClient:
         image_url: Optional[str] = None,
         image_urls: Optional[list[str]] = None,
         temperature: float = 0.0,
+        max_tokens: Optional[int] = None,
     ) -> dict:
         """Structured extraction → parsed JSON dict. Pass ``image_url`` (a data: or
         https: URL) or ``image_urls`` (a list of data: or https: URLs) to send lab
@@ -276,6 +277,7 @@ class LLMClient:
             image_url=image_url,
             image_urls=image_urls,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
         return result.value
 
@@ -288,6 +290,7 @@ class LLMClient:
         image_url: Optional[str] = None,
         image_urls: Optional[list[str]] = None,
         temperature: float = 0.0,
+        max_tokens: Optional[int] = None,
     ) -> LLMCallResult[dict]:
         """Structured extraction plus bounded provider accounting metadata."""
 
@@ -317,6 +320,7 @@ class LLMClient:
             messages=messages,
             temperature=temperature,
             response_format={"type": "json_object"},
+            max_tokens=max_tokens,
         )
         raw = (resp.choices[0].message.content or "").strip()
         try:

@@ -223,6 +223,7 @@ async def _require_raw_ownership_scope(
     session: AsyncSession,
     *,
     raw: RawPayload,
+    allow_subject_adopted_unowned: bool = False,
 ) -> None:
     """Validate an owned channel raw root before copying its provenance.
 
@@ -242,6 +243,10 @@ async def _require_raw_ownership_scope(
         ):
             raise SignalOwnershipError("raw payload has partial ownership roots")
         return
+    if not isinstance(allow_subject_adopted_unowned, bool):
+        raise SignalOwnershipError(
+            "allow_subject_adopted_unowned must be a boolean"
+        )
     if raw.file_asset_id is not None:
         raise SignalOwnershipError(
             "owned channel raw payload cannot reference a file asset"
@@ -253,6 +258,16 @@ async def _require_raw_ownership_scope(
     )
     if owner_user_id is None:
         raise SignalOwnershipError("raw payload subject does not exist")
+    if raw.actor_user_id is None and raw.integration_connection_id is None:
+        if allow_subject_adopted_unowned:
+            await _require_single_subject_adoption(
+                session,
+                subject_id=raw.subject_id,
+            )
+            return
+        raise SignalOwnershipError(
+            "subject-adopted legacy raw requires an explicit bridge"
+        )
     if raw.actor_user_id != owner_user_id:
         raise SignalOwnershipError(
             "owned channel raw payload actor is not the subject owner"
@@ -546,11 +561,16 @@ async def create_signals(
     identity: WriteIdentity | None = None,
     integration_connection_id: uuid.UUID | None = None,
     allow_historical_connection: bool = False,
+    allow_subject_adopted_unowned: bool = False,
 ) -> list[Signal]:
     """Persist a parsed batch. Every row of one message shares a ``batch_id``."""
     _validate_identity(identity, integration_connection_id)
     if not isinstance(allow_historical_connection, bool):
         raise SignalOwnershipError("allow_historical_connection must be a bool")
+    if not isinstance(allow_subject_adopted_unowned, bool):
+        raise SignalOwnershipError(
+            "allow_subject_adopted_unowned must be a bool"
+        )
     if identity is not None and integration_connection_id is not None:
         await _require_connection_scope(
             session,
@@ -568,7 +588,11 @@ async def create_signals(
         )
         if raw is None:
             raise SignalOwnershipError("raw payload does not exist")
-        await _require_raw_ownership_scope(session, raw=raw)
+        await _require_raw_ownership_scope(
+            session,
+            raw=raw,
+            allow_subject_adopted_unowned=allow_subject_adopted_unowned,
+        )
         if identity is not None and raw.subject_id != identity.subject_id:
             raise SignalOwnershipError("raw payload belongs to another subject")
         if (
