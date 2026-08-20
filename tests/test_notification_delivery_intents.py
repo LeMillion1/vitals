@@ -40,6 +40,10 @@ DST_POLICY_AT = datetime(
 UPGRADE_REFUSAL = (
     "0043 upgrade refused: keyed notifications contain partial ownership roots"
 )
+UPGRADE_DELIVERY_ROOT_REFUSAL = (
+    "0043 upgrade refused: keyed owned notifications contain mismatched "
+    "delivery roots"
+)
 DOWNGRADE_REFUSALS = {
     "intent": (
         "0043 downgrade refused: notification delivery intents contain durable state"
@@ -300,6 +304,9 @@ def test_notification_link_and_dedupe_roots_are_exact():
     }
     assert "ck_notifications_delivery_intent_scope" in checks
     assert "ck_notifications_dedupe_root_shape" in checks
+    intent_scope = checks["ck_notifications_delivery_intent_scope"]
+    assert "external_id IS NOT NULL" in intent_scope
+    assert "length(trim(external_id)) > 0" in intent_scope
     root_shape = checks["ck_notifications_dedupe_root_shape"]
     assert "dedupe_key IS NULL" in root_shape
     assert "subject_id IS NOT NULL" in root_shape
@@ -310,6 +317,7 @@ def test_notification_link_and_dedupe_roots_are_exact():
 
     indexes = {index.name: index for index in table.indexes}
     assert "uq_notification_dedupe_key" not in indexes
+    assert "ix_notifications_delivery_intent_id" not in indexes
     for name, columns in {
         "uq_notifications_owned_dedupe_key": (
             "subject_id",
@@ -428,6 +436,7 @@ async def test_notification_link_rejects_mismatched_transport_graph(
         category=intent.category,
         channel=intent.channel,
         dedupe_key="f" * 64,
+        external_id="101",
         payload={"synthetic": True},
     )
     db_session.add(row)
@@ -469,12 +478,49 @@ async def test_notification_link_accepts_exact_sent_transport_graph(
         category=intent.category,
         channel=intent.channel,
         dedupe_key=intent.idempotency_key,
+        external_id="101",
         payload={"synthetic": True},
     )
     db_session.add(row)
     await db_session.commit()
 
     assert row.delivery_intent_id == intent.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("external_id", (None, "", "   "))
+async def test_notification_link_requires_nonblank_provider_message_id(
+    db_session,
+    legacy_owner_roots,
+    external_id,
+):
+    if db_session.get_bind().dialect.name == "sqlite":
+        await db_session.execute(sa.text("PRAGMA foreign_keys=ON"))
+    connection_id = await _telegram_connection_id(
+        db_session, legacy_owner_roots.subject_id
+    )
+    intent = _intent(legacy_owner_roots, connection_id)
+    db_session.add(intent)
+    await db_session.commit()
+
+    db_session.add(
+        Notification(
+            delivery_intent_id=intent.id,
+            subject_id=intent.subject_id,
+            actor_user_id=intent.actor_user_id,
+            recipient_user_id=intent.recipient_user_id,
+            integration_connection_id=intent.integration_connection_id,
+            sent_at=NOW,
+            category=intent.category,
+            channel=intent.channel,
+            dedupe_key=intent.idempotency_key,
+            external_id=external_id,
+            payload={"synthetic": True},
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
 
 
 @pytest.mark.asyncio
@@ -510,12 +556,19 @@ def _pre_0043_schema(connection) -> None:
         "health_subjects",
         metadata,
         sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("owner_user_id", sa.Uuid(), nullable=False),
+        sa.UniqueConstraint(
+            "owner_user_id",
+            name="uq_health_subjects_owner_user_id",
+        ),
     )
     sa.Table(
         "integration_connections",
         metadata,
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("subject_id", sa.Uuid(), nullable=False),
+        sa.Column("provider", sa.String(32), nullable=False),
+        sa.Column("connection_type", sa.String(32), nullable=False),
         sa.UniqueConstraint(
             "id",
             "subject_id",
@@ -673,17 +726,24 @@ def _assert_migrated_contract(connection) -> None:
         item["name"] for item in inspector.get_indexes("notifications")
     }
     assert "uq_notification_dedupe_key" not in notification_indexes
+    assert "ix_notifications_delivery_intent_id" not in notification_indexes
     assert notification_indexes >= {
-        "ix_notifications_delivery_intent_id",
         "uq_notifications_owned_dedupe_key",
         "uq_notifications_legacy_dedupe_key",
     }
-    assert {
-        item["name"] for item in inspector.get_check_constraints("notifications")
-    } >= {
+    notification_checks = {
+        item["name"]: item["sqltext"]
+        for item in inspector.get_check_constraints("notifications")
+    }
+    assert set(notification_checks) >= {
         "ck_notifications_delivery_intent_scope",
         "ck_notifications_dedupe_root_shape",
     }
+    intent_scope = notification_checks["ck_notifications_delivery_intent_scope"]
+    normalized_intent_scope = intent_scope.lower()
+    assert "external_id is not null" in normalized_intent_scope
+    assert "length(trim(" in normalized_intent_scope
+    assert "> 0" in normalized_intent_scope
     notification_foreign_keys = {
         item["name"]: item
         for item in inspector.get_foreign_keys("notifications")
@@ -730,12 +790,17 @@ def _seed_migration_intent_roots(connection):
         [{"id": recipient_id}, {"id": actor_id}],
     )
     connection.execute(
-        tables["health_subjects"].insert().values(id=subject_id)
+        tables["health_subjects"].insert().values(
+            id=subject_id,
+            owner_user_id=recipient_id,
+        )
     )
     connection.execute(
         tables["integration_connections"].insert().values(
             id=connection_id,
             subject_id=subject_id,
+            provider="telegram",
+            connection_type="recipient",
         )
     )
     return tables, subject_id, recipient_id, actor_id, connection_id
@@ -881,6 +946,109 @@ def test_sqlite_0043_upgrade_refuses_partial_dedupe_roots_before_ddl(
         engine.dispose()
 
 
+@pytest.mark.parametrize(
+    "mismatch",
+    ("subject", "recipient", "provider", "connection_type", "channel"),
+)
+def test_sqlite_0043_upgrade_refuses_mismatched_delivery_root_before_ddl(
+    monkeypatch,
+    mismatch,
+):
+    engine = create_engine("sqlite://")
+    try:
+        with engine.begin() as connection:
+            _pre_0043_schema(connection)
+            metadata = sa.MetaData()
+            users = sa.Table("users", metadata, autoload_with=connection)
+            subjects = sa.Table(
+                "health_subjects", metadata, autoload_with=connection
+            )
+            connections = sa.Table(
+                "integration_connections", metadata, autoload_with=connection
+            )
+            notifications = sa.Table(
+                "notifications", metadata, autoload_with=connection
+            )
+            subject_id = uuid.uuid4().hex
+            other_subject_id = uuid.uuid4().hex
+            recipient_id = uuid.uuid4().hex
+            other_recipient_id = uuid.uuid4().hex
+            connection_id = uuid.uuid4().hex
+            connection.execute(
+                users.insert(),
+                [{"id": recipient_id}, {"id": other_recipient_id}],
+            )
+            connection.execute(
+                subjects.insert(),
+                [
+                    {"id": subject_id, "owner_user_id": recipient_id},
+                    {
+                        "id": other_subject_id,
+                        "owner_user_id": other_recipient_id,
+                    },
+                ],
+            )
+            connection_values = {
+                "id": connection_id,
+                "subject_id": subject_id,
+                "provider": "telegram",
+                "connection_type": "recipient",
+            }
+            notification_values = {
+                "id": 1,
+                "subject_id": subject_id,
+                "recipient_user_id": recipient_id,
+                "integration_connection_id": connection_id,
+                "category": "brief",
+                "channel": "telegram",
+                "dedupe_key": "owned-key",
+            }
+            if mismatch == "subject":
+                connection_values["subject_id"] = other_subject_id
+            elif mismatch == "recipient":
+                notification_values["recipient_user_id"] = other_recipient_id
+            elif mismatch == "provider":
+                connection_values["provider"] = "openrouter"
+            elif mismatch == "connection_type":
+                connection_values["connection_type"] = "account"
+            else:
+                notification_values["channel"] = "openrouter"
+            connection.execute(connections.insert().values(**connection_values))
+            connection.execute(notifications.insert().values(**notification_values))
+
+            before = {
+                "tables": tuple(inspect(connection).get_table_names()),
+                "columns": tuple(
+                    column["name"]
+                    for column in inspect(connection).get_columns("notifications")
+                ),
+                "indexes": tuple(
+                    item["name"]
+                    for item in inspect(connection).get_indexes("notifications")
+                ),
+            }
+            migration = _migration(monkeypatch, connection)
+            with pytest.raises(RuntimeError) as exc_info:
+                migration.upgrade()
+            assert str(exc_info.value) == UPGRADE_DELIVERY_ROOT_REFUSAL
+            assert {
+                "tables": tuple(inspect(connection).get_table_names()),
+                "columns": tuple(
+                    column["name"]
+                    for column in inspect(connection).get_columns("notifications")
+                ),
+                "indexes": tuple(
+                    item["name"]
+                    for item in inspect(connection).get_indexes("notifications")
+                ),
+            } == before
+            assert connection.scalar(
+                sa.select(sa.func.count()).select_from(notifications)
+            ) == 1
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.parametrize("incompatibility", tuple(DOWNGRADE_REFUSALS))
 def test_sqlite_0043_downgrade_guards_are_nondestructive(
     monkeypatch,
@@ -916,6 +1084,7 @@ def test_sqlite_0043_downgrade_guards_are_nondestructive(
                             category=intent["category"],
                             channel=intent["channel"],
                             dedupe_key=intent["idempotency_key"],
+                            external_id="101",
                         )
                     )
                 tracked = tables[
@@ -1035,12 +1204,28 @@ def test_sqlite_0043_migrated_constraints_enforce_graph_and_state(monkeypatch):
                         category=intent["category"],
                         channel=intent["channel"],
                         dedupe_key="f" * 64,
+                        external_id="101",
                     )
                 )
             with connection.begin_nested(), pytest.raises(IntegrityError):
                 connection.execute(
                     tables["notifications"].insert().values(
                         id=2,
+                        delivery_intent_id=intent["id"],
+                        subject_id=subject_id,
+                        actor_user_id=actor_id,
+                        recipient_user_id=recipient_id,
+                        integration_connection_id=connection_id,
+                        category=intent["category"],
+                        channel=intent["channel"],
+                        dedupe_key=intent["idempotency_key"],
+                        external_id="   ",
+                    )
+                )
+            with connection.begin_nested(), pytest.raises(IntegrityError):
+                connection.execute(
+                    tables["notifications"].insert().values(
+                        id=3,
                         subject_id=subject_id,
                         actor_user_id=actor_id,
                         recipient_user_id=None,
@@ -1088,17 +1273,58 @@ async def test_postgres_0043_empty_downgrade_upgrade_roundtrip(
     connection = await db_session.connection()
 
     def roundtrip(sync_connection):
+        statements = []
+
+        def capture_statement(
+            _connection,
+            _cursor,
+            statement,
+            _parameters,
+            _context,
+            _executemany,
+        ):
+            statements.append(" ".join(statement.lower().split()))
+
         migration = _migration(monkeypatch, sync_connection)
-        migration.downgrade()
-        inspector = inspect(sync_connection)
-        assert "notification_delivery_intents" not in inspector.get_table_names()
-        assert "delivery_intent_id" not in {
-            item["name"] for item in inspector.get_columns("notifications")
-        }
-        assert "uq_notification_dedupe_key" in {
-            item["name"] for item in inspector.get_indexes("notifications")
-        }
-        migration.upgrade()
-        _assert_migrated_contract(sync_connection)
+        sa.event.listen(
+            sync_connection,
+            "before_cursor_execute",
+            capture_statement,
+        )
+        try:
+            migration.downgrade()
+            downgrade_statements = tuple(statements)
+            statements.clear()
+
+            inspector = inspect(sync_connection)
+            assert "notification_delivery_intents" not in inspector.get_table_names()
+            assert "delivery_intent_id" not in {
+                item["name"] for item in inspector.get_columns("notifications")
+            }
+            assert "uq_notification_dedupe_key" in {
+                item["name"] for item in inspector.get_indexes("notifications")
+            }
+
+            statements.clear()
+            migration.upgrade()
+            upgrade_statements = tuple(statements)
+            _assert_migrated_contract(sync_connection)
+        finally:
+            sa.event.remove(
+                sync_connection,
+                "before_cursor_execute",
+                capture_statement,
+            )
+
+        assert downgrade_statements[0] == (
+            "lock table health_subjects, users, integration_connections, "
+            "raw_payloads, ai_invocations, notification_delivery_intents, "
+            "notifications in access exclusive mode"
+        )
+        assert upgrade_statements[0] == (
+            "lock table health_subjects, users, integration_connections, "
+            "raw_payloads, ai_invocations, notifications "
+            "in access exclusive mode"
+        )
 
     await connection.run_sync(roundtrip)

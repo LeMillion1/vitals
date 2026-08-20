@@ -22,6 +22,10 @@ depends_on: Union[str, Sequence[str], None] = None
 _UPGRADE_ROOT_REFUSAL = (
     "0043 upgrade refused: keyed notifications contain partial ownership roots"
 )
+_UPGRADE_DELIVERY_ROOT_REFUSAL = (
+    "0043 upgrade refused: keyed owned notifications contain mismatched "
+    "delivery roots"
+)
 _DOWNGRADE_INTENT_REFUSAL = (
     "0043 downgrade refused: notification delivery intents contain durable state"
 )
@@ -38,6 +42,36 @@ def _exists(statement: sa.Select) -> bool:
     return op.get_bind().execute(statement.limit(1)).first() is not None
 
 
+def _lock_upgrade_cutover() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    # This is a maintenance cutover: application writers must be stopped.  Lock
+    # every existing parent before the journal so later FK/DDL acquisition cannot
+    # invert the live S -> A/Q -> C -> raw -> AI -> intent -> Notification order.
+    bind.execute(
+        sa.text(
+            "LOCK TABLE health_subjects, users, integration_connections, "
+            "raw_payloads, ai_invocations, notifications "
+            "IN ACCESS EXCLUSIVE MODE"
+        )
+    )
+
+
+def _lock_downgrade_cutover() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    # The same maintenance-only lock order closes both guard/write race windows.
+    bind.execute(
+        sa.text(
+            "LOCK TABLE health_subjects, users, integration_connections, "
+            "raw_payloads, ai_invocations, notification_delivery_intents, "
+            "notifications IN ACCESS EXCLUSIVE MODE"
+        )
+    )
+
+
 def _assert_upgrade_is_cutover_safe() -> None:
     notifications = sa.table(
         "notifications",
@@ -46,6 +80,19 @@ def _assert_upgrade_is_cutover_safe() -> None:
         sa.column("actor_user_id", sa.Uuid()),
         sa.column("recipient_user_id", sa.Uuid()),
         sa.column("integration_connection_id", sa.Uuid()),
+        sa.column("channel", sa.String()),
+    )
+    connections = sa.table(
+        "integration_connections",
+        sa.column("id", sa.Uuid()),
+        sa.column("subject_id", sa.Uuid()),
+        sa.column("provider", sa.String()),
+        sa.column("connection_type", sa.String()),
+    )
+    subjects = sa.table(
+        "health_subjects",
+        sa.column("id", sa.Uuid()),
+        sa.column("owner_user_id", sa.Uuid()),
     )
     partial_owned = sa.or_(
         sa.and_(
@@ -71,6 +118,40 @@ def _assert_upgrade_is_cutover_safe() -> None:
         )
     ):
         raise RuntimeError(_UPGRADE_ROOT_REFUSAL)
+
+    fully_owned = sa.and_(
+        notifications.c.subject_id.is_not(None),
+        notifications.c.recipient_user_id.is_not(None),
+        notifications.c.integration_connection_id.is_not(None),
+    )
+    exact_delivery_root = (
+        sa.select(connections.c.id)
+        .select_from(
+            connections.join(
+                subjects,
+                subjects.c.id == connections.c.subject_id,
+            )
+        )
+        .where(
+            connections.c.id == notifications.c.integration_connection_id,
+            connections.c.subject_id == notifications.c.subject_id,
+            connections.c.provider == notifications.c.channel,
+            connections.c.provider == "telegram",
+            connections.c.connection_type == "recipient",
+            subjects.c.id == notifications.c.subject_id,
+            subjects.c.owner_user_id == notifications.c.recipient_user_id,
+        )
+        .correlate(notifications)
+        .exists()
+    )
+    if _exists(
+        sa.select(notifications.c.dedupe_key).where(
+            notifications.c.dedupe_key.is_not(None),
+            fully_owned,
+            ~exact_delivery_root,
+        )
+    ):
+        raise RuntimeError(_UPGRADE_DELIVERY_ROOT_REFUSAL)
 
 
 def _assert_downgrade_is_lossless() -> None:
@@ -104,6 +185,7 @@ def _assert_downgrade_is_lossless() -> None:
 
 
 def upgrade() -> None:
+    _lock_upgrade_cutover()
     _assert_upgrade_is_cutover_safe()
 
     op.create_table(
@@ -355,7 +437,8 @@ def upgrade() -> None:
             "delivery_intent_id IS NULL OR "
             "(subject_id IS NOT NULL AND recipient_user_id IS NOT NULL "
             "AND integration_connection_id IS NOT NULL "
-            "AND dedupe_key IS NOT NULL)",
+            "AND dedupe_key IS NOT NULL AND external_id IS NOT NULL "
+            "AND length(trim(external_id)) > 0)",
         )
         batch_op.create_check_constraint(
             "ck_notifications_dedupe_root_shape",
@@ -366,11 +449,6 @@ def upgrade() -> None:
             "AND recipient_user_id IS NULL "
             "AND integration_connection_id IS NULL)",
         )
-    op.create_index(
-        "ix_notifications_delivery_intent_id",
-        "notifications",
-        ["delivery_intent_id"],
-    )
     op.create_index(
         "uq_notifications_owned_dedupe_key",
         "notifications",
@@ -407,6 +485,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    _lock_downgrade_cutover()
     _assert_downgrade_is_lossless()
 
     op.create_index(
@@ -423,10 +502,6 @@ def downgrade() -> None:
     )
     op.drop_index(
         "uq_notifications_owned_dedupe_key",
-        table_name="notifications",
-    )
-    op.drop_index(
-        "ix_notifications_delivery_intent_id",
         table_name="notifications",
     )
     with op.batch_alter_table("notifications") as batch_op:

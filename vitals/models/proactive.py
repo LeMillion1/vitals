@@ -339,7 +339,8 @@ class Notification(
             "delivery_intent_id IS NULL OR "
             "(subject_id IS NOT NULL AND recipient_user_id IS NOT NULL "
             "AND integration_connection_id IS NOT NULL "
-            "AND dedupe_key IS NOT NULL)",
+            "AND dedupe_key IS NOT NULL AND external_id IS NOT NULL "
+            "AND length(trim(external_id)) > 0)",
             name="ck_notifications_delivery_intent_scope",
         ),
         CheckConstraint(
@@ -410,7 +411,6 @@ class Notification(
             "external_id",
         ),
         Index("ix_notifications_ai_invocation_id", "ai_invocation_id"),
-        Index("ix_notifications_delivery_intent_id", "delivery_intent_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
