@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import date as date_type, timedelta
 from typing import Any, Optional
 
@@ -42,6 +43,7 @@ from vitals.enums import (
 )
 from vitals.i18n import t
 from vitals.models.milestones import DOMAIN as DIGEST_DOMAIN, WeeklyDigest
+from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, digest_service
@@ -56,6 +58,27 @@ EMPTY_DAY_ALERT_KEY = "brief_empty_day"
 
 class BriefOwnershipError(ValueError):
     """A stored brief would cross its subject, actor, or LLM provenance root."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedBrief:
+    """An exact-one legacy snapshot ready for an out-of-transaction LLM call."""
+
+    on_date: date_type
+    source: str
+    identity: WriteIdentity | None
+    llm_connection_id: uuid.UUID | None
+    context: dict
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderedBrief:
+    """Network-complete brief payload ready for caller-owned persistence."""
+
+    prepared: _PreparedBrief
+    content: str
+    model: str | None
+    used_llm: bool
 
 
 async def _require_llm_connection_scope(
@@ -306,7 +329,36 @@ async def generate_brief(
     include_legacy_unowned: bool = False,
     llm_connection_id: uuid.UUID | None = None,
 ) -> Optional[WeeklyDigest]:
-    """Build the brief and store it. ``None`` = empty day, nothing built."""
+    """Build the brief and store it. ``None`` = empty day, nothing built.
+
+    Scheduler callers use the explicit prepare/render/persist phases below so
+    their database transaction ends before the OpenRouter await. This compact
+    wrapper remains caller-transactional and never commits.
+    """
+    prepared = await _prepare_brief(
+        session,
+        on_date=on_date,
+        source=source,
+        identity=identity,
+        include_legacy_unowned=include_legacy_unowned,
+        llm_connection_id=llm_connection_id,
+    )
+    if prepared is None:
+        return None
+    rendered = await _render_brief(llm, prepared)
+    return await _persist_brief(session, rendered)
+
+
+async def _prepare_brief(
+    session: AsyncSession,
+    *,
+    on_date: Optional[date_type] = None,
+    source: str = Source.MANUAL.value,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    llm_connection_id: uuid.UUID | None = None,
+) -> _PreparedBrief | None:
+    """Read and freeze one brief context without calling an external service."""
     if identity is None:
         if llm_connection_id is not None:
             raise BriefOwnershipError(
@@ -341,29 +393,98 @@ async def generate_brief(
         logger.info("brief for %s: last night is not scored, recovery dropped", on_date)
         ctx = compose.drop_unscored_night(ctx)
 
-    blocks = compose.header_blocks(ctx)
-    day = day_plan.day_block(ctx.get("day"))
+    return _PreparedBrief(
+        on_date=on_date,
+        source=source,
+        identity=identity,
+        llm_connection_id=llm_connection_id,
+        context=ctx,
+    )
+
+
+async def _render_brief(llm: Any, prepared: _PreparedBrief) -> _RenderedBrief:
+    """Call the model and render text; this function performs no database I/O."""
+    if not isinstance(prepared, _PreparedBrief):
+        raise BriefOwnershipError("prepared brief must be a _PreparedBrief")
+
+    blocks = compose.header_blocks(prepared.context)
+    day = day_plan.day_block(prepared.context.get("day"))
     if day is not None:
         blocks.append(day)
-    tail = await narrative(llm, ctx)
+    tail = await narrative(llm, prepared.context)
     if tail:
         blocks.append(compose.Block(compose.KIND_NARRATIVE, tail, 90))
+
+    return _RenderedBrief(
+        prepared=prepared,
+        content=compose.render(blocks),
+        model=getattr(llm, "brief_model", None) if tail else None,
+        used_llm=bool(tail),
+    )
+
+
+async def _persist_brief(
+    session: AsyncSession,
+    rendered: _RenderedBrief,
+) -> WeeklyDigest:
+    """Persist one rendered payload after revalidating its immutable roots."""
+    if not isinstance(rendered, _RenderedBrief):
+        raise BriefOwnershipError("rendered brief must be a _RenderedBrief")
+    prepared = rendered.prepared
+    identity = prepared.identity
+    if identity is not None:
+        assert prepared.llm_connection_id is not None
+        await _require_llm_connection_scope(
+            session,
+            identity=identity,
+            connection_id=prepared.llm_connection_id,
+        )
 
     row = WeeklyDigest(
         subject_id=identity.subject_id if identity is not None else None,
         actor_user_id=identity.actor_user_id if identity is not None else None,
-        integration_connection_id=llm_connection_id if tail else None,
-        date=on_date,
+        integration_connection_id=(
+            prepared.llm_connection_id if rendered.used_llm else None
+        ),
+        date=prepared.on_date,
         domain=DIGEST_DOMAIN,
-        source=source,
+        source=prepared.source,
         kind=DigestKind.DAILY_BRIEF.value,
-        content=compose.render(blocks),
-        context_json=ctx,
-        model=getattr(llm, "brief_model", None) if tail else None,
+        content=rendered.content,
+        context_json=prepared.context,
+        model=rendered.model,
     )
     session.add(row)
     await session.flush()
     return row
+
+
+async def _reconcile_empty_day_alert(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity,
+    empty: bool,
+) -> SystemAlert | None:
+    """Raise or clear the actorless subject alert for the durable brief outcome."""
+    if not isinstance(identity, WriteIdentity) or identity.actor_user_id is not None:
+        raise BriefOwnershipError("empty-day alert reconciliation must be actorless")
+    context = alerts_service.HealthAlertContext(identity=identity)
+    if empty:
+        return await alerts_service.raise_scoped_alert(
+            session,
+            context=context,
+            domain=Domain.SYSTEM,
+            severity=Severity.INFO,
+            message=t("alert.brief_empty_day"),
+            alert_key=EMPTY_DAY_ALERT_KEY,
+            legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+        )
+    return await alerts_service.resolve_scoped_by_key(
+        session,
+        context=context,
+        alert_key=EMPTY_DAY_ALERT_KEY,
+        legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
+    )
 
 
 def dedupe_key(on_date: date_type) -> str:
@@ -425,13 +546,32 @@ async def brief_job(session_factory, redis=None) -> None:
             session,
             actor_username=None,
         )
-        if await delivery.already_sent(
+        already_sent = await delivery.already_sent(
             session,
             dedupe_key(today),
             ownership=ownership,
-        ):
-            return
-        brief_hour, _ = prefs.hhmm((await prefs.get_prefs(session))["brief_time"])
+        )
+        brief_hour = None
+        if not already_sent:
+            brief_hour, _ = prefs.hhmm(
+                (await prefs.get_prefs(session))["brief_time"]
+            )
+        # End all ownership/settings reads before Garmin can touch the network.
+        await session.commit()
+    if already_sent:
+        # The journal is durable evidence that generation succeeded, but alert
+        # reconciliation may have failed in a later transaction. Retry that local
+        # bookkeeping on every replay without calling Garmin, OpenRouter, or the
+        # delivery channel. Keep its governance/S/key locks in a fresh transaction.
+        async with session_factory() as session:
+            await _reconcile_empty_day_alert(
+                session,
+                identity=ownership.system_action(),
+                empty=False,
+            )
+            await session.commit()
+        return
+    assert brief_hour is not None
     out_of_patience = now_local().hour >= last_attempt_hour(brief_hour)
 
     try:
@@ -480,11 +620,11 @@ async def brief_job(session_factory, redis=None) -> None:
         # next fire is an hour away and this is the normal state of a lie-in.
         if not out_of_patience and not await night_scored(session, today):
             logger.info("brief for %s postponed: last night is not scored yet", today)
+            await session.commit()
             return
 
-        row = await generate_brief(
+        prepared = await _prepare_brief(
             session,
-            LLMClient(),
             source=Source.SCHEDULER.value,
             identity=ownership.system_action(),
             include_legacy_unowned=ownership.include_legacy_unowned,
@@ -492,26 +632,42 @@ async def brief_job(session_factory, redis=None) -> None:
                 IntegrationProvider.OPENROUTER
             ),
         )
-        if row is None:
-            await alerts_service.raise_alert(
+        # The exact-one compatibility outcome is complete. Close its read
+        # transaction before either the narrative model or Telegram is awaited.
+        await session.commit()
+
+    system_identity = ownership.system_action()
+    if prepared is None:
+        async with session_factory() as session:
+            await _reconcile_empty_day_alert(
                 session,
-                domain=Domain.SYSTEM.value,
-                severity=Severity.INFO.value,
-                message=t("alert.brief_empty_day"),
-                alert_key=EMPTY_DAY_ALERT_KEY,
+                identity=system_identity,
+                empty=True,
             )
             await session.commit()
-            return
+        return
 
-        # Nothing answered for today → the header shows the template's guess and
-        # the buttons are how it gets corrected in one tap.
-        buttons = day_plan.buttons_from_context((row.context_json or {}).get("day"), today)
-        # The hint rides on the *sent* message, not on the stored brief: /reports
-        # shows the same content with no keyboard under it, and a line pointing at
-        # buttons that aren't there is worse than no line at all.
-        text = f"{row.content}\n\n{day_plan.HINT_FIX}" if buttons else row.content
+    # OpenRouter sees only the frozen compatibility context and no live
+    # AsyncSession. Persist its result durably in a fresh caller-owned transaction.
+    rendered = await _render_brief(LLMClient(), prepared)
+    async with session_factory() as session:
+        await _persist_brief(session, rendered)
+        await session.commit()
 
-        await delivery.send(
+    # Nothing answered for today → the header shows the template's guess and
+    # the buttons are how it gets corrected in one tap.
+    buttons = day_plan.buttons_from_context(prepared.context.get("day"), today)
+    # The hint rides on the *sent* message, not on the stored brief: /reports
+    # shows the same content with no keyboard under it, and a line pointing at
+    # buttons that aren't there is worse than no line at all.
+    text = (
+        f"{rendered.content}\n\n{day_plan.HINT_FIX}"
+        if buttons
+        else rendered.content
+    )
+
+    async with session_factory() as session:
+        prepared_delivery = await delivery._prepare_delivery(
             session,
             notifier,
             text=text,
@@ -520,5 +676,28 @@ async def brief_job(session_factory, redis=None) -> None:
             buttons=buttons,
             ownership=ownership,
         )
-        await alerts_service.resolve_by_key(session, alert_key=EMPTY_DAY_ALERT_KEY)
+        await session.commit()
+
+    if prepared_delivery is not None:
+        delivered = await delivery._transmit_prepared_delivery(
+            notifier,
+            prepared_delivery,
+        )
+        if delivered is not None:
+            async with session_factory() as session:
+                await delivery._journal_prepared_delivery(
+                    session,
+                    prepared_delivery,
+                    external_id=delivered.external_id,
+                )
+                await session.commit()
+
+    # Successful generation clears only this subject's actorless empty-day alert.
+    # It is intentionally separate from both durable brief storage and delivery.
+    async with session_factory() as session:
+        await _reconcile_empty_day_alert(
+            session,
+            identity=system_identity,
+            empty=False,
+        )
         await session.commit()

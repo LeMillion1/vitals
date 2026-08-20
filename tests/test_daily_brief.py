@@ -6,6 +6,7 @@ down with it turns the one proactive feature into nothing; and a brief that keep
 arriving with "нет данных", or that carries the hormone protocol into Telegram,
 is a product decision reversed by accident.
 """
+import uuid
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -13,16 +14,24 @@ from sqlalchemy import select
 
 from vitals.enums import (
     DigestKind,
+    Domain,
     IntegrationConnectionStatus,
     IntegrationProvider,
     Severity,
     Source,
+    UserStatus,
 )
+from vitals.models.identity import HealthSubject, User
 from vitals.models.milestones import WeeklyDigest
 from vitals.models.proactive import Notification
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import digest_service, garmin_service, weight_service
+from vitals.services import (
+    alerts_service,
+    digest_service,
+    garmin_service,
+    weight_service,
+)
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.services.proactive import brief, channels, compose, day_plan, delivery
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
@@ -494,6 +503,10 @@ async def test_job_stays_quiet_on_an_empty_day_and_says_so_in_the_web(
     alert = (await db_session.execute(select(SystemAlert))).scalars().one()
     assert alert.alert_key == brief.EMPTY_DAY_ALERT_KEY
     assert alert.severity == Severity.INFO.value
+    ownership = await _telegram_ownership(db_session)
+    assert alert.subject_id == ownership.subject_id
+    assert alert.integration_connection_id is None
+    assert alert.resolved_by_user_id is None
 
 
 async def test_job_sends_once_a_day_and_clears_the_empty_alert(
@@ -506,9 +519,6 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
 
     # An earlier empty morning left its alert behind.
-    from vitals.services import alerts_service
-    from vitals.enums import Domain
-
     await alerts_service.raise_alert(
         db_session, domain=Domain.SYSTEM.value, severity=Severity.INFO.value,
         message="stale", alert_key=brief.EMPTY_DAY_ALERT_KEY,
@@ -523,6 +533,7 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     journal = (await db_session.execute(select(Notification))).scalars().all()
     assert [n.category for n in journal] == [delivery.CATEGORY_BRIEF]
     assert journal[0].dedupe_key == brief.dedupe_key(DAY)
+    assert journal[0].external_id == "901"
     channel_ownership = await _telegram_ownership(db_session)
     llm_ownership = await resolve_legacy_ownership_context(
         db_session,
@@ -550,6 +561,192 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     )
     alert = (await db_session.execute(select(SystemAlert))).scalars().one()
     assert alert.resolved_at is not None
+    assert alert.subject_id == channel_ownership.subject_id
+    assert alert.integration_connection_id is None
+    assert alert.resolved_by_user_id is None
+
+
+async def test_brief_network_awaits_have_no_open_database_transaction(
+    db_session, session_factory, monkeypatch
+):
+    """Neither OpenRouter nor Telegram may inherit ownership/read transactions."""
+
+    class TransactionCheckingLLM(FakeLLM):
+        async def complete_text(self, *args, **kwargs):
+            assert not db_session.in_transaction()
+            return await super().complete_text(*args, **kwargs)
+
+    class TransactionCheckingNotifier(FakeNotifier):
+        async def send(self, *args, **kwargs):
+            assert not db_session.in_transaction()
+            return await super().send(*args, **kwargs)
+
+    notifier = TransactionCheckingNotifier()
+    _patch_job(monkeypatch, notifier, TransactionCheckingLLM())
+
+    async def transaction_checking_sync(*args, **kwargs):
+        assert not db_session.in_transaction()
+
+    monkeypatch.setattr(garmin_service, "sync_job", transaction_checking_sync)
+    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+    await _seed_day(db_session)
+
+    await brief.brief_job(session_factory)
+
+    assert len(notifier.sent) == 1
+
+
+async def test_already_sent_replay_clears_stale_alert_without_network(
+    db_session, session_factory, monkeypatch
+):
+    """A post-journal alert failure is repaired by the next hourly replay."""
+    ownership = await _telegram_ownership(db_session)
+    sent = FakeNotifier()
+    notification = await delivery.send(
+        db_session,
+        sent,
+        text="already delivered",
+        category=delivery.CATEGORY_BRIEF,
+        dedupe_key=brief.dedupe_key(DAY),
+        ownership=ownership,
+    )
+    assert notification is not None
+    stale = await alerts_service.raise_alert(
+        db_session,
+        domain=Domain.SYSTEM.value,
+        severity=Severity.INFO.value,
+        message="stale",
+        alert_key=brief.EMPTY_DAY_ALERT_KEY,
+    )
+    await db_session.commit()
+
+    class NoNetworkNotifier(FakeNotifier):
+        async def send(self, *args, **kwargs):
+            raise AssertionError("already-sent recovery must not call Telegram")
+
+    class NoNetworkLLM(FakeLLM):
+        async def complete_text(self, *args, **kwargs):
+            raise AssertionError("already-sent recovery must not call OpenRouter")
+
+    async def no_garmin(*args, **kwargs):
+        raise AssertionError("already-sent recovery must not call Garmin")
+
+    _patch_job(monkeypatch, NoNetworkNotifier(), NoNetworkLLM())
+    monkeypatch.setattr(garmin_service, "sync_job", no_garmin)
+    monkeypatch.setattr(brief, "today_local", lambda: DAY)
+
+    await brief.brief_job(session_factory)
+
+    assert stale.resolved_at is not None
+    assert stale.subject_id == ownership.subject_id
+    assert stale.integration_connection_id is None
+    assert stale.resolved_by_user_id is None
+
+
+async def test_empty_alert_clear_adopts_only_the_matching_fully_unowned_row(
+    db_session,
+):
+    ownership = await _telegram_ownership(db_session)
+    legacy_brief = await alerts_service.raise_alert(
+        db_session,
+        domain=Domain.SYSTEM.value,
+        severity=Severity.INFO.value,
+        message="legacy brief",
+        alert_key=brief.EMPTY_DAY_ALERT_KEY,
+    )
+    other = await alerts_service.raise_alert(
+        db_session,
+        domain=Domain.WEIGHT.value,
+        severity=Severity.INFO.value,
+        message="other health alert",
+        alert_key="weight.noisy_period_active",
+    )
+    await db_session.commit()
+
+    resolved = await brief._reconcile_empty_day_alert(
+        db_session,
+        identity=ownership.system_action(),
+        empty=False,
+    )
+
+    assert resolved is legacy_brief
+    assert (
+        resolved.subject_id,
+        resolved.integration_connection_id,
+        resolved.resolved_by_user_id,
+    ) == (ownership.subject_id, None, None)
+    assert resolved.resolved_at is not None
+    assert (other.subject_id, other.integration_connection_id) == (None, None)
+    assert other.resolved_at is None
+
+
+async def test_empty_alert_bridge_rejects_partial_ownership(db_session):
+    ownership = await _telegram_ownership(db_session)
+    llm_ownership = await resolve_legacy_ownership_context(
+        db_session,
+        actor_username=None,
+        required_connections=(IntegrationProvider.OPENROUTER,),
+    )
+    partial = SystemAlert(
+        subject_id=None,
+        integration_connection_id=llm_ownership.connection_id(
+            IntegrationProvider.OPENROUTER
+        ),
+        domain=Domain.SYSTEM.value,
+        severity=Severity.INFO.value,
+        message="partial",
+        alert_key=brief.EMPTY_DAY_ALERT_KEY,
+        entity_ref="",
+    )
+    db_session.add(partial)
+    await db_session.commit()
+
+    with pytest.raises(alerts_service.AlertScopedUniqueCutoverRequiredError):
+        await brief._reconcile_empty_day_alert(
+            db_session,
+            identity=ownership.system_action(),
+            empty=False,
+        )
+    assert partial.subject_id is None
+
+
+async def test_empty_alert_bridge_rejects_a_second_subject(db_session):
+    ownership = await _telegram_ownership(db_session)
+    suffix = uuid.uuid4().hex
+    owner = User(
+        username=f"second-{suffix}",
+        normalized_username=f"second-{suffix}",
+        password_hash="test-only",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(owner)
+    await db_session.flush()
+    db_session.add(
+        HealthSubject(
+            owner_user_id=owner.id,
+            display_name="second",
+            timezone="Asia/Almaty",
+        )
+    )
+    await db_session.commit()
+
+    with pytest.raises(alerts_service.AlertLegacyBridgeError):
+        await brief._reconcile_empty_day_alert(
+            db_session,
+            identity=ownership.system_action(),
+            empty=True,
+        )
+
+
+async def test_empty_alert_reconciliation_rejects_actor_attribution(db_session):
+    ownership = await _telegram_ownership(db_session)
+
+    with pytest.raises(brief.BriefOwnershipError, match="actorless"):
+        await brief._reconcile_empty_day_alert(
+            db_session,
+            identity=ownership.owner_action(),
+            empty=True,
+        )
 
 
 async def test_the_brief_says_what_its_buttons_are_for(

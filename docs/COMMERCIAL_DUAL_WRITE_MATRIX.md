@@ -65,7 +65,7 @@ or multi-subject reads are enabled.
 | `shared_reports` | create/open/revoke/purge | Create gets S+creator; human revoke gets revoker. Anonymous open and scheduled purge do not mutate actor fields. |
 | `skincare_*` | web/MCP/seed scripts | Human creates get S+A; product/log updates preserve A and are S-scoped. |
 | `supplements` | web/MCP | Human creates get S+A; updates retain A and MCP retains `Source.MCP`. |
-| `system_alerts` | domain services, jobs, web/MCP lifecycle | Health alerts get S; provider alerts also get C. Human override/resolve uses the named actor field; automatic resolution remains actorless. |
+| `system_alerts` | domain services, jobs, web/MCP lifecycle | Health alerts get S; provider alerts also get C. Human override/resolve uses the named actor field; automatic resolution remains actorless. The scheduled `brief_empty_day` row is S-only and adopts only an exact-key fully-null legacy row through the exact-one bridge. |
 
 Direct MCP note updates to weight, meals, GLP-1, skincare, body measurements,
 body scans, and labs must go through owned services or perform an explicit
@@ -266,6 +266,13 @@ still a concurrency/cutover blocker until its scoped replacement lands. Inbound
 normalization and callback mutations recover from the durable raw update, but an
 immediate reply/echo remains best-effort: PR-09 must persist an outbound intent
 with pending/sent/ambiguous states before commercial registration can open.
+
+The scheduled morning brief freezes its exact-one legacy compatibility
+context, closes that read transaction before OpenRouter, persists the rendered
+digest, and ends delivery-policy reads before Telegram. A successful send is
+journalled in a fresh caller-owned transaction. Isolated actorless S-only
+`brief_empty_day` reconciliation then follows canonical governance -> S -> key/row
+order. Empty outcomes use the same alert phase without calling either provider.
 
 Garmin and Hevy runtime ingestion now resolves S plus the provider C before
 network persistence, copies raw provenance into normalized parents and children,

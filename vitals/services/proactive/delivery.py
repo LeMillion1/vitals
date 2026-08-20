@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import date as date_type, datetime, time as time_type
 from typing import Optional
 
@@ -167,6 +168,28 @@ class NotificationOwnershipConflictError(RuntimeError):
 
 class ProactiveOwnershipScopeError(ValueError):
     """A delivery context does not resolve to the legacy owner/channel graph."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedDelivery:
+    """Policy-approved message that may cross the network without a DB session."""
+
+    text: str
+    category: str
+    dedupe_key: str | None
+    buttons: tuple[tuple[str, str], ...] | None
+    reply_to: str | None
+    sent_at: datetime
+    channel: str
+    ownership: ProactiveOwnershipContext | None
+    actor_user_id: uuid.UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class _DeliveredMessage:
+    """Successful transport result, including channels without a message id."""
+
+    external_id: str | None
 
 
 async def _require_ownership_scope(
@@ -347,7 +370,7 @@ async def already_sent(
     return result.scalars().first() is not None
 
 
-async def send(
+async def _prepare_delivery(
     session: AsyncSession,
     notifier: Optional[Notifier],
     *,
@@ -359,11 +382,15 @@ async def send(
     now: Optional[datetime] = None,
     ownership: ProactiveOwnershipContext | None = None,
     actor_user_id: uuid.UUID | None = None,
-) -> Optional[Notification]:
-    """Send if allowed, and journal what was sent. ``None`` = nothing went out."""
-    if notifier is None:
-        return None
-    if not text.strip():
+) -> _PreparedDelivery | None:
+    """Apply delivery policy without calling the transport or mutating state.
+
+    A scheduler can commit the caller-owned read transaction after this returns,
+    call :func:`_transmit_prepared_delivery`, then journal the successful send in
+    a new transaction. That is the safe seam for jobs which must never keep a
+    database transaction open across a network await.
+    """
+    if notifier is None or not text.strip():
         return None
     _validate_ownership(ownership, actor_user_id=actor_user_id)
     if ownership is not None:
@@ -372,17 +399,12 @@ async def send(
             ownership,
             channel=notifier.channel,
         )
-    # The emergency switch. Checked here because *every* outgoing message —
-    # brief, evening block, nudge, echo, reply, the test send from /reports —
-    # passes through this one function; a guard per job would leak the ones that
-    # aren't jobs.
     if not await prefs.bot_enabled(
         session,
         subject_id=(ownership.subject_id if ownership is not None else None),
     ):
         logger.info("skipping %s: the signals module is switched off", category)
         return None
-
     if dedupe_key:
         existing = await session.scalar(
             select(Notification).where(Notification.dedupe_key == dedupe_key)
@@ -403,56 +425,162 @@ async def send(
             if valid_existing is not None:
                 logger.info("skipping %s: already sent (%s)", category, dedupe_key)
                 return None
-            # A global key with invalid/foreign roots is a conflict, not evidence
-            # that this recipient was already notified. Fail before the network.
             raise NotificationOwnershipConflictError(
                 "notification dedupe key belongs to another ownership scope"
             )
 
-    now = now or now_local()
+    at = now or now_local()
     if category in INITIATIVE_CATEGORIES:
         settings = await prefs.get_prefs(session)
-        budget = settings["daily_budget"]
-        # Nudges only: a brief scheduled for 09:00 inside a 02:00-10:00 quiet
-        # window must still arrive. Both times came from the same card, and the
-        # one he set for the brief is the more specific instruction.
         if category == CATEGORY_NUDGE and in_quiet_hours(
-            now.time(),
+            at.time(),
             start=prefs.as_time(settings["quiet_start"]),
             end=prefs.as_time(settings["quiet_end"]),
         ):
-            logger.info("skipping %s: quiet hours (%s)", category, now.time())
+            logger.info("skipping %s: quiet hours (%s)", category, at.time())
             return None
         if await sent_today(
             session,
-            on_date=now.date(),
+            on_date=at.date(),
             ownership=ownership,
-        ) >= budget:
-            logger.info("skipping %s: daily budget of %s used", category, budget)
+        ) >= settings["daily_budget"]:
+            logger.info(
+                "skipping %s: daily budget of %s used",
+                category,
+                settings["daily_budget"],
+            )
             return None
 
-    try:
-        external_id = await notifier.send(text, buttons=buttons, reply_to=reply_to)
-    except Exception:
-        logger.warning("delivery failed for %s; message dropped", category, exc_info=True)
-        return None
-
-    row = Notification(
-        subject_id=ownership.subject_id if ownership is not None else None,
-        actor_user_id=actor_user_id,
-        recipient_user_id=(
-            ownership.recipient_user_id if ownership is not None else None
-        ),
-        integration_connection_id=(
-            ownership.connection_id if ownership is not None else None
-        ),
-        sent_at=now,
+    return _PreparedDelivery(
+        text=text,
         category=category,
         dedupe_key=dedupe_key,
+        buttons=tuple(buttons) if buttons else None,
+        reply_to=reply_to,
+        sent_at=at,
         channel=notifier.channel,
+        ownership=ownership,
+        actor_user_id=actor_user_id,
+    )
+
+
+async def _transmit_prepared_delivery(
+    notifier: Notifier,
+    prepared: _PreparedDelivery,
+) -> _DeliveredMessage | None:
+    """Send a prepared message without accepting or touching a DB session."""
+    if not isinstance(prepared, _PreparedDelivery):
+        raise TypeError("prepared must be a _PreparedDelivery")
+    if notifier.channel != prepared.channel:
+        raise ProactiveOwnershipScopeError(
+            "prepared delivery channel does not match the notifier"
+        )
+    try:
+        return _DeliveredMessage(
+            external_id=await notifier.send(
+                prepared.text,
+                buttons=prepared.buttons,
+                reply_to=prepared.reply_to,
+            )
+        )
+    except Exception:
+        logger.warning(
+            "delivery failed for %s; message dropped",
+            prepared.category,
+            exc_info=True,
+        )
+        return None
+
+
+async def _journal_prepared_delivery(
+    session: AsyncSession,
+    prepared: _PreparedDelivery,
+    *,
+    external_id: str | None,
+) -> Notification:
+    """Persist a successful prepared send; flush only, caller commits."""
+    if not isinstance(prepared, _PreparedDelivery):
+        raise TypeError("prepared must be a _PreparedDelivery")
+    _validate_ownership(
+        prepared.ownership,
+        actor_user_id=prepared.actor_user_id,
+    )
+    if prepared.ownership is not None:
+        await _require_ownership_scope(
+            session,
+            prepared.ownership,
+            channel=prepared.channel,
+        )
+    row = Notification(
+        subject_id=(
+            prepared.ownership.subject_id
+            if prepared.ownership is not None
+            else None
+        ),
+        actor_user_id=prepared.actor_user_id,
+        recipient_user_id=(
+            prepared.ownership.recipient_user_id
+            if prepared.ownership is not None
+            else None
+        ),
+        integration_connection_id=(
+            prepared.ownership.connection_id
+            if prepared.ownership is not None
+            else None
+        ),
+        sent_at=prepared.sent_at,
+        category=prepared.category,
+        dedupe_key=prepared.dedupe_key,
+        channel=prepared.channel,
         external_id=external_id or None,
-        payload={"text": text, "buttons": [list(b) for b in buttons] if buttons else None},
+        payload={
+            "text": prepared.text,
+            "buttons": (
+                [list(button) for button in prepared.buttons]
+                if prepared.buttons
+                else None
+            ),
+        },
     )
     session.add(row)
     await session.flush()
     return row
+
+
+async def send(
+    session: AsyncSession,
+    notifier: Optional[Notifier],
+    *,
+    text: str,
+    category: str,
+    dedupe_key: Optional[str] = None,
+    buttons: Optional[Buttons] = None,
+    reply_to: Optional[str] = None,
+    now: Optional[datetime] = None,
+    ownership: ProactiveOwnershipContext | None = None,
+    actor_user_id: uuid.UUID | None = None,
+) -> Optional[Notification]:
+    """Send if allowed, and journal what was sent. ``None`` = nothing went out."""
+    prepared = await _prepare_delivery(
+        session,
+        notifier,
+        text=text,
+        category=category,
+        dedupe_key=dedupe_key,
+        buttons=buttons,
+        reply_to=reply_to,
+        now=now,
+        ownership=ownership,
+        actor_user_id=actor_user_id,
+    )
+    if prepared is None:
+        return None
+    assert notifier is not None
+    delivered = await _transmit_prepared_delivery(notifier, prepared)
+    if delivered is None:
+        return None
+    return await _journal_prepared_delivery(
+        session,
+        prepared,
+        external_id=delivered.external_id,
+    )

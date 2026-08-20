@@ -212,8 +212,12 @@ Implementation progress on `commercial/main`:
   the subject-scoped week template. Typed alert ownership now separates health,
   provider, and platform namespaces; generic web/MCP lifecycle actions aggregate
   current and retired provider roots, and provider/scheduler writers use an exact
-  reviewed scope. Conflict reads and all seven resolver domains use one subject
-  and date. Curated conflict-rule activation is stored per subject, and the
+  reviewed scope. The scheduled empty-day brief writer now uses an actorless
+  subject alert context and exact-one fully-null bridge; its still-legacy
+  exact-one composition, OpenRouter, digest persistence, Telegram, notification
+  journalling, and alert bookkeeping are separate phases so network waits hold
+  no database transaction. All seven conflict resolver domains read within one
+  subject and date. Curated conflict-rule activation is stored per subject. The
   Supplements, Nutrition, Skincare, GLP-1, and Labs web/MCP write paths use an
   opaque prepared writer capability and locked target rows. Supplements replace
   one catalog row;

@@ -199,6 +199,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the exact-one legacy bridge against concurrent subject creation. Registration
   remains closed while the remaining alert writers, conflict mutations, global
   uniqueness, and subject-aware composition are migrated.
+- The scheduled empty-day brief alert now reconciles as an actorless subject
+  alert, adopting only the matching fully-null legacy row through the exact-one
+  bridge. Brief context, OpenRouter rendering, durable digest storage, Telegram
+  delivery, its journal, and alert bookkeeping use separate caller-owned phases,
+  so no database transaction or ownership lock spans provider network latency.
 - Platform-only scheduler diagnostics are now excluded from the transitional
   Today and digest/brief composition readers. Operational exception text can no
   longer appear in a health card or be forwarded to the external LLM while the
