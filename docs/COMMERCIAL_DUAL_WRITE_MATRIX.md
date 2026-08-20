@@ -150,6 +150,18 @@ for pre-backfill files, but only while the fail-closed legacy resolver sees
 exactly one subject; a second subject closes it. Opaque asset URLs and complete
 file backfill remain cutover work.
 
+Genetics VCF, manual, and MCP boundaries now resolve the verified legacy owner,
+write S+A, and scope direct reads/mutations by S. VCF imports persist a
+content-addressed bounded raw revision first with C/F null, then link new
+VCF-origin normalized rows to that raw; re-import replaces parser fields and
+clears stale conflict markers while later human/MCP corrections retain the
+original actor/source/raw roots. Pending replay handles partially normalized
+batches, never rolls a newer fact back to older pending evidence, and rejects
+malformed or cross-subject raw graphs. The current payload keeps the first 50,000
+parsed rows plus a truncation flag, so lossless chunking, `(S, rsid)` uniqueness,
+scoped raw uniqueness, composite raw ownership FKs, backfill, and whole-lake
+composition remain required before registration can open.
+
 `system_alerts` now has typed health, provider, and platform contexts, an
 exhaustive key/domain registry, and a fail-closed exact-one legacy bridge.
 Generic web/MCP lifecycle actions aggregate the selected subject's health alerts

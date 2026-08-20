@@ -576,23 +576,24 @@ async def sweep_domain(
 
 
 async def sweep_pending_job(session_factory, redis=None) -> None:
-    """Nightly sweep for garmin/hevy/labs/body_comp raw payloads still pending a
+    """Nightly sweep for garmin/hevy/labs/body_comp/genetics raw payloads pending a
     normalized row (registered in vitals/scheduler/jobs.py).
 
     Signals' own reparse instead piggybacks on the morning brief (see
     proactive/inbound.py, called from brief.py) because it has to finish before
-    that message goes out. These four domains have no such deadline — they're
-    fed by a periodic poll (garmin/hevy) or an owner upload (labs/body_comp),
-    not a message that's about to be sent — so one shared nightly pass covers
-    all of them instead of four separate jobs. Each domain commits (and rolls
-    back on failure) on its own so one domain's trouble can't lose or block
-    another's completed work.
+    that message goes out. These five domains have no such deadline — they're
+    fed by a periodic poll (garmin/hevy) or an owner import/upload
+    (labs/body_comp/genetics), not a message that's about to be sent — so one
+    shared nightly pass covers all of them instead of separate jobs. Each domain
+    commits (and rolls back on failure) on its own so one domain's trouble can't
+    lose or block another's completed work.
     """
     from vitals.enums import IntegrationProvider
     from vitals.services import (
         body_scan_service,
         conflict_engine,
         garmin_service,
+        genetics_service,
         hevy_service,
         labs_service,
     )
@@ -657,11 +658,29 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
                 include_legacy_unowned=True,
             )
 
+        async def _sweep_owned_genetics() -> int:
+            context = await conflict_engine.resolve_legacy_conflict_write_context(
+                session,
+                actor_username=None,
+                evaluation_date=today_local(),
+            )
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=context,
+            )
+            return await genetics_service.reparse_owned_pending(
+                session,
+                identity=context.identity,
+                prepared_conflict_write=prepared,
+                include_legacy_unowned=True,
+            )
+
         for name, sweep in (
             ("garmin", _sweep_owned_garmin),
             ("hevy", _sweep_owned_hevy),
             ("labs", _sweep_owned_labs),
             ("body_comp", _sweep_owned_body_comp),
+            ("genetics", _sweep_owned_genetics),
         ):
             try:
                 await sweep()

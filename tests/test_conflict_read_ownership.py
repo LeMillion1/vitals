@@ -31,6 +31,7 @@ from vitals.services import (
     conflict_catalog,
     conflict_engine,
     conflict_registrations,
+    genetics_service,
 )
 from vitals.services.legacy_ownership import (
     LegacyOwnerResolutionError,
@@ -590,6 +591,16 @@ async def test_legacy_adapter_accepts_only_fully_unowned_facts(
     conflict_registrations.register_all_resolvers()
     conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
 
+    if fact_domain == Domain.GENETICS.value:
+        with pytest.raises(genetics_service.GeneticsOwnershipError, match="partial"):
+            await conflict_engine.evaluate_legacy_single_subject(
+                db_session,
+                domain=PROBE_DOMAIN,
+                proposed_state={"probe": True},
+                evaluation_date=EVALUATION_DATE,
+            )
+        return
+
     partial_only = await conflict_engine.evaluate_legacy_single_subject(
         db_session,
         domain=PROBE_DOMAIN,
@@ -612,6 +623,33 @@ async def test_legacy_adapter_accepts_only_fully_unowned_facts(
         evaluation_date=EVALUATION_DATE,
     )
     assert [violation.message for violation in fully_unowned] == ["scope probe"]
+
+
+async def test_legacy_genetics_resolver_rejects_partial_fact(
+    db_session,
+    legacy_owner_roots,
+):
+    db_session.add(
+        _subject_probe_rule(
+            fact_domain=Domain.GENETICS.value,
+            subject_id=None,
+        )
+    )
+    await _seed_fact(
+        db_session,
+        domain=Domain.GENETICS.value,
+        subject_id=None,
+        actor_user_id=legacy_owner_roots.user_id,
+    )
+    await db_session.commit()
+    conflict_registrations.register_all_resolvers()
+
+    with pytest.raises(genetics_service.GeneticsOwnershipError, match="partial"):
+        await conflict_engine.evaluate(
+            db_session,
+            domain=PROBE_DOMAIN,
+            proposed_state={"probe": True},
+        )
 
 
 async def test_legacy_adapter_closes_when_second_subject_exists(
@@ -719,15 +757,11 @@ async def test_legacy_fact_rejects_partial_linked_raw_root(
         )
 
 
-@pytest.mark.parametrize(
-    "fact_domain",
-    (Domain.GENETICS.value, Domain.LABS.value),
-)
-async def test_legacy_fact_accepts_exact_subject_raw_during_backfill(
+async def test_legacy_lab_fact_accepts_exact_subject_raw_during_backfill(
     db_session,
     legacy_owner_roots,
-    fact_domain,
 ):
+    fact_domain = Domain.LABS.value
     exact_raw = RawPayload(
         subject_id=legacy_owner_roots.subject_id,
         actor_user_id=legacy_owner_roots.user_id,
@@ -761,6 +795,49 @@ async def test_legacy_fact_accepts_exact_subject_raw_during_backfill(
         evaluation_date=EVALUATION_DATE,
     )
     assert [violation.message for violation in violations] == ["scope probe"]
+
+
+async def test_legacy_manual_genetics_fact_rejects_raw_link_during_backfill(
+    db_session,
+    legacy_owner_roots,
+):
+    fact_domain = Domain.GENETICS.value
+    exact_raw = RawPayload(
+        subject_id=legacy_owner_roots.subject_id,
+        actor_user_id=legacy_owner_roots.user_id,
+        domain=fact_domain,
+        source=Source.MANUAL.value,
+        payload={"synthetic": "owned-first"},
+    )
+    db_session.add(exact_raw)
+    await db_session.flush()
+    await _seed_fact(
+        db_session,
+        domain=fact_domain,
+        subject_id=None,
+        actor_user_id=None,
+        raw_payload_id=exact_raw.id,
+    )
+    db_session.add(
+        _subject_probe_rule(
+            fact_domain=fact_domain,
+            subject_id=legacy_owner_roots.subject_id,
+        )
+    )
+    await db_session.commit()
+    conflict_registrations.register_all_resolvers()
+    conflict_engine.register_domain_resolver(PROBE_DOMAIN, _empty_scoped_resolver)
+
+    with pytest.raises(
+        conflict_engine.ConflictRawOwnershipError,
+        match="manual and MCP",
+    ):
+        await conflict_engine.evaluate_legacy_single_subject(
+            db_session,
+            domain=PROBE_DOMAIN,
+            proposed_state={"probe": True},
+            evaluation_date=EVALUATION_DATE,
+        )
 
 
 async def _seed_hrt_linked_fact(

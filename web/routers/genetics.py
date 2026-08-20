@@ -7,15 +7,32 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services.genetics_vcf import INTERPRETATIONS, interpret, parse_vcf_line
 from vitals.enums import Domain, Source
-from vitals.services import alerts_service, genetics_service
-from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services import alerts_service, conflict_engine, genetics_service
+from vitals.services.genetics_vcf import INTERPRETATIONS, ParsedVariant, parse_vcf_line
+from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth
 from web.templating import templates
 from web.uploads import VCF_EXTS, VCF_MAX_BYTES, iter_lines_capped, validate_extension
 
 router = APIRouter(prefix="/genetics", tags=["genetics"])
+
+
+async def _prepared_owner_write(
+    db: AsyncSession,
+    *,
+    username: str,
+):
+    context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=today_local(),
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        db,
+        context=context,
+    )
+    return context, prepared
 
 
 def _redirect(request: Request) -> RedirectResponse:
@@ -31,14 +48,19 @@ async def genetics_dashboard(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    ownership = await resolve_legacy_ownership_context(
+    context = await conflict_engine.resolve_legacy_conflict_write_context(
         db,
         actor_username=username,
+        evaluation_date=today_local(),
     )
-    variants = await genetics_service.list_variants(db)
+    variants = await genetics_service.list_variants(
+        db,
+        subject_id=context.identity.subject_id,
+        include_legacy_unowned=True,
+    )
     alerts = await alerts_service.list_active_scoped(
         db,
-        context=alerts_service.HealthAlertContext(ownership.owner_action()),
+        context=alerts_service.HealthAlertContext(context.identity),
         domain=Domain.GENETICS,
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
@@ -68,48 +90,55 @@ async def import_vcf(
     ``INTERPRETATIONS``), keyed by rsID. A full consumer genome is ~600k lines;
     upserting every raw variant would hang the request (Cloudflare 524), and raw
     unknown rows aren't useful as catalog entries — so we keep only the rsIDs we
-    interpret (~dozens) as ``GeneticVariant`` rows, while every parsed row is kept
-    in ``raw_payloads`` for a future re-parse (see
-    ``genetics_service.store_raw_vcf``). ``only_interpreted`` narrows the catalog
-    further to marker-bearing variants.
+    interpret (~dozens) as ``GeneticVariant`` rows. ``raw_payloads`` retains the
+    first 50k parsed rows plus an explicit truncation flag for bounded replay;
+    ``only_interpreted`` narrows the normalized catalog further to marker-bearing
+    variants.
 
     Lines are membership-checked before any DB work, so even a large file does at
-    most a few dozen upserts; the streaming read bounds memory to one chunk at a
-    time (a consumer genome is ~600k lines / tens of MB)."""
+    most a few dozen upserts. The upload is exhausted before governance locks are
+    taken, while retained raw rows remain capped for bounded memory use."""
     validate_extension(file.filename, VCF_EXTS)
 
-    imported = 0
-    markers = 0
-    raw_variants: list[list[str]] = []
+    # Consume and parse the complete capped upload before taking the governance
+    # lock. A slow client or a large VCF must never hold subject-write locks while
+    # bytes are still arriving from the network.
+    raw_variants: list[ParsedVariant] = []
+    curated_variants: list[ParsedVariant] = []
     truncated = False
     async for line in iter_lines_capped(file, max_bytes=VCF_MAX_BYTES):
-        # Cheap rsID gate before the (relatively costly) full parse + DB upsert.
         variant = parse_vcf_line(line)
         if variant is None:
             continue
-        # Every parsed row (not just the curated ones) goes to the data lake, so a
-        # later INTERPRETATIONS expansion can re-derive variants from here.
         if len(raw_variants) < genetics_service.MAX_RAW_VARIANTS:
-            raw_variants.append([variant.rsid, variant.ref, variant.alt, variant.genotype])
+            raw_variants.append(variant)
         else:
             truncated = True
-        if variant.rsid not in INTERPRETATIONS:
-            continue
-        fields = interpret(variant)
-        if only_interpreted and not fields.get("marker"):
-            continue
-        await genetics_service.upsert_by_rsid(db, **fields)
-        imported += 1
-        if fields.get("marker"):
-            markers += 1
-    if raw_variants:
-        await genetics_service.store_raw_vcf(
-            db, filename=file.filename, variants=raw_variants, truncated=truncated
+        # Curated rows remain tiny and must be collected through EOF even when
+        # the bounded raw sample filled near the start of a consumer genome.
+        if variant.rsid in INTERPRETATIONS:
+            curated_variants.append(variant)
+
+    context, prepared = await _prepared_owner_write(db, username=username)
+    try:
+        summary = await genetics_service.ingest_vcf_batch(
+            db,
+            filename=file.filename,
+            curated_variants=curated_variants,
+            raw_variants=raw_variants,
+            truncated=truncated,
+            only_interpreted=only_interpreted,
+            identity=context.identity,
+            prepared_conflict_write=prepared,
+            include_legacy_unowned=True,
         )
-    await db.commit()
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
 
     return RedirectResponse(
-        url=f"/genetics?imported={imported}&markers={markers}",
+        url=f"/genetics?imported={summary.imported}&markers={summary.markers}",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -128,36 +157,39 @@ async def save_variant(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    if rsid:
-        # An rsID is a globally-unique dbSNP id (uq_genetic_variant_rsid): re-saving
-        # the same one refreshes it in place instead of hitting the constraint —
-        # same semantics as the VCF importer. A blank rsID falls through to a plain
-        # insert (many manual, rsID-less rows may coexist).
-        await genetics_service.upsert_by_rsid(
-            db,
-            gene=gene,
-            rsid=rsid,
-            genotype=genotype or None,
-            marker=marker or None,
-            impact=impact or None,
-            impact_domain=impact_domain or None,
-            interpretation=interpretation or None,
-            action_notes=action_notes or None,
-            source=Source.MANUAL.value,
-        )
-    else:
-        await genetics_service.add_variant(
-            db,
-            gene=gene,
-            rsid=None,
-            genotype=genotype or None,
-            marker=marker or None,
-            impact=impact or None,
-            impact_domain=impact_domain or None,
-            interpretation=interpretation or None,
-            action_notes=action_notes or None,
-        )
-    await db.commit()
+    context, prepared = await _prepared_owner_write(db, username=username)
+    fields = {
+        "gene": gene,
+        "genotype": genotype or None,
+        "marker": marker or None,
+        "impact": impact or None,
+        "impact_domain": impact_domain or None,
+        "interpretation": interpretation or None,
+        "action_notes": action_notes or None,
+        "source": Source.MANUAL.value,
+        "identity": context.identity,
+        "prepared_conflict_write": prepared,
+        "include_legacy_unowned": True,
+    }
+    try:
+        if rsid:
+            # An rsID is a globally-unique dbSNP id: re-saving the same one
+            # updates only the exact owner's row under the locked write boundary.
+            await genetics_service.upsert_by_rsid(
+                db,
+                rsid=rsid,
+                **fields,
+            )
+        else:
+            await genetics_service.add_variant(
+                db,
+                rsid=None,
+                **fields,
+            )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
     return _redirect(request)
 
 
@@ -168,6 +200,17 @@ async def delete_variant(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await genetics_service.delete_variant(db, id)
-    await db.commit()
+    context, prepared = await _prepared_owner_write(db, username=username)
+    try:
+        await genetics_service.delete_variant(
+            db,
+            id,
+            identity=context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
     return _redirect(request)

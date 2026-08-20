@@ -251,6 +251,15 @@ Implementation progress on `commercial/main`:
   conflict evaluation, derived alerts, and nightly replay use that same exact-one
   subject boundary; replay isolates failures per raw row and MCP provenance keeps
   Source.MCP on raw/scan while the derived Weight remains Source.BODY_SCAN.
+  Genetics web/MCP/CLI writers now persist a content-addressed owned VCF raw
+  revision before curated normalization, scope direct CRUD by the selected
+  subject, preserve historical actor/source/raw provenance on correction, and
+  replay pending partial batches.
+  Re-import uses full parser replacement for an existing rsID so a reference
+  genotype cannot retain an obsolete conflict marker, while replay cannot replace
+  a newer fact with older pending evidence. The first 50,000 parsed rows and an
+  explicit truncation flag remain the bounded compatibility payload;
+  a lossless chunk/import-batch design belongs to the scoped-key cutover.
   These paths resolve the verified legacy owner at their web, scheduler, or MCP
   boundary and fail closed if a second subject makes the compatibility bridge
   ambiguous.
@@ -260,8 +269,9 @@ Implementation progress on `commercial/main`:
   provenance with subject/connection ownership.
 - Bounded data backfill and validation, scoped natural-key/alert/outbox-unique
   cutover, remaining health-alert and conflict writers, subject-aware
-  composition/reporting (including Labs charts, shares, digests, overview, and
-  export), full MCP principal propagation, and RLS remain pending.
+  composition/reporting (including Labs/Genetics charts, shares, digests,
+  overview, and export), lossless VCF chunking, full MCP principal propagation,
+  and RLS remain pending.
   Registration stays disabled; the current code is a safe single-subject
   migration bridge, not a multi-user release boundary.
 

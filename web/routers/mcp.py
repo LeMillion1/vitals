@@ -64,7 +64,7 @@ from vitals.models import (
     WeightLog,
     WeeklyDigest,
 )
-from vitals.services import conflict_engine, modules_service
+from vitals.services import conflict_engine, genetics_service, modules_service
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.services.data_portability_service import GENERIC_OUTPUT_SUPPRESSED_COLUMNS
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
@@ -639,6 +639,7 @@ async def get_skincare_logs(
 
 
 @mcp.tool()
+@gated("genetics")
 async def get_genetics_snps(
     gene: Optional[str] = None, rsid: Optional[str] = None, limit: int = 100
 ) -> list[dict]:
@@ -649,13 +650,15 @@ async def get_genetics_snps(
     READ tool."""
     session_factory = get_session_factory()
     async with session_factory() as session:
-        stmt = select(GeneticVariant)
-        if gene:
-            stmt = stmt.where(func.lower(GeneticVariant.gene) == gene.strip().lower())
-        if rsid:
-            stmt = stmt.where(func.lower(GeneticVariant.rsid) == rsid.strip().lower())
-        stmt = stmt.order_by(GeneticVariant.gene, GeneticVariant.rsid).limit(limit)
-        variants = (await session.execute(stmt)).scalars().all()
+        scope = await _mcp_v1_conflict_scope(session)
+        variants = await genetics_service.list_variants(
+            session,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+            gene=gene,
+            rsid=rsid,
+            limit=limit,
+        )
         return [serialize_row(v) for v in variants]
 
 
@@ -670,38 +673,63 @@ async def upsert_genetic_variant(
     impact_domain: Optional[str] = None,
     interpretation: Optional[str] = None,
     action_notes: Optional[str] = None,
+    clear_fields: Optional[list[str]] = None,
 ) -> dict:
     """Adds or updates one genetic variant, keyed by ``rsid`` — restating a known
     rsid edits that row instead of duplicating it. ``marker`` is the slug the
     conflict rules match on (e.g. "mthfr_c677t_tt"); without one the variant is
-    reference-only. Fields left out keep their stored value. WRITE tool."""
-    from vitals.services import genetics_service
+    reference-only. Fields left out keep their stored value. To explicitly clear
+    an optional value, name it in ``clear_fields`` (for example
+    ``["action_notes"]``). WRITE tool."""
+    patch_fields = {
+        "genotype": genotype,
+        "marker": marker,
+        "impact": impact,
+        "impact_domain": impact_domain,
+        "interpretation": interpretation,
+        "action_notes": action_notes,
+    }
+    clear = set(clear_fields or ())
+    unknown = clear.difference(patch_fields)
+    if unknown:
+        return {
+            "error": "clear_fields contains unknown fields: "
+            + ", ".join(sorted(unknown))
+        }
+    overlapping = sorted(name for name in clear if patch_fields[name] is not None)
+    if overlapping:
+        return {
+            "error": "fields cannot be set and cleared together: "
+            + ", ".join(overlapping)
+        }
+    for name, value in tuple(patch_fields.items()):
+        if name in clear:
+            patch_fields[name] = None
+        elif value is None:
+            patch_fields[name] = genetics_service.PATCH_UNSET
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        # upsert_by_rsid replaces the genotype unconditionally — the VCF importer
-        # always has one. A conversation adding just an interpretation does not,
-        # and must not blank the genotype the import wrote.
-        if genotype is None:
-            existing = (
-                await session.execute(
-                    select(GeneticVariant).where(GeneticVariant.rsid == rsid)
-                )
-            ).scalar_one_or_none()
-            genotype = existing.genotype if existing is not None else None
-        row = await genetics_service.upsert_by_rsid(
+        context = await _mcp_v1_conflict_write_context(session)
+        prepared = await conflict_engine.prepare_scoped_write(
             session,
-            gene=gene,
-            rsid=rsid,
-            genotype=genotype,
-            marker=marker,
-            impact=impact,
-            impact_domain=impact_domain,
-            interpretation=interpretation,
-            action_notes=action_notes,
-            source=Source.MCP.value,
+            context=context,
         )
-        await session.commit()
+        try:
+            row = await genetics_service.upsert_by_rsid(
+                session,
+                gene=gene,
+                rsid=rsid,
+                **patch_fields,
+                source=Source.MCP.value,
+                identity=context.identity,
+                prepared_conflict_write=prepared,
+                include_legacy_unowned=True,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
         return await serialize_written(session, row)
 
 
@@ -2202,6 +2230,17 @@ async def delete_record(domain: str, record_id: int) -> dict:
                 "prepared_conflict_write": prepared,
             }
         elif domain == "labs":
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            owned_kwargs = {
+                "identity": conflict_context.identity,
+                "include_legacy_unowned": True,
+                "prepared_conflict_write": prepared,
+            }
+        elif domain == "genetics":
             conflict_context = await _mcp_v1_conflict_write_context(session)
             prepared = await conflict_engine.prepare_scoped_write(
                 session,

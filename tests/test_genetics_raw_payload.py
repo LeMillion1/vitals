@@ -43,7 +43,8 @@ async def test_import_stores_parsed_variants(auth_client, db_session):
     assert len(rows) == 1
     raw = rows[0]
     assert raw.source == Source.VCF_IMPORT.value
-    assert raw.external_id == "genome.vcf"
+    assert raw.external_id.startswith("vcf:")
+    assert raw.payload["filename"] == "genome.vcf"
     assert raw.payload["truncated"] is False
     assert raw.payload["variants"] == [
         ["rs1800562", "G", "A", "G/A"],
@@ -52,7 +53,7 @@ async def test_import_stores_parsed_variants(auth_client, db_session):
 
 
 async def test_reimport_refreshes_single_row(auth_client, db_session):
-    """Same filename = same (domain, source, external_id) → one row, refreshed."""
+    """The exact same bounded import revision is idempotent."""
     await _import(auth_client, VCF)
     await _import(auth_client, VCF)
 

@@ -7,13 +7,14 @@ router and this CLI share one implementation and ``web/`` never imports
 re-exports the core names for backward compatibility.
 
 Usage:
-    python -m scripts.import_vcf path/to/genome.vcf
-    python -m scripts.import_vcf path/to/genome.vcf --only-interpreted
+    python -m scripts.import_vcf path/to/genome.vcf --actor-username owner
+    python -m scripts.import_vcf path/to/genome.vcf --actor-username owner --only-interpreted
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+from pathlib import Path
 
 # Re-export the pure parsing core (kept for backward-compat imports).
 from vitals.services.genetics_vcf import (  # noqa: F401
@@ -25,27 +26,55 @@ from vitals.services.genetics_vcf import (  # noqa: F401
 )
 
 
-async def _import(path: str, only_interpreted: bool) -> int:
+async def _import(path: str, only_interpreted: bool, actor_username: str) -> int:
     from vitals.config import load_config
     from vitals.database import create_session_factory
-    from vitals.services import genetics_service
+    from vitals.services import conflict_engine, genetics_service
+
+    raw_variants: list[ParsedVariant] = []
+    curated_variants: list[ParsedVariant] = []
+    truncated = False
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            variant = parse_vcf_line(line)
+            if variant is None:
+                continue
+            if len(raw_variants) < genetics_service.MAX_RAW_VARIANTS:
+                raw_variants.append(variant)
+            else:
+                truncated = True
+            if variant.rsid in INTERPRETATIONS:
+                curated_variants.append(variant)
 
     config = load_config()
     factory = create_session_factory(config)
 
-    imported = 0
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        variants = iter_parsed(fh)
-
     async with factory() as session:
-        for v in variants:
-            fields = interpret(v)
-            if only_interpreted and not fields.get("marker"):
-                continue
-            await genetics_service.upsert_by_rsid(session, **fields)
-            imported += 1
-        await session.commit()
-    return imported
+        try:
+            context = await conflict_engine.resolve_legacy_conflict_write_context(
+                session,
+                actor_username=actor_username,
+            )
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=context,
+            )
+            summary = await genetics_service.ingest_vcf_batch(
+                session,
+                filename=Path(path).name,
+                curated_variants=curated_variants,
+                raw_variants=raw_variants,
+                only_interpreted=only_interpreted,
+                truncated=truncated,
+                identity=context.identity,
+                prepared_conflict_write=prepared,
+                include_legacy_unowned=True,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return summary.imported
 
 
 def main() -> None:
@@ -54,10 +83,17 @@ def main() -> None:
     parser.add_argument(
         "--only-interpreted",
         action="store_true",
-        help="Import only variants with a curated marker (skip raw rows).",
+        help="Normalize only variants with a curated marker (raw capture remains).",
+    )
+    parser.add_argument(
+        "--actor-username",
+        required=True,
+        help="Authenticated owner username responsible for this import.",
     )
     args = parser.parse_args()
-    count = asyncio.run(_import(args.vcf_path, args.only_interpreted))
+    count = asyncio.run(
+        _import(args.vcf_path, args.only_interpreted, args.actor_username)
+    )
     print(f"Imported/updated {count} variants.")
 
 

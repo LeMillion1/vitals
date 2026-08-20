@@ -150,6 +150,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   alerts are actorless health alerts, and owned replay is isolated per raw row.
   Composite ownership FKs/backfill, raw natural-key uniqueness, and the remaining
   chart/share/digest/overview/export composition cutover still block registration.
+- Genetics web, MCP, and local CLI imports now bind the selected owner before any
+  catalog mutation. VCF imports persist a content-addressed S+A raw revision
+  with null provider/file roots before linking curated variants; manual and MCP
+  facts retain their own provenance, corrections preserve the original
+  actor/source/raw roots, and a risk-to-reference re-import clears obsolete
+  conflict markers. Direct reads and deletes are subject-scoped, partial or
+  malformed raw graphs fail closed, and nightly replay can complete a partially
+  normalized VCF batch without letting older pending evidence replace a newer
+  fact. The bounded raw sample still records an explicit truncation flag;
+  lossless VCF chunking, scoped rsID/raw uniqueness, composite ownership FKs,
+  and whole-lake composition remain registration blockers.
 - The Garmin Weight export outbox now projects only the prepared subject and Garmin
   account, validates every linked Weight fact before using remote-delete authority,
   and records the human requester while scheduled work remains actorless. Settings,
