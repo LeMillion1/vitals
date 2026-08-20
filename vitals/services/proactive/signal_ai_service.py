@@ -529,7 +529,20 @@ async def _lock_signal_scope(
         if not ownership.include_legacy_unowned:
             raise SignalAIOwnershipError("subject-adopted legacy raw requires the bridge")
         await _require_exact_one_subject(session, subject_id=ownership.subject_id)
-    elif raw.actor_user_id is None or raw.integration_connection_id is None:
+    elif raw.actor_user_id is None:
+        if live or not ownership.include_legacy_unowned:
+            raise SignalAIOwnershipError(
+                "signal raw has partial actor/connection roots"
+            )
+        await _require_exact_one_subject(
+            session,
+            subject_id=ownership.subject_id,
+        )
+        if raw.integration_connection_id not in locked_connections:
+            raise SignalAIOwnershipError(
+                "historical actorless signal connection changed during locking"
+            )
+    elif raw.integration_connection_id is None:
         raise SignalAIOwnershipError("signal raw has partial actor/connection roots")
     else:
         if raw.actor_user_id != ownership.recipient_user_id:
@@ -1085,13 +1098,24 @@ def _recovery_raw_scope(ownership: ProactiveOwnershipContext):
         RawPayload.integration_connection_id.is_(None),
         RawPayload.file_asset_id.is_(None),
     )
+    historical_null_actor = and_(
+        RawPayload.subject_id == ownership.subject_id,
+        RawPayload.actor_user_id.is_(None),
+        RawPayload.integration_connection_id.in_(historical_connections),
+        RawPayload.file_asset_id.is_(None),
+    )
     fully_unowned = and_(
         RawPayload.subject_id.is_(None),
         RawPayload.actor_user_id.is_(None),
         RawPayload.integration_connection_id.is_(None),
         RawPayload.file_asset_id.is_(None),
     )
-    return or_(exact_owned, subject_adopted, fully_unowned)
+    return or_(
+        exact_owned,
+        subject_adopted,
+        historical_null_actor,
+        fully_unowned,
+    )
 
 
 def _recovery_terminal_count(subject_id: uuid.UUID):
@@ -1399,6 +1423,9 @@ async def persist_signal_parse(
         raw_id=locked.raw.id,
         allow_historical_connection=True,
         allow_subject_adopted_unowned=True,
+        allow_historical_null_actor_connection=(
+            snapshot._invocation_source is AIInvocationSource.SCHEDULER
+        ),
     )
     if len(rows) != len(items):
         raise SignalAIInvocationStateError("validated signal items were not persisted")
@@ -1562,7 +1589,20 @@ async def _eligible_pending_raws(
             except SignalAIOwnershipError:
                 invalid_pending = True
                 continue
-        elif actor_id is None or connection_id is None:
+        elif actor_id is None:
+            if not ownership.include_legacy_unowned:
+                invalid_pending = True
+                continue
+            try:
+                await _require_exact_one_subject(
+                    session,
+                    subject_id=ownership.subject_id,
+                )
+            except SignalAIOwnershipError:
+                invalid_pending = True
+                continue
+            connection_ids.add(connection_id)
+        elif connection_id is None:
             invalid_pending = True
             continue
         else:

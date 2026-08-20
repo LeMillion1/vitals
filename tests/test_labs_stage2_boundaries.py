@@ -680,6 +680,85 @@ async def test_owned_raw_replay_scans_past_full_malformed_head_batch(
     assert malformed_processed == [None] * len(malformed_ids)
 
 
+async def test_stage3a_parser_history_replays_without_becoming_live_upload(
+    db_session,
+    legacy_owner_roots,
+):
+    system = _identity(legacy_owner_roots, system=True)
+    connection = await _openrouter_connection(db_session, system.subject_id)
+    raw = RawPayload(
+        subject_id=system.subject_id,
+        actor_user_id=None,
+        integration_connection_id=connection.id,
+        file_asset_id=None,
+        domain=Domain.LABS.value,
+        source=Source.LAB_PARSER.value,
+        external_id="labs/stage3a-history.png",
+        payload={
+            "date": RESULT_DATE.isoformat(),
+            "lab_name": "Historical Synthetic Lab",
+            "results": [{"marker": "Historical ferritin", "value": 72}],
+        },
+    )
+    db_session.add(raw)
+    await db_session.commit()
+
+    live_prepared = await _prepared(
+        db_session,
+        _context(system, legacy=True),
+    )
+    with pytest.raises(
+        conflict_engine.ConflictRawOwnershipError,
+        match="no file root",
+    ):
+        await labs_service.add_result(
+            db_session,
+            on_date=RESULT_DATE,
+            marker="Must not normalize live",
+            value=1,
+            source=Source.LAB_PARSER.value,
+            raw_payload_id=raw.id,
+            identity=system,
+            include_legacy_unowned=True,
+            prepared_conflict_write=live_prepared,
+        )
+    await db_session.rollback()
+
+    prepared = await _prepared(
+        db_session,
+        _context(system, on_date=BOUNDARY_DATE, legacy=True),
+    )
+    assert await labs_service.reparse_owned_pending(
+        db_session,
+        identity=system,
+        prepared_conflict_write=prepared,
+        include_legacy_unowned=True,
+    ) == 1
+    result = await db_session.scalar(
+        select(LabResult).where(LabResult.raw_payload_id == raw.id)
+    )
+    raw = await db_session.get(RawPayload, raw.id)
+    assert result is not None
+    assert raw is not None
+    assert (
+        result.subject_id,
+        result.actor_user_id,
+        result.source,
+        raw.actor_user_id,
+        raw.integration_connection_id,
+        raw.file_asset_id,
+        raw.processed_at is not None,
+    ) == (
+        system.subject_id,
+        None,
+        Source.LAB_PARSER.value,
+        None,
+        connection.id,
+        None,
+        True,
+    )
+
+
 @pytest.mark.integration
 async def test_postgres_concurrent_first_marker_writes_serialize_on_subject_root(
     db_session,

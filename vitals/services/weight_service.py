@@ -344,6 +344,76 @@ def _check_range(name: str, value: Optional[float], bounds: tuple[float, float])
 
 
 # ── Weight logs ───────────────────────────────────────────────────────────────
+def _historical_provider_raw_scope(subject_id: uuid.UUID):
+    """Exact post-backfill raw roots for a still-unowned historical Weight."""
+
+    from vitals.models.identity import HealthSubject
+    from vitals.models.tenancy import IntegrationConnection
+
+    historical_statuses = tuple(
+        status.value
+        for status in IntegrationConnectionStatus
+        if status is not IntegrationConnectionStatus.PENDING
+    )
+    exact_one_subject = and_(
+        exists(select(1).where(HealthSubject.id == subject_id)),
+        ~exists(select(1).where(HealthSubject.id != subject_id)),
+    )
+    matching_connection = exists(
+        select(1).where(
+            IntegrationConnection.id == RawPayload.integration_connection_id,
+            IntegrationConnection.subject_id == subject_id,
+            IntegrationConnection.status.in_(historical_statuses),
+            or_(
+                and_(
+                    WeightLog.source == Source.GARMIN_API.value,
+                    RawPayload.domain == Domain.GARMIN.value,
+                    RawPayload.source == Source.GARMIN_API.value,
+                    IntegrationConnection.provider
+                    == IntegrationProvider.GARMIN.value,
+                    IntegrationConnection.connection_type
+                    == IntegrationConnectionType.ACCOUNT.value,
+                ),
+                and_(
+                    WeightLog.source == Source.BODY_SCAN.value,
+                    RawPayload.domain == Domain.BODY_COMPOSITION.value,
+                    RawPayload.source == Source.BODY_SCAN.value,
+                    IntegrationConnection.provider
+                    == IntegrationProvider.OPENROUTER.value,
+                    IntegrationConnection.connection_type
+                    == IntegrationConnectionType.AI_GATEWAY.value,
+                ),
+            ),
+        ).correlate(RawPayload, WeightLog)
+    )
+    body_has_no_invocation = or_(
+        WeightLog.source != Source.BODY_SCAN.value,
+        ~exists(
+            select(1)
+            .where(AIInvocation.raw_payload_id == RawPayload.id)
+            .correlate(RawPayload)
+        ),
+    )
+    provider_history = and_(
+        RawPayload.integration_connection_id.is_not(None),
+        matching_connection,
+    )
+    body_mcp_history = and_(
+        WeightLog.source == Source.BODY_SCAN.value,
+        RawPayload.domain == Domain.BODY_COMPOSITION.value,
+        RawPayload.source == Source.MCP.value,
+        RawPayload.integration_connection_id.is_(None),
+    )
+    return and_(
+        RawPayload.subject_id == subject_id,
+        RawPayload.actor_user_id.is_(None),
+        RawPayload.file_asset_id.is_(None),
+        exact_one_subject,
+        or_(provider_history, body_mcp_history),
+        body_has_no_invocation,
+    )
+
+
 def _weight_scope_condition(
     *,
     subject_id: uuid.UUID,
@@ -375,6 +445,7 @@ def _weight_scope_condition(
     exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
         raw_scope
     )
+    historical_provider_raw = _historical_provider_raw_scope(subject_id)
     exact_fact_raw = exact_raw
     if include_legacy_unowned:
         exact_fact_raw = or_(exact_fact_raw, fully_unowned_raw)
@@ -416,7 +487,7 @@ def _weight_scope_condition(
             exists(
                 select(1).where(
                     RawPayload.id == WeightLog.raw_payload_id,
-                    fully_unowned_raw,
+                    or_(fully_unowned_raw, historical_provider_raw),
                 )
             ),
         ),
@@ -442,6 +513,7 @@ async def _assert_weight_scope_integrity(
     exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
         raw_scope
     )
+    historical_provider_raw = _historical_provider_raw_scope(subject_id)
     exact_fact_raw = exact_raw
     if include_legacy_unowned:
         exact_fact_raw = or_(exact_fact_raw, fully_unowned_raw)
@@ -469,7 +541,7 @@ async def _assert_weight_scope_integrity(
                     exists(
                         select(1).where(
                             RawPayload.id == WeightLog.raw_payload_id,
-                            fully_unowned_raw,
+                            or_(fully_unowned_raw, historical_provider_raw),
                         )
                     ),
                 ),
@@ -652,6 +724,106 @@ async def _validate_body_scan_ai_origin(
         )
 
 
+async def _validate_historical_provider_raw(
+    session: AsyncSession,
+    *,
+    raw: RawPayload,
+    subject_id: uuid.UUID,
+    fact_source: str,
+    for_update: bool,
+) -> bool:
+    """Prove one exact Stage-3A raw shape without adopting its C or actor."""
+
+    from vitals.models.identity import HealthSubject
+    from vitals.models.tenancy import IntegrationConnection
+
+    if not (
+        raw.subject_id == subject_id
+        and raw.actor_user_id is None
+        and raw.file_asset_id is None
+    ):
+        return False
+    if fact_source == Source.GARMIN_API.value:
+        expected_domain = Domain.GARMIN.value
+        expected_raw_source = Source.GARMIN_API.value
+        expected_provider = IntegrationProvider.GARMIN.value
+        expected_type = IntegrationConnectionType.ACCOUNT.value
+    elif (
+        fact_source == Source.BODY_SCAN.value
+        and raw.source == Source.BODY_SCAN.value
+    ):
+        expected_domain = Domain.BODY_COMPOSITION.value
+        expected_raw_source = Source.BODY_SCAN.value
+        expected_provider = IntegrationProvider.OPENROUTER.value
+        expected_type = IntegrationConnectionType.AI_GATEWAY.value
+    elif (
+        fact_source == Source.BODY_SCAN.value
+        and raw.domain == Domain.BODY_COMPOSITION.value
+        and raw.source == Source.MCP.value
+        and raw.integration_connection_id is None
+    ):
+        expected_domain = Domain.BODY_COMPOSITION.value
+        expected_raw_source = Source.MCP.value
+        expected_provider = None
+        expected_type = None
+    else:
+        return False
+    if raw.domain != expected_domain or raw.source != expected_raw_source:
+        return False
+    subject_ids = list(
+        await session.scalars(
+            select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+        )
+    )
+    if subject_ids != [subject_id]:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "historical Weight raw requires exactly one subject"
+        )
+    if expected_provider is None:
+        if raw.integration_connection_id is not None:
+            raise conflict_engine.ConflictRawOwnershipError(
+                "historical Weight connectionless raw claims a provider"
+            )
+    else:
+        if raw.integration_connection_id is None:
+            return False
+        historical_statuses = tuple(
+            status.value
+            for status in IntegrationConnectionStatus
+            if status is not IntegrationConnectionStatus.PENDING
+        )
+        connection_stmt = select(IntegrationConnection).where(
+            IntegrationConnection.id == raw.integration_connection_id,
+            IntegrationConnection.subject_id == subject_id,
+            IntegrationConnection.provider == expected_provider,
+            IntegrationConnection.connection_type == expected_type,
+            IntegrationConnection.status.in_(historical_statuses),
+        )
+        if for_update:
+            connection_stmt = connection_stmt.with_for_update()
+        connection = await session.scalar(
+            connection_stmt.execution_options(populate_existing=True)
+        )
+        if connection is None:
+            raise conflict_engine.ConflictRawOwnershipError(
+                "historical Weight provider connection is invalid"
+            )
+    if fact_source == Source.BODY_SCAN.value:
+        invocation_stmt = (
+            select(AIInvocation.id)
+            .where(AIInvocation.raw_payload_id == raw.id)
+            .order_by(AIInvocation.created_at, AIInvocation.id)
+            .limit(1)
+        )
+        if for_update:
+            invocation_stmt = invocation_stmt.with_for_update()
+        if await session.scalar(invocation_stmt) is not None:
+            raise conflict_engine.ConflictRawOwnershipError(
+                "historical body-scan Weight mixes subject and platform AI provenance"
+            )
+    return True
+
+
 async def _reject_body_scan_ai_invocation(
     session: AsyncSession,
     *,
@@ -682,6 +854,7 @@ async def _validate_new_weight_provenance(
     integration_connection_id: uuid.UUID | None,
     raw_payload_id: int | None,
     origin_actor_user_id: uuid.UUID | None | object,
+    allow_historical_parser_raw: bool,
 ) -> None:
     from vitals.models.tenancy import IntegrationConnection
 
@@ -811,6 +984,21 @@ async def _validate_new_weight_provenance(
         raise conflict_engine.ConflictRawOwnershipError(
             "weight raw payload belongs to a different domain"
         )
+    if (
+        allow_historical_parser_raw
+        and context.scope.include_legacy_unowned
+        and source == Source.BODY_SCAN.value
+        and raw.source == Source.BODY_SCAN.value
+        and requested_actor is None
+        and await _validate_historical_provider_raw(
+            session,
+            raw=raw,
+            subject_id=context.identity.subject_id,
+            fact_source=source,
+            for_update=True,
+        )
+    ):
+        return
     if source == Source.BODY_SCAN.value and raw.source == Source.BODY_SCAN.value:
         await _validate_body_scan_ai_origin(
             session,
@@ -882,6 +1070,26 @@ async def _validate_persisted_weight_provenance(
             raise conflict_engine.ConflictRawOwnershipError(
                 "weight fact references a missing raw payload"
             )
+        historical_provider_raw = (
+            include_legacy_unowned
+            and await _validate_historical_provider_raw(
+                session,
+                raw=raw,
+                subject_id=subject_id,
+                fact_source=row.source,
+                for_update=False,
+            )
+        )
+        if historical_provider_raw:
+            if (
+                row.actor_user_id is not None
+                or row.integration_connection_id
+                not in {None, raw.integration_connection_id}
+            ):
+                raise conflict_engine.ConflictRawOwnershipError(
+                    "historical Weight fact has conflicting normalized roots"
+                )
+            return
         raw_is_fully_unowned = all(
             root is None
             for root in (
@@ -1160,6 +1368,7 @@ async def log_weight(
     include_legacy_unowned: bool = False,
     prepared_weight_write: PreparedWeightWrite | None = None,
     origin_actor_user_id: uuid.UUID | None | object = _ORIGIN_ACTOR_UNSET,
+    allow_historical_parser_raw: bool = False,
 ) -> WeightLog:
     """Record a weight for a date, honouring manual-over-Garmin priority and the
     one-active-per-date invariant.
@@ -1168,6 +1377,8 @@ async def log_weight(
     without ``override``, or ``ValueError`` on an implausible weight.
     """
     _check_range("weight_kg", weight_kg, _WEIGHT_KG_RANGE)
+    if not isinstance(allow_historical_parser_raw, bool):
+        raise TypeError("allow_historical_parser_raw must be a bool")
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
@@ -1186,6 +1397,7 @@ async def log_weight(
             integration_connection_id=integration_connection_id,
             raw_payload_id=raw_payload_id,
             origin_actor_user_id=origin_actor_user_id,
+            allow_historical_parser_raw=allow_historical_parser_raw,
         )
     elif include_legacy_unowned:
         raise ValueError("legacy weight compatibility requires a scoped writer")

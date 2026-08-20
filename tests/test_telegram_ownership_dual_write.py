@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import attributes
 
 from vitals.enums import (
     DigestKind,
@@ -1056,6 +1057,142 @@ async def test_file_only_raw_is_not_eligible_for_the_legacy_null_bridge(db_sessi
         await signals_service._require_raw_ownership_scope(
             db_session,
             raw=owned_with_file,
+        )
+
+
+@pytest.mark.parametrize(
+    ("domain", "source"),
+    (
+        ("labs", Source.TELEGRAM.value),
+        ("signals", Source.LAB_PARSER.value),
+    ),
+)
+async def test_historical_actorless_flag_rejects_wrong_telegram_provenance(
+    db_session,
+    domain,
+    source,
+):
+    graph = await _graph(db_session, f"wrong-history-{domain}-{source}")
+    raw = RawPayload(
+        subject_id=graph.subject.id,
+        actor_user_id=None,
+        integration_connection_id=graph.connection.id,
+        file_asset_id=None,
+        domain=domain,
+        source=source,
+        external_id=f"wrong-history:{domain}:{source}",
+        payload={"text": "must stay pending"},
+    )
+    db_session.add(raw)
+    await db_session.flush()
+
+    with pytest.raises(inbound.InboundOwnershipError, match="domain or source"):
+        await inbound._validate_raw_root(
+            db_session,
+            raw,
+            ownership=graph.ownership,
+            allow_historical_null_actor_connection=True,
+        )
+    with pytest.raises(signals_service.SignalOwnershipError, match="domain or source"):
+        await signals_service._require_raw_ownership_scope(
+            db_session,
+            raw=raw,
+            allow_historical_null_actor_connection=True,
+        )
+
+
+async def test_generic_reparse_accepts_only_explicit_stage3a_telegram_history(
+    db_session,
+):
+    graph = await _graph(db_session, "stage3a-generic-reparse")
+    raw = await signals_service.store_raw_text(
+        db_session,
+        text="голова болит",
+        external_id="tg:stage3a-generic-reparse",
+        identity=graph.ownership.owner_action(),
+        integration_connection_id=graph.connection.id,
+    )
+    raw.actor_user_id = None
+    await db_session.commit()
+
+    with pytest.raises(signals_service.SignalOwnershipError, match="subject owner"):
+        await signals_service.reparse_unparsed(
+            db_session,
+            parse=_one_signal,
+            subject_id=graph.subject.id,
+            integration_connection_id=graph.connection.id,
+        )
+
+    rows = await signals_service.reparse_unparsed(
+        db_session,
+        parse=_one_signal,
+        subject_id=graph.subject.id,
+        integration_connection_id=graph.connection.id,
+        allow_historical_null_actor_connection=True,
+    )
+    assert len(rows) == 1
+    assert (
+        rows[0].subject_id,
+        rows[0].actor_user_id,
+        rows[0].integration_connection_id,
+    ) == (graph.subject.id, None, graph.connection.id)
+
+
+async def test_actorless_history_refreshes_stale_connection_lifecycle(
+    db_session,
+):
+    graph = await _graph(db_session, "stage3a-stale-connection")
+    raw = RawPayload(
+        subject_id=graph.subject.id,
+        actor_user_id=None,
+        integration_connection_id=graph.connection.id,
+        file_asset_id=None,
+        domain="signals",
+        source=Source.TELEGRAM.value,
+        external_id="tg:stage3a-stale-connection",
+        payload={"text": "must refresh C"},
+    )
+    db_session.add(raw)
+    await db_session.commit()
+    assert graph.connection.status == IntegrationConnectionStatus.ACTIVE.value
+    await db_session.execute(
+        update(IntegrationConnection)
+        .where(IntegrationConnection.id == graph.connection.id)
+        .values(status=IntegrationConnectionStatus.PENDING.value)
+        .execution_options(synchronize_session=False)
+    )
+    assert graph.connection.status == IntegrationConnectionStatus.ACTIVE.value
+
+    with pytest.raises(
+        signals_service.SignalOwnershipError,
+        match="historical provenance",
+    ):
+        await signals_service._require_raw_ownership_scope(
+            db_session,
+            raw=raw,
+            allow_historical_null_actor_connection=True,
+        )
+
+    attributes.set_committed_value(
+        graph.connection,
+        "status",
+        IntegrationConnectionStatus.ACTIVE.value,
+    )
+    bridge = ProactiveOwnershipContext(
+        subject_id=graph.subject.id,
+        recipient_user_id=graph.user.id,
+        connection_id=graph.connection.id,
+        include_legacy_unowned=True,
+    )
+    with pytest.raises(
+        inbound.InboundOwnershipError,
+        match="historical provenance",
+    ):
+        await inbound._validate_raw_root(
+            db_session,
+            raw,
+            ownership=bridge,
+            allow_historical_null_actor_connection=True,
         )
 
 

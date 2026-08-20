@@ -518,7 +518,9 @@ async def _load_telegram_connection(
     )
     if lock:
         stmt = stmt.with_for_update()
-    connection = await session.scalar(stmt)
+    connection = await session.scalar(
+        stmt.execution_options(populate_existing=True)
+    )
     if connection is None:
         raise InboundOwnershipError("Telegram connection does not exist")
     if connection.subject_id != subject_id:
@@ -551,7 +553,12 @@ async def _validate_raw_root(
     ownership: ProactiveOwnershipContext,
     lock_connection: bool = True,
     allow_subject_adopted_unowned: bool = False,
+    allow_historical_null_actor_connection: bool = False,
 ) -> None:
+    if raw.domain != DOMAIN or raw.source != SOURCE:
+        raise InboundOwnershipError(
+            "Telegram raw has mismatched domain or source"
+        )
     if raw.subject_id is None:
         if not ownership.include_legacy_unowned or any(
             value is not None
@@ -584,6 +591,32 @@ async def _validate_raw_root(
             raise InboundOwnershipError(
                 "subject-adopted Telegram raw requires exactly one subject"
             )
+        return
+    if raw.actor_user_id is None:
+        if not (
+            allow_historical_null_actor_connection
+            and ownership.include_legacy_unowned
+        ):
+            raise InboundOwnershipError(
+                "Telegram raw has partial actor/connection roots"
+            )
+        subject_ids = list(
+            await session.scalars(
+                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+            )
+        )
+        if subject_ids != [ownership.subject_id]:
+            raise InboundOwnershipError(
+                "historical actorless Telegram raw requires exactly one subject"
+            )
+        assert raw.integration_connection_id is not None
+        await _load_telegram_connection(
+            session,
+            connection_id=raw.integration_connection_id,
+            subject_id=ownership.subject_id,
+            allow_historical=True,
+            lock=lock_connection,
+        )
         return
     if raw.actor_user_id != ownership.recipient_user_id:
         raise InboundOwnershipError(
@@ -686,7 +719,12 @@ async def _claim_update_raw(
         raise InboundOwnershipError("ambiguous Telegram update claim")
     if rows:
         raw = rows[0]
-        await _validate_raw_root(session, raw, ownership=ownership)
+        await _validate_raw_root(
+            session,
+            raw,
+            ownership=ownership,
+            allow_historical_null_actor_connection=True,
+        )
         await session.commit()
         return _RawClaim(raw=raw, created=False)
 
@@ -763,6 +801,7 @@ async def handle_update(
                     session,
                     claim.raw,
                     ownership=ownership,
+                    allow_historical_null_actor_connection=True,
                 )
             except signals_service.RawPayloadAlreadyProcessedError:
                 return
@@ -1125,6 +1164,7 @@ async def _lock_pending_raw_for_completion(
     *,
     ownership: ProactiveOwnershipContext,
     allow_subject_adopted_unowned: bool = False,
+    allow_historical_null_actor_connection: bool = False,
 ) -> RawPayload:
     """Lock S -> historical C -> raw and reject a superseded stale instance."""
 
@@ -1187,6 +1227,9 @@ async def _lock_pending_raw_for_completion(
             ownership=ownership,
             lock_connection=False,
             allow_subject_adopted_unowned=allow_subject_adopted_unowned,
+            allow_historical_null_actor_connection=(
+                allow_historical_null_actor_connection
+            ),
         )
     if locked.processed_at is not None:
         raise signals_service.RawPayloadAlreadyProcessedError(
@@ -1207,6 +1250,7 @@ async def _mark_raw_processed(
     *,
     ownership: ProactiveOwnershipContext,
     allow_subject_adopted_unowned: bool = False,
+    allow_historical_null_actor_connection: bool = False,
     commit_success: bool = True,
 ) -> bool:
     try:
@@ -1215,6 +1259,9 @@ async def _mark_raw_processed(
             raw,
             ownership=ownership,
             allow_subject_adopted_unowned=allow_subject_adopted_unowned,
+            allow_historical_null_actor_connection=(
+                allow_historical_null_actor_connection
+            ),
         )
     except signals_service.RawPayloadAlreadyProcessedError:
         # Release the root locks; a newer edit already owns the terminal state.
@@ -1335,6 +1382,7 @@ async def _raw_delivery_is_current(
             ownership=ownership,
             lock_connection=False,
             allow_subject_adopted_unowned=True,
+            allow_historical_null_actor_connection=True,
         )
     if any(_is_prior_message_version(current, row) for row in locked):
         return False
@@ -1686,6 +1734,7 @@ async def _platform_signal_t1_state(
         raw,
         ownership=ownership,
         lock_connection=False,
+        allow_historical_null_actor_connection=True,
     )
     invocation = (
         await session.execute(
@@ -1863,6 +1912,7 @@ async def _supersede_edited_message(
     *,
     ownership: ProactiveOwnershipContext,
     allow_subject_adopted_unowned: bool = False,
+    allow_historical_null_actor_connection: bool = False,
 ) -> int:
     """Deactivate facts from earlier versions of the same Telegram message."""
 
@@ -1930,6 +1980,9 @@ async def _supersede_edited_message(
             ownership=ownership,
             lock_connection=False,
             allow_subject_adopted_unowned=allow_subject_adopted_unowned,
+            allow_historical_null_actor_connection=(
+                allow_historical_null_actor_connection
+            ),
         )
     if current.processed_at is not None or later:
         # A later edit already superseded this version while it was waiting, or
@@ -3136,6 +3189,7 @@ async def _raw_recovery_state(
         current,
         ownership=ownership,
         lock_connection=False,
+        allow_historical_null_actor_connection=True,
     )
     return _RawRecoveryState.UNCLAIMED
 
@@ -3395,6 +3449,12 @@ async def _recover_claimed_text(
         if is_signal and raw.processed_at is not None:
             # No live Telegram AI lineage means this is historical terminal
             # domain state, not a queue for a retroactive echo.
+            await session.commit()
+            return False
+        if raw.actor_user_id is None and raw.integration_connection_id is not None:
+            # A Stage-3A historical root is scheduler-recovery provenance. A
+            # duplicate live webhook may discover it, but must not turn that
+            # discovery into a live, owner-attributed provider reservation.
             await session.commit()
             return False
         # Classification above is read-only. Start the composed path with a fresh
@@ -4107,6 +4167,7 @@ async def _replay_pending_callbacks(
                     session,
                     raw,
                     ownership=ownership,
+                    allow_historical_null_actor_connection=True,
                 )
                 replay_ownership = ownership
                 if raw.subject_id is not None:
@@ -4202,12 +4263,14 @@ async def _reparse_pending_platform(
                     raw,
                     ownership=ownership,
                     allow_subject_adopted_unowned=True,
+                    allow_historical_null_actor_connection=True,
                 )
                 await _supersede_edited_message(
                     session,
                     raw,
                     ownership=ownership,
                     allow_subject_adopted_unowned=True,
+                    allow_historical_null_actor_connection=True,
                 )
                 try:
                     signal_ai_service.validate_signal_raw_input(raw)
@@ -4227,6 +4290,7 @@ async def _reparse_pending_platform(
                         raw,
                         ownership=ownership,
                         allow_subject_adopted_unowned=True,
+                        allow_historical_null_actor_connection=True,
                     )
                     await session.commit()
                     attempted += 1
@@ -4252,6 +4316,7 @@ async def _reparse_pending_platform(
                                 current,
                                 ownership=ownership,
                                 allow_subject_adopted_unowned=True,
+                                allow_historical_null_actor_connection=True,
                             )
                     continue
                 try:
@@ -4370,11 +4435,13 @@ async def reparse_pending(
             raw,
             ownership=ownership,
             lock_connection=False,
+            allow_historical_null_actor_connection=True,
         )
         await _supersede_edited_message(
             reparse_session,
             raw,
             ownership=ownership,
+            allow_historical_null_actor_connection=True,
         )
         if not await _raw_text_is_signal_candidate(
             reparse_session,
@@ -4385,6 +4452,7 @@ async def reparse_pending(
                 reparse_session,
                 raw,
                 ownership=ownership,
+                allow_historical_null_actor_connection=True,
             )
             raise signals_service.RawPayloadAlreadyProcessedError(
                 "Telegram command/question raw is terminal without parsing"
@@ -4409,6 +4477,7 @@ async def reparse_pending(
             reparse_session,
             raw,
             ownership=ownership,
+            allow_historical_null_actor_connection=True,
         )
 
     async def _after_normalize(
@@ -4434,6 +4503,7 @@ async def reparse_pending(
         before_normalize=_before_normalize if ownership is not None else None,
         after_normalize=_after_normalize if ownership is not None else None,
         parser_outcome=outcome,
+        allow_historical_null_actor_connection=(ownership is not None),
     )
     # Every terminal raw/Signal mutation wins durability before alert state. A
     # failed reconciliation is logged and retried by a later parser attempt.

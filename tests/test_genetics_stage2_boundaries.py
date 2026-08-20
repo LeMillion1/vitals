@@ -678,6 +678,49 @@ async def test_replay_fills_missing_curated_children_and_is_idempotent(
     ) == 0
 
 
+async def test_replay_accepts_exact_stage3a_subject_only_vcf_history(
+    db_session,
+    legacy_owner_roots,
+):
+    owner = _identity(legacy_owner_roots)
+    raw = RawPayload(
+        subject_id=owner.subject_id,
+        actor_user_id=None,
+        integration_connection_id=None,
+        file_asset_id=None,
+        domain="genetics",
+        source=Source.VCF_IMPORT.value,
+        external_id="stage3a-subject-only.vcf",
+        payload={
+            "filename": "stage3a-subject-only.vcf",
+            "truncated": False,
+            "variants": [[RISK.rsid, RISK.ref, RISK.alt, RISK.genotype]],
+        },
+    )
+    db_session.add(raw)
+    await db_session.flush()
+    system = WriteIdentity(owner.subject_id, None)
+    prepared = await _prepared(db_session, system, legacy=True)
+
+    assert await genetics_service.reparse_owned_pending(
+        db_session,
+        identity=system,
+        prepared_conflict_write=prepared,
+        include_legacy_unowned=True,
+    ) == 1
+    variants = list(
+        await db_session.scalars(
+            select(GeneticVariant).where(GeneticVariant.raw_payload_id == raw.id)
+        )
+    )
+    assert variants
+    assert {
+        (row.subject_id, row.actor_user_id, row.raw_payload_id)
+        for row in variants
+    } == {(owner.subject_id, None, raw.id)}
+    assert raw.processed_at is not None
+
+
 async def test_replay_cannot_roll_fact_back_to_older_pending_raw(
     db_session,
     legacy_owner_roots,

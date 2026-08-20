@@ -39,6 +39,7 @@ from vitals.enums import (
     Domain,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
+    IntegrationProvider,
     SignalKind,
     Source,
 )
@@ -224,6 +225,7 @@ async def _require_raw_ownership_scope(
     *,
     raw: RawPayload,
     allow_subject_adopted_unowned: bool = False,
+    allow_historical_null_actor_connection: bool = False,
 ) -> None:
     """Validate an owned channel raw root before copying its provenance.
 
@@ -231,6 +233,11 @@ async def _require_raw_ownership_scope(
     valid provenance root.  New ingestion goes through
     :func:`_require_connection_scope` first and therefore cannot attach one.
     """
+
+    if raw.domain != DOMAIN or raw.source != Source.TELEGRAM.value:
+        raise SignalOwnershipError(
+            "historical channel raw has mismatched domain or source"
+        )
 
     if raw.subject_id is None:
         if any(
@@ -246,6 +253,10 @@ async def _require_raw_ownership_scope(
     if not isinstance(allow_subject_adopted_unowned, bool):
         raise SignalOwnershipError(
             "allow_subject_adopted_unowned must be a boolean"
+        )
+    if not isinstance(allow_historical_null_actor_connection, bool):
+        raise SignalOwnershipError(
+            "allow_historical_null_actor_connection must be a boolean"
         )
     if raw.file_asset_id is not None:
         raise SignalOwnershipError(
@@ -268,7 +279,20 @@ async def _require_raw_ownership_scope(
         raise SignalOwnershipError(
             "subject-adopted legacy raw requires an explicit bridge"
         )
-    if raw.actor_user_id != owner_user_id:
+    historical_null_actor = (
+        raw.actor_user_id is None
+        and raw.integration_connection_id is not None
+    )
+    if historical_null_actor:
+        if not allow_historical_null_actor_connection:
+            raise SignalOwnershipError(
+                "owned channel raw payload actor is not the subject owner"
+            )
+        await _require_single_subject_adoption(
+            session,
+            subject_id=raw.subject_id,
+        )
+    elif raw.actor_user_id != owner_user_id:
         raise SignalOwnershipError(
             "owned channel raw payload actor is not the subject owner"
         )
@@ -278,15 +302,25 @@ async def _require_raw_ownership_scope(
         )
 
     connection = await session.scalar(
-        select(IntegrationConnection).where(
-            IntegrationConnection.id == raw.integration_connection_id
-        )
+        select(IntegrationConnection)
+        .where(IntegrationConnection.id == raw.integration_connection_id)
+        .execution_options(populate_existing=True)
     )
     if connection is None:
         raise SignalOwnershipError("raw payload connection does not exist")
     if connection.subject_id != raw.subject_id:
         raise SignalOwnershipError(
             "raw payload connection belongs to another subject"
+        )
+    if (
+        historical_null_actor
+        and (
+            raw.source != Source.TELEGRAM.value
+            or connection.provider != IntegrationProvider.TELEGRAM.value
+        )
+    ):
+        raise SignalOwnershipError(
+            "historical actorless raw is not Telegram recipient provenance"
         )
     if connection.connection_type != IntegrationConnectionType.RECIPIENT.value:
         raise SignalOwnershipError(
@@ -405,6 +439,7 @@ async def _lock_pending_raw_for_normalization(
     session: AsyncSession,
     *,
     raw: RawPayload,
+    allow_historical_null_actor_connection: bool = False,
 ) -> RawPayload:
     """Refresh the terminal marker under a row lock before creating facts."""
 
@@ -416,7 +451,13 @@ async def _lock_pending_raw_for_normalization(
     )
     if locked is None:
         raise SignalOwnershipError("raw payload does not exist")
-    await _require_raw_ownership_scope(session, raw=locked)
+    await _require_raw_ownership_scope(
+        session,
+        raw=locked,
+        allow_historical_null_actor_connection=(
+            allow_historical_null_actor_connection
+        ),
+    )
     if locked.processed_at is not None:
         raise RawPayloadAlreadyProcessedError(
             "raw payload was already processed or superseded"
@@ -562,6 +603,7 @@ async def create_signals(
     integration_connection_id: uuid.UUID | None = None,
     allow_historical_connection: bool = False,
     allow_subject_adopted_unowned: bool = False,
+    allow_historical_null_actor_connection: bool = False,
 ) -> list[Signal]:
     """Persist a parsed batch. Every row of one message shares a ``batch_id``."""
     _validate_identity(identity, integration_connection_id)
@@ -570,6 +612,10 @@ async def create_signals(
     if not isinstance(allow_subject_adopted_unowned, bool):
         raise SignalOwnershipError(
             "allow_subject_adopted_unowned must be a bool"
+        )
+    if not isinstance(allow_historical_null_actor_connection, bool):
+        raise SignalOwnershipError(
+            "allow_historical_null_actor_connection must be a bool"
         )
     if identity is not None and integration_connection_id is not None:
         await _require_connection_scope(
@@ -592,6 +638,9 @@ async def create_signals(
             session,
             raw=raw,
             allow_subject_adopted_unowned=allow_subject_adopted_unowned,
+            allow_historical_null_actor_connection=(
+                allow_historical_null_actor_connection
+            ),
         )
         if identity is not None and raw.subject_id != identity.subject_id:
             raise SignalOwnershipError("raw payload belongs to another subject")
@@ -690,6 +739,7 @@ async def ingest_stored_text(
     before_parse: RawBeforeParse | None = None,
     before_normalize: RawBeforeNormalize | None = None,
     parser_outcome: ParserOutcome | None = None,
+    allow_historical_null_actor_connection: bool = False,
 ) -> list[Signal]:
     """Normalize one raw row that was durably claimed by a channel boundary.
 
@@ -704,7 +754,13 @@ async def ingest_stored_text(
     _validate_parser_outcome(parser_outcome)
     if not isinstance(raw, RawPayload):
         raise SignalOwnershipError("raw must be a RawPayload")
-    await _require_raw_ownership_scope(session, raw=raw)
+    await _require_raw_ownership_scope(
+        session,
+        raw=raw,
+        allow_historical_null_actor_connection=(
+            allow_historical_null_actor_connection
+        ),
+    )
     if identity is not None and raw.subject_id != identity.subject_id:
         raise SignalOwnershipError("raw payload belongs to another subject")
     if (
@@ -733,7 +789,13 @@ async def ingest_stored_text(
     # ORM object that existed before the await above.
     if before_normalize is not None:
         await before_normalize(session, raw)
-    raw = await _lock_pending_raw_for_normalization(session, raw=raw)
+    raw = await _lock_pending_raw_for_normalization(
+        session,
+        raw=raw,
+        allow_historical_null_actor_connection=(
+            allow_historical_null_actor_connection
+        ),
+    )
     if identity is not None and raw.subject_id != identity.subject_id:
         raise SignalOwnershipError("raw payload belongs to another subject")
     if (
@@ -760,6 +822,9 @@ async def ingest_stored_text(
         identity=identity,
         integration_connection_id=integration_connection_id,
         allow_historical_connection=True,
+        allow_historical_null_actor_connection=(
+            allow_historical_null_actor_connection
+        ),
     )
     if not rows and not explicitly_empty:
         logger.warning("signal parser returned no usable facts; message kept raw")
@@ -798,6 +863,7 @@ async def reparse_unparsed(
     before_normalize: RawBeforeNormalize | None = None,
     after_normalize: RawAfterNormalize | None = None,
     parser_outcome: ParserOutcome | None = None,
+    allow_historical_null_actor_connection: bool = False,
 ) -> list[Signal]:
     """Second pass over messages that never became rows (R3).
 
@@ -874,7 +940,13 @@ async def reparse_unparsed(
                 # text budget. Pagination keeps rows after it reachable.
                 continue
             if subject_id is not None:
-                await _require_raw_ownership_scope(session, raw=raw)
+                await _require_raw_ownership_scope(
+                    session,
+                    raw=raw,
+                    allow_historical_null_actor_connection=(
+                        allow_historical_null_actor_connection
+                    ),
+                )
             text = projected.strip()
             if not text:
                 raw.processed_at = now_local()
@@ -903,6 +975,9 @@ async def reparse_unparsed(
                 raw = await _lock_pending_raw_for_normalization(
                     session,
                     raw=raw,
+                    allow_historical_null_actor_connection=(
+                        allow_historical_null_actor_connection
+                    ),
                 )
             except RawPayloadAlreadyProcessedError:
                 # Another worker or a newer edited update won while the parser
@@ -918,6 +993,9 @@ async def reparse_unparsed(
                 or raw.fetched_at.date(),
                 source=raw.source,
                 raw_id=raw.id,
+                allow_historical_null_actor_connection=(
+                    allow_historical_null_actor_connection
+                ),
             )
             if not rows and not explicitly_empty:
                 logger.warning(

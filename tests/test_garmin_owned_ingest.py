@@ -339,6 +339,32 @@ async def test_owned_reparse_derives_actor_and_allows_historical_connection(
     assert raw_row.fetched_at == fetched_at
 
 
+async def test_owned_reparse_preserves_stage3a_actorless_account_history(db_session):
+    _, subject, connection = await _scope(db_session, "stage3a-actorless-garmin")
+    raw = RawPayload(
+        subject_id=subject.id,
+        actor_user_id=None,
+        integration_connection_id=connection.id,
+        file_asset_id=None,
+        domain="garmin",
+        source=Source.GARMIN_API.value,
+        external_id=f"daily:{DAY.isoformat()}",
+        payload={"summary": {"totalSteps": 6789}},
+        fetched_at=now_local(),
+    )
+    db_session.add(raw)
+    await db_session.flush()
+
+    row = await garmin_service.reparse_owned_daily_from_raw(db_session, raw)
+
+    assert (
+        row.subject_id,
+        row.actor_user_id,
+        row.integration_connection_id,
+        row.raw_payload_id,
+    ) == (subject.id, None, connection.id, raw.id)
+
+
 async def test_owned_activity_reparse_rejects_payload_id_substitution(db_session):
     owner, subject, connection = await _scope(db_session, "owner")
     raw_row = RawPayload(

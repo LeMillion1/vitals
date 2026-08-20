@@ -907,6 +907,141 @@ async def test_legacy_raw_replay_weight_bridge_remains_scoped_readable(
     )
 
 
+async def test_stage3a_parser_history_replays_scan_and_weight_without_file_adoption(
+    db_session,
+    legacy_owner_roots,
+):
+    system = _identity(legacy_owner_roots, system=True)
+    connection = await _openrouter_connection(db_session, system.subject_id)
+    raw = RawPayload(
+        subject_id=system.subject_id,
+        actor_user_id=None,
+        integration_connection_id=connection.id,
+        file_asset_id=None,
+        domain=Domain.BODY_COMPOSITION.value,
+        source=Source.BODY_SCAN.value,
+        external_id="body_scan:stage3a-history",
+        payload={
+            "date": SCAN_DATE.isoformat(),
+            "device": "Historical Synthetic BIA",
+            "metrics": [{"label": "Weight", "value": 77.2, "unit": "kg"}],
+        },
+    )
+    db_session.add(raw)
+    await db_session.commit()
+
+    with pytest.raises(
+        conflict_engine.ConflictRawOwnershipError,
+        match="no file root",
+    ):
+        await body_scan_service.save_scan(
+            db_session,
+            on_date=SCAN_DATE,
+            raw_payload_id=raw.id,
+            metrics=_metrics(weight=77.2),
+            identity=system,
+            include_legacy_unowned=True,
+            prepared_weight_write=await _prepared_weight(
+                db_session,
+                system,
+                legacy=True,
+            ),
+        )
+    await db_session.rollback()
+
+    assert await body_scan_service.reparse_owned_pending(
+        db_session,
+        identity=system,
+        include_legacy_unowned=True,
+    ) == 1
+    scan = await db_session.scalar(
+        select(BodyScan).where(BodyScan.raw_payload_id == raw.id)
+    )
+    weight = await weight_service.get_active_weight(
+        db_session,
+        SCAN_DATE,
+        subject_id=system.subject_id,
+        include_legacy_unowned=True,
+    )
+    raw = await db_session.get(RawPayload, raw.id)
+    assert scan is not None and weight is not None and raw is not None
+    assert (
+        scan.subject_id,
+        scan.actor_user_id,
+        scan.file_asset_id,
+        scan.file_key,
+    ) == (system.subject_id, None, None, None)
+    assert (
+        weight.subject_id,
+        weight.actor_user_id,
+        weight.integration_connection_id,
+        weight.raw_payload_id,
+    ) == (system.subject_id, None, connection.id, raw.id)
+    assert raw.processed_at is not None
+
+
+async def test_stage3a_mcp_history_is_readable_only_through_exact_legacy_bridge(
+    db_session,
+    legacy_owner_roots,
+):
+    identity = _identity(legacy_owner_roots)
+    raw = RawPayload(
+        subject_id=identity.subject_id,
+        actor_user_id=None,
+        integration_connection_id=None,
+        file_asset_id=None,
+        domain=Domain.BODY_COMPOSITION.value,
+        source=Source.MCP.value,
+        external_id="body_scan:stage3a-mcp-history",
+        payload={"date": SCAN_DATE.isoformat(), "metrics": []},
+    )
+    scan = BodyScan(
+        date=SCAN_DATE,
+        domain=Domain.BODY_COMPOSITION.value,
+        source=Source.MCP.value,
+        raw_payload_id=None,
+    )
+    scan.metrics.append(
+        BodyScanMetric(
+            metric_key="phase_angle",
+            label="Phase Angle",
+            value=6.1,
+        )
+    )
+    db_session.add_all([raw, scan])
+    await db_session.flush()
+    scan.raw_payload_id = raw.id
+    await db_session.commit()
+
+    assert await body_scan_service.list_scans(
+        db_session,
+        subject_id=identity.subject_id,
+    ) == []
+    visible = await body_scan_service.list_scans(
+        db_session,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
+    assert [row.id for row in visible] == [scan.id]
+
+    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
+        await body_scan_service.save_scan(
+            db_session,
+            on_date=NEXT_DATE,
+            raw_payload_id=raw.id,
+            metrics=_metrics(),
+            source=Source.MCP.value,
+            identity=identity,
+            include_legacy_unowned=True,
+            prepared_weight_write=await _prepared_weight(
+                db_session,
+                identity,
+                on_date=NEXT_DATE,
+                legacy=True,
+            ),
+        )
+
+
 @pytest.mark.parametrize("actor_mode", ["null", "foreign"])
 async def test_exact_manual_scan_actor_must_be_subject_owner(
     db_session,

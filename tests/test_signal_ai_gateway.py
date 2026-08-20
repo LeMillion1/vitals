@@ -906,15 +906,15 @@ async def test_partial_pending_head_rows_do_not_starve_later_platform_recovery(
     ownership = await _ownership(db_session, legacy_owner_roots)
     partials = []
     for number in range(21):
-        partials.append(
-            await _raw(
-                db_session,
-                legacy_owner_roots,
-                ownership,
-                suffix=f"partial-head-{number}",
-                actor_user_id=None,
-            )
+        partial = await _raw(
+            db_session,
+            legacy_owner_roots,
+            ownership,
+            suffix=f"partial-head-{number}",
+            actor_user_id=None,
         )
+        partial.domain = Domain.LABS.value
+        partials.append(partial)
     valid = await _raw(
         db_session,
         legacy_owner_roots,
@@ -955,8 +955,7 @@ async def test_partial_pending_head_rows_do_not_starve_later_platform_recovery(
             SystemAlert.resolved_at.is_(None),
         )
     )
-    assert alert is not None
-    assert (alert.integration_connection_id, alert.ai_invocation_id) == (None, None)
+    assert alert is None
     valid = await db_session.get(RawPayload, valid_id)
     assert valid is not None and valid.processed_at is not None
     assert await db_session.scalar(
@@ -970,6 +969,46 @@ async def test_partial_pending_head_rows_do_not_starve_later_platform_recovery(
             .select_from(AIInvocation)
             .where(AIInvocation.raw_payload_id == partial_id)
         ) == 0
+
+
+async def test_scheduler_recovers_exact_stage3a_actorless_telegram_history(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    await _configure_platform(db_session, legacy_owner_roots)
+    ownership = await _ownership(db_session, legacy_owner_roots)
+    raw = await _raw(
+        db_session,
+        legacy_owner_roots,
+        ownership,
+        suffix="stage3a-actorless-history",
+        actor_user_id=None,
+    )
+    await db_session.commit()
+
+    with pytest.raises(signal_ai_service.SignalAIOwnershipError):
+        await signal_ai_service.prepare_live_signal_parse(
+            db_session,
+            ownership=ownership,
+            raw_payload_id=raw.id,
+            on_date=DAY,
+        )
+    await db_session.rollback()
+
+    observed = _observed()
+    monkeypatch.setattr(signal_ai_service, "LLMClient", _llm(db_session, observed))
+    recovered = await inbound.reparse_pending(db_session, ownership=ownership)
+
+    assert observed["calls"] == 1
+    assert len(recovered) == 1
+    assert (
+        recovered[0].subject_id,
+        recovered[0].actor_user_id,
+        recovered[0].integration_connection_id,
+    ) == (ownership.subject_id, None, ownership.connection_id)
+    await db_session.refresh(raw)
+    assert raw.processed_at is not None
 
 
 async def test_invalid_input_recovery_is_bounded_and_progresses_next_run(

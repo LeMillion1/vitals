@@ -10,14 +10,20 @@ import pytest
 from sqlalchemy import select
 
 from vitals.enums import (
+    AIInvocationPurpose,
+    AIInvocationSource,
+    AIInvocationStatus,
     Domain,
     FileAssetPurpose,
     FileAssetStatus,
     FileStorageBackend,
+    IntegrationConnectionType,
+    IntegrationProvider,
     MilestoneStatus,
     Source,
     UserStatus,
 )
+from vitals.models.ai import AIInvocation
 from vitals.models.body_scan import BodyScan
 from vitals.models.genetics import GeneticVariant
 from vitals.models.glp1 import DosePhase, SideEffect
@@ -27,7 +33,7 @@ from vitals.models.milestones import Milestone
 from vitals.models.raw_payload import RawPayload
 from vitals.models.skincare import SkincareProduct
 from vitals.models.supplements import Supplement
-from vitals.models.tenancy import FileAsset
+from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.timeline import Annotation
 from vitals.models.weight import NoiseMarker, ProgressPhoto
 from vitals.ownership import WriteIdentity
@@ -520,6 +526,196 @@ async def test_derived_timeline_bridge_validates_linked_raw_ownership(
 
     assert _derived_ref(selector, partial) not in refs
     assert _derived_ref(selector, legacy) in refs
+
+
+@pytest.mark.parametrize(
+    ("selector", "raw_domain", "raw_source", "normalized_source"),
+    (
+        (
+            "lab_result",
+            Domain.LABS.value,
+            Source.MCP.value,
+            Source.MCP.value,
+        ),
+        (
+            "body_scan",
+            Domain.BODY_COMPOSITION.value,
+            Source.MCP.value,
+            Source.MCP.value,
+        ),
+        (
+            "genetic_variant",
+            Domain.GENETICS.value,
+            Source.VCF_IMPORT.value,
+            Source.VCF_IMPORT.value,
+        ),
+    ),
+)
+async def test_timeline_keeps_exact_stage3a_connectionless_history(
+    db_session,
+    selector,
+    raw_domain,
+    raw_source,
+    normalized_source,
+):
+    owner = await _identity(db_session, f"stage3a-timeline-{selector}")
+    raw = RawPayload(
+        subject_id=owner.subject_id,
+        actor_user_id=None,
+        integration_connection_id=None,
+        file_asset_id=None,
+        domain=raw_domain,
+        source=raw_source,
+        external_id=f"stage3a-timeline-{selector}",
+        payload={"synthetic": True},
+    )
+    wrong_source_raw = RawPayload(
+        subject_id=owner.subject_id,
+        actor_user_id=None,
+        integration_connection_id=None,
+        file_asset_id=None,
+        domain=raw_domain,
+        source=Source.MANUAL.value,
+        external_id=f"wrong-stage3a-timeline-{selector}",
+        payload={"synthetic": True},
+    )
+    db_session.add_all([raw, wrong_source_raw])
+    await db_session.flush()
+    historical = _derived_row(selector, subject_id=None, ordinal=6)
+    historical.source = normalized_source
+    setattr(historical, _DERIVED_RAW_LINKS[selector], raw.id)
+    wrong_source = _derived_row(selector, subject_id=None, ordinal=7)
+    wrong_source.source = normalized_source
+    setattr(wrong_source, _DERIVED_RAW_LINKS[selector], wrong_source_raw.id)
+    db_session.add_all([historical, wrong_source])
+    await db_session.flush()
+
+    strict_refs = {
+        event.ref
+        for event in await timeline_service.list_events(
+            db_session,
+            subject_id=owner.subject_id,
+        )
+    }
+    bridge_refs = {
+        event.ref
+        for event in await timeline_service.list_events(
+            db_session,
+            subject_id=owner.subject_id,
+            include_legacy_unowned=True,
+        )
+    }
+
+    assert _derived_ref(selector, historical) not in strict_refs
+    assert _derived_ref(selector, historical) in bridge_refs
+    assert _derived_ref(selector, wrong_source) not in bridge_refs
+
+
+@pytest.mark.parametrize(
+    ("selector", "raw_domain", "raw_source", "purpose"),
+    (
+        (
+            "lab_result",
+            Domain.LABS.value,
+            Source.LAB_PARSER.value,
+            AIInvocationPurpose.LAB_DOCUMENT_PARSE.value,
+        ),
+        (
+            "body_scan",
+            Domain.BODY_COMPOSITION.value,
+            Source.BODY_SCAN.value,
+            AIInvocationPurpose.BODY_SCAN_PARSE.value,
+        ),
+    ),
+)
+async def test_timeline_provider_history_requires_exclusive_subject_connection(
+    db_session,
+    legacy_owner_roots,
+    platform_ai_ready,
+    selector,
+    raw_domain,
+    raw_source,
+    purpose,
+):
+    identity = WriteIdentity(
+        legacy_owner_roots.subject_id,
+        legacy_owner_roots.user_id,
+    )
+    connection = await db_session.scalar(
+        select(IntegrationConnection).where(
+            IntegrationConnection.subject_id == identity.subject_id,
+            IntegrationConnection.provider == IntegrationProvider.OPENROUTER.value,
+            IntegrationConnection.connection_type
+            == IntegrationConnectionType.AI_GATEWAY.value,
+        )
+    )
+    assert connection is not None
+    raw = RawPayload(
+        subject_id=identity.subject_id,
+        actor_user_id=None,
+        integration_connection_id=connection.id,
+        file_asset_id=None,
+        domain=raw_domain,
+        source=raw_source,
+        external_id=f"stage3a-provider-timeline-{selector}",
+        payload={"synthetic": True},
+    )
+    db_session.add(raw)
+    await db_session.flush()
+    historical = _derived_row(selector, subject_id=None, ordinal=6)
+    historical.source = raw_source
+    setattr(historical, _DERIVED_RAW_LINKS[selector], raw.id)
+    db_session.add(historical)
+    await db_session.flush()
+
+    strict_refs = {
+        event.ref
+        for event in await timeline_service.list_events(
+            db_session,
+            subject_id=identity.subject_id,
+        )
+    }
+    bridge_refs = {
+        event.ref
+        for event in await timeline_service.list_events(
+            db_session,
+            subject_id=identity.subject_id,
+            include_legacy_unowned=True,
+        )
+    }
+    assert _derived_ref(selector, historical) not in strict_refs
+    assert _derived_ref(selector, historical) in bridge_refs
+
+    db_session.add(
+        AIInvocation(
+            subject_id=identity.subject_id,
+            actor_user_id=None,
+            raw_payload_id=raw.id,
+            platform_integration_connection_id=platform_ai_ready.id,
+            purpose=purpose,
+            source=AIInvocationSource.SCHEDULER.value,
+            model="synthetic/timeline-proof",
+            config_version=platform_ai_ready.config_version,
+            idempotency_key=f"timeline-mixed-{selector}",
+            quota_period_start=date(2020, 1, 1),
+            quota_period_end=date(2100, 1, 1),
+            reserved_cost_microunits=1,
+            reserved_units=1,
+            charged_cost_microunits=0,
+            charged_units=0,
+            status=AIInvocationStatus.PREPARED.value,
+        )
+    )
+    await db_session.flush()
+    mixed_refs = {
+        event.ref
+        for event in await timeline_service.list_events(
+            db_session,
+            subject_id=identity.subject_id,
+            include_legacy_unowned=True,
+        )
+    }
+    assert _derived_ref(selector, historical) not in mixed_refs
 
 
 async def test_direct_legacy_bridge_rejects_partial_actor_roots(db_session):

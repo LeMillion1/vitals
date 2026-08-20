@@ -636,6 +636,7 @@ async def _lock_result_provenance_before_row(
             context=context,
             source=source,
             require_mcp_roots=source == Source.MCP.value,
+            allow_historical_parser_raw=include_legacy_unowned,
         )
     return raw_payload_id, source
 
@@ -679,6 +680,87 @@ async def get_result_for_update(
     return row
 
 
+async def _lock_historical_parser_connection_before_raw(
+    session: AsyncSession,
+    *,
+    raw_payload_id: int,
+    context: conflict_engine.ConflictWriteContext,
+    source: str,
+    allow_historical_parser_raw: bool,
+) -> uuid.UUID | None:
+    """Lock the inferred legacy C before raw without widening live uploads."""
+
+    if not (
+        allow_historical_parser_raw
+        and context.scope.include_legacy_unowned
+        and source == Source.LAB_PARSER.value
+    ):
+        return None
+    projected = (
+        await session.execute(
+            select(
+                RawPayload.subject_id,
+                RawPayload.actor_user_id,
+                RawPayload.integration_connection_id,
+                RawPayload.file_asset_id,
+                RawPayload.domain,
+                RawPayload.source,
+            ).where(RawPayload.id == raw_payload_id)
+        )
+    ).first()
+    if projected is None:
+        return None
+    (
+        subject_id,
+        actor_user_id,
+        connection_id,
+        file_asset_id,
+        raw_domain,
+        raw_source,
+    ) = projected
+    if not (
+        subject_id == context.identity.subject_id
+        and actor_user_id is None
+        and connection_id is not None
+        and file_asset_id is None
+        and raw_domain == DOMAIN
+        and raw_source == Source.LAB_PARSER.value
+    ):
+        return None
+    subject_ids = list(
+        await session.scalars(
+            select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+        )
+    )
+    if subject_ids != [context.identity.subject_id]:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "historical lab parser raw requires exactly one subject"
+        )
+    historical_statuses = tuple(
+        status.value
+        for status in IntegrationConnectionStatus
+        if status is not IntegrationConnectionStatus.PENDING
+    )
+    connection = await session.scalar(
+        select(IntegrationConnection)
+        .where(
+            IntegrationConnection.id == connection_id,
+            IntegrationConnection.subject_id == context.identity.subject_id,
+            IntegrationConnection.provider == IntegrationProvider.OPENROUTER.value,
+            IntegrationConnection.connection_type
+            == IntegrationConnectionType.AI_GATEWAY.value,
+            IntegrationConnection.status.in_(historical_statuses),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if connection is None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "historical lab parser AI gateway provenance is invalid"
+        )
+    return connection.id
+
+
 async def _lock_result_raw(
     session: AsyncSession,
     *,
@@ -686,7 +768,19 @@ async def _lock_result_raw(
     context: conflict_engine.ConflictWriteContext,
     source: str,
     require_mcp_roots: bool = False,
+    allow_historical_parser_raw: bool = False,
 ) -> RawPayload:
+    if not isinstance(allow_historical_parser_raw, bool):
+        raise TypeError("allow_historical_parser_raw must be a bool")
+    historical_connection_id = (
+        await _lock_historical_parser_connection_before_raw(
+            session,
+            raw_payload_id=raw_payload_id,
+            context=context,
+            source=source,
+            allow_historical_parser_raw=allow_historical_parser_raw,
+        )
+    )
     exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
         context.scope
     )
@@ -707,6 +801,29 @@ async def _lock_result_raw(
         raise conflict_engine.ConflictRawOwnershipError(
             "lab result raw provenance has a mismatched domain or source"
         )
+    if historical_connection_id is not None:
+        if (
+            raw.subject_id != context.identity.subject_id
+            or raw.actor_user_id is not None
+            or raw.integration_connection_id != historical_connection_id
+            or raw.file_asset_id is not None
+            or raw.source != Source.LAB_PARSER.value
+        ):
+            raise conflict_engine.ConflictRawOwnershipError(
+                "historical lab parser provenance changed while acquiring locks"
+            )
+        invocation_id = await session.scalar(
+            select(AIInvocation.id)
+            .where(AIInvocation.raw_payload_id == raw.id)
+            .order_by(AIInvocation.created_at, AIInvocation.id)
+            .limit(1)
+            .with_for_update()
+        )
+        if invocation_id is not None:
+            raise conflict_engine.ConflictRawOwnershipError(
+                "historical lab parser raw mixes subject and platform AI provenance"
+            )
+        return raw
     if require_mcp_roots and (
         raw.integration_connection_id is not None or raw.file_asset_id is not None
     ):
@@ -928,6 +1045,7 @@ async def add_result(
     identity: WriteIdentity | None = None,
     include_legacy_unowned: bool = False,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    allow_historical_parser_raw: bool = False,
 ) -> LabResult:
     """Record a marker value, computing its flag and ensuring its catalog row.
 
@@ -953,6 +1071,7 @@ async def add_result(
                 context=context,
                 source=source,
                 require_mcp_roots=source == Source.MCP.value,
+                allow_historical_parser_raw=allow_historical_parser_raw,
             )
     marker = normalize_marker(marker)
     if not marker:
@@ -2338,9 +2457,9 @@ async def reparse_owned_pending(
         # Failures remain pending for repair, but they do not consume the
         # successful-work limit. Keyset pagination guarantees that a full head
         # batch of corrupt historical rows cannot starve later valid panels.
-        rows = list(
+        raw_ids = list(
             await session.scalars(
-                select(RawPayload)
+                select(RawPayload.id)
                 .where(
                     raw_scope,
                     RawPayload.id > last_raw_id,
@@ -2353,34 +2472,54 @@ async def reparse_owned_pending(
                 )
                 .order_by(RawPayload.id)
                 .limit(limit)
-                .with_for_update()
-                .execution_options(populate_existing=True)
             )
         )
-        if not rows:
+        if not raw_ids:
             break
-        last_raw_id = rows[-1].id
-        for candidate in rows:
-            raw_id = candidate.id
+        last_raw_id = raw_ids[-1]
+        for raw_id in raw_ids:
             try:
                 async with session.begin_nested():
-                    is_legacy = candidate.subject_id is None
+                    # This probe supplies only the preliminary date/identity
+                    # needed for governance preparation. It intentionally takes
+                    # no raw lock; the canonical C -> raw acquisition below
+                    # refreshes and revalidates every value used to normalize.
+                    probe = await session.scalar(
+                        select(RawPayload)
+                        .where(RawPayload.id == raw_id)
+                        .execution_options(populate_existing=True)
+                    )
+                    if probe is None:
+                        continue
+                    probe_is_legacy = probe.subject_id is None
+                    probe_is_historical_parser = (
+                        probe.subject_id == identity.subject_id
+                        and probe.actor_user_id is None
+                        and probe.integration_connection_id is not None
+                        and probe.file_asset_id is None
+                        and probe.domain == DOMAIN
+                        and probe.source == Source.LAB_PARSER.value
+                    )
                     origin_identity = WriteIdentity(
                         identity.subject_id,
-                        None if is_legacy else candidate.actor_user_id,
+                        (
+                            None
+                            if probe_is_legacy or probe_is_historical_parser
+                            else probe.actor_user_id
+                        ),
                     )
-                    extracted = (
-                        candidate.payload
-                        if isinstance(candidate.payload, dict)
+                    probe_payload = (
+                        probe.payload
+                        if isinstance(probe.payload, dict)
                         else {}
                     )
-                    on_date = (
-                        _parse_date(extracted.get("date"))
+                    prepared_date = (
+                        _parse_date(probe_payload.get("date"))
                         or boundary.evaluation_date
                     )
                     row_context = conflict_engine.ConflictWriteContext(
                         identity=origin_identity,
-                        evaluation_date=on_date,
+                        evaluation_date=prepared_date,
                         legacy_bridge=(
                             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
                             if include_legacy_unowned
@@ -2391,13 +2530,55 @@ async def reparse_owned_pending(
                         session,
                         context=row_context,
                     )
-                    if is_legacy:
-                        await _lock_result_raw(
-                            session,
-                            raw_payload_id=candidate.id,
-                            context=row_context,
-                            source=Source.LAB_PARSER.value,
+                    raw = await _lock_result_raw(
+                        session,
+                        raw_payload_id=raw_id,
+                        context=row_context,
+                        source=Source.LAB_PARSER.value,
+                        allow_historical_parser_raw=include_legacy_unowned,
+                    )
+                    if raw.processed_at is not None:
+                        continue
+                    existing_result_id = await session.scalar(
+                        select(LabResult.id)
+                        .where(LabResult.raw_payload_id == raw.id)
+                        .order_by(LabResult.id)
+                        .limit(1)
+                        .with_for_update()
+                    )
+                    if existing_result_id is not None:
+                        continue
+                    extracted = raw.payload if isinstance(raw.payload, dict) else {}
+                    on_date = (
+                        _parse_date(extracted.get("date"))
+                        or boundary.evaluation_date
+                    )
+                    if on_date != prepared_date:
+                        raise conflict_engine.ConflictPreparedWriteError(
+                            "lab parser date changed while acquiring provenance locks"
                         )
+                    is_legacy = raw.subject_id is None
+                    is_historical_parser = (
+                        raw.subject_id == identity.subject_id
+                        and raw.actor_user_id is None
+                        and raw.integration_connection_id is not None
+                        and raw.file_asset_id is None
+                        and raw.domain == DOMAIN
+                        and raw.source == Source.LAB_PARSER.value
+                    )
+                    locked_origin_identity = WriteIdentity(
+                        identity.subject_id,
+                        (
+                            None
+                            if is_legacy or is_historical_parser
+                            else raw.actor_user_id
+                        ),
+                    )
+                    if locked_origin_identity != origin_identity:
+                        raise conflict_engine.ConflictRawOwnershipError(
+                            "lab parser ownership changed while acquiring locks"
+                        )
+                    if is_legacy or is_historical_parser:
                         await _preflight_scoped_panel(
                             session,
                             markers=extracted.get("results") or [],
@@ -2419,10 +2600,13 @@ async def reparse_owned_pending(
                                 ref_high=_num(item.get("ref_high")),
                                 lab_name=extracted.get("lab_name"),
                                 source=Source.LAB_PARSER.value,
-                                raw_payload_id=candidate.id,
+                                raw_payload_id=raw.id,
                                 identity=origin_identity,
                                 include_legacy_unowned=True,
                                 prepared_conflict_write=prepared,
+                                allow_historical_parser_raw=(
+                                    is_historical_parser
+                                ),
                             )
                         # A fully-unowned historical parser raw has no
                         # authoritative provider/file roots to adopt. Keep the
@@ -2431,9 +2615,9 @@ async def reparse_owned_pending(
                         await ingest_extracted(
                             session,
                             extracted,
-                            file_key=candidate.external_id,
+                            file_key=raw.external_id,
                             identity=origin_identity,
-                            existing_raw_payload=candidate,
+                            existing_raw_payload=raw,
                             prepared_conflict_write=prepared,
                         )
                     await refresh_alerts(
@@ -2442,7 +2626,7 @@ async def reparse_owned_pending(
                         include_legacy_unowned=include_legacy_unowned,
                         prepared_conflict_write=prepared,
                     )
-                    candidate.processed_at = now_local()
+                    raw.processed_at = now_local()
                     await session.flush()
             except Exception:
                 logger.warning(

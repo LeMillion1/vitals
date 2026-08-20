@@ -352,6 +352,82 @@ async def test_fully_unowned_row_is_visible_and_adopted_only_through_bridge(
     )
 
 
+async def test_legacy_weights_remain_readable_after_exact_raw_backfill(
+    db_session,
+    legacy_owner_roots,
+):
+    identity = _identity(legacy_owner_roots)
+    garmin = await _connection(
+        db_session,
+        identity,
+        IntegrationProvider.GARMIN,
+    )
+    garmin_raw = RawPayload(
+        subject_id=identity.subject_id,
+        actor_user_id=None,
+        integration_connection_id=garmin.id,
+        file_asset_id=None,
+        domain=Domain.GARMIN.value,
+        source=Source.GARMIN_API.value,
+        external_id="stage3a-weight-garmin",
+        payload={"weight": 84.0},
+    )
+    mcp_raw = RawPayload(
+        subject_id=identity.subject_id,
+        actor_user_id=None,
+        integration_connection_id=None,
+        file_asset_id=None,
+        domain=Domain.BODY_COMPOSITION.value,
+        source=Source.MCP.value,
+        external_id="stage3a-weight-body-mcp",
+        payload={"weight": 83.5},
+    )
+    db_session.add_all([garmin_raw, mcp_raw])
+    await db_session.flush()
+    garmin_weight = WeightLog(
+        date=OTHER_DATE,
+        domain=Domain.WEIGHT.value,
+        source=Source.GARMIN_API.value,
+        weight_kg=84.0,
+        raw_payload_id=garmin_raw.id,
+    )
+    mcp_body_weight = WeightLog(
+        date=EVALUATION_DATE,
+        domain=Domain.WEIGHT.value,
+        source=Source.BODY_SCAN.value,
+        weight_kg=83.5,
+        raw_payload_id=mcp_raw.id,
+    )
+    db_session.add_all([garmin_weight, mcp_body_weight])
+    await db_session.commit()
+
+    assert await weight_service.list_active_weights(
+        db_session,
+        subject_id=identity.subject_id,
+    ) == []
+    visible = await weight_service.list_active_weights(
+        db_session,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
+    assert {row.id for row in visible} == {
+        garmin_weight.id,
+        mcp_body_weight.id,
+    }
+    assert await weight_service.get_active_weight(
+        db_session,
+        OTHER_DATE,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    ) is garmin_weight
+    assert await weight_service.get_active_weight(
+        db_session,
+        EVALUATION_DATE,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    ) is mcp_body_weight
+
+
 async def test_partial_actor_connection_and_raw_roots_fail_closed(
     db_session,
     legacy_owner_roots,

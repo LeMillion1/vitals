@@ -24,9 +24,21 @@ from typing import Optional, Sequence
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import AnnotationKind, Domain, LabFlag, MilestoneStatus, Source
+from vitals.enums import (
+    AnnotationKind,
+    Domain,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    LabFlag,
+    MilestoneStatus,
+    Source,
+)
 from vitals.i18n import t
+from vitals.models.ai import AIInvocation
+from vitals.models.identity import HealthSubject
 from vitals.models.raw_payload import RawPayload
+from vitals.models.tenancy import IntegrationConnection
 from vitals.models.timeline import Annotation
 from vitals.ownership import WriteIdentity
 
@@ -49,6 +61,10 @@ def _fully_legacy_row_scope(
     *,
     ownership_roots: tuple,
     raw_link=None,
+    subject_id: uuid.UUID | None = None,
+    historical_raw_specs: tuple[
+        tuple[str, str, str, str | None, str | None], ...
+    ] = (),
 ):
     """Match only a genuinely unowned pre-Stage-1 row.
 
@@ -61,14 +77,80 @@ def _fully_legacy_row_scope(
     clauses = [model.subject_id.is_(None)]
     clauses.extend(root.is_(None) for root in ownership_roots)
     if raw_link is not None:
-        legacy_raw = (
-            select(RawPayload.id)
-            .where(
-                RawPayload.id == raw_link,
+        raw_scopes = [
+            and_(
                 RawPayload.subject_id.is_(None),
                 RawPayload.actor_user_id.is_(None),
                 RawPayload.integration_connection_id.is_(None),
                 RawPayload.file_asset_id.is_(None),
+            )
+        ]
+        if subject_id is not None and historical_raw_specs:
+            exact_one_subject = and_(
+                select(HealthSubject.id)
+                .where(HealthSubject.id == subject_id)
+                .exists(),
+                ~select(HealthSubject.id)
+                .where(HealthSubject.id != subject_id)
+                .exists(),
+            )
+            historical_statuses = tuple(
+                status.value
+                for status in IntegrationConnectionStatus
+                if status is not IntegrationConnectionStatus.PENDING
+            )
+            for (
+                normalized_source,
+                raw_domain,
+                raw_source,
+                connection_provider,
+                connection_type,
+            ) in historical_raw_specs:
+                historical_raw = and_(
+                    model.source == normalized_source,
+                    RawPayload.subject_id == subject_id,
+                    RawPayload.actor_user_id.is_(None),
+                    RawPayload.file_asset_id.is_(None),
+                    RawPayload.domain == raw_domain,
+                    RawPayload.source == raw_source,
+                    exact_one_subject,
+                    ~select(AIInvocation.id)
+                    .where(AIInvocation.raw_payload_id == RawPayload.id)
+                    .exists(),
+                )
+                if connection_provider is None and connection_type is None:
+                    historical_raw = and_(
+                        historical_raw,
+                        RawPayload.integration_connection_id.is_(None),
+                    )
+                elif (
+                    connection_provider is not None
+                    and connection_type is not None
+                ):
+                    historical_raw = and_(
+                        historical_raw,
+                        RawPayload.integration_connection_id.is_not(None),
+                        select(IntegrationConnection.id)
+                        .where(
+                            IntegrationConnection.id
+                            == RawPayload.integration_connection_id,
+                            IntegrationConnection.subject_id == subject_id,
+                            IntegrationConnection.provider == connection_provider,
+                            IntegrationConnection.connection_type == connection_type,
+                            IntegrationConnection.status.in_(historical_statuses),
+                        )
+                        .exists(),
+                    )
+                else:
+                    raise ValueError(
+                        "timeline historical connection provider/type must be paired"
+                    )
+                raw_scopes.append(historical_raw)
+        legacy_raw = (
+            select(RawPayload.id)
+            .where(
+                RawPayload.id == raw_link,
+                or_(*raw_scopes),
             )
             .exists()
         )
@@ -284,6 +366,9 @@ async def _derived_events(
         *,
         legacy_roots: tuple,
         raw_link=None,
+        historical_raw_specs: tuple[
+            tuple[str, str, str, str | None, str | None], ...
+        ] = (),
     ):
         if subject_id is None:
             if include_legacy_unowned:
@@ -299,6 +384,8 @@ async def _derived_events(
                     model,
                     ownership_roots=legacy_roots,
                     raw_link=raw_link,
+                    subject_id=subject_id,
+                    historical_raw_specs=historical_raw_specs,
                 ),
             )
         return stmt.where(subject_scope)
@@ -365,6 +452,22 @@ async def _derived_events(
         LabResult,
         legacy_roots=(LabResult.actor_user_id,),
         raw_link=LabResult.raw_payload_id,
+        historical_raw_specs=(
+            (
+                Source.LAB_PARSER.value,
+                Domain.LABS.value,
+                Source.LAB_PARSER.value,
+                IntegrationProvider.OPENROUTER.value,
+                IntegrationConnectionType.AI_GATEWAY.value,
+            ),
+            (
+                Source.MCP.value,
+                Domain.LABS.value,
+                Source.MCP.value,
+                None,
+                None,
+            ),
+        ),
     )
     if start is not None:
         l_stmt = l_stmt.where(LabResult.date >= start)
@@ -393,6 +496,22 @@ async def _derived_events(
         BodyScan,
         legacy_roots=(BodyScan.actor_user_id, BodyScan.file_asset_id),
         raw_link=BodyScan.raw_payload_id,
+        historical_raw_specs=(
+            (
+                Source.BODY_SCAN.value,
+                Domain.BODY_COMPOSITION.value,
+                Source.BODY_SCAN.value,
+                IntegrationProvider.OPENROUTER.value,
+                IntegrationConnectionType.AI_GATEWAY.value,
+            ),
+            (
+                Source.MCP.value,
+                Domain.BODY_COMPOSITION.value,
+                Source.MCP.value,
+                None,
+                None,
+            ),
+        ),
     )
     if start is not None:
         b_stmt = b_stmt.where(BodyScan.date >= start)
@@ -555,6 +674,15 @@ async def _derived_events(
         GeneticVariant,
         legacy_roots=(GeneticVariant.actor_user_id,),
         raw_link=GeneticVariant.raw_payload_id,
+        historical_raw_specs=(
+            (
+                Source.VCF_IMPORT.value,
+                Domain.GENETICS.value,
+                Source.VCF_IMPORT.value,
+                None,
+                None,
+            ),
+        ),
     )
     variants_by_day: dict[date_type, int] = {}
     for v in (await session.execute(gv_stmt)).scalars().all():

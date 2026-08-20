@@ -470,6 +470,32 @@ async def test_owned_reparse_derives_historical_actor_from_raw(db_session):
     ) == (subject.id, owner.id, connection.id)
 
 
+async def test_owned_reparse_preserves_stage3a_actorless_account_history(db_session):
+    _, subject, connection = await _roots(db_session, "stage3a-actorless-hevy")
+    raw = await _owned_raw(
+        db_session,
+        identity=WriteIdentity(subject.id, None),
+        connection_id=connection.id,
+        payload=_payload("stage3a-actorless-hevy"),
+    )
+
+    await hevy_service.reparse_owned_from_raw(
+        db_session,
+        raw,
+        identity=WriteIdentity(subject.id, None),
+        integration_connection_id=connection.id,
+    )
+
+    workout = await db_session.scalar(select(HevyWorkout))
+    assert workout is not None
+    assert (
+        workout.subject_id,
+        workout.actor_user_id,
+        workout.integration_connection_id,
+        workout.raw_payload_id,
+    ) == (subject.id, None, connection.id, raw.id)
+
+
 async def test_owned_reparse_rejects_raw_subject_or_connection_mismatch(db_session):
     owner_a, subject_a, connection_a = await _roots(db_session, "owner-a")
     owner_b, subject_b, connection_b = await _roots(db_session, "owner-b")
