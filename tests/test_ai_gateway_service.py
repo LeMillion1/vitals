@@ -29,6 +29,7 @@ from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import ai_gateway_service as gateway
 from vitals.services import platform_admin_service
+from vitals.services import transaction_outcome
 from vitals.services.identity_service import assign_role, change_user_status
 from web.config import get_web_config
 
@@ -191,6 +192,164 @@ async def test_dispatch_has_no_db_transaction_and_persists_only_sanitized_usage(
     assert completion.payload is None
     with pytest.raises(gateway.AICapabilityError):
         await gateway.finalize_ai_invocation(db_session, completion=completion)
+
+
+async def test_savepoint_commit_cannot_arm_dispatch_before_outer_commit(
+    db_session,
+    legacy_owner_roots,
+):
+    await _configure(db_session, legacy_owner_roots)
+    reservation = await _reserve(
+        db_session,
+        legacy_owner_roots,
+        key="savepoint-dispatch",
+    )
+    await db_session.commit()
+
+    lease = await gateway.start_ai_dispatch(
+        db_session,
+        identity=_identity(legacy_owner_roots),
+        invocation_id=reservation.invocation_id,
+        credential_resolver=lambda _ref: "synthetic-secret",
+    )
+    nested = await db_session.begin_nested()
+    await nested.commit()
+
+    async def provider_call(_request):
+        raise AssertionError("provider must not run before the root commits")
+
+    with pytest.raises(gateway.AICapabilityError):
+        await gateway.dispatch_ai(
+            lease,
+            provider_call=provider_call,
+            usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+        )
+    await db_session.rollback()
+    with pytest.raises(gateway.AICapabilityError):
+        await gateway.dispatch_ai(
+            lease,
+            provider_call=provider_call,
+            usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+        )
+
+    invocation = await db_session.get(AIInvocation, reservation.invocation_id)
+    assert invocation.status == AIInvocationStatus.PREPARED.value
+    assert lease._credential is None
+
+
+async def test_t3_savepoint_commit_then_outer_rollback_keeps_payload_retryable(
+    db_session,
+    legacy_owner_roots,
+):
+    await _configure(db_session, legacy_owner_roots)
+    reservation = await _reserve(
+        db_session,
+        legacy_owner_roots,
+        key="savepoint-finalize",
+    )
+    await db_session.commit()
+    lease = await gateway.start_ai_dispatch(
+        db_session,
+        identity=_identity(legacy_owner_roots),
+        invocation_id=reservation.invocation_id,
+        credential_resolver=lambda _ref: "synthetic-secret",
+    )
+    await db_session.commit()
+
+    payload = {"health": "memory-only"}
+
+    async def provider_call(_request):
+        return payload
+
+    completion = await gateway.dispatch_ai(
+        lease,
+        provider_call=provider_call,
+        usage_extractor=lambda _result: gateway.SanitizedAIUsage(
+            input_tokens=1,
+            output_tokens=1,
+            cost_microunits=1,
+        ),
+    )
+    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    nested = await db_session.begin_nested()
+    await nested.commit()
+    assert completion.payload is payload
+    await db_session.rollback()
+    assert completion.payload is payload
+
+    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    await db_session.commit()
+    assert completion.payload is None
+    assert transaction_outcome.pending_root_transaction_outcomes(db_session) == 0
+
+
+async def test_session_close_invalidates_uncommitted_ai_lease(
+    db_session,
+    legacy_owner_roots,
+):
+    await _configure(db_session, legacy_owner_roots)
+    reservation = await _reserve(
+        db_session,
+        legacy_owner_roots,
+        key="close-dispatch",
+    )
+    await db_session.commit()
+    lease = await gateway.start_ai_dispatch(
+        db_session,
+        identity=_identity(legacy_owner_roots),
+        invocation_id=reservation.invocation_id,
+        credential_resolver=lambda _ref: "synthetic-secret",
+    )
+    await db_session.close()
+
+    with pytest.raises(gateway.AICapabilityError):
+        await gateway.dispatch_ai(
+            lease,
+            provider_call=lambda _request: None,  # type: ignore[arg-type]
+            usage_extractor=lambda _result: gateway.SanitizedAIUsage(),
+        )
+    assert lease._credential is None
+
+
+async def test_session_close_rolls_back_ai_finalization_and_allows_retry(
+    db_session,
+    legacy_owner_roots,
+):
+    await _configure(db_session, legacy_owner_roots)
+    reservation = await _reserve(
+        db_session,
+        legacy_owner_roots,
+        key="close-finalize",
+    )
+    await db_session.commit()
+    lease = await gateway.start_ai_dispatch(
+        db_session,
+        identity=_identity(legacy_owner_roots),
+        invocation_id=reservation.invocation_id,
+        credential_resolver=lambda _ref: "synthetic-secret",
+    )
+    await db_session.commit()
+    payload = {"health": "retry-only"}
+
+    async def provider_call(_request):
+        return payload
+
+    completion = await gateway.dispatch_ai(
+        lease,
+        provider_call=provider_call,
+        usage_extractor=lambda _result: gateway.SanitizedAIUsage(
+            input_tokens=1,
+            output_tokens=1,
+            cost_microunits=1,
+        ),
+    )
+    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    await db_session.close()
+    assert completion.payload is payload
+
+    await gateway.finalize_ai_invocation(db_session, completion=completion)
+    await db_session.commit()
+    assert completion.payload is None
 
 
 async def test_missing_budget_fails_before_any_dispatch_surface(

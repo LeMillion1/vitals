@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Generic, TypeVar
 
-from sqlalchemy import event, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
@@ -44,6 +44,10 @@ from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.platform_admin_service import (
     PreparedPlatformAdmin,
     require_prepared_platform_admin,
+)
+from vitals.services.transaction_outcome import (
+    TransactionOutcomeError,
+    register_root_transaction_outcome,
 )
 from vitals.utils.timeutils import now_utc
 
@@ -106,6 +110,24 @@ class AIProviderDispatchError(AIGatewayError):
     def __init__(self, error_code: AIInvocationErrorCode):
         self.error_code = error_code
         super().__init__(f"AI provider dispatch failed with {error_code.value}")
+
+
+def _register_transaction_outcome(
+    session: AsyncSession,
+    *,
+    on_commit,
+    on_rollback,
+) -> None:
+    try:
+        register_root_transaction_outcome(
+            session,
+            on_commit=on_commit,
+            on_rollback=on_rollback,
+        )
+    except TransactionOutcomeError:
+        raise AICapabilityError(
+            "AI capability requires one active outer transaction"
+        ) from None
 
 
 def _validate_period(period_start: date, period_end: date) -> None:
@@ -335,7 +357,6 @@ class AIDispatchLease:
         "__weakref__",
         "_armed",
         "_actor_user_id",
-        "_commit_listener",
         "_config_version",
         "_consumed",
         "_credential",
@@ -350,7 +371,6 @@ class AIDispatchLease:
         "_raw_payload_id",
         "_reserved_cost_microunits",
         "_reserved_units",
-        "_rollback_listener",
         "_seal",
         "_session",
         "_source",
@@ -418,48 +438,26 @@ class AIDispatchLease:
             ),
         )
 
-        # Start-dispatch rejects nested transactions, so these callbacks identify
-        # the single issuing outer boundary unambiguously.
-        sync_session = session.sync_session
         lease_ref = weakref.ref(lease)
 
-        def after_commit(_session) -> None:
+        def after_commit() -> None:
             target = lease_ref()
             if target is None:
                 return
             object.__setattr__(target, "_armed", True)
-            rollback_listener = target._rollback_listener
-            if rollback_listener is not None:
-                event.remove(sync_session, "after_rollback", rollback_listener)
-            object.__setattr__(target, "_commit_listener", None)
-            object.__setattr__(target, "_rollback_listener", None)
 
-        def after_rollback(_session) -> None:
+        def after_rollback() -> None:
             target = lease_ref()
             if target is None:
                 return
             object.__setattr__(target, "_consumed", True)
             object.__setattr__(target, "_credential", None)
             object.__setattr__(target, "_session", None)
-            commit_listener = target._commit_listener
-            if commit_listener is not None:
-                event.remove(sync_session, "after_commit", commit_listener)
-            object.__setattr__(target, "_commit_listener", None)
-            object.__setattr__(target, "_rollback_listener", None)
 
-        object.__setattr__(lease, "_commit_listener", after_commit)
-        object.__setattr__(lease, "_rollback_listener", after_rollback)
-        event.listen(
-            sync_session,
-            "after_commit",
-            after_commit,
-            once=True,
-        )
-        event.listen(
-            sync_session,
-            "after_rollback",
-            after_rollback,
-            once=True,
+        _register_transaction_outcome(
+            session,
+            on_commit=after_commit,
+            on_rollback=after_rollback,
         )
         return lease
 
@@ -482,14 +480,12 @@ class AICompletion(Generic[T]):
 
     __slots__ = (
         "__weakref__",
-        "_commit_listener",
         "_consumed",
         "_error_code",
         "_fingerprint",
         "_finalizing",
         "_invocation_id",
         "_payload",
-        "_rollback_listener",
         "_seal",
         "_session",
         "_status",
@@ -521,18 +517,15 @@ class AICompletion(Generic[T]):
         object.__setattr__(completion, "_consumed", False)
         object.__setattr__(completion, "_finalizing", False)
         object.__setattr__(completion, "_session", None)
-        object.__setattr__(completion, "_commit_listener", None)
-        object.__setattr__(completion, "_rollback_listener", None)
         object.__setattr__(completion, "_seal", _COMPLETION_SEAL)
         return completion
 
     def _bind_finalization(self, session: AsyncSession) -> None:
-        sync_session = session.sync_session
         object.__setattr__(self, "_finalizing", True)
         object.__setattr__(self, "_session", session)
         completion_ref = weakref.ref(self)
 
-        def after_commit(_session) -> None:
+        def after_commit() -> None:
             target = completion_ref()
             if target is None:
                 return
@@ -540,28 +533,19 @@ class AICompletion(Generic[T]):
             object.__setattr__(target, "_finalizing", False)
             object.__setattr__(target, "_payload", None)
             object.__setattr__(target, "_session", None)
-            rollback_listener = target._rollback_listener
-            if rollback_listener is not None:
-                event.remove(sync_session, "after_rollback", rollback_listener)
-            object.__setattr__(target, "_commit_listener", None)
-            object.__setattr__(target, "_rollback_listener", None)
 
-        def after_rollback(_session) -> None:
+        def after_rollback() -> None:
             target = completion_ref()
             if target is None:
                 return
             object.__setattr__(target, "_finalizing", False)
             object.__setattr__(target, "_session", None)
-            commit_listener = target._commit_listener
-            if commit_listener is not None:
-                event.remove(sync_session, "after_commit", commit_listener)
-            object.__setattr__(target, "_commit_listener", None)
-            object.__setattr__(target, "_rollback_listener", None)
 
-        object.__setattr__(self, "_commit_listener", after_commit)
-        object.__setattr__(self, "_rollback_listener", after_rollback)
-        event.listen(sync_session, "after_commit", after_commit, once=True)
-        event.listen(sync_session, "after_rollback", after_rollback, once=True)
+        _register_transaction_outcome(
+            session,
+            on_commit=after_commit,
+            on_rollback=after_rollback,
+        )
 
     def __setattr__(self, name, value) -> None:
         del name, value
