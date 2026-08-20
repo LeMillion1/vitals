@@ -3,11 +3,19 @@ MCP surface. Same import-skip guard as the other MCP tool tests."""
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
+
+from vitals.models.milestones import Milestone
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
 
-async def test_create_get_update_delete_milestone(db_session, session_factory, monkeypatch):
+async def test_create_get_update_delete_milestone(
+    db_session,
+    session_factory,
+    legacy_owner_roots,
+    monkeypatch,
+):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
     created = await mcp_router.create_milestone(
@@ -20,6 +28,14 @@ async def test_create_get_update_delete_milestone(db_session, session_factory, m
     assert created["id"] > 0
     assert created["status"] == "active"
     mid = created["id"]
+    persisted = await db_session.scalar(
+        select(Milestone).where(Milestone.id == mid)
+    )
+    assert persisted is not None
+    assert (persisted.subject_id, persisted.actor_user_id) == (
+        legacy_owner_roots.subject_id,
+        legacy_owner_roots.user_id,
+    )
 
     listed = await mcp_router.get_milestones()
     assert any(m["id"] == mid and m["name"] == "Reach 85 kg" for m in listed)
@@ -32,6 +48,22 @@ async def test_create_get_update_delete_milestone(db_session, session_factory, m
     assert updated["status"] == "achieved"
     assert updated["note"] == "done"
 
+    cleared = await mcp_router.update_milestone(
+        mid,
+        clear_fields=["target_value", "target_unit", "deadline", "note"],
+    )
+    assert all(
+        field not in cleared
+        for field in ("target_value", "target_unit", "deadline", "note")
+    )
+    await db_session.refresh(persisted)
+    assert (
+        persisted.target_value,
+        persisted.target_unit,
+        persisted.deadline,
+        persisted.note,
+    ) == (None, None, None, None)
+
     # Status filter reflects the change.
     assert await mcp_router.get_milestones(status="active") == []
     assert len(await mcp_router.get_milestones(status="achieved")) == 1
@@ -41,7 +73,12 @@ async def test_create_get_update_delete_milestone(db_session, session_factory, m
     assert await mcp_router.get_milestones() == []
 
 
-async def test_update_milestone_rejects_bad_status(db_session, session_factory, monkeypatch):
+async def test_update_milestone_rejects_bad_status(
+    db_session,
+    session_factory,
+    legacy_owner_roots,
+    monkeypatch,
+):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     created = await mcp_router.create_milestone(name="Goal", domain="weight")
 
@@ -49,8 +86,25 @@ async def test_update_milestone_rejects_bad_status(db_session, session_factory, 
     assert "error" in result
     assert "Unknown status" in result["error"]
 
+    unknown_clear = await mcp_router.update_milestone(
+        created["id"],
+        clear_fields=["name"],
+    )
+    assert "unknown fields" in unknown_clear["error"]
+    overlap = await mcp_router.update_milestone(
+        created["id"],
+        note="set",
+        clear_fields=["note"],
+    )
+    assert "set and cleared" in overlap["error"]
 
-async def test_update_milestone_not_found(db_session, session_factory, monkeypatch):
+
+async def test_update_milestone_not_found(
+    db_session,
+    session_factory,
+    legacy_owner_roots,
+    monkeypatch,
+):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     result = await mcp_router.update_milestone(9999, name="x")
     assert result == {"error": "Milestone 9999 not found"}

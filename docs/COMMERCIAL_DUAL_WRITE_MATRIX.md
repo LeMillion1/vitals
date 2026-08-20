@@ -59,7 +59,7 @@ or multi-subject reads are enabled.
 | `hrt_doses`, `hrt_side_effects`, `hrt_cycles`, `hrt_cycle_items`, `hrt_cycle_templates`, `hrt_cycle_template_items` | web/MCP/template import/materialization | Human roots get S+A; child rows copy S; referenced compounds must be global or same-S. Automatic closes preserve A. |
 | `lab_markers`, `lab_results` | upload/parser, manual/MCP, reparse, hormone seed | S always; human/import parser rows get A, system seed does not. Raw and result S must match. |
 | `meal_logs` | web/MCP | S+A and existing MCP provenance. |
-| `milestones` | reports web/MCP | Create gets S+A; updates retain A. |
+| `milestones` | reports web/MCP | Create gets S+A; updates retain A; direct reads/mutations and progress inputs use the selected S. |
 | `weekly_digests` | web/MCP/schedulers/brief | S always; human generation gets A, scheduler does not. OpenRouter C is set only when that provider actually produced content. |
 | `notifications` | proactive delivery | S + recipient user + Telegram C; explicit human test actions may get A, scheduled/reply delivery does not infer one. |
 | `shared_reports` | create/open/revoke/purge | Create gets S+creator; human revoke gets revoker. Anonymous open and scheduled purge do not mutate actor fields. |

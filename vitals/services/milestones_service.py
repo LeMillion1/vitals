@@ -8,15 +8,157 @@ weekly digest and a dashboard card.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date as date_type
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, MilestoneStatus
 from vitals.models.milestones import Milestone
+from vitals.ownership import WriteIdentity
+from vitals.services import conflict_engine
 from vitals.utils.timeutils import today_local
+
+
+class MilestoneOwnershipError(ValueError):
+    """A goal card is outside, or corrupt within, the selected subject scope."""
+
+
+def _subject_scope(
+    subject_id: uuid.UUID,
+    *,
+    include_legacy_unowned: bool,
+):
+    exact = Milestone.subject_id == subject_id
+    if not include_legacy_unowned:
+        return exact
+    return or_(
+        exact,
+        and_(
+            Milestone.subject_id.is_(None),
+            Milestone.actor_user_id.is_(None),
+        ),
+    )
+
+
+async def _reject_partial_legacy_rows(session: AsyncSession) -> None:
+    partial_id = await session.scalar(
+        select(Milestone.id)
+        .where(
+            Milestone.subject_id.is_(None),
+            Milestone.actor_user_id.is_not(None),
+        )
+        .limit(1)
+    )
+    if partial_id is not None:
+        raise MilestoneOwnershipError(
+            "milestone has partial legacy ownership roots"
+        )
+
+
+def _require_prepared_write(
+    session: AsyncSession,
+    *,
+    identity: WriteIdentity | None,
+    prepared: conflict_engine.PreparedConflictWrite | None,
+    include_legacy_unowned: bool = False,
+) -> conflict_engine.ConflictWriteContext | None:
+    if identity is None and prepared is None:
+        if include_legacy_unowned:
+            raise MilestoneOwnershipError(
+                "legacy milestone compatibility requires a scoped writer"
+            )
+        return None
+    if identity is None or prepared is None:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "scoped milestone writes require identity and a prepared capability"
+        )
+    context = conflict_engine.require_prepared_identity(
+        session,
+        identity=identity,
+        prepared=prepared,
+    )
+    if identity.actor_user_id is None:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "milestone writes require a human actor"
+        )
+    if (
+        include_legacy_unowned
+        and context.legacy_bridge
+        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+    ):
+        raise conflict_engine.ConflictPreparedWriteError(
+            "legacy milestone compatibility requires the fully-unowned bridge"
+        )
+    return context
+
+
+async def _lock_milestone_for_write(
+    session: AsyncSession,
+    milestone_id: int,
+    *,
+    identity: WriteIdentity | None,
+    include_legacy_unowned: bool,
+    prepared: conflict_engine.PreparedConflictWrite | None,
+) -> Milestone | None:
+    context = _require_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    if context is None:
+        return await session.scalar(
+            select(Milestone)
+            .where(
+                Milestone.id == milestone_id,
+                Milestone.subject_id.is_(None),
+                Milestone.actor_user_id.is_(None),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    assert identity is not None
+    roots = (
+        await session.execute(
+            select(Milestone.subject_id, Milestone.actor_user_id).where(
+                Milestone.id == milestone_id
+            )
+        )
+    ).one_or_none()
+    if roots is None:
+        return None
+    row_subject_id, row_actor_id = roots
+    if row_subject_id is None and row_actor_id is not None:
+        raise MilestoneOwnershipError(
+            "milestone has partial legacy ownership roots"
+        )
+    if row_subject_id is not None and row_subject_id != identity.subject_id:
+        return None
+    if row_subject_id is None and not include_legacy_unowned:
+        return None
+
+    row = await session.scalar(
+        select(Milestone)
+        .where(Milestone.id == milestone_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        return None
+    if row.subject_id is None:
+        if row.actor_user_id is not None:
+            raise MilestoneOwnershipError(
+                "milestone has partial legacy ownership roots"
+            )
+        if not include_legacy_unowned:
+            return None
+    elif row.subject_id != identity.subject_id:
+        return None
+    return row
 
 
 async def create_milestone(
@@ -28,8 +170,17 @@ async def create_milestone(
     target_unit: Optional[str] = None,
     deadline: Optional[date_type] = None,
     note: Optional[str] = None,
+    identity: WriteIdentity | None = None,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> Milestone:
+    _require_prepared_write(
+        session,
+        identity=identity,
+        prepared=prepared_conflict_write,
+    )
     row = Milestone(
+        subject_id=identity.subject_id if identity is not None else None,
+        actor_user_id=identity.actor_user_id if identity is not None else None,
         name=name,
         domain=domain,
         target_value=target_value,
@@ -44,9 +195,26 @@ async def create_milestone(
 
 
 async def list_milestones(
-    session: AsyncSession, *, status: Optional[str] = None
+    session: AsyncSession,
+    *,
+    status: Optional[str] = None,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> Sequence[Milestone]:
     stmt = select(Milestone)
+    if subject_id is not None:
+        if include_legacy_unowned:
+            await _reject_partial_legacy_rows(session)
+        stmt = stmt.where(
+            _subject_scope(
+                subject_id,
+                include_legacy_unowned=include_legacy_unowned,
+            )
+        )
+    elif include_legacy_unowned:
+        raise MilestoneOwnershipError(
+            "legacy milestone compatibility requires a subject_id"
+        )
     if status is not None:
         stmt = stmt.where(Milestone.status == status)
     stmt = stmt.order_by(Milestone.deadline.is_(None), Milestone.deadline, Milestone.id)
@@ -54,10 +222,26 @@ async def list_milestones(
     return result.scalars().all()
 
 
-async def set_status(session: AsyncSession, milestone_id: int, status: str) -> Optional[Milestone]:
-    row = await session.get(Milestone, milestone_id)
+async def set_status(
+    session: AsyncSession,
+    milestone_id: int,
+    status: str,
+    *,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+) -> Optional[Milestone]:
+    row = await _lock_milestone_for_write(
+        session,
+        milestone_id,
+        identity=identity,
+        include_legacy_unowned=include_legacy_unowned,
+        prepared=prepared_conflict_write,
+    )
     if row is None:
         return None
+    if row.subject_id is None and identity is not None:
+        row.subject_id = identity.subject_id
     row.status = status
     await session.flush()
     return row
@@ -80,12 +264,23 @@ async def update_milestone(
     deadline: object = _UNSET,
     status: object = _UNSET,
     note: object = _UNSET,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
 ) -> Optional[Milestone]:
     """Partial-update a goal card. Only fields explicitly passed are changed;
     the rest keep their current value (pass ``None`` to clear an optional field)."""
-    row = await session.get(Milestone, milestone_id)
+    row = await _lock_milestone_for_write(
+        session,
+        milestone_id,
+        identity=identity,
+        include_legacy_unowned=include_legacy_unowned,
+        prepared=prepared_conflict_write,
+    )
     if row is None:
         return None
+    if row.subject_id is None and identity is not None:
+        row.subject_id = identity.subject_id
     for attr, value in (
         ("name", name),
         ("domain", domain),
@@ -101,8 +296,21 @@ async def update_milestone(
     return row
 
 
-async def delete_milestone(session: AsyncSession, milestone_id: int) -> bool:
-    row = await session.get(Milestone, milestone_id)
+async def delete_milestone(
+    session: AsyncSession,
+    milestone_id: int,
+    *,
+    identity: WriteIdentity | None = None,
+    include_legacy_unowned: bool = False,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+) -> bool:
+    row = await _lock_milestone_for_write(
+        session,
+        milestone_id,
+        identity=identity,
+        include_legacy_unowned=include_legacy_unowned,
+        prepared=prepared_conflict_write,
+    )
     if row is None:
         return False
     await session.delete(row)
@@ -110,15 +318,29 @@ async def delete_milestone(session: AsyncSession, milestone_id: int) -> bool:
     return True
 
 
-async def _current_weight(session: AsyncSession) -> Optional[float]:
+async def _current_weight(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+) -> Optional[float]:
     """Latest active weight, imported lazily to avoid a hard module dependency."""
     from vitals.services import weight_service
 
-    weights = await weight_service.list_active_weights(session)
+    weights = await weight_service.list_active_weights(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     return weights[-1].weight_kg if weights else None
 
 
-async def _current_body_fat(session: AsyncSession) -> Optional[float]:
+async def _current_body_fat(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+) -> Optional[float]:
     """Latest active body fat percentage, either Navy or InBody (BIA) based on
     preference. A BIA scan is a direct measurement, so by default it outranks the
     Navy tape-formula estimate whenever body_comp is enabled and has one — Navy is
@@ -130,13 +352,17 @@ async def _current_body_fat(session: AsyncSession) -> Optional[float]:
     config = load_config()
     source_pref = config.body_fat_source or "latest"
 
-    enabled = await get_enabled_modules(session)
+    enabled = await get_enabled_modules(session, subject_id=subject_id)
     body_comp_enabled = enabled.get("body_comp", False)
 
     # 1. Fetch Navy measurements if not pinned to bia
     navy_val = None
     if source_pref in ("latest", "navy"):
-        measurements = await weight_service.list_body_measurements(session)
+        measurements = await weight_service.list_body_measurements(
+            session,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
         # Find the latest measurement with body_fat_pct
         for m in reversed(measurements):
             if m.body_fat_pct is not None:
@@ -149,7 +375,11 @@ async def _current_body_fat(session: AsyncSession) -> Optional[float]:
         from vitals.services import body_scan_service
         from vitals.services.analytics import body_metrics
 
-        scans = await body_scan_service.list_scans(session)
+        scans = await body_scan_service.list_scans(
+            session,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
         for s in scans:
             bf_val = body_metrics.body_fat_pct_from_scan(s.metrics)
             if bf_val is not None:
@@ -187,9 +417,44 @@ def _unit_matches_domain(domain: str, target_unit: Optional[str]) -> bool:
     return True
 
 
-async def progress(session: AsyncSession, milestone: Milestone) -> dict:
+def _require_progress_scope(
+    milestone: Milestone,
+    *,
+    subject_id: uuid.UUID | None,
+    include_legacy_unowned: bool,
+) -> None:
+    if subject_id is None:
+        if include_legacy_unowned:
+            raise MilestoneOwnershipError(
+                "legacy milestone compatibility requires a subject_id"
+            )
+        return
+    if milestone.subject_id == subject_id:
+        return
+    if milestone.subject_id is None:
+        if milestone.actor_user_id is not None:
+            raise MilestoneOwnershipError(
+                "milestone has partial legacy ownership roots"
+            )
+        if include_legacy_unowned:
+            return
+    raise MilestoneOwnershipError("milestone belongs to another subject")
+
+
+async def progress(
+    session: AsyncSession,
+    milestone: Milestone,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> dict:
     """Live progress for a goal. Weight goals get current/remaining/pct vs target;
     others just echo status + days-to-deadline."""
+    _require_progress_scope(
+        milestone,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     today = today_local()
     days_left = (milestone.deadline - today).days if milestone.deadline else None
     out: dict = {
@@ -208,19 +473,44 @@ async def progress(session: AsyncSession, milestone: Milestone) -> dict:
 
     unit_ok = _unit_matches_domain(milestone.domain, milestone.target_unit)
     if milestone.domain == Domain.WEIGHT.value and milestone.target_value is not None and unit_ok:
-        current = await _current_weight(session)
+        current = await _current_weight(
+            session,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
         if current is not None:
             out["current"] = round(current, 2)
             out["remaining"] = round(current - milestone.target_value, 2)
     elif milestone.domain == Domain.BODY_COMPOSITION.value and milestone.target_value is not None and unit_ok:
-        current = await _current_body_fat(session)
+        current = await _current_body_fat(
+            session,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
         if current is not None:
             out["current"] = round(current, 2)
             out["remaining"] = round(current - milestone.target_value, 2)
     return out
 
 
-async def dashboard_cards(session: AsyncSession) -> list[dict]:
+async def dashboard_cards(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> list[dict]:
     """All goals with progress computed — the dashboard widget / reports list."""
-    rows = await list_milestones(session)
-    return [await progress(session, m) for m in rows]
+    rows = await list_milestones(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
+    return [
+        await progress(
+            session,
+            milestone,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        )
+        for milestone in rows
+    ]

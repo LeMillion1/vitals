@@ -232,6 +232,26 @@ async def _mcp_v1_conflict_scope(session) -> conflict_engine.ConflictScope:
     )
 
 
+async def _mcp_v1_composition_scope(session) -> conflict_engine.ConflictScope:
+    """Bind a legacy whole-lake read and reject corrupt Milestone roots.
+
+    The v1 connector still has no selected subject.  The governance-locked
+    exact-one proof prevents cross-subject composition, while the scoped
+    Milestone read makes partial legacy rows fail before a raw compatibility
+    aggregate can serialize or send them to an LLM.
+    """
+
+    from vitals.services import milestones_service
+
+    scope = await _mcp_v1_conflict_scope(session)
+    await milestones_service.list_milestones(
+        session,
+        subject_id=scope.subject_id,
+        include_legacy_unowned=scope.include_legacy_unowned,
+    )
+    return scope
+
+
 async def _mcp_v1_conflict_write_context(
     session,
     *,
@@ -2212,6 +2232,17 @@ async def delete_record(domain: str, record_id: int) -> dict:
                 "include_legacy_unowned": True,
                 "prepared_weight_write": prepared,
             }
+        elif domain == "milestones":
+            conflict_context = await _mcp_v1_conflict_write_context(session)
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            owned_kwargs = {
+                "identity": conflict_context.identity,
+                "include_legacy_unowned": True,
+                "prepared_conflict_write": prepared,
+            }
         elif domain in {"timeline", "supplements"}:
             ownership = await _mcp_v1_legacy_owner(session)
             owned_kwargs = {
@@ -2771,11 +2802,11 @@ async def get_timeline(
     domains = [domain] if domain else None
 
     async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
+        scope = await _mcp_v1_conflict_scope(session)
         events = await timeline_service.list_events(
             session,
-            subject_id=ownership.subject_id,
-            include_legacy_unowned=True,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
             domains=domains,
             start=start,
             end=end,
@@ -2892,6 +2923,7 @@ async def get_full_snapshot(
     session_factory = get_session_factory()
     parsed_date = _parse_date(on_date, field="on_date")
     async with session_factory() as session:
+        await _mcp_v1_composition_scope(session)
         try:
             return await digest_service.assemble_context(
                 session, on_date=parsed_date, period_days=period_days
@@ -2927,6 +2959,7 @@ async def export_everything(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        await _mcp_v1_composition_scope(session)
         try:
             return await data_portability_service.export_llm(
                 session, domains=domains, since=cutoff
@@ -2976,6 +3009,7 @@ async def get_data_overview() -> dict:
     session_factory = get_session_factory()
     overview: dict = {}
     async with session_factory() as session:
+        await _mcp_v1_composition_scope(session)
         for name, model, date_col in dated:
             cols = [func.count(), func.min(date_col), func.max(date_col)]
             updated_col = getattr(model, "updated_at", None)
@@ -3011,8 +3045,22 @@ async def get_milestones(status: Optional[str] = None) -> list[dict]:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        rows = await milestones_service.list_milestones(session, status=status)
-        return [await milestones_service.progress(session, m) for m in rows]
+        scope = await _mcp_v1_conflict_scope(session)
+        rows = await milestones_service.list_milestones(
+            session,
+            status=status,
+            subject_id=scope.subject_id,
+            include_legacy_unowned=scope.include_legacy_unowned,
+        )
+        return [
+            await milestones_service.progress(
+                session,
+                milestone,
+                subject_id=scope.subject_id,
+                include_legacy_unowned=scope.include_legacy_unowned,
+            )
+            for milestone in rows
+        ]
 
 
 @mcp.tool()
@@ -3032,9 +3080,16 @@ async def create_milestone(
     session_factory = get_session_factory()
     parsed_deadline = _parse_date(deadline, field="deadline")
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(session)
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         row = await milestones_service.create_milestone(
             session, name=name, domain=domain, target_value=target_value,
             target_unit=target_unit, deadline=parsed_deadline, note=note,
+            identity=conflict_context.identity,
+            prepared_conflict_write=prepared,
         )
         await session.commit()
         return await serialize_written(session, row)
@@ -3050,16 +3105,44 @@ async def update_milestone(
     deadline: Optional[str] = None,
     status: Optional[str] = None,
     note: Optional[str] = None,
+    clear_fields: Optional[list[str]] = None,
 ) -> dict:
     """Updates a goal card by ID. Only the fields you pass are changed. Use
-    ``status`` to mark a goal achieved/missed/paused/active. WRITE tool."""
+    ``status`` to mark a goal achieved/missed/paused/active. To remove an
+    optional value, name it in ``clear_fields`` (target_value, target_unit,
+    deadline, or note). WRITE tool."""
     from vitals.services import milestones_service
 
+    nullable_fields = {"target_value", "target_unit", "deadline", "note"}
+    clear = set(clear_fields or ())
+    unknown = clear.difference(nullable_fields)
+    if unknown:
+        return {
+            "error": "clear_fields contains unknown fields: "
+            + ", ".join(sorted(unknown))
+        }
+    supplied = {
+        "target_value": target_value,
+        "target_unit": target_unit,
+        "deadline": deadline,
+        "note": note,
+    }
+    overlapping = sorted(field for field in clear if supplied[field] is not None)
+    if overlapping:
+        return {
+            "error": "fields cannot be set and cleared together: "
+            + ", ".join(overlapping)
+        }
     if status is not None and status not in _MILESTONE_STATUSES:
         return {"error": f"Unknown status '{status}'. Use: {', '.join(sorted(_MILESTONE_STATUSES))}"}
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        conflict_context = await _mcp_v1_conflict_write_context(session)
+        prepared = await conflict_engine.prepare_scoped_write(
+            session,
+            context=conflict_context,
+        )
         kwargs: dict = {}
         if name is not None:
             kwargs["name"] = name
@@ -3075,7 +3158,16 @@ async def update_milestone(
             kwargs["status"] = status
         if note is not None:
             kwargs["note"] = note
-        row = await milestones_service.update_milestone(session, milestone_id, **kwargs)
+        for field in clear:
+            kwargs[field] = None
+        row = await milestones_service.update_milestone(
+            session,
+            milestone_id,
+            identity=conflict_context.identity,
+            include_legacy_unowned=True,
+            prepared_conflict_write=prepared,
+            **kwargs,
+        )
         if row is None:
             return {"error": f"Milestone {milestone_id} not found"}
         await session.commit()
@@ -3558,6 +3650,7 @@ async def generate_digest_now(period_days: int = 7) -> dict:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        await _mcp_v1_composition_scope(session)
         try:
             row = await digest_service.generate_digest(
                 session, LLMClient(), period_days=period_days

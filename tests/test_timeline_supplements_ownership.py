@@ -33,6 +33,7 @@ from vitals.models.weight import NoiseMarker, ProgressPhoto
 from vitals.ownership import WriteIdentity
 from vitals.services import (
     conflict_engine,
+    milestones_service,
     supplements_service,
     timeline_service,
     weight_service,
@@ -403,8 +404,13 @@ async def test_derived_timeline_bridge_rejects_partial_actor_roots(
     db_session.add(partial)
     await db_session.flush()
 
-    if selector == "progress_photo":
-        with pytest.raises(weight_service.ProgressPhotoOwnershipError):
+    if selector in {"progress_photo", "milestone"}:
+        expected_error = (
+            weight_service.ProgressPhotoOwnershipError
+            if selector == "progress_photo"
+            else milestones_service.MilestoneOwnershipError
+        )
+        with pytest.raises(expected_error):
             await timeline_service.list_events(
                 db_session,
                 subject_id=owner.subject_id,

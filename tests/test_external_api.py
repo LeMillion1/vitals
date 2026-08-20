@@ -67,7 +67,12 @@ async def test_summary_rejects_bad_token(client, _token):
 
 
 @pytest.mark.asyncio
-async def test_summary_returns_all_cards(client, db_session, _token):
+async def test_summary_returns_all_cards(
+    client,
+    db_session,
+    legacy_owner_roots,
+    _token,
+):
     await _seed(db_session)
     r = await client.get("/external/summary", headers=AUTH)
     assert r.status_code == 200
@@ -100,7 +105,11 @@ async def test_summary_returns_all_cards(client, db_session, _token):
 
 
 @pytest.mark.asyncio
-async def test_summary_empty_db_is_graceful(client, _token):
+async def test_summary_empty_db_is_graceful(
+    client,
+    legacy_owner_roots,
+    _token,
+):
     r = await client.get("/external/summary", headers=AUTH)
     assert r.status_code == 200
     body = r.json()

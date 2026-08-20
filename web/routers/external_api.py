@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.config import load_config
 from vitals.enums import Domain, MilestoneStatus
+from vitals.services import conflict_engine
 from vitals.utils.timeutils import today_local
 from web.config import get_web_config
 from web.deps import get_session
@@ -55,25 +56,42 @@ async def require_external_token(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token")
 
 
-async def _weight_block(session: AsyncSession) -> dict[str, Any]:
+async def _weight_block(
+    session: AsyncSession,
+    scope: conflict_engine.ConflictScope,
+) -> dict[str, Any]:
     """Latest weight, a noise-excluded MA7 sparkline, the trend slope, and — if an
     active weight goal exists — the projected date to reach it (all from
     ``weight_service``; nothing recomputed here)."""
     from vitals.services import milestones_service, weight_service
 
-    weights = await weight_service.list_active_weights(session)
+    weights = await weight_service.list_active_weights(
+        session,
+        subject_id=scope.subject_id,
+        include_legacy_unowned=scope.include_legacy_unowned,
+    )
     latest = weights[-1] if weights else None
 
     # An active weight goal (soonest deadline first, per list_milestones' order)
     # feeds chart_series so it returns a projection date for the goal.
-    active = await milestones_service.list_milestones(session, status=MilestoneStatus.ACTIVE.value)
+    active = await milestones_service.list_milestones(
+        session,
+        status=MilestoneStatus.ACTIVE.value,
+        subject_id=scope.subject_id,
+        include_legacy_unowned=scope.include_legacy_unowned,
+    )
     goal_ms = next(
         (m for m in active if m.domain == Domain.WEIGHT.value and m.target_value is not None),
         None,
     )
     goal_kg = goal_ms.target_value if goal_ms else None
 
-    series = await weight_service.chart_series(session, goal_kg=goal_kg)
+    series = await weight_service.chart_series(
+        session,
+        subject_id=scope.subject_id,
+        include_legacy_unowned=scope.include_legacy_unowned,
+        goal_kg=goal_kg,
+    )
     sparkline = [{"date": p["date"], "kg": p["weight_kg"]} for p in series["trend_ma"]]
     slope = series["trend"]["slope_per_week"] if series.get("trend") else None
     projection = series.get("projection")
@@ -102,6 +120,8 @@ async def _recovery_block(session: AsyncSession) -> Optional[dict[str, Any]]:
     the caller renders its own advice/labels from thresholds it owns."""
     from vitals.services import garmin_service
 
+    # Garmin's compatibility reader is not subject-aware yet. external_summary
+    # resolves the sole subject under governance before reaching this call.
     g = await garmin_service.latest_daily(session)
     if g is None:
         return None
@@ -115,7 +135,10 @@ async def _recovery_block(session: AsyncSession) -> Optional[dict[str, Any]]:
     }
 
 
-async def _activity_block(session: AsyncSession) -> dict[str, list[str]]:
+async def _activity_block(
+    session: AsyncSession,
+    scope: conflict_engine.ConflictScope,
+) -> dict[str, list[str]]:
     """Recent per-domain log dates (last ``_ACTIVITY_WINDOW_DAYS`` days), newest
     first. The caller derives "current streak" from these — a presentation
     concept the caller owns, not a Vitals metric, so only the raw dates cross
@@ -125,8 +148,22 @@ async def _activity_block(session: AsyncSession) -> dict[str, list[str]]:
     today = today_local()
     since = today - timedelta(days=_ACTIVITY_WINDOW_DAYS - 1)
 
-    weights = await weight_service.list_active_weights(session, start=since, end=today)
-    meals = await nutrition_service.list_meals(session, start=since, end=today)
+    weights = await weight_service.list_active_weights(
+        session,
+        start=since,
+        end=today,
+        subject_id=scope.subject_id,
+        include_legacy_unowned=scope.include_legacy_unowned,
+    )
+    meals = await nutrition_service.list_meals(
+        session,
+        start=since,
+        end=today,
+        subject_id=scope.subject_id,
+        include_unowned_legacy=scope.include_legacy_unowned,
+    )
+    # Garmin's current compatibility reader has no subject arguments; the
+    # summary-level exact-one governance proof remains its read boundary.
     daily = await garmin_service.list_daily(session, limit=_ACTIVITY_WINDOW_DAYS)
 
     def _dates(rows) -> list[str]:
@@ -147,12 +184,23 @@ async def external_summary(session: AsyncSession = Depends(get_session)) -> dict
     """One compact payload for the caller's four health glance cards."""
     from vitals.services import nutrition_service
 
+    scope = await conflict_engine.resolve_legacy_conflict_scope(
+        session,
+        actor_username=get_web_config().auth_username,
+        evaluation_date=today_local(),
+    )
     cfg = load_config()
-    nutrition_today = await nutrition_service.daily_summary(session, today_local(), cfg)
+    nutrition_today = await nutrition_service.daily_summary(
+        session,
+        today_local(),
+        cfg,
+        subject_id=scope.subject_id,
+        include_unowned_legacy=scope.include_legacy_unowned,
+    )
 
     return {
-        "weight": await _weight_block(session),
+        "weight": await _weight_block(session, scope),
         "nutrition_today": nutrition_today,
         "recovery": await _recovery_block(session),
-        "activity": await _activity_block(session),
+        "activity": await _activity_block(session, scope),
     }

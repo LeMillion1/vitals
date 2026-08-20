@@ -2578,8 +2578,20 @@ async def digest_job(session_factory, redis=None) -> None:
     if not load_config().openrouter_api_key:
         return
     async with session_factory() as session:
+        from vitals.services import conflict_engine, milestones_service
         from vitals.services.language_service import get_language
         from vitals.i18n import current_lang
+
+        milestone_scope = await conflict_engine.resolve_legacy_conflict_scope(
+            session,
+            actor_username=None,
+            evaluation_date=today_local(),
+        )
+        await milestones_service.list_milestones(
+            session,
+            subject_id=milestone_scope.subject_id,
+            include_legacy_unowned=milestone_scope.include_legacy_unowned,
+        )
         lang = await get_language(session, redis)
         current_lang.set(lang)
 

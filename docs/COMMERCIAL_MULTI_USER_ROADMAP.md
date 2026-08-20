@@ -264,6 +264,15 @@ Implementation progress on `commercial/main`:
   a newer fact with older pending evidence. The first 50,000 parsed rows and an
   explicit truncation flag remain the bounded compatibility payload;
   a lossless chunk/import-batch design belongs to the scoped-key cutover.
+  Milestone web/MCP creates now dual-write S+A, direct reads and mutations use
+  the same prepared exact-one subject boundary, and updates preserve the
+  historical actor. Timeline, Today, and the external glance API consume
+  subject-scoped goal rows; Weight, BodyMeasurement, BodyScan, Nutrition, and
+  module-setting inputs used for live goal progress receive that same scope.
+  Legacy whole-lake MCP snapshot/export/overview tools and manual, MCP, or
+  scheduled weekly-digest generation now acquire the same exact-one governance
+  proof before any global compatibility query or LLM request. The bridge accepts
+  only fully-null S/A history and rejects partial roots.
   These paths resolve the verified legacy owner at their web, scheduler, or MCP
   boundary and fail closed if a second subject makes the compatibility bridge
   ambiguous.
@@ -274,8 +283,8 @@ Implementation progress on `commercial/main`:
 - Bounded data backfill and validation, scoped natural-key/alert/outbox-unique
   cutover, remaining health-alert and conflict writers, subject-aware
   composition/reporting (including Labs/Genetics charts, shares, digests,
-  overview, and export), lossless VCF chunking, full MCP principal propagation,
-  and RLS remain pending.
+  overview, remaining Today composition, and export), lossless VCF chunking,
+  full MCP principal propagation, and RLS remain pending.
   Registration stays disabled; the current code is a safe single-subject
   migration bridge, not a multi-user release boundary.
 

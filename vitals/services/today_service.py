@@ -13,6 +13,7 @@ have been written from.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta
 from typing import Any, Optional, Sequence
 
@@ -109,7 +110,11 @@ def _change(key: str, domain_key: str, href: str, now: float, before: float) -> 
 
 
 async def build(
-    session: AsyncSession, *, enabled_modules: Optional[dict[str, bool]] = None
+    session: AsyncSession,
+    *,
+    enabled_modules: Optional[dict[str, bool]] = None,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
 ) -> dict:
     """Everything ``today/index.html`` renders, as one plain dict."""
     from vitals.services import (
@@ -132,7 +137,11 @@ async def build(
     weight = ctx.get("weight") or {}
     garmin = ctx.get("garmin") or {}
     baseline = garmin.get("baseline") or {}
-    series = await weight_service.chart_series(session)
+    series = await weight_service.chart_series(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
 
     # ── Key figures ──────────────────────────────────────────────────────────
     trend = weight.get("trend_kg_per_week")
@@ -279,7 +288,12 @@ async def build(
         "changes": changes[:4],
         "feed": feed,
         "attention": attention,
-        "goal": await _goal(session, series),
+        "goal": await _goal(
+            session,
+            series,
+            subject_id=subject_id,
+            include_legacy_unowned=include_legacy_unowned,
+        ),
         "latest_weight": weight.get("latest_kg"),
     }
 
@@ -350,7 +364,13 @@ def _sync_rows(ctx: dict, em: dict) -> list[dict]:
     return rows
 
 
-async def _goal(session: AsyncSession, series: dict) -> Optional[dict]:
+async def _goal(
+    session: AsyncSession,
+    series: dict,
+    *,
+    subject_id: uuid.UUID | None = None,
+    include_legacy_unowned: bool = False,
+) -> Optional[dict]:
     """The first weight goal, as distance covered rather than distance left.
 
     ``milestones_service.progress`` knows the target and where he is now but has
@@ -362,7 +382,11 @@ async def _goal(session: AsyncSession, series: dict) -> Optional[dict]:
 
     raw = series.get("raw") or []
     start = raw[0]["weight_kg"] if raw else None
-    for card in await milestones_service.dashboard_cards(session):
+    for card in await milestones_service.dashboard_cards(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    ):
         if card["domain"] != Domain.WEIGHT.value or card["current"] is None:
             continue
         if card["target_value"] is None or start is None:

@@ -1284,7 +1284,11 @@ async def test_reports_dashboard_renders(auth_client):
     assert "Еженедельный разбор" in response.text
 
 
-async def test_reports_create_milestone(auth_client, db_session):
+async def test_reports_create_milestone(
+    auth_client,
+    db_session,
+    legacy_owner_roots,
+):
     """POST /reports/milestone creates a goal card."""
     from vitals.models.milestones import Milestone
 
@@ -1298,6 +1302,10 @@ async def test_reports_create_milestone(auth_client, db_session):
     row = (await db_session.execute(select(Milestone))).scalar_one_or_none()
     assert row is not None
     assert row.name == "Дойти до 82" and row.target_value == 82.0
+    assert (row.subject_id, row.actor_user_id) == (
+        legacy_owner_roots.subject_id,
+        legacy_owner_roots.user_id,
+    )
 
 
 async def test_reports_create_body_comp_milestone(auth_client, db_session):

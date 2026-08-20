@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.config import load_config
 from vitals.enums import DigestKind, Domain, IntegrationProvider
 from vitals.integrations.llm_client import LLMClient, LLMNotConfigured
-from vitals.services import digest_service, milestones_service
+from vitals.services import conflict_engine, digest_service, milestones_service
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.services.proactive import brief, channels, delivery
 from vitals.utils.timeutils import today_local
@@ -39,7 +39,16 @@ async def reports_dashboard(
     username: str = Depends(require_auth),
 ):
     """Goal cards, the latest weekly digest and its history, and today's brief."""
-    cards = await milestones_service.dashboard_cards(db)
+    milestone_scope = await conflict_engine.resolve_legacy_conflict_scope(
+        db,
+        actor_username=username,
+        evaluation_date=today_local(),
+    )
+    cards = await milestones_service.dashboard_cards(
+        db,
+        subject_id=milestone_scope.subject_id,
+        include_legacy_unowned=milestone_scope.include_legacy_unowned,
+    )
     latest = await digest_service.latest_digest(db)
     history = await digest_service.list_digests(db, limit=12)
     latest_brief = await digest_service.latest_digest(db, kind=DigestKind.DAILY_BRIEF.value)
@@ -76,6 +85,15 @@ async def create_milestone(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
+    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=today_local(),
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        db,
+        context=conflict_context,
+    )
     await milestones_service.create_milestone(
         db,
         name=name.strip(),
@@ -84,6 +102,8 @@ async def create_milestone(
         target_unit=target_unit,
         deadline=date_type.fromisoformat(deadline) if deadline else None,
         note=note,
+        identity=conflict_context.identity,
+        prepared_conflict_write=prepared,
     )
     await db.commit()
     return _redirect(request)
@@ -97,7 +117,23 @@ async def set_milestone_status(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await milestones_service.set_status(db, milestone_id, status_value)
+    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=today_local(),
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        db,
+        context=conflict_context,
+    )
+    await milestones_service.set_status(
+        db,
+        milestone_id,
+        status_value,
+        identity=conflict_context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)
 
@@ -109,7 +145,22 @@ async def delete_milestone(
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
-    await milestones_service.delete_milestone(db, milestone_id)
+    conflict_context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db,
+        actor_username=username,
+        evaluation_date=today_local(),
+    )
+    prepared = await conflict_engine.prepare_scoped_write(
+        db,
+        context=conflict_context,
+    )
+    await milestones_service.delete_milestone(
+        db,
+        milestone_id,
+        identity=conflict_context.identity,
+        include_legacy_unowned=True,
+        prepared_conflict_write=prepared,
+    )
     await db.commit()
     return _redirect(request)
 
@@ -123,6 +174,19 @@ async def generate_digest_now(
     _rl: None = Depends(rate_limit("digest_generate", limit=5, window=60)),
 ):
     """Generate this week's digest on demand."""
+    milestone_scope = await conflict_engine.resolve_legacy_conflict_scope(
+        db,
+        actor_username=username,
+        evaluation_date=today_local(),
+    )
+    # Digest composition is still a legacy whole-lake query.  Validate its
+    # Milestone arm under the same governance-locked exact-one proof before any
+    # health data can be placed in an external LLM prompt.
+    await milestones_service.list_milestones(
+        db,
+        subject_id=milestone_scope.subject_id,
+        include_legacy_unowned=milestone_scope.include_legacy_unowned,
+    )
     try:
         await digest_service.generate_digest(db, LLMClient(), period_days=period_days)
         await db.commit()

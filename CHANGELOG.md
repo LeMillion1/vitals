@@ -169,6 +169,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Deletion atomically removes the fact and marks its file metadata DELETED before
   bytes are unlinked, then records PURGED in a fresh transaction, so rollback and
   ambiguous commits cannot silently discard intimate medical images.
+- Milestone web/MCP creates now stamp the selected subject and human actor;
+  status changes, partial updates, and deletes lock and mutate only that subject
+  while retaining the original actor. Goal lists, Timeline/Today cards, external
+  glance cards, and live Weight/body-composition progress propagate the same
+  exact-one subject scope. Whole-lake MCP snapshot/export/overview tools and
+  manual, MCP, or scheduled weekly-digest generation now close at that same
+  cardinality gate before serialization or an LLM request. Only fully-null
+  historical S/A rows may use the compatibility bridge, partial roots fail
+  closed, and a second subject closes the legacy surfaces instead of exposing
+  another goal.
 - The Garmin Weight export outbox now projects only the prepared subject and Garmin
   account, validates every linked Weight fact before using remote-delete authority,
   and records the human requester while scheduled work remains actorless. Settings,

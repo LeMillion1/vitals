@@ -435,14 +435,14 @@ async def _derived_events(
     # no dedicated history table to do better). `domain` here names the
     # *related* health area (weight/glp1/...), not a milestones-module domain,
     # so there's no domain filter on the query.
-    from vitals.models.milestones import Milestone
+    from vitals.services import milestones_service
 
-    ms_stmt = scoped(
-        select(Milestone),
-        Milestone,
-        legacy_roots=(Milestone.actor_user_id,),
+    milestones = await milestones_service.list_milestones(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
     )
-    for m in (await session.execute(ms_stmt)).scalars().all():
+    for m in milestones:
         created_date = m.created_at.date()
         if (start is None or created_date >= start) and (end is None or created_date <= end):
             events.append(TimelineEvent(
