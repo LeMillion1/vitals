@@ -1,16 +1,18 @@
-"""Stage-5C: every key-based write path resolves inside its own scope.
+"""Stage-5D: two people, and two accounts, may finally share a natural key.
 
-Each of these paths used to look a natural key up across the whole
-installation and then check afterwards whether the row it found happened to
-belong to the caller. They now look the key up *inside* the caller's scope, and
-a row outside it is reported through a typed error without being read into the
-write path or mutated. Until the legacy global keys are dropped, that report
-also stands in for the integrity error the surviving global key would raise.
+Every one of these shapes was impossible while the installation-wide unique
+keys stood: one weight per date, one lab-marker name, one Garmin activity id,
+one unresolved alert per key. Each write path now resolves its key inside its
+own scope, and the scoped unique keys are what the database enforces, so the
+rows below coexist — which is exactly what a second subject needs.
+
+Each case also asserts that the other scope's row was neither read into the
+write path nor mutated.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 
 import pytest
 from sqlalchemy import func, select
@@ -28,7 +30,6 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.garmin import GarminDaily
 from vitals.models.hrt import HrtCompound
 from vitals.models.identity import HealthSubject, User
-from vitals.models.raw_payload import RawPayload
 from vitals.models.signals import DayContext
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
@@ -74,36 +75,38 @@ async def _graph(
     return owner, subject, connection
 
 
-async def test_day_context_upsert_never_reads_another_subjects_day(db_session):
+async def test_two_subjects_answer_the_same_day(db_session):
     _owner_a, subject_a, _connection_a = await _graph(db_session, "context-owner-a")
     owner_b, subject_b, _connection_b = await _graph(db_session, "context-owner-b")
-    foreign = DayContext(
+    theirs = DayContext(
         subject_id=subject_a.id,
         date=DAY,
         domain=Domain.SIGNALS.value,
         source=Source.MANUAL.value,
         answers={"gym": True},
     )
-    db_session.add(foreign)
+    db_session.add(theirs)
     await db_session.flush()
 
-    with pytest.raises(signals_service.SignalOwnershipError):
-        await signals_service.set_day_context(
-            db_session,
-            DAY,
-            answers={"gym": False},
-            identity=WriteIdentity(subject_b.id, owner_b.id),
-        )
+    mine = await signals_service.set_day_context(
+        db_session,
+        DAY,
+        answers={"gym": False},
+        identity=WriteIdentity(subject_b.id, owner_b.id),
+    )
 
-    assert foreign.subject_id == subject_a.id
-    assert foreign.answers == {"gym": True}
-    assert await db_session.scalar(select(func.count()).select_from(DayContext)) == 1
+    assert mine.subject_id == subject_b.id
+    assert mine.answers == {"gym": False}
+    # The other subject's day was never read into this write.
+    assert theirs.subject_id == subject_a.id
+    assert theirs.answers == {"gym": True}
+    assert await db_session.scalar(select(func.count()).select_from(DayContext)) == 2
 
 
-async def test_garmin_daily_upsert_never_reads_another_connections_day(db_session):
+async def test_two_garmin_accounts_report_the_same_day(db_session):
     owner_a, subject_a, connection_a = await _graph(db_session, "daily-owner-a")
     _owner_b, subject_b, connection_b = await _graph(db_session, "daily-owner-b")
-    foreign = GarminDaily(
+    theirs = GarminDaily(
         subject_id=subject_b.id,
         integration_connection_id=connection_b.id,
         date=DAY,
@@ -111,27 +114,28 @@ async def test_garmin_daily_upsert_never_reads_another_connections_day(db_sessio
         source=Source.GARMIN_API.value,
         steps=11,
     )
-    db_session.add(foreign)
+    db_session.add(theirs)
     await db_session.flush()
 
-    with pytest.raises(garmin_service.GarminOwnershipConflictError):
-        await garmin_service.ingest_owned_daily(
-            db_session,
-            DAY,
-            {"summary": {"totalSteps": 4321}},
-            identity=WriteIdentity(subject_a.id, owner_a.id),
-            integration_connection_id=connection_a.id,
-        )
+    mine = await garmin_service.ingest_owned_daily(
+        db_session,
+        DAY,
+        {"summary": {"totalSteps": 4321}},
+        identity=WriteIdentity(subject_a.id, owner_a.id),
+        integration_connection_id=connection_a.id,
+    )
 
-    # The conflict is reported before raw ingestion writes anything.
-    assert foreign.steps == 11
-    assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
+    assert mine.integration_connection_id == connection_a.id
+    assert mine.steps == 4321
+    assert theirs.integration_connection_id == connection_b.id
+    assert theirs.steps == 11
+    assert await db_session.scalar(select(func.count()).select_from(GarminDaily)) == 2
 
 
-async def test_provider_alert_never_reads_another_connections_alert(db_session):
+async def test_two_accounts_raise_the_same_provider_alert(db_session):
     _owner_a, subject_a, connection_a = await _graph(db_session, "alert-owner-a")
     owner_b, subject_b, connection_b = await _graph(db_session, "alert-owner-b")
-    foreign = SystemAlert(
+    theirs = SystemAlert(
         subject_id=subject_a.id,
         integration_connection_id=connection_a.id,
         domain=Domain.GARMIN.value,
@@ -140,32 +144,32 @@ async def test_provider_alert_never_reads_another_connections_alert(db_session):
         alert_key="garmin.auth",
         entity_ref="",
     )
-    db_session.add(foreign)
+    db_session.add(theirs)
     await db_session.flush()
 
-    context = alerts_service.ProviderAlertContext(
-        identity=WriteIdentity(subject_b.id, owner_b.id),
-        integration_connection_id=connection_b.id,
-        provider=IntegrationProvider.GARMIN,
+    mine = await alerts_service.raise_scoped_alert(
+        db_session,
+        context=alerts_service.ProviderAlertContext(
+            identity=WriteIdentity(subject_b.id, owner_b.id),
+            integration_connection_id=connection_b.id,
+            provider=IntegrationProvider.GARMIN,
+        ),
+        domain=Domain.GARMIN,
+        severity=Severity.WARN,
+        message="subject B's account needs attention",
+        alert_key="garmin.auth",
     )
-    with pytest.raises(alerts_service.AlertScopedUniqueCutoverRequiredError):
-        await alerts_service.raise_scoped_alert(
-            db_session,
-            context=context,
-            domain=Domain.GARMIN,
-            severity=Severity.WARN,
-            message="subject B's account needs attention",
-            alert_key="garmin.auth",
-        )
 
-    assert foreign.subject_id == subject_a.id
-    assert foreign.integration_connection_id == connection_a.id
-    assert foreign.message == "subject A's account needs attention"
+    assert mine.integration_connection_id == connection_b.id
+    assert mine.message == "subject B's account needs attention"
+    assert theirs.integration_connection_id == connection_a.id
+    assert theirs.message == "subject A's account needs attention"
+    assert theirs.resolved_at is None
 
 
-async def test_compound_catalog_never_reads_a_subjects_own_compound(db_session):
+async def test_a_subjects_compound_may_reuse_a_curated_key(db_session):
     _owner, subject, _connection = await _graph(db_session, "compound-owner")
-    protected = HrtCompound(
+    theirs = HrtCompound(
         subject_id=subject.id,
         domain="hrt",
         source=Source.MANUAL.value,
@@ -177,20 +181,29 @@ async def test_compound_catalog_never_reads_a_subjects_own_compound(db_session):
         half_life_hours=1.0,
         active_fraction=1.0,
     )
-    db_session.add(protected)
+    db_session.add(theirs)
     await db_session.flush()
 
-    with pytest.raises(hrt_catalog.HrtCatalogCollisionError):
-        await hrt_catalog.sync_catalog(db_session)
+    # The catalog cannot see a subject's own compound at all, so it seeds the
+    # curated definition beside it instead of refusing or overwriting it.
+    result = await hrt_catalog.sync_catalog(db_session)
+    assert result["inserted"] > 0
 
-    assert protected.name == "A subject's own definition"
-    assert protected.source == Source.MANUAL.value
+    assert theirs.name == "A subject's own definition"
+    assert theirs.source == Source.MANUAL.value
+    curated = await db_session.scalar(
+        select(HrtCompound).where(
+            HrtCompound.key == "testosterone_enanthate",
+            HrtCompound.subject_id.is_(None),
+        )
+    )
+    assert curated is not None and curated.id != theirs.id
 
 
-async def test_rule_catalog_never_reads_a_subjects_own_rule(db_session):
+async def test_a_subjects_rule_may_reuse_a_curated_code(db_session):
     _owner, subject, _connection = await _graph(db_session, "rule-owner")
     entry = conflict_catalog.load_rule_catalog()[0]
-    protected = ConflictRule(
+    theirs = ConflictRule(
         subject_id=subject.id,
         code=entry["code"],
         rule_type=entry["rule_type"],
@@ -201,10 +214,43 @@ async def test_rule_catalog_never_reads_a_subjects_own_rule(db_session):
         severity=entry["severity"],
         message="a subject's own rule",
     )
-    db_session.add(protected)
+    db_session.add(theirs)
     await db_session.flush()
 
-    with pytest.raises(conflict_catalog.ConflictCatalogCollisionError):
-        await conflict_catalog.sync_catalog(db_session)
+    result = await conflict_catalog.sync_catalog(db_session)
+    assert result["inserted"] > 0
 
-    assert protected.message == "a subject's own rule"
+    assert theirs.message == "a subject's own rule"
+    curated = await db_session.scalar(
+        select(ConflictRule).where(
+            ConflictRule.code == entry["code"],
+            ConflictRule.subject_id.is_(None),
+        )
+    )
+    assert curated is not None and curated.id != theirs.id
+
+
+async def test_a_subjects_compound_still_cannot_squat_an_unowned_curated_key(
+    db_session,
+):
+    """The catalog's own half of the key is still exactly one row."""
+
+    unowned = HrtCompound(
+        subject_id=None,
+        domain="hrt",
+        source=Source.MANUAL.value,
+        key="testosterone_enanthate",
+        name="An unowned manual definition",
+        compound_class="testosterone",
+        route="intramuscular",
+        dose_unit="mg",
+        half_life_hours=1.0,
+        active_fraction=1.0,
+    )
+    db_session.add(unowned)
+    await db_session.flush()
+
+    with pytest.raises(hrt_catalog.HrtCatalogCollisionError):
+        await hrt_catalog.sync_catalog(db_session)
+
+    assert unowned.name == "An unowned manual definition"

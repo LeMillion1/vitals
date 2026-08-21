@@ -402,10 +402,9 @@ async def test_malformed_history_fails_closed(db_session, legacy_owner_roots, ca
             _weight(source=Source.GARMIN_API.value, raw_payload_id=raw.id)
         )
     elif case == "duplicate_active_date":
-        # The legacy global partial unique still serializes this today; drop it
-        # so the migration proves it also refuses the shape the Stage-5 scoped
-        # cutover will have to resolve before a second subject can write.
-        await db_session.execute(text("DROP INDEX uq_active_weight_per_date"))
+        # Two active rows on one date. The scoped key does not serialize them
+        # while neither carries a subject, which is exactly the shape the
+        # backfill has to refuse before it can adopt either.
         db_session.add_all([_weight(), _weight(weight_kg=82.0)])
     else:
         db_session.add(_weight(weight_kg=8.0))

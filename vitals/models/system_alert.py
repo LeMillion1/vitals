@@ -55,21 +55,11 @@ class SystemAlert(Base, SubjectOwnershipMixin, IntegrationConnectionOwnershipMix
             "AND length(trim(entity_ref)) > 0)",
             name="ck_system_alerts_ai_invocation_scope",
         ),
-        # At most one active (unresolved) alert per (key, entity). Mirrors Boxly's
-        # uq_active_* partial indexes; declared here so create_all (tests) and the
-        # Alembic migration build the same constraint.
-        Index(
-            "uq_active_alert_per_key_entity",
-            "alert_key",
-            "entity_ref",
-            unique=True,
-            postgresql_where=text("resolved_at IS NULL"),
-            sqlite_where=text("resolved_at IS NULL"),
-        ),
-        # The same invariant per root the alert actually belongs to: the
-        # connection for a provider alert, the subject for a health alert, and
-        # the installation itself for a platform alert. All three stand beside
-        # the legacy global key until the Stage-5 drop.
+        # At most one active (unresolved) alert per key, inside the root the
+        # alert actually belongs to: the connection for a provider alert, the
+        # subject for a health alert, and the installation itself for a platform
+        # alert. Declared here so create_all (tests) and the Alembic migration
+        # build the same constraints.
         Index(
             "uq_active_alert_per_connection_key_entity",
             "integration_connection_id",
@@ -112,6 +102,9 @@ class SystemAlert(Base, SubjectOwnershipMixin, IntegrationConnectionOwnershipMix
                 "AND integration_connection_id IS NULL"
             ),
         ),
+        # Dismissal history is read by (key, entity) across every state, which
+        # the unresolved-only partial keys above cannot serve.
+        Index("ix_system_alerts_key_entity", "alert_key", "entity_ref"),
         # Dashboard query: list active alerts, newest first, filterable by domain.
         Index("ix_system_alerts_domain_resolved", "domain", "resolved_at"),
         Index(

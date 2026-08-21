@@ -170,23 +170,6 @@ async def sync_catalog(session: AsyncSession) -> dict[str, int]:
             raise HrtCatalogCollisionError(
                 "HRT catalog synchronization found a protected custom-key collision"
             )
-    # Temporary bridge: the legacy global key on ``key`` is still installed, so
-    # a subject's compound under a newly curated key would make the catalog's
-    # insert fail with a bare integrity error. This check goes away with the key.
-    owned_collision = await session.scalar(
-        select(HrtCompound.key)
-        .where(
-            HrtCompound.key.in_(
-                tuple(key for key, _entry in catalog if key not in existing)
-            ),
-            HrtCompound.subject_id.is_not(None),
-        )
-        .limit(1)
-    )
-    if owned_collision is not None:
-        raise HrtCatalogCollisionError(
-            "HRT catalog synchronization found a protected custom-key collision"
-        )
 
     inserted = 0
     updated = 0

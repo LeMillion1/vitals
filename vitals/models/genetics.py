@@ -34,20 +34,11 @@ class GeneticVariant(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMix
         Index("ix_genetic_variants_marker", "marker"),
         Index("ix_genetic_variants_subject_rsid", "subject_id", "rsid"),
         Index("ix_genetic_variants_subject_marker", "subject_id", "marker"),
-        # An rsID is a globally-unique dbSNP identifier — at most one row per rsid,
-        # so a re-import or manual re-add refreshes in place instead of silently
-        # duplicating (enforced; upsert_by_rsid relies on it). Partial so manual
-        # rows with no rsid (NULL) can still coexist freely. Also serves rsid
-        # lookups for the non-null values (the only ones ever queried by rsid).
-        Index(
-            "uq_genetic_variant_rsid",
-            "rsid",
-            unique=True,
-            postgresql_where=text("rsid IS NOT NULL"),
-            sqlite_where=text("rsid IS NOT NULL"),
-        ),
         # An rsID identifies a locus, not a person: two people carry the same
-        # one. At most one row per rsID *per subject*.
+        # one. At most one row per rsID per subject, so a re-import or manual
+        # re-add refreshes in place instead of silently duplicating
+        # (``upsert_by_rsid`` relies on it). Partial so manual rows with no rsid
+        # (NULL) can still coexist freely.
         Index(
             "uq_genetic_variant_subject_rsid",
             "subject_id",

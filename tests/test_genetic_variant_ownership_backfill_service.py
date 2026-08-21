@@ -288,10 +288,9 @@ async def test_malformed_history_fails_closed(db_session, legacy_owner_roots, ca
     elif case == "blank_gene":
         db_session.add(_variant(gene="   "))
     else:
-        # The legacy global partial unique still serializes this today; drop it
-        # so the migration proves it also refuses the shape the Stage-5 scoped
-        # `(S, rsid)` cutover will have to resolve.
-        await db_session.execute(text("DROP INDEX uq_genetic_variant_rsid"))
+        # Two rows for one rsID. The scoped `(S, rsid)` key does not serialize
+        # them while neither carries a subject, which is exactly the shape the
+        # backfill has to refuse before it can adopt either.
         db_session.add_all(
             [_variant(rsid="rs1800562"), _variant(rsid="rs1800562", gene="HFE2")]
         )

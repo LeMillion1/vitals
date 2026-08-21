@@ -76,7 +76,6 @@ class LabMarker(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
 
     __tablename__ = "lab_markers"
     __table_args__ = (
-        Index("ix_lab_markers_name", "name", unique=True),
         Index("ix_lab_markers_subject_name", "subject_id", "name"),
         # A marker's reference range and deferral are personal, so the name is
         # unique inside one record, not across the installation.

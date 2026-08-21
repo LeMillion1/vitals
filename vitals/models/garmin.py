@@ -42,7 +42,6 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
     Uuid,
     text,
 )
@@ -125,7 +124,7 @@ class GarminDaily(
     __table_args__ = (
         insights_index(__tablename__),
         # One daily row per date; a re-sync (or the HAE backup) upserts it.
-        UniqueConstraint("date", name="uq_garmin_daily_date"),
+
         Index("ix_garmin_daily_subject_date", "subject_id", "date"),
         Index(
             "ix_garmin_daily_subject_domain_date",
@@ -139,8 +138,7 @@ class GarminDaily(
             "date",
         ),
         # One day per Garmin account, not per installation: two accounts
-        # legitimately report the same date. The legacy global key stands
-        # beside this one until the Stage-5 drop.
+        # legitimately report the same date.
         Index(
             "uq_garmin_daily_connection_date",
             "integration_connection_id",
@@ -228,7 +226,7 @@ class GarminActivity(
     __tablename__ = "garmin_activities"
     __table_args__ = (
         insights_index(__tablename__),
-        UniqueConstraint("external_id", name="uq_garmin_activities_external_id"),
+
         Index("ix_garmin_activities_subject_date", "subject_id", "date"),
         Index(
             "ix_garmin_activities_subject_domain_date",
@@ -360,7 +358,7 @@ class GarminWeightExport(
 
     __tablename__ = "garmin_weight_exports"
     __table_args__ = (
-        UniqueConstraint("date", name="uq_garmin_weight_exports_date"),
+
         CheckConstraint(
             "weight_kg > 0", name="ck_garmin_weight_exports_weight_positive"
         ),

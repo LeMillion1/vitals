@@ -347,13 +347,13 @@ async def test_partial_root_noise_marker_fails_closed_on_read_refresh_and_delete
     assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 0
 
 
-async def test_global_measurement_date_collision_is_a_typed_cutover_error(
+async def test_two_subjects_measure_on_the_same_date(
     db_session,
     legacy_owner_roots,
 ):
     identity = _identity(legacy_owner_roots)
     foreign_identity = await _new_identity(db_session, "foreign-date-owner")
-    occupied = BodyMeasurement(
+    theirs = BodyMeasurement(
         subject_id=foreign_identity.subject_id,
         actor_user_id=foreign_identity.actor_user_id,
         date=MEASUREMENT_DATE,
@@ -361,22 +361,25 @@ async def test_global_measurement_date_collision_is_a_typed_cutover_error(
         source=Source.MANUAL.value,
         waist_cm=90,
     )
-    db_session.add(occupied)
+    db_session.add(theirs)
     await db_session.commit()
 
-    with pytest.raises(
-        weight_service.BodyMeasurementScopedUniqueCutoverRequiredError
-    ):
-        await weight_service.upsert_body_measurement(
-            db_session,
-            on_date=MEASUREMENT_DATE,
-            waist_cm=85,
-            identity=identity,
-            prepared_conflict_write=await _prepared(db_session, identity),
-        )
+    # A measurement date is unique inside one record, not across the
+    # installation, so the other subject's row is neither read nor changed.
+    mine = await weight_service.upsert_body_measurement(
+        db_session,
+        on_date=MEASUREMENT_DATE,
+        waist_cm=85,
+        identity=identity,
+        prepared_conflict_write=await _prepared(db_session, identity),
+    )
+    assert mine.subject_id == identity.subject_id
+    assert mine.waist_cm == 85
+    assert theirs.subject_id == foreign_identity.subject_id
+    assert theirs.waist_cm == 90
     assert await db_session.scalar(
         select(func.count()).select_from(BodyMeasurement)
-    ) == 1
+    ) == 2
 
 
 async def test_measurement_block_is_write_free_and_override_is_attributed(

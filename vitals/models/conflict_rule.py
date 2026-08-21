@@ -29,7 +29,6 @@ _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 class ConflictRule(Base, SubjectOwnershipMixin, TimestampMixin):
     __tablename__ = "conflict_rules"
     __table_args__ = (
-        Index("ix_conflict_rules_code", "code", unique=True),
         # Same split as the compound catalog: a curated code is global, a
         # subject's own rule is unique only inside that subject.
         Index(

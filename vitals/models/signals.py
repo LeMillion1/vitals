@@ -34,7 +34,6 @@ from sqlalchemy import (
     String,
     Text,
     Time,
-    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -131,10 +130,8 @@ class DayContext(
     __tablename__ = "day_context"
     __table_args__ = (
         insights_index(__tablename__),
-        UniqueConstraint("date", name="uq_day_context_per_date"),
         Index("ix_day_context_subject_date", "subject_id", "date"),
-        # One answered day per person; the legacy global key stands beside this
-        # one until the Stage-5 drop.
+        # One answered day per person.
         Index("uq_day_context_subject_date", "subject_id", "date", unique=True),
         Index(
             "ix_day_context_subject_domain_date",

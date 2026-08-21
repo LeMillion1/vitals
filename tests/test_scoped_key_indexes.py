@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from datetime import date
 from pathlib import Path
 
@@ -57,13 +58,13 @@ def test_migration_matches_the_reviewed_catalog_exactly():
     ]
 
 
-def test_every_scoped_key_is_installed_beside_its_legacy_key():
+def test_every_scoped_key_replaced_its_legacy_key():
     for spec in SCOPED_KEYS:
         table = Base.metadata.tables[spec.table]
         names = {index.name for index in table.indexes}
         names |= {constraint.name for constraint in table.constraints}
-        # Stage 5B is purely additive: the legacy global key still stands.
-        assert spec.legacy_name in names, spec.legacy_name
+        # Revision 0048 dropped the installation-wide key this replaces.
+        assert spec.legacy_name not in names, spec.legacy_name
         for replacement in spec.replacements:
             assert replacement.name in names, replacement.name
             index = _index(replacement.name)
@@ -269,7 +270,15 @@ async def test_real_postgres_0047_installs_valid_scoped_keys_concurrently(
         assert set(installed) == set(replacements)
         # A CONCURRENTLY build that failed would leave the index INVALID.
         assert all(installed.values())
-        # Purely additive: every legacy global key still stands beside it.
+        # 0047 is purely additive: every legacy global key still stands beside
+        # its replacement until 0048 drops it.
+        assert set(await _index_state(engine, legacy)) == set(legacy)
+
+        await asyncio.to_thread(command.upgrade, alembic_config, "0048")
+        assert await _index_state(engine, legacy) == {}
+        assert all((await _index_state(engine, replacements)).values())
+
+        await asyncio.to_thread(command.downgrade, alembic_config, "0047")
         assert set(await _index_state(engine, legacy)) == set(legacy)
 
         await asyncio.to_thread(command.downgrade, alembic_config, "0046")
@@ -281,4 +290,147 @@ async def test_real_postgres_0047_installs_valid_scoped_keys_concurrently(
     finally:
         if migration_control_ready:
             await asyncio.to_thread(command.upgrade, alembic_config, "head")
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_postgres_two_subjects_write_the_same_keys_concurrently(
+    db_session,
+):
+    """The cutover's whole point, proved on the database that enforces it.
+
+    Two subjects and two connections write the same weigh-in date, the same
+    marker name, the same rsID, and the same provider external id — from two
+    separate transactions at once. Every one of these was impossible while the
+    installation-wide keys stood.
+    """
+
+    import asyncio
+    import uuid
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from vitals.enums import (
+        IntegrationConnectionStatus,
+        IntegrationConnectionType,
+        IntegrationProvider,
+        UserStatus,
+    )
+    from vitals.models.genetics import GeneticVariant
+    from vitals.models.hevy import HevyWorkout
+    from vitals.models.identity import HealthSubject, User
+    from vitals.models.tenancy import IntegrationConnection
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    await db_session.close()
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    same_day = date(2026, 9, 1)
+
+    async def _roots(slug: str):
+        async with factory() as session:
+            owner = User(
+                username=slug,
+                normalized_username=slug,
+                password_hash="$synthetic-test-hash",
+                status=UserStatus.ACTIVE.value,
+            )
+            session.add(owner)
+            await session.flush()
+            subject = HealthSubject(owner_user_id=owner.id, timezone="Asia/Almaty")
+            session.add(subject)
+            await session.flush()
+            connection = IntegrationConnection(
+                subject_id=subject.id,
+                provider=IntegrationProvider.HEVY.value,
+                connection_type=IntegrationConnectionType.ACCOUNT.value,
+                external_account_discriminator=f"opaque-{slug}",
+                status=IntegrationConnectionStatus.ACTIVE.value,
+            )
+            session.add(connection)
+            await session.commit()
+            return subject.id, connection.id
+
+    async def _write(subject_id: uuid.UUID, connection_id: uuid.UUID, kg: float):
+        async with factory() as session:
+            session.add_all(
+                [
+                    WeightLog(
+                        subject_id=subject_id,
+                        date=same_day,
+                        domain=Domain.WEIGHT.value,
+                        source=Source.MANUAL.value,
+                        weight_kg=kg,
+                        superseded=False,
+                    ),
+                    LabMarker(
+                        subject_id=subject_id,
+                        name="ferritin",
+                        domain="labs",
+                        tier=1,
+                    ),
+                    GeneticVariant(
+                        subject_id=subject_id,
+                        gene="HFE",
+                        rsid="rs1800562",
+                        domain="genetics",
+                        source=Source.MANUAL.value,
+                    ),
+                    HevyWorkout(
+                        subject_id=subject_id,
+                        integration_connection_id=connection_id,
+                        external_id="shared-upstream-id",
+                        date=same_day,
+                        domain="workouts",
+                        source=Source.HEVY_API.value,
+                    ),
+                ]
+            )
+            await session.commit()
+
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.drop_all)
+            await connection.run_sync(Base.metadata.create_all)
+
+        first = await _roots("scoped-key-owner-a")
+        second = await _roots("scoped-key-owner-b")
+        await asyncio.gather(
+            _write(*first, 81.0),
+            _write(*second, 62.0),
+        )
+
+        async with factory() as session:
+            for model, column, value in (
+                (WeightLog, WeightLog.date, same_day),
+                (LabMarker, LabMarker.name, "ferritin"),
+                (GeneticVariant, GeneticVariant.rsid, "rs1800562"),
+                (HevyWorkout, HevyWorkout.external_id, "shared-upstream-id"),
+            ):
+                subjects = set(
+                    await session.scalars(
+                        sa.select(model.subject_id).where(column == value)
+                    )
+                )
+                assert subjects == {first[0], second[0]}, model.__tablename__
+
+            # One subject still cannot hold the same key twice.
+            session.add(
+                WeightLog(
+                    subject_id=first[0],
+                    date=same_day,
+                    domain=Domain.WEIGHT.value,
+                    source=Source.MANUAL.value,
+                    weight_kg=99.0,
+                    superseded=False,
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.flush()
+    finally:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.drop_all)
         await engine.dispose()

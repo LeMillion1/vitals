@@ -76,12 +76,8 @@ class WeightOwnershipError(ValueError):
     """A weight-domain row cannot be used inside the requested subject scope."""
 
 
-class WeightScopedUniqueCutoverRequiredError(WeightOwnershipError):
-    """A global date key is occupied by another ownership scope."""
-
-
-class BodyMeasurementScopedUniqueCutoverRequiredError(WeightOwnershipError):
-    """The global body-measurement date key is occupied by another row."""
+class BodyMeasurementDateOccupiedError(WeightOwnershipError):
+    """This subject already has a measurement row on the destination date."""
 
 
 class ProgressPhotoOwnershipError(WeightOwnershipError):
@@ -1421,18 +1417,6 @@ async def log_weight(
         include_legacy_unowned=include_legacy_unowned,
         for_update=True,
     )
-    if existing is None and identity is not None:
-        occupied = await session.scalar(
-            select(WeightLog.id).where(
-                WeightLog.date == on_date,
-                WeightLog.superseded.is_(False),
-            )
-        )
-        if occupied is not None:
-            raise WeightScopedUniqueCutoverRequiredError(
-                "active-weight date is occupied by another ownership scope"
-            )
-
     # A re-import of a fact we already hold is not a new reading. Garmin's daily
     # bundle carries the same weigh-in on every poll, so without this each sync
     # appended another identical row and superseded the last — a day accumulated
@@ -2008,18 +1992,7 @@ async def _get_body_measurement_for_date_update(
     row = await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
-    if row is not None or subject_id is None:
-        return row
-    occupied = await session.scalar(
-        select(BodyMeasurement.id)
-        .where(BodyMeasurement.date == on_date)
-        .with_for_update()
-    )
-    if occupied is not None:
-        raise BodyMeasurementScopedUniqueCutoverRequiredError(
-            "body-measurement date is occupied outside the selected subject scope"
-        )
-    return None
+    return row
 
 
 def _require_aux_source(source: str | Source) -> str:
@@ -3865,7 +3838,7 @@ async def update_body_measurement(
             include_legacy_unowned=include_legacy_unowned,
         )
         if occupied is not None and occupied.id != row.id:
-            raise BodyMeasurementScopedUniqueCutoverRequiredError(
+            raise BodyMeasurementDateOccupiedError(
                 "body-measurement destination date already has a row"
             )
 

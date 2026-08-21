@@ -185,7 +185,7 @@ async def test_sync_catalog_refreshes_changed_fields(db_session):
     assert stale.active is False  # untouched despite the refresh
 
 
-async def test_sync_catalog_rejects_subject_owned_catalog_code(db_session):
+async def test_sync_catalog_cannot_see_a_subject_owned_catalog_code(db_session):
     entry = conflict_catalog.load_rule_catalog()[0]
     owner = User(
         username="catalog-collision-owner",
@@ -213,9 +213,19 @@ async def test_sync_catalog_rejects_subject_owned_catalog_code(db_session):
     db_session.add(protected)
     await db_session.flush()
 
-    with pytest.raises(conflict_catalog.ConflictCatalogCollisionError):
-        await conflict_catalog.sync_catalog(db_session)
+    # The curated catalog owns only the platform half of the code, so it seeds
+    # its own definition beside the subject's rule instead of overwriting it.
+    result = await conflict_catalog.sync_catalog(db_session)
+    assert result["inserted"] > 0
     assert protected.message == "synthetic protected custom rule"
+    assert protected.subject_id == subject.id
+    curated = await db_session.scalar(
+        select(ConflictRule).where(
+            ConflictRule.code == entry["code"],
+            ConflictRule.subject_id.is_(None),
+        )
+    )
+    assert curated is not None and curated.id != protected.id
 
 
 @pytest.mark.integration

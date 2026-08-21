@@ -385,10 +385,10 @@ async def test_partial_legacy_root_and_children_are_adopted_without_actor_rewrit
     ) == (subject.id, connection.id)
 
 
-async def test_foreign_same_external_id_is_never_overwritten(db_session):
+async def test_another_accounts_workout_id_is_never_read_or_overwritten(db_session):
     owner_a, subject_a, connection_a = await _roots(db_session, "owner-a")
     owner_b, subject_b, connection_b = await _roots(db_session, "owner-b")
-    foreign = HevyWorkout(
+    theirs = HevyWorkout(
         subject_id=subject_a.id,
         actor_user_id=owner_a.id,
         integration_connection_id=connection_a.id,
@@ -398,22 +398,33 @@ async def test_foreign_same_external_id_is_never_overwritten(db_session):
         source=Source.HEVY_API.value,
         title="Subject A",
     )
-    db_session.add(foreign)
+    db_session.add(theirs)
     await db_session.flush()
 
-    with pytest.raises(hevy_service.HevyOwnershipConflictError, match="cutover"):
-        await hevy_service.sync_owned(
-            db_session,
-            FakeHevyClient(
-                [_payload("shared-upstream-id", title="Subject B overwrite")]
-            ),
-            identity=WriteIdentity(subject_b.id, owner_b.id),
-            integration_connection_id=connection_b.id,
-        )
+    # A Hevy workout id is unique inside the account it came from, so both
+    # accounts keep their own workout under the same upstream id.
+    await hevy_service.sync_owned(
+        db_session,
+        FakeHevyClient([_payload("shared-upstream-id", title="Subject B")]),
+        identity=WriteIdentity(subject_b.id, owner_b.id),
+        integration_connection_id=connection_b.id,
+    )
 
-    assert foreign.subject_id == subject_a.id
-    assert foreign.integration_connection_id == connection_a.id
-    assert foreign.title == "Subject A"
+    assert theirs.subject_id == subject_a.id
+    assert theirs.integration_connection_id == connection_a.id
+    assert theirs.title == "Subject A"
+    rows = list(
+        await db_session.scalars(
+            select(HevyWorkout).where(
+                HevyWorkout.external_id == "shared-upstream-id"
+            )
+        )
+    )
+    assert len(rows) == 2
+    assert {row.integration_connection_id for row in rows} == {
+        connection_a.id,
+        connection_b.id,
+    }
 
 
 async def test_rebuild_rejects_foreign_child_scope_before_deleting_it(db_session):

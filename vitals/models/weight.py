@@ -61,17 +61,10 @@ class WeightLog(
             "ix_weight_logs_connection_date", "integration_connection_id", "date"
         ),
         UniqueConstraint("id", "subject_id", name="uq_weight_logs_id_subject"),
-        # At most one *active* weight per date. The service supersedes the
-        # previous active row (e.g. a Garmin import) before inserting a manual
-        # one, so this invariant encodes "manual beats Garmin for the day".
-        Index(
-            "uq_active_weight_per_date",
-            "date",
-            unique=True,
-            postgresql_where=text("superseded = false"),
-            sqlite_where=text("superseded = 0"),
-        ),
-        # The same invariant per person: two people share a weigh-in date.
+        # At most one *active* weight per person per date. The service
+        # supersedes the previous active row (e.g. a Garmin import) before
+        # inserting a manual one, so this invariant encodes "manual beats
+        # Garmin for the day".
         Index(
             "uq_active_weight_per_subject_date",
             "subject_id",
@@ -115,15 +108,14 @@ class BodyMeasurement(
             "domain",
             "date",
         ),
-        # One measurement set per day (the service upserts) — per person. The
-        # legacy global key stands beside this one until the Stage-5 drop.
+        # One measurement set per day (the service upserts) — per person: two
+        # people legitimately record a waist on the same date.
         Index(
             "uq_body_measurements_subject_date",
             "subject_id",
             "date",
             unique=True,
         ),
-        UniqueConstraint("date", name="uq_body_measurement_per_date"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

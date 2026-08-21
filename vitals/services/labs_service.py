@@ -79,10 +79,6 @@ CRITICAL_WIDTH_FACTOR = 0.5
 CRITICAL_MARGIN = 0.30
 
 
-class LabMarkerScopedUniqueCutoverRequiredError(ValueError):
-    """The legacy global marker-name key is occupied by another scope."""
-
-
 def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
@@ -329,7 +325,6 @@ async def _marker_for_update(
     *,
     subject_id: uuid.UUID | None,
     include_legacy_unowned: bool,
-    require_available_name: bool = False,
 ) -> LabMarker | None:
     name = normalize_marker(name)
     stmt = select(LabMarker).where(LabMarker.name == name)
@@ -346,15 +341,6 @@ async def _marker_for_update(
     marker = await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
-    if marker is None and subject_id is not None and require_available_name:
-        occupied = await session.scalar(
-            select(LabMarker.id).where(LabMarker.name == name).limit(1)
-        )
-        if occupied is not None:
-            raise LabMarkerScopedUniqueCutoverRequiredError(
-                "the global lab-marker name is occupied by another ownership scope; "
-                "scoped marker uniqueness cutover is required"
-            )
     return marker
 
 
@@ -392,7 +378,6 @@ async def _ensure_marker(
         name,
         subject_id=identity.subject_id if identity is not None else None,
         include_legacy_unowned=include_legacy_unowned,
-        require_available_name=True,
     )
     if marker is None:
         marker = LabMarker(
@@ -472,7 +457,6 @@ async def ensure_marker_catalog_entry(
         normalized,
         subject_id=identity.subject_id,
         include_legacy_unowned=include_legacy_unowned,
-        require_available_name=True,
     )
     created = row is None
     updated = False
@@ -1083,7 +1067,6 @@ async def add_result(
         marker,
         subject_id=identity.subject_id if identity is not None else None,
         include_legacy_unowned=include_legacy_unowned,
-        require_available_name=True,
     )
     eff_low = ref_low if ref_low is not None else (catalog.ref_low if catalog else None)
     eff_high = ref_high if ref_high is not None else (catalog.ref_high if catalog else None)
@@ -1228,7 +1211,6 @@ async def update_result(
         next_marker,
         subject_id=identity.subject_id if identity is not None else None,
         include_legacy_unowned=include_legacy_unowned,
-        require_available_name=True,
     )
     if next_low is None and catalog is not None:
         next_low = catalog.ref_low
@@ -2012,7 +1994,6 @@ async def _preflight_scoped_panel(
             marker,
             subject_id=context.identity.subject_id,
             include_legacy_unowned=context.scope.include_legacy_unowned,
-            require_available_name=True,
         )
         low = _num(item.get("ref_low"))
         high = _num(item.get("ref_high"))

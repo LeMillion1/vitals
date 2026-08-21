@@ -207,7 +207,7 @@ async def test_partial_legacy_fact_fails_closed_in_conflict_resolver(
         )
 
 
-async def test_foreign_id_is_non_enumerating_and_global_rsid_collision_is_typed(
+async def test_foreign_id_is_non_enumerating_and_both_subjects_keep_the_rsid(
     db_session,
     legacy_owner_roots,
 ):
@@ -236,18 +236,20 @@ async def test_foreign_id_is_non_enumerating_and_global_rsid_collision_is_typed(
         identity=owner_identity,
         prepared_conflict_write=prepared,
     )
-    with pytest.raises(
-        genetics_service.GeneticsScopedUniqueCutoverRequiredError
-    ):
-        await genetics_service.upsert_by_rsid(
-            db_session,
-            gene="HFE",
-            rsid="rs1800562",
-            genotype="G/A",
-            source=Source.MANUAL.value,
-            identity=owner_identity,
-            prepared_conflict_write=prepared,
-        )
+    # An rsID names a locus, not a person: both subjects hold their own row.
+    mine = await genetics_service.upsert_by_rsid(
+        db_session,
+        gene="HFE",
+        rsid="rs1800562",
+        genotype="G/A",
+        source=Source.MANUAL.value,
+        identity=owner_identity,
+        prepared_conflict_write=prepared,
+    )
+    assert mine.subject_id == owner_identity.subject_id
+    assert mine.id != foreign.id
+    assert foreign.subject_id == foreign_identity.subject_id
+    assert foreign.genotype is None
 
 
 async def test_vcf_batch_is_owned_raw_first_and_reimport_clears_stale_marker(

@@ -60,7 +60,7 @@ class HevyWorkout(
     __table_args__ = (
         insights_index(__tablename__),
         # The Hevy workout id is globally unique and is our upsert key on re-sync.
-        UniqueConstraint("external_id", name="uq_hevy_workouts_external_id"),
+
         UniqueConstraint("id", "subject_id", name="uq_hevy_workouts_id_subject"),
         Index("ix_hevy_workouts_subject_date", "subject_id", "date"),
         Index(

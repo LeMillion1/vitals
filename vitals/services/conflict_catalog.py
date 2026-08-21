@@ -149,10 +149,6 @@ _CATALOG_FIELDS = (
 )
 
 
-class ConflictCatalogCollisionError(ValueError):
-    """A checked-in catalog code is occupied by a subject-owned rule."""
-
-
 async def _after_catalog_rows_locked_for_test() -> None:
     """Deterministic concurrency-test seam after governance and row locks."""
 
@@ -184,27 +180,10 @@ async def sync_catalog(session: AsyncSession) -> dict[str, int]:
     existing = {row.code: row for row in result.scalars().all()}
     await _after_catalog_rows_locked_for_test()
 
-    # A custom rule may legitimately predate a code being added to the checked-in
-    # catalog.  Synchronization must never turn that subject-owned medical rule
-    # into a global definition by overwriting its fields in place.  Temporary
-    # bridge: the legacy global key on ``code`` is still installed, so such a
-    # rule would also make the catalog's insert fail with a bare integrity
-    # error.  This check goes away with the key.
-    owned_collision = await session.scalar(
-        select(ConflictRule.code)
-        .where(
-            ConflictRule.code.in_(
-                tuple(code for code in catalog_codes if code not in existing)
-            ),
-            ConflictRule.subject_id.is_not(None),
-        )
-        .limit(1)
-    )
-    if owned_collision is not None:
-        raise ConflictCatalogCollisionError(
-            "conflict catalog synchronization found a protected custom-code collision"
-        )
-
+    # A subject's own rule may legitimately predate a code being added to the
+    # checked-in catalog.  The lookup above cannot see it at all, so
+    # synchronization can no longer turn that medical rule into a global
+    # definition by overwriting its fields in place.
     inserted = 0
     updated = 0
     for entry in catalog:

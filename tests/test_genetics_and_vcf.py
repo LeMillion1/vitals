@@ -36,15 +36,30 @@ async def test_upsert_by_rsid_updates(db_session):
     assert rows[0].genotype == "A/G"
 
 
-async def test_duplicate_rsid_rejected(db_session):
-    """The partial-unique index forbids two rows sharing a non-null rsID, so a
-    re-import/re-add can't silently duplicate a variant."""
+async def test_duplicate_rsid_rejected_within_one_subject(
+    db_session, legacy_owner_roots
+):
+    """The partial-unique index forbids one subject holding an rsID twice, so a
+    re-import/re-add can't silently duplicate a variant. An rsID identifies a
+    locus, not a person, so the key is scoped to the subject."""
     from sqlalchemy.exc import IntegrityError
 
-    await genetics_service.add_variant(db_session, gene="HFE", rsid="rs1800562")
+    from vitals.models.genetics import GeneticVariant
+
+    def _variant() -> GeneticVariant:
+        return GeneticVariant(
+            subject_id=legacy_owner_roots.subject_id,
+            gene="HFE",
+            rsid="rs1800562",
+            domain="genetics",
+            source="manual",
+        )
+
+    db_session.add(_variant())
+    await db_session.flush()
+    db_session.add(_variant())
     with pytest.raises(IntegrityError):
-        # add_variant flushes, so the constraint fires here.
-        await genetics_service.add_variant(db_session, gene="HFE", rsid="rs1800562")
+        await db_session.flush()
 
 
 async def test_null_rsid_rows_coexist(db_session):

@@ -54,17 +54,12 @@ class GeneticsRawProvenanceError(
     """A VCF raw/fact provenance graph is missing or inconsistent."""
 
 
-class GeneticsScopedUniqueCutoverRequiredError(GeneticsOwnershipError):
-    """The legacy global rsID key is occupied by another ownership scope."""
+class GeneticsRsidOccupiedError(GeneticsOwnershipError):
+    """This subject already holds a variant for the requested rsID."""
 
 
 class GeneticsNotFoundError(GeneticsServiceError):
     """A requested scoped genetic variant does not exist."""
-
-
-GeneticVariantScopedUniqueCutoverRequiredError = (
-    GeneticsScopedUniqueCutoverRequiredError
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -841,18 +836,6 @@ async def _lock_by_rsid(
                     for_update=True,
                 )
         return row
-    if context is not None:
-        occupied = await session.scalar(
-            select(GeneticVariant.id)
-            .where(func.lower(GeneticVariant.rsid) == rsid)
-            .limit(1)
-            .with_for_update()
-        )
-        if occupied is not None:
-            raise GeneticsScopedUniqueCutoverRequiredError(
-                "the global rsID key is occupied by another ownership scope; "
-                "scoped rsID uniqueness cutover is required"
-            )
     return None
 
 
@@ -1007,19 +990,21 @@ async def update_variant(
                 "VCF-origin rsID identity cannot be changed in place"
             )
         if normalized_rsid is not None and normalized_rsid != row.rsid:
+            # An rsID identifies a locus, not a person: the destination is
+            # occupied only when *this* subject already holds it.
             occupied = await session.scalar(
                 select(GeneticVariant.id)
                 .where(
                     func.lower(GeneticVariant.rsid) == normalized_rsid,
+                    GeneticVariant.subject_id == identity.subject_id,
                     GeneticVariant.id != row.id,
                 )
                 .limit(1)
                 .with_for_update()
             )
             if occupied is not None:
-                raise GeneticsScopedUniqueCutoverRequiredError(
-                    "the global rsID key is occupied; scoped rsID uniqueness "
-                    "cutover is required"
+                raise GeneticsRsidOccupiedError(
+                    "this subject already holds a variant for the destination rsID"
                 )
     if _variant_is_fully_unowned(row):
         row.subject_id = identity.subject_id

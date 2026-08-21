@@ -245,33 +245,6 @@ async def _require_single_subject_legacy_adoption(
         )
 
 
-async def _foreign_connection_workout_exists(
-    session: AsyncSession,
-    *,
-    external_id: str,
-    integration_connection_id: uuid.UUID,
-) -> bool:
-    """Temporary bridge for as long as the legacy global key is installed.
-
-    The scoped key is the contract now, but the installation-wide unique key on
-    ``external_id`` has not been dropped yet, so another account's workout with
-    the same id would still make our insert fail with a bare integrity error.
-    Report it explicitly instead.  This check goes away with the key.
-    """
-
-    return (
-        await session.scalar(
-            select(HevyWorkout.id)
-            .where(
-                HevyWorkout.external_id == external_id,
-                HevyWorkout.integration_connection_id.is_not(None),
-                HevyWorkout.integration_connection_id != integration_connection_id,
-            )
-            .limit(1)
-        )
-    ) is not None
-
-
 async def _resolve_owned_workout(
     session: AsyncSession,
     *,
@@ -334,11 +307,7 @@ async def _resolve_owned_workout(
             "multiple compatible legacy workouts match the external id"
         )
     if compatible_legacy:
-        if len(rows) != 1 or await _foreign_connection_workout_exists(
-            session,
-            external_id=external_id,
-            integration_connection_id=integration_connection_id,
-        ):
+        if len(rows) != 1:
             raise HevyOwnershipAmbiguityError(
                 "legacy workout adoption conflicts with another ownership scope"
             )
@@ -352,17 +321,7 @@ async def _resolve_owned_workout(
 
     if rows:
         raise HevyOwnershipConflictError(
-            "Hevy external id already belongs to another subject; "
-            "scoped unique-key cutover is required before both rows can coexist"
-        )
-    if await _foreign_connection_workout_exists(
-        session,
-        external_id=external_id,
-        integration_connection_id=integration_connection_id,
-    ):
-        raise HevyOwnershipConflictError(
-            "Hevy external id already belongs to another connection; "
-            "scoped unique-key cutover is required before both rows can coexist"
+            "Hevy external id in this connection belongs to another subject"
         )
     return None, False
 

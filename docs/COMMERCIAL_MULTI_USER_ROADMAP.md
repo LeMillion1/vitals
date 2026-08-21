@@ -627,8 +627,15 @@ Implementation progress on `commercial/main`:
   read into the write path at all. While the legacy global keys stand, each path
   carries one narrowly scoped bridge reporting an out-of-scope occupant as a
   typed cutover error; each bridge is removed with its key.
-- Remaining work: dropping the legacy global keys, two-subject collision and
-  concurrency tests, scoped
+- Stage 5D drops all twelve legacy global keys in revision `0048`, together with
+  every temporary bridge that stood in for one. Two subjects now write the same
+  weigh-in date, marker name, rsID, and provider external id concurrently on
+  real PostgreSQL, while one subject still cannot hold the same key twice. What
+  replaces each bridge is a real invariant: a mis-shaped active alert is still
+  refused, a genetics rename cannot land on an rsID the subject already holds,
+  and the catalogs cannot see a subject's own row at all. Downgrade recreates
+  the keys only while the data still satisfies them.
+- Remaining work: scoped
   write/read path, two-subject collision and concurrency tests, dropping the
   legacy global keys, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,

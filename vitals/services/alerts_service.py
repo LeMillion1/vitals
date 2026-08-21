@@ -325,10 +325,6 @@ class AlertScopeConflictError(AlertServiceError):
     """Persisted alert ownership conflicts with the requested exact scope."""
 
 
-class AlertScopedUniqueCutoverRequiredError(AlertScopeConflictError):
-    """The retained global active-alert key is occupied by another scope."""
-
-
 class AlertAmbiguousMatchError(AlertScopeConflictError):
     """More than one persisted row could satisfy a scoped alert operation."""
 
@@ -1082,15 +1078,17 @@ def _choose_active_row(
         )
     if foreign and (exact or legacy):
         raise AlertAmbiguousMatchError(
-            "matching and foreign active alerts share one global key"
+            "matching and unusable active alerts share one scoped key"
         )
     if exact:
         return exact[0]
     if legacy:
         return legacy[0]
     if foreign:
-        raise AlertScopedUniqueCutoverRequiredError(
-            "the global active-alert key is occupied by another ownership scope"
+        # A partially-owned row inside this class: not adoptable and not ours,
+        # so it can neither be refreshed nor stepped over.
+        raise AlertScopeConflictError(
+            "an active alert in this scope has unusable ownership provenance"
         )
     return None
 
@@ -1154,35 +1152,59 @@ def _alert_class_scope(context: AlertContext):
     )
 
 
-async def _require_no_foreign_active_alert(
+async def _require_no_broken_class_alert(
     session: AsyncSession,
     *,
     alert_key: str,
     entity_ref: str,
     context: AlertContext,
 ) -> None:
-    """Temporary bridge for as long as the legacy global key is installed.
+    """Refuse to write past an active alert whose ownership shape is wrong.
 
-    The scoped keys are the contract now, but the installation-wide unique key
-    on ``(alert_key, entity_ref)`` has not been dropped yet, so another
-    subject's or another account's active alert would still make this insert
-    fail with a bare integrity error.  Raise the typed cutover error instead.
-    This check goes away with the key.
+    Each alert class has exactly one legitimate shape: a provider alert names
+    both a subject and a connection, a health alert names a subject and no
+    connection, and a platform alert names neither.  A row under this key that
+    has some other shape belongs to no root the scoped keys recognise, so
+    writing beside it would leave the key with two active rows and no way to say
+    whose it is.  A row of the *right* shape in another subject or another
+    account is not broken and is deliberately left alone.
     """
 
-    foreign = await session.scalar(
+    unadopted = and_(
+        SystemAlert.subject_id.is_(None),
+        SystemAlert.integration_connection_id.is_(None),
+    )
+    if isinstance(context, PlatformAlertContext):
+        well_formed = unadopted
+    elif isinstance(context, ProviderAlertContext):
+        well_formed = or_(
+            and_(
+                SystemAlert.subject_id.is_not(None),
+                SystemAlert.integration_connection_id.is_not(None),
+            ),
+            unadopted,
+        )
+    else:
+        well_formed = or_(
+            and_(
+                SystemAlert.subject_id.is_not(None),
+                SystemAlert.integration_connection_id.is_(None),
+            ),
+            unadopted,
+        )
+    broken = await session.scalar(
         select(SystemAlert.id)
         .where(
             SystemAlert.alert_key == alert_key,
             SystemAlert.entity_ref == entity_ref,
             SystemAlert.resolved_at.is_(None),
-            ~_alert_class_scope(context),
+            ~well_formed,
         )
         .limit(1)
     )
-    if foreign is not None:
-        raise AlertScopedUniqueCutoverRequiredError(
-            "the global active-alert key is occupied by another ownership scope"
+    if broken is not None:
+        raise AlertScopeConflictError(
+            "an active alert for this key has unusable ownership provenance"
         )
 
 
@@ -1253,6 +1275,9 @@ async def raise_scoped_alert(
         )
     await _acquire_alert_key_lock(session, alert_key)
 
+    await _require_no_broken_class_alert(
+        session, alert_key=alert_key, entity_ref=entity_ref, context=context
+    )
     rows = await _active_rows_for_key(
         session,
         alert_key=alert_key,
@@ -1264,13 +1289,6 @@ async def raise_scoped_alert(
         context=context,
         legacy_bridge=legacy_bridge,
     )
-    if row is None:
-        await _require_no_foreign_active_alert(
-            session,
-            alert_key=alert_key,
-            entity_ref=entity_ref,
-            context=context,
-        )
     if row is not None:
         await _validate_row_semantics(session, row, context)
         if row.domain != domain.value:
@@ -1385,6 +1403,9 @@ async def resolve_scoped_by_key(
     )
     await _allowed_domains_for_key(session, context, alert_key)
     await _acquire_alert_key_lock(session, alert_key)
+    await _require_no_broken_class_alert(
+        session, alert_key=alert_key, entity_ref=entity_ref, context=context
+    )
     row = _choose_active_row(
         await _active_rows_for_key(
             session,
@@ -1396,12 +1417,6 @@ async def resolve_scoped_by_key(
         legacy_bridge=legacy_bridge,
     )
     if row is None:
-        await _require_no_foreign_active_alert(
-            session,
-            alert_key=alert_key,
-            entity_ref=entity_ref,
-            context=context,
-        )
         return None
     await _validate_row_semantics(session, row, context)
     _adopt_legacy_row(row, context, legacy_bridge)

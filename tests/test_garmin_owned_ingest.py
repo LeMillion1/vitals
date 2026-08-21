@@ -178,55 +178,71 @@ async def test_owned_daily_preserves_legacy_weight_and_appends_exact_raw_link(db
     assert owned_weight.raw_payload_id == daily.raw_payload_id
 
 
-async def test_foreign_global_daily_key_conflicts_before_raw_mutation(db_session):
+async def test_another_accounts_day_is_neither_read_nor_refreshed(db_session):
     owner_a, subject_a, connection_a = await _scope(db_session, "owner-a")
     _owner_b, subject_b, connection_b = await _scope(db_session, "owner-b")
-    db_session.add(
-        GarminDaily(
-            subject_id=subject_b.id,
-            integration_connection_id=connection_b.id,
-            date=DAY,
-            domain="garmin",
-            source="garmin_api",
-        )
+    theirs = GarminDaily(
+        subject_id=subject_b.id,
+        integration_connection_id=connection_b.id,
+        date=DAY,
+        domain="garmin",
+        source="garmin_api",
+        steps=11,
     )
+    db_session.add(theirs)
     await db_session.flush()
 
-    with pytest.raises(GarminOwnershipConflictError):
-        await garmin_service.ingest_owned_daily(
-            db_session,
-            DAY,
-            {"summary": {"totalSteps": 9}},
-            identity=_identity(owner_a, subject_a),
-            integration_connection_id=connection_a.id,
-        )
+    # A Garmin day is unique inside the account it was fetched from, so both
+    # accounts keep their own row for the same date.
+    mine = await garmin_service.ingest_owned_daily(
+        db_session,
+        DAY,
+        {"summary": {"totalSteps": 9}},
+        identity=_identity(owner_a, subject_a),
+        integration_connection_id=connection_a.id,
+    )
 
-    assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
+    assert mine.integration_connection_id == connection_a.id
+    assert mine.steps == 9
+    assert (theirs.integration_connection_id, theirs.steps) == (connection_b.id, 11)
+    assert await db_session.scalar(select(func.count()).select_from(GarminDaily)) == 2
 
 
-async def test_foreign_global_activity_key_conflicts_before_raw_mutation(db_session):
+async def test_another_accounts_activity_id_is_neither_read_nor_refreshed(db_session):
     owner_a, subject_a, connection_a = await _scope(db_session, "owner-a")
     _owner_b, subject_b, connection_b = await _scope(db_session, "owner-b")
-    db_session.add(
-        GarminActivity(
-            subject_id=subject_b.id,
-            integration_connection_id=connection_b.id,
-            external_id="same-id",
-            date=DAY,
-            domain="garmin",
-            source="garmin_api",
-        )
+    theirs = GarminActivity(
+        subject_id=subject_b.id,
+        integration_connection_id=connection_b.id,
+        external_id="same-id",
+        date=DAY,
+        domain="garmin",
+        source="garmin_api",
+        name="theirs",
     )
+    db_session.add(theirs)
     await db_session.flush()
 
-    with pytest.raises(GarminOwnershipConflictError):
-        await garmin_service.ingest_owned_activities(
-            db_session,
-            [{"activityId": "same-id", "activityName": "foreign"}],
-            identity=_identity(owner_a, subject_a),
-            integration_connection_id=connection_a.id,
+    # An activity id is unique inside the account it came from.
+    await garmin_service.ingest_owned_activities(
+        db_session,
+        [{"activityId": "same-id", "activityName": "mine"}],
+        identity=_identity(owner_a, subject_a),
+        integration_connection_id=connection_a.id,
+    )
+
+    assert theirs.name == "theirs"
+    assert theirs.integration_connection_id == connection_b.id
+    rows = list(
+        await db_session.scalars(
+            select(GarminActivity).where(GarminActivity.external_id == "same-id")
         )
-    assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
+    )
+    assert len(rows) == 2
+    assert {row.integration_connection_id for row in rows} == {
+        connection_a.id,
+        connection_b.id,
+    }
 
 
 async def test_owned_intraday_replacement_does_not_delete_foreign_scope(db_session):

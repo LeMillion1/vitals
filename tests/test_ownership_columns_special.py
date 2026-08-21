@@ -80,7 +80,7 @@ _RETAINED_SCHEMA_OBJECTS = {
         "ix_signals_batch",
         "ix_signals_key_date",
     },
-    DayContext: {"ix_day_context_domain_date", "uq_day_context_per_date"},
+    DayContext: {"ix_day_context_domain_date", "uq_day_context_subject_date"},
     Notification: {
         "uq_notifications_owned_dedupe_key",
         "uq_notifications_legacy_dedupe_key",
@@ -89,7 +89,7 @@ _RETAINED_SCHEMA_OBJECTS = {
     },
     SharedReport: {"ix_shared_reports_token"},
     SystemAlert: {
-        "uq_active_alert_per_key_entity",
+        "uq_active_alert_per_subject_key_entity",
         "ix_system_alerts_domain_resolved",
     },
 }
@@ -275,7 +275,9 @@ def test_special_partial_indexes_keep_both_dialect_predicates():
     for model, index_name in (
         (Notification, "uq_notifications_owned_dedupe_key"),
         (Notification, "uq_notifications_legacy_dedupe_key"),
-        (SystemAlert, "uq_active_alert_per_key_entity"),
+        (SystemAlert, "uq_active_alert_per_connection_key_entity"),
+        (SystemAlert, "uq_active_alert_per_subject_key_entity"),
+        (SystemAlert, "uq_active_alert_per_platform_key_entity"),
     ):
         index = next(
             item for item in model.__table__.indexes if item.name == index_name

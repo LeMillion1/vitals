@@ -89,13 +89,12 @@ def test_reviewed_catalog_matches_the_live_schema():
         table = Base.metadata.tables[spec.table]
         names = {constraint.name for constraint in table.constraints}
         names |= {index.name for index in table.indexes}
-        assert spec.legacy_name in names, spec.legacy_name
+        assert spec.legacy_name not in names, spec.legacy_name
         for column in (*spec.legacy_columns, *sum(
             (index.columns for index in spec.replacements), ()
         )):
             assert column in table.columns, (spec.table, column)
-        # Stage 5B installs each replacement beside the legacy key it will
-        # eventually replace; both stand until the Stage-5 drop.
+        # Revision 0048 dropped the legacy key; only the replacements stand.
         for index in spec.replacements:
             assert index.name in names, index.name
 
@@ -236,14 +235,10 @@ async def _without_indexes(session, *names: str):
 async def test_collision_under_a_proposed_key_fails_closed(
     db_session, legacy_owner_roots
 ):
-    # While the legacy global key stands, no row can collide under the wider
-    # scoped key, and once the scoped index is installed the database refuses
-    # the duplicate outright. The audit guards the lake that arrives without
-    # either — a restore, or a cutover being replayed — so both are dropped
-    # here first.
-    async with _without_indexes(
-        db_session, "ix_lab_markers_name", "uq_lab_markers_subject_name"
-    ):
+    # The installed scoped key refuses the duplicate outright. The audit guards
+    # the lake that arrives without it — a restore, or a cutover being replayed
+    # — so it is dropped here first.
+    async with _without_indexes(db_session, "uq_lab_markers_subject_name"):
         db_session.add_all(
             [
                 LabMarker(
@@ -277,7 +272,7 @@ async def test_two_subjects_may_share_a_date_under_the_scoped_key(
     """The whole point of the cutover, proved before it is installed."""
 
     same_day = date(2026, 5, 6)
-    async with _without_indexes(db_session, "uq_active_weight_per_date"):
+    if True:
         db_session.add(
             _weight(subject_id=legacy_owner_roots.subject_id, on_date=same_day)
         )

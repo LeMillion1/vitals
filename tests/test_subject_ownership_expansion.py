@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 
 import vitals.models  # noqa: F401 -- register the complete model graph
 from vitals.models.base import Base
+from vitals.scoped_keys import SCOPED_KEY_REGISTRY
 from vitals.models.weight import WeightLog
 
 
@@ -505,21 +506,31 @@ def _normalized_predicate(value: Any) -> str | None:
     return " ".join(str(value).split()).casefold()
 
 
-def test_legacy_global_uniques_are_still_present_and_unscoped_in_models():
+def test_legacy_global_uniques_are_dropped_or_deliberately_still_global():
+    """Revision 0037 kept every global key; later revisions decide their fate.
+
+    Revision 0048 replaced twelve of them with scoped keys, revision 0043
+    replaced the notification dedupe key with exact-owned and fully-null
+    bridges, and the public share token stays global on purpose. The literals
+    remain in this file because the rest of it verifies revision 0037 itself.
+    """
+
     for name, (table_name, columns, pg_where, sqlite_where) in (
         LEGACY_GLOBAL_UNIQUES.items()
     ):
-        # Revision 0043 deliberately replaces this global key with separate
-        # exact-owned and fully-null legacy bridges. The literal remains below
-        # because the rest of this file verifies revision 0037 itself.
-        if name == "uq_notification_dedupe_key":
-            continue
         table = Base.metadata.tables[table_name]
         objects = {
             item.name: item
             for item in (*table.constraints, *table.indexes)
             if item.name is not None
         }
+        if name in SCOPED_KEY_REGISTRY:
+            assert name not in objects, name
+            for replacement in SCOPED_KEY_REGISTRY[name].replacements:
+                assert replacement.name in objects, replacement.name
+            continue
+        if name == "uq_notification_dedupe_key":
+            continue
         assert name in objects
         item = objects[name]
         assert _column_names(item) == columns

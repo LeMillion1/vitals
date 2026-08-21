@@ -307,7 +307,9 @@ async def test_missing_and_inactive_actors_fail_before_mutation(db_session):
     assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 0
 
 
-async def test_foreign_scope_is_hidden_and_global_collision_is_typed(db_session):
+async def test_foreign_scope_is_hidden_and_both_subjects_keep_their_own_alert(
+    db_session,
+):
     owner_a, subject_a = await _subject(db_session, "owner-a")
     owner_b, subject_b = await _subject(db_session, "owner-b")
     row = await alerts.raise_scoped_alert(
@@ -324,18 +326,22 @@ async def test_foreign_scope_is_hidden_and_global_collision_is_typed(db_session)
     assert await alerts.resolve_scoped_alert(
         db_session, row.id, context=context_b
     ) is None
-    with pytest.raises(alerts.AlertScopedUniqueCutoverRequiredError):
-        await alerts.raise_scoped_alert(
-            db_session,
-            context=context_b,
-            domain=Domain.WEIGHT,
-            severity=Severity.WARN,
-            message="b",
-            alert_key=HEALTH_KEY,
-        )
+    # One health key, two people: the scoped key is per subject, so raising it
+    # for B neither reads nor refreshes A's row.
+    mine = await alerts.raise_scoped_alert(
+        db_session,
+        context=context_b,
+        domain=Domain.WEIGHT,
+        severity=Severity.WARN,
+        message="b",
+        alert_key=HEALTH_KEY,
+    )
+    assert mine.subject_id == subject_b.id
+    assert mine.message == "b"
     assert row.subject_id == subject_a.id
     assert row.message == "a"
-    assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 1
+    assert row.resolved_at is None
+    assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 2
 
 
 async def test_provider_scope_validates_subject_provider_type_and_status(db_session):
@@ -511,7 +517,7 @@ async def test_full_null_health_and_provider_rows_adopt_only_with_bridge(db_sess
         domain=Domain.GARMIN,
     )
 
-    with pytest.raises(alerts.AlertScopedUniqueCutoverRequiredError):
+    with pytest.raises(alerts.AlertScopeConflictError):
         await alerts.raise_scoped_alert(
             db_session,
             context=_health(owner, subject),
@@ -562,7 +568,7 @@ async def test_bridge_rejects_second_subject_partial_and_unknown_rows(db_session
     owner, subject = await _subject(db_session, "sole")
     connection = await _connection(db_session, subject)
     partial = await _direct_alert(db_session, connection_id=connection.id)
-    with pytest.raises(alerts.AlertScopedUniqueCutoverRequiredError):
+    with pytest.raises(alerts.AlertScopeConflictError):
         await alerts.raise_scoped_alert(
             db_session,
             context=_health(owner, subject),
@@ -807,7 +813,7 @@ async def test_postgres_competing_scopes_return_typed_cutover_conflict(db_sessio
                 )
                 await session.commit()
                 return "created"
-            except alerts.AlertScopedUniqueCutoverRequiredError:
+            except alerts.AlertScopeConflictError:
                 await session.rollback()
                 return "conflict"
 

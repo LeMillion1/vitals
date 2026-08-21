@@ -6,10 +6,11 @@ exist while those hold, because two people legitimately share a date, a marker
 name, and — through two accounts — an external id.
 
 This registry is the single reviewed inventory of that change.  It names, for
-each legacy global key, the exact scoped key that replaces it and the column the
-scope comes from, so the audit that proves the cutover is safe, the migration
-that performs it, and the tests that guard it all read the same source rather
-than three hand-kept lists.
+each legacy global key, the exact scoped key that replaced it and the column the
+scope comes from, so the audit that proved the cutover safe, the migrations that
+installed the scoped keys and dropped the global ones, and the tests that guard
+them all read the same source rather than four hand-kept lists.  The legacy
+entries stay after the drop: they are what revision 0048's downgrade recreates.
 
 Scoping alone is not enough: a scoped key over a nullable scope column silently
 degenerates to a global key for the rows whose scope is missing.  Every entry

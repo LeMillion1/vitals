@@ -1280,18 +1280,6 @@ async def set_day_context(
             )
         )
     row = await session.scalar(scoped.with_for_update())
-    if row is None and identity is not None:
-        # Temporary bridge: the legacy global key on ``date`` still allows only
-        # one row per day for the whole installation, so another subject's row
-        # would make this insert fail with a bare integrity error. This check
-        # goes away with the key.
-        occupied = await session.scalar(
-            select(DayContext.id).where(DayContext.date == on_date).limit(1)
-        )
-        if occupied is not None:
-            raise SignalOwnershipError(
-                "day context belongs to another subject"
-            )
     if identity is not None:
         if row is not None:
             if row.subject_id is None:

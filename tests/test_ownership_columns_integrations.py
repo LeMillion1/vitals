@@ -130,13 +130,13 @@ _LEGACY_INDEX_COLUMNS = {
 }
 
 _LEGACY_UNIQUE_COLUMNS = {
-    GarminDaily: {"uq_garmin_daily_date": ("date",)},
+    GarminDaily: {},
     GarminActivity: {
-        "uq_garmin_activities_external_id": ("external_id",),
+
     },
-    GarminWeightExport: {"uq_garmin_weight_exports_date": ("date",)},
+    GarminWeightExport: {},
     HevyWorkout: {
-        "uq_hevy_workouts_external_id": ("external_id",),
+
         "uq_hevy_workouts_id_subject": ("id", "subject_id"),
     },
 }

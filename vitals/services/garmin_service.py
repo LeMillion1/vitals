@@ -249,37 +249,6 @@ def _row_scope_is_compatible(
     )
 
 
-async def _require_no_foreign_row_under_legacy_key(
-    session: AsyncSession,
-    *,
-    model: type[GarminDaily] | type[GarminActivity],
-    natural_clause: Any,
-    integration_connection_id: uuid.UUID,
-    key_label: str,
-) -> None:
-    """Temporary bridge for as long as the legacy global key is installed.
-
-    The scoped key is the contract now, but the installation-wide unique key it
-    replaces has not been dropped yet, so another account's row under the same
-    natural key would still make our insert fail with a bare integrity error.
-    Report the typed conflict instead.  This check goes away with the key.
-    """
-
-    foreign = await session.scalar(
-        select(model.id)
-        .where(
-            natural_clause,
-            model.integration_connection_id.is_not(None),
-            model.integration_connection_id != integration_connection_id,
-        )
-        .limit(1)
-    )
-    if foreign is not None:
-        raise GarminOwnershipConflictError(
-            f"Garmin row for {key_label} belongs to another connection"
-        )
-
-
 async def _owned_single_row_candidate(
     session: AsyncSession,
     *,
@@ -315,13 +284,6 @@ async def _owned_single_row_candidate(
             f"multiple Garmin rows match scoped key {key_label}"
         )
     if not rows:
-        await _require_no_foreign_row_under_legacy_key(
-            session,
-            model=model,
-            natural_clause=natural_clause,
-            integration_connection_id=integration_connection_id,
-            key_label=key_label,
-        )
         return None
     row = rows[0]
     if not _row_scope_is_compatible(

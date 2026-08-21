@@ -104,9 +104,9 @@ _RETAINED_SCHEMA_OBJECTS = {
         "ix_lab_results_domain_date",
         "ix_lab_results_marker_date",
     },
-    LabMarker: {"ix_lab_markers_name"},
+    LabMarker: {"uq_lab_markers_subject_name"},
     HrtCompound: {
-        "ix_hrt_compounds_key",
+        "uq_hrt_compounds_platform_key",
         "ix_hrt_compounds_active",
         "ix_hrt_compounds_class",
     },
@@ -124,7 +124,7 @@ _RETAINED_SCHEMA_OBJECTS = {
     HrtCycleItem: {"ix_hrt_cycle_items_cycle"},
     HrtCycleTemplate: {"ix_hrt_cycle_templates_name"},
     HrtCycleTemplateItem: {"ix_hrt_cycle_template_items_template"},
-    ConflictRule: {"ix_conflict_rules_code"},
+    ConflictRule: {"uq_conflict_rules_platform_code"},
 }
 
 

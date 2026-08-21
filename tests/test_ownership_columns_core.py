@@ -60,12 +60,12 @@ _INSIGHTS_MODELS = (
 _RETAINED_SCHEMA_OBJECTS = {
     WeightLog: {
         "ix_weight_logs_domain_date",
-        "uq_active_weight_per_date",
+        "uq_active_weight_per_subject_date",
         "ck_weight_logs_weight_positive",
     },
     BodyMeasurement: {
         "ix_body_measurements_domain_date",
-        "uq_body_measurement_per_date",
+        "uq_body_measurements_subject_date",
     },
     ProgressPhoto: {"ix_progress_photos_domain_date"},
     NoiseMarker: {"ix_noise_markers_domain_range"},
@@ -84,7 +84,7 @@ _RETAINED_SCHEMA_OBJECTS = {
     Supplement: {"ix_supplements_key", "ix_supplements_active"},
     GeneticVariant: {
         "ix_genetic_variants_marker",
-        "uq_genetic_variant_rsid",
+        "uq_genetic_variant_subject_rsid",
     },
     SkincareLog: {"ix_skincare_logs_domain_date"},
     SkincareObservation: {"ix_skincare_observations_domain_date"},
@@ -157,8 +157,8 @@ def test_core_existing_table_args_survive_ownership_mixins(model, expected_names
 
 def test_core_partial_unique_indexes_keep_both_dialect_predicates():
     for model, index_name in (
-        (WeightLog, "uq_active_weight_per_date"),
-        (GeneticVariant, "uq_genetic_variant_rsid"),
+        (WeightLog, "uq_active_weight_per_subject_date"),
+        (GeneticVariant, "uq_genetic_variant_subject_rsid"),
     ):
         index = next(
             item for item in model.__table__.indexes if item.name == index_name

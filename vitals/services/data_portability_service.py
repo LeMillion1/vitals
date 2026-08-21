@@ -90,7 +90,6 @@ from vitals.services.day_context_ownership_backfill_service import (
     reset_day_context_ownership_backfill_for_portability_v1_restore,
 )
 from vitals.services.conflict_catalog import (
-    ConflictCatalogCollisionError,
     sync_catalog as sync_conflict_catalog,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
@@ -1343,10 +1342,7 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
             await sync_conflict_catalog(session)
             if local_subject_id is not None:
                 await preflight_conflict_rule_ownership_backfill(session)
-        except (
-            ConflictCatalogCollisionError,
-            ConflictRuleOwnershipBackfillError,
-        ) as exc:
+        except ConflictRuleOwnershipBackfillError as exc:
             raise _contract_error(
                 "import.error.generic",
                 exc="conflict-rule catalog validation rejected the portable restore",

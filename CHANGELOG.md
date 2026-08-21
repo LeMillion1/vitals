@@ -130,6 +130,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 5D: revision `0048` drops the twelve legacy global keys the scoped
+  keys replaced. This is the point at which two people may share a weigh-in
+  date, a lab-marker name, an rsID, and a day, and two accounts of one provider
+  may share an external id — which is exactly what a second subject needs and
+  what the global keys made impossible. Every temporary bridge that stood in for
+  a surviving global key is removed with it, and the tests that asserted a typed
+  cutover error now assert the coexistence the cutover bought: a real
+  PostgreSQL rehearsal has two subjects write the same weigh-in date, marker
+  name, rsID, and provider external id from two concurrent transactions, while
+  one subject still cannot hold the same key twice. What replaces each bridge is
+  a real invariant rather than nothing: an active alert whose ownership shape
+  matches no class is still refused, a genetics rename still cannot land on an
+  rsID this subject already holds, and the catalogs simply cannot see a
+  subject's own compound or rule. A supporting `(alert_key, entity_ref)` index
+  replaces the dropped global alert key for dismissal-history reads, which the
+  unresolved-only scoped keys cannot serve. Downgrade recreates every dropped
+  key, but only while the data still satisfies it: once a second subject has
+  written a duplicate of a legacy global key, this revision is a one-way
+  boundary and recovery is a verified backup plus a forward fix.
 - Added Stage 5C, which switches every key-based write path to the scoped key.
   A path used to look its natural key up across the whole installation and then
   check afterwards whether the row it found happened to belong to the caller;

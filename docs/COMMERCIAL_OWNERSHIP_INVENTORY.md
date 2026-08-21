@@ -1086,9 +1086,9 @@ refused downgrade further down the chain rolls the whole attempt back instead of
 leaving the lake half-cut-over.
 
 The legacy expansion indexes that the scoped keys duplicate are deliberately
-left in place: revision `0037`'s contract still describes them, and removing
-them belongs with the drop of the global keys rather than with their
-installation.
+left in place, here and at the drop: revision `0037`'s contract still describes
+them, and a duplicated index is a smaller cost than a schema contract that no
+longer matches the models.
 
 #### Stage 5C — switching the write paths
 
@@ -1116,6 +1116,34 @@ whether the surviving global key is occupied outside the scope and reports that
 as a typed cutover error rather than letting the insert fail with a bare
 integrity error. Every bridge is commented as belonging to the key it stands in
 for and is removed when that key is dropped.
+
+#### Stage 5D — dropping the global keys
+
+Revision `0048` removes all twelve. This is the boundary the whole sequence was
+for: two people may now share a weigh-in date, a lab-marker name, an rsID, and a
+day, and two accounts of one provider may share an external id.
+
+Every temporary bridge goes with the key it stood in for. What replaces each one
+is a real invariant, not an absence:
+
+- an active alert whose ownership shape matches no class — a connection with no
+  subject, a subject under a provider key — is still refused, because such a row
+  belongs to no root the scoped keys recognise;
+- a genetics rename still cannot land on an rsID *this* subject already holds;
+- the compound and rule catalogs cannot see a subject's own row at all, so
+  there is nothing left for them to collide with;
+- the legacy connection-less outbox path, which can no longer name a conflict
+  target, reads-then-inserts under the outbox operation lock that already
+  serialized it.
+
+A supporting `(alert_key, entity_ref)` index replaces the dropped global alert
+key for dismissal-history reads, which the unresolved-only scoped keys cannot
+serve.
+
+Downgrade recreates every dropped key, but only while the data still satisfies
+it. Once a second subject has written a duplicate of a legacy global key, this
+revision is a one-way boundary: recovery is a verified backup plus a forward
+fix, exactly as the rollback boundary below states.
 
 ### Stage 6 — Scoped read and RLS cutover
 

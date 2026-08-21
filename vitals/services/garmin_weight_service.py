@@ -28,8 +28,6 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, or_, select, text
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
@@ -122,12 +120,6 @@ class GarminWeightConflict(RuntimeError):
 
 class GarminWeightExportOwnershipError(RuntimeError):
     """A scoped outbox operation cannot prove its complete ownership graph."""
-
-
-class GarminWeightExportScopedUniqueCutoverRequiredError(
-    GarminWeightExportOwnershipError
-):
-    """The legacy global date key is occupied by another ownership scope."""
 
 
 class GarminWeightExportPreparedError(GarminWeightExportOwnershipError):
@@ -414,37 +406,6 @@ def _activate_scoped_export(prepared: PreparedGarminWeightExport):
         yield
     finally:
         _SCOPED_EXPORT.reset(token)
-
-
-async def _require_no_foreign_outbox_under_legacy_key(
-    session: AsyncSession,
-    *,
-    on_date: date_type,
-    context: "GarminWeightExportContext",
-) -> None:
-    """Temporary bridge for as long as the legacy global key is installed.
-
-    The scoped key is the contract now, but the installation-wide unique key on
-    ``date`` has not been dropped yet, so another account's intent for the same
-    day would still make our insert fail with a bare integrity error.  Raise the
-    typed cutover error instead, without writing anything.  This check goes away
-    with the key.
-    """
-
-    foreign = await session.scalar(
-        select(GarminWeightExport.id)
-        .where(
-            GarminWeightExport.date == on_date,
-            GarminWeightExport.integration_connection_id.is_not(None),
-            GarminWeightExport.integration_connection_id
-            != context.integration_connection_id,
-        )
-        .limit(1)
-    )
-    if foreign is not None:
-        raise GarminWeightExportScopedUniqueCutoverRequiredError(
-            "global Garmin Weight export date is occupied by another scope"
-        )
 
 
 def _scoped_outbox_query(
@@ -1278,8 +1239,8 @@ async def _ensure_outbox_row(
                 is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
             )
             if not exact_or_legacy:
-                raise GarminWeightExportScopedUniqueCutoverRequiredError(
-                    "global Garmin Weight export date is occupied by another scope"
+                raise GarminWeightExportOwnershipError(
+                    "the outbox row for this date cannot be adopted in this scope"
                 )
             await _validate_scoped_outbox_row(
                 session,
@@ -1288,11 +1249,6 @@ async def _ensure_outbox_row(
                 adopt_legacy=True,
             )
             return existing
-        await _require_no_foreign_outbox_under_legacy_key(
-            session,
-            on_date=on_date,
-            context=context,
-        )
         row = GarminWeightExport(
             subject_id=context.identity.subject_id,
             integration_connection_id=context.integration_connection_id,
@@ -1312,27 +1268,28 @@ async def _ensure_outbox_row(
             adopt_legacy=False,
         )
         return row
-    values = {
-        "date": on_date,
-        "weight_log_id": weight_log_id,
-        "weight_kg": weight_kg,
-        "measured_at": measured_at,
-        "status": status,
-    }
-    dialect = session.get_bind().dialect.name
-    if dialect == "postgresql":
-        stmt = postgresql_insert(GarminWeightExport).values(**values)
-    elif dialect == "sqlite":
-        stmt = sqlite_insert(GarminWeightExport).values(**values)
-    else:  # The project supports PostgreSQL and the SQLite fast-test path.
-        raise RuntimeError(f"unsupported database dialect for Garmin outbox: {dialect}")
-    await session.execute(stmt.on_conflict_do_nothing(index_elements=["date"]))
-    result = await session.execute(
+    # The scoped branch above owns the destination account. This legacy bridge
+    # has none, so it cannot name a conflict target either: the date key is
+    # scoped by connection now. Every caller reaches here holding the outbox
+    # operation lock, which is what serializes this read-then-insert.
+    existing = await session.scalar(
         select(GarminWeightExport)
         .where(GarminWeightExport.date == on_date)
+        .with_for_update()
         .execution_options(populate_existing=True)
     )
-    return result.scalar_one()
+    if existing is not None:
+        return existing
+    row = GarminWeightExport(
+        date=on_date,
+        weight_log_id=weight_log_id,
+        weight_kg=weight_kg,
+        measured_at=measured_at,
+        status=status,
+    )
+    session.add(row)
+    await session.flush()
+    return row
 
 
 def _reset_retry(row: GarminWeightExport) -> None:
@@ -1549,8 +1506,8 @@ async def handle_active_weight_deleted(
             is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
         )
         if not exact_or_legacy:
-            raise GarminWeightExportScopedUniqueCutoverRequiredError(
-                "global Garmin Weight export date is occupied by another scope"
+            raise GarminWeightExportOwnershipError(
+                "the outbox row for this date cannot be adopted in this scope"
             )
         await _validate_scoped_outbox_row(
             session,

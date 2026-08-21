@@ -779,7 +779,7 @@ async def test_empty_alert_bridge_rejects_partial_ownership(
     db_session.add(partial)
     await db_session.commit()
 
-    with pytest.raises(alerts_service.AlertScopedUniqueCutoverRequiredError):
+    with pytest.raises(alerts_service.AlertScopeConflictError):
         await brief._reconcile_empty_day_alert(
             db_session,
             identity=ownership.system_action(),

@@ -234,7 +234,7 @@ async def test_reconcile_ignores_foreign_newer_weight(
     )
 
 
-async def test_foreign_global_date_collision_is_write_free(
+async def test_another_accounts_intent_for_the_same_date_is_left_alone(
     db_session,
     legacy_owner_roots,
 ):
@@ -263,14 +263,16 @@ async def test_foreign_global_date_collision_is_write_free(
         context=context,
     )
 
-    with pytest.raises(
-        garmin_weight_service.GarminWeightExportScopedUniqueCutoverRequiredError
-    ):
-        await garmin_weight_service.reconcile_latest_scoped(
-            db_session,
-            prepared=prepared,
-            now=NOW,
-        )
+    # One queued export per destination account per date: the other account's
+    # intent is neither read into this reconciliation nor changed by it.
+    mine = await garmin_weight_service.reconcile_latest_scoped(
+        db_session,
+        prepared=prepared,
+        now=NOW,
+    )
+    assert mine is not None
+    assert mine.integration_connection_id == context.integration_connection_id
+    assert mine.id != foreign.id
 
     assert local.subject_id == context.identity.subject_id
     assert (
