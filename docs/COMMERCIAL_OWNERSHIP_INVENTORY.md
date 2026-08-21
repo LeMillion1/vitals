@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -844,6 +844,25 @@ the Stage-3P reset, validates the S-only incoming shape in the same transaction,
 and the fixed operator refuses to advance until a provenance-bearing restore or
 an explicit reviewed remap. An empty snapshot is exact `COMPLETED`.
 
+Stage 3R continues with `stage3.retained_artifact.weekly_digests.v1` over
+exactly `weekly_digests`. Under a complete digest/brief writer pause, a reviewed
+fully-null S/A/C row gains only the sole S. The authoring actor, the historical
+subject OpenRouter connection, the platform invocation link, the narrative, the
+context it was built from, the model, the kind, the date, and both timestamps
+stay exactly as persisted.
+
+Subject-funded and platform-funded provenance are proved mutually exclusive, the
+same rule the schema check constraint states. A retained gateway connection must
+be the subject's own OpenRouter AI gateway in a historical lifecycle state; a
+linked platform invocation must belong to the subject, match the purpose its kind
+implies, and have succeeded. Every artifact created above the frozen watermark
+must carry one of those two reviewed funding roots.
+
+Backup v1 neither exports nor replaces digests. Import therefore prepares the
+retained Stage-3R checkpoint from the local artifact set on a first restore and
+afterwards revalidates and preserves it, never accepting incoming bounds, and
+post-load preflight revalidates the retained graph before commit.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -889,8 +908,11 @@ stop/resume, a strict live child above the frozen high-water mark, backup-v1
 reset/recompletion, empty replacement, and populated downgrade refusal. The
 Stage-3Q rehearsal covers destination adoption for a queued outbox, stop/resume,
 a strict live delete intent above the frozen high-water mark, backup-v1 blocking
-and apply refusal, empty replacement, and populated downgrade refusal. Remaining
-artifacts, control phases, and the Stage 4 gates remain pending.
+and apply refusal, empty replacement, and populated downgrade refusal. The
+Stage-3R rehearsal covers retained artifact adoption, stop/resume, a strict live
+gateway-funded digest above the frozen watermark, backup-v1 retention through a
+full round trip and an empty replacement, and populated downgrade refusal.
+Remaining control phases and the Stage 4 gates remain pending.
 
 ### Stage 4 — Ownership validation
 

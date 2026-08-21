@@ -568,6 +568,13 @@ Implementation progress on `commercial/main`:
   adoption is pending. Backup v1 cannot carry a required destination, so a
   nonempty restored snapshot is recorded as `RESTORE_BLOCKED` and the operator
   refuses to advance.
+- Stage 3R uses `stage3.retained_artifact.weekly_digests.v1` for exactly
+  `weekly_digests`. It adds only the sole S to reviewed fully-unowned artifacts
+  and preserves the narrative, its context, the model, and both funding roots.
+  Subject-funded and platform-funded provenance are mutually exclusive, a linked
+  invocation must belong to the subject and match its kind, and a digest above
+  the frozen watermark must carry reviewed AI funding. Backup v1 neither exports
+  nor replaces digests; import prepares or preserves the retained checkpoint.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

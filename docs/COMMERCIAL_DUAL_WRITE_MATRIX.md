@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -998,6 +998,30 @@ Import therefore records a nonempty Stage-3Q snapshot as `RESTORE_BLOCKED` after
 the Stage-3P reset, validates the S-only incoming shape in the same transaction,
 and the operator command refuses to advance until a provenance-bearing restore
 or an explicit reviewed remap. An empty snapshot is exact `COMPLETED`.
+
+## Stage-3R retained weekly-digest ownership operation
+
+The fixed `stage3.retained_artifact.weekly_digests.v1` phase covers only
+`weekly_digests`. A digest is a generated artifact, so its narrative, the context
+it was built from, the model that wrote it, and its funding provenance are
+evidence the migration must not touch. A reviewed fully-null S/A/C row gains the
+sole S and nothing else; the authoring actor, the historical subject OpenRouter
+connection, and the platform invocation link are never inferred.
+
+Subject-funded and platform-funded provenance are mutually exclusive, which the
+schema check constraint also states. A retained subject gateway connection must
+be the subject's own OpenRouter AI gateway in a historical lifecycle state and
+may not coexist with an invocation. A linked platform invocation must belong to
+the subject, carry the purpose its digest kind implies, and have succeeded. Above
+the frozen watermark every artifact must carry one of those two reviewed funding
+roots, because nothing generates a digest without paying for it.
+
+Backup v1 neither exports nor replaces digests, so this phase is retained rather
+than rebased: import prepares the checkpoint from the local artifact set on the
+first restore and afterwards revalidates and preserves it, never accepting
+incoming bounds. The fixed operator is read-only by default, commits one bounded
+batch per transaction, and emits only allowlisted aggregate counts and checksums
+without narratives, context, dates, row IDs, UUIDs, or exception text.
 
 ## Completion gates
 

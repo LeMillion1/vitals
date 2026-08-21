@@ -130,6 +130,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 3R for retained weekly-digest ownership. The fixed
+  `stage3.retained_artifact.weekly_digests.v1` operation gives a reviewed
+  fully-unowned artifact only the sole subject; the authoring actor, the
+  historical subject OpenRouter connection, the platform invocation link, the
+  narrative, the context it was built from, the model, and both timestamps stay
+  exactly as persisted. Subject-funded and platform-funded provenance are proved
+  mutually exclusive, a linked invocation must belong to the subject, match the
+  digest kind, and have succeeded, and a digest created above the frozen
+  watermark must carry reviewed AI funding. Backup v1 neither exports nor
+  replaces digests, so import prepares or preserves the retained checkpoint
+  without trusting bounds from the file.
 - Added Stage 3Q for Garmin weight-outbox ownership. The fixed
   `stage3.provider_outbox.garmin_weight_exports.v1` operation gives a reviewed
   fully-unowned row the sole subject plus the exact reviewed legacy Garmin

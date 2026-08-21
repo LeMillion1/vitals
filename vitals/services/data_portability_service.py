@@ -140,6 +140,11 @@ from vitals.services.shared_report_ownership_backfill_service import (
     preflight_shared_report_ownership_backfill,
     prepare_shared_report_ownership_backfill_for_portability_v1_restore,
 )
+from vitals.services.weekly_digest_ownership_backfill_service import (
+    WeeklyDigestOwnershipBackfillError,
+    preflight_weekly_digest_ownership_backfill,
+    prepare_weekly_digest_ownership_backfill_for_portability_v1_restore,
+)
 from vitals.services.garmin_weight_export_ownership_backfill_service import (
     GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_TABLES,
     GarminWeightExportOwnershipBackfillError,
@@ -1212,6 +1217,17 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                     "import.error.generic",
                     exc="Garmin outbox ownership restore block was rejected",
                 ) from exc
+            try:
+                await (
+                    prepare_weekly_digest_ownership_backfill_for_portability_v1_restore(
+                        session
+                    )
+                )
+            except WeeklyDigestOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="weekly-digest ownership restore preparation was rejected",
+                ) from exc
         preserved = await _secret_settings(session)
 
         # Wipe in reverse FK order so child rows go before the parents they reference.
@@ -1343,6 +1359,13 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                 raise _contract_error(
                     "import.error.generic",
                     exc="Garmin outbox validation rejected the portable restore",
+                ) from exc
+            try:
+                await preflight_weekly_digest_ownership_backfill(session)
+            except WeeklyDigestOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="weekly-digest validation rejected the portable restore",
                 ) from exc
         await _reset_sequences(session)
         await session.flush()

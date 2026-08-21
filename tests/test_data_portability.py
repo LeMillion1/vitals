@@ -107,6 +107,10 @@ from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     SharedReportOwnershipBackfillStateError,
 )
+from vitals.services.weekly_digest_ownership_backfill_service import (
+    WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    WeeklyDigestOwnershipBackfillStateError,
+)
 from vitals.services.garmin_weight_export_ownership_backfill_service import (
     GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     GarminWeightExportOwnershipBackfillStateError,
@@ -2842,6 +2846,71 @@ async def test_full_import_completes_exact_empty_body_scan_stage3o(
         checkpoint.snapshot_rows,
     ) == ("completed", 0, 0)
     assert checkpoint.completed_at is not None
+
+
+async def test_retained_weekly_digests_survive_import_and_prepare_stage3r(
+    db_session,
+    legacy_owner_roots,
+):
+    from vitals.models.milestones import WeeklyDigest
+
+    retained = WeeklyDigest(
+        subject_id=legacy_owner_roots.subject_id,
+        date=date(2026, 8, 15),
+        domain=Domain.MILESTONES.value,
+        source=Source.SCHEDULER.value,
+        kind="weekly",
+        content="synthetic retained narrative",
+        model="synthetic/digest",
+    )
+    db_session.add(retained)
+    await db_session.commit()
+    retained_id = retained.id
+
+    snapshot = await export_full(db_session)
+    assert "weekly_digests" not in snapshot
+
+    await import_full(db_session, snapshot)
+    await db_session.commit()
+
+    survivor = await db_session.get(WeeklyDigest, retained_id)
+    assert survivor is not None
+    assert survivor.content == "synthetic retained narrative"
+    phase = WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["weekly_digests"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert checkpoint.status == "running"
+    assert (checkpoint.scan_high_watermark_id, checkpoint.snapshot_rows) == (
+        retained_id,
+        1,
+    )
+
+
+async def test_weekly_digest_post_load_rejection_rolls_back_replacement(
+    db_session,
+    legacy_owner_roots,
+):
+    async def rejected_preflight(*args, **kwargs):
+        raise WeeklyDigestOwnershipBackfillStateError("sensitive synthetic state")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            data_portability_service,
+            "preflight_weekly_digest_ownership_backfill",
+            rejected_preflight,
+        )
+        with pytest.raises(
+            PortabilityError,
+            match="weekly-digest validation rejected the portable restore",
+        ):
+            await import_full(
+                db_session,
+                {
+                    "metadata": {"version": "1.0", "kind": "full_backup"},
+                    "raw_payloads": [],
+                },
+            )
+    await db_session.rollback()
 
 
 def _portable_garmin_weight_export(*, row_id: int = 131) -> dict:
