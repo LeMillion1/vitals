@@ -17,6 +17,9 @@ from vitals.enums import (
     AIInvocationSource,
     AIInvocationStatus,
     Domain,
+    FileAssetPurpose,
+    FileAssetStatus,
+    FileStorageBackend,
     IntegrationConnectionType,
     IntegrationProvider,
     NotificationDeliveryStatus,
@@ -42,8 +45,8 @@ from vitals.models.proactive import NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
 from vitals.models.supplements import Supplement
 from vitals.models.system_alert import SystemAlert
-from vitals.models.tenancy import IntegrationConnection
-from vitals.models.weight import BodyMeasurement, WeightLog
+from vitals.models.tenancy import FileAsset, IntegrationConnection
+from vitals.models.weight import BodyMeasurement, ProgressPhoto, WeightLog
 from vitals.services import conflict_catalog, data_portability_service
 from vitals.services.data_portability_service import (
     PortabilityError,
@@ -74,6 +77,11 @@ from vitals.services.normalized_ownership_backfill_service import (
 from vitals.services.provider_raw_ownership_backfill_service import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     PROVIDER_RAW_OWNERSHIP_BACKFILL_TABLES,
+)
+from vitals.services.progress_photo_ownership_backfill_service import (
+    PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    PROGRESS_PHOTO_OWNERSHIP_BACKFILL_TABLES,
+    ProgressPhotoOwnershipBackfillStateError,
 )
 from vitals.services.raw_ownership_backfill_service import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
@@ -1393,6 +1401,362 @@ async def test_conflict_rule_replacement_rejects_invalid_ids_before_mutation(
             },
         )
     assert called is False
+
+
+def _portable_progress_photo(
+    *,
+    row_id: int = 41,
+    file_key: str = "uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
+) -> dict:
+    return {
+        "id": row_id,
+        "date": "2026-08-21",
+        "domain": Domain.WEIGHT.value,
+        "source": Source.MANUAL.value,
+        "file_key": file_key,
+        "note": "synthetic portable photo",
+        "_vitals_subject_bound": True,
+    }
+
+
+async def test_full_import_blocks_nonempty_progress_photo_stage3h_without_assets(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "progress_photos": [_portable_progress_photo()],
+        },
+    )
+
+    photo = await db_session.get(ProgressPhoto, 41)
+    assert photo is not None
+    assert (
+        photo.subject_id,
+        photo.actor_user_id,
+        photo.file_asset_id,
+    ) == (legacy_owner_roots.subject_id, None, None)
+    assert await db_session.scalar(select(FileAsset.id)) is None
+
+    phase = PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES[
+        "progress_photos"
+    ]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+        checkpoint.completed_at,
+    ) == ("restore_blocked", 41, 1, 0, 0, 0, 0, None)
+    assert checkpoint.data_checksum_before == _EMPTY_SHA256
+    assert checkpoint.data_checksum_after == _EMPTY_SHA256
+    assert checkpoint.ownership_checksum_after == _EMPTY_SHA256
+
+
+async def test_full_import_completes_exact_empty_progress_photo_stage3h(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    phase = PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES[
+        "progress_photos"
+    ]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+    ) == ("completed", 0, 0, 0, 0, 0, 0)
+    assert checkpoint.completed_at is not None
+
+
+async def test_full_import_retires_only_outgoing_progress_asset_without_bytes(
+    db_session,
+    legacy_owner_roots,
+):
+    key = "uploads/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.webp"
+    asset = FileAsset(
+        subject_id=legacy_owner_roots.subject_id,
+        uploaded_by_user_id=legacy_owner_roots.user_id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO.value,
+        storage_backend=FileStorageBackend.LEGACY_LOCAL.value,
+        storage_ref=key,
+        status=FileAssetStatus.LEGACY_PLACEHOLDER.value,
+    )
+    db_session.add(asset)
+    await db_session.flush()
+    photo = ProgressPhoto(
+        subject_id=legacy_owner_roots.subject_id,
+        actor_user_id=legacy_owner_roots.user_id,
+        file_asset_id=asset.id,
+        date=date(2026, 8, 20),
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        file_key=key,
+    )
+    db_session.add(photo)
+    await db_session.commit()
+    asset_id = asset.id
+    photo_id = photo.id
+
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    db_session.expire_all()
+    assert await db_session.get(ProgressPhoto, photo_id) is None
+    retired = await db_session.get(FileAsset, asset_id)
+    assert retired is not None
+    assert retired.status == FileAssetStatus.DELETED.value
+    assert retired.deleted_at is not None
+    assert retired.purged_at is None
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    (
+        "uploads/labs/aliased.jpg",
+        "uploads/body/aliased.png",
+        "uploads/../escaped.jpg",
+        "uploads/not-an-image.svg",
+    ),
+)
+async def test_full_import_rejects_unsafe_progress_photo_atomically(
+    db_session,
+    legacy_owner_roots,
+    bad_key,
+):
+    key = "uploads/cccccccccccccccccccccccccccccccc.jpeg"
+    asset = FileAsset(
+        subject_id=legacy_owner_roots.subject_id,
+        uploaded_by_user_id=legacy_owner_roots.user_id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO.value,
+        storage_backend=FileStorageBackend.LEGACY_LOCAL.value,
+        storage_ref=key,
+        status=FileAssetStatus.LEGACY_PLACEHOLDER.value,
+    )
+    db_session.add(asset)
+    await db_session.flush()
+    photo = ProgressPhoto(
+        subject_id=legacy_owner_roots.subject_id,
+        actor_user_id=legacy_owner_roots.user_id,
+        file_asset_id=asset.id,
+        date=date(2026, 8, 20),
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        file_key=key,
+    )
+    db_session.add(photo)
+    await db_session.commit()
+    asset_id = asset.id
+    photo_id = photo.id
+
+    with pytest.raises(
+        PortabilityError,
+        match="progress-photo validation rejected",
+    ):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                "progress_photos": [
+                    _portable_progress_photo(row_id=77, file_key=bad_key)
+                ],
+            },
+        )
+    await db_session.rollback()
+
+    restored_photo = await db_session.get(ProgressPhoto, photo_id)
+    restored_asset = await db_session.get(FileAsset, asset_id)
+    assert restored_photo is not None
+    assert restored_asset is not None
+    assert restored_asset.status == FileAssetStatus.LEGACY_PLACEHOLDER.value
+    assert restored_asset.deleted_at is None
+
+
+async def test_full_import_rejects_partial_outgoing_progress_graph_atomically(
+    db_session,
+    legacy_owner_roots,
+):
+    partial = ProgressPhoto(
+        subject_id=legacy_owner_roots.subject_id,
+        actor_user_id=None,
+        file_asset_id=None,
+        date=date(2026, 8, 20),
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        file_key="uploads/dddddddddddddddddddddddddddddddd.jpg",
+    )
+    db_session.add(partial)
+    await db_session.commit()
+    partial_id = partial.id
+
+    with pytest.raises(
+        PortabilityError,
+        match="progress-photo ownership restore block",
+    ):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+            },
+        )
+    await db_session.rollback()
+
+    restored = await db_session.get(ProgressPhoto, partial_id)
+    assert restored is not None
+    assert (
+        restored.subject_id,
+        restored.actor_user_id,
+        restored.file_asset_id,
+    ) == (legacy_owner_roots.subject_id, None, None)
+    phase = PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES[
+        "progress_photos"
+    ]
+    assert await db_session.get(OwnershipBackfillCheckpoint, phase) is None
+
+
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_progress_photo_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_block(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "block_progress_photo_ownership_backfill_for_portability_v1_restore",
+        unexpected_block,
+    )
+    row = _portable_progress_photo()
+    if bad_id is None:
+        row.pop("id")
+    else:
+        row["id"] = bad_id
+    with pytest.raises(PortabilityError, match="positive integer id"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                PROGRESS_PHOTO_OWNERSHIP_BACKFILL_TABLES[0]: [row],
+            },
+        )
+    assert called is False
+
+
+async def test_full_import_calls_progress_block_after_conflict_reset(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_conflict_reset = (
+        data_portability_service.reset_conflict_rule_backfill_for_portability_v1_restore
+    )
+
+    async def tracked_conflict_reset(*args, **kwargs):
+        order.append("conflict")
+        return await original_conflict_reset(*args, **kwargs)
+
+    async def stopping_progress_block(*args, **kwargs):
+        order.append("progress")
+        raise ProgressPhotoOwnershipBackfillStateError("synthetic stop")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_conflict_rule_backfill_for_portability_v1_restore",
+        tracked_conflict_reset,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "block_progress_photo_ownership_backfill_for_portability_v1_restore",
+        stopping_progress_block,
+    )
+    with pytest.raises(PortabilityError, match="progress-photo ownership restore block"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+            },
+        )
+    await db_session.rollback()
+    assert order == ["conflict", "progress"]
+
+
+async def test_full_import_preflights_progress_after_conflict_rules(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_conflict_preflight = (
+        data_portability_service.preflight_conflict_rule_ownership_backfill
+    )
+    original_progress_preflight = (
+        data_portability_service.preflight_progress_photo_ownership_backfill
+    )
+
+    async def tracked_conflict_preflight(*args, **kwargs):
+        order.append("conflict")
+        return await original_conflict_preflight(*args, **kwargs)
+
+    async def tracked_progress_preflight(*args, **kwargs):
+        order.append("progress")
+        return await original_progress_preflight(*args, **kwargs)
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_conflict_rule_ownership_backfill",
+        tracked_conflict_preflight,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_progress_photo_ownership_backfill",
+        tracked_progress_preflight,
+    )
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    assert order == ["conflict", "progress"]
 
 
 @pytest.mark.parametrize("table_name", HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES)

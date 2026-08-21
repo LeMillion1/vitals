@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import FrozenInstanceError
-from datetime import date
+from datetime import UTC, date, datetime
+from html.parser import HTMLParser
 
 import pytest
 from sqlalchemy import func, select
@@ -19,6 +21,7 @@ from vitals.enums import (
     UserStatus,
 )
 from vitals.models.identity import HealthSubject, User
+from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.tenancy import FileAsset
 from vitals.models.weight import ProgressPhoto
 from vitals.ownership import WriteIdentity
@@ -33,6 +36,26 @@ from vitals.utils.timeutils import now_local
 
 PHOTO_DATE = date(2026, 8, 20)
 OTHER_DATE = date(2026, 8, 21)
+_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+_NONEMPTY_DATA_SHA256 = "a" * 64
+_NONEMPTY_OWNERSHIP_SHA256 = "b" * 64
+_CHECKPOINT_STAMP = datetime(2020, 1, 1, tzinfo=UTC)
+
+
+class _PhotoCardParser(HTMLParser):
+    def __init__(self, photo_id: int) -> None:
+        super().__init__()
+        self.photo_id = str(photo_id)
+        self.attributes: dict[str, str | None] | None = None
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        attributes = dict(attrs)
+        if tag == "div" and attributes.get("data-photo-id") == self.photo_id:
+            self.attributes = attributes
 
 
 def _identity(legacy_owner_roots) -> WriteIdentity:
@@ -133,6 +156,72 @@ async def _new_owner(
     session.add(subject)
     await session.flush()
     return user, subject, WriteIdentity(subject.id, user.id)
+
+
+def _photo_checkpoint(
+    *,
+    subject_id,
+    high: int,
+    count: int,
+    cursor: int,
+    scanned: int,
+    status: str,
+) -> OwnershipBackfillCheckpoint:
+    from vitals.services.progress_photo_ownership_backfill_service import (
+        PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    )
+
+    completed = status == "completed"
+    data_digest = _NONEMPTY_DATA_SHA256 if scanned else _EMPTY_SHA256
+    ownership_digest = _NONEMPTY_OWNERSHIP_SHA256 if scanned else _EMPTY_SHA256
+    return OwnershipBackfillCheckpoint(
+        phase_key=PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES[
+            "progress_photos"
+        ],
+        subject_id=subject_id,
+        status=status,
+        scan_high_watermark_id=high,
+        snapshot_rows=count,
+        last_scanned_id=cursor,
+        scanned_rows=scanned,
+        updated_rows=scanned,
+        unchanged_rows=0,
+        data_checksum_before=data_digest,
+        data_checksum_after=data_digest,
+        ownership_checksum_after=ownership_digest,
+        started_at=_CHECKPOINT_STAMP,
+        updated_at=_CHECKPOINT_STAMP,
+        completed_at=_CHECKPOINT_STAMP if completed else None,
+    )
+
+
+async def _migrated_photo(
+    session: AsyncSession,
+    identity: WriteIdentity,
+    suffix: str,
+    *,
+    uploaded_by_user_id=None,
+) -> tuple[FileAsset, ProgressPhoto]:
+    asset = await file_asset_service.register_legacy_local(
+        session,
+        subject_id=identity.subject_id,
+        uploaded_by_user_id=uploaded_by_user_id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO,
+        storage_ref=f"uploads/synthetic-migrated-{suffix}.png",
+    )
+    photo = ProgressPhoto(
+        subject_id=identity.subject_id,
+        actor_user_id=None,
+        file_asset_id=asset.id,
+        date=PHOTO_DATE,
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        file_key=asset.storage_ref,
+        note="synthetic migrated history",
+    )
+    session.add(photo)
+    await session.flush()
+    return asset, photo
 
 
 async def test_create_stamps_exact_s_a_f_and_derives_the_key(
@@ -375,6 +464,281 @@ async def test_fully_null_legacy_photo_is_visible_and_deletable_only_via_bridge(
         file_key="uploads/synthetic-legacy.png",
         file_asset_id=None,
     )
+
+
+async def test_completed_stage3h_bridge_exposes_actorless_migrated_history(
+    db_session,
+    legacy_owner_roots,
+):
+    identity = _identity(legacy_owner_roots)
+    asset, photo = await _migrated_photo(
+        db_session,
+        identity,
+        "completed",
+    )
+    db_session.add(
+        _photo_checkpoint(
+            subject_id=identity.subject_id,
+            high=photo.id,
+            count=1,
+            cursor=photo.id,
+            scanned=1,
+            status="completed",
+        )
+    )
+    await db_session.commit()
+
+    visible = await weight_service.list_progress_photos(
+        db_session,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
+    assert visible == [photo]
+    assert photo.actor_user_id is None
+    assert asset.uploaded_by_user_id is None
+
+    events = await timeline_service.list_events(
+        db_session,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+        start=PHOTO_DATE,
+        end=PHOTO_DATE,
+    )
+    assert [event.ref for event in events if event.kind == "photo"] == [
+        f"progress_photo:{photo.id}"
+    ]
+
+
+async def test_running_stage3h_bridge_accepts_processed_and_preserves_legacy_rows(
+    db_session,
+    legacy_owner_roots,
+):
+    identity = _identity(legacy_owner_roots)
+    _asset_row, processed = await _migrated_photo(
+        db_session,
+        identity,
+        "running-processed",
+    )
+    unprocessed = ProgressPhoto(
+        date=OTHER_DATE,
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        file_key="uploads/synthetic-running-unprocessed.png",
+    )
+    db_session.add(unprocessed)
+    await db_session.flush()
+    db_session.add(
+        _photo_checkpoint(
+            subject_id=identity.subject_id,
+            high=unprocessed.id,
+            count=2,
+            cursor=processed.id,
+            scanned=1,
+            status="running",
+        )
+    )
+    await db_session.commit()
+
+    visible = await weight_service.list_progress_photos(
+        db_session,
+        subject_id=identity.subject_id,
+        include_legacy_unowned=True,
+    )
+    assert {row.id for row in visible} == {processed.id, unprocessed.id}
+
+    _tail_asset, tail = await _migrated_photo(
+        db_session,
+        identity,
+        "running-tail",
+    )
+    await db_session.commit()
+    assert tail.id > unprocessed.id
+    with pytest.raises(
+        weight_service.ProgressPhotoOwnershipError,
+        match="actor",
+    ):
+        await weight_service.list_progress_photos(
+            db_session,
+            subject_id=identity.subject_id,
+            include_legacy_unowned=True,
+        )
+
+
+async def test_actorless_owned_photo_requires_a_valid_processed_checkpoint(
+    db_session,
+    legacy_owner_roots,
+):
+    identity = _identity(legacy_owner_roots)
+    _asset_row, photo = await _migrated_photo(
+        db_session,
+        identity,
+        "checkpoint-required",
+    )
+    await db_session.commit()
+
+    with pytest.raises(weight_service.ProgressPhotoOwnershipError, match="actor"):
+        await weight_service.list_progress_photos(
+            db_session,
+            subject_id=identity.subject_id,
+            include_legacy_unowned=True,
+        )
+
+    blocked = _photo_checkpoint(
+        subject_id=identity.subject_id,
+        high=photo.id,
+        count=1,
+        cursor=0,
+        scanned=0,
+        status="running",
+    )
+    blocked.status = "restore_blocked"
+    blocked.data_checksum_before = _EMPTY_SHA256
+    blocked.data_checksum_after = _EMPTY_SHA256
+    blocked.ownership_checksum_after = _EMPTY_SHA256
+    db_session.add(blocked)
+    await db_session.commit()
+    with pytest.raises(weight_service.ProgressPhotoOwnershipError, match="actor"):
+        await weight_service.list_progress_photos(
+            db_session,
+            subject_id=identity.subject_id,
+            include_legacy_unowned=True,
+        )
+
+
+async def test_malicious_legacy_file_key_is_data_not_an_alpine_expression(
+    auth_client,
+    db_session,
+):
+    file_key = "uploads/synthetic-');window.photo_pwned=1;('-.png"
+    photo = ProgressPhoto(
+        date=PHOTO_DATE,
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        file_key=file_key,
+        note="synthetic template escaping probe",
+    )
+    db_session.add(photo)
+    await db_session.commit()
+
+    response = await auth_client.get(
+        "/weight/measures",
+        headers={"Accept": "text/html"},
+    )
+    assert response.status_code == 200
+    parser = _PhotoCardParser(photo.id)
+    parser.feed(response.text)
+    assert parser.attributes is not None
+    assert parser.attributes["data-photo-src"] == f"/static/{file_key}"
+    click = parser.attributes["@click"]
+    assert click == (
+        "showPhotoModal(Number($el.dataset.photoId), "
+        "$el.dataset.photoSrc, $el.dataset.photoDate)"
+    )
+    assert "photo_pwned" not in click
+
+
+async def test_owner_can_delete_migrated_history_without_rewriting_provenance(
+    db_session,
+    legacy_owner_roots,
+):
+    identity = _identity(legacy_owner_roots)
+    asset, photo = await _migrated_photo(
+        db_session,
+        identity,
+        "delete",
+    )
+    db_session.add(
+        _photo_checkpoint(
+            subject_id=identity.subject_id,
+            high=photo.id,
+            count=1,
+            cursor=photo.id,
+            scanned=1,
+            status="completed",
+        )
+    )
+    await db_session.commit()
+    assert photo.actor_user_id is None and asset.uploaded_by_user_id is None
+
+    receipt = await weight_service.delete_progress_photo(
+        db_session,
+        photo.id,
+        identity=identity,
+        prepared_conflict_write=await _prepared(db_session, identity),
+    )
+    assert receipt == weight_service.ProgressPhotoDeletion(photo.file_key, asset.id)
+    assert asset.uploaded_by_user_id is None
+    assert asset.status == FileAssetStatus.DELETED.value
+
+
+async def test_completed_migrated_bridge_rejects_nonnull_asset_uploader(
+    db_session,
+    legacy_owner_roots,
+):
+    identity = _identity(legacy_owner_roots)
+    _asset_row, photo = await _migrated_photo(
+        db_session,
+        identity,
+        "foreign-uploader-shape",
+        uploaded_by_user_id=identity.actor_user_id,
+    )
+    db_session.add(
+        _photo_checkpoint(
+            subject_id=identity.subject_id,
+            high=photo.id,
+            count=1,
+            cursor=photo.id,
+            scanned=1,
+            status="completed",
+        )
+    )
+    await db_session.commit()
+    with pytest.raises(weight_service.ProgressPhotoOwnershipError):
+        await weight_service.list_progress_photos(
+            db_session,
+            subject_id=identity.subject_id,
+            include_legacy_unowned=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "unsafe_key",
+    [
+        "uploads/body/synthetic-migrated.png",
+        "uploads/Synthetic-migrated.png",
+        "uploads/synthetic-migrated.pdf",
+    ],
+)
+async def test_completed_migrated_bridge_requires_root_level_safe_image_key(
+    db_session,
+    legacy_owner_roots,
+    unsafe_key,
+):
+    identity = _identity(legacy_owner_roots)
+    asset, photo = await _migrated_photo(db_session, identity, "unsafe-key")
+    asset.storage_ref = unsafe_key
+    photo.file_key = unsafe_key
+    db_session.add(
+        _photo_checkpoint(
+            subject_id=identity.subject_id,
+            high=photo.id,
+            count=1,
+            cursor=photo.id,
+            scanned=1,
+            status="completed",
+        )
+    )
+    await db_session.commit()
+
+    with pytest.raises(
+        weight_service.ProgressPhotoOwnershipError,
+        match="unsafe file key",
+    ):
+        await weight_service.list_progress_photos(
+            db_session,
+            subject_id=identity.subject_id,
+            include_legacy_unowned=True,
+        )
 
 
 @pytest.mark.parametrize(
@@ -832,6 +1196,60 @@ async def test_progress_photo_download_requires_auth_and_validated_subject_graph
     invalid_graph = await auth_client.get(f"/static/uploads/{route_key}")
     assert invalid_graph.status_code == 404
     assert contents not in invalid_graph.content
+
+
+async def test_migrated_historical_progress_photo_download_uses_checkpoint_bridge(
+    auth_client,
+    db_session,
+    legacy_owner_roots,
+    tmp_path,
+    monkeypatch,
+):
+    from web import main as web_main
+
+    identity = _identity(legacy_owner_roots)
+    route_key = "synthetic-migrated-download.png"
+    contents = b"synthetic migrated progress-photo bytes"
+    (tmp_path / route_key).write_bytes(contents)
+    monkeypatch.setattr(web_main, "UPLOADS_DIR", str(tmp_path))
+
+    asset = await file_asset_service.register_legacy_local(
+        db_session,
+        subject_id=identity.subject_id,
+        uploaded_by_user_id=None,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO,
+        storage_ref=f"uploads/{route_key}",
+        media_type="image/png",
+        size_bytes=len(contents),
+        content_sha256="d" * 64,
+    )
+    photo = ProgressPhoto(
+        subject_id=identity.subject_id,
+        actor_user_id=None,
+        file_asset_id=asset.id,
+        date=PHOTO_DATE,
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        file_key=asset.storage_ref,
+    )
+    db_session.add(photo)
+    await db_session.flush()
+    db_session.add(
+        _photo_checkpoint(
+            subject_id=identity.subject_id,
+            high=photo.id,
+            count=1,
+            cursor=photo.id,
+            scanned=1,
+            status="completed",
+        )
+    )
+    await db_session.commit()
+
+    response = await auth_client.get(f"/static/uploads/{route_key}")
+    assert response.status_code == 200
+    assert response.content == contents
+    assert "no-store" in response.headers["cache-control"]
 
 
 @pytest.mark.parametrize("route_prefix", ["labs", "body"])

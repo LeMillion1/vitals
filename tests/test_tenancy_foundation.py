@@ -724,6 +724,10 @@ async def test_legacy_portability_excludes_and_cannot_mutate_foundation_rows(
     asset = _asset(
         subject.id,
         uploaded_by_user_id=user.id,
+        # Keep this generic control-plane exclusion fixture outside the
+        # Stage-3H progress-photo graph.  A live progress-purpose asset without
+        # a matching photo is intentionally rejected as an orphan.
+        purpose=FileAssetPurpose.LAB_DOCUMENT.value,
         storage_ref="synthetic/must-not-export.jpg",
     )
     db_session.add_all([connection, asset])

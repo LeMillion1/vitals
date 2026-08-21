@@ -2422,6 +2422,64 @@ _PROGRESS_PHOTO_LIVE_ASSET_STATUSES = (
     FileAssetStatus.LEGACY_PLACEHOLDER.value,
     FileAssetStatus.PENDING.value,
 )
+_PROGRESS_PHOTO_IMAGE_EXTENSIONS = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".heic",
+    ".heif",
+)
+_PROGRESS_PHOTO_IMAGE_KEY_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz0123456789._-"
+)
+
+
+async def _progress_photo_historical_processed_bound(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> int | None:
+    """Return the service-validated Stage-3H historical compatibility bound.
+
+    The import stays local to keep Weight usable while the fixed migration
+    module and its consumer are deployed together without an import cycle.
+    """
+
+    from vitals.services.progress_photo_ownership_backfill_service import (
+        ProgressPhotoOwnershipBackfillError,
+        progress_photo_historical_processed_bound,
+    )
+
+    try:
+        return await progress_photo_historical_processed_bound(
+            session,
+            subject_id=subject_id,
+        )
+    except ProgressPhotoOwnershipBackfillError as exc:
+        raise ProgressPhotoOwnershipError(
+            "progress-photo migration checkpoint is not authoritative"
+        ) from exc
+
+
+def _is_stage3h_historical_file_key(file_key: str) -> bool:
+    """Accept only the root-level image namespace migrated by Stage 3H."""
+
+    if not file_key.startswith("uploads/"):
+        return False
+    basename = file_key.removeprefix("uploads/")
+    return (
+        basename == basename.lower()
+        and "/" not in basename
+        and "\\" not in basename
+        and ".." not in basename
+        and basename.startswith(tuple("abcdefghijklmnopqrstuvwxyz0123456789"))
+        and basename.endswith(_PROGRESS_PHOTO_IMAGE_EXTENSIONS)
+        and all(
+            character in _PROGRESS_PHOTO_IMAGE_KEY_CHARACTERS
+            for character in basename
+        )
+    )
 
 
 def _progress_photo_document_alias(file_key: str) -> str | None:
@@ -2475,6 +2533,10 @@ async def _progress_photo_scope_rows(
     )
     if owner_user_id is None:
         raise ProgressPhotoOwnershipError("progress-photo subject does not exist")
+    historical_processed_bound = await _progress_photo_historical_processed_bound(
+        session,
+        subject_id=subject_id,
+    )
 
     file_asset_ids = {
         row.file_asset_id for row in rows if row.file_asset_id is not None
@@ -2561,6 +2623,10 @@ async def _progress_photo_scope_rows(
                 raise ProgressPhotoOwnershipError(
                     "progress photo has partial legacy ownership roots"
                 )
+            if not include_legacy_unowned:
+                raise ProgressPhotoOwnershipError(
+                    "progress photo requires the fully-unowned legacy bridge"
+                )
             if row.file_key in shadowed_legacy_keys:
                 raise ProgressPhotoOwnershipError(
                     "legacy progress photo conflicts with file-asset metadata"
@@ -2570,7 +2636,12 @@ async def _progress_photo_scope_rows(
             raise ProgressPhotoOwnershipError(
                 "progress photo belongs to another subject"
             )
-        if row.actor_user_id != owner_user_id:
+        migrated_historical = (
+            row.actor_user_id is None
+            and historical_processed_bound is not None
+            and row.id <= historical_processed_bound
+        )
+        if row.actor_user_id != owner_user_id and not migrated_historical:
             raise ProgressPhotoOwnershipError(
                 "progress photo actor does not match the subject owner"
             )
@@ -2578,17 +2649,27 @@ async def _progress_photo_scope_rows(
             raise ProgressPhotoOwnershipError(
                 "owned progress photo is missing its file asset"
             )
+        if migrated_historical and not _is_stage3h_historical_file_key(row.file_key):
+            raise ProgressPhotoOwnershipError(
+                "historical progress photo has an unsafe file key"
+            )
         asset = assets.get(row.file_asset_id)
         if asset is None:
             raise ProgressPhotoOwnershipError(
                 "progress photo links to a missing file asset"
             )
+        expected_uploaders = {None} if migrated_historical else {owner_user_id}
+        expected_statuses = (
+            (FileAssetStatus.LEGACY_PLACEHOLDER.value,)
+            if migrated_historical
+            else _PROGRESS_PHOTO_LIVE_ASSET_STATUSES
+        )
         if (
             asset.subject_id != subject_id
-            or asset.uploaded_by_user_id != owner_user_id
+            or asset.uploaded_by_user_id not in expected_uploaders
             or asset.purpose != FileAssetPurpose.PROGRESS_PHOTO.value
             or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
-            or asset.status not in _PROGRESS_PHOTO_LIVE_ASSET_STATUSES
+            or asset.status not in expected_statuses
             or asset.storage_ref != row.file_key
         ):
             raise ProgressPhotoOwnershipError(

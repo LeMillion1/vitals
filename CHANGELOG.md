@@ -99,6 +99,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   before refreshing any definition. Backup v1 resets the bounded checkpoint from
   its retained subject marker; the activation-preference bridge remains a later
   cutover gate.
+- Added Stage 3H for legacy progress-photo file ownership. The fixed
+  `stage3.file_backed.progress_photos.v1` operation preserves unknown historical
+  actors, creates metadata-only legacy FileAsset placeholders without touching
+  medical bytes, rejects duplicate/unsafe/aliased file graphs, and keeps strict
+  live uploads on exact S+A+F. Supported photo deletion retires the asset and is
+  compatible with completed current-graph validation. Because backup v1 carries
+  neither bytes nor trustworthy actor/file roots, nonempty restores are recorded
+  as `RESTORE_BLOCKED` and create no placeholders; empty snapshots complete.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before

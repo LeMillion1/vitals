@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -573,6 +573,35 @@ reset to bounded RUNNING or exact-empty COMPLETED before replacement. This phase
 does not retire the legacy activation bridge or authorize unscoped conflict
 composition and alert reads.
 
+Stage 3H continues with `stage3.file_backed.progress_photos.v1` over exactly
+`progress_photos`. The initial bounded run is performed under a complete
+progress-photo upload/delete maintenance pause. A reviewed fully-unowned legacy
+photo gains only the sole S and a new metadata-only FileAsset root; historical
+A and the placeholder uploader remain null because the old authenticated route
+does not prove who originally uploaded a particular file. The existing
+`file_key`, photo data, timestamps, and bytes are not changed, read, moved,
+hashed, or tested for existence. New/live rows retain their exact owner actor
+and uploader.
+
+Only canonical root-level `uploads/` image references are eligible. Duplicate
+photo keys, duplicate or cross-table F use, unsafe paths, document-path aliases,
+retired roots, partial ownership, and non-bijective live FileAsset/photo graphs
+fail closed. Initial completion locks and hashes the reviewed photo/file graph.
+Later completed status revalidates the entire current graph rather than freezing
+deleted photo IDs: the supported delete path first retires FileAsset metadata
+and then removes the fact, while an unlinked live progress-photo asset remains
+an integrity error. A validated checkpoint prefix temporarily distinguishes
+processed actorless history from the unprocessed fully-null compatibility tail;
+it never substitutes for the required S+F authorization graph.
+
+Backup v1 carries neither file bytes nor trustworthy A/F. Import therefore
+records a nonempty Stage-3H snapshot as `RESTORE_BLOCKED`, leaves restored S-only
+photos inaccessible, and never creates a placeholder for a file that was not in
+the backup. An empty snapshot is exact `COMPLETED`. Replacement retires only
+outgoing photo assets, preserves the physical files, validates the blocked or
+empty incoming shape in the same transaction, and requires backup v2 or an
+explicit reviewed recovery before nonempty restored history can be activated.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -587,7 +616,9 @@ PostgreSQL rehearsal covers normal and backup-v1 restore dependencies,
 custom-versus-curated stop/resume, post-completion catalog churn, and populated
 downgrade refusal; its service gate adds parent-classification, component-FK,
 consumer-FK, snapshot-key, component-disappearance, and catalog-recategorization
-races. Remaining
+races. The Stage-3H rehearsal covers metadata-only placeholder creation,
+actorless historical provenance, stop/resume, backup-v1 blocking, supported
+photo deletion, and real upload/delete/file-key races. Remaining
 raw/file-sensitive normalized rows, inherited children, artifacts, control
 phases, and the Stage 4 gates remain pending.
 

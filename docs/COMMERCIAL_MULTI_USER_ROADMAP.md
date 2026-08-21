@@ -476,6 +476,18 @@ Implementation progress on `commercial/main`:
   erase custom history. Backup v1 can reset this phase from its retained
   subject-bound marker. The separate subject activation-setting migration and
   strict conflict registration/read cutover remain pending.
+- Stage 3H uses `stage3.file_backed.progress_photos.v1` for exactly
+  `progress_photos`. Under a full photo-writer maintenance pause it assigns S
+  and a metadata-only legacy FileAsset to reviewed fully-unowned history while
+  preserving A as null and leaving the stored bytes and every photo field
+  untouched. A checkpoint-bounded consumer bridge accepts that actorless S+F
+  graph without weakening the exact live S+A+F path. Duplicate keys/F links,
+  unsafe or document-alias paths, partial roots, and unlinked live photo assets
+  fail closed. Completed verification is deletion-aware: supported deletion
+  retires the asset and removes the fact, then the current bijective graph is
+  revalidated instead of requiring deleted IDs to survive. Backup v1 cannot
+  carry file bytes or prove A/F, so a nonempty restore is `RESTORE_BLOCKED` and
+  creates no placeholder; an empty restore completes exactly.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

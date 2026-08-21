@@ -222,7 +222,10 @@
                     {% for p in photos %}
                     <div class="flex-none w-20 text-center space-y-1">
                         <div class="w-20 h-20 v-card-inset overflow-hidden cursor-pointer"
-                            @click="showPhotoModal({{ p.id }}, '/static/{{ p.file_key }}', '{{ p.date | format_date }}')">
+                            data-photo-id="{{ p.id }}"
+                            data-photo-src="/static/{{ p.file_key }}"
+                            data-photo-date="{{ p.date | format_date }}"
+                            @click="showPhotoModal(Number($el.dataset.photoId), $el.dataset.photoSrc, $el.dataset.photoDate)">
                             <img src="/static/{{ p.file_key }}" alt="{{ t("weight.photo_alt") }}"
                                 class="w-full h-full object-cover">
                         </div>

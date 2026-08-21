@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -680,6 +680,37 @@ nonempty snapshot or exact COMPLETED for an empty one. The fixed-target operator
 is read-only by default and exposes only bounded apply controls and allowlisted
 non-PHI counts/checksums. Stage 3G does not remove the fully-unowned activation
 bridge or scope every conflict consumer and alert path.
+
+## Stage-3H progress-photo file ownership operation
+
+The fixed `stage3.file_backed.progress_photos.v1` phase covers only
+`progress_photos`; FileAsset rows are generated ownership roots, not a second
+scanned checkpoint table. Operators pause every upload, delete, import, and
+other progress-photo writer through initial completion. A frozen row is eligible
+only in the fully-null S/A/F shape with exact Weight/manual provenance and a
+safe root-level `uploads/` image key. It gains S plus a fresh `legacy_local`,
+`legacy_placeholder`, progress-photo FileAsset whose uploader and content
+metadata remain null. Historical A remains null. No byte is read, moved, hashed,
+deleted, or assumed to exist.
+
+Processed actorless history is accepted only inside the validated RUNNING or
+COMPLETED checkpoint prefix and only with an exact same-subject S+F graph.
+Above the HWM, the existing strict owner A/FileAsset-uploader shape is mandatory.
+Duplicate keys, duplicate or raw/body-shared F, partial or foreign roots,
+unsafe keys, `uploads/labs/` and `uploads/body/` aliases, conflicting metadata,
+and any unlinked live progress-photo asset fail closed. Initial finalization
+locks and hashes the full graph. Later completed checks deliberately validate
+the current bijection: supported deletion retires the metadata root before
+removing the fact, so deleted historical IDs need not remain, but deleting a
+fact while leaving a live orphan asset is rejected.
+
+Backup v1 strips A/F and does not contain medical file bytes. Its nonempty
+Stage-3H checkpoint is therefore `RESTORE_BLOCKED`; import rebinds required S,
+creates no placeholder, and validates that the inaccessible restored rows have
+the exact blocked shape. Empty snapshots complete. The same transaction retires
+only outgoing assets referenced by replaced photos and never unlinks bytes.
+There is no ordinary apply path out of `RESTORE_BLOCKED`; backup v2 or a reviewed
+recovery must provide file provenance.
 
 ## Completion gates
 
