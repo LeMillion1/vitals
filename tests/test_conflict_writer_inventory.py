@@ -29,7 +29,6 @@ _EXPECTED_LEGACY_CALLS = Counter(
         ("vitals/services/hrt_service.py", "update_dose", "enforce"): 1,
         ("vitals/services/labs_service.py", "add_result", "enforce"): 1,
         ("vitals/services/nutrition_service.py", "log_meal", "enforce"): 1,
-        ("vitals/services/skincare_service.py", "upsert_log", "enforce"): 1,
         ("vitals/services/weight_service.py", "log_weight", "enforce"): 1,
         (
             "vitals/services/weight_service.py",
@@ -441,9 +440,9 @@ def test_legacy_conflict_writer_inventory_is_exact() -> None:
     actual = Counter(_audit().legacy_calls)
 
     assert actual == _EXPECTED_LEGACY_CALLS
-    # Eleven legacy enforce sites remain; the supplements domain closed its
-    # three when it started demanding a subject and a conflict decision.
-    assert sum(count for (*_, api), count in actual.items() if api == "enforce") == 11
+    # Ten legacy enforce sites remain; supplements closed three and skincare
+    # one when they started demanding a subject and a conflict decision.
+    assert sum(count for (*_, api), count in actual.items() if api == "enforce") == 10
     assert (
         sum(
             count

@@ -59,12 +59,10 @@ async def skincare_dashboard(
     logs = await skincare_service.list_logs(
         db,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     observations = await skincare_service.list_observations(
         db,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     alerts = await alerts_service.list_active_scoped(
         db,
@@ -76,14 +74,12 @@ async def skincare_dashboard(
         db,
         today,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     
     # Load products dynamically
     products = await skincare_service.list_products(
         db,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     
     # Load active skincare rules inside the same proved legacy-owner boundary.
@@ -145,7 +141,6 @@ async def save_log(
             note=note,
             override=override,
             identity=context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await db.commit()
@@ -205,7 +200,6 @@ async def delete_log(
         db,
         id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -228,7 +222,6 @@ async def delete_observation(
         db,
         id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -269,7 +262,6 @@ async def save_product(
             schedule_days=days,
             active=active,
             identity=context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
     else:
@@ -306,7 +298,6 @@ async def delete_product(
         db,
         id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()

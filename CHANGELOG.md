@@ -10,6 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the skincare domain. Every read takes the subject and every write takes
+  the subject with its conflict decision; the routine, the observations and the
+  product shelf are one person's or they are nobody's. All sixteen bridges are
+  closed. One reader deliberately survives: the conflict engine still offers its
+  callers a fully-unowned bridge, and a resolver has to honour the scope it is
+  handed, so the scoped skincare resolver is the last place in the module that
+  can see a row with no subject. It goes when that bridge does.
 - Closed the goal domain. `milestones_service` takes the subject on every read
   and the subject with its conflict decision on every write; progress refuses a
   goal that belongs to somebody else rather than computing it from this

@@ -175,6 +175,7 @@ async def test_dated_writes_reject_prepared_evaluation_date_mismatch(
 
 async def test_writes_reject_identity_mismatch_missing_and_stale_capabilities(
     db_session,
+    owner_write,
 ):
     identity = await _identity(db_session, "skin-token")
     context = _context(identity)
@@ -188,13 +189,14 @@ async def test_writes_reject_identity_mismatch_missing_and_stale_capabilities(
             identity=mismatched,
             prepared_conflict_write=prepared,
         )
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    # A subject cannot be passed without its conflict decision at all now.
+    with pytest.raises(TypeError):
         await skincare_service.add_observation(
             db_session,
             on_date=EVALUATION_DATE,
             identity=identity,
         )
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(TypeError):
         await skincare_service.add_product(
             db_session,
             name="Unprepared",
@@ -407,156 +409,8 @@ async def test_subjects_are_isolated_for_same_day_reads_notes_and_deletes(db_ses
     )
 
 
-async def test_legacy_bridge_adopts_only_fully_unowned_rows(
-    db_session,
-    legacy_owner_roots,
-):
-    full_log = SkincareLog(
-        date=EVALUATION_DATE,
-        domain=Domain.SKINCARE.value,
-        source=Source.MANUAL.value,
-        note="legacy",
-    )
-    partial_log = SkincareLog(
-        actor_user_id=legacy_owner_roots.user_id,
-        date=OTHER_DATE,
-        domain=Domain.SKINCARE.value,
-        source=Source.MCP.value,
-        note="partial",
-    )
-    full_product = SkincareProduct(name="Legacy product", type="cream")
-    partial_product = SkincareProduct(
-        actor_user_id=legacy_owner_roots.user_id,
-        name="Partial product",
-        type="serum",
-    )
-    partial_observation = SkincareObservation(
-        actor_user_id=legacy_owner_roots.user_id,
-        date=EVALUATION_DATE,
-        domain=Domain.SKINCARE.value,
-        source=Source.MANUAL.value,
-    )
-    db_session.add_all(
-        [
-            full_log,
-            partial_log,
-            full_product,
-            partial_product,
-            partial_observation,
-        ]
-    )
-    await db_session.commit()
-
-    context, prepared = await _legacy_context(db_session)
-    adopted_log = await skincare_service.upsert_log(
-        db_session,
-        on_date=EVALUATION_DATE,
-        moisturizer=True,
-        identity=context.identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=prepared,
-    )
-    adopted_product = await skincare_service.update_product(
-        db_session,
-        full_product.id,
-        name="Adopted product",
-        type="cream",
-        identity=context.identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=prepared,
-    )
-
-    assert adopted_log is full_log and adopted_product is full_product
-    assert (full_log.subject_id, full_log.actor_user_id, full_log.source) == (
-        legacy_owner_roots.subject_id,
-        None,
-        Source.MANUAL.value,
-    )
-    assert (full_product.subject_id, full_product.actor_user_id) == (
-        legacy_owner_roots.subject_id,
-        None,
-    )
-    assert await skincare_service.update_log_note(
-        db_session,
-        partial_log.id,
-        note="forged",
-        identity=context.identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=prepared,
-    ) is None
-    assert await skincare_service.update_product(
-        db_session,
-        partial_product.id,
-        name="forged",
-        type="serum",
-        identity=context.identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=prepared,
-    ) is None
-    assert await skincare_service.delete_observation(
-        db_session,
-        partial_observation.id,
-        identity=context.identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=prepared,
-    ) is False
-    assert (partial_log.note, partial_product.name) == (
-        "partial",
-        "Partial product",
-    )
 
 
-async def test_legacy_reads_include_fully_unowned_but_exclude_partial_roots(
-    db_session,
-    legacy_owner_roots,
-):
-    full_log = SkincareLog(
-        date=EVALUATION_DATE,
-        domain=Domain.SKINCARE.value,
-        source=Source.MANUAL.value,
-    )
-    partial_log = SkincareLog(
-        actor_user_id=legacy_owner_roots.user_id,
-        date=OTHER_DATE,
-        domain=Domain.SKINCARE.value,
-        source=Source.MANUAL.value,
-    )
-    full_observation = SkincareObservation(
-        date=EVALUATION_DATE,
-        domain=Domain.SKINCARE.value,
-        source=Source.MANUAL.value,
-    )
-    partial_observation = SkincareObservation(
-        actor_user_id=legacy_owner_roots.user_id,
-        date=OTHER_DATE,
-        domain=Domain.SKINCARE.value,
-        source=Source.MANUAL.value,
-    )
-    full_product = SkincareProduct(name="Legacy", type="cream")
-    partial_product = SkincareProduct(
-        actor_user_id=legacy_owner_roots.user_id,
-        name="Partial",
-        type="cream",
-    )
-    db_session.add_all(
-        [
-            full_log,
-            partial_log,
-            full_observation,
-            partial_observation,
-            full_product,
-            partial_product,
-        ]
-    )
-    await db_session.flush()
-
-    kwargs = {
-        "subject_id": legacy_owner_roots.subject_id,
-        "include_legacy_unowned": True,
-    }
-    assert list(await skincare_service.list_logs(db_session, **kwargs)) == [full_log]
-    assert list(await skincare_service.list_observations(db_session, **kwargs)) == [full_observation]
-    assert list(await skincare_service.list_products(db_session, **kwargs)) == [full_product]
 
 
 async def test_duplicate_subject_day_is_an_explicit_scope_error(db_session):
@@ -900,7 +754,6 @@ async def test_postgres_legacy_bridge_write_serializes_against_subject_creation(
                 on_date=EVALUATION_DATE,
                 moisturizer=True,
                 identity=context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=await _prepared(session, context),
             )
             await session.commit()
@@ -995,3 +848,36 @@ async def test_postgres_destructive_seed_serializes_before_identity_creation(
     async with factory() as verify:
         assert await verify.scalar(select(func.count()).select_from(HealthSubject)) == 1
         assert await verify.scalar(select(func.count()).select_from(SkincareLog)) == 19
+
+async def test_a_skincare_row_without_a_subject_belongs_to_nobody(
+    db_session,
+    legacy_owner_roots,
+    owner_write,
+):
+    """The domain has no adoption bridge left: an unowned row stays unowned and
+    stays invisible, and a partial-root row is never mistaken for one."""
+
+    unowned = SkincareLog(
+        date=EVALUATION_DATE,
+        domain=Domain.SKINCARE.value,
+        source=Source.MANUAL.value,
+        note="legacy",
+    )
+    db_session.add(unowned)
+    await db_session.flush()
+
+    assert list(
+        await skincare_service.list_logs(
+            db_session, subject_id=owner_write.subject_id
+        )
+    ) == []
+    written = await skincare_service.upsert_log(
+        db_session,
+        on_date=EVALUATION_DATE,
+        note="mine",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(EVALUATION_DATE),
+    )
+    assert written is not unowned
+    assert written.subject_id == owner_write.subject_id
+    assert unowned.subject_id is None and unowned.note == "legacy"

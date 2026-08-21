@@ -293,26 +293,7 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'store_raw_text',
             }
         ),
-        'vitals.services.skincare_service': frozenset(
-            {
-                '_get_log',
-                '_get_owned_row_for_update',
-                '_require_legacy_bridge',
-                '_subject_scope',
-                'add_observation',
-                'add_product',
-                'delete_log',
-                'delete_observation',
-                'delete_product',
-                'get_log',
-                'list_logs',
-                'list_observations',
-                'list_products',
-                'update_log_note',
-                'update_product',
-                'upsert_log',
-            }
-        ),
+
         'vitals.services.supplements_service': frozenset(
             {
                 '_supplement_subject_scope',

@@ -552,12 +552,24 @@ async def owner_write(db_session, legacy_owner_roots):
         actor_username=get_web_config().auth_username,
     )
 
-    async def write():
-        """A capability is bound to its transaction, so mint a fresh one."""
+    async def write(on_date=None):
+        """A capability is bound to its transaction, so mint a fresh one.
 
+        Domains that evaluate rules for a specific day check the capability's
+        evaluation date against the row's, so a test writing a dated fact says
+        which day it is writing about.
+        """
+
+        scoped = context
+        if on_date is not None:
+            scoped = await conflict_engine.resolve_legacy_conflict_write_context(
+                db_session,
+                actor_username=get_web_config().auth_username,
+                evaluation_date=on_date,
+            )
         return await conflict_engine.prepare_scoped_write(
             db_session,
-            context=context,
+            context=scoped,
         )
 
     return SimpleNamespace(

@@ -650,7 +650,6 @@ async def get_skincare_logs(
         logs = await skincare_service.list_logs(
             session,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
             start=start,
             end=end,
             limit=limit,
@@ -658,7 +657,6 @@ async def get_skincare_logs(
         observations = await skincare_service.list_observations(
             session,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
             start=start,
             end=end,
             limit=limit,
@@ -1700,7 +1698,6 @@ async def log_skincare(
                 vitamin_c=vitamin_c, benzoyl_peroxide=benzoyl_peroxide,
                 note=note, source=Source.MCP.value, override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
@@ -1896,7 +1893,6 @@ async def log_note(
                 record_id,
                 note=note,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
             if row is None:
@@ -2085,9 +2081,6 @@ async def get_notes(
                 rows = await skincare_service.list_logs(
                     session,
                     subject_id=skincare_scope.subject_id,
-                    include_legacy_unowned=(
-                        skincare_scope.include_legacy_unowned
-                    ),
                     start=start,
                     end=end,
                     has_note=True,
@@ -2312,7 +2305,6 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
         elif domain in {"glp1", "glp1_side_effect", "glp1_dose_phase"}:

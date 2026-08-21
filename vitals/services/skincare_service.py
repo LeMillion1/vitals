@@ -40,17 +40,11 @@ def _day_entity_key(on_date: date_type) -> str:
 def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
-    identity: WriteIdentity | None,
-    prepared: conflict_engine.PreparedConflictWrite | None,
-) -> conflict_engine.ConflictWriteContext | None:
-    """Separate deprecated singleton calls from subject-aware writes."""
+    identity: WriteIdentity,
+    prepared: conflict_engine.PreparedConflictWrite,
+) -> conflict_engine.ConflictWriteContext:
+    """Bind one skincare write to its subject and its conflict decision."""
 
-    if identity is None and prepared is None:
-        return None
-    if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
-            "scoped skincare writes require identity and a prepared conflict write"
-        )
     return conflict_engine.require_prepared_identity(
         session,
         prepared=prepared,
@@ -68,32 +62,10 @@ def _require_evaluation_date(
         )
 
 
-def _subject_scope(model, subject_id: uuid.UUID, *, include_legacy_unowned: bool):
-    scope = model.subject_id == subject_id
-    if include_legacy_unowned:
-        scope = or_(
-            scope,
-            and_(
-                model.subject_id.is_(None),
-                model.actor_user_id.is_(None),
-            ),
-        )
-    return scope
+def _subject_scope(model, subject_id: uuid.UUID):
+    """A routine and the skin it is written about belong to one person."""
 
-
-def _require_legacy_bridge(
-    context: conflict_engine.ConflictWriteContext,
-    *,
-    include_legacy_unowned: bool,
-) -> None:
-    if (
-        include_legacy_unowned
-        and context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy skincare access requires a fully-unowned bridge"
-        )
+    return model.subject_id == subject_id
 
 
 # ── Checklist log ─────────────────────────────────────────────────────────────
@@ -101,21 +73,14 @@ async def _get_log(
     session: AsyncSession,
     on_date: date_type,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
     for_update: bool,
 ) -> Optional[SkincareLog]:
-    stmt = select(SkincareLog).where(SkincareLog.date == on_date)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                SkincareLog,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy skincare compatibility requires a subject_id")
+    stmt = (
+        select(SkincareLog)
+        .where(SkincareLog.date == on_date)
+        .where(_subject_scope(SkincareLog, subject_id))
+    )
     stmt = stmt.order_by(SkincareLog.id).limit(2)
     if for_update:
         stmt = stmt.with_for_update().execution_options(populate_existing=True)
@@ -131,14 +96,12 @@ async def get_log(
     session: AsyncSession,
     on_date: date_type,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Optional[SkincareLog]:
     return await _get_log(
         session,
         on_date,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         for_update=False,
     )
 
@@ -157,21 +120,15 @@ async def upsert_log(
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
     override: bool = False,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> SkincareLog:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
+    _require_evaluation_date(context, on_date)
     proposed = {
         "retinoid": retinoid,
         "azelaic": azelaic,
@@ -184,42 +141,27 @@ async def upsert_log(
     row = await _get_log(
         session,
         on_date,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
-        for_update=context is not None,
+        subject_id=identity.subject_id,
+        for_update=True,
     )
-    if context is None:
-        await conflict_engine.enforce(
-            session,
-            Domain.SKINCARE.value,
-            proposed,
-            override=override,
-            entity_ref=f"skincare:{on_date.isoformat()}",
-        )
-    else:
-        assert prepared_conflict_write is not None
-        await conflict_engine.enforce_prepared(
-            session,
-            prepared=prepared_conflict_write,
-            domain=Domain.SKINCARE,
-            proposed_state=proposed,
-            override=override,
-            entity_ref=f"skincare:{on_date.isoformat()}",
-            replace_entity_key=_day_entity_key(on_date),
-        )
+    await conflict_engine.enforce_prepared(
+        session,
+        prepared=prepared_conflict_write,
+        domain=Domain.SKINCARE,
+        proposed_state=proposed,
+        override=override,
+        entity_ref=f"skincare:{on_date.isoformat()}",
+        replace_entity_key=_day_entity_key(on_date),
+    )
     if row is None:
         row = SkincareLog(
-            subject_id=identity.subject_id if identity is not None else None,
-            actor_user_id=identity.actor_user_id if identity is not None else None,
+            subject_id=identity.subject_id,
+            actor_user_id=identity.actor_user_id,
             date=on_date,
             domain=DOMAIN,
             source=source,
         )
         session.add(row)
-    elif row.subject_id is None and identity is not None:
-        # Adopt only after conflict enforcement succeeds. Preserve the unknown
-        # historical actor and original source.
-        row.subject_id = identity.subject_id
     row.retinoid = retinoid
     row.azelaic = azelaic
     row.peel = peel
@@ -236,24 +178,13 @@ async def upsert_log(
 async def list_logs(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     start: date_type | None = None,
     end: date_type | None = None,
     has_note: bool = False,
     limit: int | None = None,
 ) -> Sequence[SkincareLog]:
-    stmt = select(SkincareLog)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                SkincareLog,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy skincare compatibility requires a subject_id")
+    stmt = select(SkincareLog).where(_subject_scope(SkincareLog, subject_id))
     if start is not None:
         stmt = stmt.where(SkincareLog.date >= start)
     if end is not None:
@@ -272,20 +203,13 @@ async def _get_owned_row_for_update(
     model,
     row_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ):
-    stmt = select(model).where(model.id == row_id)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                model,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy skincare compatibility requires a subject_id")
+    stmt = (
+        select(model)
+        .where(model.id == row_id)
+        .where(_subject_scope(model, subject_id))
+    )
     return await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
@@ -295,26 +219,19 @@ async def delete_log(
     session: AsyncSession,
     log_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
     row = await _get_owned_row_for_update(
         session,
         SkincareLog,
         log_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if row is None:
         return False
@@ -329,7 +246,6 @@ async def update_log_note(
     *,
     note: str,
     identity: WriteIdentity,
-    include_legacy_unowned: bool = False,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[SkincareLog]:
     context = _require_scoped_prepared_write(
@@ -337,22 +253,14 @@ async def update_log_note(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    assert context is not None
-    _require_legacy_bridge(
-        context,
-        include_legacy_unowned=include_legacy_unowned,
-    )
     row = await _get_owned_row_for_update(
         session,
         SkincareLog,
         log_id,
         subject_id=identity.subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if row is None:
         return None
-    if row.subject_id is None:
-        row.subject_id = identity.subject_id
     row.note = note
     await session.flush()
     return row
@@ -368,19 +276,18 @@ async def add_observation(
     zone: Optional[str] = None,
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> SkincareObservation:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
+    _require_evaluation_date(context, on_date)
     row = SkincareObservation(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         date=on_date,
         domain=DOMAIN,
         source=source,
@@ -397,23 +304,12 @@ async def add_observation(
 async def list_observations(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     start: date_type | None = None,
     end: date_type | None = None,
     limit: int | None = None,
 ) -> Sequence[SkincareObservation]:
-    stmt = select(SkincareObservation)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                SkincareObservation,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy skincare compatibility requires a subject_id")
+    stmt = select(SkincareObservation).where(_subject_scope(SkincareObservation, subject_id))
     if start is not None:
         stmt = stmt.where(SkincareObservation.date >= start)
     if end is not None:
@@ -432,26 +328,19 @@ async def delete_observation(
     session: AsyncSession,
     observation_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
     row = await _get_owned_row_for_update(
         session,
         SkincareObservation,
         observation_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if row is None:
         return False
@@ -462,9 +351,26 @@ async def delete_observation(
 
 # ── Conflict-engine resolver ──────────────────────────────────────────────────
 async def resolve_today(session: AsyncSession) -> list[dict]:
-    """Today's checklist flags as a single match item (empty list if no log yet)."""
+    """Today's checklist flags as a single match item (empty list if no log yet).
+
+    The conflict engine's compatibility arm has no scope to hand down, so this
+    reader still spans the installation. It goes when that arm does; every other
+    read in this module already requires its subject.
+    """
+
     on_date = today_local()
-    row = await get_log(session, on_date)
+    # Fully unowned only: a row with an actor but no subject is partial
+    # provenance and was never legacy-owned data.
+    row = await session.scalar(
+        select(SkincareLog)
+        .where(
+            SkincareLog.date == on_date,
+            SkincareLog.subject_id.is_(None),
+            SkincareLog.actor_user_id.is_(None),
+        )
+        .order_by(SkincareLog.id)
+        .limit(1)
+    )
     if row is None:
         return []
     return [
@@ -480,7 +386,12 @@ async def resolve_today_scoped(
     *,
     scope: conflict_engine.ConflictScope,
 ) -> list[dict]:
-    """Resolve the selected subject's checklist on its evaluation day."""
+    """Resolve the selected subject's checklist on its evaluation day.
+
+    The conflict engine still offers a fully-unowned bridge to its callers, and
+    a resolver has to honour the scope it is handed. This is the last place in
+    the module that can see a row with no subject; it goes when the bridge does.
+    """
 
     subject_scope = SkincareLog.subject_id == scope.subject_id
     if scope.include_legacy_unowned:
@@ -522,21 +433,10 @@ async def resolve_today_scoped(
 async def list_products(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     active_only: bool = False,
 ) -> Sequence[SkincareProduct]:
-    stmt = select(SkincareProduct)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                SkincareProduct,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy skincare compatibility requires a subject_id")
+    stmt = select(SkincareProduct).where(_subject_scope(SkincareProduct, subject_id))
     if active_only:
         stmt = stmt.where(SkincareProduct.active.is_(True))
     stmt = stmt.order_by(SkincareProduct.active.desc(), SkincareProduct.name)
@@ -555,8 +455,8 @@ async def add_product(
     default_time: str = "evening",
     schedule_days: Sequence[int] = (),
     active: bool = True,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> SkincareProduct:
     _require_scoped_prepared_write(
         session,
@@ -564,8 +464,8 @@ async def add_product(
         prepared=prepared_conflict_write,
     )
     row = SkincareProduct(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         name=name,
         type=type,
         active_ingredient=active_ingredient,
@@ -592,26 +492,19 @@ async def update_product(
     default_time: str = "evening",
     schedule_days: Sequence[int] = (),
     active: bool = True,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[SkincareProduct]:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
     row = await _get_owned_row_for_update(
         session,
         SkincareProduct,
         product_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if row is None:
         return None
@@ -633,26 +526,19 @@ async def delete_product(
     session: AsyncSession,
     product_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
     row = await _get_owned_row_for_update(
         session,
         SkincareProduct,
         product_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if row is None:
         return False

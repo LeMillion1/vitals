@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.config import load_config
 from vitals.database import create_session_factory
 from vitals.models.identity import HealthSubject
-from vitals.models.skincare import SkincareLog
-from vitals.services import skincare_service
+from vitals.enums import Source
+from vitals.models.skincare import DOMAIN, SkincareLog
 from vitals.services.identity_service import acquire_identity_governance_lock
 
 
@@ -32,15 +32,21 @@ async def seed_skincare(session: AsyncSession) -> None:
     while current <= end_date:
         dow = int(current.strftime("%w"))  # 0 = Sunday, ..., 6 = Saturday
 
-        await skincare_service.upsert_log(
-            session,
-            on_date=current,
-            retinoid=dow in (1, 3, 4, 5, 0),
-            azelaic=dow in (1, 3, 4, 5, 0),
-            peel=dow in (2, 6),
-            niacinamide_spf=True,
-            moisturizer=True,
-            override=True,
+        # This utility runs only before identity bootstrap, when there is no
+        # subject to own a row and therefore no scoped write path to use. It
+        # writes the demo rows directly, exactly as unowned as the lake it is
+        # seeding.
+        session.add(
+            SkincareLog(
+                date=current,
+                domain=DOMAIN,
+                source=Source.MANUAL.value,
+                retinoid=dow in (1, 3, 4, 5, 0),
+                azelaic=dow in (1, 3, 4, 5, 0),
+                peel=dow in (2, 6),
+                niacinamide_spf=True,
+                moisturizer=True,
+            )
         )
         current += timedelta(days=1)
 

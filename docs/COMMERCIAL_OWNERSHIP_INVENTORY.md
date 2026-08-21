@@ -1226,6 +1226,7 @@ asserted now runs against the context and the header directly.
 | --- | --- |
 | supplements | closed — subject on every read, subject and conflict decision on every write |
 | milestones | closed — same, plus progress refuses another subject's goal |
+| skincare | closed — routine, observations and product shelf all scoped |
 | everything else | still bridged; see `vitals/legacy_scope.py` |
 
 The counter moves only in the registry, and the contract test refuses to let it
@@ -1239,6 +1240,12 @@ Two invariants survive every closure rather than going with the bridge: a row
 with an actor but no subject is broken provenance and is reported, not passed
 over; and a write still cannot name a subject without the conflict decision that
 authorized it — that contract is now expressed by the signature itself.
+
+One kind of reader also survives each closure: the domain's conflict resolver.
+The engine still offers its callers a fully-unowned bridge, and a resolver has
+to honour the scope it is handed, so each closed domain keeps exactly one reader
+that can see a row with no subject. Those go together with the bridge, which is
+why the resolvers are last.
 
 ## Rollback boundary
 

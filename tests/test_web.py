@@ -988,7 +988,7 @@ async def test_labs_dashboard_renders(auth_client, monkeypatch, platform_ai_read
     assert "LLM подключена" in response.text
 
 
-async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_session):
+async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_session, owner_write):
     """Four delete routes existed with no button anywhere — a mis-parsed lab
     result, a diary entry, an observation and a whole cycle could only be removed
     through the API. Also covers the diary/observation lists themselves, which the
@@ -1004,9 +1004,14 @@ async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_
     result = await labs_service.add_result(
         db_session, on_date=day, marker="TSH", value=5.5, ref_low=0.4, ref_high=4.0
     )
-    log = await skincare_service.upsert_log(db_session, on_date=day, retinoid=True)
+    log = await skincare_service.upsert_log(db_session, on_date=day, retinoid=True,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(day),
+    )
     obs = await skincare_service.add_observation(
-        db_session, on_date=day, inflammation=3, zone="cheeks"
+        db_session, on_date=day, inflammation=3, zone="cheeks",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(day),
     )
     cycle = await hrt_cycle_service.add_cycle(db_session, kind="course", start_date=day)
     await db_session.commit()

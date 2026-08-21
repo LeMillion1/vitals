@@ -314,7 +314,9 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
         prepared_conflict_write=await owner_write.write()
     )
     await skincare_service.add_observation(
-        db_session, on_date=DAY, inflammation=3, pih=1, zone="cheeks", note="reacted"
+        db_session, on_date=DAY, inflammation=3, pih=1, zone="cheeks", note="reacted",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY),
     )
     await genetics_service.add_variant(
         db_session, gene="HFE", rsid="rs1800562", genotype="GG", marker="hemochromatosis_carrier"

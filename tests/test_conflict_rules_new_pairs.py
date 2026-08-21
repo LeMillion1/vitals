@@ -7,6 +7,7 @@ from sqlalchemy import select
 from vitals.enums import Domain
 from vitals.models.conflict_rule import ConflictRule
 from vitals.services import (
+    conflict_registrations,
     conflict_catalog,
     conflict_engine,
     glp1_service,
@@ -54,30 +55,34 @@ async def test_glp1_normal_lipase_silent(db_session):
 
 
 # ── hrt ↔ skincare ────────────────────────────────────────────────────────────
-async def _androgen_over_skincare(db_session, *, peel: bool):
+async def _androgen_over_skincare(db_session, *, peel: bool, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
-    conflict_engine.register_domain_resolver(
-        Domain.SKINCARE.value, skincare_service.resolve_today
-    )
+    # A scoped write consults every registered domain, so register them all.
+    conflict_registrations.register_all_resolvers()
     await skincare_service.upsert_log(
         db_session, on_date=today_local(), peel=peel, moisturizer=True,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    return await conflict_engine.evaluate(
-        db_session, Domain.HRT.value,
+    # The write was scoped, so the read has to be too: the compatibility
+    # resolver only sees rows that belong to nobody.
+    return await conflict_engine.evaluate_legacy_single_subject(
+        db_session,
+        Domain.HRT.value,
         {"compound_key": "testosterone_enanthate", "compound_class": "testosterone"},
     )
 
 
-async def test_androgens_peel_fires(db_session):
-    violations = await _androgen_over_skincare(db_session, peel=True)
+async def test_androgens_peel_fires(db_session, owner_write):
+    violations = await _androgen_over_skincare(db_session, peel=True, owner_write=owner_write)
     rule_id = await _rule_id(db_session, "derm_androgens_peel_active_acne")
     fired = [v for v in violations if v.rule_id == rule_id]
     assert fired and fired[0].severity == "warn" and fired[0].category == "dermatology"
 
 
-async def test_androgens_without_peel_silent(db_session):
-    violations = await _androgen_over_skincare(db_session, peel=False)
+async def test_androgens_without_peel_silent(db_session, owner_write):
+    violations = await _androgen_over_skincare(db_session, peel=False, owner_write=owner_write)
     rule_id = await _rule_id(db_session, "derm_androgens_peel_active_acne")
     assert not any(v.rule_id == rule_id for v in violations)
