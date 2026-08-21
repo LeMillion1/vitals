@@ -30,6 +30,7 @@ from sqlalchemy import (
     Date,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -98,6 +99,7 @@ class HrtCompound(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     components: Mapped[list["HrtCompoundComponent"]] = relationship(
+        foreign_keys="HrtCompoundComponent.compound_id",
         back_populates="compound",
         cascade="all, delete-orphan",
         lazy="selectin",
@@ -111,6 +113,15 @@ class HrtCompoundComponent(Base, SubjectOwnershipMixin, TimestampMixin):
 
     __tablename__ = "hrt_compound_components"
     __table_args__ = (
+        # Stage-4 subject equality: a component of a custom compound can never
+        # reach a compound owned by a different subject, and a curated global
+        # component stays with its curated global parent.
+        ForeignKeyConstraint(
+            ["compound_id", "subject_id"],
+            ["hrt_compounds.id", "hrt_compounds.subject_id"],
+            ondelete="CASCADE",
+            name="fk_hrt_compound_components_compound_subject",
+        ),
         Index("ix_hrt_compound_components_compound", "compound_id"),
     )
 
@@ -121,7 +132,10 @@ class HrtCompoundComponent(Base, SubjectOwnershipMixin, TimestampMixin):
     ester: Mapped[str] = mapped_column(String(32), nullable=False)
     mg: Mapped[float] = mapped_column(Float, nullable=False)  # mg per ml
 
-    compound: Mapped["HrtCompound"] = relationship(back_populates="components")
+    compound: Mapped["HrtCompound"] = relationship(
+        back_populates="components",
+        foreign_keys="HrtCompoundComponent.compound_id",
+    )
 
 
 class HrtDose(
@@ -239,6 +253,7 @@ class HrtCycle(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     items: Mapped[list["HrtCycleItem"]] = relationship(
+        foreign_keys="HrtCycleItem.cycle_id",
         back_populates="cycle",
         cascade="all, delete-orphan",
         lazy="selectin",
@@ -255,6 +270,13 @@ class HrtCycleItem(Base, SubjectOwnershipMixin, TimestampMixin):
 
     __tablename__ = "hrt_cycle_items"
     __table_args__ = (
+        # Stage-4 subject equality with the cycle this item plans.
+        ForeignKeyConstraint(
+            ["cycle_id", "subject_id"],
+            ["hrt_cycles.id", "hrt_cycles.subject_id"],
+            ondelete="CASCADE",
+            name="fk_hrt_cycle_items_cycle_subject",
+        ),
         Index("ix_hrt_cycle_items_cycle", "cycle_id"),
     )
 
@@ -276,7 +298,10 @@ class HrtCycleItem(Base, SubjectOwnershipMixin, TimestampMixin):
     schedule: Mapped[Any] = mapped_column(_JSON_TYPE, nullable=False)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    cycle: Mapped["HrtCycle"] = relationship(back_populates="items")
+    cycle: Mapped["HrtCycle"] = relationship(
+        back_populates="items",
+        foreign_keys="HrtCycleItem.cycle_id",
+    )
 
 
 class HrtCycleTemplate(
@@ -312,6 +337,7 @@ class HrtCycleTemplate(
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     items: Mapped[list["HrtCycleTemplateItem"]] = relationship(
+        foreign_keys="HrtCycleTemplateItem.template_id",
         back_populates="template",
         cascade="all, delete-orphan",
         lazy="selectin",
@@ -325,6 +351,13 @@ class HrtCycleTemplateItem(Base, SubjectOwnershipMixin, TimestampMixin):
 
     __tablename__ = "hrt_cycle_template_items"
     __table_args__ = (
+        # Stage-4 subject equality with the template this item belongs to.
+        ForeignKeyConstraint(
+            ["template_id", "subject_id"],
+            ["hrt_cycle_templates.id", "hrt_cycle_templates.subject_id"],
+            ondelete="CASCADE",
+            name="fk_hrt_cycle_template_items_template_subject",
+        ),
         Index("ix_hrt_cycle_template_items_template", "template_id"),
     )
 
@@ -340,4 +373,7 @@ class HrtCycleTemplateItem(Base, SubjectOwnershipMixin, TimestampMixin):
     schedule: Mapped[Any] = mapped_column(_JSON_TYPE, nullable=False)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    template: Mapped["HrtCycleTemplate"] = relationship(back_populates="items")
+    template: Mapped["HrtCycleTemplate"] = relationship(
+        back_populates="items",
+        foreign_keys="HrtCycleTemplateItem.template_id",
+    )

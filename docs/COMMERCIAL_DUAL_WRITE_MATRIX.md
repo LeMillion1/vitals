@@ -1081,6 +1081,43 @@ connection-less: the phase treats that as a row it must complete rather than as
 partial corruption, and its reset records a nonempty snapshot as RUNNING or an
 empty one as exact COMPLETED.
 
+## Stage 4 — whole-lake validation
+
+The Stage-3 phases each proved one table. Stage 4 proves the lake as a whole
+through the fixed `stage4.whole_lake_validation.v1` operation, and it is the
+last gate before the Stage-5 scoped-key cutover.
+
+Revision `0046` adds the six parent/child subject-equality references —
+`body_scan_metrics`, `hevy_exercises`, `hevy_sets`, `hrt_compound_components`,
+`hrt_cycle_items`, `hrt_cycle_template_items` — as composite foreign keys onto
+the parent's `(id, subject_id)`. On PostgreSQL they are installed `NOT VALID`,
+so installing the rule never scans a lake whose ownership is not proved yet; the
+operation issues `VALIDATE CONSTRAINT` only after the proof has run. Because
+these are `MATCH SIMPLE` references, a row with no subject is not checked by the
+constraint — that case is covered by the parent/child equality check below.
+
+The check inventory is derived from `Base.metadata` and `OWNERSHIP_REGISTRY`
+rather than a hand-kept list, so a table that is persisted but unclassified
+fails the run and a newly added ownership reference is validated the moment it
+exists. Every Stage-3 phase must be terminal before the gate looks at any data.
+One pass proves that required S is present, that no S/A/C/F/raw reference leaves
+the reviewed roots or dangles, that every child agrees with its parent and every
+normalized fact with its raw payload, that a scoped read returns exactly the
+legacy unscoped read wherever S is mandatory, and that exactly one health
+subject exists.
+
+A curated catalog parent legitimately carries no subject, and its inherited
+components carry none either. What Stage 4 proves for an inherited child is
+equality with its parent — including "neither has one" — not the presence of a
+subject. An inherited child with no reachable parent has nothing to inherit
+from, so there S stays mandatory.
+
+The evidence is a chained digest over the whole graph. Data written after a run
+changes the digest, so the recorded proof is reported as no longer describing
+this lake and must be recorded again rather than inherited. The checkpoint table
+is the evidence store: its own ownership is validated, but it is excluded from
+the digest because the phase writes its own row into it.
+
 ## Completion gates
 
 - Every production constructor, Core insert/upsert, and bulk update has a reviewed

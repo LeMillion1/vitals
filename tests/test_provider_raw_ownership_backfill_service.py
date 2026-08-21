@@ -6,6 +6,8 @@ import asyncio
 from datetime import date, datetime
 
 import pytest
+
+from tests.conftest import legacy_unenforced_write
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -229,30 +231,34 @@ async def _seed_reviewed_graph(session):
     )
     session.add_all([daily, activity, intraday, workout])
     await session.flush()
-    exercise = HevyExercise(
-        workout_id=workout.id,
-        subject_id=identity.subject_id,
-        integration_connection_id=None,
-        exercise_index=0,
-        title="Synthetic exercise",
-        created_at=timestamp,
-        updated_at=timestamp,
-    )
-    session.add(exercise)
-    await session.flush()
-    session.add(
-        HevySet(
-            exercise_id=exercise.id,
-            subject_id=None,
+    # A half-migrated Hevy child graph: the child already carries the subject
+    # its unowned parent does not.  That is exactly what the Stage-4
+    # constraints forbid going forward, so the historical shape has to be
+    # written unenforced.
+    async with legacy_unenforced_write(session):
+        exercise = HevyExercise(
+            workout_id=workout.id,
+            subject_id=identity.subject_id,
             integration_connection_id=None,
-            set_index=0,
-            set_type="normal",
-            reps=8,
+            exercise_index=0,
+            title="Synthetic exercise",
             created_at=timestamp,
             updated_at=timestamp,
         )
-    )
-    await session.flush()
+        session.add(exercise)
+        await session.flush()
+        session.add(
+            HevySet(
+                exercise_id=exercise.id,
+                subject_id=None,
+                integration_connection_id=None,
+                set_index=0,
+                set_type="normal",
+                reps=8,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+        )
     return identity, connections, (daily, activity, intraday, workout), timestamp
 
 

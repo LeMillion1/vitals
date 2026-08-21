@@ -130,6 +130,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 4, the whole-lake ownership gate that closes the PR-03 backfill
+  sequence. Revision `0046` installs six parent/child subject-equality foreign
+  keys `NOT VALID` on PostgreSQL, so the migration installs the rule without
+  scanning a lake whose ownership is not proved yet; the fixed
+  `stage4.whole_lake_validation.v1` operation then proves the lake and makes
+  them valid. The check inventory is derived from the schema metadata and the
+  machine-readable ownership registry rather than a hand-kept list: a table that
+  is persisted but unclassified fails the run, and a newly added ownership
+  reference is validated the moment it exists. One pass proves that every
+  required subject is present, that no row reaches a subject, actor, connection,
+  file asset, or raw payload outside the reviewed roots, that every child agrees
+  with its parent and every normalized fact with its raw payload, that a scoped
+  read returns exactly what the legacy unscoped read returns, and that exactly
+  one health subject still exists. A curated catalog parent carries no subject
+  and its inherited components carry none either; what is proved there is
+  equality with the parent, not the presence of a subject. Every Stage-3 phase
+  must be terminal first, and the recorded evidence is a chained digest of the
+  whole graph, so data written after a run invalidates it and the operator has
+  to record it again rather than inheriting a stale proof. The operator command
+  is read-only by default, exposes no table, phase, reset, or database selector,
+  and emits only counts, result codes, and checksums. A throwaway PostgreSQL 15
+  rehearsal drove the real migration chain from revision `0034`, the complete
+  twenty-command Stage-3 chain, the unvalidated-to-valid constraint promotion,
+  idempotent re-recording, ordinary write-path rejection of a crossed parent, a
+  boundary broken behind the constraints being refused without recording, and
+  the populated-checkpoint downgrade refusal.
 - Added Stage 3T for subject-optional system-alert ownership, completing the
   PR-03 backfill catalogue. The fixed `stage3.subject_optional.system_alerts.v1`
   operation classifies every historical alert through the writer's own reviewed

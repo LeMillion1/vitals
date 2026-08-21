@@ -604,7 +604,9 @@ async def test_real_postgres_0034_day_context_stop_resume_and_restore(
         final_checkpoint = await _checkpoint_states(engine)
         with pytest.raises(RuntimeError, match=re.escape(DOWNGRADE_REFUSAL)):
             await asyncio.to_thread(command.downgrade, alembic_config, "0044")
-        assert await _alembic_version(engine) == "0045"
+        # The refusal rolls the whole downgrade back, so head is still 0046 and
+        # the Stage-4 subject-equality references stay installed.
+        assert await _alembic_version(engine) == "0046"
         assert await _checkpoint_states(engine) == final_checkpoint
     finally:
         if migration_control_ready:

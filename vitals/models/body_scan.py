@@ -29,6 +29,7 @@ from typing import Optional
 from sqlalchemy import (
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -86,6 +87,7 @@ class BodyScan(
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     metrics: Mapped[list["BodyScanMetric"]] = relationship(
+        foreign_keys="BodyScanMetric.scan_id",
         back_populates="scan",
         cascade="all, delete-orphan",
         order_by="BodyScanMetric.id",
@@ -97,6 +99,14 @@ class BodyScanMetric(Base, SubjectOwnershipMixin, TimestampMixin):
 
     __tablename__ = "body_scan_metrics"
     __table_args__ = (
+        # Stage-4 subject equality: a metric can never reach a scan owned by a
+        # different subject, whatever the plain parent reference says.
+        ForeignKeyConstraint(
+            ["scan_id", "subject_id"],
+            ["body_scans.id", "body_scans.subject_id"],
+            ondelete="CASCADE",
+            name="fk_body_scan_metrics_scan_subject",
+        ),
         Index("ix_body_scan_metrics_scan", "scan_id"),
         # Per-metric history series (e.g. SMM or phase-angle over time) read by key.
         Index("ix_body_scan_metrics_key", "metric_key"),
@@ -126,4 +136,7 @@ class BodyScanMetric(Base, SubjectOwnershipMixin, TimestampMixin):
         String(24), nullable=False, default="other", server_default="other"
     )
 
-    scan: Mapped["BodyScan"] = relationship(back_populates="metrics")
+    scan: Mapped["BodyScan"] = relationship(
+        back_populates="metrics",
+        foreign_keys="BodyScanMetric.scan_id",
+    )

@@ -25,6 +25,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -95,6 +96,7 @@ class HevyWorkout(
     program: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     exercises: Mapped[list["HevyExercise"]] = relationship(
+        foreign_keys="HevyExercise.workout_id",
         back_populates="workout",
         cascade="all, delete-orphan",
         order_by="HevyExercise.exercise_index",
@@ -111,6 +113,14 @@ class HevyExercise(
 
     __tablename__ = "hevy_exercises"
     __table_args__ = (
+        # Stage-4 subject equality: an exercise can never reach a workout owned
+        # by a different subject.
+        ForeignKeyConstraint(
+            ["workout_id", "subject_id"],
+            ["hevy_workouts.id", "hevy_workouts.subject_id"],
+            ondelete="CASCADE",
+            name="fk_hevy_exercises_workout_subject",
+        ),
         Index("ix_hevy_exercises_template", "exercise_template_id"),
         Index("ix_hevy_exercises_workout", "workout_id"),
         UniqueConstraint("id", "subject_id", name="uq_hevy_exercises_id_subject"),
@@ -128,8 +138,12 @@ class HevyExercise(
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     superset_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    workout: Mapped["HevyWorkout"] = relationship(back_populates="exercises")
+    workout: Mapped["HevyWorkout"] = relationship(
+        back_populates="exercises",
+        foreign_keys="HevyExercise.workout_id",
+    )
     sets: Mapped[list["HevySet"]] = relationship(
+        foreign_keys="HevySet.exercise_id",
         back_populates="exercise",
         cascade="all, delete-orphan",
         order_by="HevySet.set_index",
@@ -145,7 +159,16 @@ class HevySet(
     """A single set: weight / reps / RPE (plus distance/duration for cardio)."""
 
     __tablename__ = "hevy_sets"
-    __table_args__ = (Index("ix_hevy_sets_exercise", "exercise_id"),)
+    __table_args__ = (
+        # Stage-4 subject equality through the exercise/workout chain.
+        ForeignKeyConstraint(
+            ["exercise_id", "subject_id"],
+            ["hevy_exercises.id", "hevy_exercises.subject_id"],
+            ondelete="CASCADE",
+            name="fk_hevy_sets_exercise_subject",
+        ),
+        Index("ix_hevy_sets_exercise", "exercise_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     exercise_id: Mapped[int] = mapped_column(
@@ -161,4 +184,7 @@ class HevySet(
     distance_m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    exercise: Mapped["HevyExercise"] = relationship(back_populates="sets")
+    exercise: Mapped["HevyExercise"] = relationship(
+        back_populates="sets",
+        foreign_keys="HevySet.exercise_id",
+    )

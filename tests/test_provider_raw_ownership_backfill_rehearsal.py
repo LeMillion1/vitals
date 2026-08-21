@@ -378,7 +378,15 @@ async def _bootstrap_roots(engine: AsyncEngine):
 
 
 async def _set_hevy_child_transition(engine: AsyncEngine, subject_id: Any) -> None:
+    """Reproduce a set that is owned while its exercise still is not.
+
+    The Stage-4 subject-equality references forbid this shape going forward, so
+    the mid-transition history the dependency gate has to refuse is written with
+    the constraints stood down.
+    """
+
     async with engine.begin() as connection:
+        await connection.execute(sa.text("SET session_replication_role = replica"))
         await connection.execute(
             sa.text(
                 "UPDATE hevy_sets SET subject_id = :subject_id, "
@@ -386,6 +394,7 @@ async def _set_hevy_child_transition(engine: AsyncEngine, subject_id: Any) -> No
             ),
             {"subject_id": subject_id, "row_id": ROW_IDS["hevy_sets"][0]},
         )
+        await connection.execute(sa.text("SET session_replication_role = origin"))
 
 
 async def _run_cli_process(
@@ -722,7 +731,9 @@ async def test_real_postgres_0034_provider_raw_dependency_stop_resume_and_refusa
 
         with pytest.raises(RuntimeError, match=re.escape(DOWNGRADE_REFUSAL)):
             await asyncio.to_thread(command.downgrade, alembic_config, "0044")
-        assert await _alembic_version(engine) == "0045"
+        # The refusal rolls the whole downgrade back, so head is still 0046 and
+        # the Stage-4 subject-equality references stay installed.
+        assert await _alembic_version(engine) == "0046"
         assert await _checkpoint_states(engine) == completed_checkpoints
         assert await _run_sync(engine, _non_ownership_hashes) == before_hashes
     finally:

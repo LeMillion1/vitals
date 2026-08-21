@@ -61,6 +61,17 @@ _LEGACY_INDEXES = {
 }
 
 
+# The exact parent each child's ``subject_id`` must equal after Stage 4.
+_SUBJECT_EQUALITY_TARGETS = {
+    BodyScanMetric: "body_scans.subject_id",
+    HevyExercise: "hevy_workouts.subject_id",
+    HevySet: "hevy_exercises.subject_id",
+    HrtCompoundComponent: "hrt_compounds.subject_id",
+    HrtCycleItem: "hrt_cycles.subject_id",
+    HrtCycleTemplateItem: "hrt_cycle_templates.subject_id",
+}
+
+
 @pytest.mark.parametrize(
     ("model", "expected_columns"),
     _MODEL_OWNERSHIP_COLUMNS.items(),
@@ -81,10 +92,18 @@ def test_child_models_have_exact_nullable_ownership_foreign_keys(
         assert column.nullable is True
         assert column.default is None
         assert column.server_default is None
-        assert len(column.foreign_keys) == 1
-        foreign_key = next(iter(column.foreign_keys))
-        assert foreign_key.target_fullname == _OWNERSHIP_TARGETS[column_name]
-        assert foreign_key.ondelete == "RESTRICT"
+        # ``subject_id`` additionally carries the Stage-4 subject-equality
+        # reference to the owning parent, which cascades with that parent
+        # exactly like the plain parent link it doubles.
+        ownership_keys = {
+            foreign_key.target_fullname: foreign_key.ondelete
+            for foreign_key in column.foreign_keys
+        }
+        expected = {_OWNERSHIP_TARGETS[column_name]: "RESTRICT"}
+        equality_target = _SUBJECT_EQUALITY_TARGETS.get(model)
+        if column_name == "subject_id" and equality_target is not None:
+            expected[equality_target] = "CASCADE"
+        assert ownership_keys == expected
 
         index_name = f"ix_{table.name}_{column_name}"
         assert index_name in indexes
@@ -104,23 +123,32 @@ def test_child_models_keep_one_unambiguous_simple_parent_fk(model, parent_contra
     table = model.__table__
     column = table.columns[parent_column]
 
-    assert len(column.foreign_keys) == 1
-    foreign_key = next(iter(column.foreign_keys))
-    assert foreign_key.target_fullname == parent_target
-    assert foreign_key.ondelete == ondelete
+    # The plain link plus the Stage-4 subject-equality pair both point at the
+    # same parent row and use the same delete rule.
+    assert {
+        (foreign_key.target_fullname, foreign_key.ondelete)
+        for foreign_key in column.foreign_keys
+    } == {(parent_target, ondelete)}
 
-    parent_constraints = [
-        constraint
-        for constraint in table.foreign_key_constraints
-        if any(
-            element.target_fullname == parent_target
-            for element in constraint.elements
-        )
-    ]
-    assert len(parent_constraints) == 1
-    assert tuple(item.name for item in parent_constraints[0].columns) == (
-        parent_column,
+    # Exactly two references to the parent: the plain link the ORM navigates and
+    # the Stage-4 subject-equality pair that makes a cross-subject child
+    # impossible.
+    parent_constraints = sorted(
+        (
+            tuple(item.name for item in constraint.columns)
+            for constraint in table.foreign_key_constraints
+            if any(
+                element.target_fullname.split(".")[0]
+                == parent_target.split(".")[0]
+                for element in constraint.elements
+            )
+        ),
+        key=len,
     )
+    assert parent_constraints == [
+        (parent_column,),
+        (parent_column, "subject_id"),
+    ]
 
 
 @pytest.mark.parametrize(

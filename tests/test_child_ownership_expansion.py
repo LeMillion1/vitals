@@ -42,6 +42,16 @@ EXPECTED_CHILD_COLUMNS: dict[str, tuple[str, ...]] = {
     "hrt_cycle_template_items": (SUBJECT,),
 }
 
+# The exact parent each child's ``subject_id`` must equal from revision 0046.
+SUBJECT_EQUALITY_TARGETS = {
+    "body_scan_metrics": "body_scans.subject_id",
+    "hevy_exercises": "hevy_workouts.subject_id",
+    "hevy_sets": "hevy_exercises.subject_id",
+    "hrt_compound_components": "hrt_compounds.subject_id",
+    "hrt_cycle_items": "hrt_cycles.subject_id",
+    "hrt_cycle_template_items": "hrt_cycle_templates.subject_id",
+}
+
 COLUMN_TARGETS = {
     SUBJECT: "health_subjects.id",
     CONNECTION: "integration_connections.id",
@@ -149,10 +159,18 @@ def test_0038_orm_matches_literal_nullable_fk_index_and_unique_contract():
             assert column.default is None
             assert column.server_default is None
 
-            foreign_keys = list(column.foreign_keys)
-            assert len(foreign_keys) == 1
-            assert foreign_keys[0].target_fullname == COLUMN_TARGETS[column_name]
-            assert foreign_keys[0].ondelete == "RESTRICT"
+            # Revision 0038 owns the nullable ownership reference; revision 0046
+            # adds the Stage-4 subject-equality pair on top of it, which cascades
+            # with the parent it doubles.
+            ownership_keys = {
+                foreign_key.target_fullname: foreign_key.ondelete
+                for foreign_key in column.foreign_keys
+            }
+            expected = {COLUMN_TARGETS[column_name]: "RESTRICT"}
+            equality_target = SUBJECT_EQUALITY_TARGETS.get(table_name)
+            if column_name == "subject_id" and equality_target is not None:
+                expected[equality_target] = "CASCADE"
+            assert ownership_keys == expected
 
             index_name = f"ix_{table_name}_{column_name}"
             assert index_name in indexes

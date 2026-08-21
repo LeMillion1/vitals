@@ -6,6 +6,8 @@ fakes — JSONB / GIN / partial-unique indexes, ``func.date`` semantics — whic
 where this schema actually lives. ``@pytest.mark.integration`` tests are skipped
 on SQLite.
 """
+
+from contextlib import asynccontextmanager
 import os
 
 # Set before importing app modules so config/security read test values.
@@ -34,6 +36,7 @@ os.environ["VITALS_OPENROUTER_API_KEY"] = ""
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool, StaticPool
 
@@ -163,9 +166,50 @@ async def db_session():
         else:
             await conn.run_sync(Base.metadata.create_all)
             _SQLITE_SCHEMA_READY = True
+    if "sqlite" in TEST_DATABASE_URL:
+        # ``PRAGMA foreign_keys`` is per-connection and this in-memory engine
+        # keeps one, so a test that switches enforcement on would otherwise
+        # silently harden every test that runs after it.  Reset to the engine's
+        # own default and let each test opt in explicitly.
+        async with TEST_ENGINE.connect() as reset:
+            await reset.exec_driver_sql("PRAGMA foreign_keys=OFF")
     factory = async_sessionmaker(TEST_ENGINE, expire_on_commit=False, class_=AsyncSession)
     async with factory() as session:
         yield session
+
+
+@asynccontextmanager
+async def legacy_unenforced_write(session):
+    """Insert a shape that predates the Stage-4 subject-equality constraints.
+
+    Revision 0046 adds those references ``NOT VALID`` on PostgreSQL: rows that
+    already existed are never checked, but every new write is.  A test that has
+    to reproduce such historical data therefore has to write it the way history
+    did — without the constraint — so the service under test still gets the
+    chance to fail closed on it.
+    """
+
+    bind = session.get_bind()
+    dialect = bind.dialect.name
+    if dialect == "sqlite":
+        # ``PRAGMA foreign_keys`` is a no-op inside a transaction; deferring is
+        # the supported way to write a shape the constraints would reject.
+        await session.execute(sa_text("PRAGMA defer_foreign_keys=ON"))
+    else:
+        await session.execute(sa_text("SET session_replication_role = replica"))
+    try:
+        yield session
+        await session.flush()
+    finally:
+        if dialect != "sqlite":
+            await session.execute(sa_text("SET session_replication_role = origin"))
+
+
+@pytest_asyncio.fixture
+async def unenforced_legacy_write(db_session):
+    """Expose :func:`legacy_unenforced_write` bound to the test session."""
+
+    return legacy_unenforced_write
 
 
 @pytest_asyncio.fixture

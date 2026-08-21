@@ -968,16 +968,51 @@ downgrade refusal. The Stage-3T rehearsal covers all three reviewed alert
 classes in one snapshot, stop/resume, a strict live platform alert above the
 frozen watermark, backup-v1 reset and reconstruction of the stripped provider
 connection, empty replacement, and populated downgrade refusal. Every table in
-the inventory now has a completed backfill phase; the Stage 4 validation gates
-and the Stage 5 scoped-key cutover remain.
+the inventory now has a completed backfill phase; Stage 4 proves the lake as a
+whole and the Stage 5 scoped-key cutover remains.
 
 ### Stage 4 — Ownership validation
 
-- add PostgreSQL FKs/checks as `NOT VALID`, then validate them separately;
-- validate parent/child and raw/normalized subject equality;
-- verify every new write is populated by dual-write;
-- perform scoped shadow reads and compare counts/checksums with legacy reads;
-- keep old global unique constraints at this stage.
+Revision `0046` adds six parent/child subject-equality foreign keys — for
+`body_scan_metrics`, `hevy_exercises`, `hevy_sets`, `hrt_compound_components`,
+`hrt_cycle_items`, and `hrt_cycle_template_items` — as composite references to
+the parent's `(id, subject_id)`. On PostgreSQL they are installed `NOT VALID`,
+so the migration installs the rule without scanning a lake whose ownership is
+not proved yet, and the fixed `stage4.whole_lake_validation.v1` operation makes
+them valid only after it has proved the graph.
+
+The check inventory is derived from `Base.metadata` and `OWNERSHIP_REGISTRY`
+rather than a hand-kept list: a table that is persisted but unclassified fails
+the run, and a newly added ownership reference is validated the moment it
+exists. One pass proves that
+
+- every row whose contract requires a subject has one;
+- no row reaches a subject, actor, connection, file asset, or raw payload
+  outside the reviewed roots, and no ownership reference dangles;
+- every child agrees with its parent and every normalized fact with its raw
+  payload — including the curated catalog case, where the parent carries no
+  subject and its inherited components carry none either, so what is proved is
+  equality with the parent, not the presence of a subject;
+- a scoped read returns exactly what the legacy unscoped read returns wherever
+  the contract makes the subject mandatory;
+- exactly one health subject still exists.
+
+Every Stage-3 phase must be terminal before the gate looks at the lake at all.
+The recorded evidence is a chained digest over the whole graph, so data written
+after a run invalidates it and the operator has to record it again rather than
+inheriting a stale proof. The evidence store itself is validated but excluded
+from the digest, because the phase writes its own row into it.
+
+The operator command `scripts/validate_subject_ownership.py` is read-only by
+default, exposes no table, phase, reset, or database selector, and emits only
+counts, result codes, and checksums. The Stage-4 rehearsal drives the real
+migration chain from revision `0034`, the complete twenty-command Stage-3 chain,
+the unvalidated-to-valid constraint promotion, idempotent re-recording, ordinary
+write-path rejection of a crossed parent, a boundary broken behind the
+constraints being refused without recording, and populated downgrade refusal.
+
+Old global unique constraints are deliberately kept at this stage; they are the
+Stage 5 cutover's subject.
 
 ### Stage 5 — Gated scoped-key cutover
 

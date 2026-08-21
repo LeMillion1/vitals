@@ -6,6 +6,7 @@ from sqlalchemy import Uuid
 
 from vitals.models.body_scan import BodyScan, BodyScanMetric
 from vitals.models.conflict_rule import ConflictRule
+from vitals.models.hevy import HevyExercise, HevySet
 from vitals.models.hrt import (
     HrtCompound,
     HrtCompoundComponent,
@@ -26,10 +27,38 @@ _COLUMN_TARGETS = {
     "file_asset_id": "file_assets.id",
 }
 
+# Each ownership column maps to the exact foreign-key targets it must carry and
+# the delete rule each one uses.  A Stage-4 subject-equality reference to the
+# owning parent cascades with that parent, exactly like the plain parent link it
+# doubles; every other ownership reference restricts.
 _MULTI_FOREIGN_KEY_TARGETS = {
     (WeeklyDigest, "subject_id"): {
-        "health_subjects.id",
-        "ai_invocations.subject_id",
+        "health_subjects.id": "RESTRICT",
+        "ai_invocations.subject_id": "RESTRICT",
+    },
+    (BodyScanMetric, "subject_id"): {
+        "health_subjects.id": "RESTRICT",
+        "body_scans.subject_id": "CASCADE",
+    },
+    (HevyExercise, "subject_id"): {
+        "health_subjects.id": "RESTRICT",
+        "hevy_workouts.subject_id": "CASCADE",
+    },
+    (HevySet, "subject_id"): {
+        "health_subjects.id": "RESTRICT",
+        "hevy_exercises.subject_id": "CASCADE",
+    },
+    (HrtCompoundComponent, "subject_id"): {
+        "health_subjects.id": "RESTRICT",
+        "hrt_compounds.subject_id": "CASCADE",
+    },
+    (HrtCycleItem, "subject_id"): {
+        "health_subjects.id": "RESTRICT",
+        "hrt_cycles.subject_id": "CASCADE",
+    },
+    (HrtCycleTemplateItem, "subject_id"): {
+        "health_subjects.id": "RESTRICT",
+        "hrt_cycle_templates.subject_id": "CASCADE",
     },
 }
 
@@ -119,15 +148,13 @@ def test_protocol_models_have_exact_nullable_ownership_foreign_keys(
         assert column.nullable is True
         expected_targets = _MULTI_FOREIGN_KEY_TARGETS.get(
             (model, column_name),
-            {_COLUMN_TARGETS[column_name]},
+            {_COLUMN_TARGETS[column_name]: "RESTRICT"},
         )
         foreign_keys = list(column.foreign_keys)
-        assert {foreign_key.target_fullname for foreign_key in foreign_keys} == (
-            expected_targets
-        )
-        assert all(
-            foreign_key.ondelete == "RESTRICT" for foreign_key in foreign_keys
-        )
+        assert {
+            foreign_key.target_fullname: foreign_key.ondelete
+            for foreign_key in foreign_keys
+        } == expected_targets
 
         index_name = f"ix_{table.name}_{column_name}"
         assert index_name in indexes

@@ -26,6 +26,8 @@ from vitals.ownership import WriteIdentity
 from vitals.services import hevy_service
 from vitals.services.legacy_ownership import LegacyActorMismatchError
 
+from tests.conftest import legacy_unenforced_write
+
 
 _PASSWORD_HASH = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
 
@@ -218,9 +220,12 @@ async def test_unchanged_exact_root_adopts_nullable_children_without_rebuild(
     exercise = await db_session.scalar(select(HevyExercise))
     hevy_set = await db_session.scalar(select(HevySet))
     assert exercise is not None and hevy_set is not None
-    exercise.subject_id = None
-    hevy_set.integration_connection_id = None
-    await db_session.flush()
+    # Partial parent/child ownership predates the Stage-4 subject-equality
+    # constraints, so it has to be written the way history wrote it.
+    async with legacy_unenforced_write(db_session):
+        exercise.subject_id = None
+        hevy_set.integration_connection_id = None
+        await db_session.flush()
     exercise_id = exercise.id
     set_id = hevy_set.id
 
@@ -338,18 +343,20 @@ async def test_partial_legacy_root_and_children_are_adopted_without_actor_rewrit
         exercise_index=0,
         title="Legacy child",
     )
-    db_session.add(exercise)
-    await db_session.flush()
-    db_session.add(
-        HevySet(
-            exercise_id=exercise.id,
-            subject_id=subject.id,
-            integration_connection_id=None,
-            set_index=0,
-            reps=1,
+    # A partially owned legacy chain predates the Stage-4 subject-equality
+    # constraints, so it is written the way history wrote it.
+    async with legacy_unenforced_write(db_session):
+        db_session.add(exercise)
+        await db_session.flush()
+        db_session.add(
+            HevySet(
+                exercise_id=exercise.id,
+                subject_id=subject.id,
+                integration_connection_id=None,
+                set_index=0,
+                reps=1,
+            )
         )
-    )
-    await db_session.flush()
     db_session.expunge(exercise)
 
     summary = await hevy_service.sync_owned(
@@ -421,9 +428,11 @@ async def test_rebuild_rejects_foreign_child_scope_before_deleting_it(db_session
     )
     exercise = await db_session.scalar(select(HevyExercise))
     assert exercise is not None
-    exercise.subject_id = subject_b.id
-    exercise.integration_connection_id = connection_b.id
-    await db_session.flush()
+    # A cross-subject child is impossible to write after Stage 4, so the
+    # reviewed regression reproduces it as pre-constraint history.
+    async with legacy_unenforced_write(db_session):
+        exercise.subject_id = subject_b.id
+        exercise.integration_connection_id = connection_b.id
     exercise_id = exercise.id
 
     with pytest.raises(hevy_service.HevyOwnershipConflictError, match="exercise"):

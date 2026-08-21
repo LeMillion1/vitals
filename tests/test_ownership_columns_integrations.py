@@ -140,6 +140,12 @@ _LEGACY_UNIQUE_COLUMNS = {
 }
 
 
+_SUBJECT_EQUALITY_TARGETS = {
+    HevyExercise: "hevy_workouts.subject_id",
+    HevySet: "hevy_exercises.subject_id",
+}
+
+
 @pytest.mark.parametrize(
     ("model", "expected_columns"),
     _MODEL_COLUMNS.items(),
@@ -160,10 +166,16 @@ def test_provider_roots_have_exact_nullable_ownership_foreign_keys(
         assert column.nullable is True
         assert column.default is None
         assert column.server_default is None
-        assert len(column.foreign_keys) == 1
-        foreign_key = next(iter(column.foreign_keys))
-        assert foreign_key.target_fullname == _COLUMN_TARGETS[column_name]
-        assert foreign_key.ondelete == "RESTRICT"
+        # An inherited child's ``subject_id`` also carries the Stage-4
+        # subject-equality reference to its owning parent.
+        expected = {_COLUMN_TARGETS[column_name]: "RESTRICT"}
+        equality_target = _SUBJECT_EQUALITY_TARGETS.get(model)
+        if column_name == "subject_id" and equality_target is not None:
+            expected[equality_target] = "CASCADE"
+        assert {
+            foreign_key.target_fullname: foreign_key.ondelete
+            for foreign_key in column.foreign_keys
+        } == expected
 
         index_name = f"ix_{table.name}_{column_name}"
         assert index_name in indexes

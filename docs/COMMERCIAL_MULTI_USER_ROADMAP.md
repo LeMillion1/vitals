@@ -590,7 +590,21 @@ Implementation progress on `commercial/main`:
   gains its exact reviewed legacy connection, and an installation-wide platform
   alert keeps neither root. An unclassified key fails closed. Backup v1 rebinds S
   but strips C, so a restored provider alert is completed again.
-- Remaining bounded backfill phases and whole-lake validation, scoped
+- Stage 4 uses `stage4.whole_lake_validation.v1` and revision `0046`. The
+  revision adds six parent/child subject-equality foreign keys as composite
+  references to the parent's `(id, subject_id)`, installed `NOT VALID` on
+  PostgreSQL so the migration never scans an unproved lake; the operation makes
+  them valid only after proving the graph. Its check inventory is derived from
+  the schema metadata and the ownership registry, so a persisted but
+  unclassified table fails the run. One pass proves required S presence, that no
+  S/A/C/F/raw reference leaves the reviewed roots, parent/child and
+  raw/normalized S equality, scoped-versus-legacy shadow read equality, and that
+  exactly one subject exists. A curated catalog parent carries no S and its
+  inherited components carry none either: what is proved there is equality, not
+  presence. Every Stage-3 phase must be terminal first, and the evidence is a
+  chained digest of the whole graph, so later writes invalidate it instead of
+  granting a stale proof. Old global uniqueness is deliberately retained here.
+- Remaining work: the Stage 5 gated scoped-key cutover, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,
   natural-key/alert/outbox-unique cutover, remaining health-alert and conflict
