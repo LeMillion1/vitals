@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -833,6 +833,44 @@ connection. The fixed operator is read-only by default, commits one bounded
 batch per transaction, and emits only allowlisted aggregate counts and checksums
 without weight values, notes, dates, row/raw IDs, UUIDs, exception text, or
 database configuration.
+
+## Stage-3M raw-linked lab-result ownership operation
+
+The fixed `stage3.raw_linked_facts.lab_results.v1` phase covers only
+`lab_results`. A reviewed fully-null S/A row gains the sole S and nothing else.
+Existing exact S with a nullable owner actor is preserved, and no actor is
+inferred from the raw payload the result links. Marker, value, unit, the
+reference-range snapshot, flag, lab name, note, date, domain, source, raw link,
+and both timestamps are untouched.
+
+The table has no connection column of its own, so parser provenance is validated
+where it lives — on the raw payload — and never copied down. Manual and MCP
+results require a labs-domain raw of the same source with no connection, file, or
+document-parser invocation. A parsed result accepts three reviewed raw shapes:
+subject-funded history, where a same-subject OpenRouter AI-gateway connection
+paid for the parse and no platform invocation or file root exists; a
+platform-funded parse, where a same-subject `lab_document` asset whose
+`storage_ref` equals the raw `external_id` is accompanied by exactly one
+succeeded `lab_document_parse` invocation; and a fileless raw — pre-FileAsset
+history, and the shape backup v1 leaves once C/F are stripped — which is accepted
+as history but may not claim a parser invocation. Every invocation found on a
+referenced raw must belong to the reviewed subject. A rawless result stays legal
+for every source, because the writer accepts a panel typed in by hand and older
+parses predate the raw-first boundary.
+
+Initial completion locks gateway roots, raw payloads, and results in canonical
+order and rehashes the frozen data and ownership snapshot. Results stay volatile
+afterwards, so completed status validates the current graph rather than the
+original cardinality or digest.
+
+Backup v1 preserves the result business fields and `raw_payload_id`, rebinds S,
+and strips the actor. Import resets the exact Stage-3M checkpoint after the
+Stage-3L reset and before replacement to RUNNING for a nonempty snapshot or
+exact COMPLETED for an empty snapshot, then revalidates the restored graph
+before commit. The fixed operator is read-only by default, commits one bounded
+batch per transaction, and emits only allowlisted aggregate counts and checksums
+without markers, values, lab names, notes, dates, row/raw IDs, UUIDs, exception
+text, or database configuration.
 
 ## Completion gates
 

@@ -130,6 +130,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 3M for raw-linked lab-result ownership. The fixed
+  `stage3.raw_linked_facts.lab_results.v1` operation gives reviewed fully-unowned
+  historical results only the sole subject; actor attribution, the raw link,
+  marker, value, unit, reference-range snapshot, flag, lab name, note, and both
+  timestamps are preserved exactly. Manual, MCP, and parsed provenance are
+  validated against the linked raw payload read-only: a subject-funded gateway
+  parse may not also claim a platform invocation, a platform parse must present
+  a same-subject lab document whose storage reference matches the raw external
+  ID, and a fileless or restored parser raw is accepted as history without
+  letting it forge a parser claim. Backup v1 rebinds S, strips the actor, and
+  resets the exact checkpoint after Stage 3L.
 - Added Stage 3L for optional-channel weight ownership. The fixed
   `stage3.channel_optional.weight_logs.v1` operation gives reviewed fully-unowned
   historical weights only the sole subject: actor attribution, the Garmin or

@@ -531,6 +531,14 @@ Implementation progress on `commercial/main`:
   retains `raw_payload_id` and content, rebinds S, and resets the exact
   checkpoint after Stage 3K to RUNNING for a nonempty snapshot or COMPLETED for
   an empty one.
+- Stage 3M uses `stage3.raw_linked_facts.lab_results.v1` for exactly
+  `lab_results`. It adds only the sole S to reviewed fully-unowned historical
+  results and preserves the nullable owner A, the raw link, and every measured
+  value. Parser provenance is validated read-only on the linked raw payload:
+  subject-funded gateway history, a platform parse backed by a matching
+  same-subject lab document and one succeeded invocation, or a fileless raw that
+  may not claim a parser. Backup v1 retains `raw_payload_id` and content,
+  rebinds S, and resets the exact checkpoint after Stage 3L.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

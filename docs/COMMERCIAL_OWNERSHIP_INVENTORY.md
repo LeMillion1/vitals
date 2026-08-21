@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -703,6 +703,37 @@ commit. Recompletion leaves unknown A/C null. The fixed-target operator is
 read-only by default, commits one bounded batch per transaction, and emits only
 allowlisted aggregate counts and checksums.
 
+Stage 3M continues with `stage3.raw_linked_facts.lab_results.v1` over exactly
+`lab_results`. Under a complete manual/MCP/parser writer pause, a reviewed
+fully-null S/A row gains only the sole S. Existing exact S plus a nullable owner
+A is preserved, and no actor is inferred from the linked raw payload. Marker,
+value, unit, the reference-range snapshot, flag, lab name, note, date, domain,
+source, raw link, and timestamps remain untouched.
+
+`lab_results` has no connection column, so parser provenance is validated on the
+raw payload and never copied down. Manual and MCP results require a labs-domain
+raw of the same source with no connection, file, or document-parser invocation.
+A parsed result accepts exactly three reviewed raw shapes: subject-funded
+history behind a same-subject OpenRouter AI-gateway connection with no platform
+invocation and no file root; a platform-funded parse whose same-subject
+`lab_document` asset has a `storage_ref` equal to the raw `external_id` and
+exactly one succeeded `lab_document_parse` invocation; and a fileless raw —
+pre-FileAsset history and the shape backup v1 leaves once C/F are stripped —
+which is valid history but may not claim a parser invocation. Any invocation on
+a referenced raw must belong to the reviewed subject. A rawless result stays
+legal for every source; registering that missing document provenance is
+Stage-3A and PR-06 work, not a Stage-3M gate.
+
+Initial completion locks gateway roots, raw payloads, and results in canonical
+order and rehashes the frozen snapshot. Results stay volatile afterwards, so
+later completed status validates the whole current graph.
+
+Backup v1 retains the business fields and `raw_payload_id`, rebinds S, and
+strips A. Import resets the exact Stage-3M checkpoint after the Stage-3L reset
+and before replacement, records a nonempty snapshot as RUNNING or an empty one
+as COMPLETED, and revalidates the restored graph before commit. Recompletion
+leaves the unknown actor null.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -730,9 +761,13 @@ lifecycle volatility, and backup-v1 checkpoint preservation. The Stage-3L
 rehearsal covers linked Garmin and rawless manual history, stop/resume, a strict
 live tail above the frozen high-water mark, backup-v1 reset/recompletion, empty
 replacement, and populated downgrade refusal; its service gate adds
-fact/raw/connection races that fail before ownership or checkpoint mutation.
-Remaining raw/file-sensitive normalized rows, inherited children, artifacts,
-control phases, and the Stage 4 gates remain pending.
+fact/raw/connection races that fail before ownership or checkpoint mutation. The
+Stage-3M rehearsal covers parsed and manual history, stop/resume, a strict live
+result above the frozen high-water mark, backup-v1 reset/recompletion, empty
+replacement, and populated downgrade refusal; its service gate adds
+result/raw/gateway races. Remaining raw/file-sensitive normalized rows,
+inherited children, artifacts, control phases, and the Stage 4 gates remain
+pending.
 
 ### Stage 4 — Ownership validation
 
