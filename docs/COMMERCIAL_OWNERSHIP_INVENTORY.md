@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -734,6 +734,32 @@ and before replacement, records a nonempty snapshot as RUNNING or an empty one
 as COMPLETED, and revalidates the restored graph before commit. Recompletion
 leaves the unknown actor null.
 
+Stage 3N continues with `stage3.raw_linked_facts.genetic_variants.v1` over
+exactly `genetic_variants`. Under a complete manual/MCP/VCF writer pause, a
+reviewed fully-null S/A row gains only the sole S. Existing exact S plus a
+nullable owner A is preserved, and no actor is inferred from the linked VCF
+batch. Gene, rsID, genotype, marker, impact, interpretation, action notes,
+domain, source, raw link, and timestamps remain untouched.
+
+A variant has no event date, so the reviewed duplicate gate is its stable rsID:
+two variants sharing one non-null rsID fail closed, which is exactly the shape
+the later `(S, rsid) WHERE rsid IS NOT NULL` cutover must resolve. The legacy
+global partial unique still serializes it today. Manual and MCP variants must
+remain rawless; an imported variant must retain a genetics-domain `vcf_import`
+raw whose provider-connection and file roots are null, because a VCF upload is
+streamed and registers neither. A still fully-unowned raw is valid provenance
+for a still-unowned variant, while an adopted variant linking unowned raw
+history fails closed. The rsID-membership and payload-revision rules the
+genetics reader enforces stay in the domain service.
+
+Backup v1 retains the business fields and `raw_payload_id`, rebinds S, and
+strips A. Import resets the exact Stage-3N checkpoint after the Stage-3M reset
+and before replacement, records a nonempty snapshot as RUNNING or an empty one
+as COMPLETED, and revalidates the restored graph before commit. Migrated
+variants keep their unknown actor null; the genetics reader currently reaches
+that shape only through its legacy compatibility bridge, so retiring the bridge
+is a separate later gate rather than a Stage-3N outcome.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -765,9 +791,13 @@ fact/raw/connection races that fail before ownership or checkpoint mutation. The
 Stage-3M rehearsal covers parsed and manual history, stop/resume, a strict live
 result above the frozen high-water mark, backup-v1 reset/recompletion, empty
 replacement, and populated downgrade refusal; its service gate adds
-result/raw/gateway races. Remaining raw/file-sensitive normalized rows,
-inherited children, artifacts, control phases, and the Stage 4 gates remain
-pending.
+result/raw/gateway races. The Stage-3N rehearsal covers imported and manual
+variant history whose durable VCF link only exists from revision 0037,
+stop/resume, a strict live variant above the frozen high-water mark, backup-v1
+reset/recompletion, empty replacement, and populated downgrade refusal; its
+service gate adds variant/raw races. Remaining raw/file-sensitive normalized
+rows, inherited children, artifacts, control phases, and the Stage 4 gates
+remain pending.
 
 ### Stage 4 — Ownership validation
 

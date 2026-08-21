@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -871,6 +871,42 @@ before commit. The fixed operator is read-only by default, commits one bounded
 batch per transaction, and emits only allowlisted aggregate counts and checksums
 without markers, values, lab names, notes, dates, row/raw IDs, UUIDs, exception
 text, or database configuration.
+
+## Stage-3N raw-linked genetic-variant ownership operation
+
+The fixed `stage3.raw_linked_facts.genetic_variants.v1` phase covers only
+`genetic_variants`. A reviewed fully-null S/A row gains the sole S and nothing
+else. Existing exact S with a nullable owner actor is preserved, and no actor is
+inferred from the VCF batch a variant links. Gene, rsID, genotype, marker,
+impact, impact domain, interpretation, action notes, domain, source, raw link,
+and both timestamps are untouched.
+
+A variant is a lifelong fact with no event date, so the reviewed duplicate gate
+is its stable rsID rather than a date: two variants sharing one non-null rsID
+fail closed, which is the shape the later `(S, rsid) WHERE rsid IS NOT NULL`
+cutover must resolve. Manual and MCP variants must remain rawless. An imported
+variant must retain a genetics-domain `vcf_import` raw, and that raw must have
+null provider-connection and file roots because a VCF upload is streamed and
+registers neither. A still fully-unowned raw remains valid provenance for a
+still-unowned variant — the shape backup v1 leaves before Stage 3A runs again —
+while an adopted variant may never point at unowned raw history. The rsID
+membership and payload-revision rules the genetics reader enforces stay in the
+domain service; this phase owns ownership and subject equality.
+
+Initial completion locks referenced roots, raw payloads, and variants in
+canonical order and rehashes the frozen data and ownership snapshot. Variants
+stay volatile afterwards, so completed status validates the current graph.
+
+Backup v1 preserves the variant business fields and `raw_payload_id`, rebinds S,
+and strips the actor. Import resets the exact Stage-3N checkpoint after the
+Stage-3M reset and before replacement to RUNNING for a nonempty snapshot or
+exact COMPLETED for an empty snapshot, then revalidates the restored graph
+before commit. Migrated variants keep an unknown actor null, which the genetics
+reader still reaches through its legacy compatibility bridge; retiring that
+bridge remains a later gate. The fixed operator is read-only by default, commits
+one bounded batch per transaction, and emits only allowlisted aggregate counts
+and checksums without genes, rsIDs, genotypes, interpretations, row/raw IDs,
+UUIDs, exception text, or database configuration.
 
 ## Completion gates
 

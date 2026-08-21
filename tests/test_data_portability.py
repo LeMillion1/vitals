@@ -39,6 +39,7 @@ from vitals.models.hrt import (
     HrtCycleTemplate,
     HrtCycleTemplateItem,
 )
+from vitals.models.genetics import GeneticVariant
 from vitals.models.labs import LabResult
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.proactive import NotificationDeliveryIntent
@@ -103,6 +104,11 @@ from vitals.services.signal_ownership_backfill_service import (
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     SharedReportOwnershipBackfillStateError,
+)
+from vitals.services.genetic_variant_ownership_backfill_service import (
+    GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    GENETIC_VARIANT_OWNERSHIP_BACKFILL_TABLES,
+    GeneticVariantOwnershipBackfillStateError,
 )
 from vitals.services.lab_result_ownership_backfill_service import (
     LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -2674,6 +2680,206 @@ async def test_full_import_completes_exact_empty_lab_result_stage3m(
         checkpoint.unchanged_rows,
     ) == ("completed", 0, 0, 0, 0, 0, 0)
     assert checkpoint.completed_at is not None
+
+
+def _portable_genetic_variant(*, row_id: int = 91) -> dict:
+    return {
+        "id": row_id,
+        "domain": Domain.GENETICS.value,
+        "source": Source.MANUAL.value,
+        "gene": "HFE",
+        "rsid": "rs-synthetic-restore",
+        "genotype": "CG",
+        "marker": "hemochromatosis_carrier",
+        "impact": "carrier",
+        "impact_domain": Domain.SUPPLEMENTS.value,
+        "interpretation": "synthetic only",
+        "action_notes": None,
+        "raw_payload_id": None,
+        "_vitals_subject_bound": True,
+    }
+
+
+async def test_full_import_resets_nonempty_genetic_variant_stage3n_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "genetic_variants": [_portable_genetic_variant()],
+        },
+    )
+
+    row = await db_session.get(GeneticVariant, 91)
+    assert row is not None
+    assert (
+        row.subject_id,
+        row.actor_user_id,
+        row.raw_payload_id,
+        row.gene,
+        row.rsid,
+    ) == (legacy_owner_roots.subject_id, None, None, "HFE", "rs-synthetic-restore")
+    phase = GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["genetic_variants"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+        checkpoint.completed_at,
+    ) == ("running", 91, 1, 0, 0, 0, 0, None)
+
+
+async def test_full_import_completes_exact_empty_genetic_variant_stage3n(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    phase = GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["genetic_variants"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.scanned_rows,
+    ) == ("completed", 0, 0, 0)
+    assert checkpoint.completed_at is not None
+
+
+@pytest.mark.parametrize("table_name", GENETIC_VARIANT_OWNERSHIP_BACKFILL_TABLES)
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_genetic_variant_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    table_name,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_reset(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_genetic_variant_ownership_backfill_for_portability_v1_restore",
+        unexpected_reset,
+    )
+    row = _portable_genetic_variant()
+    row["id"] = bad_id
+
+    with pytest.raises(PortabilityError):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                table_name: [row],
+            },
+        )
+    assert called is False
+
+
+async def test_full_import_calls_genetic_variant_reset_after_lab_result_reset(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_lab_reset = (
+        data_portability_service
+        .reset_lab_result_ownership_backfill_for_portability_v1_restore
+    )
+
+    async def tracked_lab_reset(*args, **kwargs):
+        order.append("lab_results")
+        return await original_lab_reset(*args, **kwargs)
+
+    async def stopping_genetic_reset(*args, **kwargs):
+        order.append("genetic_variants")
+        raise GeneticVariantOwnershipBackfillStateError("sensitive synthetic state")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_lab_result_ownership_backfill_for_portability_v1_restore",
+        tracked_lab_reset,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_genetic_variant_ownership_backfill_for_portability_v1_restore",
+        stopping_genetic_reset,
+    )
+    with pytest.raises(
+        PortabilityError, match="genetic-variant ownership restore reset"
+    ):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                "genetic_variants": [_portable_genetic_variant(row_id=92)],
+            },
+        )
+    await db_session.rollback()
+
+    assert order == ["lab_results", "genetic_variants"]
+
+
+async def test_genetic_variant_post_load_rejection_rolls_back_whole_replacement(
+    db_session,
+    legacy_owner_roots,
+):
+    old = GeneticVariant(
+        domain=Domain.GENETICS.value,
+        source=Source.MANUAL.value,
+        gene="OLDGENE",
+    )
+    db_session.add(old)
+    await db_session.commit()
+    old_id = old.id
+
+    async def rejected_preflight(*args, **kwargs):
+        raise GeneticVariantOwnershipBackfillStateError("sensitive synthetic state")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            data_portability_service,
+            "preflight_genetic_variant_ownership_backfill",
+            rejected_preflight,
+        )
+        with pytest.raises(
+            PortabilityError,
+            match="genetic-variant validation rejected the portable restore",
+        ):
+            await import_full(
+                db_session,
+                {
+                    "metadata": {"version": "1.0", "kind": "full_backup"},
+                    "raw_payloads": [],
+                    "genetic_variants": [_portable_genetic_variant(row_id=93)],
+                },
+            )
+    await db_session.rollback()
+
+    restored = await db_session.get(GeneticVariant, old_id)
+    assert restored is not None and restored.gene == "OLDGENE"
+    assert await db_session.get(GeneticVariant, 93) is None
 
 
 @pytest.mark.parametrize("table_name", LAB_RESULT_OWNERSHIP_BACKFILL_TABLES)

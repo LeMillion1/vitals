@@ -539,6 +539,14 @@ Implementation progress on `commercial/main`:
   same-subject lab document and one succeeded invocation, or a fileless raw that
   may not claim a parser. Backup v1 retains `raw_payload_id` and content,
   rebinds S, and resets the exact checkpoint after Stage 3L.
+- Stage 3N uses `stage3.raw_linked_facts.genetic_variants.v1` for exactly
+  `genetic_variants`. It adds only the sole S to reviewed fully-unowned
+  historical variants and preserves the nullable owner A, the VCF batch link,
+  and every interpreted value. Manual and MCP variants stay rawless, an imported
+  variant keeps its durable streamed VCF batch with null connection and file
+  roots, and the one-variant-per-rsID invariant is proved independently of the
+  legacy global index. Backup v1 retains `raw_payload_id` and content, rebinds
+  S, and resets the exact checkpoint after Stage 3M.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

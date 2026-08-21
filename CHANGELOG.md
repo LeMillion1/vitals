@@ -130,6 +130,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 3N for raw-linked genetic-variant ownership. The fixed
+  `stage3.raw_linked_facts.genetic_variants.v1` operation gives reviewed
+  fully-unowned historical variants only the sole subject; actor attribution,
+  the VCF batch link, gene, rsID, genotype, marker, impact, interpretation, and
+  both timestamps are preserved exactly. Manual and MCP variants must stay
+  rawless, an imported variant must retain its durable VCF batch, and that batch
+  must have null provider-connection and file roots because a VCF upload is
+  streamed. The phase also proves the one-variant-per-rsID invariant that the
+  later `(S, rsid)` cutover must satisfy. Backup v1 rebinds S, strips the actor,
+  and resets the exact checkpoint after Stage 3M.
 - Added Stage 3M for raw-linked lab-result ownership. The fixed
   `stage3.raw_linked_facts.lab_results.v1` operation gives reviewed fully-unowned
   historical results only the sole subject; actor attribution, the raw link,
