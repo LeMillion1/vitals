@@ -256,6 +256,7 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
     from vitals.models.hrt import HrtCompound, HrtCompoundComponent
     from vitals.models.system_alert import SystemAlert
     from vitals.models.weight import WeightLog
+    from vitals.services import conflict_catalog
     from vitals.services.identity_bootstrap import bootstrap_legacy_owner
 
     owner = await bootstrap_legacy_owner(
@@ -274,17 +275,8 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
         subject_id=owner.subject_id,
         actor_user_id=owner.user_id,
     )
-    global_rule = ConflictRule(
-        code="portable-global-rule",
-        rule_type="soft_warn",
-        domain_a="weight",
-        condition_a={},
-        domain_b="labs",
-        condition_b={},
-        severity="warn",
-        message="global",
-        subject_id=None,
-    )
+    await conflict_catalog.sync_catalog(db_session)
+    global_rule_code = conflict_catalog.load_rule_catalog()[0]["code"]
     bound_rule = ConflictRule(
         code="portable-bound-rule",
         rule_type="soft_warn",
@@ -329,7 +321,6 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
     db_session.add_all(
         [
             weight,
-            global_rule,
             bound_rule,
             global_compound,
             bound_compound,
@@ -360,13 +351,16 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
 
     assert snapshot["weight_logs"][0]["_vitals_subject_bound"] is True
     assert "subject_id" not in snapshot["weight_logs"][0]
-    assert {
+    rule_markers = {
         row["code"]: row["_vitals_subject_bound"]
         for row in snapshot["conflict_rules"]
-    } == {
-        "portable-global-rule": False,
-        "portable-bound-rule": True,
     }
+    assert rule_markers[global_rule_code] is False
+    assert rule_markers["portable-bound-rule"] is True
+    assert all(
+        rule_markers[entry["code"]] is False
+        for entry in conflict_catalog.load_rule_catalog()
+    )
     assert {
         row["key"]: row["_vitals_subject_bound"]
         for row in snapshot["hrt_compounds"]
@@ -395,7 +389,7 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
         row.code: row
         for row in await db_session.scalars(select(ConflictRule))
     }
-    assert restored_rules["portable-global-rule"].subject_id is None
+    assert restored_rules[global_rule_code].subject_id is None
     assert restored_rules["portable-bound-rule"].subject_id == owner.subject_id
 
     restored_compounds = {

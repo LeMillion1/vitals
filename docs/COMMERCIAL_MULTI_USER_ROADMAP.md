@@ -468,6 +468,14 @@ Implementation progress on `commercial/main`:
   hiding custom deletion, reparenting, or ownership drift. Backup v1 preserves
   the reviewed source/key marker, so its exact two checkpoints reset to bounded
   RUNNING/empty-COMPLETED states rather than guessing any C/F provenance.
+- Stage 3G uses `stage3.mixed_catalog.conflict_rules.v1` for exactly
+  `conflict_rules`. Authentic checked-in definitions stay global; reviewed
+  historical custom rules gain only S and preserve `active` plus all rule data.
+  Initial completion locks and hashes the full snapshot, while durable
+  post-completion evidence covers the custom subset so catalog reseeds cannot
+  erase custom history. Backup v1 can reset this phase from its retained
+  subject-bound marker. The separate subject activation-setting migration and
+  strict conflict registration/read cutover remain pending.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

@@ -77,6 +77,16 @@ from vitals.ownership import (
     TargetColumn,
 )
 from vitals.i18n import t
+from vitals.services.conflict_rule_ownership_backfill_service import (
+    CONFLICT_RULE_OWNERSHIP_BACKFILL_TABLES,
+    ConflictRuleOwnershipBackfillError,
+    preflight_conflict_rule_ownership_backfill,
+    reset_conflict_rule_backfill_for_portability_v1_restore,
+)
+from vitals.services.conflict_catalog import (
+    ConflictCatalogCollisionError,
+    sync_catalog as sync_conflict_catalog,
+)
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.hevy_child_ownership_backfill_service import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_TABLES,
@@ -568,6 +578,34 @@ def _hrt_compound_replacement_snapshot_bounds(
     return bounds
 
 
+def _conflict_rule_replacement_snapshot_bounds(
+    payload: dict[str, Any],
+) -> dict[str, tuple[int, int]]:
+    """Return exact Stage-3G conflict-rule bounds before replacement."""
+
+    bounds: dict[str, tuple[int, int]] = {}
+    for table_name in CONFLICT_RULE_OWNERSHIP_BACKFILL_TABLES:
+        rows = payload.get(table_name) or ()
+        high_watermark = 0
+        for index, row in enumerate(rows):
+            row_id = row.get("id")
+            if (
+                not isinstance(row_id, int)
+                or isinstance(row_id, bool)
+                or not 1 <= row_id <= _POSTGRES_INTEGER_MAX
+            ):
+                raise _contract_error(
+                    "import.error.generic",
+                    exc=(
+                        f"{table_name} record #{index} must carry a positive "
+                        "integer id within the PostgreSQL INTEGER range"
+                    ),
+                )
+            high_watermark = max(high_watermark, row_id)
+        bounds[table_name] = (high_watermark, len(rows))
+    return bounds
+
+
 async def _refuse_retained_raw_references(session: AsyncSession) -> None:
     """Fail before mutation when retained control state still binds any raw."""
 
@@ -642,6 +680,9 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     )
     hevy_child_snapshot_bounds = _hevy_child_replacement_snapshot_bounds(payload)
     hrt_compound_snapshot_bounds = _hrt_compound_replacement_snapshot_bounds(
+        payload
+    )
+    conflict_rule_snapshot_bounds = _conflict_rule_replacement_snapshot_bounds(
         payload
     )
 
@@ -726,6 +767,16 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                     "import.error.generic",
                     exc="HRT compound ownership restore reset was rejected",
                 ) from exc
+            try:
+                await reset_conflict_rule_backfill_for_portability_v1_restore(
+                    session,
+                    snapshot_bounds=conflict_rule_snapshot_bounds,
+                )
+            except ConflictRuleOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="conflict-rule ownership restore reset was rejected",
+                ) from exc
         preserved = await _secret_settings(session)
 
         # Wipe in reverse FK order so child rows go before the parents they reference.
@@ -769,6 +820,24 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
         if preserved:
             await session.execute(Base.metadata.tables["app_settings"].insert(), preserved)
 
+        # Explicit portable IDs are loaded before current checked-in catalog rows.
+        # Advance PostgreSQL sequences first so catalog insertion cannot collide,
+        # then validate the complete current safety catalog in this same restore
+        # transaction.  A stale/omitted catalog is upgraded atomically; protected
+        # code collisions or retained orphan alert references roll everything back.
+        await _reset_sequences(session)
+        try:
+            await sync_conflict_catalog(session)
+            if local_subject_id is not None:
+                await preflight_conflict_rule_ownership_backfill(session)
+        except (
+            ConflictCatalogCollisionError,
+            ConflictRuleOwnershipBackfillError,
+        ) as exc:
+            raise _contract_error(
+                "import.error.generic",
+                exc="conflict-rule catalog validation rejected the portable restore",
+            ) from exc
         await _reset_sequences(session)
         await session.flush()
     except PortabilityError:

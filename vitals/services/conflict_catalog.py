@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, Evidence, RuleType, Severity
 from vitals.models.conflict_rule import ConflictRule
+from vitals.services.identity_service import acquire_identity_governance_lock
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,14 @@ _CATALOG_FIELDS = (
 )
 
 
+class ConflictCatalogCollisionError(ValueError):
+    """A checked-in catalog code is occupied by a subject-owned rule."""
+
+
+async def _after_catalog_rows_locked_for_test() -> None:
+    """Deterministic concurrency-test seam after governance and row locks."""
+
+
 async def sync_catalog(session: AsyncSession) -> dict[str, int]:
     """Idempotent upsert of ``conflict_rules.yaml`` into ``conflict_rules``,
     keyed on ``code``. Every catalog-owned field is refreshed on an existing
@@ -157,10 +166,25 @@ async def sync_catalog(session: AsyncSession) -> dict[str, int]:
     every startup and from the standalone script; running it twice in a row
     inserts nothing the second time and leaves ``active`` alone."""
     catalog = load_rule_catalog()
+    catalog_codes = tuple(entry["code"] for entry in catalog)
+    await acquire_identity_governance_lock(session)
     result = await session.execute(
-        select(ConflictRule).where(ConflictRule.code.isnot(None))
+        select(ConflictRule)
+        .where(ConflictRule.code.in_(catalog_codes))
+        .order_by(ConflictRule.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     existing = {row.code: row for row in result.scalars().all()}
+    await _after_catalog_rows_locked_for_test()
+
+    # A custom rule may legitimately predate a code being added to the checked-in
+    # catalog.  Synchronization must never turn that subject-owned medical rule
+    # into a global definition by overwriting its fields in place.
+    if any(row.subject_id is not None for row in existing.values()):
+        raise ConflictCatalogCollisionError(
+            "conflict catalog synchronization found a protected custom-code collision"
+        )
 
     inserted = 0
     updated = 0

@@ -24,6 +24,7 @@ from vitals.enums import (
 )
 from vitals.models.ai import AIInvocation
 from vitals.models.app_settings import AppSetting
+from vitals.models.conflict_rule import ConflictRule
 from vitals.models.garmin import GarminActivity, GarminDaily, GarminIntraday
 from vitals.models.glp1 import Injection
 from vitals.models.hevy import HevyExercise, HevySet, HevyWorkout
@@ -40,14 +41,19 @@ from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.proactive import NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
 from vitals.models.supplements import Supplement
+from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.models.weight import BodyMeasurement, WeightLog
-from vitals.services import data_portability_service
+from vitals.services import conflict_catalog, data_portability_service
 from vitals.services.data_portability_service import (
     PortabilityError,
     export_full,
     export_llm,
     import_full,
+)
+from vitals.services.conflict_rule_ownership_backfill_service import (
+    CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    CONFLICT_RULE_OWNERSHIP_BACKFILL_TABLES,
 )
 from vitals.services.hevy_child_ownership_backfill_service import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -184,6 +190,7 @@ async def _seed(session) -> None:
             HevySet(exercise_id=ex.id, set_index=1, set_type="normal", weight_kg=80.0, reps=7),
         ]
     )
+    await conflict_catalog.sync_catalog(session)
     await session.commit()
 
 
@@ -1200,6 +1207,192 @@ async def test_full_import_rebases_nonempty_hrt_compound_stage3f_snapshot(
             checkpoint.scanned_rows,
             checkpoint.completed_at,
         ) == ("running", high_watermark, 1, 0, 0, None)
+
+
+async def test_full_import_rebases_nonempty_conflict_rule_stage3g_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "conflict_rules": [
+                {
+                    "id": 41,
+                    "code": None,
+                    "rule_type": "soft_warn",
+                    "domain_a": Domain.WEIGHT.value,
+                    "condition_a": {},
+                    "domain_b": Domain.LABS.value,
+                    "condition_b": {},
+                    "severity": "warn",
+                    "message": "Synthetic custom conflict rule",
+                    "params": None,
+                    "category": "synthetic",
+                    "source": "synthetic evidence citation",
+                    "evidence": "C",
+                    "active": True,
+                    "_vitals_subject_bound": True,
+                }
+            ],
+        },
+    )
+
+    rule = await db_session.get(ConflictRule, 41)
+    assert rule is not None
+    assert rule.subject_id == legacy_owner_roots.subject_id
+    phase = CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["conflict_rules"]
+    checkpoint = await db_session.scalar(
+        select(OwnershipBackfillCheckpoint).where(
+            OwnershipBackfillCheckpoint.phase_key == phase
+        )
+    )
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.completed_at,
+    ) == ("running", 41, 1, 0, 0, None)
+
+
+async def test_full_import_atomically_restores_current_conflict_catalog(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    definitions = conflict_catalog.load_rule_catalog()
+    rows = list(await db_session.scalars(select(ConflictRule)))
+    assert {row.code for row in rows} == {entry["code"] for entry in definitions}
+    phase = CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["conflict_rules"]
+    checkpoint = await db_session.scalar(
+        select(OwnershipBackfillCheckpoint).where(
+            OwnershipBackfillCheckpoint.phase_key == phase
+        )
+    )
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+    ) == ("completed", 0, 0)
+
+
+async def test_full_import_rejects_orphaned_conflict_alert_atomically(
+    db_session,
+    legacy_owner_roots,
+):
+    custom = ConflictRule(
+        subject_id=legacy_owner_roots.subject_id,
+        code=None,
+        rule_type="soft_warn",
+        domain_a=Domain.WEIGHT.value,
+        condition_a={},
+        domain_b=Domain.LABS.value,
+        condition_b={},
+        severity="warn",
+        message="Synthetic retained custom conflict",
+        active=True,
+    )
+    db_session.add(custom)
+    await db_session.flush()
+    db_session.add(
+        SystemAlert(
+            subject_id=legacy_owner_roots.subject_id,
+            domain=Domain.WEIGHT.value,
+            severity="warn",
+            message="Synthetic retained alert",
+            alert_key="conflict:999999",
+            entity_ref="synthetic",
+        )
+    )
+    custom_id = custom.id
+    await db_session.commit()
+    db_session.expunge(custom)
+
+    with pytest.raises(
+        PortabilityError,
+        match="conflict-rule catalog validation rejected",
+    ):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                "system_alerts": [
+                    {
+                        "id": 77,
+                        "domain": Domain.WEIGHT.value,
+                        "severity": "warn",
+                        "message": "Orphaned imported conflict alert",
+                        "alert_key": "conflict:999999",
+                        "entity_ref": "synthetic-import",
+                        "_vitals_subject_bound": True,
+                    }
+                ],
+            },
+        )
+    await db_session.rollback()
+
+    assert await db_session.get(ConflictRule, custom_id) is not None
+    assert await db_session.scalar(
+        select(SystemAlert.id).where(SystemAlert.alert_key == "conflict:999999")
+    ) is not None
+
+
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_conflict_rule_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_reset(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_conflict_rule_backfill_for_portability_v1_restore",
+        unexpected_reset,
+    )
+    row = {
+        "code": None,
+        "rule_type": "soft_warn",
+        "domain_a": Domain.WEIGHT.value,
+        "condition_a": {},
+        "domain_b": Domain.LABS.value,
+        "condition_b": {},
+        "severity": "warn",
+        "message": "Synthetic custom conflict rule",
+        "active": True,
+        "_vitals_subject_bound": True,
+    }
+    if bad_id is not None:
+        row["id"] = bad_id
+    with pytest.raises(PortabilityError, match="positive integer id"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                CONFLICT_RULE_OWNERSHIP_BACKFILL_TABLES[0]: [row],
+            },
+        )
+    assert called is False
 
 
 @pytest.mark.parametrize("table_name", HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES)

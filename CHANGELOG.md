@@ -89,6 +89,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   before changing any definition or component. Catalog rows are locked before
   that decision, custom keys must be canonical lowercase slugs, and scoped
   curated reads require exact HRT/system provenance.
+- Added Stage 3G for mixed global and subject-owned conflict rules. The fixed
+  `stage3.mixed_catalog.conflict_rules.v1` operation keeps exact checked-in YAML
+  definitions global, assigns only the sole subject to reviewed historical
+  custom rules, preserves the legacy `active` toggle and every rule field, and
+  freezes durable ownership evidence only for custom rows so curated catalog
+  reseeds remain safe. Catalog synchronization now shares identity governance,
+  locks matching rows in stable order, and refuses subject-owned code collisions
+  before refreshing any definition. Backup v1 resets the bounded checkpoint from
+  its retained subject marker; the activation-preference bridge remains a later
+  cutover gate.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before

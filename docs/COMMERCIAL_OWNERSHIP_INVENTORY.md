@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -553,6 +553,25 @@ checkpoint pairs, reverse parent/component restore bounds, and noncanonical
 custom keys. Catalog synchronization locks matching rows before its collision
 decision; a PostgreSQL two-session regression proves a concurrent custom
 recategorization cannot be overwritten.
+
+Stage 3G continues with `stage3.mixed_catalog.conflict_rules.v1` over exactly
+`conflict_rules`. Current checked-in YAML definitions remain global only when
+all catalog-owned fields match exactly. Reviewed historical custom rows with a
+null code gain only the sole S; `active`, the evidence citation stored in
+`source`, JSON conditions, medical copy, and timestamps are never rewritten.
+Known catalog codes cannot become subject-owned, while noncatalog custom codes
+must be nonblank and already subject-owned when written after the frozen HWM.
+
+Initial completion performs a locked all-row data rehash, then retains an
+ownership checksum only for frozen custom rows. Current curated rows are always
+revalidated against YAML, allowing a legitimate catalog reseed without hiding
+custom deletion, reclassification, or S drift. Catalog synchronization takes
+identity governance and ordered row locks before it preserves `active` and
+refreshes catalog fields; a subject-owned code collision fails closed. Backup v1
+retains the subject-bound marker and IDs, so its single Stage-3G checkpoint is
+reset to bounded RUNNING or exact-empty COMPLETED before replacement. This phase
+does not retire the legacy activation bridge or authorize unscoped conflict
+composition and alert reads.
 
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent

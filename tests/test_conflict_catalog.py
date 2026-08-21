@@ -7,6 +7,15 @@ conflict rule written against a real key like "iron".
 """
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from vitals.enums import UserStatus
+from vitals.models.conflict_rule import ConflictRule
+from vitals.models.identity import HealthSubject, User
 from vitals.services import conflict_catalog
 from vitals.services.supplements_service import slugify
 
@@ -174,3 +183,109 @@ async def test_sync_catalog_refreshes_changed_fields(db_session):
 
     assert stale.message == real_entry["message"]
     assert stale.active is False  # untouched despite the refresh
+
+
+async def test_sync_catalog_rejects_subject_owned_catalog_code(db_session):
+    entry = conflict_catalog.load_rule_catalog()[0]
+    owner = User(
+        username="catalog-collision-owner",
+        normalized_username="catalog-collision-owner",
+        password_hash="$synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(owner)
+    await db_session.flush()
+    subject = HealthSubject(owner_user_id=owner.id, timezone="Asia/Almaty")
+    db_session.add(subject)
+    await db_session.flush()
+
+    protected = ConflictRule(
+        subject_id=subject.id,
+        code=entry["code"],
+        rule_type=entry["rule_type"],
+        domain_a=entry["domain_a"],
+        condition_a=entry["condition_a"],
+        domain_b=entry["domain_b"],
+        condition_b=entry["condition_b"],
+        severity=entry["severity"],
+        message="synthetic protected custom rule",
+    )
+    db_session.add(protected)
+    await db_session.flush()
+
+    with pytest.raises(conflict_catalog.ConflictCatalogCollisionError):
+        await conflict_catalog.sync_catalog(db_session)
+    assert protected.message == "synthetic protected custom rule"
+
+
+@pytest.mark.integration
+async def test_postgres_catalog_sync_serializes_subject_recategorization(
+    db_session,
+    monkeypatch,
+):
+    if db_session.bind.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL row-lock semantics")
+    owner = User(
+        username="catalog-race-owner",
+        normalized_username="catalog-race-owner",
+        password_hash="$synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(owner)
+    await db_session.flush()
+    subject = HealthSubject(owner_user_id=owner.id, timezone="Asia/Almaty")
+    db_session.add(subject)
+    await db_session.flush()
+    subject_id = subject.id
+    await conflict_catalog.sync_catalog(db_session)
+    await db_session.commit()
+
+    code = conflict_catalog.load_rule_catalog()[0]["code"]
+    rows_locked = asyncio.Event()
+    release_sync = asyncio.Event()
+    writer_started = asyncio.Event()
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+
+    async def pause_after_locks():
+        rows_locked.set()
+        await release_sync.wait()
+
+    monkeypatch.setattr(
+        conflict_catalog,
+        "_after_catalog_rows_locked_for_test",
+        pause_after_locks,
+    )
+
+    async def synchronize():
+        async with factory() as session:
+            await conflict_catalog.sync_catalog(session)
+            await session.commit()
+
+    async def recategorize():
+        async with factory() as session:
+            writer_started.set()
+            await session.execute(
+                update(ConflictRule)
+                .where(ConflictRule.code == code)
+                .values(
+                    subject_id=subject_id,
+                    message="Protected concurrent custom definition",
+                )
+            )
+            await session.commit()
+
+    sync_task = asyncio.create_task(synchronize())
+    await asyncio.wait_for(rows_locked.wait(), timeout=5)
+    writer_task = asyncio.create_task(recategorize())
+    await asyncio.wait_for(writer_started.wait(), timeout=5)
+    done, _pending = await asyncio.wait({writer_task}, timeout=0.1)
+    assert not done, "the concurrent writer must wait for catalog row locks"
+    release_sync.set()
+    await asyncio.wait_for(sync_task, timeout=5)
+    await asyncio.wait_for(writer_task, timeout=5)
+
+    async with factory() as session:
+        row = await session.scalar(select(ConflictRule).where(ConflictRule.code == code))
+        assert row is not None
+        assert row.subject_id == subject_id
+        assert row.message == "Protected concurrent custom definition"

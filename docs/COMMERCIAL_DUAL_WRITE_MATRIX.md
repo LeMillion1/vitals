@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -657,6 +657,29 @@ mutations. Persisted checkpoint validators require equal before/after data
 digests and exact dependency/group state pairs. Custom keys must match the
 canonical lowercase slug contract, and catalog synchronization takes ordered
 row locks before collision validation or mutation.
+
+## Stage-3G conflict-rule mixed-catalog ownership operation
+
+The fixed `stage3.mixed_catalog.conflict_rules.v1` phase covers only
+`conflict_rules`. Curated rows remain global and must exactly match every
+catalog-owned YAML field; `active` remains the legacy subject toggle and is not
+provenance. A frozen custom row is reviewed only when both S and code are null,
+then receives the sole S without changing any rule data or timestamp. Existing
+custom codes must be nonblank and outside the current catalog. Above the HWM,
+curated rows must already be exact global definitions and custom rows must
+already carry exact S.
+
+The initial snapshot is locked and fully rehashed. Post-completion evidence
+retains the frozen custom ownership subset while the current global catalog is
+revalidated directly, allowing catalog reseeds without masking custom history
+loss. The YAML synchronizer shares identity governance with the backfill, locks
+matching rules in ID order, preserves `active`, and rejects any subject-owned
+catalog-code collision before mutation. Backup v1 preserves the subject-bound
+marker and row IDs, so import resets the one checkpoint to RUNNING for a
+nonempty snapshot or exact COMPLETED for an empty one. The fixed-target operator
+is read-only by default and exposes only bounded apply controls and allowlisted
+non-PHI counts/checksums. Stage 3G does not remove the fully-unowned activation
+bridge or scope every conflict consumer and alert path.
 
 ## Completion gates
 
