@@ -40,6 +40,7 @@ from vitals.models.hrt import (
     HrtCycleTemplateItem,
 )
 from vitals.models.body_scan import BodyScan, BodyScanMetric
+from vitals.models.garmin import GarminWeightExport
 from vitals.models.genetics import GeneticVariant
 from vitals.models.labs import LabResult
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
@@ -105,6 +106,10 @@ from vitals.services.signal_ownership_backfill_service import (
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     SharedReportOwnershipBackfillStateError,
+)
+from vitals.services.garmin_weight_export_ownership_backfill_service import (
+    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    GarminWeightExportOwnershipBackfillStateError,
 )
 from vitals.services.body_scan_metric_ownership_backfill_service import (
     BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -2837,6 +2842,113 @@ async def test_full_import_completes_exact_empty_body_scan_stage3o(
         checkpoint.snapshot_rows,
     ) == ("completed", 0, 0)
     assert checkpoint.completed_at is not None
+
+
+def _portable_garmin_weight_export(*, row_id: int = 131) -> dict:
+    return {
+        "id": row_id,
+        "date": "2026-08-21",
+        "weight_log_id": None,
+        "weight_kg": 81.5,
+        "measured_at": "2026-08-21T07:30:00",
+        "dispatch_timestamp_ms": None,
+        "status": "pending",
+        "attempts": 0,
+        "last_attempt_at": None,
+        "next_attempt_at": None,
+        "exported_at": None,
+        "remote_sample_pk": None,
+        "remote_weight_kg": None,
+        "remote_owned": False,
+        "last_error": None,
+        "_vitals_subject_bound": True,
+    }
+
+
+async def test_full_import_blocks_nonempty_garmin_outbox_stage3q_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "garmin_weight_exports": [_portable_garmin_weight_export()],
+        },
+    )
+
+    row = await db_session.get(GarminWeightExport, 131)
+    assert row is not None
+    assert row.subject_id == legacy_owner_roots.subject_id
+    # Backup v1 cannot carry the destination account it was queued for.
+    assert row.integration_connection_id is None
+    assert row.requested_by_user_id is None
+    phase = GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES[
+        "garmin_weight_exports"
+    ]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.completed_at,
+    ) == ("restore_blocked", 131, 1, None)
+
+
+async def test_full_import_completes_exact_empty_garmin_outbox_stage3q(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    phase = GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES[
+        "garmin_weight_exports"
+    ]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+    ) == ("completed", 0, 0)
+    assert checkpoint.completed_at is not None
+
+
+async def test_garmin_outbox_post_load_rejection_rolls_back_replacement(
+    db_session,
+    legacy_owner_roots,
+):
+    async def rejected_preflight(*args, **kwargs):
+        raise GarminWeightExportOwnershipBackfillStateError(
+            "sensitive synthetic state"
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            data_portability_service,
+            "preflight_garmin_weight_export_ownership_backfill",
+            rejected_preflight,
+        )
+        with pytest.raises(
+            PortabilityError,
+            match="Garmin outbox validation rejected the portable restore",
+        ):
+            await import_full(
+                db_session,
+                {
+                    "metadata": {"version": "1.0", "kind": "full_backup"},
+                    "raw_payloads": [],
+                },
+            )
+    await db_session.rollback()
 
 
 async def test_full_import_resets_body_scan_metric_stage3p_snapshot(

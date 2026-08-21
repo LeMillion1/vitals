@@ -130,6 +130,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 3Q for Garmin weight-outbox ownership. The fixed
+  `stage3.provider_outbox.garmin_weight_exports.v1` operation gives a reviewed
+  fully-unowned row the sole subject plus the exact reviewed legacy Garmin
+  account it was queued for; the requesting actor, dispatch markers, retry
+  counters, remote sample identity, and every timestamp stay as persisted. The
+  destination is never guessed: a missing, rotated, or non-legacy account fails
+  the read-only preflight while adoption is still pending. Backup v1 cannot
+  carry a required destination, so a nonempty restored snapshot is recorded as
+  `RESTORE_BLOCKED` and the operator command refuses to advance.
 - Added Stage 3P for inherited body-scan metric ownership. The fixed
   `stage3.inherited_children.body_scan_metrics.v1` operation copies only the
   reviewed parent scan's subject down to its metrics; the metric key, printed

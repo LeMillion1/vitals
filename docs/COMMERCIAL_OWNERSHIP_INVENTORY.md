@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -819,6 +819,31 @@ Stage-3O block and before replacement, records a nonempty snapshot as RUNNING or
 an empty one as COMPLETED, and revalidates the restored parent/child graph before
 commit.
 
+Stage 3Q continues with `stage3.provider_outbox.garmin_weight_exports.v1` over
+exactly `garmin_weight_exports`. Under a complete Garmin export/delete writer
+pause, a reviewed fully-null S/C/requester row gains the sole S plus the exact
+reviewed legacy Garmin account it was queued for. The requesting actor stays
+null, and the date, mass, measurement time, dispatch marker, lifecycle status,
+retry counters, remote sample identity, remote ownership flag, error record, and
+timestamps are untouched.
+
+The destination is never guessed: it resolves only while the subject has exactly
+one Garmin account root and that root is the reviewed `legacy_singleton_v1`
+singleton in a historical lifecycle state. Because the gate runs whenever
+adoption is still pending, an ambiguous account fails the read-only preflight
+rather than the first mutating batch. An owned row without a destination is
+half-migrated state and fails closed; a linked weight log must already belong to
+the subject because Stage 3L owns every weight fact; and a live row that lost its
+weight log is legitimate only in the delete/skip lifecycle states. Two outbox
+rows on one date fail closed, which is the duplicate gate the later `(C, date)`
+cutover must satisfy, though the legacy global unique still serializes it today.
+
+Backup v1 rebinds S but carries neither the required destination nor the
+requester. Import records a nonempty Stage-3Q snapshot as `RESTORE_BLOCKED` after
+the Stage-3P reset, validates the S-only incoming shape in the same transaction,
+and the fixed operator refuses to advance until a provenance-bearing restore or
+an explicit reviewed remap. An empty snapshot is exact `COMPLETED`.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -861,8 +886,11 @@ apply refusal, empty replacement, and populated downgrade refusal; its service
 gate adds sheet-key, scan-disappearance, and duplicate-key races. The
 Stage-3P rehearsal covers inherited child adoption from a reviewed scan,
 stop/resume, a strict live child above the frozen high-water mark, backup-v1
-reset/recompletion, empty replacement, and populated downgrade refusal.
-Remaining artifacts, control phases, and the Stage 4 gates remain pending.
+reset/recompletion, empty replacement, and populated downgrade refusal. The
+Stage-3Q rehearsal covers destination adoption for a queued outbox, stop/resume,
+a strict live delete intent above the frozen high-water mark, backup-v1 blocking
+and apply refusal, empty replacement, and populated downgrade refusal. Remaining
+artifacts, control phases, and the Stage 4 gates remain pending.
 
 ### Stage 4 — Ownership validation
 

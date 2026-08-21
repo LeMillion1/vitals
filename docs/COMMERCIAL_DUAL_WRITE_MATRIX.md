@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -968,6 +968,36 @@ the reviewed local root. Import resets the exact Stage-3P checkpoint after the
 Stage-3O block and before replacement to RUNNING for a nonempty snapshot or
 exact COMPLETED for an empty snapshot, then revalidates the restored parent/child
 graph before commit.
+
+## Stage-3Q Garmin weight-outbox ownership operation
+
+The fixed `stage3.provider_outbox.garmin_weight_exports.v1` phase covers only
+`garmin_weight_exports`. The outbox is destination state rather than health
+history, so every row needs both the sole reviewed subject and the Garmin
+account it was queued for. A reviewed fully-null S/C/requester row therefore
+gains S plus the exact reviewed legacy Garmin account root, and nothing else:
+the requesting actor stays null, and the local date, mass, measurement time,
+dispatch marker, lifecycle status, retry counters, remote sample identity,
+remote ownership flag, error record, and both timestamps are untouched.
+
+The destination is never guessed. It resolves only while the subject has exactly
+one Garmin account root and that root is the reviewed `legacy_singleton_v1`
+singleton in a historical lifecycle state; a missing, rotated, or additional
+account fails closed. Because that gate runs whenever adoption is still pending,
+an ambiguous account surfaces in the read-only preflight rather than at the first
+mutating batch. An owned row without a destination is half-migrated state and
+fails closed too, and a linked weight log must already belong to the subject
+because Stage 3L owns every weight fact. A live row that lost its weight log is
+accepted only in the delete/skip lifecycle states where that is legitimate. The
+phase also refuses two outbox rows on one date, which is the duplicate gate the
+later `(C, date)` cutover must satisfy; the legacy global unique still serializes
+it today.
+
+Backup v1 rebinds S but cannot carry the required destination or the requester.
+Import therefore records a nonempty Stage-3Q snapshot as `RESTORE_BLOCKED` after
+the Stage-3P reset, validates the S-only incoming shape in the same transaction,
+and the operator command refuses to advance until a provenance-bearing restore
+or an explicit reviewed remap. An empty snapshot is exact `COMPLETED`.
 
 ## Completion gates
 

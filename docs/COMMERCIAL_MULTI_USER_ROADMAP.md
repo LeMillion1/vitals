@@ -561,6 +561,13 @@ Implementation progress on `commercial/main`:
   live child requires the strict parent graph, and parents are locked before
   children so a concurrent scan adoption cannot race the child update. Backup v1
   rebinds the child subject and resets the exact checkpoint after Stage 3O.
+- Stage 3Q uses `stage3.provider_outbox.garmin_weight_exports.v1` for exactly
+  `garmin_weight_exports`. It adds the sole S plus the exact reviewed legacy
+  Garmin account a queued row was destined for, and invents no requester. A
+  missing, rotated, or non-legacy account fails the read-only preflight while
+  adoption is pending. Backup v1 cannot carry a required destination, so a
+  nonempty restored snapshot is recorded as `RESTORE_BLOCKED` and the operator
+  refuses to advance.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,
