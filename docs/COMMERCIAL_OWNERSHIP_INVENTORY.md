@@ -1030,6 +1030,45 @@ second subject becomes writable:
 Registration and any other path that can create a second writable subject remain
 disabled throughout this cutover.
 
+#### Stage 5A — the audit that gates it
+
+`vitals/scoped_keys.py` is the reviewed inventory the audit, the cutover
+migration, and the tests all read: twelve legacy global keys and the sixteen
+scoped indexes that replace them.
+
+| scope | legacy key | replacement |
+| --- | --- | --- |
+| subject | `uq_body_measurement_per_date` | `(subject_id, date)` |
+| subject | `uq_day_context_per_date` | `(subject_id, date)` |
+| subject | `uq_active_weight_per_date` | `(subject_id, date) WHERE superseded` is false |
+| subject | `uq_genetic_variant_rsid` | `(subject_id, rsid) WHERE rsid IS NOT NULL` |
+| subject | `ix_lab_markers_name` | `(subject_id, name)` |
+| connection | `uq_garmin_daily_date` | `(integration_connection_id, date)` |
+| connection | `uq_garmin_activities_external_id` | `(integration_connection_id, external_id)` |
+| connection | `uq_hevy_workouts_external_id` | `(integration_connection_id, external_id)` |
+| connection | `uq_garmin_weight_exports_date` | `(integration_connection_id, date)` |
+| mixed catalog | `ix_hrt_compounds_key` | global `(key)` for curated rows, `(subject_id, key)` for a subject's own |
+| mixed catalog | `ix_conflict_rules_code` | global `(code)` for curated rows, `(subject_id, code)` for a subject's own |
+| alert class | `uq_active_alert_per_key_entity` | one unresolved row per key inside the connection, the subject, or the installation |
+
+`stage5.scoped_key_audit.v1` proves two things read-only. The first is that no
+existing row would collide under a proposed key. The second, and the one the
+audit mainly exists for, is that no row is missing the scope its key depends on:
+a scoped unique index over a null scope column keeps no uniqueness at all for
+that row, so the cutover would quietly lose the rule it was replacing. A Garmin
+or Hevy row with no connection passes Stage 4 — its ownership never leaves the
+reviewed roots — and is refused here.
+
+The audit requires Stage 4 to have proved *this* lake, not merely to have run:
+because Stage 4's evidence is a digest of the whole graph, stale evidence blocks
+the audit exactly as absent evidence does. The audit creates, drops, and
+rewrites nothing but its own checkpoint.
+
+`skincare_logs` and `supplements` are deliberately excluded. Neither carries
+global uniqueness today, so neither ever blocked a second subject; adding
+uniqueness where the application currently allows duplicates is a product
+decision, not an isolation requirement.
+
 ### Stage 6 — Scoped read and RLS cutover
 
 PR-04 removes bare-ID/global reads, requires AccessContext, and enables FORCE RLS

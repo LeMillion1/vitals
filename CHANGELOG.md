@@ -130,6 +130,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 5A, the audit that gates the scoped-key cutover. `vitals/scoped_keys.py`
+  is the machine-readable inventory of the change: twelve legacy global keys and
+  the sixteen scoped indexes that replace them, each naming the column its scope
+  comes from. The fixed `stage5.scoped_key_audit.v1` operation proves, read-only,
+  that no row would collide under a proposed scoped key and — the check the audit
+  mainly exists for — that no row is missing the scope the key depends on, since
+  a scoped unique index over a null scope column silently degenerates into the
+  global key it was replacing. A provider row with no connection passes Stage 4,
+  because its ownership never leaves the reviewed roots, and is refused here.
+  The audit requires Stage 4 to have proved *this* lake rather than merely to
+  have run: stale evidence blocks it exactly as missing evidence does. It
+  creates, drops, and rewrites nothing but its own checkpoint, and its operator
+  command exposes no table, key, phase, reset, or database selector and emits
+  only counts, result codes, and checksums. `skincare_logs` and `supplements`
+  are deliberately out of scope: they carry no global uniqueness today, so they
+  never blocked a second subject, and adding uniqueness where the application
+  allows duplicates is a product decision rather than an isolation one.
 - Added Stage 4, the whole-lake ownership gate that closes the PR-03 backfill
   sequence. Revision `0046` installs six parent/child subject-equality foreign
   keys `NOT VALID` on PostgreSQL, so the migration installs the rule without

@@ -604,7 +604,19 @@ Implementation progress on `commercial/main`:
   presence. Every Stage-3 phase must be terminal first, and the evidence is a
   chained digest of the whole graph, so later writes invalidate it instead of
   granting a stale proof. Old global uniqueness is deliberately retained here.
-- Remaining work: the Stage 5 gated scoped-key cutover, scoped
+- Stage 5A uses `stage5.scoped_key_audit.v1` and the reviewed catalog in
+  `vitals/scoped_keys.py`: twelve legacy global keys and the sixteen scoped
+  indexes that replace them, scoped by subject, by connection, by curated-versus-
+  custom catalog row, or by alert class. The audit proves read-only that no row
+  would collide under a proposed key and that no row is missing the scope its key
+  depends on — a scoped unique index over a null scope column keeps no uniqueness
+  at all, so the cutover would silently lose the rule. It requires Stage 4 to have
+  proved this exact lake, and it creates, drops, and rewrites nothing but its own
+  checkpoint. `skincare_logs` and `supplements` are out of scope: they carry no
+  global uniqueness today and so never blocked a second subject.
+- Remaining work: installing the scoped indexes, switching every key-based
+  write/read path, two-subject collision and concurrency tests, dropping the
+  legacy global keys, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,
   natural-key/alert/outbox-unique cutover, remaining health-alert and conflict
