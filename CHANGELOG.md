@@ -628,6 +628,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   exclude the replaced row from safety evaluation, and attribute human overrides
   to the authenticated owner without exposing internal ownership identifiers.
 
+### Fixed — durable inbound diagnostics
+
+- **A failed Telegram update no longer hides why it failed** — the scoped
+  durable delivery cutover re-raised `DurableInboundProcessingError` with
+  `from None`, discarding the original exception. The cause is chained again,
+  so a post-capture failure reports the underlying ownership or delivery error
+  instead of only the wrapper. The web webhook still acknowledges the update
+  without a traceback, so no message content reaches the logs.
+- Four PostgreSQL race tests around concurrent and edited Telegram updates were
+  left on the pre-cutover contract, where the passed-in notifier performed the
+  send. They now supply a bound notifier and a `notifier_resolver`, matching how
+  delivery resolves its endpoint at dispatch. The duplicate-webhook test no
+  longer asserts an exactly-once parse through the injected parser seam: a plain
+  callable leaves no reservation row, while the paid provider path still
+  reserves one before dispatching and is covered separately.
+
 ### Fixed — AI period-report context
 
 - **Stored Garmin and treatment data now reaches the report** — context schema v2 includes bounded Garmin activities and expanded daily metrics, every same-day Hevy session, GLP-1 phases/injections/effects, and HRT plans/actual doses/effects. Garmin and Hevy remain separate sources so a synchronized session is not counted twice.
