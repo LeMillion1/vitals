@@ -104,6 +104,11 @@ from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     SharedReportOwnershipBackfillStateError,
 )
+from vitals.services.weight_log_ownership_backfill_service import (
+    WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    WEIGHT_LOG_OWNERSHIP_BACKFILL_TABLES,
+    WeightLogOwnershipBackfillStateError,
+)
 
 _IDENTITY_CONTROL_PLANE_TABLES = {
     "users",
@@ -2503,6 +2508,207 @@ async def test_shared_report_post_load_rejection_rolls_back_whole_replacement(
     assert retained.token == "retained-stage3k-rollback"
     phase = SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["shared_reports"]
     assert await db_session.get(OwnershipBackfillCheckpoint, phase) is None
+
+
+def _portable_weight_log(*, row_id: int = 71) -> dict:
+    return {
+        "id": row_id,
+        "date": "2026-08-21",
+        "domain": Domain.WEIGHT.value,
+        "source": Source.MANUAL.value,
+        "weight_kg": 81.5,
+        "note": "synthetic only",
+        "superseded": False,
+        "raw_payload_id": None,
+        "_vitals_subject_bound": True,
+    }
+
+
+async def test_full_import_resets_nonempty_weight_log_stage3l_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "weight_logs": [_portable_weight_log()],
+        },
+    )
+
+    row = await db_session.get(WeightLog, 71)
+    assert row is not None
+    assert (
+        row.subject_id,
+        row.actor_user_id,
+        row.integration_connection_id,
+        row.raw_payload_id,
+        row.weight_kg,
+    ) == (legacy_owner_roots.subject_id, None, None, None, 81.5)
+    phase = WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["weight_logs"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+        checkpoint.completed_at,
+    ) == ("running", 71, 1, 0, 0, 0, 0, None)
+
+
+async def test_full_import_completes_exact_empty_weight_log_stage3l(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    phase = WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["weight_logs"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+    ) == ("completed", 0, 0, 0, 0, 0, 0)
+    assert checkpoint.completed_at is not None
+
+
+@pytest.mark.parametrize("table_name", WEIGHT_LOG_OWNERSHIP_BACKFILL_TABLES)
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_weight_log_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    table_name,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_reset(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_weight_log_ownership_backfill_for_portability_v1_restore",
+        unexpected_reset,
+    )
+    row = _portable_weight_log()
+    row["id"] = bad_id
+
+    with pytest.raises(PortabilityError):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                table_name: [row],
+            },
+        )
+    assert called is False
+
+
+async def test_full_import_calls_weight_log_reset_after_shared_report_preparation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_prepare = (
+        data_portability_service
+        .prepare_shared_report_ownership_backfill_for_portability_v1_restore
+    )
+
+    async def tracked_prepare(*args, **kwargs):
+        order.append("shared_reports")
+        return await original_prepare(*args, **kwargs)
+
+    async def stopping_weight_log_reset(*args, **kwargs):
+        order.append("weight_logs")
+        raise WeightLogOwnershipBackfillStateError("sensitive synthetic state")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "prepare_shared_report_ownership_backfill_for_portability_v1_restore",
+        tracked_prepare,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_weight_log_ownership_backfill_for_portability_v1_restore",
+        stopping_weight_log_reset,
+    )
+    with pytest.raises(
+        PortabilityError, match="weight-log ownership restore reset"
+    ):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                "weight_logs": [_portable_weight_log(row_id=72)],
+            },
+        )
+    await db_session.rollback()
+
+    assert order == ["shared_reports", "weight_logs"]
+
+
+async def test_weight_log_post_load_rejection_rolls_back_whole_replacement(
+    db_session,
+    legacy_owner_roots,
+):
+    old = WeightLog(
+        date=date(2026, 8, 20),
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        weight_kg=80.0,
+        superseded=False,
+    )
+    db_session.add(old)
+    await db_session.commit()
+    old_id = old.id
+
+    async def rejected_preflight(*args, **kwargs):
+        raise WeightLogOwnershipBackfillStateError("sensitive synthetic state")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            data_portability_service,
+            "preflight_weight_log_ownership_backfill",
+            rejected_preflight,
+        )
+        with pytest.raises(
+            PortabilityError,
+            match="weight-log validation rejected the portable restore",
+        ):
+            await import_full(
+                db_session,
+                {
+                    "metadata": {"version": "1.0", "kind": "full_backup"},
+                    "raw_payloads": [],
+                    "weight_logs": [_portable_weight_log(row_id=73)],
+                },
+            )
+    await db_session.rollback()
+
+    restored = await db_session.get(WeightLog, old_id)
+    assert restored is not None and restored.weight_kg == 80.0
+    assert await db_session.get(WeightLog, 73) is None
 
 
 @pytest.mark.parametrize("table_name", HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES)

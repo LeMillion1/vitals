@@ -521,6 +521,16 @@ Implementation progress on `commercial/main`:
   intentionally neither exports nor replaces published reports; import
   prepares or preserves the retained Stage-3K checkpoint after Stage 3J reset
   and validates it again after portable replacement.
+- Stage 3L uses `stage3.channel_optional.weight_logs.v1` for exactly
+  `weight_logs`. It adds only the sole S to reviewed fully-unowned historical
+  weights, preserves nullable owner A and nullable same-subject Garmin/AI-gateway
+  C, and never copies a connection down from the raw payload a fact links.
+  Manual/MCP, Garmin, and body-scan raw provenance and parser-invocation
+  exclusivity are validated read-only, and the one-active-weight-per-date
+  invariant is proved independently of the legacy global index. Backup v1
+  retains `raw_payload_id` and content, rebinds S, and resets the exact
+  checkpoint after Stage 3K to RUNNING for a nonempty snapshot or COMPLETED for
+  an empty one.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -668,6 +668,41 @@ checkpoint or prepares one from the retained local report set, without accepting
 incoming report bounds or mutating report rows. Post-load preflight revalidates
 the retained graph before commit.
 
+Stage 3L continues with `stage3.channel_optional.weight_logs.v1` over exactly
+`weight_logs`. Under a complete manual/MCP/Garmin/body-scan writer pause, a
+reviewed fully-null S/A/C row gains only the sole S. Existing exact S plus a
+nullable owner A and a nullable same-subject Garmin-account or OpenRouter
+AI-gateway C is preserved; the phase never manufactures either optional root
+from `source`, from a sole current connection, or from the raw payload the fact
+links. Mass, note, supersession, date, domain, source, raw link, and timestamps
+remain untouched.
+
+Provenance is validated per source: manual and MCP facts cannot claim a provider
+connection and may only carry a weight-domain raw of the same source; Garmin
+facts require a Garmin-domain `garmin_api` raw; body-scan facts require a
+body-composition raw from either the vision parser or structured MCP. Parser
+invocations must belong to the same subject and may not coexist with a
+subject-funded provider C on the same raw. Because backup v1 strips raw C and
+records Stage 3A/3D as restore-blocked, a connection-stripped or still-unowned
+raw stays valid provenance for a historical fact, while an adopted fact linking
+fully-unowned raw history fails closed.
+
+Initial completion locks provider roots, raw payloads, and facts in canonical
+order and rehashes the frozen snapshot. Weights stay volatile afterwards, so
+later completed status validates the whole current graph rather than requiring
+the initial cardinality or digest. The phase additionally proves the
+one-active-weight-per-date invariant that the later
+`(S, date) WHERE superseded = false` cutover must satisfy; the legacy global
+partial unique still serializes it today.
+
+Backup v1 retains the weight business fields and `raw_payload_id`, rebinds S,
+and strips A/C. Import resets the exact Stage-3L checkpoint after the retained
+Stage-3K preparation and before replacement, records a nonempty snapshot as
+RUNNING or an empty one as COMPLETED, and revalidates the restored graph before
+commit. Recompletion leaves unknown A/C null. The fixed-target operator is
+read-only by default, commits one bounded batch per transaction, and emits only
+allowlisted aggregate counts and checksums.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -691,9 +726,13 @@ date-row/provenance races. The Stage-3J rehearsal covers optional actor/channel
 history, batch/raw invariants, stop/resume, volatile misparse/delete behavior,
 backup-v1 reset/recompletion, and recipient/raw/FK races. The Stage-3K rehearsal
 covers retained public reports, bounded stop/resume, immutable frozen snapshots,
-lifecycle volatility, and backup-v1 checkpoint preservation. Remaining
-raw/file-sensitive normalized rows, inherited children, artifacts, control
-phases, and the Stage 4 gates remain pending.
+lifecycle volatility, and backup-v1 checkpoint preservation. The Stage-3L
+rehearsal covers linked Garmin and rawless manual history, stop/resume, a strict
+live tail above the frozen high-water mark, backup-v1 reset/recompletion, empty
+replacement, and populated downgrade refusal; its service gate adds
+fact/raw/connection races that fail before ownership or checkpoint mutation.
+Remaining raw/file-sensitive normalized rows, inherited children, artifacts,
+control phases, and the Stage 4 gates remain pending.
 
 ### Stage 4 — Ownership validation
 

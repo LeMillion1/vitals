@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -794,6 +794,45 @@ reset, never trusts incoming report bounds, and revalidates the retained graph
 after portable rows are replaced. The fixed operator remains read-only by
 default and emits only allowlisted aggregate counts and checksums without report
 IDs, tokens, hashes, titles, snapshots, dates, actors, or exception text.
+
+## Stage-3L optional-channel weight ownership operation
+
+The fixed `stage3.channel_optional.weight_logs.v1` phase covers only
+`weight_logs`. A reviewed fully-null S/A/C row gains the sole S and nothing else.
+Existing exact S with a nullable owner actor and a nullable same-subject Garmin
+account or OpenRouter AI-gateway connection is preserved; neither optional root
+is inferred from `source`, from a sole current connection, or from the raw
+payload the fact already links. Mass, note, supersession, date, domain, source,
+raw link, and both timestamps are untouched by the migration.
+
+Manual and MCP facts may not claim a provider connection, and their optional
+historical raw must be a weight-domain row of the same source. Garmin facts must
+reference a Garmin-domain `garmin_api` raw, and body-scan facts a
+body-composition raw written either by the vision parser or by structured MCP.
+A raw C is Stage-3A/3D evidence rather than a Stage-3L requirement: backup v1
+strips it and records those phases as restore-blocked, so a still-unowned or
+connection-stripped raw remains valid provenance for a historical fact while an
+adopted fact may never point at fully-unowned raw history. Parser invocations
+are validated for subject equality and for subject-versus-platform exclusivity,
+never re-created.
+
+Initial completion locks provider roots, raw payloads, and facts in canonical
+order and rehashes the frozen data and ownership snapshot. Weights stay volatile
+afterwards, so completed status validates the current graph — new manual, MCP,
+Garmin, and body-scan writes, supersession, note corrections, and deletions
+remain legal. The phase also proves that exactly one active weight exists per
+date, which is the duplicate gate the later `(S, date) WHERE superseded = false`
+cutover has to satisfy.
+
+Backup v1 preserves the weight business fields and `raw_payload_id`, rebinds S,
+and strips optional A/C. Import resets the exact Stage-3L checkpoint after the
+retained Stage-3K preparation and before replacement to RUNNING for a nonempty
+snapshot or exact COMPLETED for an empty snapshot, then revalidates the restored
+graph before commit. Recompletion never fabricates the stripped actor or
+connection. The fixed operator is read-only by default, commits one bounded
+batch per transaction, and emits only allowlisted aggregate counts and checksums
+without weight values, notes, dates, row/raw IDs, UUIDs, exception text, or
+database configuration.
 
 ## Completion gates
 

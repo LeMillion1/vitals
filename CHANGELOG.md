@@ -130,6 +130,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 3L for optional-channel weight ownership. The fixed
+  `stage3.channel_optional.weight_logs.v1` operation gives reviewed fully-unowned
+  historical weights only the sole subject: actor attribution, the Garmin or
+  body-scan connection, the raw link, mass, note, supersession, and both
+  timestamps are preserved exactly, and a provider connection is never copied
+  down from the raw payload onto the fact. Manual/MCP, Garmin, and body-scan
+  provenance shapes are validated against their reviewed raw domain/source and
+  parser-invocation exclusivity, and the one-active-weight-per-date invariant is
+  proved independently of the legacy global index. Backup v1 rebinds S, strips
+  actor/connection, and resets the exact checkpoint after Stage 3K to RUNNING
+  for a nonempty snapshot or COMPLETED for an empty one.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before
