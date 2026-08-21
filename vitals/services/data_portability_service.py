@@ -135,6 +135,11 @@ from vitals.services.signal_ownership_backfill_service import (
     preflight_signal_ownership_backfill,
     reset_signal_ownership_backfill_for_portability_v1_restore,
 )
+from vitals.services.shared_report_ownership_backfill_service import (
+    SharedReportOwnershipBackfillError,
+    preflight_shared_report_ownership_backfill,
+    prepare_shared_report_ownership_backfill_for_portability_v1_restore,
+)
 from vitals.services.signals_service import normalize_key
 from vitals.utils.timeutils import now_local
 
@@ -914,6 +919,17 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                     "import.error.generic",
                     exc="signal ownership restore reset was rejected",
                 ) from exc
+            try:
+                await (
+                    prepare_shared_report_ownership_backfill_for_portability_v1_restore(
+                        session
+                    )
+                )
+            except SharedReportOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="shared-report ownership restore preparation was rejected",
+                ) from exc
         preserved = await _secret_settings(session)
 
         # Wipe in reverse FK order so child rows go before the parents they reference.
@@ -996,6 +1012,13 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                 raise _contract_error(
                     "import.error.generic",
                     exc="signal validation rejected the portable restore",
+                ) from exc
+            try:
+                await preflight_shared_report_ownership_backfill(session)
+            except SharedReportOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="shared-report validation rejected the portable restore",
                 ) from exc
         await _reset_sequences(session)
         await session.flush()

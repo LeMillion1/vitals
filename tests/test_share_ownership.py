@@ -16,6 +16,10 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.share import SharedReport
 from vitals.models.weight import WeightLog
 from vitals.services import identity_service, share_service
+from vitals.services.shared_report_ownership_backfill_service import (
+    SharedReportHistoricalBridgeState,
+    SharedReportOwnershipBackfillStateError,
+)
 from vitals.utils.timeutils import now_local
 from web.config import get_web_config
 
@@ -71,6 +75,30 @@ def _bare_report(token: str, **roots) -> SharedReport:
     )
 
 
+def _bridge(
+    monkeypatch,
+    *,
+    cursor: int,
+    high_watermark: int,
+    completed: bool = False,
+) -> None:
+    from vitals.services import shared_report_ownership_backfill_service
+
+    async def load(session, *, subject_id):
+        del session, subject_id
+        return SharedReportHistoricalBridgeState(
+            processed_high_watermark_id=cursor,
+            snapshot_high_watermark_id=high_watermark,
+            completed=completed,
+        )
+
+    monkeypatch.setattr(
+        shared_report_ownership_backfill_service,
+        "shared_report_historical_bridge_state",
+        load,
+    )
+
+
 @pytest.mark.asyncio
 async def test_create_stamps_subject_creator_and_keeps_ids_out_of_snapshot(
     db_session,
@@ -114,6 +142,233 @@ async def test_owner_reads_include_only_exact_and_fully_null_history(
             prepared_owner=prepared,
         )
     ) is legacy
+
+
+@pytest.mark.asyncio
+async def test_running_bridge_exposes_migrated_prefix_and_unprocessed_legacy(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    migrated = _bare_report(
+        "running-migrated-prefix",
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    unprocessed = _bare_report("running-unprocessed-legacy")
+    db_session.add_all([migrated, unprocessed])
+    await db_session.flush()
+    _bridge(
+        monkeypatch,
+        cursor=migrated.id,
+        high_watermark=unprocessed.id,
+    )
+    prepared = await _prepared(db_session)
+
+    rows = await share_service.list_reports(db_session, prepared_owner=prepared)
+    assert {row.id for row in rows} == {migrated.id, unprocessed.id}
+    assert await share_service.resolve_public(db_session, migrated.token) is migrated
+    assert await share_service.resolve_public(db_session, unprocessed.token) is unprocessed
+    assert await share_service.register_open(db_session, unprocessed.token) is unprocessed
+    assert unprocessed.opened_count == 1
+
+
+@pytest.mark.asyncio
+async def test_running_bridge_rejects_fully_null_processed_or_above_hwm(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    processed_but_null = _bare_report("running-null-at-cursor")
+    db_session.add(processed_but_null)
+    await db_session.flush()
+    _bridge(
+        monkeypatch,
+        cursor=processed_but_null.id,
+        high_watermark=processed_but_null.id,
+    )
+    prepared = await _prepared(db_session)
+
+    with pytest.raises(share_service.ShareOwnershipError, match="outside"):
+        await share_service.list_reports(db_session, prepared_owner=prepared)
+    assert await share_service.resolve_public(
+        db_session, processed_but_null.token
+    ) is None
+
+    await db_session.delete(processed_but_null)
+    await db_session.flush()
+    historical = _bare_report(
+        "running-hwm-anchor",
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    forged_tail = _bare_report("running-forged-null-tail")
+    db_session.add_all([historical, forged_tail])
+    await db_session.flush()
+    _bridge(
+        monkeypatch,
+        cursor=historical.id,
+        high_watermark=historical.id,
+    )
+
+    with pytest.raises(share_service.ShareOwnershipError, match="outside"):
+        await share_service.get_report(
+            db_session,
+            forged_tail.id,
+            prepared_owner=prepared,
+        )
+    assert await share_service.resolve_public(db_session, forged_tail.token) is None
+    assert await share_service.register_open(db_session, forged_tail.token) is None
+    with pytest.raises(share_service.ShareOwnershipError, match="outside"):
+        await share_service.revoke(
+            db_session,
+            forged_tail.id,
+            prepared_owner=prepared,
+        )
+    with pytest.raises(share_service.ShareOwnershipError, match="outside"):
+        await share_service.delete_report(
+            db_session,
+            forged_tail.id,
+            prepared_owner=prepared,
+        )
+
+
+@pytest.mark.asyncio
+async def test_running_unprocessed_revoke_and_delete_are_authenticated_adoptions(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    to_revoke = _bare_report("running-unprocessed-revoke")
+    to_delete = _bare_report("running-unprocessed-delete")
+    db_session.add_all([to_revoke, to_delete])
+    await db_session.flush()
+    _bridge(
+        monkeypatch,
+        cursor=0,
+        high_watermark=to_delete.id,
+    )
+    prepared = await _prepared(db_session)
+
+    assert await share_service.revoke(
+        db_session,
+        to_revoke.id,
+        prepared_owner=prepared,
+    )
+    assert to_revoke.subject_id == legacy_owner_roots.subject_id
+    assert to_revoke.created_by_user_id is None
+    assert to_revoke.revoked_by_user_id == legacy_owner_roots.user_id
+    assert await share_service.get_report(
+        db_session,
+        to_revoke.id,
+        prepared_owner=prepared,
+    ) is to_revoke
+    assert await share_service.delete_report(
+        db_session,
+        to_delete.id,
+        prepared_owner=prepared,
+    )
+
+
+@pytest.mark.asyncio
+async def test_completed_bridge_allows_historical_and_requires_strict_live_creator(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    historical = _bare_report(
+        "completed-historical",
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    live = _bare_report(
+        "completed-strict-live",
+        subject_id=legacy_owner_roots.subject_id,
+        created_by_user_id=legacy_owner_roots.user_id,
+    )
+    db_session.add_all([historical, live])
+    await db_session.flush()
+    _bridge(
+        monkeypatch,
+        cursor=historical.id,
+        high_watermark=historical.id,
+        completed=True,
+    )
+    prepared = await _prepared(db_session)
+
+    rows = await share_service.list_reports(db_session, prepared_owner=prepared)
+    assert {row.id for row in rows} == {historical.id, live.id}
+    assert await share_service.resolve_public(db_session, historical.token) is historical
+    assert await share_service.register_open(db_session, live.token) is live
+
+    live.created_by_user_id = None
+    await db_session.flush()
+    with pytest.raises(share_service.ShareOwnershipError, match="creator"):
+        await share_service.list_reports(db_session, prepared_owner=prepared)
+    assert await share_service.resolve_public(db_session, live.token) is None
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_errors_fail_owner_and_purge_and_are_public_not_found(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    from vitals.services import shared_report_ownership_backfill_service
+
+    report = _bare_report(
+        "malformed-checkpoint",
+        subject_id=legacy_owner_roots.subject_id,
+        created_by_user_id=legacy_owner_roots.user_id,
+    )
+    report.expires_at = now_local() - timedelta(minutes=1)
+    db_session.add(report)
+    await db_session.flush()
+
+    async def reject(session, *, subject_id):
+        del session, subject_id
+        raise SharedReportOwnershipBackfillStateError(
+            "malformed or wrong-subject checkpoint"
+        )
+
+    monkeypatch.setattr(
+        shared_report_ownership_backfill_service,
+        "shared_report_historical_bridge_state",
+        reject,
+    )
+    prepared = await _prepared(db_session)
+    with pytest.raises(share_service.ShareOwnershipError, match="checkpoint"):
+        await share_service.list_reports(db_session, prepared_owner=prepared)
+    assert await share_service.resolve_public(db_session, report.token) is None
+    assert await share_service.register_open(db_session, report.token) is None
+    with pytest.raises(share_service.ShareOwnershipError, match="checkpoint"):
+        await share_service.purge_expired(db_session)
+    assert report.snapshot is not None
+
+
+@pytest.mark.asyncio
+async def test_running_bridge_purges_migrated_and_unprocessed_snapshots(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    migrated = _bare_report(
+        "running-expired-migrated",
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    unprocessed = _bare_report("running-expired-unprocessed")
+    migrated.expires_at = unprocessed.expires_at = (
+        now_local() - timedelta(minutes=1)
+    )
+    db_session.add_all([migrated, unprocessed])
+    await db_session.flush()
+    _bridge(
+        monkeypatch,
+        cursor=migrated.id,
+        high_watermark=unprocessed.id,
+    )
+
+    assert await share_service.purge_expired(db_session) == 2
+    assert migrated.snapshot is None
+    assert unprocessed.snapshot is None
+    assert unprocessed.subject_id is None
 
 
 @pytest.mark.asyncio

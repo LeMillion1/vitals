@@ -378,81 +378,203 @@ def _owner_scope(prepared_owner: PreparedShareOwner):
     )
 
 
-def _validate_owner_roots(
-    prepared_owner: PreparedShareOwner,
+def _bridge_is_absent(state: Any) -> bool:
+    return (
+        state.processed_high_watermark_id == 0
+        and state.snapshot_high_watermark_id == 0
+        and not state.completed
+    )
+
+
+async def _historical_bridge_state(
+    session: AsyncSession,
     *,
+    subject_id: uuid.UUID,
+    public: bool = False,
+) -> Any:
+    """Load the service-validated Stage-3K boundary without an import cycle."""
+
+    from vitals.services.shared_report_ownership_backfill_service import (
+        SharedReportOwnershipBackfillError,
+        shared_report_historical_bridge_state,
+    )
+
+    try:
+        return await shared_report_historical_bridge_state(
+            session,
+            subject_id=subject_id,
+        )
+    except SharedReportOwnershipBackfillError as exc:
+        error = (
+            _PublicReportOwnershipError
+            if public
+            else ShareOwnershipError
+        )
+        raise error(
+            "shared-report migration checkpoint is not authoritative"
+        ) from exc
+
+
+def _validate_report_roots(
+    *,
+    report_id: int,
+    expected_subject_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
     subject_id: uuid.UUID | None,
     created_by_user_id: uuid.UUID | None,
     revoked_by_user_id: uuid.UUID | None,
     revoked_at: datetime | None,
+    bridge_state: Any,
+    error_type: type[ShareOwnershipError] = ShareOwnershipError,
 ) -> bool:
     """Validate stored roots; return whether this is fully-null legacy history."""
-    identity = prepared_owner._identity
-    owner_user_id = prepared_owner._owner_user_id
-    if revoked_by_user_id is not None and revoked_at is None:
-        raise ShareOwnershipError(
-            "shared report has revocation actor without revocation timestamp"
-        )
+    checkpoint_absent = _bridge_is_absent(bridge_state)
+    within_snapshot = report_id <= bridge_state.snapshot_high_watermark_id
     if subject_id is None:
         if created_by_user_id is not None or revoked_by_user_id is not None:
-            raise ShareOwnershipError(
+            raise error_type(
                 "shared report has partial legacy ownership roots"
             )
+        if not checkpoint_absent and (
+            bridge_state.completed
+            or report_id <= bridge_state.processed_high_watermark_id
+            or not within_snapshot
+        ):
+            raise error_type(
+                "fully-unowned shared report is outside the historical bridge"
+            )
         return True
-    if subject_id != identity.subject_id:
-        raise ShareOwnershipError("shared report belongs to another subject")
+    if revoked_by_user_id is not None and revoked_at is None:
+        raise error_type(
+            "shared report has revocation actor without revocation timestamp"
+        )
+    if subject_id != expected_subject_id:
+        raise error_type("shared report belongs to another subject")
+    if not checkpoint_absent and not within_snapshot:
+        if created_by_user_id != owner_user_id:
+            raise error_type(
+                "live shared report creator does not own its health subject"
+            )
+        if (revoked_at is None) != (revoked_by_user_id is None):
+            raise error_type(
+                "live shared report has inconsistent revocation provenance"
+            )
     for actor_user_id in (created_by_user_id, revoked_by_user_id):
         # An exact-S row may legitimately lack historical actor provenance.  A
         # non-null actor, however, must be the subject owner.
         if actor_user_id is not None and actor_user_id != owner_user_id:
-            raise ShareOwnershipError(
-                "shared report actor does not own its health subject"
+            raise error_type(
+                "shared report has a foreign actor for its health subject"
             )
     return False
+
+
+def _validate_owner_roots(
+    prepared_owner: PreparedShareOwner,
+    **roots: Any,
+) -> bool:
+    return _validate_report_roots(
+        expected_subject_id=prepared_owner._identity.subject_id,
+        owner_user_id=prepared_owner._owner_user_id,
+        **roots,
+    )
 
 
 async def _reject_selected_scope_corruption(
     session: AsyncSession,
     prepared_owner: PreparedShareOwner,
-) -> None:
+) -> Any:
     identity = prepared_owner._identity
+    bridge_state = await _historical_bridge_state(
+        session,
+        subject_id=identity.subject_id,
+    )
     owner_user_id = prepared_owner._owner_user_id
-    corrupt_id = await session.scalar(
-        select(SharedReport.id)
-        .where(
+    root_columns = (
+        SharedReport.id,
+        SharedReport.subject_id,
+        SharedReport.created_by_user_id,
+        SharedReport.revoked_by_user_id,
+        SharedReport.revoked_at,
+    )
+    invalid_shapes = or_(
+        and_(
+            SharedReport.subject_id.is_(None),
+            or_(
+                SharedReport.created_by_user_id.is_not(None),
+                SharedReport.revoked_by_user_id.is_not(None),
+            ),
+        ),
+        and_(
+            SharedReport.subject_id == identity.subject_id,
             or_(
                 and_(
-                    SharedReport.subject_id.is_(None),
-                    or_(
-                        SharedReport.created_by_user_id.is_not(None),
-                        SharedReport.revoked_by_user_id.is_not(None),
-                    ),
+                    SharedReport.created_by_user_id.is_not(None),
+                    SharedReport.created_by_user_id != owner_user_id,
                 ),
                 and_(
-                    SharedReport.subject_id == identity.subject_id,
-                    or_(
-                        and_(
-                            SharedReport.created_by_user_id.is_not(None),
-                            SharedReport.created_by_user_id != owner_user_id,
-                        ),
-                        and_(
-                            SharedReport.revoked_by_user_id.is_not(None),
+                    SharedReport.revoked_by_user_id.is_not(None),
+                    SharedReport.revoked_by_user_id != owner_user_id,
+                ),
+                and_(
+                    SharedReport.revoked_by_user_id.is_not(None),
+                    SharedReport.revoked_at.is_(None),
+                ),
+            ),
+        ),
+    )
+    candidates = [invalid_shapes]
+    if not _bridge_is_absent(bridge_state):
+        invalid_fully_null = SharedReport.subject_id.is_(None)
+        if not bridge_state.completed:
+            invalid_fully_null = and_(
+                invalid_fully_null,
+                or_(
+                    SharedReport.id
+                    <= bridge_state.processed_high_watermark_id,
+                    SharedReport.id > bridge_state.snapshot_high_watermark_id,
+                ),
+            )
+        candidates.append(invalid_fully_null)
+        candidates.append(
+            and_(
+                SharedReport.subject_id == identity.subject_id,
+                SharedReport.id > bridge_state.snapshot_high_watermark_id,
+                or_(
+                    SharedReport.created_by_user_id.is_(None),
+                    SharedReport.created_by_user_id != owner_user_id,
+                    and_(
+                        SharedReport.revoked_at.is_not(None),
+                        or_(
+                            SharedReport.revoked_by_user_id.is_(None),
                             SharedReport.revoked_by_user_id != owner_user_id,
-                        ),
-                        and_(
-                            SharedReport.revoked_by_user_id.is_not(None),
-                            SharedReport.revoked_at.is_(None),
                         ),
                     ),
                 ),
             )
         )
-        .limit(1)
-    )
-    if corrupt_id is not None:
-        raise ShareOwnershipError(
-            "shared report has partial or foreign ownership roots"
+    for predicate in candidates:
+        root = (
+            await session.execute(
+                select(*root_columns)
+                .where(predicate)
+                .order_by(SharedReport.id)
+                .limit(1)
+            )
+        ).one_or_none()
+        if root is None:
+            continue
+        _validate_owner_roots(
+            prepared_owner,
+            report_id=root.id,
+            subject_id=root.subject_id,
+            created_by_user_id=root.created_by_user_id,
+            revoked_by_user_id=root.revoked_by_user_id,
+            revoked_at=root.revoked_at,
+            bridge_state=bridge_state,
         )
+        raise ShareOwnershipError("shared report ownership validation failed")
+    return bridge_state
 
 
 # ── Snapshot ──────────────────────────────────────────────────────────────────
@@ -924,7 +1046,7 @@ async def list_reports(
             SharedReport.revoked_by_user_id.is_(None),
         )
     else:
-        await _reject_selected_scope_corruption(session, owner)
+        bridge_state = await _reject_selected_scope_corruption(session, owner)
         stmt = select(SharedReport).where(_owner_scope(owner))
     result = await session.execute(
         stmt.order_by(SharedReport.created_at.desc(), SharedReport.id.desc())
@@ -935,10 +1057,12 @@ async def list_reports(
         for row in rows:
             _validate_owner_roots(
                 owner,
+                report_id=row.id,
                 subject_id=row.subject_id,
                 created_by_user_id=row.created_by_user_id,
                 revoked_by_user_id=row.revoked_by_user_id,
                 revoked_at=row.revoked_at,
+                bridge_state=bridge_state,
             )
     return rows
 
@@ -958,7 +1082,7 @@ async def get_report(
             SharedReport.revoked_by_user_id.is_(None),
         )
     else:
-        await _reject_selected_scope_corruption(session, owner)
+        bridge_state = await _reject_selected_scope_corruption(session, owner)
         stmt = select(SharedReport).where(
             SharedReport.id == report_id,
             _owner_scope(owner),
@@ -970,10 +1094,12 @@ async def get_report(
         return row
     _validate_owner_roots(
         owner,
+        report_id=row.id,
         subject_id=row.subject_id,
         created_by_user_id=row.created_by_user_id,
         revoked_by_user_id=row.revoked_by_user_id,
         revoked_at=row.revoked_at,
+        bridge_state=bridge_state,
     )
     return row
 
@@ -981,12 +1107,13 @@ async def get_report(
 async def _public_subject_owner(
     session: AsyncSession,
     *,
+    report_id: int,
     subject_id: uuid.UUID | None,
     created_by_user_id: uuid.UUID | None,
     revoked_by_user_id: uuid.UUID | None,
     revoked_at: datetime | None,
     for_update: bool,
-) -> tuple[uuid.UUID, uuid.UUID]:
+) -> tuple[uuid.UUID, uuid.UUID, Any]:
     """Validate roots selected by an opaque public token, never infer actors."""
     if revoked_by_user_id is not None and revoked_at is None:
         raise _PublicReportOwnershipError(
@@ -1053,14 +1180,23 @@ async def _public_subject_owner(
         raise _PublicReportOwnershipError(
             "public report owner is missing or inactive"
         )
-    for actor_user_id in (created_by_user_id, revoked_by_user_id):
-        # Actor NULL is valid historical provenance once S is exact.  The
-        # fully-null bridge above is stricter because S is not authoritative.
-        if actor_user_id is not None and actor_user_id != owner_user_id:
-            raise _PublicReportOwnershipError(
-                "public report actor does not own its subject"
-            )
-    return resolved_subject_id, owner_user_id
+    bridge_state = await _historical_bridge_state(
+        session,
+        subject_id=resolved_subject_id,
+        public=True,
+    )
+    _validate_report_roots(
+        report_id=report_id,
+        expected_subject_id=resolved_subject_id,
+        owner_user_id=owner_user_id,
+        subject_id=subject_id,
+        created_by_user_id=created_by_user_id,
+        revoked_by_user_id=revoked_by_user_id,
+        revoked_at=revoked_at,
+        bridge_state=bridge_state,
+        error_type=_PublicReportOwnershipError,
+    )
+    return resolved_subject_id, owner_user_id, bridge_state
 
 
 def _report_is_publicly_live(row: SharedReport) -> bool:
@@ -1091,6 +1227,7 @@ async def resolve_public(session: AsyncSession, token: str) -> Optional[SharedRe
     try:
         await _public_subject_owner(
             session,
+            report_id=row.id,
             subject_id=row.subject_id,
             created_by_user_id=row.created_by_user_id,
             revoked_by_user_id=row.revoked_by_user_id,
@@ -1131,6 +1268,7 @@ async def register_open(
     try:
         await _public_subject_owner(
             session,
+            report_id=report_id,
             subject_id=subject_id,
             created_by_user_id=created_by_user_id,
             revoked_by_user_id=revoked_by_user_id,
@@ -1177,7 +1315,7 @@ async def _lock_owner_report(
     prepared_owner: PreparedShareOwner,
 ) -> SharedReport | None:
     owner = _require_prepared_owner(session, prepared_owner)
-    await _reject_selected_scope_corruption(session, owner)
+    bridge_state = await _reject_selected_scope_corruption(session, owner)
     roots = (
         await session.execute(
             select(
@@ -1196,10 +1334,12 @@ async def _lock_owner_report(
     subject_id, created_by_user_id, revoked_by_user_id, revoked_at = roots
     _validate_owner_roots(
         owner,
+        report_id=report_id,
         subject_id=subject_id,
         created_by_user_id=created_by_user_id,
         revoked_by_user_id=revoked_by_user_id,
         revoked_at=revoked_at,
+        bridge_state=bridge_state,
     )
     row = await session.scalar(
         select(SharedReport)
@@ -1214,10 +1354,12 @@ async def _lock_owner_report(
         return None
     _validate_owner_roots(
         owner,
+        report_id=row.id,
         subject_id=row.subject_id,
         created_by_user_id=row.created_by_user_id,
         revoked_by_user_id=row.revoked_by_user_id,
         revoked_at=row.revoked_at,
+        bridge_state=bridge_state,
     )
     return row
 
@@ -1389,22 +1531,31 @@ async def purge_expired(session: AsyncSession, *, now: Optional[datetime] = None
     if any(owners.get(owner_id) is None for owner_id in owner_ids):
         raise ShareOwnershipError("expired shared report owner is missing")
 
+    bridge_states = {
+        subject_id: await _historical_bridge_state(
+            session,
+            subject_id=subject_id,
+        )
+        for subject_id in sorted(subject_ids, key=str)
+    }
     expected_roots = {}
     for root in root_rows:
         if root.subject_id is None:
             assert legacy_owner is not None
-            _, owner_user_id = legacy_owner
+            expected_subject_id, owner_user_id = legacy_owner
         else:
+            expected_subject_id = root.subject_id
             owner_user_id = subjects[root.subject_id].owner_user_id
-        for actor_user_id in (root.created_by_user_id, root.revoked_by_user_id):
-            if actor_user_id is not None and actor_user_id != owner_user_id:
-                raise ShareOwnershipError(
-                    "expired shared report actor does not own its subject"
-                )
-        if root.revoked_by_user_id is not None and root.revoked_at is None:
-            raise ShareOwnershipError(
-                "expired shared report has revocation actor without timestamp"
-            )
+        _validate_report_roots(
+            report_id=root.id,
+            expected_subject_id=expected_subject_id,
+            owner_user_id=owner_user_id,
+            subject_id=root.subject_id,
+            created_by_user_id=root.created_by_user_id,
+            revoked_by_user_id=root.revoked_by_user_id,
+            revoked_at=root.revoked_at,
+            bridge_state=bridge_states[expected_subject_id],
+        )
         expected_roots[root.id] = (
             root.subject_id,
             root.created_by_user_id,

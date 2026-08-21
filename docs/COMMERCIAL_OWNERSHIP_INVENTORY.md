@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -650,6 +650,24 @@ fact and raw rows. Import resets the exact Stage-3J checkpoint after Stage 3I an
 before replacement to RUNNING for a nonempty snapshot or exact COMPLETED for an
 empty snapshot. Recompletion never fabricates the stripped actor or recipient.
 
+Stage 3K continues with `stage3.retained_artifact.shared_reports.v1` over
+exactly `shared_reports`. A frozen report is adopted only from the fully-null
+S/creator/revoker shape and gains S alone; no actor is inferred and no token,
+password hash, snapshot, title, date, lifecycle value, counter, or timestamp is
+rewritten. A RUNNING checkpoint exposes only its unprocessed frozen tail through
+the fully-null compatibility bridge. Exact-S historical actor shapes remain
+valid anywhere at or below the snapshot HWM, while every report created above
+the HWM must have the strict live S+creator graph. Current reports are
+revalidated after legitimate open, revoke, purge, delete, and new-create
+volatility rather than comparing live data to the initial frozen digest.
+
+Backup v1 excludes `shared_reports` from both export and replacement so it cannot
+carry password hashes or resurrect public links. Under the same governance-locked
+restore transaction, Stage 3K therefore validates and preserves an existing
+checkpoint or prepares one from the retained local report set, without accepting
+incoming report bounds or mutating report rows. Post-load preflight revalidates
+the retained graph before commit.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -671,7 +689,9 @@ covers actorless/channel-less historical adoption, mutable plan/answer
 stop/resume and post-completion updates, backup-v1 reset/recompletion, and real
 date-row/provenance races. The Stage-3J rehearsal covers optional actor/channel
 history, batch/raw invariants, stop/resume, volatile misparse/delete behavior,
-backup-v1 reset/recompletion, and recipient/raw/FK races. Remaining
+backup-v1 reset/recompletion, and recipient/raw/FK races. The Stage-3K rehearsal
+covers retained public reports, bounded stop/resume, immutable frozen snapshots,
+lifecycle volatility, and backup-v1 checkpoint preservation. Remaining
 raw/file-sensitive normalized rows, inherited children, artifacts, control
 phases, and the Stage 4 gates remain pending.
 

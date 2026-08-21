@@ -43,6 +43,7 @@ from vitals.models.labs import LabResult
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.proactive import NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
+from vitals.models.share import SharedReport
 from vitals.models.signals import DayContext, Signal
 from vitals.models.supplements import Supplement
 from vitals.models.system_alert import SystemAlert
@@ -98,6 +99,10 @@ from vitals.services.signal_ownership_backfill_service import (
     SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     SIGNAL_OWNERSHIP_BACKFILL_TABLES,
     SignalOwnershipBackfillStateError,
+)
+from vitals.services.shared_report_ownership_backfill_service import (
+    SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    SharedReportOwnershipBackfillStateError,
 )
 
 _IDENTITY_CONTROL_PLANE_TABLES = {
@@ -2264,6 +2269,240 @@ async def test_signal_post_load_rejection_rolls_back_whole_replacement(
     assert restored is not None
     assert restored.key == "old_signal"
     assert await db_session.get(Signal, 62) is None
+
+
+def _retained_shared_report(*, token: str = "retained-stage3k") -> SharedReport:
+    return SharedReport(
+        token=token,
+        password_hash="$2b$04$synthetic-stage3k-hash",
+        title="Synthetic retained report",
+        domains=[Domain.LABS.value],
+        period_start=date(2026, 8, 1),
+        period_end=date(2026, 8, 21),
+        snapshot={"synthetic": {"marker": "redacted"}},
+        expires_at=datetime(2030, 1, 1),
+    )
+
+
+async def test_full_import_prepares_nonempty_retained_shared_report_stage3k(
+    db_session,
+    legacy_owner_roots,
+):
+    report = _retained_shared_report()
+    db_session.add(report)
+    await db_session.commit()
+    before = (
+        report.id,
+        report.subject_id,
+        report.created_by_user_id,
+        report.revoked_by_user_id,
+        report.token,
+        report.password_hash,
+        report.snapshot,
+        report.created_at,
+        report.updated_at,
+    )
+
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    retained = await db_session.get(SharedReport, report.id)
+    assert retained is not None
+    assert (
+        retained.id,
+        retained.subject_id,
+        retained.created_by_user_id,
+        retained.revoked_by_user_id,
+        retained.token,
+        retained.password_hash,
+        retained.snapshot,
+        retained.created_at,
+        retained.updated_at,
+    ) == before
+    phase = SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["shared_reports"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+        checkpoint.completed_at,
+    ) == ("running", report.id, 1, 0, 0, 0, 0, None)
+
+
+async def test_full_import_completes_exact_empty_retained_shared_report_stage3k(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    phase = SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["shared_reports"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+    ) == ("completed", 0, 0, 0, 0, 0, 0)
+    assert checkpoint.completed_at is not None
+
+
+async def test_full_import_prepares_shared_reports_after_signal_reset(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_signal_reset = (
+        data_portability_service.reset_signal_ownership_backfill_for_portability_v1_restore
+    )
+
+    async def tracked_signal_reset(*args, **kwargs):
+        order.append("signals")
+        return await original_signal_reset(*args, **kwargs)
+
+    async def stopping_shared_report_prepare(*args, **kwargs):
+        order.append("shared_reports")
+        raise SharedReportOwnershipBackfillStateError("synthetic stop")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_signal_ownership_backfill_for_portability_v1_restore",
+        tracked_signal_reset,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "prepare_shared_report_ownership_backfill_for_portability_v1_restore",
+        stopping_shared_report_prepare,
+    )
+    with pytest.raises(
+        PortabilityError,
+        match="shared-report ownership restore preparation",
+    ):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+            },
+        )
+    await db_session.rollback()
+    assert order == ["signals", "shared_reports"]
+
+
+async def test_full_import_preflights_shared_reports_after_signals(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_signal_preflight = (
+        data_portability_service.preflight_signal_ownership_backfill
+    )
+    original_shared_report_preflight = (
+        data_portability_service.preflight_shared_report_ownership_backfill
+    )
+
+    async def tracked_signal_preflight(*args, **kwargs):
+        order.append("signals")
+        return await original_signal_preflight(*args, **kwargs)
+
+    async def tracked_shared_report_preflight(*args, **kwargs):
+        order.append("shared_reports")
+        return await original_shared_report_preflight(*args, **kwargs)
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_signal_ownership_backfill",
+        tracked_signal_preflight,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_shared_report_ownership_backfill",
+        tracked_shared_report_preflight,
+    )
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    assert order == ["signals", "shared_reports"]
+
+
+async def test_shared_report_post_load_rejection_rolls_back_whole_replacement(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    old = Signal(
+        date=date(2026, 8, 20),
+        domain=Domain.SIGNALS.value,
+        source=Source.MCP.value,
+        kind="state",
+        key="retained_report_rollback_signal",
+        value_num=2.0,
+        batch_id="old-batch",
+        misparse=False,
+    )
+    report = _retained_shared_report(token="retained-stage3k-rollback")
+    db_session.add_all([old, report])
+    await db_session.commit()
+    old_id = old.id
+    report_id = report.id
+
+    async def rejected_preflight(*args, **kwargs):
+        raise SharedReportOwnershipBackfillStateError("sensitive synthetic state")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_shared_report_ownership_backfill",
+        rejected_preflight,
+    )
+    with pytest.raises(
+        PortabilityError,
+        match="shared-report validation rejected the portable restore",
+    ):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                "signals": [_portable_signal(row_id=63)],
+            },
+        )
+    await db_session.rollback()
+
+    restored = await db_session.get(Signal, old_id)
+    retained = await db_session.get(SharedReport, report_id)
+    assert restored is not None
+    assert restored.key == "retained_report_rollback_signal"
+    assert await db_session.get(Signal, 63) is None
+    assert retained is not None
+    assert retained.token == "retained-stage3k-rollback"
+    phase = SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["shared_reports"]
+    assert await db_session.get(OwnershipBackfillCheckpoint, phase) is None
 
 
 @pytest.mark.parametrize("table_name", HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES)

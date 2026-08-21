@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -770,6 +770,30 @@ default, exposes only bounded apply controls, and emits aggregate allowlisted
 JSON without signal text, keys, batch/raw IDs, dates, UUIDs, exception text, or
 database configuration. Consumer-bridge and scoped reader retirement remain a
 later gate.
+
+## Stage-3K retained shared-report ownership operation
+
+The fixed `stage3.retained_artifact.shared_reports.v1` phase covers only
+`shared_reports`. A frozen fully-null S/creator/revoker row gains the sole S and
+nothing else. Historical creator/revoker gaps remain null; non-null actors must
+be the subject owner and a revocation actor requires a revocation timestamp.
+Every token, password hash, frozen snapshot, report field, lifecycle value,
+counter, and timestamp is preserved through the ownership mutation.
+
+The checkpoint-aware owner and public-token boundary accepts fully-null rows only
+in the unprocessed frozen tail while RUNNING. Exact-S historical actor shapes are
+valid anywhere at or below the snapshot HWM, and rows above that HWM require the
+strict live S+creator graph. After completion, anonymous opens, owner revocation,
+snapshot purge, deletion, and strict new reports are validated as current-graph
+volatility; the initial digest remains migration evidence rather than a permanent
+business-data snapshot.
+
+Backup v1 excludes `shared_reports` from both export and replacement. Import
+therefore prepares or preserves the retained Stage-3K checkpoint after Stage 3J
+reset, never trusts incoming report bounds, and revalidates the retained graph
+after portable rows are replaced. The fixed operator remains read-only by
+default and emits only allowlisted aggregate counts and checksums without report
+IDs, tokens, hashes, titles, snapshots, dates, actors, or exception text.
 
 ## Completion gates
 

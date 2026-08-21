@@ -122,6 +122,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   canonical root-before-fact locks, and revalidates the current volatile graph
   after completion. Backup v1 resets nonempty signal snapshots for bounded
   recompletion after Stage 3I and completes empty snapshots exactly.
+- Added Stage 3K for retained shared-report ownership. The fixed
+  `stage3.retained_artifact.shared_reports.v1` operation assigns only the sole
+  subject to reviewed fully-unowned reports while preserving creator/revoker
+  gaps and every public token, password hash, frozen snapshot, lifecycle field,
+  counter, and timestamp. A checkpoint-bounded consumer boundary distinguishes
+  migrated history, the unprocessed frozen tail, and strict live reports.
+  Backup v1 neither exports nor replaces published reports, so import prepares
+  or preserves the retained checkpoint without trusting bounds from the file.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before

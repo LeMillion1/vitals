@@ -512,6 +512,15 @@ Implementation progress on `commercial/main`:
   reparse, and new-ingest transitions remain legal. Backup v1 retains `raw_id`
   and content, rebinds S, and resets the exact checkpoint after Stage 3I to
   RUNNING for a nonempty snapshot or COMPLETED for an empty one.
+- Stage 3K uses `stage3.retained_artifact.shared_reports.v1` for exactly
+  `shared_reports`. It adds only the sole S to reviewed fully-unowned retained
+  reports and preserves creator/revoker gaps plus every token, password hash,
+  frozen snapshot, lifecycle value, counter, and timestamp. A checkpoint-aware
+  boundary keeps only the unprocessed frozen tail on the fully-null bridge and
+  requires strict ownership for rows created above the snapshot HWM. Backup v1
+  intentionally neither exports nor replaces published reports; import
+  prepares or preserves the retained Stage-3K checkpoint after Stage 3J reset
+  and validates it again after portable replacement.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,
