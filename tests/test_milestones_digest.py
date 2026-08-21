@@ -319,7 +319,9 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
         prepared_conflict_write=await owner_write.write(DAY),
     )
     await genetics_service.add_variant(
-        db_session, gene="HFE", rsid="rs1800562", genotype="GG", marker="hemochromatosis_carrier"
+        db_session, gene="HFE", rsid="rs1800562", genotype="GG", marker="hemochromatosis_carrier",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     alert = await alerts_service.raise_alert(
         db_session, domain="labs", severity="warn", message="Ferritin high",

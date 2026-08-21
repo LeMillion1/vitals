@@ -10,6 +10,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the genetics domain, the first one whose facts carry raw provenance.
+  Every read takes the subject, every write takes the subject with its conflict
+  decision, and `get_variant` no longer falls back to a bare primary-key fetch —
+  a key proves nothing about whose genome it is. A variant with an actor but no
+  subject is reported as broken provenance rather than passed over, and the
+  bridge that adopted an unowned variant into a subject is gone along with the
+  four tests that described it. The scoped conflict resolver keeps the engine's
+  fully-unowned arm, and what it proves for a row that belongs to nobody is that
+  the raw it cites belongs to nobody either: a manual fact citing any raw, or a
+  VCF fact citing a raw with an actor, is refused there exactly as it is on the
+  owned path. The demo VCF seed writes directly, like the skincare one.
 - Closed the skincare domain. Every read takes the subject and every write takes
   the subject with its conflict decision; the routine, the observations and the
   product shelf are one person's or they are nobody's. All sixteen bridges are

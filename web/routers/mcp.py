@@ -684,7 +684,6 @@ async def get_genetics_snps(
         variants = await genetics_service.list_variants(
             session,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
             gene=gene,
             rsid=rsid,
             limit=limit,
@@ -754,7 +753,6 @@ async def upsert_genetic_variant(
                 source=Source.MCP.value,
                 identity=context.identity,
                 prepared_conflict_write=prepared,
-                include_legacy_unowned=True,
             )
             await session.commit()
         except Exception:
@@ -2228,22 +2226,22 @@ async def delete_record(domain: str, record_id: int) -> dict:
             conflict_context, prepared = await _mcp_v1_weight_write(session)
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
-                "prepared_weight_write": prepared,
+                        "include_legacy_unowned": True,
+                        "prepared_weight_write": prepared,
             }
         elif domain in {"measurement", "noise_marker"}:
             conflict_context, prepared = await _mcp_v1_aux_weight_write(session)
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
-                "prepared_conflict_write": prepared,
+                        "include_legacy_unowned": True,
+                        "prepared_conflict_write": prepared,
             }
         elif domain == "body_comp":
             conflict_context, prepared = await _mcp_v1_weight_write(session)
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
-                "prepared_weight_write": prepared,
+                        "include_legacy_unowned": True,
+                        "prepared_weight_write": prepared,
             }
         elif domain == "milestones":
             conflict_context = await _mcp_v1_conflict_write_context(session)
@@ -2262,8 +2260,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             ownership = await _mcp_v1_legacy_owner(session)
             owned_kwargs = {
                 "identity": ownership.owner_action(),
-                "include_legacy_unowned": True,
-            }
+                    }
         elif domain == "nutrition":
             conflict_context = await _mcp_v1_conflict_write_context(session)
             prepared = await conflict_engine.prepare_scoped_write(
@@ -2273,6 +2270,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             owned_kwargs = {
                 "identity": conflict_context.identity,
                 "include_unowned_legacy": True,
+                "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
         elif domain == "labs":
@@ -2283,8 +2281,8 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
-                "prepared_conflict_write": prepared,
+                        "include_legacy_unowned": True,
+                        "prepared_conflict_write": prepared,
             }
         elif domain == "genetics":
             conflict_context = await _mcp_v1_conflict_write_context(session)
@@ -2294,8 +2292,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
-                "prepared_conflict_write": prepared,
+                        "prepared_conflict_write": prepared,
             }
         elif domain == "skincare_observation":
             conflict_context = await _mcp_v1_conflict_write_context(session)
@@ -2315,8 +2312,8 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
-                "prepared_conflict_write": prepared,
+                        "include_legacy_unowned": True,
+                        "prepared_conflict_write": prepared,
             }
         elif domain in {
             "hrt_dose",
@@ -2331,15 +2328,14 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
-                "prepared_conflict_write": prepared,
+                        "include_legacy_unowned": True,
+                        "prepared_conflict_write": prepared,
             }
         elif domain == "signals":
             ownership = await _mcp_v1_legacy_owner(session)
             owned_kwargs = {
                 "subject_id": ownership.subject_id,
-                "include_legacy_unowned": True,
-            }
+                    }
         ok = await getattr(service, fn_name)(session, record_id, **owned_kwargs)
         if domain == "body_comp" and ok:
             await service.refresh_alerts(

@@ -692,7 +692,6 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
                 session,
                 identity=context.identity,
                 prepared_conflict_write=prepared,
-                include_legacy_unowned=True,
             )
 
         for name, sweep in (

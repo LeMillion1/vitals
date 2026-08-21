@@ -88,32 +88,10 @@ def _require_scoped_prepared_write(
     )
 
 
-def _require_legacy_bridge(
-    context: conflict_engine.ConflictWriteContext,
-    *,
-    include_legacy_unowned: bool,
-) -> None:
-    if (
-        include_legacy_unowned
-        and context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy genetics access requires fully-unowned compatibility"
-        )
+def _subject_scope(subject_id: uuid.UUID):
+    """A genome belongs to one person; an rsID identifies a locus, not them."""
 
-
-def _subject_scope(subject_id: uuid.UUID, *, include_legacy_unowned: bool):
-    exact = GeneticVariant.subject_id == subject_id
-    if not include_legacy_unowned:
-        return exact
-    return or_(
-        exact,
-        and_(
-            GeneticVariant.subject_id.is_(None),
-            GeneticVariant.actor_user_id.is_(None),
-        ),
-    )
+    return GeneticVariant.subject_id == subject_id
 
 
 def _raw_is_fully_unowned(raw: RawPayload) -> bool:
@@ -211,8 +189,7 @@ async def _reject_partial_legacy_raws(
 async def list_variants(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     gene: str | None = None,
     rsid: str | None = None,
     limit: int | None = None,
@@ -220,31 +197,21 @@ async def list_variants(
     gene = _validate_filter("gene", gene)
     rsid = _validate_filter("rsid", rsid)
     _validate_limit(limit)
-    stmt = select(GeneticVariant).execution_options(populate_existing=True)
-    if subject_id is not None:
-        if not isinstance(subject_id, uuid.UUID):
-            raise GeneticsValidationError("subject_id must be a UUID or None")
-        stmt = stmt.where(
-            _subject_scope(
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise GeneticsValidationError(
-            "legacy genetics compatibility requires a subject_id"
-        )
+    if not isinstance(subject_id, uuid.UUID):
+        raise GeneticsValidationError("subject_id must be a UUID")
+    stmt = (
+        select(GeneticVariant)
+        .where(_subject_scope(subject_id))
+        .execution_options(populate_existing=True)
+    )
     if gene is not None:
         stmt = stmt.where(func.lower(GeneticVariant.gene) == gene.lower())
     if rsid is not None:
         stmt = stmt.where(func.lower(GeneticVariant.rsid) == rsid.lower())
-    if subject_id is not None:
-        if include_legacy_unowned:
-            await _reject_partial_legacy_rows(
-                session,
-                gene=gene,
-                rsid=rsid,
-            )
+    if True:
+        # A variant with an actor but no subject is broken provenance, not
+        # merely another person's row.
+        await _reject_partial_legacy_rows(session, gene=gene, rsid=rsid)
         high_water_id = int(
             await session.scalar(
                 stmt.with_only_columns(func.max(GeneticVariant.id)).order_by(None)
@@ -271,7 +238,6 @@ async def list_variants(
                     session,
                     row=row,
                     subject_id=subject_id,
-                    include_legacy_unowned=include_legacy_unowned,
                     for_update=False,
                     raw_rsid_cache=raw_rsid_cache,
                 )
@@ -294,7 +260,6 @@ async def list_variants(
                 session,
                 row=row,
                 subject_id=subject_id,
-                include_legacy_unowned=include_legacy_unowned,
                 for_update=False,
                 raw_rsid_cache=raw_rsid_cache,
             )
@@ -305,8 +270,7 @@ async def get_variant(
     session: AsyncSession,
     variant_id: int,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> GeneticVariant | None:
     if (
         not isinstance(variant_id, int)
@@ -314,14 +278,8 @@ async def get_variant(
         or variant_id < 1
     ):
         raise GeneticsValidationError("variant_id must be a positive integer")
-    if subject_id is None:
-        if include_legacy_unowned:
-            raise GeneticsValidationError(
-                "legacy genetics compatibility requires a subject_id"
-            )
-        return await session.get(GeneticVariant, variant_id)
     if not isinstance(subject_id, uuid.UUID):
-        raise GeneticsValidationError("subject_id must be a UUID or None")
+        raise GeneticsValidationError("subject_id must be a UUID")
     candidate = await session.scalar(
         select(GeneticVariant)
         .where(GeneticVariant.id == variant_id)
@@ -329,23 +287,16 @@ async def get_variant(
     )
     if candidate is None:
         return None
-    if candidate.subject_id != subject_id and not (
-        include_legacy_unowned and _variant_is_fully_unowned(candidate)
-    ):
-        if (
-            include_legacy_unowned
-            and candidate.subject_id is None
-            and candidate.actor_user_id is not None
-        ):
-            raise GeneticsOwnershipError(
-                "partial legacy genetic ownership cannot cross the compatibility bridge"
-            )
+    if candidate.subject_id is None and candidate.actor_user_id is not None:
+        raise GeneticsOwnershipError(
+            "genetic variant has partial ownership provenance"
+        )
+    if candidate.subject_id != subject_id:
         return None
     await _validate_variant_graph(
         session,
         row=candidate,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         for_update=False,
     )
     return candidate
@@ -474,7 +425,6 @@ def _validate_raw_owner(
     *,
     subject_id: uuid.UUID,
     actor_user_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
 ) -> None:
     exact = (
         raw.subject_id == subject_id
@@ -488,10 +438,7 @@ def _validate_raw_owner(
         and raw.integration_connection_id is None
         and raw.file_asset_id is None
     )
-    if not exact and not (
-        include_legacy_unowned
-        and (_raw_is_fully_unowned(raw) or historical_null_actor)
-    ):
+    if not exact and not historical_null_actor:
         raise GeneticsRawProvenanceError(
             "VCF raw payload has foreign or partial S/A/C/F provenance"
         )
@@ -557,7 +504,6 @@ async def _validate_variant_graph(
     *,
     row: GeneticVariant,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool,
     for_update: bool,
     raw_rsid_cache: dict[int, frozenset[str]] | None = None,
 ) -> None:
@@ -567,12 +513,12 @@ async def _validate_variant_graph(
     row_is_legacy = _variant_is_fully_unowned(row)
     if row.subject_id == subject_id:
         if row.actor_user_id != owner_user_id and not (
-            include_legacy_unowned and row.actor_user_id is None
+            row.actor_user_id is None
         ):
             raise GeneticsOwnershipError(
                 "genetic variant actor is foreign to its subject owner"
             )
-    elif not (include_legacy_unowned and row_is_legacy):
+    elif not row_is_legacy:
         raise GeneticsOwnershipError("genetic variant belongs to another subject")
     _validate_source(row.source)
     if row.source in {Source.MANUAL.value, Source.MCP.value}:
@@ -607,7 +553,7 @@ async def _validate_variant_graph(
         and row.actor_user_id == owner_user_id
         and raw_exact_owner
     )
-    bridged_graph = include_legacy_unowned and (
+    bridged_graph = (
         (
             row_is_legacy
             and (
@@ -637,7 +583,6 @@ async def _lock_scoped_variant(
     variant_id: int,
     *,
     context: conflict_engine.ConflictWriteContext,
-    include_legacy_unowned: bool,
 ) -> GeneticVariant | None:
     row = await session.scalar(
         select(GeneticVariant)
@@ -645,7 +590,6 @@ async def _lock_scoped_variant(
             GeneticVariant.id == variant_id,
             _subject_scope(
                 context.identity.subject_id,
-                include_legacy_unowned=include_legacy_unowned,
             ),
         )
         .with_for_update()
@@ -659,19 +603,17 @@ async def _lock_scoped_variant(
         )
         if (
             candidate is not None
-            and include_legacy_unowned
             and candidate.subject_id is None
             and candidate.actor_user_id is not None
         ):
             raise GeneticsOwnershipError(
-                "partial legacy genetic ownership cannot cross the compatibility bridge"
+                "genetic variant has partial ownership provenance"
             )
         return None
     await _validate_variant_graph(
         session,
         row=row,
         subject_id=context.identity.subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         for_update=True,
     )
     return row
@@ -690,9 +632,8 @@ async def add_variant(
     action_notes: Optional[str] = None,
     source: str = Source.MANUAL.value,
     raw_payload_id: int | None = None,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
-    include_legacy_unowned: bool = False,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> GeneticVariant:
     context = _require_scoped_prepared_write(
         session,
@@ -700,10 +641,6 @@ async def add_variant(
         prepared=prepared_conflict_write,
     )
     if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
         _validate_source(source)
         owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
         if identity.actor_user_id != owner_user_id:
@@ -726,18 +663,13 @@ async def add_variant(
                 raw,
                 subject_id=identity.subject_id,
                 actor_user_id=identity.actor_user_id,
-                include_legacy_unowned=include_legacy_unowned,
             )
-    elif include_legacy_unowned:
-        raise GeneticsValidationError(
-            "legacy genetics compatibility requires a scoped writer"
-        )
     if not isinstance(gene, str) or not gene.strip():
         raise GeneticsValidationError("gene must be a non-blank string")
     normalized_rsid = None if rsid is None else _normalize_rsid(rsid)
     row = GeneticVariant(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         domain=DOMAIN,
         source=source,
         raw_payload_id=raw_payload_id,
@@ -766,7 +698,6 @@ async def _lock_by_rsid(
     *,
     rsid: str,
     context: conflict_engine.ConflictWriteContext | None,
-    include_legacy_unowned: bool,
     replacement_raw: RawPayload | None = None,
 ) -> GeneticVariant | None:
     rsid = _normalize_rsid(rsid)
@@ -777,7 +708,6 @@ async def _lock_by_rsid(
         stmt = stmt.where(
             _subject_scope(
                 context.identity.subject_id,
-                include_legacy_unowned=include_legacy_unowned,
             )
         )
     rows = list(
@@ -805,16 +735,7 @@ async def _lock_by_rsid(
                 )
                 valid_fact_root = (
                     row.subject_id == context.identity.subject_id
-                    and row.actor_user_id == owner_user_id
-                ) or (
-                    include_legacy_unowned
-                    and (
-                        _variant_is_fully_unowned(row)
-                        or (
-                            row.subject_id == context.identity.subject_id
-                            and row.actor_user_id is None
-                        )
-                    )
+                    and row.actor_user_id in {owner_user_id, None}
                 )
                 if not valid_fact_root:
                     raise GeneticsOwnershipError(
@@ -825,14 +746,12 @@ async def _lock_by_rsid(
                     replacement_raw,
                     subject_id=context.identity.subject_id,
                     actor_user_id=owner_user_id,
-                    include_legacy_unowned=include_legacy_unowned,
                 )
             else:
                 await _validate_variant_graph(
                     session,
                     row=row,
                     subject_id=context.identity.subject_id,
-                    include_legacy_unowned=include_legacy_unowned,
                     for_update=True,
                 )
         return row
@@ -852,9 +771,8 @@ async def upsert_by_rsid(
     action_notes: object = PATCH_UNSET,
     source: str = Source.VCF_IMPORT.value,
     raw_payload_id: int | None = None,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
-    include_legacy_unowned: bool = False,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> GeneticVariant:
     """Locked rsID upsert; corrections preserve origin/source/raw provenance."""
 
@@ -867,10 +785,6 @@ async def upsert_by_rsid(
         prepared=prepared_conflict_write,
     )
     if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
         _validate_source(source)
         owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
         if identity.actor_user_id != owner_user_id:
@@ -884,15 +798,10 @@ async def upsert_by_rsid(
             raise GeneticsRawProvenanceError(
                 "manual and MCP genetics facts require null raw provenance"
             )
-    elif include_legacy_unowned:
-        raise GeneticsValidationError(
-            "legacy genetics compatibility requires a scoped writer"
-        )
     row = await _lock_by_rsid(
         session,
         rsid=normalized_rsid,
         context=context,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if row is None:
         return await add_variant(
@@ -917,7 +826,6 @@ async def upsert_by_rsid(
             raw_payload_id=raw_payload_id,
             identity=identity,
             prepared_conflict_write=prepared_conflict_write,
-            include_legacy_unowned=include_legacy_unowned,
         )
     # Provenance is immutable on correction. The bridge may fill the entirely
     # absent legacy owner roots once, under the prepared S/A proof.
@@ -952,7 +860,6 @@ async def update_variant(
     action_notes: object = PATCH_UNSET,
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
-    include_legacy_unowned: bool = False,
 ) -> GeneticVariant | None:
     """Patch a locked scoped fact; omitted fields differ from explicit clears."""
 
@@ -962,10 +869,6 @@ async def update_variant(
         prepared=prepared_conflict_write,
     )
     assert context is not None
-    _require_legacy_bridge(
-        context,
-        include_legacy_unowned=include_legacy_unowned,
-    )
     owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
     if identity.actor_user_id != owner_user_id:
         raise conflict_engine.ConflictPreparedWriteError(
@@ -975,7 +878,6 @@ async def update_variant(
         session,
         variant_id,
         context=context,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if row is None:
         return None
@@ -1155,7 +1057,6 @@ async def _replace_vcf_rows(
     only_interpreted: bool,
     raw: RawPayload,
     context: conflict_engine.ConflictWriteContext,
-    include_legacy_unowned: bool,
 ) -> tuple[int, int]:
     # Last occurrence wins, then rsID sorting gives every worker the same lock
     # order and prevents a batch from updating one rsID twice.
@@ -1175,7 +1076,6 @@ async def _replace_vcf_rows(
             session,
             rsid=rsid,
             context=context,
-            include_legacy_unowned=include_legacy_unowned,
             replacement_raw=raw,
         )
         if row is None and only_interpreted and not fields.get("marker"):
@@ -1246,7 +1146,6 @@ async def ingest_vcf_batch(
     only_interpreted: bool = False,
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
-    include_legacy_unowned: bool = False,
 ) -> VcfIngestSummary:
     """Persist bounded raw rows first, then normalize the tiny curated batch."""
 
@@ -1296,10 +1195,6 @@ async def ingest_vcf_batch(
         prepared=prepared_conflict_write,
     )
     assert context is not None
-    _require_legacy_bridge(
-        context,
-        include_legacy_unowned=include_legacy_unowned,
-    )
     owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
     if identity.actor_user_id != owner_user_id:
         raise conflict_engine.ConflictPreparedWriteError(
@@ -1335,11 +1230,10 @@ async def ingest_vcf_batch(
             candidate,
             subject_id=identity.subject_id,
             actor_user_id=identity.actor_user_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
 
-    if include_legacy_unowned:
-        await _reject_partial_legacy_raws(session)
+    # A raw payload with an actor but no subject is broken provenance.
+    await _reject_partial_legacy_raws(session)
     raw = await raw_payload_service.upsert_owned_raw_payload(
         session,
         identity=identity,
@@ -1356,7 +1250,6 @@ async def ingest_vcf_batch(
         raw,
         subject_id=identity.subject_id,
         actor_user_id=identity.actor_user_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     imported, markers = await _replace_vcf_rows(
         session,
@@ -1364,7 +1257,6 @@ async def ingest_vcf_batch(
         only_interpreted=only_interpreted,
         raw=raw,
         context=context,
-        include_legacy_unowned=include_legacy_unowned,
     )
     raw.processed_at = now_local()
     await session.flush()
@@ -1377,8 +1269,8 @@ async def store_raw_vcf(
     filename: Optional[str],
     variants: Sequence[Sequence[str]],
     truncated: bool = False,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> RawPayload:
     """Legacy raw-only adapter; scoped callers use ``ingest_vcf_batch``."""
 
@@ -1404,26 +1296,15 @@ async def delete_variant(
     session: AsyncSession,
     variant_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
-    include_legacy_unowned: bool = False,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is None:
-        if include_legacy_unowned:
-            raise GeneticsValidationError(
-                "legacy genetics compatibility requires a scoped writer"
-            )
-        row = await session.get(GeneticVariant, variant_id)
-    else:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
+    if True:
         owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
         if identity.actor_user_id != owner_user_id:
             raise conflict_engine.ConflictPreparedWriteError(
@@ -1433,7 +1314,6 @@ async def delete_variant(
             session,
             variant_id,
             context=context,
-            include_legacy_unowned=include_legacy_unowned,
         )
     if row is None:
         return False
@@ -1460,11 +1340,40 @@ async def resolve_variants_scoped(
     *,
     scope: conflict_engine.ConflictScope,
 ) -> list[dict]:
-    variants = await list_variants(
-        session,
-        subject_id=scope.subject_id,
-        include_legacy_unowned=scope.include_legacy_unowned,
-    )
+    """Resolve one subject's markers for the conflict engine.
+
+    The engine still offers callers a fully-unowned bridge, and a resolver has
+    to honour the scope it is handed; this is the last reader in the module that
+    can see a row with no subject. It goes when that bridge does.
+    """
+
+    variants = list(await list_variants(session, subject_id=scope.subject_id))
+    if scope.include_legacy_unowned:
+        # The bridge adds rows that belong to nobody. Their graph carries no
+        # subject to validate against, so what is proved instead is that any
+        # raw they cite belongs to nobody either — a raw with an actor and no
+        # subject is broken provenance, not legacy data.
+        bridged = list(
+            await session.scalars(
+                select(GeneticVariant).where(
+                    GeneticVariant.subject_id.is_(None),
+                    GeneticVariant.actor_user_id.is_(None),
+                )
+            )
+        )
+        for row in bridged:
+            if row.raw_payload_id is None:
+                continue
+            if row.source in {Source.MANUAL.value, Source.MCP.value}:
+                raise GeneticsRawProvenanceError(
+                    "manual and MCP genetics facts require null raw provenance"
+                )
+            raw = await _load_raw(session, row.raw_payload_id, for_update=False)
+            if not _raw_is_fully_unowned(raw):
+                raise GeneticsRawProvenanceError(
+                    "VCF raw payload has partial legacy S/A/C/F provenance"
+                )
+        variants.extend(bridged)
     return [
         {"marker": row.marker, "gene": row.gene, "genotype": row.genotype}
         for row in variants
@@ -1477,7 +1386,6 @@ async def reparse_owned_pending(
     *,
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
-    include_legacy_unowned: bool = False,
     limit: int = raw_payload_service.REPARSE_BATCH,
     since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
 ) -> int:
@@ -1493,10 +1401,6 @@ async def reparse_owned_pending(
         prepared=prepared_conflict_write,
     )
     assert outer_context is not None
-    _require_legacy_bridge(
-        outer_context,
-        include_legacy_unowned=include_legacy_unowned,
-    )
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise GeneticsValidationError("limit must be a positive integer")
     if (
@@ -1506,20 +1410,9 @@ async def reparse_owned_pending(
     ):
         raise GeneticsValidationError("since_days must be a non-negative integer")
     cutoff = now_local() - timedelta(days=since_days)
-    if include_legacy_unowned:
-        await _reject_partial_legacy_raws(session, pending_since=cutoff)
+    await _reject_partial_legacy_raws(session, pending_since=cutoff)
 
     raw_scope = RawPayload.subject_id == identity.subject_id
-    if include_legacy_unowned:
-        raw_scope = or_(
-            raw_scope,
-            and_(
-                RawPayload.subject_id.is_(None),
-                RawPayload.actor_user_id.is_(None),
-                RawPayload.integration_connection_id.is_(None),
-                RawPayload.file_asset_id.is_(None),
-            ),
-        )
     raw_ids = list(
         await session.scalars(
             select(RawPayload.id)
@@ -1546,7 +1439,6 @@ async def reparse_owned_pending(
             raw,
             subject_id=identity.subject_id,
             actor_user_id=owner_user_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
         linked = list(
             await session.scalars(
@@ -1562,7 +1454,6 @@ async def reparse_owned_pending(
                     session,
                     row=row,
                     subject_id=identity.subject_id,
-                    include_legacy_unowned=include_legacy_unowned,
                     for_update=False,
                     raw_rsid_cache=raw_rsid_cache,
                 )
@@ -1584,11 +1475,7 @@ async def reparse_owned_pending(
                 row_context = conflict_engine.ConflictWriteContext(
                     identity=origin_identity,
                     evaluation_date=outer_context.evaluation_date,
-                    legacy_bridge=(
-                        conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-                        if include_legacy_unowned
-                        else conflict_engine.LegacyConflictBridge.REJECT
-                    ),
+                    legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
                 )
                 prepared = await conflict_engine.prepare_scoped_write(
                     session,
@@ -1607,7 +1494,6 @@ async def reparse_owned_pending(
                     raw,
                     subject_id=identity.subject_id,
                     actor_user_id=owner_user_id,
-                    include_legacy_unowned=include_legacy_unowned,
                 )
                 await _replace_vcf_rows(
                     session,
@@ -1615,7 +1501,6 @@ async def reparse_owned_pending(
                     only_interpreted=_raw_only_interpreted(raw),
                     raw=raw,
                     context=context,
-                    include_legacy_unowned=include_legacy_unowned,
                 )
                 raw.processed_at = now_local()
                 await session.flush()

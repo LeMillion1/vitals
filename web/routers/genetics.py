@@ -56,7 +56,6 @@ async def genetics_dashboard(
     variants = await genetics_service.list_variants(
         db,
         subject_id=context.identity.subject_id,
-        include_legacy_unowned=True,
     )
     alerts = await alerts_service.list_active_scoped(
         db,
@@ -130,7 +129,6 @@ async def import_vcf(
             only_interpreted=only_interpreted,
             identity=context.identity,
             prepared_conflict_write=prepared,
-            include_legacy_unowned=True,
         )
         await db.commit()
     except Exception:
@@ -169,7 +167,6 @@ async def save_variant(
         "source": Source.MANUAL.value,
         "identity": context.identity,
         "prepared_conflict_write": prepared,
-        "include_legacy_unowned": True,
     }
     try:
         if rsid:
@@ -206,7 +203,6 @@ async def delete_variant(
             db,
             id,
             identity=context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await db.commit()

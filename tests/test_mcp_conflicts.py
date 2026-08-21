@@ -39,12 +39,14 @@ async def _seed_iron_rule(db_session):
     await db_session.commit()
 
 
-async def test_check_supplement_conflicts_normalizes_cyrillic_name(db_session, session_factory, monkeypatch):
+async def test_check_supplement_conflicts_normalizes_cyrillic_name(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     conflict_registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await genetics_service.add_variant(
-        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier"
+        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
 

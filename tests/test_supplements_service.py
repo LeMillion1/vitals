@@ -127,7 +127,9 @@ async def test_iron_blocked_for_hemochromatosis_carrier(db_session, owner_write)
     conflict_registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await genetics_service.add_variant(
-        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier"
+        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
 
@@ -147,7 +149,9 @@ async def test_cyrillic_name_no_explicit_key_still_blocked(db_session, owner_wri
     conflict_registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await genetics_service.add_variant(
-        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier"
+        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
 
@@ -160,7 +164,9 @@ async def test_iron_override_saves_and_stamps_alert(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await genetics_service.add_variant(
-        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier"
+        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
 
@@ -182,7 +188,9 @@ async def test_inactive_iron_not_blocked(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     await _seed_iron_rule(db_session)
     await genetics_service.add_variant(
-        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier"
+        db_session, gene="HFE", rsid="rs1800562", marker="hemochromatosis_carrier",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
 

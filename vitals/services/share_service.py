@@ -949,7 +949,7 @@ async def _genetics_block(
 ) -> dict:
     from vitals.services import genetics_service
 
-    variants = await genetics_service.list_variants(session)
+    variants = await genetics_service.list_variants(session, subject_id=subject_id)
     rows = [
         {
             "gene": v.gene,

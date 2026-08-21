@@ -91,7 +91,6 @@ async def _ingest(
         only_interpreted=only_interpreted,
         identity=identity,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=legacy,
     )
 
 
@@ -176,7 +175,6 @@ async def test_partial_actor_root_fails_closed(
         await genetics_service.list_variants(
             db_session,
             subject_id=legacy_owner_roots.subject_id,
-            include_legacy_unowned=True,
         )
 
 
@@ -337,7 +335,6 @@ async def test_same_filename_reimport_preserves_prior_raw_evidence(
         truncated=False,
         identity=identity,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     )
     second = await _ingest(
         db_session,
@@ -362,7 +359,6 @@ async def test_same_filename_reimport_preserves_prior_raw_evidence(
         for row in await genetics_service.list_variants(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
     }
     assert rows[RISK.rsid].raw_payload_id == second.raw.id
@@ -386,7 +382,6 @@ async def test_mcp_patch_preserves_vcf_origin_and_omitted_fields(
         source=Source.MCP.value,
         identity=identity,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     )
 
     assert row.source == Source.VCF_IMPORT.value
@@ -436,7 +431,6 @@ async def test_wrong_shape_raw_link_fails_before_read(
         await genetics_service.list_variants(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
 
@@ -460,6 +454,8 @@ async def test_manual_fact_cannot_use_raw_bridge_and_raw_flags_are_typed(
     db_session.add(raw)
     await db_session.flush()
     manual = GeneticVariant(
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         domain="genetics",
         source=Source.MANUAL.value,
         raw_payload_id=raw.id,
@@ -476,7 +472,6 @@ async def test_manual_fact_cannot_use_raw_bridge_and_raw_flags_are_typed(
         await genetics_service.list_variants(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
     manual.source = Source.VCF_IMPORT.value
@@ -487,7 +482,6 @@ async def test_manual_fact_cannot_use_raw_bridge_and_raw_flags_are_typed(
         await genetics_service.list_variants(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
 
@@ -516,110 +510,8 @@ async def test_truncated_curated_hit_must_agree_with_retained_raw_evidence(
     assert list(await db_session.scalars(select(GeneticVariant))) == []
 
 
-async def test_legacy_adoption_preserves_null_actor_and_exact_raw_bridge(
-    db_session,
-    legacy_owner_roots,
-):
-    identity = _identity(legacy_owner_roots)
-    raw = RawPayload(
-        subject_id=identity.subject_id,
-        actor_user_id=identity.actor_user_id,
-        domain="genetics",
-        source=Source.VCF_IMPORT.value,
-        external_id="legacy.vcf",
-        payload={
-            "filename": "legacy.vcf",
-            "truncated": False,
-            "variants": [[RISK.rsid, RISK.ref, RISK.alt, RISK.genotype]],
-        },
-    )
-    db_session.add(raw)
-    await db_session.flush()
-    legacy = GeneticVariant(
-        domain="genetics",
-        source=Source.VCF_IMPORT.value,
-        raw_payload_id=raw.id,
-        gene="HFE",
-        rsid=RISK.rsid,
-        genotype=RISK.genotype,
-    )
-    db_session.add(legacy)
-    await db_session.flush()
-    prepared = await _prepared(db_session, identity, legacy=True)
-
-    row = await genetics_service.upsert_by_rsid(
-        db_session,
-        gene="HFE",
-        rsid=RISK.rsid,
-        marker="hemochromatosis_carrier",
-        source=Source.MCP.value,
-        identity=identity,
-        prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
-    )
-    assert row.subject_id == identity.subject_id
-    assert row.actor_user_id is None
-    assert row.raw_payload_id == raw.id
-    assert await genetics_service.get_variant(
-        db_session,
-        row.id,
-        subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    ) is row
 
 
-async def test_reimport_completes_fully_null_fact_without_overwriting_legacy_raw(
-    db_session,
-    legacy_owner_roots,
-):
-    identity = _identity(legacy_owner_roots)
-    raw = RawPayload(
-        domain="genetics",
-        source=Source.VCF_IMPORT.value,
-        external_id="adopted.vcf",
-        payload={
-            "filename": "adopted.vcf",
-            "truncated": False,
-            "only_interpreted": False,
-            "variants": [[RISK.rsid, RISK.ref, RISK.alt, RISK.genotype]],
-        },
-    )
-    db_session.add(raw)
-    await db_session.flush()
-    legacy = GeneticVariant(
-        domain="genetics",
-        source=Source.VCF_IMPORT.value,
-        raw_payload_id=raw.id,
-        gene="HFE",
-        rsid=RISK.rsid,
-        genotype=RISK.genotype,
-    )
-    db_session.add(legacy)
-    await db_session.flush()
-    prepared = await _prepared(db_session, identity, legacy=True)
-
-    summary = await _ingest(
-        db_session,
-        identity,
-        prepared,
-        REFERENCE,
-        filename="adopted.vcf",
-        legacy=True,
-    )
-
-    assert summary.raw is not None
-    assert summary.raw is not raw
-    assert summary.raw.subject_id == identity.subject_id
-    assert summary.raw.actor_user_id == identity.actor_user_id
-    assert summary.raw.processed_at is not None
-    assert raw.subject_id is None
-    assert raw.actor_user_id is None
-    assert raw.processed_at is None
-    assert legacy.subject_id == identity.subject_id
-    assert legacy.actor_user_id is None
-    assert legacy.raw_payload_id == summary.raw.id
-    assert legacy.genotype == REFERENCE.genotype
-    assert legacy.marker is None
 
 
 async def test_replay_fills_missing_curated_children_and_is_idempotent(
@@ -665,7 +557,6 @@ async def test_replay_fills_missing_curated_children_and_is_idempotent(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     ) == 1
     assert raw.processed_at is not None
     assert set(await db_session.scalars(select(GeneticVariant.rsid))) == {
@@ -676,7 +567,6 @@ async def test_replay_fills_missing_curated_children_and_is_idempotent(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     ) == 0
 
 
@@ -708,7 +598,6 @@ async def test_replay_accepts_exact_stage3a_subject_only_vcf_history(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     ) == 1
     variants = list(
         await db_session.scalars(
@@ -781,7 +670,6 @@ async def test_replay_cannot_roll_fact_back_to_older_pending_raw(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     ) == 1
     assert old_raw.processed_at is not None
     assert fact.raw_payload_id == current_raw.id
@@ -827,7 +715,6 @@ async def test_replay_uses_durable_only_interpreted_policy(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     ) == 1
     rows = list(await db_session.scalars(select(GeneticVariant)))
     assert len(rows) == expected_rows
@@ -874,7 +761,6 @@ async def test_truncated_same_name_tail_change_creates_distinct_raw_revision(
         truncated=True,
         identity=identity,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     )
     second = await genetics_service.ingest_vcf_batch(
         db_session,
@@ -884,7 +770,6 @@ async def test_truncated_same_name_tail_change_creates_distinct_raw_revision(
         truncated=True,
         identity=identity,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     )
 
     assert first.raw is not None
@@ -895,7 +780,6 @@ async def test_truncated_same_name_tail_change_creates_distinct_raw_revision(
         for row in await genetics_service.list_variants(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
     }
     assert rows[RISK.rsid].raw_payload_id == second.raw.id
@@ -919,7 +803,6 @@ async def test_truncated_curated_tail_child_can_be_rebuilt_from_pending_raw(
         truncated=True,
         identity=identity,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     )
     assert summary.raw is not None
     fact = await db_session.scalar(
@@ -936,7 +819,6 @@ async def test_truncated_curated_tail_child_can_be_rebuilt_from_pending_raw(
         db_session,
         identity=system,
         prepared_conflict_write=replay_prepared,
-        include_legacy_unowned=True,
     ) == 1
     rebuilt = await db_session.scalar(
         select(GeneticVariant).where(GeneticVariant.rsid == RISK.rsid)
@@ -979,7 +861,6 @@ async def test_partial_raw_candidate_rejects_before_adoption_or_mutation(
             truncated=False,
             identity=identity,
             prepared_conflict_write=prepared,
-            include_legacy_unowned=True,
         )
 
     assert raw.subject_id is None
@@ -1017,7 +898,6 @@ async def test_pending_partial_raw_fails_preflight_instead_of_silent_zero(
             db_session,
             identity=system,
             prepared_conflict_write=prepared,
-            include_legacy_unowned=True,
         )
 
     assert raw.subject_id is None
@@ -1040,7 +920,6 @@ async def test_disappeared_truncated_tail_child_keeps_prior_raw_revision(
         truncated=True,
         identity=identity,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     )
     second = await genetics_service.ingest_vcf_batch(
         db_session,
@@ -1050,7 +929,6 @@ async def test_disappeared_truncated_tail_child_keeps_prior_raw_revision(
         truncated=True,
         identity=identity,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     )
 
     assert first.raw is not None
@@ -1297,53 +1175,8 @@ def test_vcf_v2_history_is_not_reinterpreted_as_malformed_after_catalog_change(
     assert genetics_service._raw_normalization_variants(raw) == [RISK]
 
 
-async def test_strict_ingest_ignores_unrelated_partial_legacy_raw(
-    db_session,
-    legacy_owner_roots,
-):
-    identity = _identity(legacy_owner_roots)
-    partial_payload = {
-        "filename": "unrelated-partial.vcf",
-        "truncated": False,
-        "variants": [[MTHFR.rsid, MTHFR.ref, MTHFR.alt, MTHFR.genotype]],
-    }
-    partial = RawPayload(
-        actor_user_id=identity.actor_user_id,
-        domain="genetics",
-        source=Source.VCF_IMPORT.value,
-        external_id=genetics_service._vcf_external_id(partial_payload),
-        payload=partial_payload,
-    )
-    db_session.add(partial)
-    await db_session.flush()
-    prepared = await _prepared(db_session, identity)
-
-    summary = await _ingest(db_session, identity, prepared, RISK)
-
-    assert summary.raw is not None
-    assert summary.raw.subject_id == identity.subject_id
-    assert partial.subject_id is None
-    assert partial.actor_user_id == identity.actor_user_id
-    assert partial.payload == partial_payload
 
 
-async def test_legacy_raw_only_adapter_is_content_addressed(db_session):
-    first = await genetics_service.store_raw_vcf(
-        db_session,
-        filename="legacy-adapter.vcf",
-        variants=[[RISK.rsid, RISK.ref, RISK.alt, RISK.genotype]],
-    )
-    second = await genetics_service.store_raw_vcf(
-        db_session,
-        filename="legacy-adapter.vcf",
-        variants=[
-            [REFERENCE.rsid, REFERENCE.ref, REFERENCE.alt, REFERENCE.genotype]
-        ],
-    )
-
-    assert first.id != second.id
-    assert first.external_id != second.external_id
-    assert first.payload["variants"] != second.payload["variants"]
 
 
 async def test_replay_propagates_current_fact_provenance_corruption(
@@ -1750,7 +1583,6 @@ async def test_postgres_legacy_write_holds_exact_one_governance_through_commit(
                 source=Source.MANUAL.value,
                 identity=context.identity,
                 prepared_conflict_write=prepared,
-                include_legacy_unowned=True,
             )
             await session.commit()
 
@@ -1844,7 +1676,6 @@ async def test_postgres_concurrent_owned_replay_claims_one_raw_exactly_once(
                 session,
                 identity=system,
                 prepared_conflict_write=prepared,
-                include_legacy_unowned=True,
             )
             await session.commit()
             return done
@@ -1950,7 +1781,6 @@ async def test_postgres_newer_ingest_wins_race_with_older_pending_replay(
                 session,
                 identity=system,
                 prepared_conflict_write=prepared,
-                include_legacy_unowned=True,
             )
             await session.commit()
             return done

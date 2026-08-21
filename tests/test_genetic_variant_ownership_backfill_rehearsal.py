@@ -600,7 +600,6 @@ async def test_real_postgres_0034_genetic_variant_stop_resume_volatility_and_res
             listed = await genetics_service.list_variants(
                 session,
                 subject_id=identity.subject_id,
-                include_legacy_unowned=True,
             )
             assert {row.id for row in listed} == set(VARIANT_IDS)
 

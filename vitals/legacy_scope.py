@@ -74,26 +74,7 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'prime_cache',
             }
         ),
-        'vitals.services.genetics_service': frozenset(
-            {
-                '_lock_by_rsid',
-                '_lock_scoped_variant',
-                '_replace_vcf_rows',
-                '_require_legacy_bridge',
-                '_subject_scope',
-                '_validate_raw_owner',
-                '_validate_variant_graph',
-                'add_variant',
-                'delete_variant',
-                'get_variant',
-                'ingest_vcf_batch',
-                'list_variants',
-                'reparse_owned_pending',
-                'store_raw_vcf',
-                'update_variant',
-                'upsert_by_rsid',
-            }
-        ),
+
         'vitals.services.glp1_service': frozenset(
             {
                 '_owned_row_for_update',
@@ -384,7 +365,6 @@ LEGACY_BARE_ID_READS: Mapping[str, frozenset[str]] = MappingProxyType(
         "vitals.services.custom_charts_service": frozenset({"AppSetting"}),
         "vitals.services.garmin_service": frozenset({"RawPayload"}),
         "vitals.services.garmin_weight_service": frozenset({"AppSetting"}),
-        "vitals.services.genetics_service": frozenset({"GeneticVariant"}),
         "vitals.services.hrt_service": frozenset({"HrtCompound"}),
         "vitals.services.labs_service": frozenset({"RawPayload"}),
         "vitals.services.language_service": frozenset({"AppSetting"}),

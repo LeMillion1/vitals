@@ -1227,6 +1227,7 @@ asserted now runs against the context and the header directly.
 | supplements | closed — subject on every read, subject and conflict decision on every write |
 | milestones | closed — same, plus progress refuses another subject's goal |
 | skincare | closed — routine, observations and product shelf all scoped |
+| genetics | closed — including the bare-key read; raw provenance proved on both the owned path and the resolver's bridge |
 | everything else | still bridged; see `vitals/legacy_scope.py` |
 
 The counter moves only in the registry, and the contract test refuses to let it
