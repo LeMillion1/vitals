@@ -130,6 +130,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 3O for file-backed body-scan ownership. The fixed
+  `stage3.file_backed.body_scans.v1` operation gives a reviewed fully-unowned
+  scan the sole subject and, when it kept a sheet, a metadata-only FileAsset
+  root; historical actors and the placeholder uploader stay null because the old
+  route does not prove who uploaded a sheet. Device, file key, raw link, note,
+  and both timestamps are untouched, and no file byte is read, moved, or hashed.
+  Manual scans may claim neither file nor raw provenance, structured MCP scans
+  stay file-free, and a parsed scan's vision provenance is validated read-only on
+  its raw payload. The body-scan reader now recognises that reviewed placeholder,
+  so migrated sheet history stays legible instead of failing its own file check.
+  Backup v1 carries neither sheet bytes nor trustworthy actor/file roots, so a
+  nonempty restored snapshot is recorded as `RESTORE_BLOCKED`.
 - Added Stage 3N for raw-linked genetic-variant ownership. The fixed
   `stage3.raw_linked_facts.genetic_variants.v1` operation gives reviewed
   fully-unowned historical variants only the sole subject; actor attribution,

@@ -39,6 +39,7 @@ from vitals.models.hrt import (
     HrtCycleTemplate,
     HrtCycleTemplateItem,
 )
+from vitals.models.body_scan import BodyScan
 from vitals.models.genetics import GeneticVariant
 from vitals.models.labs import LabResult
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
@@ -104,6 +105,11 @@ from vitals.services.signal_ownership_backfill_service import (
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     SharedReportOwnershipBackfillStateError,
+)
+from vitals.services.body_scan_ownership_backfill_service import (
+    BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    BODY_SCAN_OWNERSHIP_BACKFILL_TABLES,
+    BodyScanOwnershipBackfillStateError,
 )
 from vitals.services.genetic_variant_ownership_backfill_service import (
     GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -2759,6 +2765,154 @@ async def test_full_import_completes_exact_empty_genetic_variant_stage3n(
         checkpoint.scanned_rows,
     ) == ("completed", 0, 0, 0)
     assert checkpoint.completed_at is not None
+
+
+def _portable_body_scan(*, row_id: int = 101) -> dict:
+    return {
+        "id": row_id,
+        "date": "2026-08-21",
+        "domain": Domain.BODY_COMPOSITION.value,
+        "source": Source.MANUAL.value,
+        "device": "InBody 770",
+        "file_key": None,
+        "raw_payload_id": None,
+        "note": "synthetic only",
+        "_vitals_subject_bound": True,
+    }
+
+
+async def test_full_import_blocks_nonempty_body_scan_stage3o_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "body_scans": [_portable_body_scan()],
+        },
+    )
+
+    row = await db_session.get(BodyScan, 101)
+    assert row is not None
+    assert (row.subject_id, row.actor_user_id, row.file_asset_id) == (
+        legacy_owner_roots.subject_id,
+        None,
+        None,
+    )
+    phase = BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["body_scans"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.completed_at,
+    ) == ("restore_blocked", 101, 1, None)
+
+
+async def test_full_import_completes_exact_empty_body_scan_stage3o(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    phase = BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["body_scans"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+    ) == ("completed", 0, 0)
+    assert checkpoint.completed_at is not None
+
+
+@pytest.mark.parametrize("table_name", BODY_SCAN_OWNERSHIP_BACKFILL_TABLES)
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_body_scan_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    table_name,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_block(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "block_body_scan_ownership_backfill_for_portability_v1_restore",
+        unexpected_block,
+    )
+    row = _portable_body_scan()
+    row["id"] = bad_id
+
+    with pytest.raises(PortabilityError):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                table_name: [row],
+            },
+        )
+    assert called is False
+
+
+async def test_full_import_blocks_body_scans_after_genetic_variant_reset(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_genetic_reset = (
+        data_portability_service
+        .reset_genetic_variant_ownership_backfill_for_portability_v1_restore
+    )
+
+    async def tracked_genetic_reset(*args, **kwargs):
+        order.append("genetic_variants")
+        return await original_genetic_reset(*args, **kwargs)
+
+    async def stopping_body_scan_block(*args, **kwargs):
+        order.append("body_scans")
+        raise BodyScanOwnershipBackfillStateError("sensitive synthetic state")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_genetic_variant_ownership_backfill_for_portability_v1_restore",
+        tracked_genetic_reset,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "block_body_scan_ownership_backfill_for_portability_v1_restore",
+        stopping_body_scan_block,
+    )
+    with pytest.raises(
+        PortabilityError, match="body-scan ownership restore block"
+    ):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                "body_scans": [_portable_body_scan(row_id=102)],
+            },
+        )
+    await db_session.rollback()
+
+    assert order == ["genetic_variants", "body_scans"]
 
 
 @pytest.mark.parametrize("table_name", GENETIC_VARIANT_OWNERSHIP_BACKFILL_TABLES)

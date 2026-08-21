@@ -1307,6 +1307,51 @@ async def reparse_pending(
     )
 
 
+async def _validate_migrated_sheet_root(
+    session: AsyncSession,
+    *,
+    scan: BodyScan,
+    subject_id: uuid.UUID,
+    for_update: bool,
+) -> None:
+    """Accept only the reviewed Stage-3O placeholder for a migrated sheet.
+
+    A historical scan never proves who uploaded its sheet, so the migration
+    registers metadata-only file roots.  Reads must recognise exactly that
+    shape; anything else is forged or half-migrated provenance.
+    """
+
+    if scan.file_key is None:
+        if scan.file_asset_id is not None:
+            raise conflict_engine.ConflictRawOwnershipError(
+                "a sheet-less historical body scan cannot claim a file root"
+            )
+        return
+    if scan.file_asset_id is None:
+        # The unprocessed Stage-3O tail: the sheet is not registered yet.
+        return
+    asset_stmt = select(FileAsset).where(FileAsset.id == scan.file_asset_id)
+    if for_update:
+        asset_stmt = asset_stmt.with_for_update().execution_options(
+            populate_existing=True
+        )
+    asset = await session.scalar(asset_stmt)
+    if (
+        asset is None
+        or asset.subject_id != subject_id
+        or asset.uploaded_by_user_id is not None
+        or asset.purpose != FileAssetPurpose.BODY_SCAN_DOCUMENT.value
+        or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
+        or asset.storage_ref != scan.file_key
+        or asset.status != FileAssetStatus.LEGACY_PLACEHOLDER.value
+        or asset.deleted_at is not None
+        or asset.purged_at is not None
+    ):
+        raise conflict_engine.ConflictRawOwnershipError(
+            "historical body-scan sheet root is not the reviewed placeholder"
+        )
+
+
 # ── Reads ─────────────────────────────────────────────────────────────────────
 async def _validate_persisted_scan(
     session: AsyncSession,
@@ -1432,8 +1477,6 @@ async def _validate_persisted_scan(
     if historical_connection_id is not None:
         if (
             scan.actor_user_id is not None
-            or scan.file_asset_id is not None
-            or scan.file_key is not None
             or raw.subject_id != subject_id
             or raw.actor_user_id is not None
             or raw.integration_connection_id != historical_connection_id
@@ -1443,6 +1486,12 @@ async def _validate_persisted_scan(
             raise conflict_engine.ConflictRawOwnershipError(
                 "historical body-scan normalized provenance is inconsistent"
             )
+        await _validate_migrated_sheet_root(
+            session,
+            scan=scan,
+            subject_id=subject_id,
+            for_update=for_update,
+        )
         await _reject_historical_parser_invocation(
             session,
             raw_payload_id=raw.id,
@@ -1477,14 +1526,16 @@ async def _validate_persisted_scan(
     if raw_is_legacy:
         # Registration-disabled compatibility for pre-ownership parser rows.
         # New scoped BODY_SCAN writes can never create this graph.
-        if (
-            scan.actor_user_id is not None
-            or scan.file_asset_id is not None
-            or scan.file_key is not None
-        ):
+        if scan.actor_user_id is not None:
             raise conflict_engine.ConflictRawOwnershipError(
-                "legacy body-scan raw cannot authorize a file root"
+                "legacy body-scan raw cannot authorize an actor"
             )
+        await _validate_migrated_sheet_root(
+            session,
+            scan=scan,
+            subject_id=subject_id,
+            for_update=for_update,
+        )
         return
     if raw.file_asset_id is None or scan.file_asset_id != raw.file_asset_id:
         raise conflict_engine.ConflictRawOwnershipError(

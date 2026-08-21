@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -907,6 +907,39 @@ bridge remains a later gate. The fixed operator is read-only by default, commits
 one bounded batch per transaction, and emits only allowlisted aggregate counts
 and checksums without genes, rsIDs, genotypes, interpretations, row/raw IDs,
 UUIDs, exception text, or database configuration.
+
+## Stage-3O file-backed body-scan ownership operation
+
+The fixed `stage3.file_backed.body_scans.v1` phase covers only `body_scans`. A
+reviewed fully-unowned scan gains the sole S and, when it kept a sheet, one new
+metadata-only FileAsset root; historical A and the placeholder uploader stay null
+because the old authenticated route does not prove who uploaded a particular
+sheet. The existing `file_key`, device, raw link, note, and both timestamps are
+not changed, and no byte is read, moved, hashed, or tested for existence.
+
+Only reviewed sheet locators are eligible: an optional `uploads/` or `body/`
+directory prefix, a safe POSIX basename, and the route's own document extension
+allowlist. Duplicate sheet keys, duplicate or cross-table file use, unsafe paths,
+partial ownership, and non-bijective live FileAsset/scan graphs fail closed. A
+manual scan may claim neither file nor raw provenance; a structured MCP scan
+stays file-free; a parsed scan's vision provenance is validated read-only on its
+raw payload, where subject-funded gateway history, a platform parse with one
+successful invocation and a matching file root, and a fileless or restored raw
+are the three reviewed shapes. Parser invocations must belong to the subject.
+
+Because a migrated scan keeps a null actor and a placeholder file root, the
+body-scan reader now recognises exactly that shape — same subject,
+`body_scan_document` purpose, legacy-local backend, `storage_ref` equal to
+`file_key`, null uploader, `legacy_placeholder` status, not retired. Without it
+the historical branches would reject their own migrated history. An unprocessed
+tail whose sheet is not registered yet remains legible too.
+
+Backup v1 carries neither sheet bytes nor trustworthy A/F. Import therefore
+records a nonempty Stage-3O snapshot as `RESTORE_BLOCKED`, retires only outgoing
+scan assets while preserving the physical files, validates the blocked or empty
+incoming shape in the same transaction, and requires backup v2 or an explicit
+reviewed recovery before nonempty restored history can be activated. An empty
+snapshot is exact `COMPLETED`.
 
 ## Completion gates
 

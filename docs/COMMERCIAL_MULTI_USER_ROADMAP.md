@@ -547,6 +547,14 @@ Implementation progress on `commercial/main`:
   roots, and the one-variant-per-rsID invariant is proved independently of the
   legacy global index. Backup v1 retains `raw_payload_id` and content, rebinds
   S, and resets the exact checkpoint after Stage 3M.
+- Stage 3O uses `stage3.file_backed.body_scans.v1` for exactly `body_scans`. It
+  adds only the sole S to reviewed fully-unowned scans and, for a scan that kept
+  its sheet, one metadata-only FileAsset root with a null uploader. Manual scans
+  stay file- and raw-free, structured MCP scans stay file-free, and parsed
+  provenance is validated read-only on the raw payload. The body-scan reader now
+  recognises the reviewed placeholder so migrated sheet history stays legible.
+  Backup v1 carries neither sheet bytes nor trustworthy A/F, so a nonempty
+  restored snapshot is recorded as `RESTORE_BLOCKED`.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

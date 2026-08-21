@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -760,6 +760,39 @@ variants keep their unknown actor null; the genetics reader currently reaches
 that shape only through its legacy compatibility bridge, so retiring the bridge
 is a separate later gate rather than a Stage-3N outcome.
 
+Stage 3O continues with `stage3.file_backed.body_scans.v1` over exactly
+`body_scans`. The initial bounded run is performed under a complete body-scan
+upload/parse/delete maintenance pause. A reviewed fully-unowned scan gains only
+the sole S and, when it kept a sheet, a new metadata-only FileAsset root;
+historical A and the placeholder uploader remain null because the old
+authenticated route does not prove who uploaded a particular sheet. The existing
+`file_key`, device, raw link, note, and timestamps are not changed, read, moved,
+or hashed.
+
+Eligible sheet locators carry an optional `uploads/` or `body/` prefix, a safe
+POSIX basename, and one of the route's document extensions. Duplicate sheet
+keys, duplicate or cross-table file use, unsafe paths, partial ownership, and
+non-bijective live FileAsset/scan graphs fail closed. A manual scan may claim
+neither file nor raw provenance; a structured MCP scan stays file-free; a parsed
+scan's raw payload must present subject-funded gateway history, a platform parse
+with one successful invocation and a matching file root, or the fileless shape a
+restore leaves behind, and every parser invocation on it must belong to the
+reviewed subject.
+
+Because a migrated scan keeps a null actor and a placeholder file root, the
+body-scan reader was extended to recognise exactly that reviewed shape. Without
+it the historical branches would have rejected their own migrated history, and
+a legacy scan that kept a sheet would have stayed unreadable; an unprocessed
+tail whose sheet is not registered yet stays legible as well.
+
+Backup v1 carries neither sheet bytes nor trustworthy A/F. Import therefore
+records a nonempty Stage-3O snapshot as `RESTORE_BLOCKED`, retires only outgoing
+scan assets, preserves the physical files, validates the blocked or empty
+incoming shape in the same transaction, and requires backup v2 or an explicit
+reviewed recovery before nonempty restored history can be activated. An empty
+snapshot is exact `COMPLETED`. `body_scan_metrics` remains deferred until its
+own inherited-child phase.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -795,9 +828,13 @@ result/raw/gateway races. The Stage-3N rehearsal covers imported and manual
 variant history whose durable VCF link only exists from revision 0037,
 stop/resume, a strict live variant above the frozen high-water mark, backup-v1
 reset/recompletion, empty replacement, and populated downgrade refusal; its
-service gate adds variant/raw races. Remaining raw/file-sensitive normalized
-rows, inherited children, artifacts, control phases, and the Stage 4 gates
-remain pending.
+service gate adds variant/raw races. The Stage-3O rehearsal covers
+metadata-only placeholder creation for sheet-backed parser history, stop/resume,
+the migrated processed bound, post-completion volatility, backup-v1 blocking and
+apply refusal, empty replacement, and populated downgrade refusal; its service
+gate adds sheet-key, scan-disappearance, and duplicate-key races. Remaining
+inherited children, artifacts, control phases, and the Stage 4 gates remain
+pending.
 
 ### Stage 4 — Ownership validation
 
