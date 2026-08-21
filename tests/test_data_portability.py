@@ -107,6 +107,10 @@ from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     SharedReportOwnershipBackfillStateError,
 )
+from vitals.services.notification_ownership_backfill_service import (
+    NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    NotificationOwnershipBackfillStateError,
+)
 from vitals.services.weekly_digest_ownership_backfill_service import (
     WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     WeeklyDigestOwnershipBackfillStateError,
@@ -2846,6 +2850,87 @@ async def test_full_import_completes_exact_empty_body_scan_stage3o(
         checkpoint.snapshot_rows,
     ) == ("completed", 0, 0)
     assert checkpoint.completed_at is not None
+
+
+async def test_retained_notifications_survive_import_and_prepare_stage3s(
+    db_session,
+    legacy_owner_roots,
+):
+    from vitals.models.proactive import Notification
+
+    retained = Notification(
+        subject_id=legacy_owner_roots.subject_id,
+        recipient_user_id=legacy_owner_roots.user_id,
+        integration_connection_id=await _legacy_telegram_recipient_id(db_session),
+        sent_at=datetime(2026, 8, 21, 8, 0),
+        category="brief",
+        dedupe_key="brief:2026-08-21",
+        channel="telegram",
+        external_id="4242",
+        payload={"text": "synthetic retained message"},
+    )
+    db_session.add(retained)
+    await db_session.commit()
+    retained_id = retained.id
+
+    snapshot = await export_full(db_session)
+    assert "notifications" not in snapshot
+
+    await import_full(db_session, snapshot)
+    await db_session.commit()
+
+    survivor = await db_session.get(Notification, retained_id)
+    assert survivor is not None
+    assert survivor.recipient_user_id == legacy_owner_roots.user_id
+    assert survivor.dedupe_key == "brief:2026-08-21"
+    phase = NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["notifications"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert checkpoint.status == "running"
+    assert (checkpoint.scan_high_watermark_id, checkpoint.snapshot_rows) == (
+        retained_id,
+        1,
+    )
+
+
+async def _legacy_telegram_recipient_id(session):
+    from sqlalchemy import select as sa_select
+
+    from vitals.models.tenancy import IntegrationConnection
+
+    return await session.scalar(
+        sa_select(IntegrationConnection.id).where(
+            IntegrationConnection.provider == "telegram",
+            IntegrationConnection.connection_type == "recipient",
+        )
+    )
+
+
+async def test_notification_post_load_rejection_rolls_back_replacement(
+    db_session,
+    legacy_owner_roots,
+):
+    async def rejected_preflight(*args, **kwargs):
+        raise NotificationOwnershipBackfillStateError("sensitive synthetic state")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            data_portability_service,
+            "preflight_notification_ownership_backfill",
+            rejected_preflight,
+        )
+        with pytest.raises(
+            PortabilityError,
+            match="notification validation rejected the portable restore",
+        ):
+            await import_full(
+                db_session,
+                {
+                    "metadata": {"version": "1.0", "kind": "full_backup"},
+                    "raw_payloads": [],
+                },
+            )
+    await db_session.rollback()
 
 
 async def test_retained_weekly_digests_survive_import_and_prepare_stage3r(

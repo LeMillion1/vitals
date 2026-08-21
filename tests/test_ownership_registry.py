@@ -62,6 +62,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "integration_connections",
         "legacy_openrouter_connection_bridges",
         "notification_delivery_intents",
+        "notifications",
         "ownership_backfill_checkpoints",
         "platform_integration_connections",
         "platform_settings",

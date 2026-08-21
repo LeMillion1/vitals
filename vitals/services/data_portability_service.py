@@ -140,6 +140,11 @@ from vitals.services.shared_report_ownership_backfill_service import (
     preflight_shared_report_ownership_backfill,
     prepare_shared_report_ownership_backfill_for_portability_v1_restore,
 )
+from vitals.services.notification_ownership_backfill_service import (
+    NotificationOwnershipBackfillError,
+    preflight_notification_ownership_backfill,
+    prepare_notification_ownership_backfill_for_portability_v1_restore,
+)
 from vitals.services.weekly_digest_ownership_backfill_service import (
     WeeklyDigestOwnershipBackfillError,
     preflight_weekly_digest_ownership_backfill,
@@ -211,6 +216,7 @@ GENERIC_OUTPUT_SUPPRESSED_COLUMNS = frozenset(
         "requested_by_user_id",
         "integration_connection_id",
         "ai_invocation_id",
+        "delivery_intent_id",
         "file_asset_id",
         "uploaded_by_user_id",
         "credential_ref",
@@ -1228,6 +1234,17 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                     "import.error.generic",
                     exc="weekly-digest ownership restore preparation was rejected",
                 ) from exc
+            try:
+                await (
+                    prepare_notification_ownership_backfill_for_portability_v1_restore(
+                        session
+                    )
+                )
+            except NotificationOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="notification ownership restore preparation was rejected",
+                ) from exc
         preserved = await _secret_settings(session)
 
         # Wipe in reverse FK order so child rows go before the parents they reference.
@@ -1366,6 +1383,13 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                 raise _contract_error(
                     "import.error.generic",
                     exc="weekly-digest validation rejected the portable restore",
+                ) from exc
+            try:
+                await preflight_notification_ownership_backfill(session)
+            except NotificationOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="notification validation rejected the portable restore",
                 ) from exc
         await _reset_sequences(session)
         await session.flush()

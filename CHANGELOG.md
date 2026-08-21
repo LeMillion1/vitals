@@ -130,6 +130,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 3S for retained notification ownership. A delivered message only
+  means something together with the person it went to and the channel that
+  carried it, so the fixed `stage3.delivery_artifact.notifications.v1` operation
+  gives a reviewed fully-unowned row the sole subject, the reviewed owner as
+  recipient, and the exact reviewed legacy Telegram root together; the
+  originating actor stays null and the sent time, category, dedupe key, channel,
+  external message id, and payload are untouched. A rotated or additional
+  recipient fails the read-only preflight while adoption is pending, and a reply
+  or echo linking a platform invocation must belong to the subject and have
+  succeeded. `notifications` also becomes retained rather than portable: backup
+  v1 transports neither recipient nor channel, so a restored address-less row
+  would violate the reviewed dedupe shape and resurrect keys that no longer
+  scope to anything. `delivery_intent_id` joins the suppressed plumbing columns.
 - Added Stage 3R for retained weekly-digest ownership. The fixed
   `stage3.retained_artifact.weekly_digests.v1` operation gives a reviewed
   fully-unowned artifact only the sole subject; the authoring actor, the

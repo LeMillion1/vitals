@@ -575,6 +575,14 @@ Implementation progress on `commercial/main`:
   invocation must belong to the subject and match its kind, and a digest above
   the frozen watermark must carry reviewed AI funding. Backup v1 neither exports
   nor replaces digests; import prepares or preserves the retained checkpoint.
+- Stage 3S uses `stage3.delivery_artifact.notifications.v1` for exactly
+  `notifications`. It adds the sole S, the reviewed owner as recipient, and the
+  exact reviewed legacy Telegram root together, because a delivered message needs
+  all three or none. A rotated or additional recipient fails the read-only
+  preflight, and an AI reply must link a same-subject invocation that succeeded.
+  `notifications` becomes retained rather than portable: backup v1 carries
+  neither recipient nor channel, so import prepares or preserves the retained
+  checkpoint instead of replacing the delivery log.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

@@ -252,6 +252,12 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         actor=TargetColumn.OPTIONAL,
         connection=TargetColumn.OPTIONAL,
+        # A delivered message only means something together with the person it
+        # went to and the channel that carried it, and backup v1 transports
+        # neither.  A restored address-less row would also resurrect dedupe keys
+        # that no longer scope to anything, so the local delivery log is
+        # retained in place rather than exported and replaced.
+        user_portable=False,
     ),
     "notification_delivery_intents": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL,

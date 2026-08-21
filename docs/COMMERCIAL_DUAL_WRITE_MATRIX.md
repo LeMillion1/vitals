@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R / Stage-3S implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -1022,6 +1022,35 @@ first restore and afterwards revalidates and preserves it, never accepting
 incoming bounds. The fixed operator is read-only by default, commits one bounded
 batch per transaction, and emits only allowlisted aggregate counts and checksums
 without narratives, context, dates, row IDs, UUIDs, or exception text.
+
+## Stage-3S retained notification ownership operation
+
+The fixed `stage3.delivery_artifact.notifications.v1` phase covers only
+`notifications`. A delivered message is addressed state: it only means something
+together with the person it went to and the channel that carried it, which is
+also what the schema's dedupe-shape constraint says. A reviewed fully-null
+S/A/R/C row therefore gains the sole subject, the reviewed owner as recipient,
+and the exact reviewed legacy Telegram recipient root together — and nothing
+else. The originating actor stays null, and the sent time, category, dedupe key,
+channel, external message id, and payload are untouched.
+
+The recipient root is never guessed: it resolves only while the subject has
+exactly one Telegram recipient connection and that connection is the reviewed
+`legacy_singleton_v1` singleton in a historical lifecycle state. Because that
+gate runs whenever adoption is still pending, an ambiguous root surfaces in the
+read-only preflight. An owned row missing either the recipient or the channel is
+half-migrated state and fails closed. A linked delivery intent must agree with
+the message on subject, recipient, and channel; a linked platform invocation may
+only belong to a reply or echo, must belong to the subject, and must have
+succeeded.
+
+`notifications` is retained rather than portable. Backup v1 transports neither
+the recipient nor the delivery connection, so a restored address-less row would
+violate the reviewed dedupe shape and resurrect dedupe keys that no longer scope
+to anything. Import therefore prepares the checkpoint from the local delivery log
+on a first restore and afterwards revalidates and preserves it, never accepting
+incoming bounds. `delivery_intent_id` also joins the suppressed plumbing columns
+so no generic MCP, LLM, or backup surface can expose or replay it.
 
 ## Completion gates
 

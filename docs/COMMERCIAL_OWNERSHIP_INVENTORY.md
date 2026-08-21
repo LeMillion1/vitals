@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R / Stage-3S implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -127,7 +127,7 @@ remain PR-06 work.
 | 31 | `meal_logs` / `MealLog` | S, A | Add subject/date indexes. Multiple meals on one date remain allowed. |
 | 32 | `milestones` / `Milestone` | S, A | Add `(S, status)` and subject/deadline indexes. |
 | 33 | `noise_markers` / `NoiseMarker` | S, A | Replace the global range access path with `(S, domain, start_date, end_date)`. |
-| 34 | `notifications` / `Notification` | S, R, delivery C, optional A/system | Scope dedupe by `(R, C, dedupe_key)`, reply lookup by R/C/external ID, and budget queries by `(R, S, category, sent_at)`. Existing rows map to the owner and legacy Telegram connection. |
+| 34 | `notifications` / `Notification` | S, R, delivery C, optional A/system | Scope dedupe by `(R, C, dedupe_key)`, reply lookup by R/C/external ID, and budget queries by `(R, S, category, sent_at)`. Existing rows map to the owner and legacy Telegram connection. Retained rather than ordinary-user portable: backup v1 carries neither R nor C, so a restored address-less row would violate the reviewed dedupe shape. |
 | 35 | `progress_photos` / `ProgressPhoto` | S, A, F | Register a FileAsset for every referenced DB key without reading or moving the file. Retain `file_key` during dual-write. |
 | 36 | `raw_payloads` / `RawPayload` | S, optional C, optional A, optional F | Add `UNIQUE(id, S)`. Add partial unique `(C, domain, source, external_id)` when C/external ID are present and `(S, domain, source, external_id)` when C is null. Add S/C-aware pending-sweep indexes. |
 | 37 | `shared_reports` / `SharedReport` | S, creator A, revoker A | Keep the public token globally unique. Add `(S, created_at)` for owner management. Preserve the frozen snapshot byte-for-byte/checksum through backfill. |
@@ -863,6 +863,31 @@ retained Stage-3R checkpoint from the local artifact set on a first restore and
 afterwards revalidates and preserves it, never accepting incoming bounds, and
 post-load preflight revalidates the retained graph before commit.
 
+Stage 3S continues with `stage3.delivery_artifact.notifications.v1` over exactly
+`notifications`. Under a complete delivery/inbound writer pause, a reviewed
+fully-null S/A/R/C row gains the sole subject, the reviewed owner as recipient,
+and the exact reviewed legacy Telegram recipient root together, because the
+schema's dedupe-shape constraint states that a delivered message needs all three
+or none. The originating actor stays null, and the sent time, category, dedupe
+key, channel, external message id, and payload are untouched.
+
+The recipient root is never guessed: it resolves only while the subject has
+exactly one Telegram recipient connection and that connection is the reviewed
+`legacy_singleton_v1` singleton in a historical lifecycle state, and the gate
+runs whenever adoption is still pending so an ambiguous root fails the read-only
+preflight. An owned row missing either the recipient or the channel fails closed.
+A linked delivery intent must agree with its message on subject, recipient, and
+connection; a linked platform invocation may only belong to a reply or echo, must
+belong to the subject, and must have succeeded.
+
+This phase also reclassifies `notifications` as retained rather than ordinary-user
+portable. Backup v1 transports neither R nor C, so restoring an address-less
+message would violate the reviewed dedupe shape and resurrect dedupe keys that no
+longer scope to anything. Import prepares the Stage-3S checkpoint from the local
+delivery log on a first restore and afterwards revalidates and preserves it.
+`delivery_intent_id` joins the suppressed plumbing columns so no generic MCP,
+LLM, or backup surface can expose or replay a delivery lease.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -911,8 +936,11 @@ a strict live delete intent above the frozen high-water mark, backup-v1 blocking
 and apply refusal, empty replacement, and populated downgrade refusal. The
 Stage-3R rehearsal covers retained artifact adoption, stop/resume, a strict live
 gateway-funded digest above the frozen watermark, backup-v1 retention through a
-full round trip and an empty replacement, and populated downgrade refusal.
-Remaining control phases and the Stage 4 gates remain pending.
+full round trip and an empty replacement, and populated downgrade refusal. The
+Stage-3S rehearsal covers subject/recipient/channel adoption for a delivered log,
+stop/resume, a strict live message above the frozen watermark, backup-v1
+retention through a full round trip and an empty replacement, and populated
+downgrade refusal. Only `system_alerts` and the Stage 4 gates remain pending.
 
 ### Stage 4 — Ownership validation
 
