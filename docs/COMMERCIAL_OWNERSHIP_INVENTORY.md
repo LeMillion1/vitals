@@ -1178,6 +1178,30 @@ migration and for FORCE RLS — until then, neither is safe, because a scoped
 unique key over a nullable column and RLS under an application that still issues
 unscoped reads are each worth nothing on their own.
 
+#### The order the closures have to happen in
+
+A leaf domain cannot be closed first. Making `supplements_service` demand a
+subject was tried and reverted: the service itself was straightforward, but its
+callers are the composition layer — `digest_service.assemble_context`,
+`share_service.build_snapshot`, the conflict resolvers — and none of them holds a
+subject to pass down. Closing the leaf while its callers cannot supply the scope
+breaks a hundred and forty tests and proves nothing.
+
+The composition layer therefore goes first:
+
+1. `assemble_context` and `build_snapshot` take a mandatory subject and thread it
+   into every domain read they perform. This makes the *calls* scoped without
+   changing any leaf signature.
+2. The conflict engine's `legacy_resolver` registrations go as one change, since
+   they are a single cross-domain mechanism rather than per-domain code.
+3. Only then does each leaf service make its own `subject_id`/`identity`
+   mandatory and drop `include_legacy_unowned`, because by then every caller
+   already passes it.
+4. The zero-subject legacy generators — the digest path that refuses to run once
+   a subject exists, and share's zero-subject snapshot arm — are removed rather
+   than scoped: in a commercial installation a subject always exists, so those
+   arms are unreachable code that only tests keep alive.
+
 ## Rollback boundary
 
 Before a second subject can write:
