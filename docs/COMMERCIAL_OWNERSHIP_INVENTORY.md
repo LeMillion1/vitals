@@ -1145,6 +1145,17 @@ it. Once a second subject has written a duplicate of a legacy global key, this
 revision is a one-way boundary: recovery is a verified backup plus a forward
 fix, exactly as the rollback boundary below states.
 
+#### What Stage 5 deliberately does not finish
+
+A scoped key over a nullable scope column is only as good as the guarantee that
+the scope is present. Stage 5A proves that for the lake as it stands, and every
+switched write path supplies the scope, but `subject_id` and the required
+connection columns are still nullable: a future writer that omits one would
+leave that row with no uniqueness at all. Making them `NOT NULL` belongs to the
+PR-04 contract migration, together with removing the legacy unscoped readers.
+Registration and every other path to a second writable subject stay disabled
+until then.
+
 ### Stage 6 — Scoped read and RLS cutover
 
 PR-04 removes bare-ID/global reads, requires AccessContext, and enables FORCE RLS

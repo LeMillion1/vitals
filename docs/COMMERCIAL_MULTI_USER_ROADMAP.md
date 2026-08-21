@@ -635,6 +635,12 @@ Implementation progress on `commercial/main`:
   refused, a genetics rename cannot land on an rsID the subject already holds,
   and the catalogs cannot see a subject's own row at all. Downgrade recreates
   the keys only while the data still satisfies them.
+- Stage 5 is complete: the audit, the scoped keys, the switched write paths and
+  the drop of the global keys. What a second subject still needs is PR-04's
+  work, not PR-03's: `subject_id` and a required connection are still nullable,
+  so a row written without one keeps no uniqueness at all under its scoped key,
+  and the legacy unscoped readers are still in place. Registration stays closed
+  until those land.
 - Remaining work: scoped
   write/read path, two-subject collision and concurrency tests, dropping the
   legacy global keys, scoped
