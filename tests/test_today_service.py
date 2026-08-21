@@ -299,7 +299,7 @@ async def test_calories_change_compares_logged_days(db_session, legacy_owner_roo
     assert row["delta"] == "−400"
 
 
-async def test_goal_reads_as_distance_covered(db_session, legacy_owner_roots):
+async def test_goal_reads_as_distance_covered(db_session, legacy_owner_roots, owner_write):
     """The bar needs a starting point, and milestones_service has no notion of one
     — the first logged weight is what "11.2 of 17.5 covered" is measured from."""
     for offset, kg in ((30, 100.0), (0, 94.0)):
@@ -309,6 +309,8 @@ async def test_goal_reads_as_distance_covered(db_session, legacy_owner_roots):
     await milestones_service.create_milestone(
         db_session, name="Дойти до 85", domain=Domain.WEIGHT.value,
         target_value=85.0, target_unit="кг",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
 

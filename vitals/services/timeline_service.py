@@ -559,7 +559,6 @@ async def _derived_events(
     milestones = await milestones_service.list_milestones(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     for m in milestones:
         created_date = m.created_at.date()

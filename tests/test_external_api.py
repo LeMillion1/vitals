@@ -23,6 +23,10 @@ def _token(monkeypatch):
     monkeypatch.setenv("VITALS_EXTERNAL_API_TOKEN", TOKEN)
 
 
+# Every row the summary reads belongs to the one person it is about.
+pytestmark = pytest.mark.usefixtures("owned_by_legacy_subject")
+
+
 async def _seed(db_session):
     today = today_local()
     # 10 consecutive daily weights, gently trending down (so the MA7 sparkline has

@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from vitals.enums import Domain
+from vitals.enums import Domain, Source
 from vitals.models.milestones import WeeklyDigest
 from vitals.services import (
     digest_service,
@@ -27,31 +27,47 @@ composed = pytest.mark.usefixtures("owned_by_legacy_subject")
 
 
 # ── Milestones ────────────────────────────────────────────────────────────────
-async def test_create_and_progress_weight_goal(db_session):
+@composed
+async def test_create_and_progress_weight_goal(db_session, owner_write):
     await weight_service.log_weight(db_session, on_date=DAY, weight_kg=90.0)
     m = await milestones_service.create_milestone(
         db_session, name="Дойти до 82", domain="weight", target_value=82.0,
         target_unit="кг", deadline=DAY + timedelta(days=60),
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
 
-    cards = await milestones_service.dashboard_cards(db_session)
+    cards = await milestones_service.dashboard_cards(db_session,
+        subject_id=owner_write.subject_id,
+    )
     assert len(cards) == 1
     card = cards[0]
     assert card["current"] == 90.0
     assert card["remaining"] == 8.0  # 90 - 82
     assert card["days_left"] is not None
 
-    assert await milestones_service.set_status(db_session, m.id, "achieved")
+    assert await milestones_service.set_status(db_session, m.id, "achieved",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
-    assert (await milestones_service.list_milestones(db_session, status="achieved"))[0].id == m.id
+    assert (await milestones_service.list_milestones(db_session, status="achieved",
+        subject_id=owner_write.subject_id,
+    ))[0].id == m.id
 
-    assert await milestones_service.delete_milestone(db_session, m.id)
+    assert await milestones_service.delete_milestone(db_session, m.id,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
-    assert len(await milestones_service.list_milestones(db_session)) == 0
+    assert len(await milestones_service.list_milestones(db_session,
+        subject_id=owner_write.subject_id,
+    )) == 0
 
 
-async def test_progress_guards_against_unit_domain_mismatch(db_session):
+@composed
+async def test_progress_guards_against_unit_domain_mismatch(db_session, owner_write):
     """A goal filed under domain="weight" but with a "%" target_unit (e.g.
     copy-pasted from a body-fat goal) must not compute current/remaining — on the
     old code this compared a percentage target against a kilogram reading and
@@ -60,28 +76,43 @@ async def test_progress_guards_against_unit_domain_mismatch(db_session):
     m = await milestones_service.create_milestone(
         db_session, name="Body fat under 15%", domain="weight", target_value=15.0,
         target_unit="%",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
 
-    card = (await milestones_service.dashboard_cards(db_session))[0]
+    card = (await milestones_service.dashboard_cards(db_session,
+        subject_id=owner_write.subject_id,
+    ))[0]
     assert card["current"] is None
     assert card["remaining"] is None
 
     # A matching unit still computes normally (kg goal, kg unit).
-    await milestones_service.update_milestone(db_session, m.id, target_unit="кг")
+    await milestones_service.update_milestone(db_session, m.id, target_unit="кг",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
-    card = (await milestones_service.dashboard_cards(db_session))[0]
+    card = (await milestones_service.dashboard_cards(db_session,
+        subject_id=owner_write.subject_id,
+    ))[0]
     assert card["current"] == 86.1
     assert card["remaining"] == pytest.approx(71.1, abs=0.01)
 
     # No unit at all stays permissive (older goals predate this field).
-    await milestones_service.update_milestone(db_session, m.id, target_unit=None)
+    await milestones_service.update_milestone(db_session, m.id, target_unit=None,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
-    card = (await milestones_service.dashboard_cards(db_session))[0]
+    card = (await milestones_service.dashboard_cards(db_session,
+        subject_id=owner_write.subject_id,
+    ))[0]
     assert card["current"] == 86.1
 
 
-async def test_create_and_progress_body_fat_goal(db_session, monkeypatch):
+@composed
+async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_write):
     # 1. Log Navy body fat (approx 14.52% for height=190, neck=38, waist=85, weight=88)
     await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
     await weight_service.upsert_body_measurement(
@@ -91,10 +122,14 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch):
     m = await milestones_service.create_milestone(
         db_session, name="Снизить жир до 12%", domain="body_comp", target_value=12.0,
         target_unit="%", deadline=DAY + timedelta(days=60),
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
 
-    cards = await milestones_service.dashboard_cards(db_session)
+    cards = await milestones_service.dashboard_cards(db_session,
+        subject_id=owner_write.subject_id,
+    )
     assert len(cards) == 1
     card = cards[0]
     # Verify Navy body fat is retrieved and progress is computed
@@ -106,32 +141,48 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch):
     from vitals.services.modules_service import set_module_enabled
     await set_module_enabled(db_session, key="body_comp", enabled=True)
     
-    from vitals.services import body_scan_service
-    await body_scan_service.save_scan(
-        db_session,
-        on_date=DAY + timedelta(days=1),
+    from vitals.models.body_scan import BodyScan, BodyScanMetric
+
+    scan = BodyScan(
+        date=DAY + timedelta(days=1),
+        actor_user_id=owner_write.identity.actor_user_id,
+        domain=Domain.BODY_COMPOSITION.value,
+        source=Source.MANUAL.value,
         device="InBody 770",
-        metrics=[
-            {"label": "Процент жира", "value": 15.5, "unit": "%"},
-        ],
     )
+    scan.metrics = [
+        BodyScanMetric(
+            metric_key="body_fat_pct",
+            label="Процент жира",
+            value=15.5,
+            unit="%",
+            category="composition",
+        )
+    ]
+    db_session.add(scan)
     await db_session.commit()
 
     # Get cards - BIA is available, so "latest" (default) picks it over Navy
-    cards = await milestones_service.dashboard_cards(db_session)
+    cards = await milestones_service.dashboard_cards(db_session,
+        subject_id=owner_write.subject_id,
+    )
     card = cards[0]
     assert card["current"] == 15.5
     assert card["remaining"] == pytest.approx(15.5 - 12.0, abs=0.1)
 
     # 3. Test body_fat_source preference - force "navy"
     monkeypatch.setenv("VITALS_BODY_FAT_SOURCE", "navy")
-    cards = await milestones_service.dashboard_cards(db_session)
+    cards = await milestones_service.dashboard_cards(db_session,
+        subject_id=owner_write.subject_id,
+    )
     card = cards[0]
     assert card["current"] == pytest.approx(14.52, abs=0.1)
 
     # 4. Force "bia"
     monkeypatch.setenv("VITALS_BODY_FAT_SOURCE", "bia")
-    cards = await milestones_service.dashboard_cards(db_session)
+    cards = await milestones_service.dashboard_cards(db_session,
+        subject_id=owner_write.subject_id,
+    )
     card = cards[0]
     assert card["current"] == 15.5
 
@@ -143,7 +194,9 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch):
         db_session, on_date=DAY + timedelta(days=2), neck_cm=39, waist_cm=90
     )
     await db_session.commit()
-    cards = await milestones_service.dashboard_cards(db_session)
+    cards = await milestones_service.dashboard_cards(db_session,
+        subject_id=owner_write.subject_id,
+    )
     card = cards[0]
     assert card["current"] == 15.5
 

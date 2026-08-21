@@ -509,7 +509,12 @@ async def owned_by_legacy_subject(db_session, legacy_owner_roots):
             # A curated catalog row and a platform-wide alert belong to nobody;
             # stamping them would turn the platform's half of the key into one
             # person's row.
-            if spec is None or spec.subject is not TargetColumn.REQUIRED:
+            # An inherited child carries whatever its parent carries, and in
+            # these tests the parent is this subject's row.
+            if spec is None or spec.subject not in {
+                TargetColumn.REQUIRED,
+                TargetColumn.INHERITED,
+            }:
                 continue
             # A delivery artifact's roots travel as a set — subject, recipient,
             # and channel — and a database check enforces that shape. Supplying

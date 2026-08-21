@@ -3409,7 +3409,6 @@ async def prepare_digest(
     await milestones_service.list_milestones(
         session,
         subject_id=owner._subject_id,
-        include_legacy_unowned=True,
     )
     frozen_date = on_date or today_local()
     from vitals.i18n import current_lang

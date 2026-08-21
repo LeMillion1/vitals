@@ -78,7 +78,6 @@ async def _weight_block(
         session,
         status=MilestoneStatus.ACTIVE.value,
         subject_id=scope.subject_id,
-        include_legacy_unowned=scope.include_legacy_unowned,
     )
     goal_ms = next(
         (m for m in active if m.domain == Domain.WEIGHT.value and m.target_value is not None),

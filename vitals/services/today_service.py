@@ -394,7 +394,6 @@ async def _goal(
     for card in await milestones_service.dashboard_cards(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     ):
         if card["domain"] != Domain.WEIGHT.value or card["current"] is None:
             continue

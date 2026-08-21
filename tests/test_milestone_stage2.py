@@ -104,11 +104,13 @@ async def test_scoped_create_stamps_subject_actor_and_update_retains_origin(
 async def test_scoped_writer_capability_is_required_live_and_human(
     db_session,
     legacy_owner_roots,
+    owner_write,
 ):
     identity = _identity(legacy_owner_roots)
     prepared = await _prepared(db_session, identity)
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    # A subject cannot be passed without its conflict decision at all now.
+    with pytest.raises(TypeError):
         await milestones_service.create_milestone(
             db_session,
             name="missing token",
@@ -192,10 +194,13 @@ async def test_subject_reads_are_isolated_and_foreign_ids_do_not_enumerate(
     assert await db_session.get(Milestone, other.id) is other
 
 
-async def test_legacy_bridge_adopts_only_fully_unowned_rows(
+async def test_a_goal_without_a_subject_belongs_to_nobody(
     db_session,
     legacy_owner_roots,
 ):
+    """A goal is somebody's. One with no subject is not this subject's, and no
+    write path will adopt it into being theirs."""
+
     identity = _identity(legacy_owner_roots)
     legacy = Milestone(name="legacy", domain=Domain.WEIGHT.value)
     partial = Milestone(
@@ -206,11 +211,12 @@ async def test_legacy_bridge_adopts_only_fully_unowned_rows(
     db_session.add_all([legacy, partial])
     await db_session.commit()
 
+    # A row with an actor but no subject is broken provenance, not merely
+    # somebody else's, so it is reported rather than passed over.
     with pytest.raises(milestones_service.MilestoneOwnershipError, match="partial"):
         await milestones_service.list_milestones(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
     with pytest.raises(milestones_service.MilestoneOwnershipError, match="partial"):
         await milestones_service.update_milestone(
@@ -218,41 +224,28 @@ async def test_legacy_bridge_adopts_only_fully_unowned_rows(
             partial.id,
             note="must not adopt",
             identity=identity,
-            include_legacy_unowned=True,
-            prepared_conflict_write=await _prepared(
-                db_session,
-                identity,
-                legacy=True,
-            ),
+            prepared_conflict_write=await _prepared(db_session, identity),
         )
+    assert (
+        await milestones_service.update_milestone(
+            db_session,
+            legacy.id,
+            note="must not adopt",
+            identity=identity,
+            prepared_conflict_write=await _prepared(db_session, identity),
+        )
+        is None
+    )
+    assert (legacy.subject_id, legacy.note) == (None, None)
+    assert (partial.subject_id, partial.note) == (None, None)
 
     await db_session.delete(partial)
     await db_session.flush()
-    visible = await milestones_service.list_milestones(
+    # With the broken row gone, an unowned goal is simply not this subject's.
+    assert await milestones_service.list_milestones(
         db_session,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    )
-    assert [row.id for row in visible] == [legacy.id]
-
-    adopted = await milestones_service.update_milestone(
-        db_session,
-        legacy.id,
-        note="adopted",
-        identity=identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=await _prepared(
-            db_session,
-            identity,
-            legacy=True,
-        ),
-    )
-    assert adopted is legacy
-    assert (legacy.subject_id, legacy.actor_user_id, legacy.note) == (
-        identity.subject_id,
-        None,
-        "adopted",
-    )
+    ) == []
 
 
 async def test_progress_propagates_subject_to_weight_measurement_scan_and_settings(
@@ -268,22 +261,22 @@ async def test_progress_propagates_subject_to_weight_measurement_scan_and_settin
 
     async def weights(session, **kwargs):
         del session
-        seen.append(("weight", kwargs["subject_id"], kwargs["include_legacy_unowned"]))
+        seen.append(("weight", kwargs["subject_id"]))
         return [SimpleNamespace(weight_kg=88.0)]
 
     async def measurements(session, **kwargs):
         del session
-        seen.append(("measurement", kwargs["subject_id"], kwargs["include_legacy_unowned"]))
+        seen.append(("measurement", kwargs["subject_id"]))
         return [SimpleNamespace(body_fat_pct=14.0)]
 
     async def scans(session, **kwargs):
         del session
-        seen.append(("scan", kwargs["subject_id"], kwargs["include_legacy_unowned"]))
+        seen.append(("scan", kwargs["subject_id"]))
         return [SimpleNamespace(metrics=[])]
 
     async def modules(session, *, subject_id=None):
         del session
-        seen.append(("modules", subject_id, True))
+        seen.append(("modules", subject_id))
         return {"body_comp": True}
 
     monkeypatch.setattr(weight_service, "list_active_weights", weights)
@@ -314,19 +307,17 @@ async def test_progress_propagates_subject_to_weight_measurement_scan_and_settin
         db_session,
         weight_goal,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     await milestones_service.progress(
         db_session,
         body_goal,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     assert set(seen) == {
-        ("weight", identity.subject_id, True),
-        ("measurement", identity.subject_id, True),
-        ("scan", identity.subject_id, True),
-        ("modules", identity.subject_id, True),
+        ("weight", identity.subject_id),
+        ("measurement", identity.subject_id),
+        ("scan", identity.subject_id),
+        ("modules", identity.subject_id),
     }
 
 

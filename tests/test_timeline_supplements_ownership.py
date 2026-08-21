@@ -356,7 +356,14 @@ async def test_each_derived_timeline_selector_rejects_cross_subject_rows(
     assert _derived_ref(selector, owner_row) not in foreign_refs
 
 
-@pytest.mark.parametrize("selector", _DERIVED_TIMELINE_SELECTORS)
+# The goal domain has no legacy bridge left: a goal without a subject is
+# nobody's, and the timeline reads goals through the scoped service.
+_LEGACY_BRIDGED_SELECTORS = tuple(
+    selector for selector in _DERIVED_TIMELINE_SELECTORS if selector != "milestone"
+)
+
+
+@pytest.mark.parametrize("selector", _LEGACY_BRIDGED_SELECTORS)
 async def test_each_derived_timeline_selector_requires_explicit_legacy_null_bridge(
     db_session,
     selector,

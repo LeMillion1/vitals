@@ -255,7 +255,6 @@ async def _mcp_v1_composition_scope(session) -> conflict_engine.ConflictScope:
     await milestones_service.list_milestones(
         session,
         subject_id=scope.subject_id,
-        include_legacy_unowned=scope.include_legacy_unowned,
     )
     # Whole-lake compatibility tools still query globally, so validate every
     # WeeklyDigest root before export/overview can serialize or count it.
@@ -2261,7 +2260,6 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
         elif domain == "supplements":
@@ -3077,14 +3075,12 @@ async def get_milestones(status: Optional[str] = None) -> list[dict]:
             session,
             status=status,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
         )
         return [
             await milestones_service.progress(
                 session,
                 milestone,
                 subject_id=scope.subject_id,
-                include_legacy_unowned=scope.include_legacy_unowned,
             )
             for milestone in rows
         ]
@@ -3191,7 +3187,6 @@ async def update_milestone(
             session,
             milestone_id,
             identity=conflict_context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
             **kwargs,
         )

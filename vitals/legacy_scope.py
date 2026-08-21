@@ -215,23 +215,7 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'update_result_note',
             }
         ),
-        'vitals.services.milestones_service': frozenset(
-            {
-                '_current_body_fat',
-                '_current_weight',
-                '_lock_milestone_for_write',
-                '_require_prepared_write',
-                '_require_progress_scope',
-                '_subject_scope',
-                'create_milestone',
-                'dashboard_cards',
-                'delete_milestone',
-                'list_milestones',
-                'progress',
-                'set_status',
-                'update_milestone',
-            }
-        ),
+
         'vitals.services.modules_service': frozenset(
             {
                 'cache_key',

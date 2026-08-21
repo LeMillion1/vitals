@@ -1202,6 +1202,44 @@ The composition layer therefore goes first:
    than scoped: in a commercial installation a subject always exists, so those
    arms are unreachable code that only tests keep alive.
 
+That order was corrected once by practice. The conflict engine's
+`legacy_resolver` cannot go second: its arm is entered only when `enforce()` is
+called without a scope, and every one of those calls lives inside a leaf
+service. The resolvers therefore come out *after* the leaves, not before them.
+
+#### Stage 6B — the composition layer
+
+`assemble_context` takes the subject it composes for, and each of its thirty-odd
+domain reads is scoped by it; `build_snapshot`, `today_service.build`, the
+brief's `build_context`, and the share report's twelve block builders thread the
+same subject down. Two defects the scoped read exposed were fixed with it: a
+subject could not see their own custom HRT compounds, and platform diagnostics
+reached everyone's report through an unscoped alert read.
+
+The two zero-subject generators are gone. Neither had a production caller —
+both refused to run once a subject existed — so what their tests actually
+asserted now runs against the context and the header directly.
+
+#### Stage 6C onward — the leaves, one at a time
+
+| domain | state |
+| --- | --- |
+| supplements | closed — subject on every read, subject and conflict decision on every write |
+| milestones | closed — same, plus progress refuses another subject's goal |
+| everything else | still bridged; see `vitals/legacy_scope.py` |
+
+The counter moves only in the registry, and the contract test refuses to let it
+move the wrong way. It started at 266 functions across 25 modules; it is now
+248. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
+its subject is mandatory, and the branch that adopted an unowned row on the way
+past has been removed — an unowned row then stays unowned and stays invisible,
+which is the whole point.
+
+Two invariants survive every closure rather than going with the bridge: a row
+with an actor but no subject is broken provenance and is reported, not passed
+over; and a write still cannot name a subject without the conflict decision that
+authorized it — that contract is now expressed by the signature itself.
+
 ## Rollback boundary
 
 Before a second subject can write:

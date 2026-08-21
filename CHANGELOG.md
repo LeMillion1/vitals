@@ -10,6 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the goal domain. `milestones_service` takes the subject on every read
+  and the subject with its conflict decision on every write; progress refuses a
+  goal that belongs to somebody else rather than computing it from this
+  subject's weight. A goal without a subject is nobody's: it is not listed, not
+  adopted, and not counted. All thirteen of the module's bridges are closed.
+  What did not go with them is the guard that reports a goal carrying an actor
+  but no subject — that is broken provenance, not merely another person's row.
 - Closed the first leaf domain. `supplements_service` now demands the subject on
   every read and the subject together with its conflict decision on every write;
   `include_legacy_unowned` is gone from all of them, as is the branch that

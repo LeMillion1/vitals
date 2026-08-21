@@ -59,7 +59,6 @@ async def reports_dashboard(
     cards = await milestones_service.dashboard_cards(
         db,
         subject_id=milestone_scope.subject_id,
-        include_legacy_unowned=milestone_scope.include_legacy_unowned,
     )
     digest_owner = await digest_service.prepare_digest_owner(
         db,
@@ -162,7 +161,6 @@ async def set_milestone_status(
         milestone_id,
         status_value,
         identity=conflict_context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -189,7 +187,6 @@ async def delete_milestone(
         db,
         milestone_id,
         identity=conflict_context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
