@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -940,6 +940,34 @@ scan assets while preserving the physical files, validates the blocked or empty
 incoming shape in the same transaction, and requires backup v2 or an explicit
 reviewed recovery before nonempty restored history can be activated. An empty
 snapshot is exact `COMPLETED`.
+
+## Stage-3P inherited body-scan metric ownership operation
+
+The fixed `stage3.inherited_children.body_scan_metrics.v1` phase covers only
+`body_scan_metrics`. A metric is a directly queried child, so it carries its own
+subject even though that subject is reachable through the scan. A historical
+child with a null S gains only the exact S of its reviewed Stage-3O parent; the
+metric key, printed label, value, unit, reference range, segment, category, and
+both timestamps are untouched, and the child never gains an actor.
+
+A child never leads its parent: a metric whose scan is still unowned fails
+closed, a foreign parent or child subject fails closed, and a child whose S
+disagrees with its scan is an integrity error rather than something to repair.
+A metric written above the frozen high-water mark requires the strict parent
+graph. Parents are locked before children in every batch and in every whole-graph
+pass, so a concurrent scan adoption cannot slip between validation and the child
+update, and the referenced parent digest is rechecked afterwards.
+
+Because Stage 3O leaves a migrated scan's unknown actor null, the body-scan
+reader now also accepts that shape on the manual branch under the legacy
+compatibility bridge; without it a migrated manual scan and all of its metrics
+would have become unreadable.
+
+Backup v1 carries the child business fields and rebinds the child subject from
+the reviewed local root. Import resets the exact Stage-3P checkpoint after the
+Stage-3O block and before replacement to RUNNING for a nonempty snapshot or
+exact COMPLETED for an empty snapshot, then revalidates the restored parent/child
+graph before commit.
 
 ## Completion gates
 

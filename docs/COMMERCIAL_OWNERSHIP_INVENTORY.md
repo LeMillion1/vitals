@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -793,6 +793,32 @@ reviewed recovery before nonempty restored history can be activated. An empty
 snapshot is exact `COMPLETED`. `body_scan_metrics` remains deferred until its
 own inherited-child phase.
 
+Stage 3P continues with `stage3.inherited_children.body_scan_metrics.v1` over
+exactly `body_scan_metrics`. Stage 3O must already be `COMPLETED`. Under a
+complete body-scan writer pause, a historical child with a null S gains only the
+exact S of its reviewed parent scan; the metric key, printed label, value, unit,
+reference range, segment, category, and timestamps are untouched, and the child
+never gains an actor.
+
+A child never leads its parent: a metric whose scan is still unowned fails
+closed, foreign parent or child ownership fails closed, and a child whose S
+disagrees with its scan is an integrity error rather than something to repair.
+A metric appended above the frozen high-water mark requires the strict parent
+graph. Parents are locked before children in every batch and whole-graph pass,
+and the referenced parent digest is rechecked afterwards, so a concurrent scan
+adoption cannot slip between validation and the child update.
+
+Because Stage 3O leaves a migrated scan's unknown actor null, the body-scan
+reader's manual branch now recognises that shape under the legacy compatibility
+bridge; without it a migrated manual scan and every metric under it would have
+become unreadable.
+
+Backup v1 carries the child business fields and rebinds the child subject from
+the reviewed local root. Import resets the exact Stage-3P checkpoint after the
+Stage-3O block and before replacement, records a nonempty snapshot as RUNNING or
+an empty one as COMPLETED, and revalidates the restored parent/child graph before
+commit.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -832,9 +858,11 @@ service gate adds variant/raw races. The Stage-3O rehearsal covers
 metadata-only placeholder creation for sheet-backed parser history, stop/resume,
 the migrated processed bound, post-completion volatility, backup-v1 blocking and
 apply refusal, empty replacement, and populated downgrade refusal; its service
-gate adds sheet-key, scan-disappearance, and duplicate-key races. Remaining
-inherited children, artifacts, control phases, and the Stage 4 gates remain
-pending.
+gate adds sheet-key, scan-disappearance, and duplicate-key races. The
+Stage-3P rehearsal covers inherited child adoption from a reviewed scan,
+stop/resume, a strict live child above the frozen high-water mark, backup-v1
+reset/recompletion, empty replacement, and populated downgrade refusal.
+Remaining artifacts, control phases, and the Stage 4 gates remain pending.
 
 ### Stage 4 — Ownership validation
 

@@ -140,6 +140,12 @@ from vitals.services.shared_report_ownership_backfill_service import (
     preflight_shared_report_ownership_backfill,
     prepare_shared_report_ownership_backfill_for_portability_v1_restore,
 )
+from vitals.services.body_scan_metric_ownership_backfill_service import (
+    BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_TABLES,
+    BodyScanMetricOwnershipBackfillError,
+    preflight_body_scan_metric_ownership_backfill,
+    reset_body_scan_metric_ownership_backfill_for_portability_v1_restore,
+)
 from vitals.services.body_scan_ownership_backfill_service import (
     BODY_SCAN_OWNERSHIP_BACKFILL_TABLES,
     BodyScanOwnershipBackfillError,
@@ -849,6 +855,34 @@ def _body_scan_replacement_snapshot_bounds(
     return bounds
 
 
+def _body_scan_metric_replacement_snapshot_bounds(
+    payload: dict[str, Any],
+) -> dict[str, tuple[int, int]]:
+    """Return exact Stage-3P body-scan metric bounds before replacement."""
+
+    bounds: dict[str, tuple[int, int]] = {}
+    for table_name in BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_TABLES:
+        rows = payload.get(table_name) or ()
+        high_watermark = 0
+        for index, row in enumerate(rows):
+            row_id = row.get("id")
+            if (
+                not isinstance(row_id, int)
+                or isinstance(row_id, bool)
+                or not 1 <= row_id <= _POSTGRES_INTEGER_MAX
+            ):
+                raise _contract_error(
+                    "import.error.generic",
+                    exc=(
+                        f"{table_name} record #{index} must carry a positive "
+                        "integer id within the PostgreSQL INTEGER range"
+                    ),
+                )
+            high_watermark = max(high_watermark, row_id)
+        bounds[table_name] = (high_watermark, len(rows))
+    return bounds
+
+
 async def _refuse_retained_raw_references(session: AsyncSession) -> None:
     """Fail before mutation when retained control state still binds any raw."""
 
@@ -939,6 +973,9 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
         payload
     )
     body_scan_snapshot_bounds = _body_scan_replacement_snapshot_bounds(payload)
+    body_scan_metric_snapshot_bounds = (
+        _body_scan_metric_replacement_snapshot_bounds(payload)
+    )
 
     try:
         # Freeze identity before deriving the local subject and keep governance
@@ -1114,6 +1151,18 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                     "import.error.generic",
                     exc="body-scan ownership restore block was rejected",
                 ) from exc
+            try:
+                await (
+                    reset_body_scan_metric_ownership_backfill_for_portability_v1_restore(
+                        session,
+                        snapshot_bounds=body_scan_metric_snapshot_bounds,
+                    )
+                )
+            except BodyScanMetricOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="body-scan metric ownership restore reset was rejected",
+                ) from exc
         preserved = await _secret_settings(session)
 
         # Wipe in reverse FK order so child rows go before the parents they reference.
@@ -1231,6 +1280,13 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                 raise _contract_error(
                     "import.error.generic",
                     exc="body-scan validation rejected the portable restore",
+                ) from exc
+            try:
+                await preflight_body_scan_metric_ownership_backfill(session)
+            except BodyScanMetricOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="body-scan metric validation rejected the portable restore",
                 ) from exc
         await _reset_sequences(session)
         await session.flush()

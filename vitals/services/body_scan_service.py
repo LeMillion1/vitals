@@ -1386,7 +1386,13 @@ async def _validate_persisted_scan(
             "body scan has an unsupported scoped provenance source"
         )
     if scan.source == Source.MANUAL.value:
-        if not is_legacy_scan and scan.actor_user_id != owner_user_id:
+        # A migrated manual scan keeps its unknown actor null, so the reviewed
+        # compatibility bridge must recognise that shape as well as the owner.
+        if (
+            not is_legacy_scan
+            and scan.actor_user_id != owner_user_id
+            and not (include_legacy_unowned and scan.actor_user_id is None)
+        ):
             raise BodyScanOwnershipError(
                 "manual body-scan actor does not match the subject owner"
             )

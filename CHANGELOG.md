@@ -130,6 +130,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 3P for inherited body-scan metric ownership. The fixed
+  `stage3.inherited_children.body_scan_metrics.v1` operation copies only the
+  reviewed parent scan's subject down to its metrics; the metric key, printed
+  label, value, unit, reference range, segment, category, and both timestamps are
+  untouched. A child never leads its parent: a metric whose scan is still
+  unowned fails closed, and a live metric requires the strict parent graph.
+  Parents are locked before children so a concurrent scan adoption cannot slip
+  between validation and the child update. The body-scan reader now also accepts
+  a migrated manual scan whose unknown actor stays null. Backup v1 rebinds the
+  child subject and resets the exact checkpoint after Stage 3O.
 - Added Stage 3O for file-backed body-scan ownership. The fixed
   `stage3.file_backed.body_scans.v1` operation gives a reviewed fully-unowned
   scan the sole subject and, when it kept a sheet, a metadata-only FileAsset

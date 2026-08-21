@@ -555,6 +555,12 @@ Implementation progress on `commercial/main`:
   recognises the reviewed placeholder so migrated sheet history stays legible.
   Backup v1 carries neither sheet bytes nor trustworthy A/F, so a nonempty
   restored snapshot is recorded as `RESTORE_BLOCKED`.
+- Stage 3P uses `stage3.inherited_children.body_scan_metrics.v1` for exactly
+  `body_scan_metrics`. It copies only the reviewed parent scan's subject down to
+  its metrics and changes no measured value. A child never leads its parent, a
+  live child requires the strict parent graph, and parents are locked before
+  children so a concurrent scan adoption cannot race the child update. Backup v1
+  rebinds the child subject and resets the exact checkpoint after Stage 3O.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

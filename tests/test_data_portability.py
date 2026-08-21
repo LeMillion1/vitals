@@ -39,7 +39,7 @@ from vitals.models.hrt import (
     HrtCycleTemplate,
     HrtCycleTemplateItem,
 )
-from vitals.models.body_scan import BodyScan
+from vitals.models.body_scan import BodyScan, BodyScanMetric
 from vitals.models.genetics import GeneticVariant
 from vitals.models.labs import LabResult
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
@@ -105,6 +105,10 @@ from vitals.services.signal_ownership_backfill_service import (
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     SharedReportOwnershipBackfillStateError,
+)
+from vitals.services.body_scan_metric_ownership_backfill_service import (
+    BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    BodyScanMetricOwnershipBackfillStateError,
 )
 from vitals.services.body_scan_ownership_backfill_service import (
     BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -2833,6 +2837,77 @@ async def test_full_import_completes_exact_empty_body_scan_stage3o(
         checkpoint.snapshot_rows,
     ) == ("completed", 0, 0)
     assert checkpoint.completed_at is not None
+
+
+async def test_full_import_resets_body_scan_metric_stage3p_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "body_scans": [_portable_body_scan(row_id=111)],
+            "body_scan_metrics": [
+                {
+                    "id": 121,
+                    "scan_id": 111,
+                    "metric_key": "skeletal_muscle_mass",
+                    "label": "SMM",
+                    "value": 38.4,
+                    "unit": "kg",
+                    "ref_low": 33.0,
+                    "ref_high": 41.0,
+                    "segment": None,
+                    "category": "composition",
+                }
+            ],
+        },
+    )
+
+    metric = await db_session.get(BodyScanMetric, 121)
+    assert metric is not None
+    assert metric.subject_id == legacy_owner_roots.subject_id
+    assert metric.scan_id == 111 and metric.value == 38.4
+    phase = BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES[
+        "body_scan_metrics"
+    ]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.completed_at,
+    ) == ("running", 121, 1, None)
+
+
+async def test_body_scan_metric_post_load_rejection_rolls_back_replacement(
+    db_session,
+    legacy_owner_roots,
+):
+    async def rejected_preflight(*args, **kwargs):
+        raise BodyScanMetricOwnershipBackfillStateError("sensitive synthetic state")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            data_portability_service,
+            "preflight_body_scan_metric_ownership_backfill",
+            rejected_preflight,
+        )
+        with pytest.raises(
+            PortabilityError,
+            match="body-scan metric validation rejected the portable restore",
+        ):
+            await import_full(
+                db_session,
+                {
+                    "metadata": {"version": "1.0", "kind": "full_backup"},
+                    "raw_payloads": [],
+                },
+            )
+    await db_session.rollback()
 
 
 @pytest.mark.parametrize("table_name", BODY_SCAN_OWNERSHIP_BACKFILL_TABLES)
