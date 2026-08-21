@@ -1267,11 +1267,31 @@ async def set_day_context(
                 allow_historical=allow_historical_connection,
             )
 
-    row = await session.scalar(
-        select(DayContext)
-        .where(DayContext.date == on_date)
-        .with_for_update()
-    )
+    # One answered day per person: the lookup is scoped by subject, and a row
+    # that has not been adopted yet carries none and is still this subject's to
+    # claim.  Without an identity there is no scope to apply, which is the
+    # legacy bridge the scoped-read cutover removes.
+    scoped = select(DayContext).where(DayContext.date == on_date)
+    if identity is not None:
+        scoped = scoped.where(
+            or_(
+                DayContext.subject_id == identity.subject_id,
+                DayContext.subject_id.is_(None),
+            )
+        )
+    row = await session.scalar(scoped.with_for_update())
+    if row is None and identity is not None:
+        # Temporary bridge: the legacy global key on ``date`` still allows only
+        # one row per day for the whole installation, so another subject's row
+        # would make this insert fail with a bare integrity error. This check
+        # goes away with the key.
+        occupied = await session.scalar(
+            select(DayContext.id).where(DayContext.date == on_date).limit(1)
+        )
+        if occupied is not None:
+            raise SignalOwnershipError(
+                "day context belongs to another subject"
+            )
     if identity is not None:
         if row is not None:
             if row.subject_id is None:
@@ -1291,10 +1311,6 @@ async def set_day_context(
                     subject_id=identity.subject_id,
                 )
                 row.subject_id = identity.subject_id
-            elif row.subject_id != identity.subject_id:
-                raise SignalOwnershipError(
-                    "day context belongs to another subject"
-                )
             if (
                 row.actor_user_id is not None
                 and row.actor_user_id != subject.owner_user_id

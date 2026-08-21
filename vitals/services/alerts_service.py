@@ -1123,11 +1123,75 @@ def _stamp_override(row: SystemAlert, actor_user_id: uuid.UUID) -> bool:
     return True
 
 
+def _alert_class_scope(context: AlertContext):
+    """Restrict the active-alert lookup to the root the alert belongs to.
+
+    One unresolved alert per key lives inside the connection for a provider
+    alert, inside the subject for a health alert, and inside the installation
+    for a platform alert.  A row that has not been adopted yet carries neither
+    root and is still a candidate for the subject or connection claiming it —
+    which is also exactly the platform class's own shape.
+    """
+
+    unadopted = and_(
+        SystemAlert.subject_id.is_(None),
+        SystemAlert.integration_connection_id.is_(None),
+    )
+    if isinstance(context, PlatformAlertContext):
+        return unadopted
+    if isinstance(context, ProviderAlertContext):
+        return or_(
+            SystemAlert.integration_connection_id
+            == context.integration_connection_id,
+            unadopted,
+        )
+    return or_(
+        and_(
+            SystemAlert.subject_id == context.identity.subject_id,
+            SystemAlert.integration_connection_id.is_(None),
+        ),
+        unadopted,
+    )
+
+
+async def _require_no_foreign_active_alert(
+    session: AsyncSession,
+    *,
+    alert_key: str,
+    entity_ref: str,
+    context: AlertContext,
+) -> None:
+    """Temporary bridge for as long as the legacy global key is installed.
+
+    The scoped keys are the contract now, but the installation-wide unique key
+    on ``(alert_key, entity_ref)`` has not been dropped yet, so another
+    subject's or another account's active alert would still make this insert
+    fail with a bare integrity error.  Raise the typed cutover error instead.
+    This check goes away with the key.
+    """
+
+    foreign = await session.scalar(
+        select(SystemAlert.id)
+        .where(
+            SystemAlert.alert_key == alert_key,
+            SystemAlert.entity_ref == entity_ref,
+            SystemAlert.resolved_at.is_(None),
+            ~_alert_class_scope(context),
+        )
+        .limit(1)
+    )
+    if foreign is not None:
+        raise AlertScopedUniqueCutoverRequiredError(
+            "the global active-alert key is occupied by another ownership scope"
+        )
+
+
 async def _active_rows_for_key(
     session: AsyncSession,
     *,
     alert_key: str,
     entity_ref: str,
+    context: AlertContext,
 ) -> list[SystemAlert]:
     return list(
         await session.scalars(
@@ -1136,6 +1200,7 @@ async def _active_rows_for_key(
                 SystemAlert.alert_key == alert_key,
                 SystemAlert.entity_ref == entity_ref,
                 SystemAlert.resolved_at.is_(None),
+                _alert_class_scope(context),
             )
             .with_for_update()
             .execution_options(populate_existing=True)
@@ -1192,12 +1257,20 @@ async def raise_scoped_alert(
         session,
         alert_key=alert_key,
         entity_ref=entity_ref,
+        context=context,
     )
     row = _choose_active_row(
         rows,
         context=context,
         legacy_bridge=legacy_bridge,
     )
+    if row is None:
+        await _require_no_foreign_active_alert(
+            session,
+            alert_key=alert_key,
+            entity_ref=entity_ref,
+            context=context,
+        )
     if row is not None:
         await _validate_row_semantics(session, row, context)
         if row.domain != domain.value:
@@ -1317,11 +1390,18 @@ async def resolve_scoped_by_key(
             session,
             alert_key=alert_key,
             entity_ref=entity_ref,
+            context=context,
         ),
         context=context,
         legacy_bridge=legacy_bridge,
     )
     if row is None:
+        await _require_no_foreign_active_alert(
+            session,
+            alert_key=alert_key,
+            entity_ref=entity_ref,
+            context=context,
+        )
         return None
     await _validate_row_semantics(session, row, context)
     _adopt_legacy_row(row, context, legacy_bridge)

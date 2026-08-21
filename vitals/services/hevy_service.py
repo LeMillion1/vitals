@@ -245,6 +245,33 @@ async def _require_single_subject_legacy_adoption(
         )
 
 
+async def _foreign_connection_workout_exists(
+    session: AsyncSession,
+    *,
+    external_id: str,
+    integration_connection_id: uuid.UUID,
+) -> bool:
+    """Temporary bridge for as long as the legacy global key is installed.
+
+    The scoped key is the contract now, but the installation-wide unique key on
+    ``external_id`` has not been dropped yet, so another account's workout with
+    the same id would still make our insert fail with a bare integrity error.
+    Report it explicitly instead.  This check goes away with the key.
+    """
+
+    return (
+        await session.scalar(
+            select(HevyWorkout.id)
+            .where(
+                HevyWorkout.external_id == external_id,
+                HevyWorkout.integration_connection_id.is_not(None),
+                HevyWorkout.integration_connection_id != integration_connection_id,
+            )
+            .limit(1)
+        )
+    ) is not None
+
+
 async def _resolve_owned_workout(
     session: AsyncSession,
     *,
@@ -254,18 +281,25 @@ async def _resolve_owned_workout(
 ) -> tuple[Optional[HevyWorkout], bool]:
     """Return an exact row or one safely adoptable nullable legacy row.
 
-    The boolean says whether the returned root still needs ownership adoption.
-    Rows in a foreign subject/connection scope are never returned. The current
-    schema still has a global unique key on ``external_id``; until its scoped
-    replacement lands, a foreign collision therefore fails explicitly instead
-    of falling through to an IntegrityError or, worse, being overwritten.
+    A Hevy workout id is unique inside the account it came from, so the lookup
+    is scoped by connection; a row that has not been adopted yet carries no
+    connection and is still a candidate for the one now claiming it. The boolean
+    says whether the returned root still needs ownership adoption. Rows in a
+    foreign subject or connection scope are never returned.
     """
 
     with session.no_autoflush:
         rows = list(
             await session.scalars(
                 select(HevyWorkout)
-                .where(HevyWorkout.external_id == external_id)
+                .where(
+                    HevyWorkout.external_id == external_id,
+                    or_(
+                        HevyWorkout.integration_connection_id
+                        == integration_connection_id,
+                        HevyWorkout.integration_connection_id.is_(None),
+                    ),
+                )
                 .order_by(HevyWorkout.id)
                 .with_for_update()
             )
@@ -300,7 +334,11 @@ async def _resolve_owned_workout(
             "multiple compatible legacy workouts match the external id"
         )
     if compatible_legacy:
-        if len(rows) != 1:
+        if len(rows) != 1 or await _foreign_connection_workout_exists(
+            session,
+            external_id=external_id,
+            integration_connection_id=integration_connection_id,
+        ):
             raise HevyOwnershipAmbiguityError(
                 "legacy workout adoption conflicts with another ownership scope"
             )
@@ -314,7 +352,16 @@ async def _resolve_owned_workout(
 
     if rows:
         raise HevyOwnershipConflictError(
-            "Hevy external id already belongs to another subject or connection; "
+            "Hevy external id already belongs to another subject; "
+            "scoped unique-key cutover is required before both rows can coexist"
+        )
+    if await _foreign_connection_workout_exists(
+        session,
+        external_id=external_id,
+        integration_connection_id=integration_connection_id,
+    ):
+        raise HevyOwnershipConflictError(
+            "Hevy external id already belongs to another connection; "
             "scoped unique-key cutover is required before both rows can coexist"
         )
     return None, False

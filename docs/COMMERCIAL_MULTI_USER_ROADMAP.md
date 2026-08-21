@@ -619,7 +619,16 @@ Implementation progress on `commercial/main`:
   than the key it narrows, so installation rejects nothing and no reader or
   writer changes. PostgreSQL builds them `CONCURRENTLY`; downgrade drops them
   transactionally so a refused downgrade rolls the whole attempt back.
-- Remaining work: switching every key-based
+- Stage 5C switches every key-based write path to the scoped key: Garmin days
+  and activities, Hevy workouts, and weight-export intents resolve inside their
+  connection; day context inside its subject; the compound and rule catalogs
+  read only the platform half of their key; and an active alert resolves inside
+  the root its class belongs to. A row outside the caller's scope is no longer
+  read into the write path at all. While the legacy global keys stand, each path
+  carries one narrowly scoped bridge reporting an out-of-scope occupant as a
+  typed cutover error; each bridge is removed with its key.
+- Remaining work: dropping the legacy global keys, two-subject collision and
+  concurrency tests, scoped
   write/read path, two-subject collision and concurrency tests, dropping the
   legacy global keys, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,

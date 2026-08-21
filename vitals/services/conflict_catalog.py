@@ -168,9 +168,15 @@ async def sync_catalog(session: AsyncSession) -> dict[str, int]:
     catalog = load_rule_catalog()
     catalog_codes = tuple(entry["code"] for entry in catalog)
     await acquire_identity_governance_lock(session)
+    # The curated catalog owns the platform half of the rule code: a subject's
+    # own rule may reuse the same code and is not the catalog's to read or
+    # rewrite.
     result = await session.execute(
         select(ConflictRule)
-        .where(ConflictRule.code.in_(catalog_codes))
+        .where(
+            ConflictRule.code.in_(catalog_codes),
+            ConflictRule.subject_id.is_(None),
+        )
         .order_by(ConflictRule.id)
         .with_for_update()
         .execution_options(populate_existing=True)
@@ -180,8 +186,21 @@ async def sync_catalog(session: AsyncSession) -> dict[str, int]:
 
     # A custom rule may legitimately predate a code being added to the checked-in
     # catalog.  Synchronization must never turn that subject-owned medical rule
-    # into a global definition by overwriting its fields in place.
-    if any(row.subject_id is not None for row in existing.values()):
+    # into a global definition by overwriting its fields in place.  Temporary
+    # bridge: the legacy global key on ``code`` is still installed, so such a
+    # rule would also make the catalog's insert fail with a bare integrity
+    # error.  This check goes away with the key.
+    owned_collision = await session.scalar(
+        select(ConflictRule.code)
+        .where(
+            ConflictRule.code.in_(
+                tuple(code for code in catalog_codes if code not in existing)
+            ),
+            ConflictRule.subject_id.is_not(None),
+        )
+        .limit(1)
+    )
+    if owned_collision is not None:
         raise ConflictCatalogCollisionError(
             "conflict catalog synchronization found a protected custom-code collision"
         )

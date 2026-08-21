@@ -416,6 +416,63 @@ def _activate_scoped_export(prepared: PreparedGarminWeightExport):
         _SCOPED_EXPORT.reset(token)
 
 
+async def _require_no_foreign_outbox_under_legacy_key(
+    session: AsyncSession,
+    *,
+    on_date: date_type,
+    context: "GarminWeightExportContext",
+) -> None:
+    """Temporary bridge for as long as the legacy global key is installed.
+
+    The scoped key is the contract now, but the installation-wide unique key on
+    ``date`` has not been dropped yet, so another account's intent for the same
+    day would still make our insert fail with a bare integrity error.  Raise the
+    typed cutover error instead, without writing anything.  This check goes away
+    with the key.
+    """
+
+    foreign = await session.scalar(
+        select(GarminWeightExport.id)
+        .where(
+            GarminWeightExport.date == on_date,
+            GarminWeightExport.integration_connection_id.is_not(None),
+            GarminWeightExport.integration_connection_id
+            != context.integration_connection_id,
+        )
+        .limit(1)
+    )
+    if foreign is not None:
+        raise GarminWeightExportScopedUniqueCutoverRequiredError(
+            "global Garmin Weight export date is occupied by another scope"
+        )
+
+
+def _scoped_outbox_query(
+    on_date: date_type,
+    *,
+    context: "GarminWeightExportContext | None",
+):
+    """Scope the outbox lookup by destination account.
+
+    One queued export per account per date: two Garmin accounts legitimately
+    hold an intent for the same day.  A row that has not been adopted yet
+    carries no connection and is still the one this context is claiming.
+    Without a context there is no scope to apply, which is the legacy bridge
+    the scoped-read cutover removes.
+    """
+
+    query = select(GarminWeightExport).where(GarminWeightExport.date == on_date)
+    if context is None:
+        return query
+    return query.where(
+        or_(
+            GarminWeightExport.integration_connection_id
+            == context.integration_connection_id,
+            GarminWeightExport.integration_connection_id.is_(None),
+        )
+    )
+
+
 def _active_export_context() -> GarminWeightExportContext | None:
     prepared = _SCOPED_EXPORT.get()
     return prepared.context if prepared is not None else None
@@ -1204,8 +1261,7 @@ async def _ensure_outbox_row(
         assert prepared is not None
         _require_prepared_export(session, prepared, historical_ok=False)
         existing = await session.scalar(
-            select(GarminWeightExport)
-            .where(GarminWeightExport.date == on_date)
+            _scoped_outbox_query(on_date, context=context)
             .with_for_update()
             .execution_options(populate_existing=True)
         )
@@ -1232,6 +1288,11 @@ async def _ensure_outbox_row(
                 adopt_legacy=True,
             )
             return existing
+        await _require_no_foreign_outbox_under_legacy_key(
+            session,
+            on_date=on_date,
+            context=context,
+        )
         row = GarminWeightExport(
             subject_id=context.identity.subject_id,
             integration_connection_id=context.integration_connection_id,
@@ -1470,8 +1531,7 @@ async def handle_active_weight_deleted(
     clock = now or now_local()
     context = _active_export_context()
     result = await session.execute(
-        select(GarminWeightExport)
-        .where(GarminWeightExport.date == on_date)
+        _scoped_outbox_query(on_date, context=context)
         .with_for_update()
         .execution_options(populate_existing=True)
     )

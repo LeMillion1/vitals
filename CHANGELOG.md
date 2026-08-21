@@ -130,6 +130,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 5C, which switches every key-based write path to the scoped key.
+  A path used to look its natural key up across the whole installation and then
+  check afterwards whether the row it found happened to belong to the caller;
+  it now looks the key up *inside* the caller's scope, so a row outside it is
+  never read into the write path or mutated. A Garmin day and activity, a Hevy
+  workout, and a weight-export intent resolve inside their connection; a day
+  context resolves inside its subject; the compound and rule catalogs read only
+  the platform half of their key, so a subject's own compound or rule is no
+  longer something catalog startup can even see; and an active alert resolves
+  inside the root its class belongs to — the connection for a provider alert,
+  the subject for a health alert, the installation for a platform alert. The
+  weight, body-measurement, lab-marker, genetics, and HRT-cycle paths already
+  worked this way. Because the legacy global keys are still installed, each
+  path also carries one narrowly scoped bridge that reports a row outside the
+  scope as a typed cutover error instead of letting the surviving global key
+  raise a bare integrity error; every bridge is marked to be removed with the
+  key it stands in for.
 - Added Stage 5B: revision `0047` installs the sixteen scoped unique keys. Each
   is installed *beside* the legacy global key it will eventually replace, never
   instead of it — a scoped key is strictly weaker than the global key it

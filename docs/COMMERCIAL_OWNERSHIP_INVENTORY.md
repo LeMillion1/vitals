@@ -1090,6 +1090,33 @@ left in place: revision `0037`'s contract still describes them, and removing
 them belongs with the drop of the global keys rather than with their
 installation.
 
+#### Stage 5C — switching the write paths
+
+A key-based path used to look its natural key up across the whole installation
+and then check afterwards whether the row it found happened to belong to the
+caller. It now looks the key up *inside* the caller's scope, so a row outside
+that scope is never read into the write path, never locked as a candidate, and
+never mutated.
+
+| path | resolves inside |
+| --- | --- |
+| Garmin daily, Garmin activity | the connection the row was fetched from |
+| Hevy workout | the connection the workout came from |
+| Garmin weight-export intent | the destination account |
+| day context | the subject whose day it is |
+| compound catalog, rule catalog | the platform half of the key only |
+| active alert | the connection, the subject, or the installation, by alert class |
+
+The weight, body-measurement, lab-marker, genetics, and HRT-cycle paths already
+resolved this way from the dual-write work.
+
+Because the legacy global keys are still installed, each switched path carries
+one narrowly scoped bridge: when the scoped lookup finds nothing, it asks
+whether the surviving global key is occupied outside the scope and reports that
+as a typed cutover error rather than letting the insert fail with a bare
+integrity error. Every bridge is commented as belonging to the key it stands in
+for and is removed when that key is dropped.
+
 ### Stage 6 — Scoped read and RLS cutover
 
 PR-04 removes bare-ID/global reads, requires AccessContext, and enables FORCE RLS

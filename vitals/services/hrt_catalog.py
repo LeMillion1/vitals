@@ -141,9 +141,15 @@ async def sync_catalog(session: AsyncSession) -> dict[str, int]:
     distinguishable from user-added compounds (``source='manual'``)."""
     catalog = load_compound_catalog()
     catalog_keys = tuple(key for key, _entry in catalog)
+    # The curated catalog owns the platform half of the compound key: a
+    # subject's own compound may reuse the same key and is not the catalog's to
+    # read or rewrite.
     result = await session.execute(
         select(HrtCompound)
-        .where(HrtCompound.key.in_(catalog_keys))
+        .where(
+            HrtCompound.key.in_(catalog_keys),
+            HrtCompound.subject_id.is_(None),
+        )
         .order_by(HrtCompound.id)
         .with_for_update()
         .execution_options(populate_existing=True)
@@ -159,12 +165,28 @@ async def sync_catalog(session: AsyncSession) -> dict[str, int]:
         if row is not None and not (
             row.domain == DOMAIN
             and row.source == Source.SYSTEM.value
-            and row.subject_id is None
             and row.actor_user_id is None
         ):
             raise HrtCatalogCollisionError(
                 "HRT catalog synchronization found a protected custom-key collision"
             )
+    # Temporary bridge: the legacy global key on ``key`` is still installed, so
+    # a subject's compound under a newly curated key would make the catalog's
+    # insert fail with a bare integrity error. This check goes away with the key.
+    owned_collision = await session.scalar(
+        select(HrtCompound.key)
+        .where(
+            HrtCompound.key.in_(
+                tuple(key for key, _entry in catalog if key not in existing)
+            ),
+            HrtCompound.subject_id.is_not(None),
+        )
+        .limit(1)
+    )
+    if owned_collision is not None:
+        raise HrtCatalogCollisionError(
+            "HRT catalog synchronization found a protected custom-key collision"
+        )
 
     inserted = 0
     updated = 0

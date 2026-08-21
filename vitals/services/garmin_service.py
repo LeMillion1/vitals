@@ -249,6 +249,37 @@ def _row_scope_is_compatible(
     )
 
 
+async def _require_no_foreign_row_under_legacy_key(
+    session: AsyncSession,
+    *,
+    model: type[GarminDaily] | type[GarminActivity],
+    natural_clause: Any,
+    integration_connection_id: uuid.UUID,
+    key_label: str,
+) -> None:
+    """Temporary bridge for as long as the legacy global key is installed.
+
+    The scoped key is the contract now, but the installation-wide unique key it
+    replaces has not been dropped yet, so another account's row under the same
+    natural key would still make our insert fail with a bare integrity error.
+    Report the typed conflict instead.  This check goes away with the key.
+    """
+
+    foreign = await session.scalar(
+        select(model.id)
+        .where(
+            natural_clause,
+            model.integration_connection_id.is_not(None),
+            model.integration_connection_id != integration_connection_id,
+        )
+        .limit(1)
+    )
+    if foreign is not None:
+        raise GarminOwnershipConflictError(
+            f"Garmin row for {key_label} belongs to another connection"
+        )
+
+
 async def _owned_single_row_candidate(
     session: AsyncSession,
     *,
@@ -258,23 +289,39 @@ async def _owned_single_row_candidate(
     integration_connection_id: uuid.UUID,
     key_label: str,
 ) -> GarminDaily | GarminActivity | None:
-    """Lock the legacy-global key before raw ingestion mutates anything.
+    """Lock this connection's row for the natural key before raw ingestion.
 
-    Global unique constraints remain in force during the nullable expansion. A
-    foreign scoped row therefore cannot coexist yet; report a typed conflict
-    before the owned raw helper refreshes or inserts its side of the transaction.
+    A Garmin day or activity id is unique inside the account it was fetched
+    from, not across the installation, so the lookup is scoped by connection.  A
+    row that has not been adopted yet carries no connection at all and is still
+    a candidate for the connection now claiming it.
     """
 
     rows = list(
         await session.scalars(
-            select(model).where(natural_clause).with_for_update()
+            select(model)
+            .where(
+                natural_clause,
+                or_(
+                    model.integration_connection_id == integration_connection_id,
+                    model.integration_connection_id.is_(None),
+                ),
+            )
+            .with_for_update()
         )
     )
     if len(rows) > 1:
         raise GarminOwnershipAmbiguityError(
-            f"multiple Garmin rows match legacy-global key {key_label}"
+            f"multiple Garmin rows match scoped key {key_label}"
         )
     if not rows:
+        await _require_no_foreign_row_under_legacy_key(
+            session,
+            model=model,
+            natural_clause=natural_clause,
+            integration_connection_id=integration_connection_id,
+            key_label=key_label,
+        )
         return None
     row = rows[0]
     if not _row_scope_is_compatible(
@@ -2340,12 +2387,21 @@ async def _pulse_base_payload(
 
     daily_rows = list(
         await session.scalars(
-            select(GarminDaily).where(GarminDaily.date == on_date).limit(2)
+            select(GarminDaily)
+            .where(
+                GarminDaily.date == on_date,
+                or_(
+                    GarminDaily.integration_connection_id
+                    == integration_connection_id,
+                    GarminDaily.integration_connection_id.is_(None),
+                ),
+            )
+            .limit(2)
         )
     )
     if len(daily_rows) > 1:
         raise GarminOwnershipAmbiguityError(
-            f"multiple Garmin rows match legacy-global key daily:{on_date}"
+            f"multiple Garmin rows match scoped key daily:{on_date}"
         )
     if not daily_rows:
         return {}
