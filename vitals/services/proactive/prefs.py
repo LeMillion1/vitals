@@ -46,6 +46,7 @@ from vitals.services.identity_service import (
     acquire_identity_governance_lock,
     authorize_pre_identity_compatibility_transaction,
     normalize_username,
+    require_pre_identity_compatibility,
 )
 
 LEGACY_SETTINGS_KEY = "proactive"
@@ -1062,21 +1063,49 @@ async def set_preferences_bundle(
     return _bundle_from_clean(clean)
 
 
+async def _read_legacy_setting_value(session: AsyncSession) -> Any:
+    return await session.scalar(
+        select(AppSetting.value).where(AppSetting.key == LEGACY_SETTINGS_KEY)
+    )
+
+
 async def get_pre_identity_legacy_prefs(
     session: AsyncSession,
 ) -> dict[str, Any]:
-    """Explicit compatibility read for a database with zero health subjects."""
+    """Explicit compatibility read for a database with zero health subjects.
+
+    This is the transaction-boundary form: it insists on a fresh guarded root.
+    Use :func:`get_pre_identity_legacy_prefs_in_transaction` from a service hook
+    that is already inside a caller-owned transaction.
+    """
 
     with session.no_autoflush:
         try:
             await authorize_pre_identity_compatibility_transaction(session)
         except PreIdentityCompatibilityError as exc:
             raise ProactivePreferencesScopeError(str(exc)) from exc
-        value = await session.scalar(
-            select(AppSetting.value).where(
-                AppSetting.key == LEGACY_SETTINGS_KEY
-            )
-        )
+        value = await _read_legacy_setting_value(session)
+    return sanitize(value)
+
+
+async def get_pre_identity_legacy_prefs_in_transaction(
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """Compatibility read for a hook running inside a caller's transaction.
+
+    Same governance lock and same zero-subject probe as
+    :func:`get_pre_identity_legacy_prefs`; it adopts the open transaction rather
+    than demanding a fresh root, because a hook cannot own the boundary. The
+    caller owes the lock-order contract described on
+    :func:`vitals.services.identity_service.require_pre_identity_compatibility`.
+    """
+
+    with session.no_autoflush:
+        try:
+            await require_pre_identity_compatibility(session)
+        except PreIdentityCompatibilityError as exc:
+            raise ProactivePreferencesScopeError(str(exc)) from exc
+        value = await _read_legacy_setting_value(session)
     return sanitize(value)
 
 
@@ -1199,6 +1228,7 @@ __all__ = [
     "get_locked_delivery_policy",
     "get_preferences_bundle",
     "get_pre_identity_legacy_prefs",
+    "get_pre_identity_legacy_prefs_in_transaction",
     "get_prefs",
     "get_subject_policy",
     "hhmm",

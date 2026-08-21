@@ -147,24 +147,8 @@ async def acquire_identity_governance_lock(session: AsyncSession) -> None:
     )
 
 
-async def authorize_pre_identity_compatibility_transaction(
-    session: AsyncSession,
-) -> object:
-    """Authorize and return one guarded root transaction with zero subjects.
-
-    PostgreSQL uses the shared transaction-scoped governance advisory lock.
-    SQLite governance is intentionally a no-op, so its equivalent is a fresh
-    ``BEGIN IMMEDIATE``. Re-entry is allowed only for the exact root transaction
-    this function authorized; arbitrary pre-open or nested transactions fail
-    closed. Pending, dirty, or deleted subject state is never autoflushed or
-    treated as an authoritative zero-subject database.
-    """
-
-    sync_session = session.sync_session
-    if sync_session.get_nested_transaction() is not None:
-        raise PreIdentityCompatibilityError(
-            "pre-identity compatibility requires a fresh outer transaction"
-        )
+def _reject_pending_subject_state(sync_session) -> None:
+    """Refuse to treat a session with pending subject rows as pre-identity."""
 
     subject_state = (
         tuple(sync_session.new)
@@ -176,30 +160,38 @@ async def authorize_pre_identity_compatibility_transaction(
             "pre-identity compatibility rejects pending subject identity state"
         )
 
+
+async def _guard_pre_identity_root(session: AsyncSession) -> object:
+    """Hold the governance lock for this transaction and prove zero subjects.
+
+    Both compatibility entry points share this body; they differ only in what
+    they demand of the transaction *before* it runs.  The two facts proved here
+    are the ones a legacy mutation actually needs: the shared identity-governance
+    lock is held for the remainder of the transaction, so a concurrent bootstrap
+    stays frozen until the caller commits, and the database still has zero health
+    subjects.
+    """
+
+    sync_session = session.sync_session
     transaction = sync_session.get_transaction()
-    authorized = sync_session.info.get(
-        _PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY
-    )
-    if transaction is not None:
-        if transaction is authorized and transaction.is_active:
-            pass
-        elif (
-            not transaction.is_active
-            or bool(getattr(transaction, "_connections", {None: None}))
-        ):
-            raise PreIdentityCompatibilityError(
-                "pre-identity compatibility requires a fresh guarded transaction"
-            )
-        else:
-            # ``Session.add()`` creates a logical root before any database work.
-            # It remains safe to guard that exact connectionless root, which is
-            # how unrelated pending ORM state can stay pending and unflushed.
-            authorized = None
-    if transaction is None or authorized is None:
+    if (
+        transaction is None
+        or not transaction.is_active
+        or sync_session.info.get(_PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY)
+        is not transaction
+    ):
         pending_transaction = transaction
         with session.no_autoflush:
             if session.get_bind().dialect.name == "sqlite":
-                await session.execute(text("BEGIN IMMEDIATE"))
+                # SQLite has no advisory locks; ``BEGIN IMMEDIATE`` is the
+                # equivalent, and it can only open a transaction that has not
+                # started one yet.  An adopted transaction therefore keeps
+                # SQLite's deferred write lock — which is no weaker than the
+                # cross-connection guarantee this dialect offers anyway.
+                if transaction is None or not bool(
+                    getattr(transaction, "_connections", {})
+                ):
+                    await session.execute(text("BEGIN IMMEDIATE"))
             else:
                 await acquire_identity_governance_lock(session)
         transaction = sync_session.get_transaction()
@@ -227,6 +219,85 @@ async def authorize_pre_identity_compatibility_transaction(
             "pre-identity compatibility is closed after identity bootstrap"
         )
     return transaction
+
+
+async def authorize_pre_identity_compatibility_transaction(
+    session: AsyncSession,
+) -> object:
+    """Authorize and return one guarded root transaction with zero subjects.
+
+    This is the *boundary* API: a web request, a job, or a legacy preference
+    write must present a fresh root, so earlier unguarded work can never be
+    smuggled into a legacy mutation.  Re-entry is allowed only for the exact root
+    transaction this function authorized; arbitrary pre-open or nested
+    transactions fail closed.  Pending, dirty, or deleted subject state is never
+    autoflushed or treated as an authoritative zero-subject database.
+
+    Service hooks that run deep inside a caller's transaction cannot present a
+    fresh root and must use :func:`require_pre_identity_compatibility` instead.
+    """
+
+    sync_session = session.sync_session
+    if sync_session.get_nested_transaction() is not None:
+        raise PreIdentityCompatibilityError(
+            "pre-identity compatibility requires a fresh outer transaction"
+        )
+
+    _reject_pending_subject_state(sync_session)
+
+    transaction = sync_session.get_transaction()
+    authorized = sync_session.info.get(
+        _PRE_IDENTITY_COMPATIBILITY_TRANSACTION_KEY
+    )
+    # ``Session.add()`` creates a logical root before any database work.  That
+    # exact connectionless root is still safe to guard below, which is how
+    # unrelated pending ORM state can stay pending and unflushed; anything that
+    # has already reached a connection is somebody else's transaction.
+    if (
+        transaction is not None
+        and not (transaction is authorized and transaction.is_active)
+        and (
+            not transaction.is_active
+            or bool(getattr(transaction, "_connections", {None: None}))
+        )
+    ):
+        raise PreIdentityCompatibilityError(
+            "pre-identity compatibility requires a fresh guarded transaction"
+        )
+
+    return await _guard_pre_identity_root(session)
+
+
+async def require_pre_identity_compatibility(session: AsyncSession) -> object:
+    """Prove pre-identity compatibility inside the caller's open transaction.
+
+    Legacy service hooks — the Garmin weight outbox projection, its
+    reconciliation, the local delete hook — run in the middle of somebody else's
+    write transaction.  They cannot present the fresh root that
+    :func:`authorize_pre_identity_compatibility_transaction` demands, and
+    demanding it there buys no safety: it only turns a legitimate zero-subject
+    write into a silent no-op.  This sibling adopts the caller's transaction and
+    proves exactly the same two facts, so the guarantee a legacy mutation needs —
+    identity bootstrap frozen until the caller commits — is unchanged.
+
+    The one contract this cannot verify, and every caller must therefore honour,
+    is lock order.  Call it *before* the Garmin outbox advisory and before any
+    row lock, in the position
+    :func:`vitals.services.weight_service.prepare_weight_write` gives
+    :func:`acquire_identity_governance_lock` on the scoped path.  Taking
+    governance after a lock that the canonical order puts behind it is the
+    inversion that deadlocks.
+    """
+
+    sync_session = session.sync_session
+    if sync_session.get_nested_transaction() is not None:
+        raise PreIdentityCompatibilityError(
+            "pre-identity compatibility requires a fresh outer transaction"
+        )
+
+    _reject_pending_subject_state(sync_session)
+
+    return await _guard_pre_identity_root(session)
 
 
 async def _user_for_update(session: AsyncSession, user_id: uuid.UUID) -> User:
@@ -499,6 +570,7 @@ __all__ = [
     "change_user_status",
     "has_active_platform_superadmin",
     "normalize_username",
+    "require_pre_identity_compatibility",
     "revoke_role",
     "rotate_password_hash",
 ]

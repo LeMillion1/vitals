@@ -1407,7 +1407,11 @@ async def log_weight(
 
     # Scoped callers already acquired this advisory before subject locks through
     # ``prepare_weight_write``. Re-acquiring the same xact lock is harmless and
-    # keeps the legacy branch serialized too.
+    # keeps the legacy branch serialized too. A legacy caller has no prepared
+    # token, so it establishes identity governance here — before the advisory,
+    # in the same order ``prepare_weight_write`` uses.
+    if context is None:
+        await garmin_weight_service.prepare_legacy_active_weight_change(session)
     await garmin_weight_service.lock_active_weight_change(session)
 
     existing = await get_active_weight(
@@ -3181,9 +3185,12 @@ async def delete_weight_log(
     # concurrent deletion can reactivate a row that this reusable session loaded
     # earlier; populate_existing prevents the identity map from preserving that
     # stale classification. The lock also precedes any FK ``SET NULL`` flush,
-    # keeping the global advisory→weight→outbox order consistent.
+    # keeping the global advisory→weight→outbox order consistent, behind the
+    # identity governance a legacy writer establishes for itself first.
     from vitals.services import garmin_weight_service
 
+    if context is None:
+        await garmin_weight_service.prepare_legacy_active_weight_change(session)
     await garmin_weight_service.lock_active_weight_change(session)
     row = await _get_weight_log_for_update(
         session,
@@ -3689,6 +3696,10 @@ async def update_weight_log(
     _check_range("weight_kg", weight_kg, _WEIGHT_KG_RANGE)
     from vitals.services import garmin_weight_service
 
+    # Identity governance before the outbox advisory, exactly as
+    # ``prepare_weight_write`` orders them for a scoped edit.
+    if context is None:
+        await garmin_weight_service.prepare_legacy_active_weight_change(session)
     await garmin_weight_service.lock_active_weight_change(session)
     row = await _get_weight_log_for_update(
         session,

@@ -680,6 +680,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   callable leaves no reservation row, while the paid provider path still
   reserves one before dispatching and is covered separately.
 
+### Fixed — pre-identity Garmin weight outbox
+
+- **A paused Garmin request no longer blocks local weight writes.** The
+  pre-identity branch of the weight exporter re-proved its zero-subject
+  compatibility right after releasing the short outbox lease, but kept the
+  transaction-scoped identity-governance advisory lock while the GET or POST was
+  on the wire. Every concurrent local save and delete hook queued behind it for
+  the duration of the vendor round trip. The legacy branch now proves the same
+  fact in its own short transaction and commits it, exactly as the scoped branch
+  already did, and fails closed if the database was bootstrapped mid-flight.
+- **Legacy weight writes take identity governance in the canonical order.**
+  `log_weight`, `update_weight_log`, and `delete_weight_log` reached identity
+  governance only in the closing outbox hook — after the outbox advisory and
+  every row lock, the inversion the canonical order exists to prevent. The
+  compatibility guard fails closed on that inversion, so a save on a session that
+  already held an open read transaction silently skipped its outbox projection: a
+  local delete did not cancel a queued export, and a correction did not update
+  one. The legacy branch now establishes that root before the outbox advisory,
+  where `prepare_weight_write` puts it for a scoped write.
+- Identity compatibility now has two explicit entry points instead of one:
+  `authorize_pre_identity_compatibility_transaction` remains the boundary API
+  that insists on a fresh guarded root, and `require_pre_identity_compatibility`
+  adopts the transaction a service hook is already inside. Both hold the same
+  governance lock and run the same zero-subject probe.
+
 ### Fixed — AI period-report context
 
 - **Stored Garmin and treatment data now reaches the report** — context schema v2 includes bounded Garmin activities and expanded daily metrics, every same-day Hevy session, GLP-1 phases/injections/effects, and HRT plans/actual doses/effects. Garmin and Hevy remain separate sources so a synchronized session is not counted twice.

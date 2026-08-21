@@ -64,7 +64,11 @@ from vitals.models.scoped_settings import IntegrationConnectionSetting
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, conflict_engine, scoped_settings_service
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity_service import (
+    PreIdentityCompatibilityError,
+    acquire_identity_governance_lock,
+    require_pre_identity_compatibility,
+)
 from vitals.services.proactive import prefs as proactive_prefs
 from vitals.utils.timeutils import now_local
 
@@ -647,6 +651,32 @@ async def lock_active_weight_change(session: AsyncSession) -> None:
     await _acquire_operation_lock(session)
 
 
+async def prepare_legacy_active_weight_change(session: AsyncSession) -> None:
+    """Take identity governance before the outbox advisory on the legacy path.
+
+    A scoped writer proves this order through ``prepare_weight_write``: identity
+    governance first, then the installation-wide Garmin outbox advisory, then the
+    subject and actor rows. A legacy (zero-subject) writer has no prepared token
+    to carry that proof, so it used to reach identity governance only at the very
+    end, inside ``handle_legacy_active_weight_*`` — after the outbox advisory and
+    after every row lock. That inversion is the deadlock the canonical order
+    exists to prevent, and because the compatibility guard fails closed on it, the
+    outbox projection was silently skipped instead.
+
+    Establishing the root here restores the order. A database that is no longer
+    pre-identity (or that holds pending subject state) simply leaves it
+    unestablished: the local health write still goes ahead, and the legacy hooks
+    at the end of that write decline the global outbox projection on their own.
+    """
+
+    try:
+        await require_pre_identity_compatibility(session)
+    except PreIdentityCompatibilityError:
+        # Nothing to establish, and nothing to raise: a bootstrapped database
+        # still accepts the local health write, it just loses the outbox.
+        return
+
+
 async def handle_active_weight_changed(
     session: AsyncSession, *, now: Optional[datetime] = None
 ) -> None:
@@ -675,7 +705,7 @@ async def handle_legacy_active_weight_changed(
     """
 
     try:
-        await proactive_prefs.get_pre_identity_legacy_prefs(session)
+        await proactive_prefs.get_pre_identity_legacy_prefs_in_transaction(session)
     except proactive_prefs.ProactivePreferencesError:
         return False
     await handle_active_weight_changed(session, now=now)
@@ -1323,7 +1353,13 @@ async def reconcile_latest(
     clock = now or now_local()
     context = _active_export_context()
     if context is None:
-        settings = await proactive_prefs.get_pre_identity_legacy_prefs(session)
+        # Reconciliation is a hook as often as it is an entry point: ``log_weight``
+        # and the delete hook call it from the middle of a local write. Prove the
+        # legacy root inside whatever transaction that caller owns, and prove it
+        # before the outbox advisory below so the canonical order holds.
+        settings = await proactive_prefs.get_pre_identity_legacy_prefs_in_transaction(
+            session
+        )
         if max_age_days is None:
             max_age_days = settings["garmin_weight_max_age_days"]
     await _acquire_operation_lock(session)
@@ -1637,7 +1673,7 @@ async def handle_legacy_active_weight_deleted(
     """Quarantine deletion projection for databases without identity roots."""
 
     try:
-        await proactive_prefs.get_pre_identity_legacy_prefs(session)
+        await proactive_prefs.get_pre_identity_legacy_prefs_in_transaction(session)
     except proactive_prefs.ProactivePreferencesError:
         return False
     await handle_active_weight_deleted(
@@ -2449,6 +2485,35 @@ async def _revalidate_network_attempt(
     return _lease_matches(row, lease)
 
 
+async def _release_legacy_roots_for_vendor_io(session: AsyncSession) -> bool:
+    """Re-prove the legacy root, then leave nothing locked for the vendor call.
+
+    The scoped branch of both authorizers re-prepares its roots and commits, so
+    no identity or outbox lock survives into the request. The legacy branch has
+    no scoped roots to re-prepare, but it does have one fact that can expire
+    underneath it: a database is only allowed on this path while it has zero
+    health subjects. Proving that needs the transaction-scoped identity-governance
+    advisory lock, which means it can only be proved inside a transaction — and
+    that transaction has to end here.
+
+    Committing is therefore the point of this helper, not an afterthought. The
+    caller has already committed its own work and holds nothing worth keeping;
+    what must not happen is that the short probe transaction stays open across a
+    Garmin round trip, because every local weight save and delete hook queues
+    behind the very same governance lock (see ``prepare_weight_write``). Returning
+    ``False`` means the database was bootstrapped mid-flight and the legacy path
+    must stop, mirroring the scoped branch's inactive-connection exit.
+    """
+
+    try:
+        await proactive_prefs.get_pre_identity_legacy_prefs(session)
+    except proactive_prefs.ProactivePreferencesError:
+        await session.rollback()
+        return False
+    await session.commit()
+    return True
+
+
 async def _authorize_scoped_vendor_lease(
     session: AsyncSession,
     row: GarminWeightExport,
@@ -2459,8 +2524,7 @@ async def _authorize_scoped_vendor_lease(
     """Freshly validate roots immediately before a scoped vendor request."""
 
     if _active_export_context() is None:
-        await proactive_prefs.get_pre_identity_legacy_prefs(session)
-        return True
+        return await _release_legacy_roots_for_vendor_io(session)
     try:
         await _reprepare_active_export(session, historical=False)
     except GarminWeightExportConnectionInactiveError:
@@ -2483,8 +2547,7 @@ async def _authorize_scoped_vendor_dispatch(
     require_enabled: bool,
 ) -> bool:
     if _active_export_context() is None:
-        await proactive_prefs.get_pre_identity_legacy_prefs(session)
-        return True
+        return await _release_legacy_roots_for_vendor_io(session)
     try:
         await _reprepare_active_export(session, historical=False)
     except GarminWeightExportConnectionInactiveError:

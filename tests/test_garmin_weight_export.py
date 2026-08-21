@@ -112,9 +112,9 @@ class FakeWeightClient:
 
 async def _manual_weight(db_session, value: float, *, on_date: date = DAY):
     # These legacy export tests intentionally exercise a database before the
-    # commercial identity bootstrap. Authorize that exact zero-subject root
-    # before the local write opens any other database transaction.
-    await authorize_pre_identity_compatibility_transaction(db_session)
+    # commercial identity bootstrap. The write itself establishes that
+    # zero-subject root now (``prepare_legacy_active_weight_change``), so it also
+    # works on a session that already holds an open read transaction.
     return await weight_service.log_weight(
         db_session,
         on_date=on_date,
@@ -124,7 +124,6 @@ async def _manual_weight(db_session, value: float, *, on_date: date = DAY):
 
 
 async def _delete_weight(db_session, row_id: int) -> bool:
-    await authorize_pre_identity_compatibility_transaction(db_session)
     return await weight_service.delete_weight_log(db_session, row_id)
 
 
