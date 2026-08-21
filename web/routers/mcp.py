@@ -629,7 +629,6 @@ async def get_supplements_catalog() -> list[dict]:
         supps = await supplements_service.list_supplements(
             session,
             subject_id=ownership.subject_id,
-            include_legacy_unowned=True,
         )
         return [serialize_row(s) for s in supps]
 
@@ -2265,7 +2264,10 @@ async def delete_record(domain: str, record_id: int) -> dict:
                 "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
-        elif domain in {"timeline", "supplements"}:
+        elif domain == "supplements":
+            ownership = await _mcp_v1_legacy_owner(session)
+            owned_kwargs = {"identity": ownership.owner_action()}
+        elif domain == "timeline":
             ownership = await _mcp_v1_legacy_owner(session)
             owned_kwargs = {
                 "identity": ownership.owner_action(),
@@ -3469,7 +3471,6 @@ async def update_supplement(
             session,
             supplement_id,
             identity=conflict_context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         if current is None:
@@ -3492,7 +3493,6 @@ async def update_supplement(
             row = await supplements_service.update_supplement(
                 session, supplement_id, override=override, **merged,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
@@ -3524,7 +3524,6 @@ async def set_supplement_active(
                 active,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:

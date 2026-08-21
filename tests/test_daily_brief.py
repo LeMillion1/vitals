@@ -346,7 +346,7 @@ async def test_brief_survives_a_dead_model(db_session, legacy_owner_roots):
 # ── Storage ───────────────────────────────────────────────────────────────────
 
 
-async def test_protocol_never_reaches_the_brief(db_session, legacy_owner_roots):
+async def test_protocol_never_reaches_the_brief(db_session, legacy_owner_roots, owner_write):
     """No doses, no compounds, no injection schedule, no supplements — not in
     the stored context and not in the prompt. The weekly digest still sees it all."""
     from vitals.services import glp1_service, supplements_service
@@ -355,7 +355,9 @@ async def test_protocol_never_reaches_the_brief(db_session, legacy_owner_roots):
         db_session, start_date=DAY - timedelta(days=30), drug="semaglutide", dose_mg=1.0
     )
     await supplements_service.add_supplement(
-        db_session, name="Ашваганда", key="ashwagandha", active=True
+        db_session, name="Ашваганда", key="ashwagandha", active=True,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write()
     )
     await _seed_day(db_session)
 

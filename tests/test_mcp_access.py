@@ -35,7 +35,7 @@ async def _optional_modules_on(session_factory, legacy_owner_roots):
 
 
 
-async def _seed_meal_block(db_session):
+async def _seed_meal_block(db_session, owner_write):
     """A hard block that fires on a meal named 'steak' while iron is in the stack.
     Cross-domain (supplements ↔ nutrition) so the block is reachable through the
     live save path of log_meal."""
@@ -51,15 +51,15 @@ async def _seed_meal_block(db_session):
             active=True,
         )
     )
-    await supplements_service.add_supplement(db_session, name="Iron", key="iron", active=True)
+    await supplements_service.add_supplement(db_session, name="Iron", key="iron", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
 
 # ── Override plumbing ─────────────────────────────────────────────────────────
-async def test_log_meal_blocked_returns_payload_not_500(db_session, session_factory, monkeypatch):
+async def test_log_meal_blocked_returns_payload_not_500(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     conflict_registrations.register_all_resolvers()
-    await _seed_meal_block(db_session)
+    await _seed_meal_block(db_session, owner_write)
 
     result = await mcp_router.log_meal(name="steak", calories=600)
     assert result.get("blocked") is True
@@ -69,10 +69,10 @@ async def test_log_meal_blocked_returns_payload_not_500(db_session, session_fact
     assert await mcp_router.search_meals(query="steak") == []
 
 
-async def test_log_meal_override_saves_through_block(db_session, session_factory, monkeypatch):
+async def test_log_meal_override_saves_through_block(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     conflict_registrations.register_all_resolvers()
-    await _seed_meal_block(db_session)
+    await _seed_meal_block(db_session, owner_write)
 
     saved = await mcp_router.log_meal(name="steak", calories=600, override=True)
     assert saved.get("blocked") is not True

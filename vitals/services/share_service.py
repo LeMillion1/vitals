@@ -625,7 +625,15 @@ async def build_snapshot(
     blocks: dict[str, Any] = {}
     for domain in chosen:
         builder = _BUILDERS[domain]
-        block = await builder(session, ctx, stats, start, end, labs_flagged_only)
+        block = await builder(
+            session,
+            ctx,
+            stats,
+            start,
+            end,
+            labs_flagged_only,
+            subject_id=owner._identity.subject_id,
+        )
         # An empty domain draws no section at all — a "no data" placeholder is a
         # line a doctor reads and gets nothing from.
         if block:
@@ -655,7 +663,9 @@ async def build_snapshot(
     }
 
 
-async def _weight_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _weight_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     """Where the scale started and where it ended, plus the series for the chart.
 
     Points come from ``chart_series`` rather than the raw table so the average
@@ -683,7 +693,9 @@ async def _weight_block(session, ctx, stats, start, end, flagged_only) -> dict:
     }
 
 
-async def _body_comp_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _body_comp_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     from vitals.i18n import current_lang
     from vitals.services import body_scan_service
     from vitals.services.analytics.body_metrics import METRIC_REGISTRY, display_name
@@ -715,7 +727,9 @@ async def _body_comp_block(session, ctx, stats, start, end, flagged_only) -> dic
     return {"scans": rows} if rows else {}
 
 
-async def _labs_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _labs_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     """Every marker measured in the window, with its reference range and the two
     readings before it — a value without its range and its direction is a number
     a doctor has to go and look up."""
@@ -759,7 +773,9 @@ async def _labs_block(session, ctx, stats, start, end, flagged_only) -> dict:
     return {"markers": markers} if markers else {}
 
 
-async def _glp1_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _glp1_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     from vitals.services import glp1_service
 
     phase = ctx.get("glp1") or {}
@@ -793,7 +809,9 @@ async def _glp1_block(session, ctx, stats, start, end, flagged_only) -> dict:
     }
 
 
-async def _hrt_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _hrt_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     from vitals.i18n import current_lang
     from vitals.services import hrt_service
 
@@ -846,10 +864,14 @@ async def _hrt_block(session, ctx, stats, start, end, flagged_only) -> dict:
     }
 
 
-async def _supplements_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _supplements_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     from vitals.services import supplements_service
 
-    items = await supplements_service.list_supplements(session, active_only=True)
+    items = await supplements_service.list_supplements(
+        session, subject_id=subject_id, active_only=True
+    )
     return {
         "items": [
             {"name": s.name, "dose": s.dose, "timing": s.timing} for s in items
@@ -857,7 +879,9 @@ async def _supplements_block(session, ctx, stats, start, end, flagged_only) -> d
     } if items else {}
 
 
-async def _garmin_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _garmin_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     """Averages over the window and over the one before it. Two lines, not a
     table of nights — a doctor is looking for the level, not the diary."""
     current = stats.get("current") or {}
@@ -872,7 +896,9 @@ async def _garmin_block(session, ctx, stats, start, end, flagged_only) -> dict:
     }
 
 
-async def _workouts_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _workouts_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     hevy = ctx.get("hevy") or {}
     current = stats.get("current") or {}
     if not current.get("workouts"):
@@ -884,7 +910,9 @@ async def _workouts_block(session, ctx, stats, start, end, flagged_only) -> dict
     }
 
 
-async def _nutrition_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _nutrition_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     current = stats.get("current") or {}
     if not current.get("nutrition_days_logged"):
         return {}
@@ -895,7 +923,9 @@ async def _nutrition_block(session, ctx, stats, start, end, flagged_only) -> dic
     }
 
 
-async def _skincare_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _skincare_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     skin = ctx.get("skincare") or {}
     if not skin:
         return {}
@@ -914,7 +944,9 @@ async def _skincare_block(session, ctx, stats, start, end, flagged_only) -> dict
     return {"active_products": skin.get("active_products"), "observations": observations}
 
 
-async def _genetics_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _genetics_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     from vitals.services import genetics_service
 
     variants = await genetics_service.list_variants(session)
@@ -931,7 +963,9 @@ async def _genetics_block(session, ctx, stats, start, end, flagged_only) -> dict
     return {"variants": rows} if rows else {}
 
 
-async def _signals_block(session, ctx, stats, start, end, flagged_only) -> dict:
+async def _signals_block(
+    session, ctx, stats, start, end, flagged_only, *, subject_id
+) -> dict:
     """What the patient said about how he felt — symptoms, in his own words.
 
     ``state`` rows are a daily mood/energy score he keeps for himself; on a

@@ -225,13 +225,15 @@ async def test_scoped_identity_without_prepared_capability_is_rejected(
     db_session.add(row)
     await db_session.flush()
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    # A subject without its conflict decision is not a call the service can
+    # even be asked to make any more.
+    with pytest.raises(TypeError):
         await supplements_service.add_supplement(
             db_session,
             name="Unprepared",
             identity=identity,
         )
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    with pytest.raises(TypeError):
         await supplements_service.set_active(
             db_session,
             row.id,
@@ -285,41 +287,6 @@ async def test_deactivation_rejects_mismatched_or_committed_capability(
     assert row.active is True
 
 
-async def test_legacy_deactivation_adopts_only_with_matching_bridge(
-    db_session,
-    legacy_owner_roots,
-):
-    row = Supplement(
-        domain=Domain.SUPPLEMENTS.value,
-        source="manual",
-        name="Legacy",
-        key="legacy",
-        active=True,
-    )
-    db_session.add(row)
-    await db_session.commit()
-    context = await conflict_engine.resolve_legacy_conflict_write_context(
-        db_session,
-        actor_username="tester",
-        evaluation_date=EVALUATION_DATE,
-    )
-    prepared = await conflict_engine.prepare_scoped_write(
-        db_session,
-        context=context,
-    )
-
-    result = await supplements_service.set_active(
-        db_session,
-        row.id,
-        False,
-        identity=context.identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=prepared,
-    )
-    assert result is row
-    assert row.subject_id == legacy_owner_roots.subject_id
-    assert row.actor_user_id is None
-    assert row.active is False
 
 
 async def test_activation_refreshes_locked_row_before_conflict_evaluation(

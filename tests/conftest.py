@@ -524,3 +524,40 @@ async def owned_by_legacy_subject(db_session, legacy_owner_roots):
         yield legacy_owner_roots
     finally:
         sa_event.remove(sync_session, "before_flush", _stamp)
+
+
+@pytest_asyncio.fixture
+async def owner_write(db_session, legacy_owner_roots):
+    """One scoped write capability for the sole owner.
+
+    Domain writes now demand the subject and the conflict decision together, so
+    a test that exercises a write path needs both. This builds them once from
+    the identity, the same way a router does before calling the service.
+    """
+
+    from types import SimpleNamespace
+
+    from vitals.services import conflict_engine
+
+    from web.config import get_web_config
+
+    # A human actor: an override is a decision somebody has to be answerable for.
+    context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db_session,
+        actor_username=get_web_config().auth_username,
+    )
+
+    async def write():
+        """A capability is bound to its transaction, so mint a fresh one."""
+
+        return await conflict_engine.prepare_scoped_write(
+            db_session,
+            context=context,
+        )
+
+    return SimpleNamespace(
+        identity=context.identity,
+        write=write,
+        context=context,
+        subject_id=legacy_owner_roots.subject_id,
+    )

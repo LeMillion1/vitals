@@ -108,7 +108,7 @@ async def test_list_conflict_rules_returns_subject_activation_not_global_flag(
     assert payload["active"] is False
 
 
-async def test_check_conflicts_generic_domain_payload(db_session, session_factory, monkeypatch):
+async def test_check_conflicts_generic_domain_payload(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     conflict_registrations.register_all_resolvers()
     from vitals.services import supplements_service
@@ -121,7 +121,7 @@ async def test_check_conflicts_generic_domain_payload(db_session, session_factor
             severity="block", message="Гиперкалиемия.", active=True,
         )
     )
-    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True)
+    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
     violations = await mcp_router.check_conflicts("labs", {"marker": "Калий", "value": 5.5})

@@ -61,7 +61,7 @@ async def test_retinoid_plus_peel_override_saves(db_session):
     assert row.retinoid and row.peel
 
 
-async def test_isotretinoin_blocks_peel_cross_domain(db_session):
+async def test_isotretinoin_blocks_peel_cross_domain(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
@@ -76,7 +76,9 @@ async def test_isotretinoin_blocks_peel_cross_domain(db_session):
         )
     )
     await supplements_service.add_supplement(
-        db_session, name="Изотретиноин", key="isotretinoin", active=True
+        db_session, name="Изотретиноин", key="isotretinoin", active=True,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write()
     )
     await db_session.commit()
 

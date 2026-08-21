@@ -331,17 +331,8 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
         'vitals.services.supplements_service': frozenset(
             {
-                '_get_supplement_for_update',
-                '_supplement_by_id_stmt',
                 '_supplement_subject_scope',
-                'add_supplement',
-                'delete_supplement',
-                'get_supplement',
-                'get_supplement_for_update',
-                'list_supplements',
                 'resolve_active',
-                'set_active',
-                'update_supplement',
             }
         ),
         'vitals.services.timeline_service': frozenset(

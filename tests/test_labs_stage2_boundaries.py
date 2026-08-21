@@ -156,6 +156,7 @@ async def test_mcp_update_preserves_omitted_date_and_provenance_and_structures_b
     session_factory,
     legacy_owner_roots,
     monkeypatch,
+    owner_write,
 ):
     mcp_router = pytest.importorskip("web.routers.mcp")
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
@@ -176,6 +177,8 @@ async def test_mcp_update_preserves_omitted_date_and_provenance_and_structures_b
         db_session,
         name="Synthetic potassium",
         key="potassium",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write()
     )
     await db_session.commit()
 

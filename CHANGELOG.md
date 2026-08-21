@@ -10,6 +10,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the first leaf domain. `supplements_service` now demands the subject on
+  every read and the subject together with its conflict decision on every write;
+  `include_legacy_unowned` is gone from all of them, as is the branch that
+  adopted an unowned row on the way past. A regimen without a person is not a
+  thing, so a supplement with no subject is no longer anybody's: the page does
+  not list it, the report does not carry it, and no write path will claim it.
+  Nine of the module's eleven bridges are closed and three of the fourteen
+  legacy `enforce` call sites went with them; the two that remain are the
+  conflict-engine resolver and the scope helper it shares. The share report's
+  block builders take the subject they compose for, which is what made closing
+  the leaf possible at all.
+
 - Threaded a mandatory subject through the composition layer. `assemble_context`
   is what the weekly digest, the daily brief, the doctor's report and the MCP
   composition tool all reason over, and it read the whole installation: a single

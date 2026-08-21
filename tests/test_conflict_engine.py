@@ -249,7 +249,7 @@ async def test_glp1_low_intake_rules_skip_mid_day_but_fire_at_day_end(db_session
 
 # ── enforce_day_end: raises AND auto-clears (unlike plain enforce()) ───────
 
-async def test_enforce_day_end_raises_the_alert_when_violated(db_session):
+async def test_enforce_day_end_raises_the_alert_when_violated(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
@@ -262,7 +262,7 @@ async def test_enforce_day_end_raises_the_alert_when_violated(db_session):
             active=True,
         )
     )
-    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True)
+    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await labs_service.add_result(
         db_session, on_date=today_local(), marker="Калий", value=5.5, ref_low=3.5, ref_high=5.1
     )
@@ -275,7 +275,7 @@ async def test_enforce_day_end_raises_the_alert_when_violated(db_session):
     assert any(a.message == "test day-end rule" for a in active)
 
 
-async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session):
+async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, owner_write):
     """Plain enforce() never resolves anything — it only raises. A day_end_only
     rule that stops matching on a later day (a fresh entity_ref) must still get
     its earlier alert cleared automatically, not left active forever."""
@@ -293,7 +293,7 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session):
             active=True,
         )
     )
-    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True)
+    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await labs_service.add_result(
         db_session, on_date=today_local(), marker="Калий", value=5.5, ref_low=3.5, ref_high=5.1
     )
@@ -337,33 +337,33 @@ async def _seed_iron_zinc_timing_rule(db_session):
     await db_session.commit()
 
 
-async def test_timing_separation_fires_when_same_slot(db_session):
+async def test_timing_separation_fires_when_same_slot(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     await _seed_iron_zinc_timing_rule(db_session)
-    await supplements_service.add_supplement(db_session, name="Iron", key="iron", timing="утро", active=True)
-    await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", timing="утро", active=True)
+    await supplements_service.add_supplement(db_session, name="Iron", key="iron", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
     violations = await conflict_engine.evaluate(db_session, "supplements")
     assert any(v.rule_type == "timing_separation" for v in violations)
 
 
-async def test_timing_separation_silent_when_different_slot(db_session):
+async def test_timing_separation_silent_when_different_slot(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     await _seed_iron_zinc_timing_rule(db_session)
-    await supplements_service.add_supplement(db_session, name="Iron", key="iron", timing="утро", active=True)
-    await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", timing="вечер", active=True)
+    await supplements_service.add_supplement(db_session, name="Iron", key="iron", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
+    await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", timing="вечер", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
     violations = await conflict_engine.evaluate(db_session, "supplements")
     assert not any(v.rule_type == "timing_separation" for v in violations)
 
 
-async def test_timing_separation_silent_when_slot_unknown(db_session):
+async def test_timing_separation_silent_when_slot_unknown(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     await _seed_iron_zinc_timing_rule(db_session)
-    await supplements_service.add_supplement(db_session, name="Iron", key="iron", active=True)  # no timing
-    await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", active=True)  # no timing
+    await supplements_service.add_supplement(db_session, name="Iron", key="iron", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())  # no timing
+    await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())  # no timing
     await db_session.commit()
 
     violations = await conflict_engine.evaluate(db_session, "supplements")
@@ -372,7 +372,7 @@ async def test_timing_separation_silent_when_slot_unknown(db_session):
 
 # ── Operator-based rule end to end: labs value threshold blocks a supplement ─
 
-async def test_operator_rule_fires_on_lab_value_threshold(db_session):
+async def test_operator_rule_fires_on_lab_value_threshold(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
@@ -390,7 +390,7 @@ async def test_operator_rule_fires_on_lab_value_threshold(db_session):
     await db_session.commit()
 
     with pytest.raises(ConflictBlocked):
-        await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True)
+        await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
 
 
 async def test_violation_carries_catalog_metadata(db_session):
@@ -418,7 +418,7 @@ async def test_violation_carries_catalog_metadata(db_session):
     assert v.to_dict()["category"] == "lab_safety"
 
 
-async def test_operator_rule_silent_when_lab_value_below_threshold(db_session):
+async def test_operator_rule_silent_when_lab_value_below_threshold(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
@@ -436,4 +436,4 @@ async def test_operator_rule_silent_when_lab_value_below_threshold(db_session):
     await db_session.commit()
 
     # Must not raise — value is in range, the $gt condition should not match.
-    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True)
+    await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())

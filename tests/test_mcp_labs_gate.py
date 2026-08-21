@@ -26,7 +26,7 @@ def _use_test_factory(session_factory, monkeypatch, legacy_owner_roots):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
 
-async def _potassium_hard_rule(session):
+async def _potassium_hard_rule(session, owner_write):
     """The catalog's real lab_safety block, added directly so the test doesn't
     depend on the whole rule catalog being synced."""
     conflict_registrations.register_all_resolvers()
@@ -40,13 +40,13 @@ async def _potassium_hard_rule(session):
             active=True,
         )
     )
-    await supplements_service.add_supplement(session, name="Калий", key="potassium")
+    await supplements_service.add_supplement(session, name="Калий", key="potassium", identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await session.commit()
 
 
 # ── The gate ──────────────────────────────────────────────────────────────────
-async def test_add_result_blocks_on_a_hard_rule(db_session):
-    await _potassium_hard_rule(db_session)
+async def test_add_result_blocks_on_a_hard_rule(db_session, owner_write):
+    await _potassium_hard_rule(db_session, owner_write)
 
     with pytest.raises(ConflictBlocked):
         await labs_service.add_result(
@@ -54,8 +54,8 @@ async def test_add_result_blocks_on_a_hard_rule(db_session):
         )
 
 
-async def test_add_result_saves_with_override(db_session):
-    await _potassium_hard_rule(db_session)
+async def test_add_result_saves_with_override(db_session, owner_write):
+    await _potassium_hard_rule(db_session, owner_write)
 
     row = await labs_service.add_result(
         db_session, on_date=DAY, marker="Калий", value=5.5,
@@ -72,9 +72,9 @@ async def test_add_result_still_saves_when_nothing_conflicts(db_session):
     assert row.flag == "normal"
 
 
-async def test_log_lab_result_tool_reports_the_block(session_factory):
+async def test_log_lab_result_tool_reports_the_block(session_factory, owner_write):
     async with session_factory() as session:
-        await _potassium_hard_rule(session)
+        await _potassium_hard_rule(session, owner_write)
 
     blocked = await mcp_router.log_lab_result(
         marker="Калий", value=5.5, on_date="2026-07-01", ref_low=3.5, ref_high=5.1
@@ -89,9 +89,9 @@ async def test_log_lab_result_tool_reports_the_block(session_factory):
     assert saved["value"] == 5.5
 
 
-async def test_log_lab_results_batch_reports_the_block(session_factory):
+async def test_log_lab_results_batch_reports_the_block(session_factory, owner_write):
     async with session_factory() as session:
-        await _potassium_hard_rule(session)
+        await _potassium_hard_rule(session, owner_write)
 
     blocked = await mcp_router.log_lab_results(
         results=[{"marker": "Калий", "value": 5.5, "ref_low": 3.5, "ref_high": 5.1}],

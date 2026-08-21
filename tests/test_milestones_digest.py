@@ -243,7 +243,7 @@ async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots
 
 
 @composed
-async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db_session, legacy_owner_roots):
+async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db_session, legacy_owner_roots, owner_write):
     """The weekly digest must see supplements, skincare, genetics and active
     alerts — previously these enabled domains were absent, so cross-domain
     reasoning (e.g. 'started a supplement → sleep shifted', 'introduced a retinoid
@@ -256,7 +256,9 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
     )
 
     await supplements_service.add_supplement(
-        db_session, name="Creatine", dose="5 g", timing="morning", evidence="A"
+        db_session, name="Creatine", dose="5 g", timing="morning", evidence="A",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write()
     )
     await skincare_service.add_observation(
         db_session, on_date=DAY, inflammation=3, pih=1, zone="cheeks", note="reacted"

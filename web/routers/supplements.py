@@ -37,7 +37,6 @@ async def supplements_dashboard(
     supplements = await supplements_service.list_supplements(
         db,
         subject_id=ownership.subject_id,
-        include_legacy_unowned=True,
     )
     alerts = await alerts_service.list_active_scoped(
         db,
@@ -96,7 +95,6 @@ async def save_supplement(
                 note=note,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         else:
@@ -146,7 +144,6 @@ async def toggle_supplement(
             active,
             override=override,
             identity=conflict_context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await db.commit()
@@ -173,7 +170,6 @@ async def delete_supplement(
         db,
         id,
         identity=ownership.owner_action(),
-        include_legacy_unowned=True,
     )
     await db.commit()
     return _redirect(request)

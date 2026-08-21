@@ -4063,7 +4063,7 @@ async def test_llm_export_includes_body_scans(db_session):
     assert metrics == {"body_fat_pct": 18.5, "skeletal_muscle_mass": 42.0}
 
 
-async def test_llm_export_since_keeps_open_periods_and_catalogs(db_session):
+async def test_llm_export_since_keeps_open_periods_and_catalogs(db_session, owner_write):
     """``since`` narrows the digest for the MCP tool. Two things must survive the cut
     regardless of when they started: a period still running today (an open dose
     phase), and the catalogs, which are current state rather than history."""
@@ -4076,7 +4076,7 @@ async def test_llm_export_since_keeps_open_periods_and_catalogs(db_session):
         db_session, start_date=date(2019, 1, 1), end_date=date(2019, 6, 1),
         drug="semaglutide", dose_mg=0.5,
     )
-    await supplements_service.add_supplement(db_session, name="Creatine")
+    await supplements_service.add_supplement(db_session, name="Creatine", identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
     out = await export_llm(db_session, since=date(2026, 1, 1))

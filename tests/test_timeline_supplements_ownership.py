@@ -765,23 +765,24 @@ async def test_direct_legacy_bridge_rejects_partial_actor_roots(db_session):
         db_session,
         supplement.id,
         subject_id=owner.subject_id,
-        include_legacy_unowned=True,
     ) is None
+    # A partial-root supplement is simply not this subject's row any more, so
+    # the scoped write finds nothing to change rather than refusing a bridge.
     partial_prepared = await _prepared_supplement_write(db_session, owner)
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
+    assert (
         await supplements_service.set_active(
             db_session,
             supplement.id,
             False,
             identity=owner,
-            include_legacy_unowned=True,
             prepared_conflict_write=partial_prepared,
         )
+        is None
+    )
     assert await supplements_service.delete_supplement(
         db_session,
         supplement.id,
         identity=owner,
-        include_legacy_unowned=True,
     ) is False
     assert annotation.subject_id is None and annotation.title == "Partial annotation"
     assert supplement.subject_id is None and supplement.active is True
@@ -955,13 +956,14 @@ async def test_legacy_null_rows_need_explicit_sole_subject_bridge(db_session):
             include_legacy_unowned=True,
         )
     ) == [legacy_annotation]
+    # A supplement without a subject is nobody's regimen: the scoped read never
+    # returns it, and there is no bridge left that would adopt it.
     assert list(
         await supplements_service.list_supplements(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
-    ) == [legacy_supplement]
+    ) == []
 
     await timeline_service.update_annotation(
         db_session,
@@ -973,21 +975,8 @@ async def test_legacy_null_rows_need_explicit_sole_subject_bridge(db_session):
         identity=identity,
         include_legacy_unowned=True,
     )
-    legacy_prepared = await _prepared_supplement_write(
-        db_session,
-        identity,
-        legacy_bridge=True,
-    )
-    await supplements_service.set_active(
-        db_session,
-        legacy_supplement.id,
-        False,
-        identity=identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=legacy_prepared,
-    )
     assert legacy_annotation.subject_id == identity.subject_id
-    assert legacy_supplement.subject_id == identity.subject_id
+    assert legacy_supplement.subject_id is None
     assert legacy_annotation.actor_user_id is None
     assert legacy_supplement.actor_user_id is None
 
@@ -1024,9 +1013,11 @@ async def test_web_creates_use_authenticated_owner_identity(auth_client, db_sess
     )
 
 
-async def test_web_sole_subject_bridge_keeps_legacy_null_rows_working(
+async def test_web_sole_subject_bridge_keeps_legacy_annotations_working(
     auth_client, db_session
 ):
+    """Timeline still bridges its unowned history; supplements no longer does."""
+
     annotation = Annotation(
         date=date(2026, 8, 17),
         domain="timeline",
@@ -1053,7 +1044,9 @@ async def test_web_sole_subject_bridge_keeps_legacy_null_rows_working(
     assert timeline_page.status_code == 200
     assert supplements_page.status_code == 200
     assert "Legacy web annotation" in timeline_page.text
-    assert "Legacy web supplement" in supplements_page.text
+    # A supplement with no subject is nobody's regimen; the page does not show
+    # it, and the toggle has nothing to act on.
+    assert "Legacy web supplement" not in supplements_page.text
 
     toggle = await auth_client.post(
         f"/supplements/{supplement.id}/toggle", data={"active": "false"}
@@ -1064,9 +1057,8 @@ async def test_web_sole_subject_bridge_keeps_legacy_null_rows_working(
     await db_session.refresh(supplement)
     subject = await db_session.scalar(select(HealthSubject))
     assert subject is not None
-    assert supplement.subject_id == subject.id
-    assert supplement.actor_user_id is None
-    assert supplement.active is False
+    assert supplement.subject_id is None
+    assert supplement.active is True
     assert await db_session.get(Annotation, annotation.id) is None
 
 
@@ -1190,7 +1182,6 @@ _READS = {
 # also forces a scoped migration to remove its stale exception immediately.
 _KNOWN_LEGACY_READERS = {
     ("vitals/services/today_service.py", "build", "list_events"),
-    ("vitals/services/share_service.py", "_supplements_block", "list_supplements"),
 }
 
 
@@ -1252,5 +1243,6 @@ def test_production_callsite_inventory_requires_owned_boundaries():
     source = (Path(__file__).resolve().parents[1] / "web/routers/mcp.py").read_text(
         encoding="utf-8"
     )
-    assert 'if domain in {"timeline", "supplements"}:' in source
+    assert 'elif domain == "timeline":' in source
+    assert 'elif domain == "supplements":' in source
     assert '"identity": ownership.owner_action()' in source
