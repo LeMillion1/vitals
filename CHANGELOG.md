@@ -8,6 +8,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — scoped services (PR-04)
+
+- Added the ratchet that makes PR-04 measurable. Stage 2 gave every core service
+  an optional scope — pass `subject_id` (or an `identity`/`context`, and
+  sometimes `include_legacy_unowned`) and the call is scoped; omit it and it
+  reads or writes across the whole installation. That optionality is what kept
+  the migration reversible while ownership was being backfilled, and it is now
+  the last thing standing between this schema and a second person: a scoped
+  unique key over a nullable column, a policy engine no service consults, and
+  row-level security applied under an application that still issues unscoped
+  reads are each worth nothing on their own. `vitals/legacy_scope.py` inventories
+  what remains — 266 bridged functions across 25 modules, and 14 modules that
+  still fetch a subject-owned row by bare primary key, which proves nothing
+  about who it belongs to. A contract test recomputes both inventories from the
+  source and fails in either direction, so a new bridge cannot appear unnoticed
+  and closed ones cannot be left recorded as outstanding. Reaching zero is the
+  condition for making the compatibility columns `NOT NULL` and enabling FORCE
+  RLS.
+
 ### Added — commercial multi-user foundation
 
 - Added the first isolated commercial-fork schema slice: stable users, additive

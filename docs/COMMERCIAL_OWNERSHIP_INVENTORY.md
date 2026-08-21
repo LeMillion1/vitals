@@ -1162,6 +1162,22 @@ PR-04 removes bare-ID/global reads, requires AccessContext, and enables FORCE RL
 only after application scoping is complete. Nullable compatibility columns are
 not removed until the later contract migration.
 
+#### Stage 6A — the inventory that makes it measurable
+
+`vitals/legacy_scope.py` names every service function that still accepts an
+omittable scope, and every module that still fetches a subject-owned row by bare
+primary key. As of the cutover's start that is 266 functions across 25 modules,
+plus 14 modules reading by key.
+
+A contract test recomputes both inventories from the source and fails in either
+direction: a module that grows an unlisted bridge fails, and a module whose
+bridge was closed fails until the registry records the progress. The registry
+can therefore only move one way, and the work is countable rather than a matter
+of opinion. Reaching zero is the precondition for the `NOT NULL` contract
+migration and for FORCE RLS — until then, neither is safe, because a scoped
+unique key over a nullable column and RLS under an application that still issues
+unscoped reads are each worth nothing on their own.
+
 ## Rollback boundary
 
 Before a second subject can write:
