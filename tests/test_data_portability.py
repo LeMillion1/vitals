@@ -43,7 +43,7 @@ from vitals.models.labs import LabResult
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.proactive import NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
-from vitals.models.signals import DayContext
+from vitals.models.signals import DayContext, Signal
 from vitals.models.supplements import Supplement
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset, IntegrationConnection
@@ -93,6 +93,11 @@ from vitals.services.raw_ownership_backfill_service import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
     RawOwnershipBackfillIdentityError,
     RawOwnershipBackfillStateError,
+)
+from vitals.services.signal_ownership_backfill_service import (
+    SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    SIGNAL_OWNERSHIP_BACKFILL_TABLES,
+    SignalOwnershipBackfillStateError,
 )
 
 _IDENTITY_CONTROL_PLANE_TABLES = {
@@ -2006,6 +2011,259 @@ async def test_day_context_post_load_rejection_rolls_back_whole_replacement(
     assert restored is not None
     assert restored.answers == {"load": "heavy"}
     assert await db_session.get(DayContext, 52) is None
+
+
+def _portable_signal(*, row_id: int = 61) -> dict:
+    return {
+        "id": row_id,
+        "date": "2026-08-21",
+        "domain": Domain.SIGNALS.value,
+        "source": Source.MCP.value,
+        "kind": "state",
+        "key": "synthetic_restore_signal",
+        "value_num": 3.0,
+        "unit": None,
+        "note": "synthetic only",
+        "at_time": None,
+        "raw_id": None,
+        "batch_id": "restore-batch",
+        "misparse": False,
+        "_vitals_subject_bound": True,
+    }
+
+
+async def test_full_import_resets_nonempty_signal_stage3j_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "signals": [_portable_signal()],
+        },
+    )
+
+    signal = await db_session.get(Signal, 61)
+    assert signal is not None
+    assert (
+        signal.subject_id,
+        signal.actor_user_id,
+        signal.integration_connection_id,
+        signal.key,
+        signal.raw_id,
+    ) == (
+        legacy_owner_roots.subject_id,
+        None,
+        None,
+        "synthetic_restore_signal",
+        None,
+    )
+    phase = SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["signals"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+        checkpoint.completed_at,
+    ) == ("running", 61, 1, 0, 0, 0, 0, None)
+
+
+async def test_full_import_completes_exact_empty_signal_stage3j(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    phase = SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["signals"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+    ) == ("completed", 0, 0, 0, 0, 0, 0)
+    assert checkpoint.completed_at is not None
+
+
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_signal_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_reset(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_signal_ownership_backfill_for_portability_v1_restore",
+        unexpected_reset,
+    )
+    row = _portable_signal()
+    if bad_id is None:
+        row.pop("id")
+    else:
+        row["id"] = bad_id
+    with pytest.raises(PortabilityError, match="positive integer id"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                SIGNAL_OWNERSHIP_BACKFILL_TABLES[0]: [row],
+            },
+        )
+    assert called is False
+
+
+async def test_full_import_calls_signal_reset_after_day_context_reset(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_day_context_reset = (
+        data_portability_service.reset_day_context_ownership_backfill_for_portability_v1_restore
+    )
+
+    async def tracked_day_context_reset(*args, **kwargs):
+        order.append("day_context")
+        return await original_day_context_reset(*args, **kwargs)
+
+    async def stopping_signal_reset(*args, **kwargs):
+        order.append("signals")
+        raise SignalOwnershipBackfillStateError("synthetic stop")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_day_context_ownership_backfill_for_portability_v1_restore",
+        tracked_day_context_reset,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_signal_ownership_backfill_for_portability_v1_restore",
+        stopping_signal_reset,
+    )
+    with pytest.raises(PortabilityError, match="signal ownership restore reset"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+            },
+        )
+    await db_session.rollback()
+    assert order == ["day_context", "signals"]
+
+
+async def test_full_import_preflights_signals_after_day_context(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_day_context_preflight = (
+        data_portability_service.preflight_day_context_ownership_backfill
+    )
+    original_signal_preflight = (
+        data_portability_service.preflight_signal_ownership_backfill
+    )
+
+    async def tracked_day_context_preflight(*args, **kwargs):
+        order.append("day_context")
+        return await original_day_context_preflight(*args, **kwargs)
+
+    async def tracked_signal_preflight(*args, **kwargs):
+        order.append("signals")
+        return await original_signal_preflight(*args, **kwargs)
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_day_context_ownership_backfill",
+        tracked_day_context_preflight,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_signal_ownership_backfill",
+        tracked_signal_preflight,
+    )
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    assert order == ["day_context", "signals"]
+
+
+async def test_signal_post_load_rejection_rolls_back_whole_replacement(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    old = Signal(
+        date=date(2026, 8, 20),
+        domain=Domain.SIGNALS.value,
+        source=Source.MCP.value,
+        kind="state",
+        key="old_signal",
+        value_num=2.0,
+        batch_id="old-batch",
+        misparse=False,
+    )
+    db_session.add(old)
+    await db_session.commit()
+    old_id = old.id
+
+    async def rejected_preflight(*args, **kwargs):
+        raise SignalOwnershipBackfillStateError("sensitive synthetic state")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_signal_ownership_backfill",
+        rejected_preflight,
+    )
+    with pytest.raises(
+        PortabilityError,
+        match="signal validation rejected the portable restore",
+    ):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                "signals": [_portable_signal(row_id=62)],
+            },
+        )
+    await db_session.rollback()
+
+    restored = await db_session.get(Signal, old_id)
+    assert restored is not None
+    assert restored.key == "old_signal"
+    assert await db_session.get(Signal, 62) is None
 
 
 @pytest.mark.parametrize("table_name", HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES)

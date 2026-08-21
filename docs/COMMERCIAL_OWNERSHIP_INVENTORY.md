@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -627,6 +627,29 @@ is read-only by default, commits one bounded batch per transaction, and emits
 only allowlisted aggregate counts and checksums. Consumer-bridge retirement,
 the scoped uniqueness cutover, and registration remain later gates.
 
+Stage 3J continues with `stage3.channel_optional.signals.v1` over exactly
+`signals`. Under a complete ingest/reparse/MCP/misparse/delete/import writer pause,
+a reviewed fully-null S/A/C row gains only the sole S. Existing A remains null
+or the sole owner, and existing C remains null or an exact same-subject
+historical Telegram-recipient root; neither is inferred. MCP facts remain
+raw/channel-neutral. Historical Telegram facts may retain an exact linked
+Signals/Telegram raw row, while new rows above the HWM require the complete
+owner/recipient/raw graph. The only actorless above-HWM exception is a late
+reparse from the exact S+C/A-null Telegram raw row already covered by the
+validated Stage-3A HWM; the fact must retain that raw and recipient exactly.
+Rows sharing a batch must agree on date, source, actor, channel, and raw
+provenance, and one raw message cannot be split across normalization batches.
+
+Initial completion locks recipient roots, raw rows, and signal facts in canonical
+order and rehashes the frozen data and ownership snapshot. Signals remain
+volatile after completion: supported misparse, delete, reparse, and new
+ingest operations are validated against the current graph rather than requiring
+the original cardinality or business digest to remain. Backup v1 preserves the
+signal business fields and `raw_id`, rebinds S, and strips optional A/C from both
+fact and raw rows. Import resets the exact Stage-3J checkpoint after Stage 3I and
+before replacement to RUNNING for a nonempty snapshot or exact COMPLETED for an
+empty snapshot. Recompletion never fabricates the stripped actor or recipient.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -646,7 +669,9 @@ actorless historical provenance, stop/resume, backup-v1 blocking, supported
 photo deletion, and real upload/delete/file-key races. The Stage-3I rehearsal
 covers actorless/channel-less historical adoption, mutable plan/answer
 stop/resume and post-completion updates, backup-v1 reset/recompletion, and real
-date-row/provenance races. Remaining
+date-row/provenance races. The Stage-3J rehearsal covers optional actor/channel
+history, batch/raw invariants, stop/resume, volatile misparse/delete behavior,
+backup-v1 reset/recompletion, and recipient/raw/FK races. Remaining
 raw/file-sensitive normalized rows, inherited children, artifacts, control
 phases, and the Stage 4 gates remain pending.
 

@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -740,6 +740,36 @@ default, exposes only bounded apply controls, and emits allowlisted aggregate
 counts and checksums without dates, answers, IDs, UUIDs, timestamps, exception
 text, or database configuration. This phase does not replace the global
 `UNIQUE(date)` key or finish the reader/constraint cutover.
+
+## Stage-3J signal channel-optional ownership operation
+
+The fixed `stage3.channel_optional.signals.v1` phase covers only `signals`.
+A frozen row is eligible for adoption only when S/A/C are all null; it gains the
+sole S without changing the signal fact, batch, raw link, provenance, or
+timestamps. Existing owned rows retain nullable-or-owner A and nullable-or-exact
+historical Telegram-recipient C. MCP rows are raw/channel-neutral. Historical
+Telegram rows may retain an exact same-subject Signals/Telegram raw link;
+above-HWM live Telegram rows require the complete owner, recipient, and raw
+graph. The only actorless above-HWM exception is a late reparse from an exact
+S+C/A-null Telegram raw row already covered by the validated Stage-3A HWM; the
+fact must retain that exact raw and recipient. The service also rejects split
+batch provenance and a raw message divided across multiple normalization batches.
+
+Operators pause Telegram/MCP ingest, pending-raw reparse, misparse, delete,
+import, and direct signal writers through initial completion. Recipient roots
+are locked before raw payloads and facts; projected roots and FKs are rechecked
+after locking. Initial finalization hashes the frozen data and ownership graph.
+Completed status is intentionally current-graph based because supported
+misparse, deletion, reparse, and new ingest operations make the table volatile.
+
+Backup v1 preserves signal content and `raw_id` but strips A/C. Import rebinds S
+and resets the exact checkpoint after Stage 3I and before replacement: nonempty
+snapshots become RUNNING and empty snapshots exact COMPLETED. Recompletion
+preserves unknown historical A/C as null. The fixed operator is read-only by
+default, exposes only bounded apply controls, and emits aggregate allowlisted
+JSON without signal text, keys, batch/raw IDs, dates, UUIDs, exception text, or
+database configuration. Consumer-bridge and scoped reader retirement remain a
+later gate.
 
 ## Completion gates
 

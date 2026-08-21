@@ -114,6 +114,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   stripped provenance. Completed checks validate the current mutable context
   graph, while backup v1 resets nonempty snapshots for bounded recompletion and
   completes empty snapshots exactly.
+- Added Stage 3J for channel-optional signal ownership. The fixed
+  `stage3.channel_optional.signals.v1` operation assigns only the sole subject
+  to reviewed fully-unowned history while preserving signal facts, batch/raw
+  links, timestamps, and every valid optional actor/Telegram-recipient root.
+  It validates raw and batch provenance without inferring stripped A/C, uses
+  canonical root-before-fact locks, and revalidates the current volatile graph
+  after completion. Backup v1 resets nonempty signal snapshots for bounded
+  recompletion after Stage 3I and completes empty snapshots exactly.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before

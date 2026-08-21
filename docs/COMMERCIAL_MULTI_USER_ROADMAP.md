@@ -500,6 +500,18 @@ Implementation progress on `commercial/main`:
   subject-bound marker and content, so the exact checkpoint resets to bounded
   RUNNING for a nonempty snapshot or COMPLETED for an empty one after Stage 3H
   handling and before replacement.
+- Stage 3J uses `stage3.channel_optional.signals.v1` for exactly `signals`. It
+  assigns only the sole S to reviewed fully-unowned history and preserves every
+  signal value, batch/raw link, timestamp, and valid optional owner/Telegram
+  recipient root. MCP facts remain raw/channel-neutral; Telegram raw links and
+  batch membership are validated without inferring stripped A/C. A late
+  actorless reparse is accepted only from the exact S+C/A-null Telegram raw row
+  already frozen by Stage 3A. Initial
+  completion runs under a complete signal-writer pause, while later completed
+  checks validate the current volatile graph so supported misparse, delete,
+  reparse, and new-ingest transitions remain legal. Backup v1 retains `raw_id`
+  and content, rebinds S, and resets the exact checkpoint after Stage 3I to
+  RUNNING for a nonempty snapshot or COMPLETED for an empty one.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,
