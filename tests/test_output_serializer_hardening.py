@@ -303,20 +303,23 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
         subject_id=owner.subject_id,
         actor_user_id=owner.user_id,
     )
+    # Reviewed keys: an installation-wide scheduler failure owns no subject,
+    # while a health alert is subject-bound.
     global_alert = SystemAlert(
         domain="system",
         severity="info",
         message="global",
-        alert_key="portable.global",
+        alert_key="scheduler.job_failed:raw_payload_sweep",
         subject_id=None,
     )
     bound_alert = SystemAlert(
-        domain="system",
+        domain="weight",
         severity="info",
         message="bound",
-        alert_key="portable.bound",
+        alert_key="weight.noisy_period_active",
         subject_id=owner.subject_id,
         overridden_by_user_id=owner.user_id,
+        override_at=datetime(2026, 1, 2, 8, 0),
     )
     db_session.add_all(
         [
@@ -375,7 +378,10 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
     assert {
         row["alert_key"]: row["_vitals_subject_bound"]
         for row in snapshot["system_alerts"]
-    } == {"portable.global": False, "portable.bound": True}
+    } == {
+        "scheduler.job_failed:raw_payload_sweep": False,
+        "weight.noisy_period_active": True,
+    }
 
     await data_portability_service.import_full(db_session, snapshot)
     await db_session.flush()
@@ -413,9 +419,15 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
         row.alert_key: row
         for row in await db_session.scalars(select(SystemAlert))
     }
-    assert restored_alerts["portable.global"].subject_id is None
-    assert restored_alerts["portable.bound"].subject_id == owner.subject_id
-    assert restored_alerts["portable.bound"].overridden_by_user_id is None
+    assert (
+        restored_alerts["scheduler.job_failed:raw_payload_sweep"].subject_id is None
+    )
+    assert (
+        restored_alerts["weight.noisy_period_active"].subject_id == owner.subject_id
+    )
+    assert (
+        restored_alerts["weight.noisy_period_active"].overridden_by_user_id is None
+    )
 
 
 async def test_legacy_v1_required_row_without_marker_rebinds_to_local_subject(

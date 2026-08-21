@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R / Stage-3S implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R / Stage-3S / Stage-3T implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -888,6 +888,30 @@ delivery log on a first restore and afterwards revalidates and preserves it.
 `delivery_intent_id` joins the suppressed plumbing columns so no generic MCP,
 LLM, or backup surface can expose or replay a delivery lease.
 
+Stage 3T completes the PR-03 backfill catalogue with
+`stage3.subject_optional.system_alerts.v1` over exactly `system_alerts`. An
+alert is not uniformly subject-scoped, so the phase classifies each historical
+row through the exhaustive key allowlist the writer already enforces and adds
+only what the class proves: a health key — including the `conflict:<rule id>`
+family — gains the sole S and no C; a provider key additionally gains the exact
+reviewed legacy connection for its provider and connection type; an
+installation-wide platform key keeps neither root and is never adopted. An
+unclassified key fails closed, because a broad prefix is not proof of ownership.
+
+Severity, message, key, entity reference, creation time, and the override and
+resolution history are untouched, and lifecycle actors must be null or the
+subject owner. A health alert may not claim a connection, a platform alert may
+claim neither root nor a platform invocation, and a parser alert naming an
+invocation must carry an entity reference and a same-subject invocation. The
+provider root resolves only while the subject has exactly one connection of that
+provider and type and it is the reviewed `legacy_singleton_v1` singleton; the
+gate runs in the read-only preflight whenever adoption is still pending.
+
+Backup v1 rebinds S where the portable marker proves subject scope but strips C,
+so a restored provider alert arrives subject-bound and connection-less. The phase
+treats that as a row it must complete rather than as partial corruption, and its
+reset records a nonempty snapshot as RUNNING or an empty one as exact COMPLETED.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -940,7 +964,12 @@ full round trip and an empty replacement, and populated downgrade refusal. The
 Stage-3S rehearsal covers subject/recipient/channel adoption for a delivered log,
 stop/resume, a strict live message above the frozen watermark, backup-v1
 retention through a full round trip and an empty replacement, and populated
-downgrade refusal. Only `system_alerts` and the Stage 4 gates remain pending.
+downgrade refusal. The Stage-3T rehearsal covers all three reviewed alert
+classes in one snapshot, stop/resume, a strict live platform alert above the
+frozen watermark, backup-v1 reset and reconstruction of the stripped provider
+connection, empty replacement, and populated downgrade refusal. Every table in
+the inventory now has a completed backfill phase; the Stage 4 validation gates
+and the Stage 5 scoped-key cutover remain.
 
 ### Stage 4 — Ownership validation
 

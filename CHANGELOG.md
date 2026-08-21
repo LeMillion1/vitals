@@ -130,6 +130,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 3T for subject-optional system-alert ownership, completing the
+  PR-03 backfill catalogue. The fixed `stage3.subject_optional.system_alerts.v1`
+  operation classifies every historical alert through the writer's own reviewed
+  key allowlist and adds only what the class proves: a health or conflict alert
+  gains the sole subject, a provider alert additionally gains the exact reviewed
+  legacy connection for its provider, and an installation-wide platform alert
+  keeps neither root. An unclassified key fails closed rather than being folded
+  into any class. Severity, message, key, entity reference, and the override and
+  resolution history are untouched, and lifecycle actors must be the owner or
+  null. Backup v1 rebinds the subject but strips the connection, so a restored
+  provider alert is completed again rather than left half-migrated.
 - Added Stage 3S for retained notification ownership. A delivered message only
   means something together with the person it went to and the channel that
   carried it, so the fixed `stage3.delivery_artifact.notifications.v1` operation

@@ -107,6 +107,10 @@ from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     SharedReportOwnershipBackfillStateError,
 )
+from vitals.services.system_alert_ownership_backfill_service import (
+    SYSTEM_ALERT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    SystemAlertOwnershipBackfillStateError,
+)
 from vitals.services.notification_ownership_backfill_service import (
     NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     NotificationOwnershipBackfillStateError,
@@ -2850,6 +2854,71 @@ async def test_full_import_completes_exact_empty_body_scan_stage3o(
         checkpoint.snapshot_rows,
     ) == ("completed", 0, 0)
     assert checkpoint.completed_at is not None
+
+
+async def test_full_import_resets_system_alert_stage3t_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "system_alerts": [
+                {
+                    "id": 151,
+                    "domain": Domain.WEIGHT.value,
+                    "severity": "warn",
+                    "message": "synthetic only",
+                    "alert_key": "weight.noisy_period_active",
+                    "entity_ref": "weight:1",
+                    "_vitals_subject_bound": True,
+                }
+            ],
+        },
+    )
+
+    row = await db_session.get(SystemAlert, 151)
+    assert row is not None
+    assert row.subject_id == legacy_owner_roots.subject_id
+    assert row.integration_connection_id is None
+    phase = SYSTEM_ALERT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["system_alerts"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.completed_at,
+    ) == ("running", 151, 1, None)
+
+
+async def test_system_alert_post_load_rejection_rolls_back_replacement(
+    db_session,
+    legacy_owner_roots,
+):
+    async def rejected_preflight(*args, **kwargs):
+        raise SystemAlertOwnershipBackfillStateError("sensitive synthetic state")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            data_portability_service,
+            "preflight_system_alert_ownership_backfill",
+            rejected_preflight,
+        )
+        with pytest.raises(
+            PortabilityError,
+            match="system-alert validation rejected the portable restore",
+        ):
+            await import_full(
+                db_session,
+                {
+                    "metadata": {"version": "1.0", "kind": "full_backup"},
+                    "raw_payloads": [],
+                },
+            )
+    await db_session.rollback()
 
 
 async def test_retained_notifications_survive_import_and_prepare_stage3s(

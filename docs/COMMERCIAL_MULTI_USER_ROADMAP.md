@@ -583,6 +583,13 @@ Implementation progress on `commercial/main`:
   `notifications` becomes retained rather than portable: backup v1 carries
   neither recipient nor channel, so import prepares or preserves the retained
   checkpoint instead of replacing the delivery log.
+- Stage 3T uses `stage3.subject_optional.system_alerts.v1` for exactly
+  `system_alerts` and completes the backfill catalogue. It classifies each alert
+  through the writer's own reviewed key allowlist and adds only what the class
+  proves: a health or conflict alert gains the sole S, a provider alert also
+  gains its exact reviewed legacy connection, and an installation-wide platform
+  alert keeps neither root. An unclassified key fails closed. Backup v1 rebinds S
+  but strips C, so a restored provider alert is completed again.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

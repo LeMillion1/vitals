@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R / Stage-3S implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R / Stage-3S / Stage-3T implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -1051,6 +1051,35 @@ to anything. Import therefore prepares the checkpoint from the local delivery lo
 on a first restore and afterwards revalidates and preserves it, never accepting
 incoming bounds. `delivery_intent_id` also joins the suppressed plumbing columns
 so no generic MCP, LLM, or backup surface can expose or replay it.
+
+## Stage-3T subject-optional system-alert ownership operation
+
+The fixed `stage3.subject_optional.system_alerts.v1` phase covers only
+`system_alerts` and completes the PR-03 backfill catalogue. An alert is not
+uniformly subject-scoped, so the phase classifies each row through the exhaustive
+key allowlist the writer already enforces and adds only what the class proves: a
+health key — including the `conflict:<rule id>` family — gains the sole subject
+and no connection; a provider key additionally gains the exact reviewed legacy
+connection for that provider and connection type; an installation-wide platform
+key keeps neither root and is never adopted. A key outside the allowlist fails
+closed rather than being folded into any class, because a broad prefix is not
+proof of ownership.
+
+Severity, message, key, entity reference, creation time, and the override and
+resolution history are untouched. Override and resolution actors must be null or
+the subject owner. A health alert may not claim a provider connection, a platform
+alert may claim neither root nor a platform invocation, and a parser alert that
+names an invocation must carry an entity reference and a same-subject invocation.
+The provider connection root resolves only while the subject has exactly one
+connection of that provider and type and it is the reviewed
+`legacy_singleton_v1` singleton, and the gate runs during the read-only preflight
+whenever adoption is still pending.
+
+Backup v1 rebinds the subject where the portable marker proves subject scope but
+strips the connection, so a restored provider alert arrives subject-bound and
+connection-less: the phase treats that as a row it must complete rather than as
+partial corruption, and its reset records a nonempty snapshot as RUNNING or an
+empty one as exact COMPLETED.
 
 ## Completion gates
 
