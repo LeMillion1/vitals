@@ -855,11 +855,11 @@ async def handle_update(
             parser_alert_context=parser_alert_context,
             notifier_resolver=notifier_resolver,
         )
-    except Exception:
+    except Exception as exc:
         if parked:
             raise DurableInboundProcessingError(
                 "Telegram update failed after durable raw capture"
-            ) from None
+            ) from exc
         raise
 
 

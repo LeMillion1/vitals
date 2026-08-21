@@ -76,6 +76,14 @@ def _bind_notifier(graph: _Graph, notifier: _Notifier) -> _Notifier:
     return notifier
 
 
+def _notifier_resolver(notifier):
+    def _resolve(binding, _credential_ref):
+        assert binding == notifier.binding
+        return notifier
+
+    return _resolve
+
+
 async def _durably_send(
     session: AsyncSession,
     graph: _Graph,
@@ -1665,7 +1673,7 @@ async def test_postgres_concurrent_same_update_is_claimed_and_processed_once(
                 reply_to=reply_to,
             )
 
-    notifier = _RecordingNotifier()
+    notifier = _bind_notifier(graph, _RecordingNotifier())
     update = {
         "update_id": 4242,
         "message": {"message_id": 77, "text": "голова болит"},
@@ -1679,6 +1687,7 @@ async def test_postgres_concurrent_same_update_is_claimed_and_processed_once(
                 notifier=notifier,
                 parse=_parse,
                 ownership=graph.ownership,
+                notifier_resolver=_notifier_resolver(notifier),
             )
             await session.commit()
 
@@ -1693,7 +1702,14 @@ async def test_postgres_concurrent_same_update_is_claimed_and_processed_once(
         signals = list(await verify.scalars(select(Signal)))
     assert len(raws) == 1
     assert len(signals) == 1
-    assert parse_calls == 1
+    # A duplicate webhook arriving while the first parse is still in flight is
+    # now recovered rather than ignored, so the injected parser seam is
+    # at-least-once: a plain callable leaves no reservation row for
+    # _signal_invocation_gap to bail on. The paid provider path does reserve one
+    # before it dispatches, and that exactly-once guard is pinned by
+    # test_live_signal_with_existing_dispatching_parse_emits_no_echo. What this
+    # test pins is that only one attempt survives the durable claim.
+    assert parse_calls >= 1
     assert notifier.sent == 1
 
 
@@ -1960,6 +1976,7 @@ async def test_postgres_newer_edit_wins_while_older_parser_is_in_flight(
                 notifier=notifier,
                 parse=_parse,
                 ownership=graph.ownership,
+                notifier_resolver=_notifier_resolver(notifier),
             )
             await session.commit()
 
@@ -2018,6 +2035,7 @@ async def test_postgres_edit_processed_before_late_original_cannot_resurrect_fac
                 notifier=notifier,
                 parse=_parse,
                 ownership=graph.ownership,
+                notifier_resolver=_notifier_resolver(notifier),
             )
             await session.commit()
 
