@@ -488,6 +488,18 @@ Implementation progress on `commercial/main`:
   revalidated instead of requiring deleted IDs to survive. Backup v1 cannot
   carry file bytes or prove A/F, so a nonempty restore is `RESTORE_BLOCKED` and
   creates no placeholder; an empty restore completes exactly.
+- Stage 3I uses `stage3.channel_optional.day_context.v1` for exactly
+  `day_context`. It assigns only the sole S to reviewed fully-unowned history
+  and preserves every answer, plan, timestamp, source, and existing valid A/C;
+  neither an actor nor a Telegram recipient connection is inferred. Initial
+  completion runs under a complete day-context writer pause. Because the row
+  for a date is deliberately overwritten, later completed checks validate the
+  current ownership/provenance graph without comparing frozen data or ownership
+  digests, while retaining frozen IDs and cardinality as migration evidence.
+  Backup v1 retains the
+  subject-bound marker and content, so the exact checkpoint resets to bounded
+  RUNNING for a nonempty snapshot or COMPLETED for an empty one after Stage 3H
+  handling and before replacement.
 - Remaining bounded backfill phases and whole-lake validation, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,
   artifacts,

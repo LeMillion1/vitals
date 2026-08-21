@@ -43,6 +43,7 @@ from vitals.models.labs import LabResult
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.proactive import NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
+from vitals.models.signals import DayContext
 from vitals.models.supplements import Supplement
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset, IntegrationConnection
@@ -57,6 +58,11 @@ from vitals.services.data_portability_service import (
 from vitals.services.conflict_rule_ownership_backfill_service import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     CONFLICT_RULE_OWNERSHIP_BACKFILL_TABLES,
+)
+from vitals.services.day_context_ownership_backfill_service import (
+    DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+    DAY_CONTEXT_OWNERSHIP_BACKFILL_TABLES,
+    DayContextOwnershipBackfillStateError,
 )
 from vitals.services.hevy_child_ownership_backfill_service import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -1757,6 +1763,249 @@ async def test_full_import_preflights_progress_after_conflict_rules(
     )
 
     assert order == ["conflict", "progress"]
+
+
+def _portable_day_context(*, row_id: int = 51) -> dict:
+    return {
+        "id": row_id,
+        "date": "2026-08-21",
+        "domain": Domain.SIGNALS.value,
+        "source": Source.MANUAL.value,
+        "answers": {"gym": True},
+        "planned": {"where": "remote"},
+        "_vitals_subject_bound": True,
+    }
+
+
+async def test_full_import_resets_nonempty_day_context_stage3i_snapshot(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+            "day_context": [_portable_day_context()],
+        },
+    )
+
+    context = await db_session.get(DayContext, 51)
+    assert context is not None
+    assert (
+        context.subject_id,
+        context.actor_user_id,
+        context.integration_connection_id,
+        context.answers,
+        context.planned,
+    ) == (
+        legacy_owner_roots.subject_id,
+        None,
+        None,
+        {"gym": True},
+        {"where": "remote"},
+    )
+    phase = DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["day_context"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+        checkpoint.completed_at,
+    ) == ("running", 51, 1, 0, 0, 0, 0, None)
+
+
+async def test_full_import_completes_exact_empty_day_context_stage3i(
+    db_session,
+    legacy_owner_roots,
+):
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    phase = DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["day_context"]
+    checkpoint = await db_session.get(OwnershipBackfillCheckpoint, phase)
+    assert checkpoint is not None
+    assert (
+        checkpoint.status,
+        checkpoint.scan_high_watermark_id,
+        checkpoint.snapshot_rows,
+        checkpoint.last_scanned_id,
+        checkpoint.scanned_rows,
+        checkpoint.updated_rows,
+        checkpoint.unchanged_rows,
+    ) == ("completed", 0, 0, 0, 0, 0, 0)
+    assert checkpoint.completed_at is not None
+
+
+@pytest.mark.parametrize("bad_id", (0, -1, True, None, 2_147_483_648))
+async def test_day_context_replacement_rejects_invalid_ids_before_mutation(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    bad_id,
+):
+    called = False
+
+    async def unexpected_reset(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_day_context_ownership_backfill_for_portability_v1_restore",
+        unexpected_reset,
+    )
+    row = _portable_day_context()
+    if bad_id is None:
+        row.pop("id")
+    else:
+        row["id"] = bad_id
+    with pytest.raises(PortabilityError, match="positive integer id"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                DAY_CONTEXT_OWNERSHIP_BACKFILL_TABLES[0]: [row],
+            },
+        )
+    assert called is False
+
+
+async def test_full_import_calls_day_context_reset_after_progress_block(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_progress_block = (
+        data_portability_service.block_progress_photo_ownership_backfill_for_portability_v1_restore
+    )
+
+    async def tracked_progress_block(*args, **kwargs):
+        order.append("progress")
+        return await original_progress_block(*args, **kwargs)
+
+    async def stopping_day_context_reset(*args, **kwargs):
+        order.append("day_context")
+        raise DayContextOwnershipBackfillStateError("synthetic stop")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "block_progress_photo_ownership_backfill_for_portability_v1_restore",
+        tracked_progress_block,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "reset_day_context_ownership_backfill_for_portability_v1_restore",
+        stopping_day_context_reset,
+    )
+    with pytest.raises(PortabilityError, match="day-context ownership restore reset"):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+            },
+        )
+    await db_session.rollback()
+    assert order == ["progress", "day_context"]
+
+
+async def test_full_import_preflights_day_context_after_progress(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    order: list[str] = []
+    original_progress_preflight = (
+        data_portability_service.preflight_progress_photo_ownership_backfill
+    )
+    original_day_context_preflight = (
+        data_portability_service.preflight_day_context_ownership_backfill
+    )
+
+    async def tracked_progress_preflight(*args, **kwargs):
+        order.append("progress")
+        return await original_progress_preflight(*args, **kwargs)
+
+    async def tracked_day_context_preflight(*args, **kwargs):
+        order.append("day_context")
+        return await original_day_context_preflight(*args, **kwargs)
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_progress_photo_ownership_backfill",
+        tracked_progress_preflight,
+    )
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_day_context_ownership_backfill",
+        tracked_day_context_preflight,
+    )
+    await import_full(
+        db_session,
+        {
+            "metadata": {"version": "1.0", "kind": "full_backup"},
+            "raw_payloads": [],
+        },
+    )
+
+    assert order == ["progress", "day_context"]
+
+
+async def test_day_context_post_load_rejection_rolls_back_whole_replacement(
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+):
+    old = DayContext(
+        date=date(2026, 8, 20),
+        domain=Domain.SIGNALS.value,
+        source=Source.MANUAL.value,
+        answers={"load": "heavy"},
+        planned={"where": "office"},
+    )
+    db_session.add(old)
+    await db_session.commit()
+    old_id = old.id
+
+    async def rejected_preflight(*args, **kwargs):
+        raise DayContextOwnershipBackfillStateError("sensitive synthetic state")
+
+    monkeypatch.setattr(
+        data_portability_service,
+        "preflight_day_context_ownership_backfill",
+        rejected_preflight,
+    )
+    with pytest.raises(
+        PortabilityError,
+        match="day-context validation rejected the portable restore",
+    ):
+        await import_full(
+            db_session,
+            {
+                "metadata": {"version": "1.0", "kind": "full_backup"},
+                "raw_payloads": [],
+                "day_context": [_portable_day_context(row_id=52)],
+            },
+        )
+    await db_session.rollback()
+
+    restored = await db_session.get(DayContext, old_id)
+    assert restored is not None
+    assert restored.answers == {"load": "heavy"}
+    assert await db_session.get(DayContext, 52) is None
 
 
 @pytest.mark.parametrize("table_name", HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES)

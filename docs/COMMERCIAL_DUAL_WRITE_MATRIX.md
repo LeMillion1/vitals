@@ -1,6 +1,6 @@
 # Commercial Legacy Dual-write Matrix
 
-Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H implementation source of truth
+Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -711,6 +711,35 @@ the exact blocked shape. Empty snapshots complete. The same transaction retires
 only outgoing assets referenced by replaced photos and never unlinks bytes.
 There is no ordinary apply path out of `RESTORE_BLOCKED`; backup v2 or a reviewed
 recovery must provide file provenance.
+
+## Stage-3I day-context channel-optional ownership operation
+
+The fixed `stage3.channel_optional.day_context.v1` phase covers only
+`day_context`. A frozen row is eligible for adoption only when S/A/C are all
+null; it gains the sole S without changing answers, planned context, source,
+domain, dates, or timestamps. Existing owned rows must already have exact S,
+nullable-or-owner A, and either null C or an exact same-subject historical
+Telegram recipient connection. The operation never infers A or C from source,
+content, or the presence of a sole active recipient.
+
+Operators pause plan, Telegram-answer, MCP-answer, import, and direct
+day-context writers through initial completion. The current global date key is
+validated as the one-row-per-date legacy invariant. Initial finalization locks
+and hashes the complete frozen snapshot. Day context is intentionally mutable:
+later plans and answers overwrite the row and may legitimately update data,
+timestamps, source, A, and optional C. Completed status therefore revalidates
+every current row without comparing the frozen data or ownership digests, while
+still retaining the frozen IDs and cardinality as migration evidence.
+
+Backup v1 strips A/C but preserves the row content and subject-bound marker.
+Import therefore rebinds S and resets the one checkpoint to RUNNING for a
+nonempty snapshot or exact COMPLETED for an empty snapshot, after Stage 3H is
+blocked/reset and before portable rows are replaced. Recompletion preserves the
+unknown historical A/C as null. The fixed-target operator is read-only by
+default, exposes only bounded apply controls, and emits allowlisted aggregate
+counts and checksums without dates, answers, IDs, UUIDs, timestamps, exception
+text, or database configuration. This phase does not replace the global
+`UNIQUE(date)` key or finish the reader/constraint cutover.
 
 ## Completion gates
 

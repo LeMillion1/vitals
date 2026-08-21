@@ -1,6 +1,6 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H implementation source of truth
+Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I implementation source of truth
 
 Last reviewed: 2026-08-21
 
@@ -602,6 +602,31 @@ outgoing photo assets, preserves the physical files, validates the blocked or
 empty incoming shape in the same transaction, and requires backup v2 or an
 explicit reviewed recovery before nonempty restored history can be activated.
 
+Stage 3I continues with `stage3.channel_optional.day_context.v1` over exactly
+`day_context`. Under a complete plan/answer/import writer pause, a reviewed
+fully-null S/A/C row gains only the sole S. Existing exact S plus nullable owner
+A and nullable same-subject historical Telegram-recipient C is preserved; the
+phase never manufactures either optional provenance root from source or from a
+sole current channel. Answers, planned context, date, domain, source, and
+timestamps remain untouched by the migration.
+
+Initial completion locks and rehashes the complete frozen snapshot. The model
+is overwrite-in-place by design, so later completed checks validate the whole
+current graph and allow legitimate plan/answer updates without requiring the
+frozen data digest to remain. Frozen IDs and cardinality remain durable
+migration evidence; deleting a frozen row fails closed, while a new strict row
+above the HWM is validated as live data.
+The legacy global `UNIQUE(date)` still serializes the single-user natural key
+until the later `(S, date)` constraint cutover.
+
+Backup v1 retains the subject-bound marker and business content while stripping
+A/C. Import rebinds S, resets the exact Stage-3I checkpoint after Stage 3H and
+before replacement, and records a nonempty snapshot as RUNNING or an empty one
+as COMPLETED. Recompletion leaves unknown A/C null. The fixed-target operator
+is read-only by default, commits one bounded batch per transaction, and emits
+only allowlisted aggregate counts and checksums. Consumer-bridge retirement,
+the scoped uniqueness cutover, and registration remain later gates.
+
 The Stage-3A synthetic PostgreSQL 15 rehearsal passed a real migration build through
 revision `0034` and then to head, batch-size-2 process stop/resume, idempotent
 completion, byte-stable data/link/frozen-output hashes, and downgrade refusal
@@ -618,7 +643,10 @@ downgrade refusal; its service gate adds parent-classification, component-FK,
 consumer-FK, snapshot-key, component-disappearance, and catalog-recategorization
 races. The Stage-3H rehearsal covers metadata-only placeholder creation,
 actorless historical provenance, stop/resume, backup-v1 blocking, supported
-photo deletion, and real upload/delete/file-key races. Remaining
+photo deletion, and real upload/delete/file-key races. The Stage-3I rehearsal
+covers actorless/channel-less historical adoption, mutable plan/answer
+stop/resume and post-completion updates, backup-v1 reset/recompletion, and real
+date-row/provenance races. Remaining
 raw/file-sensitive normalized rows, inherited children, artifacts, control
 phases, and the Stage 4 gates remain pending.
 

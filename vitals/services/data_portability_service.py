@@ -83,6 +83,12 @@ from vitals.services.conflict_rule_ownership_backfill_service import (
     preflight_conflict_rule_ownership_backfill,
     reset_conflict_rule_backfill_for_portability_v1_restore,
 )
+from vitals.services.day_context_ownership_backfill_service import (
+    DAY_CONTEXT_OWNERSHIP_BACKFILL_TABLES,
+    DayContextOwnershipBackfillError,
+    preflight_day_context_ownership_backfill,
+    reset_day_context_ownership_backfill_for_portability_v1_restore,
+)
 from vitals.services.conflict_catalog import (
     ConflictCatalogCollisionError,
     sync_catalog as sync_conflict_catalog,
@@ -640,6 +646,34 @@ def _progress_photo_replacement_snapshot_bounds(
     return bounds
 
 
+def _day_context_replacement_snapshot_bounds(
+    payload: dict[str, Any],
+) -> dict[str, tuple[int, int]]:
+    """Return exact Stage-3I DayContext bounds before replacement."""
+
+    bounds: dict[str, tuple[int, int]] = {}
+    for table_name in DAY_CONTEXT_OWNERSHIP_BACKFILL_TABLES:
+        rows = payload.get(table_name) or ()
+        high_watermark = 0
+        for index, row in enumerate(rows):
+            row_id = row.get("id")
+            if (
+                not isinstance(row_id, int)
+                or isinstance(row_id, bool)
+                or not 1 <= row_id <= _POSTGRES_INTEGER_MAX
+            ):
+                raise _contract_error(
+                    "import.error.generic",
+                    exc=(
+                        f"{table_name} record #{index} must carry a positive "
+                        "integer id within the PostgreSQL INTEGER range"
+                    ),
+                )
+            high_watermark = max(high_watermark, row_id)
+        bounds[table_name] = (high_watermark, len(rows))
+    return bounds
+
+
 async def _refuse_retained_raw_references(session: AsyncSession) -> None:
     """Fail before mutation when retained control state still binds any raw."""
 
@@ -722,6 +756,7 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     progress_photo_snapshot_bounds = _progress_photo_replacement_snapshot_bounds(
         payload
     )
+    day_context_snapshot_bounds = _day_context_replacement_snapshot_bounds(payload)
 
     try:
         # Freeze identity before deriving the local subject and keep governance
@@ -824,6 +859,16 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                     "import.error.generic",
                     exc="progress-photo ownership restore block was rejected",
                 ) from exc
+            try:
+                await reset_day_context_ownership_backfill_for_portability_v1_restore(
+                    session,
+                    snapshot_bounds=day_context_snapshot_bounds,
+                )
+            except DayContextOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="day-context ownership restore reset was rejected",
+                ) from exc
         preserved = await _secret_settings(session)
 
         # Wipe in reverse FK order so child rows go before the parents they reference.
@@ -892,6 +937,13 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                 raise _contract_error(
                     "import.error.generic",
                     exc="progress-photo validation rejected the portable restore",
+                ) from exc
+            try:
+                await preflight_day_context_ownership_backfill(session)
+            except DayContextOwnershipBackfillError as exc:
+                raise _contract_error(
+                    "import.error.generic",
+                    exc="day-context validation rejected the portable restore",
                 ) from exc
         await _reset_sequences(session)
         await session.flush()

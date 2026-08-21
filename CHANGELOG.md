@@ -107,6 +107,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   compatible with completed current-graph validation. Because backup v1 carries
   neither bytes nor trustworthy actor/file roots, nonempty restores are recorded
   as `RESTORE_BLOCKED` and create no placeholders; empty snapshots complete.
+- Added Stage 3I for channel-optional day-context ownership. The fixed
+  `stage3.channel_optional.day_context.v1` operation assigns only the sole
+  subject to reviewed fully-unowned history, preserves every answer, plan,
+  timestamp, source, and valid optional actor/channel root, and never infers
+  stripped provenance. Completed checks validate the current mutable context
+  graph, while backup v1 resets nonempty snapshots for bounded recompletion and
+  completes empty snapshots exactly.
 - Split the mixed proactive settings aggregate into a subject schedule/nudge
   policy, Telegram-recipient quiet-hours/budget policy, and Garmin-connection
   sync/pulse/export policy. Startup materializes complete scoped rows before
