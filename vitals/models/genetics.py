@@ -46,6 +46,16 @@ class GeneticVariant(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMix
             postgresql_where=text("rsid IS NOT NULL"),
             sqlite_where=text("rsid IS NOT NULL"),
         ),
+        # An rsID identifies a locus, not a person: two people carry the same
+        # one. At most one row per rsID *per subject*.
+        Index(
+            "uq_genetic_variant_subject_rsid",
+            "subject_id",
+            "rsid",
+            unique=True,
+            postgresql_where=text("rsid IS NOT NULL"),
+            sqlite_where=text("rsid IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

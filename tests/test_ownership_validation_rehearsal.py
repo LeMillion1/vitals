@@ -26,6 +26,8 @@ from alembic.config import Config as AlembicConfig
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from tests.conftest import alembic_head_revision
+
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.services import conflict_catalog, hrt_catalog
@@ -494,7 +496,7 @@ async def test_real_postgres_stage4_whole_lake_validation_and_constraint_promoti
             await asyncio.to_thread(command.downgrade, alembic_config, "0044")
         # The refusal rolls the whole downgrade back, so the Stage-4 references
         # stay installed and valid alongside the evidence they were proved with.
-        assert await _alembic_version(engine) == "0046"
+        assert await _alembic_version(engine) == alembic_head_revision()
         assert all((await _constraint_states(engine)).values())
         assert await _validation_checkpoints(engine) == final_checkpoints
     finally:

@@ -66,6 +66,52 @@ class SystemAlert(Base, SubjectOwnershipMixin, IntegrationConnectionOwnershipMix
             postgresql_where=text("resolved_at IS NULL"),
             sqlite_where=text("resolved_at IS NULL"),
         ),
+        # The same invariant per root the alert actually belongs to: the
+        # connection for a provider alert, the subject for a health alert, and
+        # the installation itself for a platform alert. All three stand beside
+        # the legacy global key until the Stage-5 drop.
+        Index(
+            "uq_active_alert_per_connection_key_entity",
+            "integration_connection_id",
+            "alert_key",
+            "entity_ref",
+            unique=True,
+            postgresql_where=text(
+                "resolved_at IS NULL AND integration_connection_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "resolved_at IS NULL AND integration_connection_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_active_alert_per_subject_key_entity",
+            "subject_id",
+            "alert_key",
+            "entity_ref",
+            unique=True,
+            postgresql_where=text(
+                "resolved_at IS NULL AND subject_id IS NOT NULL "
+                "AND integration_connection_id IS NULL"
+            ),
+            sqlite_where=text(
+                "resolved_at IS NULL AND subject_id IS NOT NULL "
+                "AND integration_connection_id IS NULL"
+            ),
+        ),
+        Index(
+            "uq_active_alert_per_platform_key_entity",
+            "alert_key",
+            "entity_ref",
+            unique=True,
+            postgresql_where=text(
+                "resolved_at IS NULL AND subject_id IS NULL "
+                "AND integration_connection_id IS NULL"
+            ),
+            sqlite_where=text(
+                "resolved_at IS NULL AND subject_id IS NULL "
+                "AND integration_connection_id IS NULL"
+            ),
+        ),
         # Dashboard query: list active alerts, newest first, filterable by domain.
         Index("ix_system_alerts_domain_resolved", "domain", "resolved_at"),
         Index(

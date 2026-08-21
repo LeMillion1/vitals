@@ -71,6 +71,15 @@ class WeightLog(
             postgresql_where=text("superseded = false"),
             sqlite_where=text("superseded = 0"),
         ),
+        # The same invariant per person: two people share a weigh-in date.
+        Index(
+            "uq_active_weight_per_subject_date",
+            "subject_id",
+            "date",
+            unique=True,
+            postgresql_where=text("superseded = false"),
+            sqlite_where=text("superseded = 0"),
+        ),
         # A weight is a physical mass — never zero or negative.
         CheckConstraint("weight_kg > 0", name="ck_weight_logs_weight_positive"),
     )
@@ -106,7 +115,14 @@ class BodyMeasurement(
             "domain",
             "date",
         ),
-        # One measurement set per day (the service upserts).
+        # One measurement set per day (the service upserts) — per person. The
+        # legacy global key stands beside this one until the Stage-5 drop.
+        Index(
+            "uq_body_measurements_subject_date",
+            "subject_id",
+            "date",
+            unique=True,
+        ),
         UniqueConstraint("date", name="uq_body_measurement_per_date"),
     )
 

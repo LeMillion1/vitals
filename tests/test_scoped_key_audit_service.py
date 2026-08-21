@@ -94,10 +94,10 @@ def test_reviewed_catalog_matches_the_live_schema():
             (index.columns for index in spec.replacements), ()
         )):
             assert column in table.columns, (spec.table, column)
-        # The replacement must not exist yet: Stage 5A only proves, never
-        # installs.
+        # Stage 5B installs each replacement beside the legacy key it will
+        # eventually replace; both stand until the Stage-5 drop.
         for index in spec.replacements:
-            assert index.name not in names, index.name
+            assert index.name in names, index.name
 
 
 def test_every_scoped_key_names_a_scope_or_is_deliberately_global():
@@ -206,25 +206,30 @@ async def test_row_without_its_connection_scope_fails_closed(
 
 
 @asynccontextmanager
-async def _without_legacy_index(session, name: str):
-    """Drop a legacy global index the way the cutover migration will.
+async def _without_indexes(session, *names: str):
+    """Drop unique indexes the way a cutover — or a restore — leaves them.
 
-    The schema is shared across the fast suite, so the index is recreated from
+    The schema is shared across the fast suite, so each index is recreated from
     its own metadata definition before the test returns.
     """
 
-    index = next(
-        candidate
-        for table in Base.metadata.tables.values()
-        for candidate in table.indexes
-        if candidate.name == name
-    )
-    await session.execute(DropIndex(index))
+    indexes = [
+        next(
+            candidate
+            for table in Base.metadata.tables.values()
+            for candidate in table.indexes
+            if candidate.name == name
+        )
+        for name in names
+    ]
+    for index in indexes:
+        await session.execute(DropIndex(index))
     try:
         yield
     finally:
         await session.rollback()
-        await session.execute(CreateIndex(index))
+        for index in indexes:
+            await session.execute(CreateIndex(index))
 
 
 @pytest.mark.asyncio
@@ -232,9 +237,13 @@ async def test_collision_under_a_proposed_key_fails_closed(
     db_session, legacy_owner_roots
 ):
     # While the legacy global key stands, no row can collide under the wider
-    # scoped key. The check guards the lake after the drop — and a lake that
-    # arrives from a restore — so the legacy index is dropped here first.
-    async with _without_legacy_index(db_session, "ix_lab_markers_name"):
+    # scoped key, and once the scoped index is installed the database refuses
+    # the duplicate outright. The audit guards the lake that arrives without
+    # either — a restore, or a cutover being replayed — so both are dropped
+    # here first.
+    async with _without_indexes(
+        db_session, "ix_lab_markers_name", "uq_lab_markers_subject_name"
+    ):
         db_session.add_all(
             [
                 LabMarker(
@@ -268,7 +277,7 @@ async def test_two_subjects_may_share_a_date_under_the_scoped_key(
     """The whole point of the cutover, proved before it is installed."""
 
     same_day = date(2026, 5, 6)
-    async with _without_legacy_index(db_session, "uq_active_weight_per_date"):
+    async with _without_indexes(db_session, "uq_active_weight_per_date"):
         db_session.add(
             _weight(subject_id=legacy_owner_roots.subject_id, on_date=same_day)
         )

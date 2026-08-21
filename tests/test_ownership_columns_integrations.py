@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import pytest
+
+from vitals.scoped_keys import scoped_keys_for
 from sqlalchemy import CheckConstraint, UniqueConstraint, Uuid
 
 from vitals.models.garmin import (
@@ -202,13 +204,28 @@ def test_provider_existing_indexes_survive_with_exact_columns(
     expected = dict(legacy_indexes)
     for column_name in _MODEL_COLUMNS.get(model, ()):
         expected[f"ix_{model.__tablename__}_{column_name}"] = (column_name,)
+    # The Stage-5 cutover adds the connection-scoped replacement for the
+    # provider's legacy global key beside it; nothing else changes.
+    for spec in scoped_keys_for(model.__tablename__):
+        for index in spec.replacements:
+            expected[index.name] = index.columns
 
     actual = {
         index.name: tuple(column.name for column in index.columns)
         for index in model.__table__.indexes
     }
     assert actual == expected
-    assert all(index.unique is False for index in model.__table__.indexes)
+    # Expansion added no uniqueness of its own; the Stage-5 cutover replaces the
+    # provider's global key with the scoped one, and nothing else.
+    scoped = {
+        index.name
+        for spec in scoped_keys_for(model.__tablename__)
+        for index in spec.replacements
+    }
+    assert all(
+        index.unique is (index.name in scoped)
+        for index in model.__table__.indexes
+    )
 
 
 @pytest.mark.parametrize(

@@ -1069,6 +1069,27 @@ global uniqueness today, so neither ever blocked a second subject; adding
 uniqueness where the application currently allows duplicates is a product
 decision, not an isolation requirement.
 
+#### Stage 5B — installing the scoped keys
+
+Revision `0047` installs all sixteen. It is purely additive: each scoped key
+stands beside the legacy global key it will eventually replace. That is safe
+without any code change, because every replacement is strictly weaker than the
+key it narrows — it either keeps the legacy columns and adds a scope column, or
+keeps them and restricts the row set with a predicate — so installing it can
+reject nothing the lake already holds, and every legacy reader and writer keeps
+working unchanged.
+
+On PostgreSQL the indexes are built `CONCURRENTLY`, so the migration never holds
+a write lock on a populated health table, and `IF NOT EXISTS` makes a re-run
+after an interrupted build safe. Downgrade drops them transactionally, so a
+refused downgrade further down the chain rolls the whole attempt back instead of
+leaving the lake half-cut-over.
+
+The legacy expansion indexes that the scoped keys duplicate are deliberately
+left in place: revision `0037`'s contract still describes them, and removing
+them belongs with the drop of the global keys rather than with their
+installation.
+
 ### Stage 6 — Scoped read and RLS cutover
 
 PR-04 removes bare-ID/global reads, requires AccessContext, and enables FORCE RLS

@@ -9,6 +9,7 @@ on SQLite.
 
 from contextlib import asynccontextmanager
 import os
+from pathlib import Path
 
 # Set before importing app modules so config/security read test values.
 os.environ.setdefault("VITALS_TESTING", "1")
@@ -456,3 +457,23 @@ async def platform_ai_ready(db_session, legacy_owner_roots, monkeypatch):
     )
     await db_session.commit()
     return root
+
+
+def alembic_head_revision() -> str:
+    """Return the current migration head.
+
+    A rehearsal that asserts where a refused downgrade leaves the schema must
+    not have to be edited every time a revision is added.
+    """
+
+    from alembic.config import Config as _AlembicConfig
+    from alembic.script import ScriptDirectory as _ScriptDirectory
+
+    repository_root = Path(__file__).resolve().parent.parent
+    script = _ScriptDirectory.from_config(
+        _AlembicConfig(str(repository_root / "alembic.ini"))
+    )
+    heads = script.get_heads()
+    if len(heads) != 1:
+        raise RuntimeError("the migration chain must have exactly one head")
+    return heads[0]

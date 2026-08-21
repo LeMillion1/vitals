@@ -130,6 +130,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   migrated history, the unprocessed frozen tail, and strict live reports.
   Backup v1 neither exports nor replaces published reports, so import prepares
   or preserves the retained checkpoint without trusting bounds from the file.
+- Added Stage 5B: revision `0047` installs the sixteen scoped unique keys. Each
+  is installed *beside* the legacy global key it will eventually replace, never
+  instead of it — a scoped key is strictly weaker than the global key it
+  narrows, so installing it can reject nothing the lake already holds and every
+  legacy reader and writer keeps working unchanged. On PostgreSQL the indexes
+  are built `CONCURRENTLY` so the migration never holds a write lock on a
+  populated health table, and `IF NOT EXISTS` makes a re-run after an
+  interrupted build safe; downgrade drops them transactionally, so a refused
+  downgrade further down the chain rolls the whole attempt back rather than
+  leaving the lake half-cut-over. A schema-contract test pins the migration to
+  the reviewed catalog so the two cannot drift, and rehearsals now derive the
+  migration head from the chain itself instead of naming a revision, so adding
+  one no longer edits twenty files. Dropping the global keys, and switching
+  every key-based write path to the scoped key, remain the separately reviewed
+  cutover.
 - Added Stage 5A, the audit that gates the scoped-key cutover. `vitals/scoped_keys.py`
   is the machine-readable inventory of the change: twelve legacy global keys and
   the sixteen scoped indexes that replace them, each naming the column its scope

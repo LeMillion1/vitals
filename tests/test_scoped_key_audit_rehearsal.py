@@ -27,6 +27,8 @@ from alembic.config import Config as AlembicConfig
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from tests.conftest import alembic_head_revision
+
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.services import conflict_catalog, hrt_catalog
@@ -359,13 +361,14 @@ async def test_real_postgres_stage5a_scoped_key_audit_proves_the_cutover(
         await asyncio.to_thread(command.upgrade, alembic_config, "head")
         subject_id = (await _bootstrap_roots(engine)).subject_id
 
-        # Nothing about the cutover is installed before it is proved.
+        # Revision 0047 installs each scoped key beside the legacy global key
+        # it will eventually replace; the audit changes neither.
         installed = await _index_names(engine)
         replacements = {
             index.name for spec in SCOPED_KEYS for index in spec.replacements
         }
-        assert not (replacements & installed)
         legacy = {spec.legacy_name for spec in SCOPED_KEYS}
+        assert replacements <= installed
         assert legacy <= installed
 
         # Before Stage 4 the audit refuses to look at the lake at all.
@@ -477,7 +480,7 @@ async def test_real_postgres_stage5a_scoped_key_audit_proves_the_cutover(
         final_checkpoints = await _checkpoints(engine, SCOPED_KEY_AUDIT_PHASE)
         with pytest.raises(RuntimeError, match=re.escape(DOWNGRADE_REFUSAL)):
             await asyncio.to_thread(command.downgrade, alembic_config, "0044")
-        assert await _alembic_version(engine) == "0046"
+        assert await _alembic_version(engine) == alembic_head_revision()
         assert await _checkpoints(engine, SCOPED_KEY_AUDIT_PHASE) == final_checkpoints
     finally:
         if migration_control_ready:

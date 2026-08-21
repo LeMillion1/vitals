@@ -614,7 +614,12 @@ Implementation progress on `commercial/main`:
   proved this exact lake, and it creates, drops, and rewrites nothing but its own
   checkpoint. `skincare_logs` and `supplements` are out of scope: they carry no
   global uniqueness today and so never blocked a second subject.
-- Remaining work: installing the scoped indexes, switching every key-based
+- Stage 5B installs all sixteen scoped keys in revision `0047`, beside the legacy
+  global keys rather than instead of them. Every replacement is strictly weaker
+  than the key it narrows, so installation rejects nothing and no reader or
+  writer changes. PostgreSQL builds them `CONCURRENTLY`; downgrade drops them
+  transactionally so a refused downgrade rolls the whole attempt back.
+- Remaining work: switching every key-based
   write/read path, two-subject collision and concurrency tests, dropping the
   legacy global keys, scoped
   remaining raw/file-sensitive normalized rows and their inherited children,

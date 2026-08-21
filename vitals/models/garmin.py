@@ -138,6 +138,15 @@ class GarminDaily(
             "integration_connection_id",
             "date",
         ),
+        # One day per Garmin account, not per installation: two accounts
+        # legitimately report the same date. The legacy global key stands
+        # beside this one until the Stage-5 drop.
+        Index(
+            "uq_garmin_daily_connection_date",
+            "integration_connection_id",
+            "date",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -231,6 +240,13 @@ class GarminActivity(
             "ix_garmin_activities_connection_external",
             "integration_connection_id",
             "external_id",
+        ),
+        # An activity id is unique inside the account it was fetched from.
+        Index(
+            "uq_garmin_activities_connection_external_id",
+            "integration_connection_id",
+            "external_id",
+            unique=True,
         ),
     )
 
@@ -354,6 +370,13 @@ class GarminWeightExport(
             "ix_garmin_weight_exports_connection_date",
             "integration_connection_id",
             "date",
+        ),
+        # One queued export per destination account per date.
+        Index(
+            "uq_garmin_weight_exports_connection_date",
+            "integration_connection_id",
+            "date",
+            unique=True,
         ),
         Index(
             "ix_garmin_weight_exports_connection_status_next",

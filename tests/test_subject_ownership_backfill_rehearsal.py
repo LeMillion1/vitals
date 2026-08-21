@@ -25,6 +25,8 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from tests.conftest import alembic_head_revision
+
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.enums import IntegrationProvider
 from vitals.models.base import Base
@@ -487,9 +489,9 @@ async def test_real_postgres_0034_upgrade_stop_resume_and_populated_downgrade(
 
         with pytest.raises(RuntimeError, match=re.escape(DOWNGRADE_REFUSAL)):
             await asyncio.to_thread(command.downgrade, alembic_config, "0034")
-        # The refusal rolls the whole downgrade back, so head is still 0046 and
-        # the Stage-4 subject-equality references stay installed.
-        assert await _alembic_version(engine) == "0046"
+        # The refusal rolls the whole downgrade back, so the schema is left at
+        # head with every later revision's objects still installed.
+        assert await _alembic_version(engine) == alembic_head_revision()
         assert await _checkpoint_state(engine) == completed_checkpoint
         assert await _run_sync(engine, _legacy_hashes) == before_hashes
     finally:

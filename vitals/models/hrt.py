@@ -61,6 +61,25 @@ class HrtCompound(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin)
     __tablename__ = "hrt_compounds"
     __table_args__ = (
         Index("ix_hrt_compounds_key", "key", unique=True),
+        # The curated catalog belongs to the platform and keeps a global key; a
+        # subject's own compound may reuse that key without colliding with
+        # anyone. Both stand beside the legacy global key until the Stage-5
+        # drop.
+        Index(
+            "uq_hrt_compounds_platform_key",
+            "key",
+            unique=True,
+            postgresql_where=text("subject_id IS NULL"),
+            sqlite_where=text("subject_id IS NULL"),
+        ),
+        Index(
+            "uq_hrt_compounds_subject_key",
+            "subject_id",
+            "key",
+            unique=True,
+            postgresql_where=text("subject_id IS NOT NULL"),
+            sqlite_where=text("subject_id IS NOT NULL"),
+        ),
         Index("ix_hrt_compounds_active", "active"),
         Index("ix_hrt_compounds_class", "compound_class"),
         Index("ix_hrt_compounds_subject_key", "subject_id", "key"),

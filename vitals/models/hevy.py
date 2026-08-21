@@ -74,6 +74,13 @@ class HevyWorkout(
             "integration_connection_id",
             "external_id",
         ),
+        # A workout id is unique inside the Hevy account it came from.
+        Index(
+            "uq_hevy_workouts_connection_external_id",
+            "integration_connection_id",
+            "external_id",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
