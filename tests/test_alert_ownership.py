@@ -789,7 +789,7 @@ async def test_postgres_concurrent_same_scope_raise_returns_one_row(db_session):
 
 
 @pytest.mark.integration
-async def test_postgres_competing_scopes_return_typed_cutover_conflict(db_session):
+async def test_postgres_competing_scopes_each_get_their_own_alert(db_session):
     owner_a, subject_a = await _subject(db_session, "owner-a")
     owner_b, subject_b = await _subject(db_session, "owner-b")
     await db_session.commit()
@@ -821,4 +821,9 @@ async def test_postgres_competing_scopes_return_typed_cutover_conflict(db_sessio
         run_once(_health(owner_a, subject_a, system=True)),
         run_once(_health(owner_b, subject_b, system=True)),
     )
-    assert sorted(outcomes) == ["conflict", "created"]
+    # The scoped key is per subject, so two concurrent transactions raising the
+    # same health key both succeed instead of racing for one global row.
+    assert outcomes == ["created", "created"]
+    assert await db_session.scalar(
+        select(func.count()).select_from(SystemAlert)
+    ) == 2

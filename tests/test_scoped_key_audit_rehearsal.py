@@ -361,15 +361,15 @@ async def test_real_postgres_stage5a_scoped_key_audit_proves_the_cutover(
         await asyncio.to_thread(command.upgrade, alembic_config, "head")
         subject_id = (await _bootstrap_roots(engine)).subject_id
 
-        # Revision 0047 installs each scoped key beside the legacy global key
-        # it will eventually replace; the audit changes neither.
+        # By head the scoped keys are installed and the legacy global keys they
+        # replaced are gone; the audit changes neither.
         installed = await _index_names(engine)
         replacements = {
             index.name for spec in SCOPED_KEYS for index in spec.replacements
         }
         legacy = {spec.legacy_name for spec in SCOPED_KEYS}
         assert replacements <= installed
-        assert legacy <= installed
+        assert not (legacy & installed)
 
         # Before Stage 4 the audit refuses to look at the lake at all.
         blocked = await _run_cli(

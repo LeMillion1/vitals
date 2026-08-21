@@ -494,12 +494,25 @@ async def test_get_day_context_missing_day_is_none(db_session):
 
 
 @pytest.mark.integration
-async def test_day_context_unique_per_date_is_enforced_by_the_db(db_session):
-    """The UNIQUE(date) index, not just the service's read-then-write."""
+async def test_day_context_unique_per_subject_date_is_enforced_by_the_db(
+    db_session, legacy_owner_roots
+):
+    """The UNIQUE(subject_id, date) index, not just the read-then-write.
+
+    A day belongs to one person, so the key is scoped to the subject; two people
+    answering the same date is not a collision.
+    """
     from sqlalchemy.exc import IntegrityError
 
-    db_session.add(DayContext(date=D1, domain=Domain.SIGNALS.value, answers={}))
-    db_session.add(DayContext(date=D1, domain=Domain.SIGNALS.value, answers={}))
+    for _ in range(2):
+        db_session.add(
+            DayContext(
+                subject_id=legacy_owner_roots.subject_id,
+                date=D1,
+                domain=Domain.SIGNALS.value,
+                answers={},
+            )
+        )
     with pytest.raises(IntegrityError):
         await db_session.flush()
     await db_session.rollback()
