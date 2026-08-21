@@ -502,6 +502,7 @@ async def test_brief_prefers_his_answer_to_the_template(
     assert not [p for p in payloads if ":load:" in p]
 
 
+@pytest.mark.usefixtures("owned_by_legacy_subject")
 async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
     db_session, session_factory, monkeypatch
 ):

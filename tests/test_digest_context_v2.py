@@ -34,7 +34,7 @@ from vitals.services import (
     modules_service,
 )
 
-pytestmark = pytest.mark.usefixtures("all_modules_on")
+pytestmark = pytest.mark.usefixtures("all_modules_on", "owned_by_legacy_subject")
 
 DAY = date(2026, 8, 4)
 
@@ -65,6 +65,7 @@ async def test_report_window_separates_closed_day_and_brief(monkeypatch):
 
 async def test_platform_scheduler_diagnostics_never_reach_report_context(
     db_session,
+    legacy_owner_roots,
 ):
     sentinel = "secret-path:/srv/private/trace.sql"
     stamp = datetime.combine(DAY, time(8, 0))
@@ -79,6 +80,7 @@ async def test_platform_scheduler_diagnostics_never_reach_report_context(
                 created_at=stamp,
             ),
             SystemAlert(
+                subject_id=legacy_owner_roots.subject_id,
                 domain=Domain.SYSTEM.value,
                 severity="info",
                 message="subject-visible",
@@ -87,6 +89,7 @@ async def test_platform_scheduler_diagnostics_never_reach_report_context(
                 created_at=stamp,
             ),
             SystemAlert(
+                subject_id=legacy_owner_roots.subject_id,
                 domain=Domain.SYSTEM.value,
                 severity="warn",
                 message="subject-job-visible",
@@ -95,6 +98,7 @@ async def test_platform_scheduler_diagnostics_never_reach_report_context(
                 created_at=stamp,
             ),
             SystemAlert(
+                subject_id=legacy_owner_roots.subject_id,
                 domain=Domain.SYSTEM.value,
                 severity="warn",
                 message="provider-job-visible",
@@ -108,6 +112,7 @@ async def test_platform_scheduler_diagnostics_never_reach_report_context(
 
     ctx = await digest_service.assemble_context(
         db_session,
+        subject_id=legacy_owner_roots.subject_id,
         on_date=DAY,
         period_days=1,
         mode=digest_service.REPORT_MODE_BRIEF,
@@ -120,7 +125,7 @@ async def test_platform_scheduler_diagnostics_never_reach_report_context(
     assert sentinel not in messages
 
 
-async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session):
+async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session, legacy_owner_roots):
     db_session.add(
         GarminDaily(
             date=DAY,
@@ -196,7 +201,8 @@ async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session):
     await db_session.commit()
 
     ctx = await digest_service.assemble_context(
-        db_session, on_date=DAY, period_days=7
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7
     )
     report_day = ctx["days"][-1]
 
@@ -223,6 +229,7 @@ async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session):
 
 async def test_historical_context_excludes_future_rows_from_every_fixed_block(
     db_session,
+    legacy_owner_roots,
 ):
     current_scan = BodyScan(
         date=DAY,
@@ -312,7 +319,9 @@ async def test_historical_context_excludes_future_rows_from_every_fixed_block(
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
     assert ctx["weight"]["latest_date"] == DAY.isoformat()
     assert ctx["body_comp"]["date"] == DAY.isoformat()
@@ -324,7 +333,7 @@ async def test_historical_context_excludes_future_rows_from_every_fixed_block(
     assert ctx["glp1"]["injections"] is None
 
 
-async def test_disabled_module_is_absent_and_explicit_in_coverage(db_session):
+async def test_disabled_module_is_absent_and_explicit_in_coverage(db_session, legacy_owner_roots):
     stamp = datetime.combine(DAY, time.min)
     db_session.add_all(
         [
@@ -376,7 +385,9 @@ async def test_disabled_module_is_absent_and_explicit_in_coverage(db_session):
     await modules_service.set_module_enabled(db_session, key="hrt", enabled=False)
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
     assert ctx["hrt"] is None
     assert ctx["coverage"]["hrt"] == {
@@ -406,7 +417,7 @@ async def test_disabled_module_is_absent_and_explicit_in_coverage(db_session):
     assert all("hrt_side_effects" not in row for row in ctx["days"])
 
 
-async def test_lab_history_is_bounded_per_marker_and_reports_truncation(db_session):
+async def test_lab_history_is_bounded_per_marker_and_reports_truncation(db_session, legacy_owner_roots):
     db_session.add_all(
         [
             LabResult(
@@ -423,16 +434,19 @@ async def test_lab_history_is_bounded_per_marker_and_reports_truncation(db_sessi
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
     assert len(ctx["labs"]["trends"][0]["points"]) == 3
     assert ctx["coverage"]["labs"]["truncated"] is True
     assert ctx["coverage"]["labs"]["history_limit_per_marker"] == 3
 
 
-async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session):
+async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_owner_roots):
     db_session.add(
         HrtCompound(
+            subject_id=legacy_owner_roots.subject_id,
             domain=Domain.HRT.value,
             source=Source.MANUAL.value,
             key="test_enanthate",
@@ -520,7 +534,9 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session):
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
     assert ctx["glp1"]["active_phase"]["dose_mg"] == 7.5
     assert {row["period"] for row in ctx["glp1"]["injections"]} == {
@@ -538,7 +554,7 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session):
     assert ctx["coverage"]["hrt"]["cycle_rows"] == 1
 
 
-async def test_supporting_domains_are_complete_but_compact(db_session):
+async def test_supporting_domains_are_complete_but_compact(db_session, legacy_owner_roots):
     old_scan = BodyScan(
         date=DAY - timedelta(days=20),
         domain=Domain.BODY_COMPOSITION.value,
@@ -675,7 +691,8 @@ async def test_supporting_domains_are_complete_but_compact(db_session):
     await db_session.commit()
 
     ctx = await digest_service.assemble_context(
-        db_session, on_date=DAY, period_days=14
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=14
     )
 
     assert ctx["weight"]["measurement_delta"]["waist_cm"] == -4
@@ -716,7 +733,7 @@ async def test_supporting_domains_are_complete_but_compact(db_session):
         assert forbidden not in payload
 
 
-async def test_day_context_aliases_and_truncation_are_explicit(db_session):
+async def test_day_context_aliases_and_truncation_are_explicit(db_session, legacy_owner_roots):
     db_session.add(
         DayContext(
             date=DAY,
@@ -743,7 +760,8 @@ async def test_day_context_aliases_and_truncation_are_explicit(db_session):
     await db_session.commit()
 
     ctx = await digest_service.assemble_context(
-        db_session, on_date=DAY, period_days=1
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=1
     )
 
     day_context = ctx["day_context"][0]

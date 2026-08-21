@@ -134,7 +134,11 @@ async def build(
     today = today_local()
     cfg = load_config()
 
-    ctx = await brief.build_context(session)
+    ctx = await brief.build_context(
+        session,
+        subject_id=subject_id,
+        include_legacy_unowned=include_legacy_unowned,
+    )
     weight = ctx.get("weight") or {}
     garmin = ctx.get("garmin") or {}
     baseline = garmin.get("baseline") or {}

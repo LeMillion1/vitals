@@ -2945,10 +2945,13 @@ async def get_full_snapshot(
     session_factory = get_session_factory()
     parsed_date = _parse_date(on_date, field="on_date")
     async with session_factory() as session:
-        await _mcp_v1_composition_scope(session)
+        scope = await _mcp_v1_composition_scope(session)
         try:
             return await digest_service.assemble_context(
-                session, on_date=parsed_date, period_days=period_days
+                session,
+                subject_id=scope.subject_id,
+                on_date=parsed_date,
+                period_days=period_days,
             )
         except ValueError as exc:
             return {"error": str(exc)}

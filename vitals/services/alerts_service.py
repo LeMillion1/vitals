@@ -243,16 +243,26 @@ async def resolve_all(session: AsyncSession, *, domain: Optional[str] = None) ->
 
 
 async def list_active(
-    session: AsyncSession, *, domain: Optional[str] = None
+    session: AsyncSession,
+    *,
+    domain: Optional[str] = None,
+    subject_id: uuid.UUID | None = None,
 ) -> Sequence[SystemAlert]:
     """Active (unresolved) alerts, newest first, optionally filtered by domain.
 
-    The ``uq_active_alert_per_key_entity`` partial-unique index already guarantees
-    one active row per ``(alert_key, entity_ref)``, so there are no true duplicates
-    to filter — every active row is a distinct alert and is returned as-is. (The
-    old normalized-message dedup hid legitimately different alerts that shared
-    templated wording and made the result nondeterministic.)"""
+    The scoped partial-unique keys guarantee one active row per key inside each
+    root, so there are no true duplicates to filter — every active row is a
+    distinct alert and is returned as-is. (The old normalized-message dedup hid
+    legitimately different alerts that shared templated wording and made the
+    result nondeterministic.)
+
+    ``subject_id`` restricts the result to one person's alerts, which is what a
+    composed report needs; the platform's own alerts are not that person's and
+    are excluded with it.
+    """
     stmt = select(SystemAlert).where(SystemAlert.resolved_at.is_(None))
+    if subject_id is not None:
+        stmt = stmt.where(SystemAlert.subject_id == subject_id)
     if domain is not None:
         stmt = stmt.where(SystemAlert.domain == domain)
     stmt = stmt.order_by(SystemAlert.created_at.desc(), SystemAlert.id.desc())

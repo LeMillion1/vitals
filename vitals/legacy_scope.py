@@ -29,6 +29,17 @@ from types import MappingProxyType
 # or an ``include_legacy_unowned`` escape hatch.
 LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
     {
+        'vitals.services.garmin_service': frozenset(
+            {
+                'latest_daily',
+                'list_daily_between',
+            }
+        ),
+        'vitals.services.alerts_service': frozenset(
+            {
+                'list_active',
+            }
+        ),
         'vitals.services.ai_gateway_service': frozenset(
             {
                 '_ensure_nonoverlapping_period',
@@ -94,6 +105,7 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'delete_injection',
                 'delete_side_effect',
                 'dose_phase_overlays',
+                'evaluate_plateau',
                 'get_injection_for_update',
                 'last_injection',
                 'list_dose_phases',

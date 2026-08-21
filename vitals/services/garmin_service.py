@@ -2791,16 +2791,23 @@ async def list_daily(
 
 
 async def list_daily_between(
-    session: AsyncSession, start: date_type, end: date_type
+    session: AsyncSession,
+    start: date_type,
+    end: date_type,
+    *,
+    subject_id: uuid.UUID | None = None,
 ) -> Sequence[GarminDaily]:
     """Every day in a date range, chronological. ``list_daily`` counts backwards
     from the newest row, which answers "the last N days I have" — not "the days
     between these two dates", the question every period report actually asks."""
-    result = await session.execute(
+    stmt = (
         select(GarminDaily)
         .where(GarminDaily.date >= start, GarminDaily.date <= end)
         .order_by(GarminDaily.date)
     )
+    if subject_id is not None:
+        stmt = stmt.where(GarminDaily.subject_id == subject_id)
+    result = await session.execute(stmt)
     return result.scalars().all()
 
 
@@ -2888,7 +2895,10 @@ _REPORTED_DAILY_COLS = (
 
 
 async def latest_daily(
-    session: AsyncSession, *, before_or_on: Optional[date_type] = None
+    session: AsyncSession,
+    *,
+    before_or_on: Optional[date_type] = None,
+    subject_id: uuid.UUID | None = None,
 ) -> Optional[GarminDaily]:
     """The newest day that actually carries numbers, not merely the newest row.
 
@@ -2899,6 +2909,8 @@ async def latest_daily(
     history list; it just stops being "the latest day".
     """
     stmt = select(GarminDaily).where(or_(*(col.is_not(None) for col in _REPORTED_DAILY_COLS)))
+    if subject_id is not None:
+        stmt = stmt.where(GarminDaily.subject_id == subject_id)
     if before_or_on is not None:
         stmt = stmt.where(GarminDaily.date <= before_or_on)
     stmt = stmt.order_by(GarminDaily.date.desc()).limit(1)

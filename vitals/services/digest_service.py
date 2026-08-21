@@ -781,6 +781,7 @@ HOW TO WRITE:
 async def assemble_context(
     session: AsyncSession,
     *,
+    subject_id: uuid.UUID,
     on_date: Optional[date_type] = None,
     period_days: int = 7,
     mode: str = REPORT_MODE_CLOSED,
@@ -789,9 +790,18 @@ async def assemble_context(
 ) -> dict:
     """Build the versioned, date-bounded context shared by report consumers.
 
+    Every read below is scoped to ``subject_id``.  This context is what the
+    weekly digest, the daily brief, the doctor's report, and the MCP composition
+    tool all reason over, so a single unscoped query here would put one person's
+    numbers into another person's document — which is why the subject is
+    mandatory rather than inferred.
+
     Optional domains are gated before their queries run. Empty, disabled, and
     truncated sources remain distinguishable through the ``coverage`` block.
     """
+
+    if not isinstance(subject_id, uuid.UUID):
+        raise TypeError("assemble_context requires the subject it composes for")
     window = report_window(
         on_date=on_date,
         period_days=period_days,
@@ -859,12 +869,16 @@ async def assemble_context(
     # Protocol phases have their own bounded block below; the chart helper is
     # used only for weight trend math here, so do not perform its overlay query.
     series = await weight_service.chart_series(
-        session, end=period_end, include_glp1=False
+        session, end=period_end, include_glp1=False, subject_id=subject_id
     )
-    all_weights = list(await weight_service.list_active_weights(session, end=period_end))
+    all_weights = list(
+        await weight_service.list_active_weights(
+            session, end=period_end, subject_id=subject_id
+        )
+    )
     weights = [w for w in all_weights if prev_start <= w.date <= period_end]
 
-    markers = await weight_service.list_noise_markers(session)
+    markers = await weight_service.list_noise_markers(session, subject_id=subject_id)
     matching_markers = []
     for m in markers:
         if m.start_date <= period_end and (
@@ -915,7 +929,10 @@ async def assemble_context(
         (
             await session.execute(
                 select(BodyMeasurement)
-                .where(BodyMeasurement.date <= period_end)
+                .where(
+                    BodyMeasurement.subject_id == subject_id,
+                    BodyMeasurement.date <= period_end,
+                )
                 .order_by(BodyMeasurement.date.desc(), BodyMeasurement.id.desc())
                 .limit(_BODY_MEASUREMENT_LIMIT + 1)
             )
@@ -981,14 +998,22 @@ async def assemble_context(
         glp1_injections, injections_truncated = await _bounded_scalars(
             session,
             select(Injection)
-            .where(Injection.date >= prev_start, Injection.date <= period_end)
+            .where(
+                Injection.subject_id == subject_id,
+                Injection.date >= prev_start,
+                Injection.date <= period_end,
+            )
             .order_by(Injection.date, Injection.id),
             _TREATMENT_EVENT_LIMIT,
         )
         glp1_effects, effects_truncated = await _bounded_scalars(
             session,
             select(SideEffect)
-            .where(SideEffect.date >= prev_start, SideEffect.date <= period_end)
+            .where(
+                SideEffect.subject_id == subject_id,
+                SideEffect.date >= prev_start,
+                SideEffect.date <= period_end,
+            )
             .order_by(SideEffect.date, SideEffect.id),
             _TREATMENT_EVENT_LIMIT,
         )
@@ -996,6 +1021,7 @@ async def assemble_context(
             session,
             select(DosePhase)
             .where(
+                DosePhase.subject_id == subject_id,
                 DosePhase.start_date <= period_end,
                 or_(DosePhase.end_date.is_(None), DosePhase.end_date >= prev_start),
             )
@@ -1005,13 +1031,15 @@ async def assemble_context(
         glp1_truncated = any(
             (injections_truncated, effects_truncated, phases_truncated)
         )
-        phase = await glp1_service.active_dose_phase(session, on_date=period_end)
+        phase = await glp1_service.active_dose_phase(
+            session, on_date=period_end, subject_id=subject_id
+        )
         ctx["glp1"] = {
             # Legacy headline fields.
             "drug": phase.drug if phase else None,
             "dose_mg": phase.dose_mg if phase else None,
             "plateau": await glp1_service.evaluate_plateau(
-                session, on_date=period_end
+                session, on_date=period_end, subject_id=subject_id
             ),
             "active_phase": (
                 {
@@ -1096,7 +1124,7 @@ async def assemble_context(
         scans, scans_truncated = await _bounded_scalars(
             session,
             select(BodyScan)
-            .where(BodyScan.date <= period_end)
+            .where(BodyScan.subject_id == subject_id, BodyScan.date <= period_end)
             .options(selectinload(BodyScan.metrics))
             .order_by(BodyScan.date.desc(), BodyScan.id.desc()),
             _BODY_SCAN_LIMIT,
@@ -1196,14 +1224,19 @@ async def assemble_context(
     from vitals.services import garmin_service
     from vitals.models.garmin import GarminActivity, GarminDaily
 
-    g = await garmin_service.latest_daily(session, before_or_on=period_end)
+    g = await garmin_service.latest_daily(
+        session, before_or_on=period_end, subject_id=subject_id
+    )
     garmin_rows = list(
-        await garmin_service.list_daily_between(session, prev_start, period_end)
+        await garmin_service.list_daily_between(
+            session, prev_start, period_end, subject_id=subject_id
+        )
     )
     garmin_activities, garmin_activities_truncated = await _bounded_scalars(
         session,
         select(GarminActivity)
         .where(
+            GarminActivity.subject_id == subject_id,
             GarminActivity.date >= prev_start,
             GarminActivity.date <= period_end,
         )
@@ -1216,6 +1249,7 @@ async def assemble_context(
                 select(func.count())
                 .select_from(GarminDaily)
                 .where(
+                    GarminDaily.subject_id == subject_id,
                     GarminDaily.date <= period_end,
                     or_(
                         GarminDaily.sleep_score.is_not(None),
@@ -1302,7 +1336,11 @@ async def assemble_context(
         hevy_rows, hevy_truncated = await _bounded_scalars(
             session,
             select(HevyWorkout)
-            .where(HevyWorkout.date >= prev_start, HevyWorkout.date <= period_end)
+            .where(
+                HevyWorkout.subject_id == subject_id,
+                HevyWorkout.date >= prev_start,
+                HevyWorkout.date <= period_end,
+            )
             .options(
                 selectinload(HevyWorkout.exercises).selectinload(HevyExercise.sets)
             )
@@ -1378,6 +1416,7 @@ async def assemble_context(
             await session.execute(
                 select(LabResult)
                 .where(
+                    LabResult.subject_id == subject_id,
                     LabResult.date >= prev_start,
                     LabResult.date <= period_end,
                 )
@@ -1395,12 +1434,14 @@ async def assemble_context(
             )
             .label("history_rank"),
         )
-        .where(LabResult.date <= period_end)
+        .where(LabResult.subject_id == subject_id, LabResult.date <= period_end)
         .subquery()
     )
     recent_lab_rows = list(
         (
             await session.execute(
+                # Scoped through the ranked subquery above, which is already
+                # restricted to this subject.
                 select(LabResult)
                 .join(ranked_lab_ids, LabResult.id == ranked_lab_ids.c.id)
                 .where(ranked_lab_ids.c.history_rank <= _LAB_HISTORY_PER_MARKER)
@@ -1421,7 +1462,10 @@ async def assemble_context(
             await session.execute(
                 select(func.count())
                 .select_from(LabResult)
-                .where(LabResult.date <= period_end)
+                .where(
+                    LabResult.subject_id == subject_id,
+                    LabResult.date <= period_end,
+                )
             )
         ).scalar()
         or 0
@@ -1433,7 +1477,11 @@ async def assemble_context(
     marker_catalog = {
         row.name: row
         for row in (
-            await session.execute(select(LabMarker).order_by(LabMarker.name))
+            await session.execute(
+            select(LabMarker)
+            .where(LabMarker.subject_id == subject_id)
+            .order_by(LabMarker.name)
+        )
         ).scalars().all()
     }
     latest_labs = [rows[0] for rows in marker_rows.values()]
@@ -1543,7 +1591,7 @@ async def assemble_context(
     nutrition_enabled = module_on("nutrition")
     all_meals = list(
         await nutrition_service.list_meals(
-            session, start=prev_start, end=period_end
+            session, start=prev_start, end=period_end, subject_id=subject_id
         )
     ) if nutrition_enabled else []
     all_meals_by_date: dict[date_type, list[Any]] = {}
@@ -1621,7 +1669,9 @@ async def assemble_context(
 
     supplements_enabled = module_on("supplements")
     all_supps = list(
-        await supplements_service.list_supplements(session, active_only=False)
+        await supplements_service.list_supplements(
+            session, subject_id=subject_id, active_only=False
+        )
     ) if supplements_enabled else []
     active_supps = [row for row in all_supps if row.active]
     ctx["supplements"] = (
@@ -1663,6 +1713,7 @@ async def assemble_context(
             session,
             select(SkincareLog)
             .where(
+                SkincareLog.subject_id == subject_id,
                 SkincareLog.date >= prev_start,
                 SkincareLog.date <= period_end,
             )
@@ -1673,6 +1724,7 @@ async def assemble_context(
             session,
             select(SkincareObservation)
             .where(
+                SkincareObservation.subject_id == subject_id,
                 SkincareObservation.date >= prev_start,
                 SkincareObservation.date <= period_end,
             )
@@ -1685,7 +1737,9 @@ async def assemble_context(
         skin_logs.reverse()
         skin_obs.reverse()
         all_products = list(
-            await skincare_service.list_products(session, active_only=False)
+            await skincare_service.list_products(
+                session, subject_id=subject_id, active_only=False
+            )
         )
         active_products = [row for row in all_products if row.active]
     else:
@@ -1774,12 +1828,13 @@ async def assemble_context(
             session,
             select(GeneticVariant)
             .where(
+                GeneticVariant.subject_id == subject_id,
                 or_(
                     GeneticVariant.marker.is_not(None),
                     GeneticVariant.impact.is_not(None),
                     GeneticVariant.interpretation.is_not(None),
                     GeneticVariant.action_notes.is_not(None),
-                )
+                ),
             )
             .order_by(GeneticVariant.gene, GeneticVariant.rsid),
             _GENETICS_LIMIT,
@@ -1810,7 +1865,7 @@ async def assemble_context(
 
     active_alerts = [
         row
-        for row in await alerts_service.list_active(session)
+        for row in await alerts_service.list_active(session, subject_id=subject_id)
         if row.created_at.date() <= period_end
         and domain_visible(row.domain)
         and not alerts_service.is_platform_alert_key(row.alert_key)
@@ -1852,11 +1907,17 @@ async def assemble_context(
     planned_truncated = False
     compound_names: dict[str, dict[str, Any]] = {}
     if hrt_enabled:
-        cycle = await hrt_cycle_service.active_cycle(session, on_date=period_end)
+        cycle = await hrt_cycle_service.active_cycle(
+            session, on_date=period_end, subject_id=subject_id
+        )
         hrt_all_doses, doses_truncated = await _bounded_scalars(
             session,
             select(HrtDose)
-            .where(HrtDose.date >= prev_start, HrtDose.date <= period_end)
+            .where(
+                HrtDose.subject_id == subject_id,
+                HrtDose.date >= prev_start,
+                HrtDose.date <= period_end,
+            )
             .order_by(HrtDose.date, HrtDose.id),
             _TREATMENT_EVENT_LIMIT,
         )
@@ -1864,13 +1925,16 @@ async def assemble_context(
             session,
             select(HrtSideEffect)
             .where(
+                HrtSideEffect.subject_id == subject_id,
                 HrtSideEffect.date >= prev_start,
                 HrtSideEffect.date <= period_end,
             )
             .order_by(HrtSideEffect.date, HrtSideEffect.id),
             _TREATMENT_EVENT_LIMIT,
         )
-        compounds = await hrt_service.list_compounds(session, active_only=False)
+        compounds = await hrt_service.list_compounds(
+            session, subject_id=subject_id, active_only=False
+        )
         compound_names = {
             row.key: {
                 "name": row.name,
@@ -1883,7 +1947,11 @@ async def assemble_context(
         }
         if cycle is not None:
             all_planned = await hrt_cycle_service.planned_administrations(
-                session, start=prev_start, end=period_end, cycle=cycle
+                session,
+                start=prev_start,
+                end=period_end,
+                cycle=cycle,
+                subject_id=subject_id,
             )
             planned_truncated = len(all_planned) > _TREATMENT_EVENT_LIMIT
             planned_hrt = all_planned[:_TREATMENT_EVENT_LIMIT]
@@ -2016,7 +2084,7 @@ async def assemble_context(
     timeline_entries: list[dict[str, Any]] = []
     if timeline_enabled:
         annotations = await timeline_service.list_annotations(
-            session, start=since, end=period_end
+            session, start=since, end=period_end, subject_id=subject_id
         )
         timeline_entries.extend(
             {
@@ -2134,6 +2202,7 @@ async def assemble_context(
             start=since,
             end=period_end,
             limit=signal_limit + 1,
+            subject_id=subject_id,
         )
         if signals_enabled
         else []
@@ -2157,7 +2226,9 @@ async def assemble_context(
     milestone_rows = list(
         (
             await session.execute(
-                select(Milestone).order_by(
+                select(Milestone)
+                .where(Milestone.subject_id == subject_id)
+                .order_by(
                     Milestone.deadline.is_(None), Milestone.deadline, Milestone.id
                 )
             )
@@ -2291,7 +2362,11 @@ async def assemble_context(
         (
             await session.execute(
                 select(DayContext)
-                .where(DayContext.date >= since, DayContext.date <= period_end)
+                .where(
+                    DayContext.subject_id == subject_id,
+                    DayContext.date >= since,
+                    DayContext.date <= period_end,
+                )
                 .order_by(DayContext.date)
             )
         ).scalars().all()
@@ -2331,6 +2406,7 @@ async def assemble_context(
                 await session.execute(
                     select(BodyMeasurement)
                     .where(
+                        BodyMeasurement.subject_id == subject_id,
                         BodyMeasurement.date >= period_start,
                         BodyMeasurement.date <= period_end,
                     )
@@ -3344,6 +3420,7 @@ async def prepare_digest(
         raise DigestOwnershipError("digest model is not configured")
     context = await assemble_context(
         session,
+        subject_id=owner._subject_id,
         on_date=frozen_date,
         period_days=period_days,
     )
@@ -3696,56 +3773,6 @@ async def existing_digest_for_prepared(
         )
         .execution_options(populate_existing=True)
     )
-
-
-async def generate_digest(
-    session: AsyncSession,
-    llm: Any,
-    *,
-    on_date: Optional[date_type] = None,
-    period_days: int = 7,
-    source: str = Source.MANUAL.value,
-) -> WeeklyDigest:
-    """Zero-subject compatibility wrapper for injected legacy/test callers.
-
-    Identity-bearing production boundaries must use prepare/render/persist so no
-    database transaction spans OpenRouter. This wrapper never commits.
-    """
-    await acquire_identity_governance_lock(session)
-    if await session.scalar(select(HealthSubject.id).limit(1)) is not None:
-        raise DigestOwnershipError(
-            "identity-bearing digest generation requires phased APIs"
-        )
-    if source not in _DIGEST_SOURCES:
-        raise DigestOwnershipError(f"unsupported digest source {source!r}")
-    from vitals.i18n import current_lang
-    lang = current_lang.get()
-
-    context = await assemble_context(session, on_date=on_date, period_days=period_days)
-    prompt = build_prompt(context, lang=lang)
-    system = DIGEST_SYSTEM_EN if lang == "en" else DIGEST_SYSTEM
-
-    content = await llm.complete_text(prompt, system=system, max_tokens=_DIGEST_MAX_TOKENS)
-    if not content:
-        # Seen in prod: the upstream occasionally returns a blank message with no
-        # error at all. One retry clears it in practice; if it's still empty,
-        # fail loudly instead of silently persisting nothing.
-        content = await llm.complete_text(prompt, system=system, max_tokens=_DIGEST_MAX_TOKENS)
-    if not content:
-        raise LLMEmptyResponse("LLM returned an empty digest narrative twice in a row")
-
-    row = WeeklyDigest(
-        date=on_date or today_local(),
-        domain=DOMAIN,
-        source=source,
-        kind=DigestKind.WEEKLY.value,
-        content=content,
-        context_json=context,
-        model=getattr(llm, "digest_model", None),
-    )
-    session.add(row)
-    await session.flush()
-    return row
 
 
 async def latest_digest(

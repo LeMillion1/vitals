@@ -45,6 +45,13 @@ async def _seed_weights(session) -> None:
     await session.flush()
 
 
+async def _prepared_owner(session):
+    return await share_service.prepare_legacy_owner(
+        session,
+        actor_username=get_web_config().auth_username,
+    )
+
+
 async def _create(session, **kwargs):
     params = dict(
         title="Endocrinologist",
@@ -52,16 +59,14 @@ async def _create(session, **kwargs):
         period_start=START,
         period_end=END,
         enabled=ALL_ON,
+        prepared_owner=await _prepared_owner(session),
     )
     params.update(kwargs)
     return await share_service.create_report(session, **params)
 
 
-async def _prepared_owner(session):
-    return await share_service.prepare_legacy_owner(
-        session,
-        actor_username=get_web_config().auth_username,
-    )
+# Every row these tests create belongs to the one person the report is about.
+pytestmark = pytest.mark.usefixtures("owned_by_legacy_subject")
 
 
 # ── Snapshot ──────────────────────────────────────────────────────────────────
@@ -72,6 +77,7 @@ async def test_period_cuts_exactly_at_its_edges(db_session):
     await _seed_weights(db_session)
     snap = await share_service.build_snapshot(
         db_session,
+        prepared_owner=await _prepared_owner(db_session),
         domains=[Domain.WEIGHT.value],
         period_start=START,
         period_end=END,
@@ -111,6 +117,7 @@ async def test_unticked_domain_is_absent(db_session):
 
     snap = await share_service.build_snapshot(
         db_session,
+        prepared_owner=await _prepared_owner(db_session),
         domains=[Domain.WEIGHT.value],
         period_start=START,
         period_end=END,
@@ -133,6 +140,7 @@ async def test_disabled_module_cannot_be_published(db_session):
     off = {**ALL_ON, "supplements": False}
     snap = await share_service.build_snapshot(
         db_session,
+        prepared_owner=await _prepared_owner(db_session),
         domains=[Domain.SUPPLEMENTS.value, Domain.WEIGHT.value],
         period_start=START,
         period_end=END,
@@ -158,6 +166,7 @@ async def test_progress_photos_never_reach_a_snapshot(db_session):
 
     snap = await share_service.build_snapshot(
         db_session,
+        prepared_owner=await _prepared_owner(db_session),
         domains=share_service.PRESETS["full"]["domains"],
         period_start=START,
         period_end=END,
@@ -190,7 +199,8 @@ async def test_labs_carry_range_and_history_and_honour_flagged_only(db_session):
     await db_session.flush()
 
     full = await share_service.build_snapshot(
-        db_session, domains=[Domain.LABS.value],
+        db_session,
+        prepared_owner=await _prepared_owner(db_session), domains=[Domain.LABS.value],
         period_start=START, period_end=END, enabled=ALL_ON,
     )
     markers = {m["marker"]: m for m in full["blocks"]["labs"]["markers"]}
@@ -199,7 +209,8 @@ async def test_labs_carry_range_and_history_and_honour_flagged_only(db_session):
     assert [p["value"] for p in markers["Ферритин"]["history"]] == [31.0]
 
     flagged = await share_service.build_snapshot(
-        db_session, domains=[Domain.LABS.value],
+        db_session,
+        prepared_owner=await _prepared_owner(db_session), domains=[Domain.LABS.value],
         period_start=START, period_end=END, labs_flagged_only=True, enabled=ALL_ON,
     )
     assert [m["marker"] for m in flagged["blocks"]["labs"]["markers"]] == ["Ферритин"]
@@ -237,7 +248,8 @@ async def test_labs_of_the_window_survive_a_bigger_history_after_it(db_session):
     await db_session.flush()
 
     snap = await share_service.build_snapshot(
-        db_session, domains=[Domain.LABS.value],
+        db_session,
+        prepared_owner=await _prepared_owner(db_session), domains=[Domain.LABS.value],
         period_start=START, period_end=END, enabled=ALL_ON,
     )
 
@@ -252,7 +264,8 @@ async def test_labs_of_the_window_survive_a_bigger_history_after_it(db_session):
 @pytest.mark.asyncio
 async def test_empty_domain_draws_no_section(db_session):
     snap = await share_service.build_snapshot(
-        db_session, domains=[Domain.WEIGHT.value, Domain.LABS.value],
+        db_session,
+        prepared_owner=await _prepared_owner(db_session), domains=[Domain.WEIGHT.value, Domain.LABS.value],
         period_start=START, period_end=END, enabled=ALL_ON,
     )
     assert snap["blocks"] == {}
@@ -267,7 +280,8 @@ async def test_contents_line_names_only_the_sections_that_exist(db_session):
     """
     await _seed_weights(db_session)
     snap = await share_service.build_snapshot(
-        db_session, domains=[Domain.WEIGHT.value, Domain.LABS.value],
+        db_session,
+        prepared_owner=await _prepared_owner(db_session), domains=[Domain.WEIGHT.value, Domain.LABS.value],
         period_start=START, period_end=END, enabled=ALL_ON,
     )
     assert Domain.LABS.value not in snap["blocks"]
@@ -301,7 +315,8 @@ async def test_body_metrics_carry_the_catalogue_unit_not_the_sheets(db_session):
     await db_session.flush()
 
     snap = await share_service.build_snapshot(
-        db_session, domains=[Domain.BODY_COMPOSITION.value],
+        db_session,
+        prepared_owner=await _prepared_owner(db_session), domains=[Domain.BODY_COMPOSITION.value],
         period_start=START, period_end=END, enabled=ALL_ON,
     )
     units = {
@@ -417,9 +432,15 @@ async def test_delete_removes_the_row(db_session):
     row, _ = await _create(db_session)
     await db_session.commit()
 
-    assert await share_service.delete_report(db_session, row.id) is True
+    owner = await _prepared_owner(db_session)
+    assert (
+        await share_service.delete_report(db_session, row.id, prepared_owner=owner)
+        is True
+    )
     await db_session.commit()
-    assert await share_service.list_reports(db_session) == []
+    assert await share_service.list_reports(
+        db_session, prepared_owner=await _prepared_owner(db_session)
+    ) == []
 
 
 @pytest.mark.asyncio
@@ -453,7 +474,8 @@ async def test_symptoms_carry_the_patients_words_not_the_apps(db_session):
     await db_session.flush()
 
     snap = await share_service.build_snapshot(
-        db_session, domains=[Domain.SIGNALS.value],
+        db_session,
+        prepared_owner=await _prepared_owner(db_session), domains=[Domain.SIGNALS.value],
         period_start=START, period_end=END, enabled=ALL_ON,
     )
     symptoms = snap["blocks"][Domain.SIGNALS.value]["symptoms"]

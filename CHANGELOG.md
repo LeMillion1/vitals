@@ -10,6 +10,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Threaded a mandatory subject through the composition layer. `assemble_context`
+  is what the weekly digest, the daily brief, the doctor's report and the MCP
+  composition tool all reason over, and it read the whole installation: a single
+  unscoped query there would put one person's numbers into another person's
+  document. It now takes the subject it composes for and every one of its
+  thirty-odd domain reads is scoped by it, as are `build_snapshot`,
+  `today_service.build`, and the brief's `build_context`. A subject also finally
+  sees their own custom HRT compounds instead of only the curated catalog, which
+  the scoped read made visible as a gap. Alerts are read per subject, so the
+  platform's own diagnostics no longer reach anyone's report.
+- Removed the two zero-subject generators. `digest_service.generate_digest` and
+  the brief's compatibility wrapper both refused to run once a subject existed,
+  which in a commercial installation is always, so neither had a production
+  caller; only tests kept them alive. What those tests actually asserted —
+  whether a day is empty, what the header prints, that the protocol never
+  reaches the brief — is asserted against the context and the header directly,
+  where it belongs, and the AI path they incidentally exercised is already
+  covered by the gateway suites.
+
 - Added the ratchet that makes PR-04 measurable. Stage 2 gave every core service
   an optional scope — pass `subject_id` (or an `identity`/`context`, and
   sometimes `include_legacy_unowned`) and the call is scoped; omit it and it

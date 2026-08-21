@@ -7,21 +7,43 @@ without rendering a card for a module that is switched off.
 """
 from __future__ import annotations
 
+import pytest
+
 from datetime import timedelta
 
 from vitals.enums import DigestKind, Domain, Severity, Source
 from vitals.models.milestones import DOMAIN as INSIGHTS_DOMAIN, WeeklyDigest
 from vitals.models.system_alert import SystemAlert
-from vitals.services import milestones_service, nutrition_service, today_service, weight_service
+from vitals.ownership import WriteIdentity
+from vitals.services import (
+    digest_service,
+    milestones_service,
+    nutrition_service,
+    today_service,
+    weight_service,
+)
 from vitals.utils.timeutils import today_local
 
 ALL_OFF: dict[str, bool] = {}
 ALL_ON = {"nutrition": True, "timeline": True, "signals": True, "glp1": True, "hevy": True}
 
+# The first screen belongs to the person looking at it.
+pytestmark = pytest.mark.usefixtures("owned_by_legacy_subject")
 
-async def test_build_survives_an_empty_database(db_session):
+
+async def test_build_survives_an_empty_database(db_session, legacy_owner_roots):
     """Nothing logged, no integrations, no digest — still a coherent screen."""
-    ctx = await today_service.build(db_session, enabled_modules=ALL_ON)
+    ctx = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules=ALL_ON)
 
     assert ctx["date"] == today_local()
     assert ctx["narrative"]  # never blank: the fallback sentence stands in
@@ -52,7 +74,29 @@ BRIEF_CONTEXT = {
 BRIEF_PROSE = "HRV и пульс покоя держатся на твоём базовом уровне — крути день как обычно."
 
 
-def _stored_brief(prose: str = BRIEF_PROSE, *, model: str | None = "test-model"):
+async def _openrouter_connection(session, roots):
+    from sqlalchemy import select
+
+    from vitals.enums import IntegrationConnectionType, IntegrationProvider
+    from vitals.models.tenancy import IntegrationConnection
+
+    return await session.scalar(
+        select(IntegrationConnection).where(
+            IntegrationConnection.subject_id == roots.subject_id,
+            IntegrationConnection.provider == IntegrationProvider.OPENROUTER.value,
+            IntegrationConnection.connection_type
+            == IntegrationConnectionType.AI_GATEWAY.value,
+        )
+    )
+
+
+def _stored_brief(
+    prose: str = BRIEF_PROSE,
+    *,
+    model: str | None = "test-model",
+    actor_user_id=None,
+    integration_connection_id=None,
+):
     """A brief row shaped the way the morning job writes one."""
     from vitals.services.proactive import compose, day_plan
 
@@ -64,6 +108,8 @@ def _stored_brief(prose: str = BRIEF_PROSE, *, model: str | None = "test-model")
         blocks.append(compose.Block(compose.KIND_NARRATIVE, prose, 90))
     return WeeklyDigest(
         date=today_local(),
+        actor_user_id=actor_user_id,
+        integration_connection_id=integration_connection_id,
         domain=INSIGHTS_DOMAIN,
         source=Source.MANUAL.value,
         kind=DigestKind.DAILY_BRIEF.value,
@@ -73,13 +119,30 @@ def _stored_brief(prose: str = BRIEF_PROSE, *, model: str | None = "test-model")
     )
 
 
-async def test_hero_takes_only_the_prose_out_of_todays_brief(db_session):
+async def test_hero_takes_only_the_prose_out_of_todays_brief(db_session, legacy_owner_roots):
     """The stored brief is the whole Telegram message, header numbers included —
     printed whole it made the hero repeat every key figure back in 38px."""
-    db_session.add(_stored_brief())
+    # A stored model name needs the provider connection it came through.
+    connection = await _openrouter_connection(db_session, legacy_owner_roots)
+    db_session.add(
+        _stored_brief(
+            actor_user_id=legacy_owner_roots.user_id,
+            integration_connection_id=connection.id,
+        )
+    )
     await db_session.commit()
 
-    ctx = await today_service.build(db_session, enabled_modules=ALL_OFF)
+    ctx = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules=ALL_OFF)
 
     assert ctx["narrative"] == BRIEF_PROSE
     assert ctx["narrative_source"] == "digest"
@@ -89,23 +152,34 @@ async def test_hero_takes_only_the_prose_out_of_todays_brief(db_session):
     assert [row["dot"] for row in ctx["feed"]] == ["amber"]
 
 
-async def test_a_header_only_brief_falls_back_to_the_computed_sentence(db_session):
+async def test_a_header_only_brief_falls_back_to_the_computed_sentence(db_session, legacy_owner_roots):
     """The model stayed silent that morning, so the row is numbers only — promoting
     a number line into the headline is worse than composing one."""
-    db_session.add(_stored_brief(prose="", model=None))
+    db_session.add(_stored_brief(prose="", model=None, actor_user_id=legacy_owner_roots.user_id))
     await db_session.commit()
 
-    ctx = await today_service.build(db_session, enabled_modules=ALL_OFF)
+    ctx = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules=ALL_OFF)
 
     assert ctx["narrative_source"] == "computed"
     assert ctx["feed"] == []
 
 
-async def test_yesterdays_brief_does_not_stand_in_for_today(db_session):
+async def test_yesterdays_brief_does_not_stand_in_for_today(db_session, legacy_owner_roots):
     """A narrative is about a day. Yesterday's read as today's is worse than none."""
     db_session.add(
         WeeklyDigest(
             date=today_local() - timedelta(days=1),
+            actor_user_id=legacy_owner_roots.user_id,
             domain=INSIGHTS_DOMAIN,
             source=Source.MANUAL.value,
             kind=DigestKind.DAILY_BRIEF.value,
@@ -114,20 +188,40 @@ async def test_yesterdays_brief_does_not_stand_in_for_today(db_session):
     )
     await db_session.commit()
 
-    ctx = await today_service.build(db_session, enabled_modules=ALL_OFF)
+    ctx = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules=ALL_OFF)
 
     assert ctx["narrative_source"] == "computed"
     assert "Вчерашний текст." != ctx["narrative"]
 
 
-async def test_weight_drives_the_figure_and_the_fallback_sentence(db_session):
+async def test_weight_drives_the_figure_and_the_fallback_sentence(db_session, legacy_owner_roots):
     for offset, kg in ((14, 95.0), (7, 93.5), (0, 92.0)):
         await weight_service.log_weight(
             db_session, on_date=today_local() - timedelta(days=offset), weight_kg=kg
         )
     await db_session.commit()
 
-    ctx = await today_service.build(db_session, enabled_modules=ALL_OFF)
+    ctx = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules=ALL_OFF)
 
     weight_figure = ctx["figures"][0]
     assert weight_figure["key"] == "weight"
@@ -139,23 +233,43 @@ async def test_weight_drives_the_figure_and_the_fallback_sentence(db_session):
     assert ctx["changes"][0]["href"] == "/weight"
 
 
-async def test_a_disabled_module_contributes_nothing(db_session):
+async def test_a_disabled_module_contributes_nothing(db_session, legacy_owner_roots):
     """Nutrition off: no calories figure, no meal in the feed — not an empty card."""
     await nutrition_service.log_meal(
         db_session, on_date=today_local(), name="Курица с рисом", calories=520
     )
     await db_session.commit()
 
-    off = await today_service.build(db_session, enabled_modules=ALL_OFF)
+    off = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules=ALL_OFF)
     assert "calories" not in [f["key"] for f in off["figures"]]
     assert off["feed"] == []
 
-    on = await today_service.build(db_session, enabled_modules={"nutrition": True})
+    on = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules={"nutrition": True})
     assert "calories" in [f["key"] for f in on["figures"]]
     assert [row["text"] for row in on["feed"]] == ["Курица с рисом"]
 
 
-async def test_calories_change_compares_logged_days(db_session):
+async def test_calories_change_compares_logged_days(db_session, legacy_owner_roots):
     """Intake week over week is per *logged* day: a week with three days filled in
     must not read as a crash in intake that never happened."""
     for offset, cal in ((10, 1800.0), (9, 2000.0), (2, 1500.0)):
@@ -167,7 +281,17 @@ async def test_calories_change_compares_logged_days(db_session):
         )
     await db_session.commit()
 
-    ctx = await today_service.build(db_session, enabled_modules={"nutrition": True})
+    ctx = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules={"nutrition": True})
 
     row = next(c for c in ctx["changes"] if c["key"] == "calories")
     assert row["href"] == "/nutrition"
@@ -175,7 +299,7 @@ async def test_calories_change_compares_logged_days(db_session):
     assert row["delta"] == "−400"
 
 
-async def test_goal_reads_as_distance_covered(db_session):
+async def test_goal_reads_as_distance_covered(db_session, legacy_owner_roots):
     """The bar needs a starting point, and milestones_service has no notion of one
     — the first logged weight is what "11.2 of 17.5 covered" is measured from."""
     for offset, kg in ((30, 100.0), (0, 94.0)):
@@ -188,14 +312,24 @@ async def test_goal_reads_as_distance_covered(db_session):
     )
     await db_session.commit()
 
-    goal = (await today_service.build(db_session, enabled_modules=ALL_OFF))["goal"]
+    goal = (await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules=ALL_OFF))["goal"]
 
     assert goal["done"] == "6"     # 100 → 94
     assert goal["total"] == "15"   # 100 → 85
     assert goal["pct"] == 40
 
 
-async def test_recovery_advice_arrives_as_an_observation(db_session):
+async def test_recovery_advice_arrives_as_an_observation(db_session, legacy_owner_roots):
     """An interpretation of the numbers is not a failure: it joins the attention
     card on the quietest rung, never as a warning."""
     from vitals.models.garmin import GarminDaily
@@ -212,7 +346,17 @@ async def test_recovery_advice_arrives_as_an_observation(db_session):
     )
     await db_session.commit()
 
-    ctx = await today_service.build(db_session, enabled_modules=ALL_OFF)
+    ctx = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules=ALL_OFF)
 
     notes = [a for a in ctx["attention"] if a["severity"] == Severity.NOTE.value]
     assert notes, ctx["attention"]
@@ -221,6 +365,7 @@ async def test_recovery_advice_arrives_as_an_observation(db_session):
 
 async def test_platform_scheduler_diagnostics_never_reach_today_attention(
     db_session,
+    legacy_owner_roots,
 ):
     sentinel = "secret-path:/srv/private/trace.sql"
     db_session.add_all(
@@ -257,7 +402,17 @@ async def test_platform_scheduler_diagnostics_never_reach_today_attention(
     )
     await db_session.commit()
 
-    ctx = await today_service.build(db_session, enabled_modules=ALL_OFF)
+    ctx = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules=ALL_OFF)
 
     messages = {row["message"] for row in ctx["attention"]}
     assert "subject-visible" in messages
@@ -266,7 +421,7 @@ async def test_platform_scheduler_diagnostics_never_reach_today_attention(
     assert sentinel not in messages
 
 
-async def test_feed_stays_a_glance_on_a_busy_day(db_session):
+async def test_feed_stays_a_glance_on_a_busy_day(db_session, legacy_owner_roots):
     """Every seeded goal and supplement carries today's date on a first run — the
     card is the day at a glance, so it is capped rather than left unbounded."""
     for i in range(20):
@@ -275,6 +430,16 @@ async def test_feed_stays_a_glance_on_a_busy_day(db_session):
         )
     await db_session.commit()
 
-    ctx = await today_service.build(db_session, enabled_modules={"nutrition": True})
+    ctx = await today_service.build(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        prepared_digest_owner=await digest_service.prepare_digest_owner_for_identity(
+            db_session,
+            identity=WriteIdentity(
+                legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+            ),
+            owner_user_id=legacy_owner_roots.user_id,
+        ),
+        enabled_modules={"nutrition": True})
 
     assert len(ctx["feed"]) == today_service._FEED_LIMIT

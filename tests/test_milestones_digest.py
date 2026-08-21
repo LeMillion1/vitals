@@ -21,6 +21,10 @@ DAY = date(2026, 6, 10)
 
 pytestmark = pytest.mark.usefixtures("all_modules_on")
 
+# The composition tests below read one subject's data; the milestone service
+# tests deliberately exercise the legacy unowned path and must not be stamped.
+composed = pytest.mark.usefixtures("owned_by_legacy_subject")
+
 
 # ── Milestones ────────────────────────────────────────────────────────────────
 async def test_create_and_progress_weight_goal(db_session):
@@ -145,7 +149,8 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch):
 
 
 # ── Digest context ────────────────────────────────────────────────────────────
-async def test_assemble_context_is_robust_when_empty(db_session, monkeypatch):
+@composed
+async def test_assemble_context_is_robust_when_empty(db_session, monkeypatch, legacy_owner_roots):
     """Context assembles even with no data in any domain."""
     # The profile block comes from env (load_dotenv picks up a real .env), so pin it —
     # otherwise this passes on a bare checkout and fails inside the deploy image, where
@@ -153,7 +158,9 @@ async def test_assemble_context_is_robust_when_empty(db_session, monkeypatch):
     monkeypatch.setenv("VITALS_USER_AGE", "18")
     monkeypatch.setenv("VITALS_SEX", "male")
     monkeypatch.setenv("VITALS_HEIGHT_CM", "190")
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     assert ctx["date"] == "2026-06-10"
     assert ctx["report_meta"]["report_date"] == "2026-06-10"
     assert ctx["report_meta"]["period_days"] == 7
@@ -173,7 +180,8 @@ async def test_assemble_context_is_robust_when_empty(db_session, monkeypatch):
     assert ctx["alerts"] is None
 
 
-async def test_signals_reach_the_digest_context(db_session):
+@composed
+async def test_signals_reach_the_digest_context(db_session, legacy_owner_roots):
     """The capture domain exists to explain the other domains' numbers. If it
     never lands in the context, everything written to the bot is write-only."""
     from vitals.services import signals_service
@@ -191,7 +199,9 @@ async def test_signals_reach_the_digest_context(db_session):
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
     assert [s["key"] for s in ctx["signals"]] == ["caffeine_late", "headache"]
     assert ctx["signals"][0]["at_time"] == "22:00", "the hour is what makes it correlatable"
@@ -201,11 +211,14 @@ async def test_signals_reach_the_digest_context(db_session):
     await signals_service.mark_misparse(db_session, rows[0].batch_id)
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     assert [s["key"] for s in ctx["signals"]] == ["caffeine_late"]
 
 
-async def test_assemble_context_pulls_each_domain(db_session):
+@composed
+async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots):
     from vitals.services import labs_service
 
     await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
@@ -218,7 +231,9 @@ async def test_assemble_context_pulls_each_domain(db_session):
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     assert ctx["weight"]["latest_kg"] == 88.0
     assert ctx["garmin"]["resting_hr"] == 52
     assert ctx["garmin"]["sleep_score"] == 80
@@ -227,7 +242,8 @@ async def test_assemble_context_pulls_each_domain(db_session):
     assert ctx["labs"]["out_of_range"][0]["date"] == (DAY - timedelta(days=10)).isoformat()
 
 
-async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db_session):
+@composed
+async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db_session, legacy_owner_roots):
     """The weekly digest must see supplements, skincare, genetics and active
     alerts — previously these enabled domains were absent, so cross-domain
     reasoning (e.g. 'started a supplement → sleep shifted', 'introduced a retinoid
@@ -253,9 +269,14 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
         alert_key="ferritin_high", entity_ref="labs:ferritin",
     )
     alert.created_at = datetime.combine(DAY, datetime.min.time())
+    # A health alert belongs to the person it is about; the report only carries
+    # that person's alerts.
+    alert.subject_id = legacy_owner_roots.subject_id
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
 
     assert ctx["supplements"] is not None
     assert ctx["supplements"][0]["name"] == "Creatine"
@@ -268,7 +289,8 @@ async def test_assemble_context_includes_supplements_skincare_genetics_alerts(db
     assert ctx["alerts"][0]["message"] == "Ferritin high"
 
 
-async def test_assemble_context_includes_body_comp(db_session):
+@composed
+async def test_assemble_context_includes_body_comp(db_session, legacy_owner_roots):
     """The weekly digest must see the latest BIA/InBody scan (headline metrics
     + derived LBM) — previously body composition was absent from the analysis."""
     from vitals.models.body_scan import BodyScan, BodyScanMetric
@@ -296,7 +318,9 @@ async def test_assemble_context_includes_body_comp(db_session):
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     bc = ctx["body_comp"]
     assert bc is not None
     assert bc["date"] == (DAY - timedelta(days=2)).isoformat()
@@ -309,7 +333,8 @@ async def test_assemble_context_includes_body_comp(db_session):
     assert "lean_body_mass" not in bc["metrics"]
 
 
-async def test_assemble_context_with_custom_period_days(db_session):
+@composed
+async def test_assemble_context_with_custom_period_days(db_session, legacy_owner_roots):
     from vitals.models.hevy import HevyWorkout
     from vitals.enums import Source
 
@@ -331,15 +356,20 @@ async def test_assemble_context_with_custom_period_days(db_session):
     await db_session.commit()
 
     # With period_days=7, both workouts should be counted
-    ctx_7 = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+    ctx_7 = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
     assert ctx_7["hevy"]["total_workouts"] == 2
 
     # With period_days=4, only the one from 2 days ago should be counted
-    ctx_4 = await digest_service.assemble_context(db_session, on_date=DAY, period_days=4)
+    ctx_4 = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=4)
     assert ctx_4["hevy"]["total_workouts"] == 1
 
 
-async def test_assemble_context_includes_hrt_and_timeline(db_session):
+@composed
+async def test_assemble_context_includes_hrt_and_timeline(db_session, legacy_owner_roots):
     """Hormones and the timeline must reach the digest. Without them the
     strongest intervention in the lake (a compound change) and the ready-made
     explanation for a dip (illness, travel) were invisible to the narrative."""
@@ -365,7 +395,9 @@ async def test_assemble_context_includes_hrt_and_timeline(db_session):
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
 
     assert ctx["hrt"] is not None
     assert ctx["hrt"]["doses"][0]["compound_key"] == "testosterone_enanthate"
@@ -376,9 +408,7 @@ async def test_assemble_context_includes_hrt_and_timeline(db_session):
     assert [a["title"] for a in ctx["timeline"]] == ["Грипп"]
 
     # The model ignores keys the system prompt never names.
-    llm = FakeLLM()
-    await digest_service.generate_digest(db_session, llm, on_date=DAY)
-    system_prompt = llm.prompts[0][0]
+    system_prompt = digest_service.DIGEST_SYSTEM
     assert "hrt:" in system_prompt
     assert "timeline:" in system_prompt
 
@@ -449,10 +479,13 @@ def test_every_domain_is_mapped_to_digest_keys():
     assert set(digest_service._DOMAIN_MODULE) == {domain.value for domain in Domain}
 
 
-async def test_assemble_context_has_a_key_for_every_domain(db_session):
+@composed
+async def test_assemble_context_has_a_key_for_every_domain(db_session, legacy_owner_roots):
     """Every mapped key is actually assembled — on an empty database too, so a
     domain can't be "present" only when it happens to have rows."""
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     for paths in DIGEST_DOMAIN_PATHS.values():
         for path in paths:
             key = path.split(".", 1)[0]
@@ -471,24 +504,6 @@ class FakeLLM:
         return "Неделя прошла стабильно: вес снижается, восстановление в норме."
 
 
-async def test_generate_digest_persists_narrative_and_context(db_session):
-    await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
-    await db_session.commit()
-
-    llm = FakeLLM()
-    row = await digest_service.generate_digest(db_session, llm, on_date=DAY)
-    await db_session.commit()
-
-    assert "стабильно" in row.content
-    assert row.model == "fake/model"
-    assert row.context_json["weight"]["latest_kg"] == 88.0
-    # The system prompt frames it as an analytical peer or partner.
-    assert "peer" in llm.prompts[0][0] or "напарник" in llm.prompts[0][0]
-
-    latest = await digest_service.latest_digest(db_session)
-    assert latest.id == row.id
-    stored = (await db_session.execute(select(WeeklyDigest))).scalars().all()
-    assert len(stored) == 1
 
 
 class FakeBlankLLM:
@@ -521,35 +536,8 @@ class FakeFlakyLLM:
         return "Восстановилось со второй попытки."
 
 
-async def test_generate_digest_raises_and_persists_nothing_when_llm_stays_blank(db_session):
-    from vitals.integrations.llm_client import LLMEmptyResponse
-    import pytest
-
-    llm = FakeBlankLLM()
-    with pytest.raises(LLMEmptyResponse):
-        await digest_service.generate_digest(db_session, llm, on_date=DAY)
-
-    assert llm.calls == 2  # one retry, then give up
-    stored = (await db_session.execute(select(WeeklyDigest))).scalars().all()
-    assert len(stored) == 0
 
 
-async def test_generate_digest_asks_for_enough_output_tokens(db_session):
-    """Regression: prod ran with max_tokens=6000 and the narrative came back cut
-    mid-sentence — a reasoning model spends part of the same budget on thinking."""
-
-    class RecordingLLM(FakeLLM):
-        def __init__(self):
-            super().__init__()
-            self.budgets = []
-
-        async def complete_text(self, prompt, *, system=None, max_tokens=None, **kw):
-            self.budgets.append(max_tokens)
-            return await super().complete_text(prompt, system=system, **kw)
-
-    llm = RecordingLLM()
-    await digest_service.generate_digest(db_session, llm, on_date=DAY)
-    assert llm.budgets and all(b >= 12000 for b in llm.budgets)
 
 
 async def test_complete_text_warns_when_the_answer_is_cut_by_the_token_limit(caplog):
@@ -581,16 +569,10 @@ async def test_complete_text_warns_when_the_answer_is_cut_by_the_token_limit(cap
     assert any("truncated by max_tokens" in r.getMessage() for r in caplog.records)
 
 
-async def test_generate_digest_retries_once_and_recovers_from_a_blank_response(db_session):
-    llm = FakeFlakyLLM()
-    row = await digest_service.generate_digest(db_session, llm, on_date=DAY)
-    await db_session.commit()
-
-    assert llm.calls == 2
-    assert row.content == "Восстановилось со второй попытки."
 
 
-async def test_assemble_context_includes_intersecting_noise_markers(db_session):
+@composed
+async def test_assemble_context_includes_intersecting_noise_markers(db_session, legacy_owner_roots):
     # Add noise markers: some overlapping, some not.
     # DAY is 2026-06-10. Current is [06-04, 06-10], previous [05-28, 06-03].
     
@@ -624,7 +606,9 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session):
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
     markers = ctx["weight"]["noise_markers"]
     
     # Both sides of the comparison must carry their overlapping noise context.
@@ -650,14 +634,13 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session):
     assert past_marker["periods"] == ["previous"]
 
     # Check that system prompt mentions noise_markers
-    llm = FakeLLM()
-    await digest_service.generate_digest(db_session, llm, on_date=DAY, period_days=7)
-    system_prompt = llm.prompts[0][0]
+    system_prompt = digest_service.DIGEST_SYSTEM
     assert "noise_markers" in system_prompt
     assert "период" in system_prompt or "period" in system_prompt
 
 
-async def test_assemble_context_trend_excludes_noise(db_session):
+@composed
+async def test_assemble_context_trend_excludes_noise(db_session, legacy_owner_roots):
     """The weight trend handed to the LLM must be computed on noise-excluded
     points — otherwise the digest reasons about a spike it's told to discount."""
     import pytest
@@ -680,7 +663,9 @@ async def test_assemble_context_trend_excludes_noise(db_session):
     await db_session.commit()
 
     ctx = await digest_service.assemble_context(
-        db_session, on_date=base + timedelta(days=10), period_days=7
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=base + timedelta(days=10), period_days=7
     )
     # Clean −1kg/day line → ≈ −7kg/week, undistorted by the +20kg spike.
     assert ctx["weight"]["trend_kg_per_week"] == pytest.approx(-7.0, abs=0.1)

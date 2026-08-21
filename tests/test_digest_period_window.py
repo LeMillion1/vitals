@@ -19,7 +19,7 @@ from vitals.services import digest_service
 # A Tuesday, like the day the complaint came from.
 DAY = date(2026, 8, 4)
 
-pytestmark = pytest.mark.usefixtures("all_modules_on")
+pytestmark = pytest.mark.usefixtures("all_modules_on", "owned_by_legacy_subject")
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +42,7 @@ def _workout(external_id: str, on_date: date, title: str) -> HevyWorkout:
     )
 
 
-async def test_sessions_before_the_window_are_visible_but_not_counted(db_session):
+async def test_sessions_before_the_window_are_visible_but_not_counted(db_session, legacy_owner_roots):
     db_session.add_all(
         [
             _workout("w_sat", DAY - timedelta(days=3), "Push"),   # Saturday, in period
@@ -52,7 +52,9 @@ async def test_sessions_before_the_window_are_visible_but_not_counted(db_session
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
     hevy = ctx["hevy"]
 
     # The count keeps window semantics — it is the *cadence* that was missing.
@@ -65,7 +67,7 @@ async def test_sessions_before_the_window_are_visible_but_not_counted(db_session
     assert hevy["sessions"][1]["title"] == "Push"
 
 
-async def test_recovery_covers_the_period_not_just_the_latest_day(db_session):
+async def test_recovery_covers_the_period_not_just_the_latest_day(db_session, legacy_owner_roots):
     """A "weekly" report used to be handed one night of recovery data."""
     for i in range(9):
         db_session.add(
@@ -81,7 +83,9 @@ async def test_recovery_covers_the_period_not_just_the_latest_day(db_session):
         )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
 
     assert [d["date"] for d in ctx["days"]] == [
         (DAY - timedelta(days=i)).isoformat() for i in range(6, -1, -1)
@@ -92,7 +96,7 @@ async def test_recovery_covers_the_period_not_just_the_latest_day(db_session):
     assert ctx["garmin"]["total_days_logged"] == 9
 
 
-async def test_period_is_handed_the_period_before_it_to_compare_against(db_session):
+async def test_period_is_handed_the_period_before_it_to_compare_against(db_session, legacy_owner_roots):
     """Without a yardstick the narrative can only read current values back, which
     is the dashboard's job. Both windows come back in the same shape."""
     for i in range(14):
@@ -116,7 +120,9 @@ async def test_period_is_handed_the_period_before_it_to_compare_against(db_sessi
     await db_session.commit()
 
     stats = (await digest_service.assemble_context(
-        db_session, on_date=DAY, period_days=7
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY, period_days=7
     ))["period_stats"]
 
     assert stats["current"]["start"] == (DAY - timedelta(days=6)).isoformat()
@@ -129,7 +135,7 @@ async def test_period_is_handed_the_period_before_it_to_compare_against(db_sessi
     assert stats["previous"]["workouts"] == 2
 
 
-async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch):
+async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch, legacy_owner_roots):
     """Generated just after midnight, the report treated the current date as a
     seventh day of the window and read its missing log as a day its owner had
     skipped — while he was still awake on it. The window ends yesterday and holds
@@ -152,7 +158,9 @@ async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch)
         )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
     meta, current = ctx["report_meta"], ctx["period_stats"]["current"]
 
     assert meta["period_end"] == (DAY - timedelta(days=1)).isoformat()
@@ -163,19 +171,21 @@ async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch)
     assert [d["date"] for d in ctx["days"]][-1] == (DAY - timedelta(days=1)).isoformat()
 
 
-async def test_a_past_period_ends_on_its_own_date(db_session, monkeypatch):
+async def test_a_past_period_ends_on_its_own_date(db_session, monkeypatch, legacy_owner_roots):
     """Regenerate an old digest and nothing shifts: every day in it is long over."""
     monkeypatch.setattr(digest_service, "today_local", lambda: DAY + timedelta(days=30))
 
     meta = (await digest_service.assemble_context(
-        db_session, on_date=DAY, period_days=7
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY, period_days=7
     ))["report_meta"]
 
     assert meta["period_end"] == DAY.isoformat()
     assert meta["period_start"] == (DAY - timedelta(days=6)).isoformat()
 
 
-async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch):
+async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch, legacy_owner_roots):
     """The links the report kept failing to find need the domains on one row."""
     from vitals.services import nutrition_service, signals_service
 
@@ -205,7 +215,9 @@ async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch):
     days = {
         d["date"]: d
         for d in (await digest_service.assemble_context(
-            db_session, on_date=DAY, period_days=7
+            db_session,
+            subject_id=legacy_owner_roots.subject_id,
+            on_date=DAY, period_days=7
         ))["days"]
     }
 
@@ -218,7 +230,7 @@ async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch):
     assert days[(session_day + timedelta(days=1)).isoformat()]["hrv_avg"] == 41.0
 
 
-async def test_training_cadence_survives_the_window_edge(db_session):
+async def test_training_cadence_survives_the_window_edge(db_session, legacy_owner_roots):
     """The gap between sessions is the number a window boundary cannot move — and
     the one the narrative can quote without explaining the boundary first."""
     db_session.add_all(
@@ -231,14 +243,16 @@ async def test_training_cadence_survives_the_window_edge(db_session):
     await db_session.commit()
 
     hevy = (await digest_service.assemble_context(
-        db_session, on_date=DAY, period_days=7
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY, period_days=7
     ))["hevy"]
 
     assert hevy["total_workouts"] == 1, "the window edge still cuts the count"
     assert hevy["mean_gap_days"] == 3.5, "the rhythm does not move with it"
 
 
-async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session):
+async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session, legacy_owner_roots):
     """A marker sliding 120 → 95 → 80 never trips a flag, so out_of_range never
     sees it — and a table of current values shows one green number."""
     from vitals.services import labs_service
@@ -260,7 +274,9 @@ async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session):
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
 
     assert ctx["labs"]["out_of_range"] == [], "every value is inside its range"
     trends = {t["marker"]: t for t in ctx["labs"]["trends"]}
@@ -269,7 +285,7 @@ async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session):
     assert trends["Ферритин"]["ref_low"] == 30.0
 
 
-async def test_a_long_window_carries_all_of_its_signals(db_session):
+async def test_a_long_window_carries_all_of_its_signals(db_session, legacy_owner_roots):
     """The signals block is handed to the narrative as "the period, chronologically".
     Read with the service's screen-sized default, a long window lost everything past
     the 200th newest row — and the days it lost were the oldest ones, so the period
@@ -295,7 +311,9 @@ async def test_a_long_window_carries_all_of_its_signals(db_session):
     await db_session.commit()
 
     ctx = await digest_service.assemble_context(
-        db_session, on_date=DAY, period_days=days
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY, period_days=days
     )
 
     assert len(ctx["signals"]) == days * per_day
@@ -304,7 +322,7 @@ async def test_a_long_window_carries_all_of_its_signals(db_session):
     )
 
 
-async def test_brief_context_stays_a_single_day(db_session):
+async def test_brief_context_stays_a_single_day(db_session, legacy_owner_roots):
     """The explicit brief mode stays compact even though a 1-day report does not."""
     db_session.add(
         GarminDaily(
@@ -319,6 +337,7 @@ async def test_brief_context_stays_a_single_day(db_session):
 
     ctx = await digest_service.assemble_context(
         db_session,
+        subject_id=legacy_owner_roots.subject_id,
         on_date=DAY,
         period_days=1,
         mode=digest_service.REPORT_MODE_BRIEF,

@@ -477,3 +477,50 @@ def alembic_head_revision() -> str:
     if len(heads) != 1:
         raise RuntimeError("the migration chain must have exactly one head")
     return heads[0]
+
+
+@pytest_asyncio.fixture
+async def owned_by_legacy_subject(db_session, legacy_owner_roots):
+    """Stamp the sole subject onto rows a test creates without naming one.
+
+    Composition tests build dozens of synthetic domain rows to prove what a
+    report contains. Every one of those rows belongs to the person the report is
+    about, and spelling that out in each constructor would bury the assertion
+    under ownership plumbing. This fixture supplies it the way production does —
+    once, from the identity — while leaving any row that names a subject
+    explicitly exactly as the test wrote it, so cross-subject cases still work.
+    """
+
+    from sqlalchemy import event as sa_event
+
+    subject_id = legacy_owner_roots.subject_id
+    sync_session = db_session.sync_session
+
+    from vitals.ownership import OWNERSHIP_REGISTRY, TargetColumn
+
+    _UNSTAMPABLE_TABLES = {"notifications", "notification_delivery_intents"}
+
+    def _stamp(session, _flush_context, _instances):
+        for instance in session.new:
+            table = getattr(type(instance), "__table__", None)
+            if table is None or "subject_id" not in table.columns:
+                continue
+            spec = OWNERSHIP_REGISTRY.get(table.name)
+            # A curated catalog row and a platform-wide alert belong to nobody;
+            # stamping them would turn the platform's half of the key into one
+            # person's row.
+            if spec is None or spec.subject is not TargetColumn.REQUIRED:
+                continue
+            # A delivery artifact's roots travel as a set — subject, recipient,
+            # and channel — and a database check enforces that shape. Supplying
+            # one of the three would make the row invalid rather than owned.
+            if table.name in _UNSTAMPABLE_TABLES:
+                continue
+            if getattr(instance, "subject_id", None) is None:
+                instance.subject_id = subject_id
+
+    sa_event.listen(sync_session, "before_flush", _stamp)
+    try:
+        yield legacy_owner_roots
+    finally:
+        sa_event.remove(sync_session, "before_flush", _stamp)

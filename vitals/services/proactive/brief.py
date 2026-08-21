@@ -363,8 +363,11 @@ async def build_context(
     that knows there is a gym session and a heavy workday ahead, so it goes into
     the model's JSON as well as onto the header line.
     """
+    if subject_id is None:
+        raise ValueError("composing the brief requires the subject it is about")
     ctx = await digest_service.assemble_context(
         session,
+        subject_id=subject_id,
         on_date=on_date,
         period_days=1,
         mode=digest_service.REPORT_MODE_BRIEF,

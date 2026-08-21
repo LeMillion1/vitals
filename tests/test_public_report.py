@@ -20,7 +20,8 @@ from vitals.services.modules_service import MODULE_REGISTRY
 from vitals.utils.timeutils import now_local
 from web.config import get_web_config
 
-pytestmark = pytest.mark.usefixtures("legacy_owner_roots")
+# The document is about one person; every row it reads belongs to them.
+pytestmark = pytest.mark.usefixtures("legacy_owner_roots", "owned_by_legacy_subject")
 
 ALL_ON = {k: True for k in MODULE_REGISTRY}
 START = date(2026, 3, 1)

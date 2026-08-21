@@ -262,12 +262,21 @@ async def list_compounds(
 ) -> Sequence[HrtCompound]:
     stmt = select(HrtCompound)
     if subject_id is not None:
+        # A subject's compound list is the curated catalog plus whatever custom
+        # molecules that subject defined. Returning only the catalog would hide
+        # a compound the person is actually dosing from every screen and report
+        # that lists them by key.
         stmt = stmt.where(
-            HrtCompound.key.in_(_curated_compound_keys()),
-            HrtCompound.subject_id.is_(None),
-            HrtCompound.actor_user_id.is_(None),
-            HrtCompound.domain == DOMAIN,
-            HrtCompound.source == Source.SYSTEM.value,
+            or_(
+                and_(
+                    HrtCompound.key.in_(_curated_compound_keys()),
+                    HrtCompound.subject_id.is_(None),
+                    HrtCompound.actor_user_id.is_(None),
+                    HrtCompound.domain == DOMAIN,
+                    HrtCompound.source == Source.SYSTEM.value,
+                ),
+                HrtCompound.subject_id == subject_id,
+            )
         )
     if active_only:
         stmt = stmt.where(HrtCompound.active.is_(True))
@@ -277,7 +286,8 @@ async def list_compounds(
     rows = (await session.execute(stmt)).scalars().all()
     if subject_id is not None:
         for row in rows:
-            _require_curated_compound_integrity(row)
+            if row.subject_id is None:
+                _require_curated_compound_integrity(row)
     return rows
 
 

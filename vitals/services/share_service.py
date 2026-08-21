@@ -597,7 +597,11 @@ async def build_snapshot(
     today" is read through yesterday and the row stores that, rather than a
     header claiming a day the numbers don't cover.
     """
-    await _owner_or_zero_subject_legacy(session, prepared_owner)
+    owner = await _owner_or_zero_subject_legacy(session, prepared_owner)
+    if owner is None:
+        raise SharePreparedOwnerError(
+            "composing a report requires the subject it is about"
+        )
 
     from vitals.config import load_config
     from vitals.i18n import current_lang
@@ -608,6 +612,7 @@ async def build_snapshot(
     span_days = max((end - start).days + 1, 1)
     ctx = await digest_service.assemble_context(
         session,
+        subject_id=owner._identity.subject_id,
         on_date=end,
         period_days=span_days,
         mode=digest_service.REPORT_MODE_CLOSED,

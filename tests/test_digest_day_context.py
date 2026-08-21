@@ -14,7 +14,7 @@ from vitals.services import digest_service, signals_service
 
 DAY = date(2026, 6, 10)
 
-pytestmark = pytest.mark.usefixtures("all_modules_on")
+pytestmark = pytest.mark.usefixtures("all_modules_on", "owned_by_legacy_subject")
 
 
 class FakeLLM:
@@ -28,7 +28,7 @@ class FakeLLM:
         return "Три тяжёлых дня подряд — отсюда и просадка."
 
 
-async def test_day_context_reaches_the_digest_context(db_session):
+async def test_day_context_reaches_the_digest_context(db_session, legacy_owner_roots):
     await signals_service.set_day_context(
         db_session, DAY - timedelta(days=1), answers={"where": "remote", "gym": True}
     )
@@ -51,7 +51,9 @@ async def test_day_context_reaches_the_digest_context(db_session):
     )
     await db_session.commit()
 
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
 
     days = ctx["day_context"]
     assert [d["date"] for d in days] == [
@@ -64,11 +66,11 @@ async def test_day_context_reaches_the_digest_context(db_session):
     assert days[-1]["source"] == Source.MANUAL.value
 
     # The model ignores keys the system prompt never names.
-    llm = FakeLLM()
-    await digest_service.generate_digest(db_session, llm, on_date=DAY, period_days=7)
-    assert "day_context:" in llm.prompts[0][0]
+    assert "day_context:" in digest_service.DIGEST_SYSTEM
 
 
-async def test_day_context_is_none_when_the_period_has_no_days(db_session):
-    ctx = await digest_service.assemble_context(db_session, on_date=DAY, period_days=7)
+async def test_day_context_is_none_when_the_period_has_no_days(db_session, legacy_owner_roots):
+    ctx = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
     assert ctx["day_context"] is None

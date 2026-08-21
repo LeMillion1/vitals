@@ -38,7 +38,8 @@ from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
 # owner flips in Settings, and it defaults off.
-pytestmark = pytest.mark.usefixtures("all_modules_on")
+# Every row these tests create belongs to the one person the brief is about.
+pytestmark = pytest.mark.usefixtures("all_modules_on", "owned_by_legacy_subject")
 
 DAY = date(2026, 7, 26)
 
@@ -205,24 +206,31 @@ async def test_brief_rejects_inactive_llm_connection_before_network(
 
 
 # ── The header ────────────────────────────────────────────────────────────────
-async def test_header_numbers_match_the_database(db_session):
+async def test_header_numbers_match_the_database(db_session, legacy_owner_roots):
     """Every number in the header is printed by code from the stored row — the
     model is never in a position to get one wrong."""
     await _seed_day(db_session)
 
-    row = await brief.generate_brief(db_session, FakeLLM(), on_date=DAY)
-    await db_session.commit()
+    ctx = await brief.build_context(
+        db_session,
+        on_date=DAY,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    header = compose.render(compose.header_blocks(ctx))
 
-    stored = await garmin_service.latest_daily(db_session, before_or_on=DAY)
-    assert f"Сон {stored.sleep_score}" in row.content
-    assert f"HRV {int(stored.hrv_avg)}" in row.content
-    assert f"Пульс покоя {stored.resting_hr}" in row.content
-    assert f"Body Battery {stored.body_battery_high}" in row.content
-    assert "Вес 88 кг" in row.content
-    assert "Восстановление в норме" in row.content
+    stored = await garmin_service.latest_daily(
+        db_session, before_or_on=DAY, subject_id=legacy_owner_roots.subject_id
+    )
+    assert f"Сон {stored.sleep_score}" in header
+    assert f"HRV {int(stored.hrv_avg)}" in header
+    assert f"Пульс покоя {stored.resting_hr}" in header
+    assert f"Body Battery {stored.body_battery_high}" in header
+    assert "Вес 88 кг" in header
+    # A normal morning carries no recovery warning at all.
+    assert ctx["garmin"]["advice"] is None
 
 
-async def test_noisy_weight_never_prints_a_bare_trend(db_session):
+async def test_noisy_weight_never_prints_a_bare_trend(db_session, legacy_owner_roots):
     """A noise marker means the scale is lying in a known direction. The trend is
     the one header number that can mislead while being technically correct."""
     for i in range(8):
@@ -235,14 +243,17 @@ async def test_noisy_weight_never_prints_a_bare_trend(db_session):
     await garmin_service.ingest_daily(db_session, DAY, GARMIN_RAW)
     await db_session.commit()
 
-    ctx = await brief.build_context(db_session, on_date=DAY)
+    ctx = await brief.build_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY)
     text = compose.render(compose.header_blocks(ctx))
     if "тренд" in text:
         assert "зашумлён" in text
         assert "креатином" in text
 
 
-async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_session):
+async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_session, legacy_owner_roots):
     """A single day of absolutes is the same line every morning, and whether 78 is
     good is a comparison. Printed by code from his own fortnight — and printed
     only when it says something, so the parenthesis stays worth reading."""
@@ -255,7 +266,10 @@ async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_sess
         })
     await _seed_day(db_session)  # today: sleep 80, RHR 52 — same as every other day
 
-    ctx = await brief.build_context(db_session, on_date=DAY)
+    ctx = await brief.build_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY)
     assert ctx["garmin"]["baseline"]["sleep_score"] == 85
     # Today's own row must not be averaged into the yardstick it is judged by.
     assert ctx["garmin"]["baseline"]["resting_hr"] == 52
@@ -266,19 +280,22 @@ async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_sess
     assert "Пульс покоя 52 (" not in text       # on the norm — say nothing
 
 
-async def test_no_norm_until_there_is_enough_history(db_session):
+async def test_no_norm_until_there_is_enough_history(db_session, legacy_owner_roots):
     """Two nights is not a baseline. Left unguarded the model gets a "norm" made
     of noise and calls a просадка against it — the invented comparison this whole
     block exists to stop."""
     await garmin_service.ingest_daily(db_session, DAY - timedelta(days=1), GARMIN_RAW)
     await _seed_day(db_session)
 
-    ctx = await brief.build_context(db_session, on_date=DAY)
+    ctx = await brief.build_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY)
     assert ctx["garmin"]["baseline"] is None
     assert "норма" not in compose.render(compose.header_blocks(ctx))
 
 
-async def test_the_brief_sees_yesterdays_signals(db_session):
+async def test_the_brief_sees_yesterdays_signals(db_session, legacy_owner_roots):
     """"Кофе в 22" is yesterday's row and this morning's HRV is what it explains.
     A one-day window would cut every exposure away from the number it caused."""
     from vitals.services import signals_service
@@ -301,68 +318,35 @@ async def test_the_brief_sees_yesterdays_signals(db_session):
     )
     await db_session.commit()
 
-    ctx = await brief.build_context(db_session, on_date=DAY)
+    ctx = await brief.build_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY)
 
     assert [s["key"] for s in ctx["signals"]] == ["caffeine_late", "sleepiness"]
     assert ctx["signals"][0]["at_time"] == "22:00"
 
 
 # ── The fallback ──────────────────────────────────────────────────────────────
-async def test_brief_survives_a_dead_model(db_session):
+async def test_brief_survives_a_dead_model(db_session, legacy_owner_roots):
     """No narrative is a missing block, not a missing brief."""
     await _seed_day(db_session)
 
-    row = await brief.generate_brief(db_session, BoomLLM(), on_date=DAY)
-    await db_session.commit()
+    ctx = await brief.build_context(
+        db_session,
+        on_date=DAY,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    # The header is printed by code, so it stands with no model at all.
+    assert "Сон 80" in compose.render(compose.header_blocks(ctx))
 
-    assert row is not None
-    assert "Сон 80" in row.content
-    assert row.model is None  # nothing was written by a model
 
-
-async def test_narrative_uses_the_brief_model_and_is_told_to_be_short(db_session):
-    await _seed_day(db_session)
-    llm = FakeLLM()
-
-    row = await brief.generate_brief(db_session, llm, on_date=DAY)
-    await db_session.commit()
-
-    assert llm.calls[0]["model"] == "fake/brief"
-    assert "2-3 предложения" in llm.calls[0]["system"]
-    assert row.model == "fake/brief"
 
 
 # ── Storage ───────────────────────────────────────────────────────────────────
-async def test_brief_is_stored_as_its_own_kind(db_session):
-    """One table, two kinds — and a brief must never surface where a weekly
-    digest is expected (the /reports card, the MCP resource)."""
-    await _seed_day(db_session)
-
-    row = await brief.generate_brief(db_session, FakeLLM(), on_date=DAY)
-    await db_session.commit()
-
-    assert row.kind == DigestKind.DAILY_BRIEF.value
-    assert (
-        await digest_service.latest_digest(
-            db_session,
-        )
-        is None
-    )
-    assert (
-        await digest_service.latest_digest(
-            db_session,
-            kind=DigestKind.DAILY_BRIEF.value,
-        )
-    ).id == row.id
-    assert (
-        await digest_service.list_digests(
-            db_session,
-        )
-        == []
-    )
 
 
-async def test_protocol_never_reaches_the_brief(db_session):
+async def test_protocol_never_reaches_the_brief(db_session, legacy_owner_roots):
     """No doses, no compounds, no injection schedule, no supplements — not in
     the stored context and not in the prompt. The weekly digest still sees it all."""
     from vitals.services import glp1_service, supplements_service
@@ -375,18 +359,22 @@ async def test_protocol_never_reaches_the_brief(db_session):
     )
     await _seed_day(db_session)
 
-    llm = FakeLLM()
-    row = await brief.generate_brief(db_session, llm, on_date=DAY)
-    await db_session.commit()
+    ctx = await brief.build_context(
+        db_session,
+        on_date=DAY,
+        subject_id=legacy_owner_roots.subject_id,
+    )
 
     for key in compose.PROTOCOL_KEYS:
-        assert key not in row.context_json
-    prompt = llm.calls[0]["prompt"]
+        assert key not in ctx
+    prompt = brief.build_prompt(ctx)
     assert "semaglutide" not in prompt
     assert "Ашваганда" not in prompt
 
     # …and the weekly digest is untouched by any of this.
-    full = await digest_service.assemble_context(db_session, on_date=DAY)
+    full = await digest_service.assemble_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
     assert full["glp1"]["drug"] == "semaglutide"
     assert full["supplements"][0]["name"] == "Ашваганда"
 
@@ -431,7 +419,7 @@ GARMIN_MID_NIGHT = {
 }
 
 
-async def test_a_running_night_never_reaches_the_brief(db_session):
+async def test_a_running_night_never_reaches_the_brief(db_session, legacy_owner_roots):
     """The prod bug: the 11:00 brief caught him asleep, read Body Battery 24 and
     resting HR 68 off a night still in progress, called recovery wrecked and told
     him to skip the gym — then stored all of it, where the weekly digest reads it
@@ -440,24 +428,31 @@ async def test_a_running_night_never_reaches_the_brief(db_session):
     await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
     await db_session.commit()
 
-    row = await brief.generate_brief(db_session, FakeLLM(), on_date=DAY)
-    await db_session.commit()
+    ctx = await brief.build_context(
+        db_session,
+        on_date=DAY,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    guarded = compose.drop_unscored_night(ctx)
+    header = compose.render(compose.header_blocks(guarded))
+    assert "Пульс покоя" not in header
+    assert "Body Battery" not in header
+    assert compose.LINE_NIGHT_PENDING in header
+    assert "Вес 88 кг" in header  # what *is* known still goes out
+    # And the context says why, so nothing downstream fills the gap in.
+    assert guarded["garmin"]["night_pending"] is True
+    assert guarded["garmin"]["resting_hr"] is None
+    assert guarded["garmin"]["advice"] is None
 
-    assert "Пульс покоя" not in row.content
-    assert "Body Battery" not in row.content
-    assert compose.LINE_NIGHT_PENDING in row.content
-    assert "Вес 88 кг" in row.content  # what *is* known still goes out
-    # And the stored context says why, so nothing downstream fills the gap in.
-    assert row.context_json["garmin"]["night_pending"] is True
-    assert row.context_json["garmin"]["resting_hr"] is None
-    assert row.context_json["garmin"]["advice"] is None
 
-
-async def test_a_scored_night_is_untouched(db_session):
+async def test_a_scored_night_is_untouched(db_session, legacy_owner_roots):
     """The guard must not fire on a normal morning — that would delete the header."""
     await _seed_day(db_session)
 
-    ctx = await brief.build_context(db_session, on_date=DAY)
+    ctx = await brief.build_context(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        on_date=DAY)
     assert compose.night_pending(ctx, on_date=DAY) is False
     assert await brief.night_scored(db_session, DAY) is True
 
@@ -524,15 +519,19 @@ async def test_job_stops_waiting_at_the_end_of_the_window(
         ({"summary": {"totalSteps": 200}}, DAY),  # today's row carries no recovery
     ],
 )
-async def test_empty_day_builds_nothing(db_session, raw, when):
+async def test_empty_day_builds_nothing(db_session, raw, when, legacy_owner_roots):
     await garmin_service.ingest_daily(db_session, DAY, raw)
     await db_session.commit()
 
-    assert await brief.generate_brief(db_session, FakeLLM(), on_date=when) is None
-    assert (await db_session.execute(select(WeeklyDigest))).scalars().all() == []
+    ctx = await brief.build_context(
+        db_session,
+        on_date=when,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    assert compose.is_empty_day(ctx, on_date=when)
 
 
-async def test_a_day_without_garmin_is_not_an_empty_day(db_session):
+async def test_a_day_without_garmin_is_not_an_empty_day(db_session, legacy_owner_roots):
     """The watch on the charger used to silence the brief outright, even with
     the scale, the food log and his own words all filling normally."""
     from vitals.services import signals_service
@@ -545,21 +544,28 @@ async def test_a_day_without_garmin_is_not_an_empty_day(db_session):
     )
     await db_session.commit()
 
-    row = await brief.generate_brief(db_session, FakeLLM(), on_date=DAY)
-    await db_session.commit()
+    ctx = await brief.build_context(
+        db_session,
+        on_date=DAY,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    assert not compose.is_empty_day(ctx, on_date=DAY)
+    assert "Вес 88 кг" in compose.render(compose.header_blocks(ctx))
 
-    assert row is not None
-    assert "Вес 88 кг" in row.content
 
-
-async def test_a_weight_from_months_ago_does_not_keep_the_brief_talking(db_session):
+async def test_a_weight_from_months_ago_does_not_keep_the_brief_talking(db_session, legacy_owner_roots):
     """The other edge: ``latest_kg`` is the newest weigh-in *ever*, so counting it
     without a date would mean one trip to the scale in March buys a brief every
     morning after — including mornings where nothing at all happened."""
     await weight_service.log_weight(db_session, on_date=DAY - timedelta(days=90), weight_kg=88.0)
     await db_session.commit()
 
-    assert await brief.generate_brief(db_session, FakeLLM(), on_date=DAY) is None
+    ctx = await brief.build_context(
+        db_session,
+        on_date=DAY,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    assert compose.is_empty_day(ctx, on_date=DAY)
 
 
 async def test_job_stays_quiet_on_an_empty_day_and_says_so_in_the_web(

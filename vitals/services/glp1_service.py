@@ -797,12 +797,25 @@ async def delete_side_effect(
 async def evaluate_plateau(
     session: AsyncSession,
     *,
+    subject_id: uuid.UUID | None = None,
     on_date: Optional[date_type] = None,
     scope: conflict_engine.ConflictScope | None = None,
 ) -> Optional[dict]:
     """Pure read: is the current dose plateaued? Returns a context dict
     (drug, dose, days_on_dose, slope_per_week) when a plateau is detected on the
-    current phase, else ``None``. Writes nothing."""
+    current phase, else ``None``. Writes nothing.
+
+    A plateau is a fact about one person's dose and one person's weight trend.
+    ``scope`` carries that subject on the conflict path; a composition caller
+    that has no conflict decision passes ``subject_id`` directly.
+    """
+
+    if subject_id is None and scope is not None:
+        subject_id = scope.subject_id
+    elif scope is not None and scope.subject_id != subject_id:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "plateau subject does not match the prepared conflict scope"
+        )
     today = scope.evaluation_date if scope is not None else (on_date or today_local())
     if on_date is not None and on_date != today:
         raise conflict_engine.ConflictPreparedWriteError(
@@ -811,7 +824,7 @@ async def evaluate_plateau(
     phase = await active_dose_phase(
         session,
         on_date=today,
-        subject_id=scope.subject_id if scope is not None else None,
+        subject_id=subject_id,
         include_legacy_unowned=(
             scope.include_legacy_unowned if scope is not None else False
         ),
@@ -827,7 +840,7 @@ async def evaluate_plateau(
         session,
         start=phase.start_date,
         end=today,
-        subject_id=scope.subject_id if scope is not None else None,
+        subject_id=subject_id,
         include_legacy_unowned=(
             scope.include_legacy_unowned if scope is not None else False
         ),
@@ -835,7 +848,7 @@ async def evaluate_plateau(
     points = [(w.date, w.weight_kg) for w in weights]
     ranges = await weight_service._noise_ranges(
         session,
-        subject_id=scope.subject_id if scope is not None else None,
+        subject_id=subject_id,
         include_legacy_unowned=(
             scope.include_legacy_unowned if scope is not None else False
         ),
