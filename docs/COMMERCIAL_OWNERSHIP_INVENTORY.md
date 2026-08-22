@@ -1463,6 +1463,32 @@ therefore builds a migrated database and connects as a role with no special
 attributes — the suite's own superuser bypasses row security by definition,
 which is precisely why the boundary needs a proof that does not use it.
 
+#### The cutover as one operation
+
+The twenty phases, the contract revision and the policies are three parts of one
+upgrade, and until now each part was proven separately: twenty rehearsals for the
+phases, `test_required_ownership_contract` for the migration, and
+`test_row_level_security` for the policies — the last two against a lake that was
+empty or stamped by hand. Nothing carried a revision-0034 database with real data
+through all three.
+
+`tests/test_ownership_deploy_rehearsal.py` does. It seeds a 0034 lake, migrates
+to the pre-contract revision, bootstraps the roots and the catalogs, runs every
+phase to completion, and then asserts the things the seam between them depends
+on: that no target column is left unstamped once every phase reports success —
+otherwise "completed" is a claim about the loop rather than about the data — that
+the contract migration accepts the result instead of refusing it, that every
+column is `NOT NULL` afterwards, that a fingerprint of the non-ownership columns
+is unchanged, and that the policies then isolate rows which reached their owner
+through the phases rather than through a fixture.
+
+The order itself lives in `vitals/ownership_deploy.py` as
+`OWNERSHIP_BACKFILL_SEQUENCE`, in the application rather than in a test, because
+it is an operational fact. `docs/OWNERSHIP_CUTOVER_RUNBOOK.md` is what an
+operator follows, and a test checks the document against the tuple — an operator
+follows the document, not the code, so the document is the thing that has to be
+verified rather than trusted.
+
 ## Rollback boundary
 
 Before a second subject can write:

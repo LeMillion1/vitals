@@ -10,6 +10,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- The ownership cutover is now proven as one operation. A revision-0034 lake
+  with real data goes through all twenty backfill phases, the contract
+  migration and the row policies in a single rehearsal — previously each third
+  was proven alone, and the last two only against an empty or hand-stamped
+  database.
+- `vitals/ownership_deploy.py` names the phase order in the application rather
+  than inside a test, `docs/OWNERSHIP_CUTOVER_RUNBOOK.md` is generated from it,
+  and a test checks the document against the tuple.
+
 - **Revision 0050 enforces subject isolation in the database.** Forty-one
   tables get `FORCE ROW LEVEL SECURITY` and a policy comparing `subject_id` to
   the `vitals.subject_id` session setting. An unbound session sees nothing

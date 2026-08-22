@@ -25,6 +25,7 @@ from sqlalchemy.pool import NullPool
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.enums import Source
 from vitals.models.base import Base
+from vitals.ownership_deploy import OWNERSHIP_BACKFILL_SEQUENCE
 from vitals.services import (
     conflict_catalog,
     data_portability_service,
@@ -431,121 +432,28 @@ async def test_real_postgres_0034_system_alert_stop_resume_volatility_and_restor
         identity = await _bootstrap_roots(engine)
         await _sync_catalogs(engine)
 
-        prior_commands = (
+        # Every phase before this one, in the order an operator runs them.
+        # The order itself lives in ``vitals.ownership_deploy`` so the runbook,
+        # the deploy rehearsal and this test cannot drift apart.
+        prior_commands = tuple(
             (
-                "backfill_subject_ownership.py",
-                ["--apply", "--batch-size", "1000"],
-                RAW_OWNERSHIP_BACKFILL_PHASE,
-                RAW_CLI_KEYS,
-            ),
-            (
-                "backfill_normalized_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "100"],
-                NORMALIZED_MANUAL_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_hrt_child_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                HRT_CHILD_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_provider_raw_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                PROVIDER_RAW_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_hevy_child_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                HEVY_CHILD_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_hrt_compound_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                HRT_COMPOUND_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_conflict_rule_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_progress_photo_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                PROGRESS_PHOTO_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_day_context_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                DAY_CONTEXT_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_signal_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                SIGNAL_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_shared_report_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                SHARED_REPORT_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_weight_log_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                WEIGHT_LOG_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_lab_result_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                LAB_RESULT_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_genetic_variant_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_body_scan_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                BODY_SCAN_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_body_scan_metric_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_garmin_weight_export_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_weekly_digest_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_notification_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                NOTIFICATION_OWNERSHIP_BACKFILL_PHASE,
-                AGGREGATE_CLI_KEYS,
-            ),
+                step.script,
+                (
+                    ["--apply", "--batch-size", "1000"]
+                    if step.phase == RAW_OWNERSHIP_BACKFILL_PHASE
+                    else ["--apply", "--batch-size", "1000", "--max-batches", "100"]
+                    if step.phase == NORMALIZED_MANUAL_BACKFILL_PHASE
+                    else ["--apply", "--batch-size", "1000", "--max-batches", "10"]
+                ),
+                step.phase,
+                (
+                    RAW_CLI_KEYS
+                    if step.phase == RAW_OWNERSHIP_BACKFILL_PHASE
+                    else AGGREGATE_CLI_KEYS
+                ),
+            )
+            for step in OWNERSHIP_BACKFILL_SEQUENCE
+            if step.phase != SYSTEM_ALERT_OWNERSHIP_BACKFILL_PHASE
         )
         for script, arguments, phase, expected_keys in prior_commands:
             result = await _run_cli(

@@ -140,7 +140,7 @@ async def _migrated_engine(database_url: str, alembic_config):
     return engine
 
 
-async def _restricted_engine(database_url: str):
+async def restricted_engine(database_url: str):
     """A role with no special attributes, granted plain DML on every table.
 
     No ``BYPASSRLS``, not the table owner, not superuser — the shape the
@@ -240,7 +240,7 @@ async def test_real_postgres_policies_isolate_subjects_and_fail_closed(
     admin = await _migrated_engine(
         database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
     )
-    restricted = await _restricted_engine(database_url)
+    restricted = await restricted_engine(database_url)
     try:
         first, second = await _seed_two_subjects(admin)
 
@@ -298,7 +298,7 @@ async def test_real_postgres_write_check_and_force_hold(db_session, monkeypatch)
     admin = await _migrated_engine(
         database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
     )
-    restricted = await _restricted_engine(database_url)
+    restricted = await restricted_engine(database_url)
     try:
         mine, theirs = await _seed_two_subjects(admin)
 
@@ -377,7 +377,7 @@ async def test_real_postgres_binding_survives_a_commit_and_refuses_a_switch(
     admin = await _migrated_engine(
         database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
     )
-    restricted = await _restricted_engine(database_url)
+    restricted = await restricted_engine(database_url)
     try:
         mine, theirs = await _seed_two_subjects(admin)
         factory = async_sessionmaker(
