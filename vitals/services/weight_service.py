@@ -3112,7 +3112,6 @@ async def _glp1_phase_overlays(
     phases = await glp1_service.list_dose_phases(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     return [
         {

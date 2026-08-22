@@ -4070,11 +4070,21 @@ async def test_llm_export_since_keeps_open_periods_and_catalogs(db_session, owne
     from vitals.services import glp1_service, supplements_service
 
     await glp1_service.add_dose_phase(
-        db_session, start_date=date(2020, 1, 1), drug="semaglutide", dose_mg=1.0
+        db_session,
+        start_date=date(2020, 1, 1),
+        drug="semaglutide",
+        dose_mg=1.0,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(date(2020, 1, 1)),
     )
     await glp1_service.add_dose_phase(
-        db_session, start_date=date(2019, 1, 1), end_date=date(2019, 6, 1),
-        drug="semaglutide", dose_mg=0.5,
+        db_session,
+        start_date=date(2019, 1, 1),
+        end_date=date(2019, 6, 1),
+        drug="semaglutide",
+        dose_mg=0.5,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(date(2019, 1, 1)),
     )
     await supplements_service.add_supplement(db_session, name="Creatine", identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()

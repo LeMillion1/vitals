@@ -156,15 +156,33 @@ async def test_glp1_resolve_active_empty_without_phase(db_session):
     assert await glp1_service.resolve_active(db_session) == []
 
 
-async def test_glp1_resolve_active_shape(db_session):
-    from vitals.services import glp1_service
+async def test_glp1_resolve_active_shape(db_session, owner_write):
+    from vitals.services import conflict_engine as engine, glp1_service
 
     await glp1_service.add_dose_phase(
-        db_session, start_date=today_local(), drug="semaglutide", dose_mg=1.0
+        db_session,
+        start_date=today_local(),
+        drug="semaglutide",
+        dose_mg=1.0,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    items = await glp1_service.resolve_active(db_session)
-    assert items == [{"drug": "semaglutide", "dose_mg": 1.0, "active": True}]
+    items = await glp1_service.resolve_active_scoped(
+        db_session,
+        scope=engine.ConflictScope(
+            subject_id=owner_write.subject_id,
+            evaluation_date=today_local(),
+        ),
+    )
+    assert items == [
+        {
+            engine.CONFLICT_ENTITY_KEY: items[0][engine.CONFLICT_ENTITY_KEY],
+            "drug": "semaglutide",
+            "dose_mg": 1.0,
+            "active": True,
+        }
+    ]
 
 
 async def test_labs_resolve_latest_shape(db_session):

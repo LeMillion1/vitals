@@ -1234,11 +1234,12 @@ asserted now runs against the context and the header directly.
 | nutrition | closed — meals and the day's running total, plus the nav rail's status card that reads it |
 | custom charts | closed — including the Redis key, which is now one entry per person |
 | timeline | closed — manual annotations and the derived feed over ten domains; the legacy-row selector went with it |
+| GLP-1 | closed — injections, dose phases, side effects and the plateau alert; phase bookkeeping is now unconditionally locked |
 | everything else | still bridged; see `vitals/legacy_scope.py` |
 
 The counter moves only in the registry, and the contract test refuses to let it
 move the wrong way. It started at 266 functions across 25 modules; it is now
-111 across 15. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
+91 across 14. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
 its subject is mandatory, and the branch that adopted an unowned row on the way
 past has been removed — an unowned row then stays unowned and stays invisible,
 which is the whole point.

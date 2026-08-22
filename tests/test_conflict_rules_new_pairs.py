@@ -26,30 +26,45 @@ async def _rule_id(session, code: str) -> int:
 
 
 # ── glp1 ↔ labs ───────────────────────────────────────────────────────────────
-async def _glp1_on_lipase(db_session, *, value: float):
+async def _glp1_on_lipase(db_session, owner_write, *, value: float):
     await conflict_catalog.sync_catalog(db_session)
-    conflict_engine.register_domain_resolver(Domain.GLP1.value, glp1_service.resolve_active)
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs_service.resolve_latest)
+    # GLP-1 is closed, so the dose phase is written and read inside the
+    # subject's scope; labs is still bridged and keeps its legacy resolver.
+    conflict_registrations.register_all_resolvers()
     await glp1_service.add_dose_phase(
-        db_session, start_date=today_local(), drug="semaglutide", dose_mg=1.0,
+        db_session,
+        start_date=today_local(),
+        drug="semaglutide",
+        dose_mg=1.0,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await labs_service.add_result(
         db_session, on_date=today_local(), marker="Липаза", value=value,
         ref_low=0, ref_high=60,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    return await conflict_engine.evaluate(db_session, Domain.LABS.value)
+    return await conflict_engine.evaluate_scoped(
+        db_session,
+        scope=conflict_engine.ConflictScope(
+            subject_id=owner_write.subject_id,
+            evaluation_date=today_local(),
+        ),
+        domain=Domain.LABS.value,
+    )
 
 
-async def test_glp1_high_lipase_fires(db_session):
-    violations = await _glp1_on_lipase(db_session, value=180)
+async def test_glp1_high_lipase_fires(db_session, owner_write):
+    violations = await _glp1_on_lipase(db_session, owner_write, value=180)
     rule_id = await _rule_id(db_session, "glp1_pancreatic_enzymes_elevated")
     fired = [v for v in violations if v.rule_id == rule_id]
     assert fired and fired[0].severity == "warn" and fired[0].category == "lab_safety"
 
 
-async def test_glp1_normal_lipase_silent(db_session):
-    violations = await _glp1_on_lipase(db_session, value=30)
+async def test_glp1_normal_lipase_silent(db_session, owner_write):
+    violations = await _glp1_on_lipase(db_session, owner_write, value=30)
     rule_id = await _rule_id(db_session, "glp1_pancreatic_enzymes_elevated")
     assert not any(v.rule_id == rule_id for v in violations)
 

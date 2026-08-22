@@ -62,10 +62,7 @@ async def glp1_dashboard(
         prepared_conflict_write=prepared,
     )
 
-    scope_kwargs = {
-        "subject_id": context.identity.subject_id,
-        "include_legacy_unowned": True,
-    }
+    scope_kwargs = {"subject_id": context.identity.subject_id}
     injections = await glp1_service.list_injections(db, **scope_kwargs)
     phases = await glp1_service.list_dose_phases(db, **scope_kwargs)
     side_effects = await glp1_service.list_side_effects(db, **scope_kwargs)
@@ -129,7 +126,6 @@ async def add_injection(
                 db, id, on_date=on_date, drug=drug, dose_mg=dose_mg,
                 site=site, note=note, override=override,
                 identity=context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         else:
@@ -185,7 +181,6 @@ async def add_phase(
             source=Source.MANUAL.value,
             override=override,
             identity=context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await db.commit()
@@ -244,7 +239,6 @@ async def delete_injection(
         db,
         id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -267,7 +261,6 @@ async def delete_phase(
         db,
         id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -290,7 +283,6 @@ async def delete_side_effect(
         db,
         id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()

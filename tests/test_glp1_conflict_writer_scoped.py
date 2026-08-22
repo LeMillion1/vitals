@@ -413,7 +413,7 @@ async def test_reads_updates_notes_and_deletes_are_strictly_subject_scoped(
     assert foreign.drug == "tirzepatide"
 
 
-async def test_legacy_bridge_includes_only_fully_unowned_rows(
+async def test_no_glp1_reader_or_writer_reaches_an_unowned_row(
     db_session,
     legacy_owner_roots,
 ):
@@ -478,54 +478,44 @@ async def test_legacy_bridge_includes_only_fully_unowned_rows(
     assert [row.id for row in await glp1_service.list_injections(
         db_session,
         subject_id=context.identity.subject_id,
-        include_legacy_unowned=True,
-    )] == [full_injection.id]
+    )] == []
     assert [row.id for row in await glp1_service.list_dose_phases(
         db_session,
         subject_id=context.identity.subject_id,
-        include_legacy_unowned=True,
-    )] == [full_phase.id]
+    )] == []
     assert [row.id for row in await glp1_service.list_side_effects(
         db_session,
         subject_id=context.identity.subject_id,
-        include_legacy_unowned=True,
-    )] == [full_effect.id]
+    )] == []
 
-    adopted = await glp1_service.update_injection(
+    # Adoption on write went with the bridge, so an unowned row stays unowned
+    # and unedited rather than being claimed by the first writer to touch it.
+    assert await glp1_service.update_injection(
         db_session,
         full_injection.id,
         on_date=EVALUATION_DATE,
         drug="semaglutide",
         dose_mg=1,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
-    )
-    assert adopted is full_injection
-    assert (adopted.subject_id, adopted.actor_user_id, adopted.source) == (
-        context.identity.subject_id,
-        None,
-        Source.MANUAL.value,
-    )
+    ) is None
+    assert full_injection.subject_id is None
     assert await glp1_service.delete_injection(
         db_session,
         partial_injection.id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     ) is False
     assert await glp1_service.delete_dose_phase(
         db_session,
         partial_phase.id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     ) is False
     assert await glp1_service.delete_side_effect(
         db_session,
         partial_effect.id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     ) is False
 
@@ -729,6 +719,7 @@ async def test_plateau_uses_scoped_phase_weights_noise_and_typed_health_alert(
 
     plateau = await glp1_service.evaluate_plateau(
         db_session,
+        subject_id=identity.subject_id,
         scope=context.scope,
     )
     assert plateau is not None
@@ -814,6 +805,7 @@ async def test_plateau_rejects_weight_linked_to_foreign_raw_provenance(
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
         await glp1_service.evaluate_plateau(
             db_session,
+            subject_id=identity.subject_id,
             scope=_context(identity).scope,
         )
 
@@ -861,6 +853,7 @@ async def test_plateau_rejects_legacy_weight_linked_to_partial_raw_provenance(
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
         await glp1_service.evaluate_plateau(
             db_session,
+            subject_id=identity.subject_id,
             scope=_context(identity, legacy_bridge=True).scope,
         )
 
@@ -1286,7 +1279,6 @@ async def test_postgres_legacy_phase_write_serializes_subject_governance(
                 drug="semaglutide",
                 dose_mg=0.5,
                 identity=context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=await _prepared(session, context),
             )
             await session.commit()

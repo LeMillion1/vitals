@@ -23,8 +23,6 @@ _LEGACY_WRITER_APIS = frozenset({"enforce", "enforce_day_end"})
 _EXPECTED_LEGACY_CALLS = Counter(
     {
         ("vitals/services/body_scan_service.py", "save_scan", "enforce"): 1,
-        ("vitals/services/glp1_service.py", "log_injection", "enforce"): 1,
-        ("vitals/services/glp1_service.py", "update_injection", "enforce"): 1,
         ("vitals/services/labs_service.py", "add_result", "enforce"): 1,
         ("vitals/services/weight_service.py", "log_weight", "enforce"): 1,
         (
@@ -437,10 +435,10 @@ def test_legacy_conflict_writer_inventory_is_exact() -> None:
     actual = Counter(_audit().legacy_calls)
 
     assert actual == _EXPECTED_LEGACY_CALLS
-    # Seven legacy enforce sites remain: supplements closed three, skincare
-    # one, HRT two and nutrition one when they started demanding a subject and
-    # a conflict decision.
-    assert sum(count for (*_, api), count in actual.items() if api == "enforce") == 7
+    # Five legacy enforce sites remain: supplements closed three, skincare one,
+    # HRT two, nutrition one and GLP-1 two when they started demanding a subject
+    # and a conflict decision.
+    assert sum(count for (*_, api), count in actual.items() if api == "enforce") == 5
     assert (
         sum(
             count

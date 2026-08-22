@@ -10,6 +10,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the GLP-1 domain. Twenty bridges — the largest single leaf so far, and
+  the first with an alert of its own. Every read takes the subject, every write
+  takes the subject with its conflict decision, and two more legacy `enforce()`
+  call sites went with them: five remain across the codebase.
+- Dose-phase bookkeeping is now unconditionally serialized. Closing an older
+  open phase used to take the row lock only on the scoped path and adopt an
+  unowned phase while it was there; both were consequences of the bridge. A
+  phase belongs to one person, so the lock is always taken and nothing is
+  claimed.
+- The plateau evaluator names the subject whose dose and whose weight trend it
+  is reading. It still hands `weight_service` the compatibility flag, because
+  weight is the next domain to close, not this one.
+
 - Closed the timeline domain, both halves of it: the manual annotations a person
   writes and the derived feed re-shaped from ten other domains' rows. Ten
   bridges. `_fully_legacy_row_scope` is gone with them — the selector that

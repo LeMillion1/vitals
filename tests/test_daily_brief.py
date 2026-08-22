@@ -357,7 +357,12 @@ async def test_protocol_never_reaches_the_brief(db_session, legacy_owner_roots, 
     from vitals.services import glp1_service, supplements_service
 
     await glp1_service.add_dose_phase(
-        db_session, start_date=DAY - timedelta(days=30), drug="semaglutide", dose_mg=1.0
+        db_session,
+        start_date=DAY - timedelta(days=30),
+        drug="semaglutide",
+        dose_mg=1.0,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY - timedelta(days=30)),
     )
     await supplements_service.add_supplement(
         db_session, name="Ашваганда", key="ashwagandha", active=True,

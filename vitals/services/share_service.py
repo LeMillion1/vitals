@@ -782,10 +782,16 @@ async def _glp1_block(
 
     phase = ctx.get("glp1") or {}
     injections = [
-        i for i in await glp1_service.list_injections(session) if start <= i.date <= end
+        i
+        for i in await glp1_service.list_injections(session, subject_id=subject_id)
+        if start <= i.date <= end
     ]
     effects = [
-        e for e in await glp1_service.list_side_effects(session) if start <= e.date <= end
+        e
+        for e in await glp1_service.list_side_effects(
+            session, subject_id=subject_id
+        )
+        if start <= e.date <= end
     ]
     current = (
         {"drug": phase.get("drug"), "dose_mg": phase.get("dose_mg")}

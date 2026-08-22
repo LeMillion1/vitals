@@ -46,30 +46,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
             }
         ),
 
-        'vitals.services.glp1_service': frozenset(
-            {
-                '_owned_row_for_update',
-                '_require_legacy_bridge',
-                '_subject_scope',
-                'active_dose_phase',
-                'add_dose_phase',
-                'delete_dose_phase',
-                'delete_injection',
-                'delete_side_effect',
-                'dose_phase_overlays',
-                'evaluate_plateau',
-                'get_injection_for_update',
-                'last_injection',
-                'list_dose_phases',
-                'list_injections',
-                'list_side_effects',
-                'log_injection',
-                'log_side_effect',
-                'refresh_plateau_alert',
-                'update_injection',
-                'update_injection_note',
-            }
-        ),
 
         'vitals.services.hrt_reminders': frozenset(
             {

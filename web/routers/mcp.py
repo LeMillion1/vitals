@@ -441,10 +441,7 @@ async def get_glp1_logs(
         from vitals.services import glp1_service
 
         scope = await _mcp_v1_conflict_scope(session)
-        scope_kwargs = {
-            "subject_id": scope.subject_id,
-            "include_legacy_unowned": scope.include_legacy_unowned,
-        }
+        scope_kwargs = {"subject_id": scope.subject_id}
         injections = await glp1_service.list_injections(
             session,
             start=start,
@@ -1896,7 +1893,6 @@ async def log_note(
                 record_id,
                 note=note,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
             if row is None:
@@ -2077,9 +2073,6 @@ async def get_notes(
                 rows = await glp1_service.list_injections(
                     session,
                     subject_id=glp1_scope.subject_id,
-                    include_legacy_unowned=(
-                        glp1_scope.include_legacy_unowned
-                    ),
                     start=start,
                     end=end,
                     has_note=True,
@@ -2288,7 +2281,6 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
         elif domain in {
@@ -3183,7 +3175,6 @@ async def update_glp1(
             session,
             injection_id,
             identity=conflict_context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         if current is None:
@@ -3212,7 +3203,6 @@ async def update_glp1(
                 on_date=final_date,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
                 **merged,
             )
@@ -3297,7 +3287,6 @@ async def add_dose_phase(
                 source=Source.MCP.value,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         except ConflictBlocked as exc:
