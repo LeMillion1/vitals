@@ -2,7 +2,7 @@
 
 Status: active design and implementation plan
 
-Last reviewed: 2026-08-20
+Last reviewed: 2026-08-22
 
 Current implementation branch: `commercial/main`
 
@@ -636,21 +636,11 @@ Implementation progress on `commercial/main`:
   and the catalogs cannot see a subject's own row at all. Downgrade recreates
   the keys only while the data still satisfies them.
 - Stage 5 is complete: the audit, the scoped keys, the switched write paths and
-  the drop of the global keys. What a second subject still needs is PR-04's
-  work, not PR-03's: `subject_id` and a required connection are still nullable,
-  so a row written without one keeps no uniqueness at all under its scoped key,
-  and the legacy unscoped readers are still in place. Registration stays closed
-  until those land.
-- Remaining work: scoped
-  write/read path, two-subject collision and concurrency tests, dropping the
-  legacy global keys, scoped
-  remaining raw/file-sensitive normalized rows and their inherited children,
-  artifacts,
-  natural-key/alert/outbox-unique cutover, remaining health-alert and conflict
-  writers, subject-aware composition/reporting (including Labs/Genetics charts,
-  share snapshot inputs, digests, overview, remaining Today composition, and
-  export), lossless VCF chunking, full MCP principal propagation, and RLS remain
-  pending.
+  the drop of the global keys. PR-04 then closed what a second subject still
+  needed — see its section below.
+- Remaining before a multi-user release: lossless VCF chunking, full MCP
+  principal propagation, and the `AccessContext` cutover that replaces the
+  sole-subject resolver with a real principal (PR-05 and PR-10).
   Registration stays disabled; the current code is a safe single-subject
   migration bridge, not a multi-user release boundary.
 
@@ -709,6 +699,39 @@ Tests:
 Rollback: feature flag the new policy adapter only while no second subject can
 register. RLS can be disabled in a controlled rollback without dropping scope
 columns.
+
+Delivered:
+
+- The legacy scope registry reached zero. `vitals/legacy_scope.py` started at
+  266 functions across 25 modules that would read or write across the whole
+  installation when the caller left the scope out; there are none, and the
+  contract test asserts equality rather than a lower bound so a bridge cannot
+  reopen without deleting that assertion.
+- The conflict engine has no unscoped path. The seven `legacy_resolver=`
+  registrations, the engine's second resolver arm, `evaluate`, `enforce`,
+  `enforce_day_end` and the seven unscoped domain readers are gone;
+  `register_domain_resolver` refuses a reader without a keyword-only `scope`.
+- No production path writes an ownerless row. Garmin's and Hevy's unscoped sync,
+  pulse, ingest and reparse entry points are deleted along with
+  `raw_payload_service.upsert_raw_payload`; every one had an owned twin the live
+  callers were already using.
+- Revision `0049` makes all thirty-nine remaining registered-required references
+  `NOT NULL`, in the models and the database together, and refuses to run while
+  any target column still holds unstamped rows.
+  `PRE_OWNERSHIP_CONTRACT_REVISION` records the deploy order in code: migrate to
+  `0048`, finish the backfill, migrate to head.
+- Revision `0050` puts `FORCE ROW LEVEL SECURITY` and a subject policy on the
+  forty-one tables whose `subject_id` is mandatory.
+  `rls_session.bind_session_subject` sets the transaction-local value the policy
+  reads; an unbound session sees nothing rather than everything.
+
+Not delivered, and deliberately so: the `AccessContext` cutover in the scope
+list above. Services take an explicit `subject_id` today and the sole-subject
+resolver supplies it; replacing that resolver with a real principal is PR-10's
+work and is what the composition readers move onto next. `system_alerts`,
+`conflict_rules` and the inherited children are also excluded from the blanket
+RLS policy — they need "mine or the installation's" rather than "mine", which is
+a different predicate and needs its own review.
 
 ### PR 05 — OIDC authentication, local sessions, and closed registration
 
@@ -1077,8 +1100,8 @@ Additional gates:
   historical fork branches.
 - [x] Merge PR 01 identity/support foundation.
 - [x] Bootstrap current owner and introduce `AccessContext`.
-- [ ] Backfill subject ownership across the lake.
-- [ ] Pass cross-subject service isolation and PostgreSQL RLS gates.
+- [x] Backfill subject ownership across the lake.
+- [x] Pass cross-subject service isolation and PostgreSQL RLS gates.
 - [ ] Cut over OIDC authentication and per-user Vitals sessions/step-up state.
 - [ ] Isolate files, settings, portability, connectors, scheduler, and messaging.
 - [ ] Add verified professionals, relationships, and consent.

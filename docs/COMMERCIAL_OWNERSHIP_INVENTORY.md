@@ -1,8 +1,8 @@
 # Commercial Subject-Ownership Inventory
 
-Status: PR-03 Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R / Stage-3S / Stage-3T implementation source of truth
+Status: PR-03 Stage-3 through Stage-5 and PR-04 Stage-6 implementation source of truth
 
-Last reviewed: 2026-08-21
+Last reviewed: 2026-08-22
 
 This document classifies every SQLAlchemy table currently registered in
 `Base.metadata` and records the ownership, provenance, key, backfill, and
@@ -1167,7 +1167,8 @@ not removed until the later contract migration.
 `vitals/legacy_scope.py` names every service function that still accepts an
 omittable scope, and every module that still fetches a subject-owned row by bare
 primary key. As of the cutover's start that is 266 functions across 25 modules,
-plus 14 modules reading by key.
+plus 14 modules reading by key. Both are ratchets; the first reached zero, and
+the second is at eight — see the table under Stage 6C.
 
 A contract test recomputes both inventories from the source and fails in either
 direction: a module that grows an unlisted bridge fails, and a module whose
@@ -1243,7 +1244,25 @@ asserted now runs against the context and the header directly.
 
 The counter moves only in the registry, and the contract test refuses to let it
 move the wrong way. It started at 266 functions across 25 modules and is now
-**zero**. The contract test asserts equality rather than a lower bound, so a
+**zero**.
+
+The second inventory in the same file, `LEGACY_BARE_ID_READS`, is not zero. It
+records modules that still fetch a subject-owned row by bare primary key, and it
+went from fourteen to eight as the domains closed — genetics and Garmin gave up
+theirs outright, the rest went with the functions that were deleted. What
+remains falls into three groups, and none of them is a leak today:
+
+| module | model | why it is still there |
+| --- | --- | --- |
+| `alerts_service` | `SystemAlert` | The scoped reader exists; the bare read is the resolve-by-id path a router hands a clicked alert. |
+| `body_scan_service`, `labs_service`, `proactive.inbound` | `RawPayload` | Each re-reads a payload it has already proved the ownership of, on the way to reparsing it. |
+| `garmin_weight_service`, `language_service`, `twofa_service` | `AppSetting` | Installation-wide settings, which have no subject to be scoped by — they move when the key moves to `scoped_settings_service`. |
+| `hrt_service` | `HrtCompound` | The catalog is `MIXED`: a curated compound belongs to nobody. |
+
+A bare read proves nothing about who a row belongs to, which is why they are
+counted; each of these has established that separately, and the ratchet is what
+keeps that claim honest as the code changes. Closing them is PR-10 work, not a
+precondition for anything in Stage 6. The contract test asserts equality rather than a lower bound, so a
 reopened bridge cannot pass without deleting that assertion. A leaf is "closed"
 when its `include_legacy_unowned` parameters are gone, its subject is mandatory,
 and the branch that adopted an unowned row on the way past has been removed — an
@@ -1373,12 +1392,13 @@ boundary against the column each table actually has removes a silent gap:
 before, those three were quietly skipped by anything that looked the name up
 directly.
 
-`PENDING_OWNERSHIP_CONTRACT_COLUMNS` in `vitals/ownership.py` names the thirty-nine
-columns, and its paired contract test recomputes the set from the models and
-fails in either direction — a column that gains its `NOT NULL` fails until the
-entry is removed, one that quietly loses it fails at once, and an entry removed
-without the column actually becoming `NOT NULL` fails too. Same ratchet as
-`legacy_scope.py`, and reaching empty is the condition for writing the migration.
+`PENDING_OWNERSHIP_CONTRACT_COLUMNS` in `vitals/ownership.py` was the ratchet
+that tracked the gap while it closed, and it is now empty. Its paired contract
+test still recomputes the set from the models and fails in either direction — a
+column that gains its `NOT NULL` fails until the entry is removed, one that
+quietly loses it fails at once, and an entry removed without the column actually
+becoming `NOT NULL` fails too. Empty is therefore a claim the test re-proves on
+every run rather than a line somebody edited.
 
 #### Stage 6E — FORCE RLS, the second boundary
 

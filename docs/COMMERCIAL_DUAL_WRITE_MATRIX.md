@@ -2,13 +2,21 @@
 
 Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R / Stage-3S / Stage-3T implementation source of truth
 
-Last reviewed: 2026-08-21
+Last reviewed: 2026-08-22
 
 This document records every compatibility write boundary that must populate the
 nullable ownership columns introduced by revisions `0037` and `0038`. It is the
 runtime companion to `COMMERCIAL_OWNERSHIP_INVENTORY.md`; that inventory owns the
 schema target, while this file owns how new writes reach it before registration
 or multi-subject reads are enabled.
+
+Those columns are no longer nullable. Revision `0049` made every registered-
+required reference `NOT NULL` and `0050` added the row-level policies over them,
+so the boundaries below are now the *history* of how the lake was brought to
+that state rather than a description of what a new write may still omit — a
+write that omits one is refused by the schema. The file is kept because a
+deployment that has not finished its backfill is still migrating through exactly
+these boundaries, in this order.
 
 ## Boundary contract
 
@@ -201,8 +209,10 @@ also scopes every derived event selector when a subject is supplied. Pre-backfil
 NULL rows are included only through an explicit compatibility flag after the
 sole-subject resolver succeeds. Cross-domain composition readers in Today,
 digest/report/share assembly, weight-chart overlays, custom-chart metric catalog/
-series resolution, and whole-lake MCP exports still await the PR-04/PR-10
-AccessContext cutover. Conflict-rule reads now select one subject and evaluation
+series resolution, and MCP exports were closed by PR-04: each takes the subject
+it composes for and threads it into every domain read. The `AccessContext`
+cutover that replaces the sole-subject resolver with a real principal is PR-10's,
+and is what these readers move onto next. Conflict-rule reads now select one subject and evaluation
 date across all seven resolver domains; curated definitions remain global,
 subject/custom rows are exact-S, and ambiguous or partial legacy roots fail
 closed. Curated activation now lives in the subject setting with a temporary
