@@ -1,0 +1,886 @@
+<title>Vitals Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+
+<style>
+:root {
+  --ink:        #12181f;
+  --ink-soft:   #3d4a52;
+  --muted:      #5c6b72;
+  --paper:      #f7f8f7;
+  --surface:    #ffffff;
+  --surface-2:  #eef2f2;
+  --rule:       #ccd6d8;
+  --rule-soft:  #e2e9e9;
+  --accent:     #0e7c86;
+  --accent-ink: #0a5b62;
+  --accent-wash:#dceaec;
+  --oxide:      #a6501e;
+  --oxide-wash: #f4e5da;
+  --moss:       #46683c;
+
+  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --measure: 68ch;
+  --rail: 15.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink:        #e6ecec;
+    --ink-soft:   #b3c0c4;
+    --muted:      #8b9aa0;
+    --paper:      #0e1418;
+    --surface:    #151d22;
+    --surface-2:  #1c262c;
+    --rule:       #2e3b42;
+    --rule-soft:  #222d33;
+    --accent:     #46b3bd;
+    --accent-ink: #7ccdd4;
+    --accent-wash:#143236;
+    --oxide:      #d8875a;
+    --oxide-wash: #2f2018;
+    --moss:       #8db97f;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ink:        #e6ecec;
+  --ink-soft:   #b3c0c4;
+  --muted:      #8b9aa0;
+  --paper:      #0e1418;
+  --surface:    #151d22;
+  --surface-2:  #1c262c;
+  --rule:       #2e3b42;
+  --rule-soft:  #222d33;
+  --accent:     #46b3bd;
+  --accent-ink: #7ccdd4;
+  --accent-wash:#143236;
+  --oxide:      #d8875a;
+  --oxide-wash: #2f2018;
+  --moss:       #8db97f;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  gap: 0 3.5rem;
+  max-width: 78rem;
+  margin: 0 auto;
+  padding: 0 2rem 6rem;
+}
+
+/* ── Masthead ─────────────────────────────────────────────────────── */
+.masthead {
+  grid-column: 1 / -1;
+  border-bottom: 2px solid var(--ink);
+  padding: 4.5rem 0 1.75rem;
+  margin-bottom: 3rem;
+}
+.masthead h1 {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: clamp(2.4rem, 5vw, 3.6rem);
+  line-height: 1.02;
+  letter-spacing: -0.025em;
+  margin: 0 0 0.9rem;
+  text-wrap: balance;
+}
+.standfirst {
+  max-width: 46rem;
+  font-size: 1.15rem;
+  color: var(--ink-soft);
+  margin: 0 0 1.6rem;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.75rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.meta b { color: var(--ink); font-weight: 500; }
+
+/* ── Rail ─────────────────────────────────────────────────────────── */
+.rail { grid-column: 1; }
+.rail nav {
+  position: sticky;
+  top: 2rem;
+  font-family: var(--sans);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.rail .label {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 0.85rem;
+}
+.rail ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; }
+.rail a { color: var(--ink-soft); text-decoration: none; display: block; border-left: 2px solid transparent; padding-left: 0.7rem; }
+.rail a:hover, .rail a:focus-visible { color: var(--accent-ink); border-left-color: var(--accent); }
+
+/* ── Content ──────────────────────────────────────────────────────── */
+main { grid-column: 2; min-width: 0; }
+section + section { margin-top: 4.5rem; }
+section > * { max-width: var(--measure); }
+
+h2 {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 1.85rem;
+  letter-spacing: -0.018em;
+  line-height: 1.15;
+  margin: 0 0 0.4rem;
+  text-wrap: balance;
+}
+h3 {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 1.12rem;
+  letter-spacing: -0.008em;
+  margin: 2.4rem 0 0.5rem;
+}
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+  margin: 0 0 0.5rem;
+}
+p { margin: 0 0 1.05rem; }
+a { color: var(--accent-ink); }
+code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  background: var(--surface-2);
+  padding: 0.1em 0.34em;
+  border-radius: 2px;
+}
+strong { font-weight: 600; }
+
+/* ── Invariants: the rules that survive ───────────────────────────── */
+.invariant {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-wash);
+  padding: 1rem 1.25rem;
+  margin: 1.6rem 0;
+  font-size: 0.97rem;
+}
+.invariant p:last-child { margin-bottom: 0; }
+.invariant .tag {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+  display: block;
+  margin-bottom: 0.35rem;
+}
+.gone {
+  border-left-color: var(--oxide);
+  background: var(--oxide-wash);
+}
+.gone .tag { color: var(--oxide); }
+
+/* ── Figures break the measure ────────────────────────────────────── */
+figure {
+  margin: 2rem 0;
+  max-width: none;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  border-radius: 3px;
+  overflow: hidden;
+}
+/* The diagrams carry their own fixed palette, so their ground stays light in
+   both themes — a technical plate on the page rather than a themed surface.
+   Anything mermaid draws outside a node (edge labels, subgraph titles) would
+   otherwise be dark ink on a dark card. */
+figure .diagram {
+  overflow-x: auto;
+  padding: 1.5rem 1.25rem 0.5rem;
+  background: #ffffff;
+}
+figcaption {
+  font-family: var(--sans);
+  font-size: 0.83rem;
+  color: var(--muted);
+  padding: 0.85rem 1.25rem 1rem;
+  border-top: 1px solid var(--rule-soft);
+  background: var(--surface-2);
+}
+figcaption b { color: var(--ink); font-weight: 600; }
+pre.mermaid { background: transparent; margin: 0; text-align: center; }
+
+/* ── Tables ───────────────────────────────────────────────────────── */
+.tablewrap { overflow-x: auto; margin: 1.6rem 0; max-width: none; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: var(--sans);
+  font-size: 0.88rem;
+  font-variant-numeric: tabular-nums;
+}
+th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.7rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1.5px solid var(--ink);
+  padding: 0 0.9rem 0.5rem 0;
+  white-space: nowrap;
+}
+td {
+  border-bottom: 1px solid var(--rule-soft);
+  padding: 0.6rem 0.9rem 0.6rem 0;
+  vertical-align: top;
+}
+td code { background: none; padding: 0; color: var(--ink-soft); }
+tbody tr:hover td { background: var(--surface-2); }
+
+/* ── Stage timeline: order carries meaning here ───────────────────── */
+.stages { max-width: none; margin: 2rem 0; display: flex; flex-direction: column; }
+.stage {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr;
+  gap: 0 1.25rem;
+  padding: 1.1rem 0;
+  border-top: 1px solid var(--rule-soft);
+}
+.stage:first-child { border-top: 1.5px solid var(--ink); }
+.stage .n {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding-top: 0.15rem;
+  font-variant-numeric: tabular-nums;
+}
+.stage h4 {
+  font-family: var(--sans);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 0.3rem;
+}
+.stage p { font-size: 0.94rem; margin: 0; color: var(--ink-soft); max-width: 60ch; }
+.stage .state {
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.15em 0.5em;
+  border-radius: 2px;
+  margin-left: 0.6rem;
+  vertical-align: 0.15em;
+  white-space: nowrap;
+}
+.done { background: var(--accent-wash); color: var(--accent-ink); }
+.next { background: var(--surface-2); color: var(--muted); }
+
+.footnote {
+  margin-top: 5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.85rem;
+  color: var(--muted);
+  max-width: var(--measure);
+}
+
+@media (max-width: 900px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0 1.25rem 4rem; }
+  .rail { display: none; }
+  main { grid-column: 1; }
+  .masthead { padding-top: 2.5rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <h1>Vitals Architecture</h1>
+  <p class="standfirst">A self-hosted personal health record — fifteen domains, four external integrations, one data lake — being rebuilt so that every row belongs to a named person instead of to the installation. This is what the service is now, mid-conversion, and what changed underneath it.</p>
+  <div class="meta">
+    <span><b>62</b> tables</span>
+    <span><b>50</b> migrations</span>
+    <span><b>15</b> domains</span>
+    <span><b>88</b> services</span>
+    <span><b>4,443</b> tests</span>
+    <span>Reviewed <b>2026-08-23</b></span>
+  </div>
+</header>
+
+<aside class="rail">
+  <nav>
+    <p class="label">Contents</p>
+    <ol>
+      <li><a href="#context">What it is</a></li>
+      <li><a href="#containers">Containers</a></li>
+      <li><a href="#ownership">The ownership graph</a></li>
+      <li><a href="#domains">Fifteen domains</a></li>
+      <li><a href="#lake">Raw, fact, artifact</a></li>
+      <li><a href="#write">How a write happens</a></li>
+      <li><a href="#read">How a read is bounded</a></li>
+      <li><a href="#conflicts">Cross-domain conflicts</a></li>
+      <li><a href="#migration">The conversion</a></li>
+      <li><a href="#cutover">The cutover</a></li>
+      <li><a href="#invariants">Invariants</a></li>
+    </ol>
+  </nav>
+</aside>
+
+<main>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="context">
+  <p class="eyebrow">C4 · Level 1</p>
+  <h2>What it is</h2>
+  <p>Vitals is one person's health record, self-hosted behind a VPN. It pulls from the devices and services that already hold fragments of that record, keeps every upstream response verbatim, and turns those into facts it can chart, compare and reason about.</p>
+  <p>The conversion under way does not change what it does. It changes who a row belongs to: from <em>the installation</em>, implicitly, to <em>a named health subject</em>, explicitly and enforceably.</p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"13px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2","tertiaryColor":"#f7f8f7"}}}%%
+flowchart TB
+  owner(["Owner<br/><span style='font-size:11px'>the person the record is about</span>"])
+  pro(["Clinician / trainer<br/><span style='font-size:11px'>not yet — PR-07</span>"])
+
+  subgraph platform [" "]
+    vitals["<b>Vitals</b><br/><span style='font-size:11px'>health record, analytics,<br/>conflict engine, reports</span>"]
+  end
+
+  garmin["Garmin Connect<br/><span style='font-size:11px'>sleep, HRV, steps, weigh-ins</span>"]
+  hevy["Hevy<br/><span style='font-size:11px'>strength training</span>"]
+  tg["Telegram<br/><span style='font-size:11px'>inbound signals, outbound nudges</span>"]
+  llm["OpenRouter<br/><span style='font-size:11px'>digests, parsing, briefs</span>"]
+  mcp["MCP client<br/><span style='font-size:11px'>Claude, over a scoped grant</span>"]
+
+  owner -->|web UI| vitals
+  owner -.->|messages| tg
+  pro -.->|"consent-scoped read"| vitals
+  vitals <-->|pull + weigh-in export| garmin
+  vitals -->|pull| hevy
+  vitals <-->|send + receive| tg
+  vitals -->|"metered, quota'd"| llm
+  mcp -->|tools + resources| vitals
+
+  classDef sys fill:#0e7c86,stroke:#0a5b62,color:#ffffff,font-weight:600
+  classDef ext fill:#eef2f2,stroke:#ccd6d8,color:#3d4a52
+  classDef person fill:#ffffff,stroke:#12181f,color:#12181f
+  class vitals sys
+  class garmin,hevy,tg,llm,mcp ext
+  class owner,pro person
+  style pro stroke-dasharray: 5 4
+  style platform fill:none,stroke:none
+</pre>
+    </div>
+    <figcaption><b>System context.</b> Solid edges exist today. The clinician path is dashed: the policy vocabulary for it is built and evaluated, but no relationship or consent record can be created yet.</figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="containers">
+  <p class="eyebrow">C4 · Level 2</p>
+  <h2>Containers</h2>
+  <p>One FastAPI process serves the web UI, the MCP endpoint and the external read API. An APScheduler loop inside it runs fifteen jobs. Everything durable is in PostgreSQL; Redis holds only what can be lost without consequence.</p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"13px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
+flowchart LR
+  subgraph proc ["FastAPI process"]
+    direction TB
+    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>25 routers, server-rendered</span>"]
+    mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
+    api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
+    svc["<b>Domain services</b><br/><span style='font-size:11px'>88 modules — the only writers</span>"]
+    sched["<b>Scheduler</b><br/><span style='font-size:11px'>15 jobs: sync, digest, nudge,<br/>reconcile, sweep</span>"]
+  end
+
+  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>62 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
+  redis[("<b>Redis</b><br/><span style='font-size:11px'>cache, rate limits,<br/>Garmin token, breaker</span>")]
+  files[/"<b>Private files</b><br/><span style='font-size:11px'>photos, scans, PDFs<br/>opaque keys</span>"/]
+
+  web --> svc
+  mcpsrv --> svc
+  api --> svc
+  sched --> svc
+  svc --> pg
+  svc --> redis
+  svc --> files
+
+  classDef box fill:#ffffff,stroke:#ccd6d8,color:#12181f
+  classDef core fill:#dceaec,stroke:#0e7c86,color:#12181f,font-weight:600
+  classDef store fill:#eef2f2,stroke:#5c6b72,color:#12181f
+  class web,mcpsrv,api,sched box
+  class svc core
+  class pg,redis,files store
+  style proc fill:#f7f8f7,stroke:#ccd6d8
+</pre>
+    </div>
+    <figcaption><b>Containers.</b> Every surface goes through the domain services; none of them reaches the database directly. That funnel is what made the ownership conversion tractable — there was one layer to make scope-aware, not four.</figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="ownership">
+  <p class="eyebrow">The core of the conversion</p>
+  <h2>The ownership graph</h2>
+  <p>Before, a row was simply <em>in the database</em>, and that was enough to identify it as the owner's. The conversion replaces that with four explicit roots, each answering a different question about a row.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Root</th><th>Question it answers</th><th>Absent means</th></tr></thead>
+      <tbody>
+        <tr><td><code>subject_id</code></td><td>Whose health is this about?</td><td>Nothing — now mandatory on 41 tables</td></tr>
+        <tr><td><code>actor_user_id</code></td><td>Which human entered it?</td><td>A system or scheduled job did</td></tr>
+        <tr><td><code>integration_connection_id</code></td><td>Which account did it arrive through?</td><td>Nobody's device — typed in by hand</td></tr>
+        <tr><td><code>file_asset_id</code></td><td>Which private file is it a pointer to?</td><td>Not backed by a file</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="invariant">
+    <span class="tag">Invariant</span>
+    <p>A null <em>actor</em> is legitimate — a migrated row or a scheduled sync genuinely has no human behind it. A row that names an actor but no subject is not old data, it is <strong>broken provenance</strong>, and every reader reports it rather than passing over it.</p>
+  </div>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"12px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72"}}}%%
+erDiagram
+  USERS ||--o| HEALTH_SUBJECTS : "owns exactly one"
+  USERS ||--o{ USER_ROLES : "additive, never a data grant"
+  HEALTH_SUBJECTS ||--o{ INTEGRATION_CONNECTIONS : "garmin, hevy, telegram, openrouter"
+  HEALTH_SUBJECTS ||--o{ FILE_ASSETS : "opaque private keys"
+  HEALTH_SUBJECTS ||--o{ RAW_PAYLOADS : "the lake"
+  HEALTH_SUBJECTS ||--o{ SUBJECT_DATA : "34 domain tables"
+  HEALTH_SUBJECTS ||--o{ SUPPORT_ACCESS_GRANTS : "time-boxed, scoped"
+  INTEGRATION_CONNECTIONS ||--o{ RAW_PAYLOADS : "arrived through"
+  RAW_PAYLOADS ||--o{ SUBJECT_DATA : "parsed into"
+  FILE_ASSETS ||--o{ SUBJECT_DATA : "pointed at by"
+
+  USERS {
+    uuid id PK
+    text normalized_username UK
+    text status "active, suspended"
+    int session_version
+  }
+  HEALTH_SUBJECTS {
+    uuid id PK
+    uuid owner_user_id FK "unique — one record per person"
+    text timezone
+  }
+  INTEGRATION_CONNECTIONS {
+    uuid id PK
+    uuid subject_id FK
+    text provider
+    text connection_type "account, recipient"
+    text status "legacy, active, disabled, retired"
+  }
+  RAW_PAYLOADS {
+    uuid subject_id FK "NOT NULL"
+    uuid integration_connection_id FK "null when hand-entered"
+    text external_id "scoped-unique per subject"
+    jsonb payload "verbatim upstream"
+    timestamp processed_at "null = awaiting reparse"
+  }
+  SUBJECT_DATA {
+    uuid subject_id FK "NOT NULL"
+    uuid actor_user_id FK "null = system"
+    int raw_payload_id FK "provenance"
+    text source "manual, garmin_api, mcp, ..."
+  }
+</pre>
+    </div>
+    <figcaption><b>Ownership roots.</b> <code>SUBJECT_DATA</code> stands for the 34 domain tables, which share this shape exactly. One user owns at most one health subject — the unique constraint is what makes "their own record" unambiguous rather than a guess.</figcaption>
+  </figure>
+
+  <h3>Classification, not convention</h3>
+  <p>Every table carries a reviewed classification in <code>vitals/ownership.py</code>. A new table fails the test suite until it is classified, which is how a health table cannot be added and quietly left global.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Class</th><th>Count</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>subject_data</code></td><td>34</td><td>The record itself. Subject mandatory.</td></tr>
+        <tr><td><code>subject_control</code></td><td>7</td><td>Connections, settings, quotas, grants.</td></tr>
+        <tr><td><code>subject_child</code></td><td>5</td><td>Inherits its subject from a parent row.</td></tr>
+        <tr><td><code>account_control</code></td><td>4</td><td>Users, roles, per-user settings.</td></tr>
+        <tr><td><code>mixed_catalog</code></td><td>2</td><td>Curated rows belong to nobody; custom rows to one subject.</td></tr>
+        <tr><td><code>platform_control</code></td><td>2</td><td>The installation's own AI gateway and quotas.</td></tr>
+        <tr><td><code>subject_optional</code></td><td>1</td><td>Alerts — a patient's, or the platform's.</td></tr>
+        <tr><td><code>platform_journal</code></td><td>1</td><td>Audit events.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="domains">
+  <p class="eyebrow">The record</p>
+  <h2>Fifteen domains</h2>
+  <p>Each domain owns its tables, its service module, its conflict resolver and its page. They share one write contract and one read contract; nothing else is common between them.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Domain</th><th>Holds</th><th>Arrives from</th><th>Notable</th></tr></thead>
+      <tbody>
+        <tr><td><b>Weight</b></td><td><code>weight_logs</code>, <code>noise_markers</code>, <code>garmin_weight_exports</code></td><td>Manual, Garmin, MCP</td><td>One active weigh-in per day per subject; a priority table decides which source wins. Exports back to Garmin through a durable outbox.</td></tr>
+        <tr><td><b>Body composition</b></td><td><code>body_scans</code>, <code>body_scan_metrics</code>, <code>body_measurements</code>, <code>progress_photos</code></td><td>Scan PDFs, manual, photos</td><td>Scan documents are parsed by an LLM into a metric sheet; the original stays in the lake. Photos are pointers — the file is a <code>file_asset</code>.</td></tr>
+        <tr><td><b>GLP-1</b></td><td><code>glp1_injections</code>, <code>glp1_dose_phases</code>, <code>glp1_side_effects</code></td><td>Manual, MCP</td><td>Phases model a titration schedule; a plateau alert watches the weight domain across the boundary.</td></tr>
+        <tr><td><b>HRT</b></td><td><code>hrt_cycles</code>, <code>hrt_doses</code>, <code>hrt_side_effects</code>, <code>hrt_cycle_templates</code></td><td>Manual, MCP</td><td>The largest graph: cycles hold items, items reference compounds, templates instantiate cycles. The compound catalog is <em>mixed</em> — curated entries are global, custom ones are one person's.</td></tr>
+        <tr><td><b>Nutrition</b></td><td><code>meal_logs</code></td><td>Manual, MCP, Telegram</td><td>A day-end job evaluates rules that only make sense once the day is over — a running total is trivially under target at breakfast.</td></tr>
+        <tr><td><b>Labs</b></td><td><code>lab_results</code>, <code>lab_markers</code></td><td>PDF panels, manual, MCP</td><td>A parsed document becomes many results linked to one raw payload. Out-of-range and overdue-retest alerts are per-marker.</td></tr>
+        <tr><td><b>Genetics</b></td><td><code>genetic_variants</code></td><td>VCF import</td><td>The most identifying data held. Ingestion takes the subject and the conflict decision together, or refuses.</td></tr>
+        <tr><td><b>Supplements</b></td><td><code>supplements</code></td><td>Manual, MCP</td><td>Feeds the conflict engine: an iron supplement against a hemochromatosis marker is a hard block.</td></tr>
+        <tr><td><b>Skincare</b></td><td><code>skincare_logs</code>, <code>skincare_observations</code>, <code>skincare_products</code></td><td>Manual</td><td>A routine with timing slots; retinoid and acid peel on the same evening is a timing conflict.</td></tr>
+        <tr><td><b>Garmin</b></td><td><code>garmin_daily</code>, <code>garmin_intraday</code>, <code>garmin_activities</code></td><td>Garmin API, Health Auto Export</td><td>Intraday holds ~2k samples per day — the reason the <code>NOT NULL</code> migration avoids a full-table lock. A daily bundle may carry a weigh-in, which crosses into the weight domain.</td></tr>
+        <tr><td><b>Workouts</b></td><td><code>hevy_workouts</code>, <code>hevy_exercises</code>, <code>hevy_sets</code></td><td>Hevy API</td><td>A three-level tree; children inherit subject and connection from the workout through composite foreign keys.</td></tr>
+        <tr><td><b>Signals</b></td><td><code>signals</code>, <code>day_context</code></td><td>Telegram</td><td>Free text a person sent the bot, parsed by an LLM into typed symptoms and states. Unparseable text is parked verbatim and re-parsed later.</td></tr>
+        <tr><td><b>Milestones</b></td><td><code>milestones</code></td><td>Manual</td><td>Goals with progress computed from whichever domain the goal is about.</td></tr>
+        <tr><td><b>Timeline</b></td><td><code>annotations</code></td><td>Manual + derived</td><td>Hand-written notes merged with events derived from ten other domains into one feed.</td></tr>
+        <tr><td><b>Reports</b></td><td><code>weekly_digests</code>, <code>shared_reports</code></td><td>Generated</td><td>The one place data deliberately leaves the boundary. A share is a frozen snapshot behind a revocable token; a digest names the OpenRouter account that produced it.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="lake">
+  <p class="eyebrow">Data lifecycle</p>
+  <h2>Raw, fact, artifact</h2>
+  <p>Nothing upstream is discarded. Every provider response and every uploaded document lands in <code>raw_payloads</code> as JSONB before anything is derived from it, so a parser improved next year can recover columns this year's parser dropped — without a network call.</p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"13px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
+flowchart LR
+  ext["Provider response<br/>Uploaded PDF<br/>Telegram message"]
+  raw[("<b>raw_payloads</b><br/><span style='font-size:11px'>verbatim JSONB · GIN index<br/>subject + connection stamped</span>")]
+  fact[("<b>Domain fact</b><br/><span style='font-size:11px'>typed columns<br/>links back to its raw</span>")]
+  art[("<b>Artifact</b><br/><span style='font-size:11px'>digest, share, alert,<br/>notification</span>")]
+
+  ext -->|"upsert, scoped by<br/>(subject, connection, external_id)"| raw
+  raw -->|parse| fact
+  raw -.->|"reparse — no network"| fact
+  fact -->|compose| art
+
+  classDef store fill:#eef2f2,stroke:#0e7c86,color:#12181f
+  classDef src fill:#ffffff,stroke:#ccd6d8,color:#3d4a52
+  class raw,fact,art store
+  class ext src
+</pre>
+    </div>
+    <figcaption><b>The lake.</b> <code>processed_at</code> is set when a raw becomes a fact and cleared whenever the payload is refreshed, so a sweeper can find everything still waiting. Reparse never re-fetches and never rewrites the original fetch time.</figcaption>
+  </figure>
+
+  <div class="invariant">
+    <span class="tag">Invariant</span>
+    <p>A fact's provenance is a link to <em>its own</em> raw payload, and both must name the same subject. A fact pointing at somebody else's payload is refused; a fact pointing at an unstamped payload mid-backfill is simply out of scope, which is what a half-migrated table looks like from inside.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="write">
+  <p class="eyebrow">Write path</p>
+  <h2>How a write happens</h2>
+  <p>A domain service will not accept a subject on its own. It takes the subject <em>and</em> the conflict decision that authorized the write, as one capability minted earlier in the same transaction. The signature enforces what a comment used to ask for.</p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"12.5px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","actorBkg":"#ffffff","actorBorder":"#12181f","actorTextColor":"#12181f","signalColor":"#3d4a52","signalTextColor":"#12181f","labelBoxBkgColor":"#eef2f2","labelBoxBorderColor":"#ccd6d8","noteBkgColor":"#dceaec","noteBorderColor":"#0e7c86","noteTextColor":"#12181f"}}}%%
+sequenceDiagram
+  autonumber
+  participant R as Router
+  participant O as Ownership resolver
+  participant C as Conflict engine
+  participant S as Domain service
+  participant D as PostgreSQL
+
+  R->>O: resolve(actor_username)
+  O->>D: which subject does this actor own?
+  O->>D: SET LOCAL vitals.subject_id
+  Note over O,D: every later query is<br/>inside the policy from here
+  O-->>R: identity + AccessContext
+
+  R->>C: prepare_scoped_write(identity, date)
+  C->>D: governance lock → subject → connection
+  C->>C: evaluate rules across all domains
+  alt a hard block fires without override
+    C-->>R: ConflictBlocked → 409 + violations
+  else allowed, or overridden
+    C-->>R: PreparedConflictWrite
+    Note right of C: bound to this session,<br/>this transaction, this subject
+  end
+
+  R->>S: log_dose(identity=…, prepared_conflict_write=…)
+  S->>S: refuse if the capability is not for this session
+  S->>D: INSERT … subject_id NOT NULL
+  D-->>S: WITH CHECK passes only inside the bound subject
+</pre>
+    </div>
+    <figcaption><b>One write.</b> The capability is opaque and bound to the exact session, transaction and subject it was minted for, so a proof obtained before a commit cannot be reused after its locks were released. Passing an identity without one is a type error, not a review comment.</figcaption>
+  </figure>
+
+  <h3>Lock order</h3>
+  <p>Every write path takes the same locks in the same order — governance advisory, then the active-weight advisory, then the subject row, then the connection row, then the domain's own rows. The order is uniform because a Garmin daily bundle can carry a weigh-in, so two independent sync paths can reach the weight tables at once; the previous ordering produced a real deadlock under PostgreSQL.</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="read">
+  <p class="eyebrow">Read path</p>
+  <h2>How a read is bounded</h2>
+  <p>Three boundaries, deliberately independent. Each would be sufficient on a good day; together they mean a mistake in one is not a breach.</p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"13px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
+flowchart TB
+  req["Request<br/><span style='font-size:11px'>authenticated principal</span>"]
+  ctx["<b>1 · AccessContext</b><br/><span style='font-size:11px'>principal · subject · owner<br/>roles · live grants</span>"]
+  pol{"<b>2 · Policy</b><br/><span style='font-size:11px'>is_allowed(context, request)</span>"}
+  svc["<b>3 · Scoped service</b><br/><span style='font-size:11px'>subject_id is mandatory<br/>in every signature</span>"]
+  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 41 tables<br/>subject_id = session setting</span>"]
+  rows[("rows")]
+  deny["403<br/><span style='font-size:11px'>says nothing about<br/>whose record, or whether<br/>it exists</span>"]
+
+  req --> ctx --> pol
+  pol -->|"owner, or an exact live grant"| svc --> rls --> rows
+  pol -->|"anything else"| deny
+
+  classDef step fill:#ffffff,stroke:#ccd6d8,color:#12181f
+  classDef guard fill:#dceaec,stroke:#0e7c86,color:#12181f,font-weight:600
+  classDef bad fill:#f4e5da,stroke:#a6501e,color:#12181f
+  class req,rows step
+  class ctx,svc,rls guard
+  class pol guard
+  class deny bad
+</pre>
+    </div>
+    <figcaption><b>Four gates, three of them independent.</b> Application scoping is a property of the code that happens to be running. A policy is a property of the data, and it survives a query written in a hurry, a report assembled by hand, and a console session opened during an incident.</figcaption>
+  </figure>
+
+  <div class="invariant">
+    <span class="tag">Fails closed</span>
+    <p>An unbound session sees <em>nothing</em>, not everything. <code>current_setting</code> returns NULL when the application forgot to say whose request it is serving, the policy comparison is NULL, and no row qualifies. Getting the boundary wrong shows up as an empty page, never as somebody else's data.</p>
+  </div>
+
+  <p><code>FORCE</code> is the operative word: PostgreSQL exempts a table's owner from its own policies, and the application connects as the owner. Roles that must see across subjects — the migration runner, the ownership backfill jobs, the platform control plane — are exempt by role attribute. That is deliberate: a backfill that could not see an unstamped row could not stamp it.</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="conflicts">
+  <p class="eyebrow">Cross-domain safety</p>
+  <h2>The conflict engine</h2>
+  <p>Rules are data, not code. Each domain registers a resolver that reports its current state for one subject on one date; the engine evaluates active rules across domains before a write lands, and turns a violation into a block, a warning, or a passive alert.</p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"12.5px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
+flowchart LR
+  prop["Proposed write<br/><span style='font-size:11px'>iron supplement</span>"]
+  eng{{"<b>Conflict engine</b><br/><span style='font-size:11px'>evaluate_scoped(scope)</span>"}}
+  rules[("conflict_rules<br/><span style='font-size:11px'>curated + this subject's own</span>")]
+
+  subgraph resolvers ["Domain resolvers — each scoped to one subject and date"]
+    direction TB
+    r1["supplements"]
+    r2["genetics"]
+    r3["labs"]
+    r4["hrt"]
+    r5["glp1"]
+    r6["nutrition"]
+    r7["skincare"]
+    r8["weight"]
+    r9["body_comp"]
+  end
+
+  out1["<b>block</b> → 409<br/><span style='font-size:11px'>unless overridden,<br/>and the override is stamped</span>"]
+  out2["<b>warn / info</b><br/><span style='font-size:11px'>passive alert row</span>"]
+
+  prop --> eng
+  rules --> eng
+  resolvers --> eng
+  eng --> out1
+  eng --> out2
+
+  classDef n fill:#ffffff,stroke:#ccd6d8,color:#3d4a52
+  classDef e fill:#dceaec,stroke:#0e7c86,color:#12181f,font-weight:600
+  classDef blk fill:#f4e5da,stroke:#a6501e,color:#12181f
+  class prop,r1,r2,r3,r4,r5,r6,r7,r8,r9 n
+  class eng,rules e
+  class out1 blk
+  class out2 n
+  style resolvers fill:#f7f8f7,stroke:#ccd6d8
+</pre>
+    </div>
+    <figcaption><b>Nine resolvers, one scope.</b> Every resolver takes a keyword-only <code>scope</code> with no default — a reader that would answer without a subject cannot be registered at all. The engine has no unscoped path left: a rule is evaluated for one person or not at all.</figcaption>
+  </figure>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="migration">
+  <p class="eyebrow">Where the service is</p>
+  <h2>The conversion</h2>
+  <p>The order matters and was corrected twice by practice. Columns had to exist before anything could fill them; the composition layer had to learn to pass a subject before a leaf service could demand one; and the conflict resolvers had to go <em>after</em> the leaves, not before, because their unscoped arm was only reachable from inside a leaf.</p>
+
+  <div class="stages">
+    <div class="stage">
+      <div class="n">PR-01</div>
+      <div>
+        <h4>Identity and support foundation<span class="state done">merged</span></h4>
+        <p>Users, roles, health subjects, time-boxed support grants, audit events. Roles are additive and never a data grant on their own.</p>
+      </div>
+    </div>
+    <div class="stage">
+      <div class="n">PR-02</div>
+      <div>
+        <h4>Owner bootstrap and the policy vocabulary<span class="state done">merged</span></h4>
+        <p>The existing installation gets a named owner and subject at startup. <code>AccessContext</code> and <code>is_allowed</code> are written — and stay unused for two PRs.</p>
+      </div>
+    </div>
+    <div class="stage">
+      <div class="n">PR-03</div>
+      <div>
+        <h4>Ownership expansion and backfill<span class="state done">merged</span></h4>
+        <p>Nullable ownership columns on every table, dual-write from every path, twenty resumable backfill phases, then scoped unique keys installed beside the global ones and the global ones dropped. Two people can now share a weigh-in date.</p>
+      </div>
+    </div>
+    <div class="stage">
+      <div class="n">PR-04</div>
+      <div>
+        <h4>Scoped services, the contract, and RLS<span class="state done">merged</span></h4>
+        <p>266 functions that would read across the whole installation when the caller omitted a scope, reduced to zero. The unscoped conflict path deleted. Every ownerless writer retired. Then <code>NOT NULL</code> on 39 columns, and <code>FORCE</code> row-level security on 41 tables.</p>
+      </div>
+    </div>
+    <div class="stage">
+      <div class="n">PR-05</div>
+      <div>
+        <h4>OIDC authentication and local sessions<span class="state next">next</span></h4>
+        <p>Environment-only login gives way to an identity provider. Vitals stops holding password material and starts holding revocable application sessions — and decides, separately from the IdP, whether an account may be provisioned at all.</p>
+      </div>
+    </div>
+    <div class="stage">
+      <div class="n">PR-07 …</div>
+      <div>
+        <h4>Relationships, consent, professionals<span class="state next">planned</span></h4>
+        <p>The half of the policy engine with nothing to evaluate yet: the grants that make a cross-subject answer anything other than no.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>What "closed" turned out to mean</h3>
+  <p>A domain counted as closed when its subject was mandatory, its <code>include_legacy_unowned</code> escape hatch was gone, and — the part that kept being missed — the branch that quietly <em>adopted</em> an unowned row on the way past had been removed. An unowned row then stays unowned and stays invisible, which is the whole point.</p>
+
+  <div class="invariant">
+    <span class="tag">Rule the closures follow</span>
+    <p>Adoption stays only where it is the operation's <em>purpose</em> — the nightly sweep that turns an unowned upload into an owned scan — and never where it is a convenience on the read path. Even then it is decided per row, from that row's own roots, rather than from a flag the caller passed in.</p>
+  </div>
+
+  <div class="invariant gone">
+    <span class="tag">Deleted, not scoped</span>
+    <p>Some code had no scoped equivalent because it only made sense with one person in the database: the zero-subject daily brief, Garmin's unscoped sync and pulse, Hevy's, the raw upsert that belonged to nobody, and the VCF adapter that stored a genome as an ownerless payload. Each had an owned twin the live callers were already using. Scoping them would have preserved a path nothing should take.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="cutover">
+  <p class="eyebrow">Operations</p>
+  <h2>The cutover</h2>
+  <p>Upgrading an existing installation is not one <code>alembic upgrade head</code>. It is three parts, and the middle one is an application job rather than a migration.</p>
+
+  <figure>
+    <div class="diagram">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"12.5px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
+flowchart TB
+  a["<b>1 · alembic upgrade 0048</b><br/><span style='font-size:11px'>every ownership column exists,<br/>all still nullable · safe to stop here</span>"]
+  b["<b>2 · bootstrap, then twenty phases</b><br/><span style='font-size:11px'>owner, resource roots, catalogs<br/>raw → facts → children → artifacts<br/>each resumable, each checkpointed</span>"]
+  c{"every target column<br/>stamped?"}
+  d["<b>3 · alembic upgrade head</b><br/><span style='font-size:11px'>0049 NOT NULL · 0050 FORCE RLS</span>"]
+  e["<b>refused</b><br/><span style='font-size:11px'>names each table and how far behind<br/>nothing altered — run the phase, retry</span>"]
+  f["<b>one-way from here</b><br/><span style='font-size:11px'>once a second subject writes,<br/>downgrade is forbidden</span>"]
+
+  a --> b --> c
+  c -->|no| e
+  e -->|"finish the phase"| b
+  c -->|yes| d --> f
+
+  classDef step fill:#ffffff,stroke:#ccd6d8,color:#12181f
+  classDef ok fill:#dceaec,stroke:#0e7c86,color:#12181f,font-weight:600
+  classDef stop fill:#f4e5da,stroke:#a6501e,color:#12181f
+  class a,b step
+  class c,d ok
+  class e stop
+  class f stop
+</pre>
+    </div>
+    <figcaption><b>Cutover.</b> The contract migration counts remaining nulls before it alters anything, so a skipped phase stops the upgrade rather than half-applying it. The phase order lives in <code>vitals/ownership_deploy.py</code>; the runbook is generated from it and a test compares the two, because an operator follows the document rather than the code.</figcaption>
+  </figure>
+
+  <p>On PostgreSQL each column is proven with a <code>NOT VALID</code> check that is then validated before <code>SET NOT NULL</code> takes over from it. Validation takes a weaker lock than the alter would, and PostgreSQL accepts the validated check as proof — the difference between a pause and an outage on a table holding a couple of thousand samples for every day ever synced.</p>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<section id="invariants">
+  <p class="eyebrow">What holds</p>
+  <h2>Invariants</h2>
+  <p>Nine things that survived every closure, each because getting it wrong once was cheaper to fix than to discover.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Invariant</th><th>Why it exists</th></tr></thead>
+      <tbody>
+        <tr><td>A write names the subject <em>and</em> the conflict decision, together</td><td>Either alone is a write nobody authorized. The signature enforces it; a comment did not.</td></tr>
+        <tr><td>Actor null is fine; subject null with an actor is broken</td><td>Migration stamped subjects without inventing actors. Any <em>other</em> user's id is forged attribution and is refused.</td></tr>
+        <tr><td>Resolving a context authorizes nothing</td><td>"May I reach that record?" has to be answerable without first entering its scope.</td></tr>
+        <tr><td>A role is never a grant</td><td>A doctor is a doctor everywhere and a stranger to every record without a live, actor-bound, exactly-scoped one.</td></tr>
+        <tr><td>An unbound session sees nothing</td><td>Forgetting the boundary shows up as an empty page, never as somebody else's data.</td></tr>
+        <tr><td>Curated catalog rows belong to nobody</td><td>A checked-in compound or conflict rule is the installation's. Only custom rows carry a subject.</td></tr>
+        <tr><td>A fact and its raw payload name the same subject</td><td>Provenance that points elsewhere is not provenance.</td></tr>
+        <tr><td>Mid-backfill, a reader shows exactly the stamped rows</td><td>An ownerless row attached to this subject's raw is not a broken chain — it is what a half-stamped table looks like.</td></tr>
+        <tr><td>Two ratchets, both one-way</td><td>The scope registry recomputes from source and asserts zero; the deploy sequence is checked against the scripts on disk. Progress cannot be claimed by editing a line.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="footnote">Generated from the source it describes: table counts and classifications from <code>vitals/ownership.py</code>, the phase order from <code>vitals/ownership_deploy.py</code>, domains from <code>vitals/enums.py</code>. Companion documents: <code>COMMERCIAL_OWNERSHIP_INVENTORY.md</code> for the per-table contract, <code>COMMERCIAL_MULTI_USER_ROADMAP.md</code> for the plan, <code>OWNERSHIP_CUTOVER_RUNBOOK.md</code> for the upgrade.</p>
+</section>
+
+</main>
+</div>
