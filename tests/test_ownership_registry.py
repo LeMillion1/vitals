@@ -8,6 +8,7 @@ import vitals.models  # noqa: F401 -- register the complete metadata graph
 from vitals.models.base import Base
 from vitals.ownership import (
     OWNERSHIP_REGISTRY,
+    PENDING_OWNERSHIP_CONTRACT_COLUMNS,
     OwnershipClass,
     TargetColumn,
     ownership_for,
@@ -124,3 +125,96 @@ def test_portability_exclusions_follow_the_registry_contract():
         if not spec.user_portable
     }
     assert _EXCLUDED_TABLES == expected
+
+
+# ── The PR-04 contract: the registry and the columns say the same thing ───────
+
+_OWNERSHIP_COLUMNS = (
+    ("subject", "subject_id"),
+    ("actor", "actor_user_id"),
+    ("connection", "integration_connection_id"),
+    ("platform_connection", "platform_connection_id"),
+    ("file_asset", "file_asset_id"),
+)
+
+
+def _column_nullability() -> dict[tuple[str, str], bool]:
+    return {
+        (table_name, column.name): column.nullable
+        for table_name, table in Base.metadata.tables.items()
+        for column in table.columns
+    }
+
+
+def test_the_pending_contract_set_is_exactly_what_is_still_nullable():
+    """The Stage-6 ratchet: ``REQUIRED`` columns the schema does not yet enforce.
+
+    The registry has always described the *target* contract, and PR-03 added
+    every one of these columns nullable so the expansion could ship without a
+    write failing. Closing the gap is the contract migration's job, and it is
+    blocked on the last legacy writers — the unscoped Garmin ingest and the
+    unowned raw upsert still create rows without the reference.
+
+    Recomputing the set here means it can only move one way. A table that gains
+    its ``NOT NULL`` fails until the entry is removed; one that quietly loses it
+    fails immediately. Reaching empty is the condition for writing the migration.
+    """
+
+    nullable = _column_nullability()
+    observed = {
+        (table_name, column_name)
+        for table_name, spec in OWNERSHIP_REGISTRY.items()
+        for field, column_name in _OWNERSHIP_COLUMNS
+        if getattr(spec, field) is TargetColumn.REQUIRED
+        and nullable.get((table_name, column_name)) is True
+    }
+    assert observed == set(PENDING_OWNERSHIP_CONTRACT_COLUMNS), {
+        "closed": sorted(set(PENDING_OWNERSHIP_CONTRACT_COLUMNS) - observed),
+        "reopened": sorted(observed - set(PENDING_OWNERSHIP_CONTRACT_COLUMNS)),
+    }
+
+
+def test_a_required_reference_outside_the_pending_set_is_enforced():
+    """Whatever has already left the pending set must be enforced, not merely gone.
+
+    Removing an entry is how progress is recorded, so the removal has to be
+    backed by an actual ``NOT NULL`` — otherwise the ratchet could be advanced
+    by editing one line.
+    """
+
+    nullable = _column_nullability()
+    for table_name, spec in sorted(OWNERSHIP_REGISTRY.items()):
+        for field, column_name in _OWNERSHIP_COLUMNS:
+            if getattr(spec, field) is not TargetColumn.REQUIRED:
+                continue
+            if (table_name, column_name) in PENDING_OWNERSHIP_CONTRACT_COLUMNS:
+                continue
+            if (table_name, column_name) not in nullable:
+                continue
+            assert nullable[(table_name, column_name)] is False, (
+                f"{table_name}.{column_name} left the pending set without "
+                "becoming NOT NULL"
+            )
+
+
+def test_a_reference_that_is_not_required_stays_nullable():
+    """The converse, so the mixins cannot drift the other way.
+
+    ``MIXED``, ``OPTIONAL`` and ``INHERITED`` all describe references that are
+    legitimately absent on some rows — a curated catalog entry belongs to
+    nobody, a platform alert to no patient, a hand-typed fact to no integration.
+    A ``NOT NULL`` there would reject data the product is supposed to hold.
+    """
+
+    nullable = _column_nullability()
+    offenders = [
+        f"{table_name}.{column_name} ({getattr(spec, field).value})"
+        for table_name, spec in sorted(OWNERSHIP_REGISTRY.items())
+        for field, column_name in _OWNERSHIP_COLUMNS
+        if getattr(spec, field)
+        in (TargetColumn.MIXED, TargetColumn.OPTIONAL, TargetColumn.INHERITED)
+        and nullable.get((table_name, column_name)) is False
+    ]
+    assert not offenders, (
+        f"not required by the registry but NOT NULL in the model: {offenders}"
+    )

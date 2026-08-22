@@ -355,6 +355,85 @@ OWNERSHIP_REGISTRY: Mapping[str, OwnershipSpec] = MappingProxyType(
 )
 
 
+#: ``REQUIRED`` references whose column is still nullable, and why that is not
+#: yet fixable. Every one of these is waiting on the same thing: a legacy write
+#: path that still creates the row without the reference. ``garmin_service``'s
+#: unscoped ``ingest_daily`` / ``ingest_intraday`` / ``ingest_activities`` and
+#: ``raw_payload_service.upsert_raw_payload`` are the remaining writers, and a
+#: ``NOT NULL`` installed before they are retired would break the Garmin and
+#: Hevy syncs on their next run rather than protect anything.
+#:
+#: This is a ratchet, like ``vitals/legacy_scope.py``: the paired test recomputes
+#: the set from the models and fails in either direction, so it can only shrink.
+#: When it is empty the contract migration is safe to write.
+PENDING_OWNERSHIP_CONTRACT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("annotations", "subject_id"),
+        ("body_measurements", "subject_id"),
+        ("body_scans", "subject_id"),
+        ("day_context", "subject_id"),
+        ("garmin_activities", "integration_connection_id"),
+        ("garmin_activities", "subject_id"),
+        ("garmin_daily", "integration_connection_id"),
+        ("garmin_daily", "subject_id"),
+        ("garmin_intraday", "integration_connection_id"),
+        ("garmin_intraday", "subject_id"),
+        ("garmin_weight_exports", "integration_connection_id"),
+        ("garmin_weight_exports", "subject_id"),
+        ("genetic_variants", "subject_id"),
+        ("glp1_dose_phases", "subject_id"),
+        ("glp1_injections", "subject_id"),
+        ("glp1_side_effects", "subject_id"),
+        ("hevy_workouts", "integration_connection_id"),
+        ("hevy_workouts", "subject_id"),
+        ("hrt_cycle_templates", "subject_id"),
+        ("hrt_cycles", "subject_id"),
+        ("hrt_doses", "subject_id"),
+        ("hrt_side_effects", "subject_id"),
+        ("lab_markers", "subject_id"),
+        ("lab_results", "subject_id"),
+        ("meal_logs", "subject_id"),
+        ("milestones", "subject_id"),
+        ("noise_markers", "subject_id"),
+        ("notifications", "subject_id"),
+        ("progress_photos", "file_asset_id"),
+        ("progress_photos", "subject_id"),
+        ("raw_payloads", "subject_id"),
+        ("shared_reports", "subject_id"),
+        ("signals", "subject_id"),
+        ("skincare_logs", "subject_id"),
+        ("skincare_observations", "subject_id"),
+        ("skincare_products", "subject_id"),
+        ("supplements", "subject_id"),
+        ("weekly_digests", "subject_id"),
+        ("weight_logs", "subject_id"),
+    }
+)
+
+
+def required_ownership_columns() -> tuple[tuple[str, str], ...]:
+    """Every ``(table, column)`` the registry says must always name an owner.
+
+    The contract migration keeps its own frozen copy of this list, because a
+    migration has to mean the same thing next year as it did on the day it ran.
+    This function is the live view, and a contract test compares the two so the
+    frozen copy cannot silently fall behind a reclassified table.
+    """
+
+    return tuple(
+        (table_name, column_name)
+        for table_name, spec in sorted(_OWNERSHIP_REGISTRY.items())
+        for field, column_name in (
+            ("subject", "subject_id"),
+            ("actor", "actor_user_id"),
+            ("connection", "integration_connection_id"),
+            ("platform_connection", "platform_connection_id"),
+            ("file_asset", "file_asset_id"),
+        )
+        if getattr(spec, field) is TargetColumn.REQUIRED
+    )
+
+
 def ownership_for(table_name: str) -> OwnershipSpec:
     """Return the reviewed target contract; unknown tables fail closed."""
 
@@ -365,10 +444,15 @@ def ownership_for(table_name: str) -> OwnershipSpec:
 
 
 __all__ = [
+    "OWNERSHIP_CONTRACT_REVISION",
+    "OwnershipBackfillIncompleteError",
     "OWNERSHIP_REGISTRY",
+    "PRE_OWNERSHIP_CONTRACT_REVISION",
     "OwnershipClass",
     "OwnershipSpec",
+    "PENDING_OWNERSHIP_CONTRACT_COLUMNS",
     "TargetColumn",
     "WriteIdentity",
     "ownership_for",
+    "required_ownership_columns",
 ]

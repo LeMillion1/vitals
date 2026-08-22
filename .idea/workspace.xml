@@ -5,30 +5,50 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="4f7d8d26-b83f-429b-a4a5-0ed778c9a66c" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/tests/conftest.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/conftest.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_chart_data_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_chart_data_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_conflict_engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_conflict_engine.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_digest_period_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_digest_period_window.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_hrt_reminders.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_hrt_reminders.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_lab_document_ai_gateway.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_lab_document_ai_gateway.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_labs_conflict_writer_scoped.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_labs_conflict_writer_scoped.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_labs_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_labs_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_labs_stage2_boundaries.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_labs_stage2_boundaries.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_mcp_labs_gate.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_mcp_labs_gate.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_mcp_oauth.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_mcp_oauth.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_milestones_digest.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_milestones_digest.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_raw_payload_reparse.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_raw_payload_reparse.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_share_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_share_router.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_upload_dual_write.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_upload_dual_write.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_web.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_web.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/hrt_reminders.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/hrt_reminders.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/labs_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/labs_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/raw_payload_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/raw_payload_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/share_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/share_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/web/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/web/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/web/routers/labs.py" beforeDir="false" afterPath="$PROJECT_DIR$/web/routers/labs.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/web/routers/mcp.py" beforeDir="false" afterPath="$PROJECT_DIR$/web/routers/mcp.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/web/routers/more.py" beforeDir="false" afterPath="$PROJECT_DIR$/web/routers/more.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/COMMERCIAL_OWNERSHIP_INVENTORY.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/COMMERCIAL_OWNERSHIP_INVENTORY.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_body_scan_metric_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_body_scan_metric_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_body_scan_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_body_scan_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_conflict_rule_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_conflict_rule_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_day_context_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_day_context_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_garmin_weight_export_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_garmin_weight_export_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_genetic_variant_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_genetic_variant_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_hevy_child_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_hevy_child_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_hrt_child_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_hrt_child_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_hrt_compound_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_hrt_compound_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_lab_result_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_lab_result_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_normalized_subject_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_normalized_subject_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_notification_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_notification_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_ownership_registry.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_ownership_registry.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_ownership_validation_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_ownership_validation_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_progress_photo_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_progress_photo_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_provider_raw_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_provider_raw_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_scoped_key_audit_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_scoped_key_audit_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_scoped_key_indexes.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_scoped_key_indexes.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_shared_report_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_shared_report_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_signal_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_signal_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_subject_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_subject_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_system_alert_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_system_alert_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_weekly_digest_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_weekly_digest_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_weight_log_ownership_backfill_rehearsal.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_weight_log_ownership_backfill_rehearsal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/body_scan.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/body_scan.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/garmin.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/garmin.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/genetics.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/genetics.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/glp1.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/glp1.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/hevy.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/hevy.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/hrt.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/hrt.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/labs.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/labs.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/milestones.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/milestones.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/nutrition.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/nutrition.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/ownership_mixins.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/ownership_mixins.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/proactive.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/proactive.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/raw_payload.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/raw_payload.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/share.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/share.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/signals.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/signals.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/skincare.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/skincare.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/supplements.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/supplements.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/timeline.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/timeline.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/models/weight.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/models/weight.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/ownership.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/ownership.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -195,7 +215,7 @@
       <workItem from="1784309643642" duration="30875000" />
       <workItem from="1786724999730" duration="7000" />
       <workItem from="1786725020818" duration="6965000" />
-      <workItem from="1786814082863" duration="39384000" />
+      <workItem from="1786814082863" duration="39988000" />
     </task>
     <servers />
   </component>

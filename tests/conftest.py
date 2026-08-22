@@ -9,6 +9,7 @@ on SQLite.
 
 from contextlib import asynccontextmanager
 import os
+import uuid
 from pathlib import Path
 
 # Set before importing app modules so config/security read test values.
@@ -572,6 +573,83 @@ async def signals_owner(db_session, legacy_owner_roots):
         connection=connection,
         connection_id=connection.id,
     )
+
+
+@pytest_asyncio.fixture
+async def legacy_connection_ids(db_session, legacy_owner_roots):
+    """The sole owner's bootstrapped connection, looked up by provider.
+
+    ``integration_connection_id`` is the ownership registry's other ``REQUIRED``
+    reference on the vendor tables: a Garmin day that arrived through no account
+    cannot be attributed to anyone. ``bootstrap_legacy_resource_roots`` already
+    created one connection per provider for this subject, so a test seeding
+    vendor data asks for the one it means rather than inventing a UUID.
+    """
+
+    from sqlalchemy import select
+
+    from vitals.models.tenancy import IntegrationConnection
+
+    rows = await db_session.scalars(
+        select(IntegrationConnection).where(
+            IntegrationConnection.subject_id == legacy_owner_roots.subject_id
+        )
+    )
+    by_provider = {row.provider: row.id for row in rows}
+
+    def _lookup(provider) -> uuid.UUID:
+        key = getattr(provider, "value", provider)
+        try:
+            return by_provider[key]
+        except KeyError:  # pragma: no cover - a missing root is a bootstrap bug
+            raise AssertionError(
+                f"the legacy resource roots have no {key!r} connection; "
+                f"available: {sorted(by_provider)}"
+            ) from None
+
+    return _lookup
+
+
+@pytest_asyncio.fixture
+async def garmin_connection_id(legacy_connection_ids):
+    """Shorthand for the owner's Garmin connection — by far the most seeded."""
+
+    from vitals.enums import IntegrationProvider
+
+    return legacy_connection_ids(IntegrationProvider.GARMIN)
+
+
+@pytest_asyncio.fixture
+async def hevy_connection_id(legacy_connection_ids):
+    """Shorthand for the owner's Hevy connection."""
+
+    from vitals.enums import IntegrationProvider
+
+    return legacy_connection_ids(IntegrationProvider.HEVY)
+
+
+@pytest_asyncio.fixture
+async def legacy_file_asset_id(db_session, legacy_owner_roots):
+    """One private-file root belonging to the owner.
+
+    A progress photo is a pointer and the asset is the file; a test that seeds
+    the pointer should say which file it points at rather than leave the link
+    empty, which is the shape the ownership registry marks ``REQUIRED``.
+    """
+
+    from vitals.enums import FileAssetPurpose, FileStorageBackend
+    from vitals.models.tenancy import FileAsset
+
+    asset = FileAsset(
+        subject_id=legacy_owner_roots.subject_id,
+        uploaded_by_user_id=legacy_owner_roots.user_id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO.value,
+        storage_backend=FileStorageBackend.LEGACY_LOCAL.value,
+        storage_ref="progress/synthetic-fixture.jpg",
+    )
+    db_session.add(asset)
+    await db_session.flush()
+    return asset.id
 
 
 @pytest_asyncio.fixture

@@ -1220,7 +1220,7 @@ The two zero-subject generators are gone. Neither had a production caller —
 both refused to run once a subject existed — so what their tests actually
 asserted now runs against the context and the header directly.
 
-#### Stage 6C onward — the leaves, one at a time
+#### Stage 6C — the leaves, one at a time (complete)
 
 | domain | state |
 | --- | --- |
@@ -1238,25 +1238,36 @@ asserted now runs against the context and the header directly.
 | labs | closed — results, the marker catalog, the parsed-document chain and the hormone-panel seed; a legacy raw behind an owned parsed fact stays valid provenance |
 | weight | closed — weigh-ins, measurements, noise markers, progress photos, the chart series and the Garmin export outbox; the last legacy `enforce()` site went with it |
 | modules, brief, Today, HRT reminders | closed — module state is one person's preference, and the two composed screens are assembled from that person's domains |
-| everything else | still bridged; see `vitals/legacy_scope.py` |
+| supplements, week template, alerts, Garmin day readers | closed — the alert reader and both Garmin day readers had defaulted their subject to `None` and read the whole installation |
+| AI quota periods, HRT catalog flag, bot gate, scoped settings | closed — the last seven |
 
 The counter moves only in the registry, and the contract test refuses to let it
-move the wrong way. It started at 266 functions across 25 modules; it is now
-14 across 8, and no legacy `enforce()` call site remains anywhere. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
-its subject is mandatory, and the branch that adopted an unowned row on the way
-past has been removed — an unowned row then stays unowned and stays invisible,
-which is the whole point.
+move the wrong way. It started at 266 functions across 25 modules and is now
+**zero**. The contract test asserts equality rather than a lower bound, so a
+reopened bridge cannot pass without deleting that assertion. A leaf is "closed"
+when its `include_legacy_unowned` parameters are gone, its subject is mandatory,
+and the branch that adopted an unowned row on the way past has been removed — an
+unowned row then stays unowned and stays invisible, which is the whole point.
 
 Two invariants survive every closure rather than going with the bridge: a row
 with an actor but no subject is broken provenance and is reported, not passed
 over; and a write still cannot name a subject without the conflict decision that
 authorized it — that contract is now expressed by the signature itself.
 
-One kind of reader also survives each closure: the domain's conflict resolver.
-The engine still offers its callers a fully-unowned bridge, and a resolver has
-to honour the scope it is handed, so each closed domain keeps exactly one reader
-that can see a row with no subject. Those go together with the bridge, which is
-why the resolvers are last.
+One kind of reader survived each closure until the very end: the domain's
+conflict resolver. The engine offered its callers a second, unscoped arm, so
+each closed domain kept exactly one reader that could see a row with no subject.
+Those went last, as one change, and took the arm with them — along with
+`evaluate`, `enforce`, `enforce_day_end`, the unscoped rule loader, and the
+seven readers themselves. `register_domain_resolver` now refuses a reader that
+does not take a keyword-only `scope` with no default, so the arm cannot grow
+back by accident.
+
+What remains is `ConflictScope`'s `FULLY_UNOWNED` bridge, which is a different
+thing and outlives PR-04: it needs a subject to bridge *from*, and
+`evaluate_scoped` proves that subject is still the installation's only one
+before any resolver may use it. That is the backfill's bridge, not the
+single-user application's.
 
 Body composition adds a second such reader, and it is the one that shows what
 "closed" has to mean for a domain with raw provenance. Its nightly sweep is the
@@ -1275,6 +1286,41 @@ raw is not a broken chain to report: mid-backfill that is exactly what a
 half-stamped table looks like, so the row is simply out of scope. During a
 rolling backfill the reader therefore shows precisely the rows already stamped,
 which the PostgreSQL stop/resume rehearsal now pins.
+
+#### Stage 6D — the contract migration, and what still blocks it
+
+With the bridges closed, the next step is the `NOT NULL` contract: thirty-nine
+columns the ownership registry marks `REQUIRED` are still nullable, because
+PR-03 added them that way so the expansion could ship without a write failing.
+A scoped unique index over a nullable column keeps no uniqueness for a row whose
+scope is null, and an RLS policy comparing `subject_id` to the session's subject
+silently excludes such a row rather than protecting it. Closing that is what
+makes the two worth having.
+
+Writing the migration surfaced what still blocks it. Four legacy write paths
+create these rows without the reference:
+
+| writer | what it omits |
+| --- | --- |
+| `garmin_service.ingest_daily` | `garmin_daily.integration_connection_id` and `subject_id` |
+| `garmin_service.ingest_intraday` | the same, on `garmin_intraday` |
+| `garmin_service.ingest_activities` | the same, on `garmin_activities` |
+| `raw_payload_service.upsert_raw_payload` | `raw_payloads.subject_id` |
+
+Each has an owned counterpart already in place — `ingest_owned_daily`,
+`ingest_owned_intraday`, `ingest_owned_activities`,
+`upsert_owned_raw_payload` — but the legacy Garmin and Hevy sync entry points,
+the light pulse, and the two reparse paths still call the unowned ones. A
+`NOT NULL` installed before those callers move would not protect anything; it
+would break the next sync. The writers come first, the migration second, and the
+model mixins last.
+
+`PENDING_OWNERSHIP_CONTRACT_COLUMNS` in `vitals/ownership.py` names the thirty-nine
+columns, and its paired contract test recomputes the set from the models and
+fails in either direction — a column that gains its `NOT NULL` fails until the
+entry is removed, one that quietly loses it fails at once, and an entry removed
+without the column actually becoming `NOT NULL` fails too. Same ratchet as
+`legacy_scope.py`, and reaching empty is the condition for writing the migration.
 
 ## Rollback boundary
 

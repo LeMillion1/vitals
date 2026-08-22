@@ -10,6 +10,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- `PENDING_OWNERSHIP_CONTRACT_COLUMNS` starts the Stage-6 ratchet: the
+  thirty-nine `REQUIRED` ownership columns still nullable, recomputed from the
+  models by a contract test that fails in either direction. Reaching empty is
+  the condition for the `NOT NULL` contract migration and FORCE RLS.
+- Writing that migration first surfaced why it cannot ship yet: the unscoped
+  `garmin_service.ingest_daily` / `ingest_intraday` / `ingest_activities` and
+  `raw_payload_service.upsert_raw_payload` still create rows without the
+  reference, so a `NOT NULL` would break the next Garmin and Hevy sync rather
+  than protect anything. Those writers are retired first — see
+  `docs/COMMERCIAL_OWNERSHIP_INVENTORY.md`, Stage 6D.
+- Test fixtures for the owner's provider connections and private-file root
+  (`garmin_connection_id`, `hevy_connection_id`, `legacy_connection_ids`,
+  `legacy_file_asset_id`), so a test seeding vendor data or a progress photo
+  names the connection and the file it means.
+
 - **The conflict engine has no unscoped path left.** The seven
   `legacy_resolver=` registrations are gone, and with them the engine's second
   resolver arm, the `evaluate`/`enforce`/`enforce_day_end` entry points, and the
