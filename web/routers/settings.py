@@ -43,6 +43,8 @@ from vitals.services import (
     twofa_service,
 )
 from vitals.services.modules_service import ModuleToggleError
+from vitals.access import PolicyAction, PolicyResourceType
+from vitals.services.access_resolution import AccessDeniedError, require_access
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.services.proactive import day_plan, prefs
 from vitals.utils.timeutils import today_local
@@ -1193,6 +1195,28 @@ async def change_password(
 # ── Data portability (backup / restore / LLM export) ──────────────────────────
 
 
+async def _authorize_export(db: AsyncSession, username: str) -> None:
+    """Decide the export, rather than infer it from being logged in.
+
+    Downloading the record is the one routine operation that takes the data out
+    of the boundary everything else keeps it inside, so it is the first to be
+    *decided* by the policy engine rather than merely resolved. Today the answer
+    is always yes — self-ownership authorizes it — and the value is that there is
+    now one place for the answer to become no.
+    """
+
+    ownership = await resolve_legacy_ownership_context(db, actor_username=username)
+    if ownership.access is None:  # pragma: no cover - require_auth names an actor
+        raise AccessDeniedError("an export needs a principal behind it")
+    require_access(
+        ownership.access,
+        resource_type=PolicyResourceType.OPERATION,
+        resource_key="data_portability.export",
+        action=PolicyAction.EXPORT,
+    )
+
+
+
 @router.get("/export")
 async def export_backup(
     username: str = Depends(require_auth),
@@ -1200,6 +1224,7 @@ async def export_backup(
     _rl: None = Depends(rate_limit("data_export", limit=2, window=60)),
 ):
     """Download portable health data without identity/control-plane state."""
+    await _authorize_export(db, username)
     snapshot = await data_portability_service.export_full(db)
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_backup_{today_local().strftime('%Y%m%d')}.json"
@@ -1217,6 +1242,7 @@ async def export_llm(
     _rl: None = Depends(rate_limit("data_export", limit=2, window=60)),
 ):
     """Download a curated, flat, secret-free digest for pasting into an LLM chat."""
+    await _authorize_export(db, username)
     snapshot = await data_portability_service.export_llm(db)
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_llm_{today_local().strftime('%Y%m%d')}.json"

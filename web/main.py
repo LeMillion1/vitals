@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.services.access_resolution import AccessDeniedError
 from web.auth import router as auth_router
 from web.csrf import add_csrf_origin_check, add_security_headers
 from web.deps import (
@@ -464,6 +465,26 @@ async def module_disabled_handler(request: Request, exc: ModuleDisabled):
     if request.method == "GET" and "text/html" in accept:
         return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
     return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": exc.detail})
+
+
+@app.exception_handler(AccessDeniedError)
+async def access_denied_handler(request: Request, exc: AccessDeniedError):
+    """A refused policy decision is 403, not a crash.
+
+    The response deliberately says nothing about whose record was reached for or
+    whether it exists: a denial and a miss have to look the same from outside,
+    or the refusal itself becomes a way to probe.
+    """
+
+    del exc
+    logger.warning("access denied: %s %s", request.method, request.url.path)
+    detail = "Недостаточно прав для этой операции."
+    accept = request.headers.get("accept", "")
+    if request.method == "GET" and "text/html" in accept:
+        return HTMLResponse(content=detail, status_code=status.HTTP_403_FORBIDDEN)
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN, content={"detail": detail}
+    )
 
 
 # ── Health check ─────────────────────────────────────────────────────────────

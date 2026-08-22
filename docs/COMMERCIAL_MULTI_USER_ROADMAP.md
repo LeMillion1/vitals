@@ -725,10 +725,28 @@ Delivered:
   `rls_session.bind_session_subject` sets the transaction-local value the policy
   reads; an unbound session sees nothing rather than everything.
 
-Not delivered, and deliberately so: the `AccessContext` cutover in the scope
-list above. Services take an explicit `subject_id` today and the sole-subject
-resolver supplies it; replacing that resolver with a real principal is PR-10's
-work and is what the composition readers move onto next. `system_alerts`,
+Partly delivered since: the policy engine now has a caller.
+`vitals/services/access_resolution.py` resolves a real `AccessContext` — a
+principal with its roles, the selected subject, and that subject's owner — and
+`require_access` decides one exact resource and action through
+`vitals.access.is_allowed`. `resolve_legacy_ownership_context` builds the
+snapshot whenever a human is behind the operation, and the export routes are
+the first to be decided by it rather than by being logged in; a refusal is 403
+and says nothing about whose record was reached for.
+
+What that changes is the shape of the refusal. The legacy resolver fails as soon
+as a second subject exists, for either person, because it cannot tell whose
+installation it is. `resolve_access_context` selects by ownership instead, so a
+second person's record becomes ordinary denied access rather than an error about
+the database's cardinality. Two properties are deliberate: resolving a context
+authorizes nothing — the question "may I reach that record?" has to be
+answerable without entering its scope — and a role is never a grant, so a doctor
+or a platform superadmin is a stranger to every record without a live,
+actor-bound, exactly-scoped one.
+
+Still PR-10's: moving the remaining services and the composition readers off the
+explicit `subject_id` they take today onto the context, and the relationship and
+support grants that make a cross-subject answer anything other than no. `system_alerts`,
 `conflict_rules` and the inherited children are also excluded from the blanket
 RLS policy — they need "mine or the installation's" rather than "mine", which is
 a different predicate and needs its own review.

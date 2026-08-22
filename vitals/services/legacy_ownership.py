@@ -26,6 +26,7 @@ from vitals.enums import (
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.tenancy import IntegrationConnection
+from vitals.access import AccessContext
 from vitals.ownership import WriteIdentity
 from vitals.services.rls_session import bind_session_subject
 from vitals.services.identity_service import IdentityValidationError, normalize_username
@@ -88,6 +89,13 @@ class LegacyOwnershipContext:
     owner_user_id: uuid.UUID
     actor_user_id: uuid.UUID | None
     connection_ids: Mapping[IntegrationProvider, uuid.UUID]
+    #: The policy snapshot this operation may be decided from, when a human is
+    #: behind it. ``None`` for a scheduled job or a provider callback: there is
+    #: no principal to evaluate, and the job acts as the system rather than as
+    #: somebody. Callers that hand data across a boundary — an export, a share,
+    #: an external read — ask ``access_resolution.require_access`` against this
+    #: rather than inferring permission from having got this far.
+    access: AccessContext | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("subject_id", "owner_user_id"):
@@ -320,11 +328,31 @@ async def resolve_legacy_ownership_context(
                 )
             connection_ids[provider] = non_retired[0].id
 
+    access = None
+    if actor_user_id is not None:
+        # A named actor is a principal, so the operation can be *decided* rather
+        # than merely resolved. The sole owner is authorized by self-ownership,
+        # which is why nothing changes for this installation; what the snapshot
+        # adds is somewhere for a denial to come from once it might.
+        from vitals.services.access_resolution import (
+            enter_subject_scope,
+            resolve_access_context,
+        )
+
+        access = await resolve_access_context(
+            session, user_id=actor_user_id, subject_id=subject_id
+        )
+        # This resolver only ever returns the subject its actor owns, so the
+        # scope is entered here; a caller reaching for somebody else's record
+        # goes through ``require_access`` and enters it only if allowed.
+        await enter_subject_scope(session, access)
+
     return LegacyOwnershipContext(
         subject_id=subject_id,
         owner_user_id=resolved_owner_id,
         actor_user_id=actor_user_id,
         connection_ids=connection_ids,
+        access=access,
     )
 
 

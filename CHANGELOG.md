@@ -10,6 +10,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- **The policy engine has a caller.** `vitals/access.py` had been complete and
+  unused since PR-02; `access_resolution.resolve_access_context` now builds a
+  real `AccessContext` and `require_access` decides one exact resource and
+  action through `is_allowed`.
+- A second person's record becomes ordinary denied access instead of an error
+  about the database's cardinality: the resolver selects the subject by
+  ownership rather than by there being only one.
+- Resolving a context authorizes nothing, and entering the database scope is a
+  separate step — asking whether you may reach somebody's record must not
+  require entering it first.
+- The export routes are the first decided by the engine rather than by being
+  logged in. `AccessDeniedError` maps to 403 and reveals nothing about whose
+  record was reached for or whether it exists.
+
 - The ownership cutover is now proven as one operation. A revision-0034 lake
   with real data goes through all twenty backfill phases, the contract
   migration and the row policies in a single rehearsal — previously each third
