@@ -45,25 +45,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 '_ensure_nonoverlapping_period',
             }
         ),
-        'vitals.services.body_scan_service': frozenset(
-            {
-                '_lock_scan_for_update',
-                '_require_legacy_bridge',
-                '_subject_scope',
-                '_validate_persisted_scan',
-                'available_metrics',
-                'bia_chart_points',
-                'delete_scan',
-                'get_scan',
-                'latest_scan',
-                'list_scans',
-                'metric_history',
-                'refresh_alerts',
-                'reparse_owned_pending',
-                'save_scan',
-                'update_scan_note',
-            }
-        ),
         'vitals.services.custom_charts_service': frozenset(
             {
                 'cache_key',

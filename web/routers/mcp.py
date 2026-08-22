@@ -1838,7 +1838,6 @@ async def log_note(
                 record_id,
                 note=note,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_weight_write=prepared,
             )
             if row is None:
@@ -2127,9 +2126,6 @@ async def get_notes(
                 rows = await body_scan_service.list_scans(
                     session,
                     subject_id=body_comp_scope.subject_id,
-                    include_legacy_unowned=(
-                        body_comp_scope.include_legacy_unowned
-                    ),
                     start=start,
                     end=end,
                 )
@@ -2230,8 +2226,8 @@ async def delete_record(domain: str, record_id: int) -> dict:
         elif domain == "body_comp":
             conflict_context, prepared = await _mcp_v1_weight_write(session)
             owned_kwargs = {
+                "subject_id": conflict_context.identity.subject_id,
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
                 "prepared_weight_write": prepared,
             }
         elif domain == "milestones":
@@ -2251,7 +2247,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             ownership = await _mcp_v1_legacy_owner(session)
             owned_kwargs = {
                 "identity": ownership.owner_action(),
-                    }
+            }
         elif domain == "nutrition":
             conflict_context = await _mcp_v1_conflict_write_context(session)
             prepared = await conflict_engine.prepare_scoped_write(
@@ -2283,7 +2279,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                        "prepared_conflict_write": prepared,
+                "prepared_conflict_write": prepared,
             }
         elif domain == "skincare_observation":
             conflict_context = await _mcp_v1_conflict_write_context(session)
@@ -2328,8 +2324,8 @@ async def delete_record(domain: str, record_id: int) -> dict:
         if domain == "body_comp" and ok:
             await service.refresh_alerts(
                 session,
+                subject_id=conflict_context.identity.subject_id,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_weight_write=prepared,
             )
         await session.commit()
@@ -2366,7 +2362,6 @@ async def get_body_scans(
             start=start,
             end=end,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
         )
         return [_serialize_scan(s) for s in scans[:limit]]
 
@@ -2385,7 +2380,6 @@ async def get_body_scan(scan_id: int) -> dict:
             session,
             scan_id,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
         )
         if scan is None:
             return {"error": f"Body scan {scan_id} not found"}
@@ -2417,7 +2411,6 @@ async def get_body_metric_history(
             start=start,
             end=end,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
         )
 
 
@@ -2479,9 +2472,9 @@ async def log_body_scan(
             )
             await body_scan_service.refresh_alerts(
                 session,
+                subject_id=conflict_context.identity.subject_id,
                 on_date=parsed_date,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_weight_write=prepared_weight_write,
             )
         except ConflictBlocked as e:
@@ -2495,7 +2488,6 @@ async def log_body_scan(
             session,
             scan.id,
             subject_id=conflict_context.identity.subject_id,
-            include_legacy_unowned=True,
         )
         return _serialize_scan(full) if full else {"scan_id": scan.id}
 
@@ -3765,8 +3757,12 @@ async def get_trend(
         except KeyError:
             return {"error": f"Unknown metric '{metric_key}'"}
         try:
+            trend_scope = await _mcp_v1_conflict_scope(session)
             raw = await chart_data_service.series_for(
-                session, metric_key=metric_key, param=param
+                session,
+                subject_id=trend_scope.subject_id,
+                metric_key=metric_key,
+                param=param,
             )
         except ValueError as e:
             return {"error": str(e)}

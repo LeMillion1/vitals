@@ -3065,7 +3065,6 @@ async def chart_series(
         bia = await body_scan_service.bia_chart_points(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
 
     # Timeline flags (manual annotations) — lazy import, only when the

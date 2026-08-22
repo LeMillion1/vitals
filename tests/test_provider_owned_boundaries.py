@@ -64,8 +64,9 @@ async def test_nightly_raw_sweep_passes_exact_system_owned_roots(
         calls.append(("labs", identity, prepared_conflict_write))
         return 0
 
-    async def _body_comp(session, *, identity, include_legacy_unowned, **kwargs):
-        calls.append(("body_comp", identity, include_legacy_unowned))
+    async def _body_comp(session, *, identity, **kwargs):
+        # body_comp is closed: the sweep carries the subject, not an escape hatch.
+        calls.append(("body_comp", identity, identity.subject_id))
         return 0
 
     monkeypatch.setattr(garmin_service, "reparse_owned_pending", _garmin)
@@ -103,7 +104,7 @@ async def test_nightly_raw_sweep_passes_exact_system_owned_roots(
         subject.id,
         None,
     )
-    assert calls[3][2] is True
+    assert calls[3][2] == subject.id
     assert [name for name, _identity, _connection in calls] == [
         "garmin",
         "hevy",

@@ -296,7 +296,6 @@ async def _persist_and_replay_platform_scan(
     assert await body_scan_service.reparse_owned_pending(
         session,
         identity=context.identity,
-        include_legacy_unowned=True,
     ) == 1
     await session.commit()
     raw = await session.get(RawPayload, raw_id)
@@ -1052,7 +1051,6 @@ async def test_replay_normalizes_only_successful_platform_extraction(
     done = await body_scan_service.reparse_owned_pending(
         db_session,
         identity=context.identity,
-        include_legacy_unowned=True,
     )
     await db_session.commit()
 
@@ -1228,7 +1226,6 @@ async def test_mcp_scan_and_derived_weight_reject_mixed_parser_invocation(
         await body_scan_service.list_scans(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
     await db_session.rollback()
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):

@@ -586,13 +586,11 @@ async def test_real_postgres_0034_body_scan_metric_stop_resume_volatility_and_re
 
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as session:
-            # Migrated scans keep their unknown actor null, which the body-scan
-            # reader still reaches through the legacy compatibility bridge; its
-            # retirement is a separate later gate.
+            # Migrated scans keep their unknown actor null, and the closed
+            # body-scan reader accepts that: the subject is what it scopes on.
             listed = await body_scan_service.list_scans(
                 session,
                 subject_id=identity.subject_id,
-                include_legacy_unowned=True,
             )
             assert [row.id for row in listed] == [SCAN_ID]
             assert {metric.id for metric in listed[0].metrics} == set(METRIC_IDS)

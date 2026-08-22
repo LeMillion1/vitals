@@ -226,6 +226,12 @@ async def test_upload_confirm_keeps_exact_s_a_c_f_raw_and_metric_inheritance(
         identity=identity,
         connection=connection,
         suffix="exact",
+        payload={
+            "date": SCAN_DATE.isoformat(),
+            "device": "Synthetic BIA",
+            # The parser misread body fat; the owner corrects it in preview.
+            "metrics": [{"label": "Percent Body Fat", "value": 99.9, "unit": "%"}],
+        },
     )
 
     scan = await body_scan_service.save_scan(
@@ -234,7 +240,7 @@ async def test_upload_confirm_keeps_exact_s_a_c_f_raw_and_metric_inheritance(
         device="Synthetic BIA",
         file_key=raw.external_id,
         raw_payload_id=raw.id,
-        metrics=_metrics(),
+        metrics=_metrics(fat=22.0),
         identity=identity,
         prepared_weight_write=await _prepared_weight(db_session, identity),
     )
@@ -294,6 +300,11 @@ async def test_upload_confirm_keeps_exact_s_a_c_f_raw_and_metric_inheritance(
         Source.BODY_SCAN.value,
     )
     assert raw.processed_at is not None
+    # The owner's correction lands on the normalized row; what the parser
+    # actually said stays on the raw payload, unedited.
+    fat = next(m for m in children if m.metric_key == "body_fat_pct")
+    assert fat.value == 22.0
+    assert raw.payload["metrics"][0]["value"] == 99.9
 
 
 async def test_mcp_structured_write_is_raw_first_and_splits_scan_from_weight_source(
@@ -339,7 +350,7 @@ async def test_mcp_structured_write_is_raw_first_and_splits_scan_from_weight_sou
                 "refresh",
                 kwargs["identity"],
                 context.legacy_bridge,
-                kwargs["include_legacy_unowned"],
+                kwargs["subject_id"],
                 kwargs["on_date"],
             )
         )
@@ -400,7 +411,7 @@ async def test_mcp_structured_write_is_raw_first_and_splits_scan_from_weight_sou
             "refresh",
             _identity(legacy_owner_roots),
             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
-            True,
+            legacy_owner_roots.subject_id,
             SCAN_DATE,
         ),
     ]
@@ -461,10 +472,12 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
             prepared=prepared,
             identity=kwargs["identity"],
         )
+        # save_scan takes its scope from the capability rather than a separate
+        # argument, so the capability's subject is what the probe records.
         captured.append((
             "save",
             kwargs["identity"],
-            kwargs["include_legacy_unowned"],
+            context.identity.subject_id,
             context.legacy_bridge,
             kwargs["on_date"],
         ))
@@ -479,7 +492,7 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
         captured.append((
             "refresh",
             kwargs["identity"],
-            kwargs["include_legacy_unowned"],
+            kwargs["subject_id"],
             context.legacy_bridge,
             kwargs["on_date"],
         ))
@@ -522,14 +535,14 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
         (
             "save",
             _identity(legacy_owner_roots),
-            True,
+            legacy_owner_roots.subject_id,
             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
             SCAN_DATE,
         ),
         (
             "refresh",
             _identity(legacy_owner_roots),
-            True,
+            legacy_owner_roots.subject_id,
             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
             SCAN_DATE,
         ),
@@ -554,7 +567,7 @@ async def test_web_upload_and_confirm_keep_owned_boundary_kwargs_and_chain(
     assert captured[-1] == (
         "save",
         _identity(legacy_owner_roots),
-        True,
+        legacy_owner_roots.subject_id,
         conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
         SCAN_DATE,
     )
@@ -719,6 +732,7 @@ async def test_subject_a_reads_notes_delete_history_catalog_and_bia_exclude_b(
     assert not await body_scan_service.delete_scan(
         db_session,
         scan_b.id,
+        subject_id=owner_a.subject_id,
         identity=owner_a,
         prepared_weight_write=await _prepared_weight(
             db_session,
@@ -823,10 +837,17 @@ async def test_mcp_note_delete_and_web_delete_prepare_before_target_reads(
     assert await db_session.get(BodyScan, web_scan.id) is None
 
 
-async def test_fully_null_legacy_graph_is_visible_and_adoptable_for_delete(
+async def test_fully_null_legacy_graph_is_invisible_to_the_closed_domain(
     db_session,
     legacy_owner_roots,
 ):
+    """The bridge that once adopted an unowned scan on read is gone.
+
+    While body_comp still had a compatibility arm, a scan with no subject was
+    visible to the sole owner and adoptable on delete. Closing the domain makes
+    the subject the only key: an unowned row is now outside every scope, which
+    is what stops a second person's request from ever reaching it.
+    """
     identity = _identity(legacy_owner_roots)
     legacy = BodyScan(
         date=SCAN_DATE,
@@ -847,20 +868,20 @@ async def test_fully_null_legacy_graph_is_visible_and_adoptable_for_delete(
     visible = await body_scan_service.list_scans(
         db_session,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
-    assert [row.id for row in visible] == [legacy.id]
-    assert await body_scan_service.delete_scan(
+    assert visible == []
+    assert not await body_scan_service.delete_scan(
         db_session,
         legacy.id,
+        subject_id=identity.subject_id,
         identity=identity,
-        include_legacy_unowned=True,
         prepared_weight_write=await _prepared_weight(
             db_session,
             identity,
             legacy=True,
         ),
     )
+    assert await db_session.get(BodyScan, legacy.id) is not None
 
 
 async def test_legacy_raw_replay_weight_bridge_remains_scoped_readable(
@@ -883,7 +904,6 @@ async def test_legacy_raw_replay_weight_bridge_remains_scoped_readable(
     assert await body_scan_service.reparse_owned_pending(
         db_session,
         identity=system,
-        include_legacy_unowned=True,
     ) == 1
     bridged = await weight_service.get_active_weight(
         db_session,
@@ -940,7 +960,6 @@ async def test_stage3a_parser_history_replays_scan_and_weight_without_file_adopt
             raw_payload_id=raw.id,
             metrics=_metrics(weight=77.2),
             identity=system,
-            include_legacy_unowned=True,
             prepared_weight_write=await _prepared_weight(
                 db_session,
                 system,
@@ -952,7 +971,6 @@ async def test_stage3a_parser_history_replays_scan_and_weight_without_file_adopt
     assert await body_scan_service.reparse_owned_pending(
         db_session,
         identity=system,
-        include_legacy_unowned=True,
     ) == 1
     scan = await db_session.scalar(
         select(BodyScan).where(BodyScan.raw_payload_id == raw.id)
@@ -980,10 +998,16 @@ async def test_stage3a_parser_history_replays_scan_and_weight_without_file_adopt
     assert raw.processed_at is not None
 
 
-async def test_stage3a_mcp_history_is_readable_only_through_exact_legacy_bridge(
+async def test_stage3a_mcp_history_without_a_subject_is_unreadable_and_unlinkable(
     db_session,
     legacy_owner_roots,
 ):
+    """A half-migrated MCP graph — owned raw, unowned scan — stays out of reach.
+
+    The compatibility bridge that once surfaced such a scan is gone, so the row
+    is invisible, and its raw still cannot be relinked to a new scan, which is
+    what stops the unowned half from being quietly adopted.
+    """
     identity = _identity(legacy_owner_roots)
     raw = RawPayload(
         subject_id=identity.subject_id,
@@ -1017,12 +1041,6 @@ async def test_stage3a_mcp_history_is_readable_only_through_exact_legacy_bridge(
         db_session,
         subject_id=identity.subject_id,
     ) == []
-    visible = await body_scan_service.list_scans(
-        db_session,
-        subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    )
-    assert [row.id for row in visible] == [scan.id]
 
     with pytest.raises(conflict_engine.ConflictRawOwnershipError):
         await body_scan_service.save_scan(
@@ -1032,7 +1050,6 @@ async def test_stage3a_mcp_history_is_readable_only_through_exact_legacy_bridge(
             metrics=_metrics(),
             source=Source.MCP.value,
             identity=identity,
-            include_legacy_unowned=True,
             prepared_weight_write=await _prepared_weight(
                 db_session,
                 identity,
@@ -1048,6 +1065,13 @@ async def test_exact_manual_scan_actor_must_be_subject_owner(
     legacy_owner_roots,
     actor_mode,
 ):
+    """A manual scan names either the subject's owner or nobody at all.
+
+    The Stage-3B backfill stamped the subject onto migrated history without
+    inventing an actor for it, so a null actor is what a pre-multi-user manual
+    scan legitimately looks like. Any *other* user's id on that row is a forged
+    attribution and stays refused.
+    """
     identity = _identity(legacy_owner_roots)
     actor_user_id = None
     if actor_mode == "foreign":
@@ -1070,6 +1094,14 @@ async def test_exact_manual_scan_actor_must_be_subject_owner(
     )
     db_session.add(scan)
     await db_session.commit()
+
+    if actor_mode == "null":
+        visible = await body_scan_service.list_scans(
+            db_session,
+            subject_id=identity.subject_id,
+        )
+        assert [row.id for row in visible] == [scan.id]
+        return
 
     with pytest.raises(body_scan_service.BodyScanOwnershipError):
         await body_scan_service.list_scans(
@@ -1156,11 +1188,16 @@ async def test_exact_mcp_chain_cannot_share_one_foreign_actor(
 
 
 @pytest.mark.parametrize("raw_source", [Source.MCP.value, Source.BODY_SCAN.value])
-async def test_fully_null_scan_cannot_reverse_bridge_to_exact_owned_raw(
+async def test_fully_null_scan_never_reaches_a_scope_through_its_owned_raw(
     db_session,
     legacy_owner_roots,
     raw_source,
 ):
+    """Owning the raw does not pull an ownerless scan into the owner's history.
+
+    The scan's own subject is the only thing the reader scopes on, so a row that
+    names nobody stays outside every scope no matter whose payload it points at.
+    """
     identity = _identity(legacy_owner_roots)
     if raw_source == Source.BODY_SCAN.value:
         connection = await _openrouter_connection(db_session, identity.subject_id)
@@ -1197,12 +1234,10 @@ async def test_fully_null_scan_cannot_reverse_bridge_to_exact_owned_raw(
     db_session.add(legacy_scan)
     await db_session.commit()
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
-        await body_scan_service.list_scans(
-            db_session,
-            subject_id=identity.subject_id,
-            include_legacy_unowned=True,
-        )
+    assert await body_scan_service.list_scans(
+        db_session,
+        subject_id=identity.subject_id,
+    ) == []
 
 
 @pytest.mark.parametrize(
@@ -1273,7 +1308,6 @@ async def test_owned_replay_rejects_foreign_or_partial_link_suppression(
         await body_scan_service.reparse_owned_pending(
             db_session,
             identity=system,
-            include_legacy_unowned=True,
         )
     await db_session.refresh(raw)
     assert raw.processed_at is None
@@ -1315,7 +1349,6 @@ async def test_latest_scan_rejects_newer_partial_legacy_instead_of_using_stale(
         await body_scan_service.latest_scan(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
 
@@ -1324,7 +1357,10 @@ async def test_latest_scan_rejects_newer_partial_legacy_instead_of_using_stale(
     [
         "scan_actor_without_subject",
         "scan_file_without_subject",
-        "scan_raw_without_subject",
+        # A bare raw link on an ownerless scan is not a broken chain — it is
+        # what a running ownership backfill looks like mid-flight, and
+        # test_fully_null_scan_never_reaches_a_scope_through_its_owned_raw
+        # pins the invisibility that covers it instead.
         "metric_missing_subject",
         "metric_foreign_subject",
         "raw_missing_subject",
@@ -1371,10 +1407,6 @@ async def test_every_partial_scan_metric_and_raw_chain_fails_closed(
         scan.subject_id = None
         scan.actor_user_id = None
         scan.raw_payload_id = None
-    elif broken_part == "scan_raw_without_subject":
-        scan.subject_id = None
-        scan.actor_user_id = None
-        scan.file_asset_id = None
     elif broken_part == "metric_missing_subject":
         scan.metrics[0].subject_id = None
     elif broken_part == "metric_foreign_subject":
@@ -1402,7 +1434,6 @@ async def test_every_partial_scan_metric_and_raw_chain_fails_closed(
         await body_scan_service.list_scans(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
 
@@ -1494,6 +1525,7 @@ async def test_capability_is_rejected_before_raw_or_scan_target_resolution(
         await body_scan_service.delete_scan(
             db_session,
             999_999,
+            subject_id=owner.subject_id,
             identity=owner,
             prepared_weight_write=wrong_capability,
         )
@@ -1716,6 +1748,7 @@ async def test_visceral_and_phase_alerts_are_typed_scoped_and_actorless(
 
     await body_scan_service.refresh_alerts(
         db_session,
+        subject_id=system.subject_id,
         on_date=SCAN_DATE,
         identity=system,
         prepared_weight_write=await _prepared_weight(db_session, system),
@@ -1846,13 +1879,9 @@ async def test_same_day_scans_keep_independent_conflicts_and_resolver_entities(
         row[conflict_engine.CONFLICT_ENTITY_KEY] != f"body_scan:{historical.id}"
         for row in resolved
     )
-    assert await body_scan_service.resolve_active(db_session) == [
-        {"scan": True, "source": Source.MANUAL.value},
-        {"scan": True, "source": Source.MANUAL.value},
-    ]
 
 
-async def test_owned_replay_isolates_savepoints_is_idempotent_and_generic_rejects(
+async def test_owned_replay_isolates_savepoints_and_is_idempotent(
     db_session,
     legacy_owner_roots,
     monkeypatch,
@@ -1874,9 +1903,6 @@ async def test_owned_replay_isolates_savepoints_is_idempotent_and_generic_reject
     )
     failed_id, successful_id = failed.id, successful.id
     await db_session.commit()
-
-    with pytest.raises(ValueError):
-        await body_scan_service.reparse_from_raw(db_session, failed)
 
     original_save = body_scan_service.save_scan
 

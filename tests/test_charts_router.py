@@ -86,7 +86,9 @@ async def test_delete_chart(auth_client, db_session):
     assert charts == []
 
 
-async def test_charts_page_lists_and_renders_saved_chart_data(auth_client, db_session):
+async def test_charts_page_lists_and_renders_saved_chart_data(
+    auth_client, db_session, owned_by_legacy_subject
+):
     db_session.add(WeightLog(date=DAY, domain="weight", source="manual", weight_kg=88.0, superseded=False))
     await custom_charts_service.create_chart(
         db_session, name="Weight only", series=[{"domain": "weight", "metric_key": "weight.weight_kg"}]

@@ -10,6 +10,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the body-composition domain, the deepest graph so far: a scan, its
+  metric sheet, the raw payload it was parsed from, the file that payload came
+  out of, and the weigh-in it bridges into the weight domain. Fifteen bridges
+  closed. Every read takes the subject; every write takes the subject together
+  with the Weight capability, because a scan that changes today's weight has to
+  take the Weight lock order to do it.
+- Retired the generic replay path (`ingest_extracted`, `reparse_from_raw`,
+  `reparse_pending`) and the disabled singleton resolver with it. `reparse_owned_pending`
+  is now the only sweep, and it is the one reader body_comp keeps that can see a
+  payload belonging to nobody — adopting that payload into the subject's history
+  is the whole point of the sweep. It decides that per raw, from the raw's own
+  roots, instead of from a caller-supplied flag: a fully-unowned payload and a
+  Stage-3A parser payload adopt, everything else is judged exactly.
+- A migrated manual scan keeps its unknown actor null, and the closed reader
+  accepts that — the Stage-3B backfill stamped subjects without inventing
+  actors. Any *other* user's id on that row is still refused as a forged
+  attribution.
+- An ownerless scan is now simply outside every scope rather than adoptable on
+  read: owning the raw it points at does not pull it into the owner's history.
+  Mid-backfill this means the reader shows exactly the rows already stamped,
+  which is what the PostgreSQL stop/resume rehearsal now pins.
+- Scoped the chart builder along the way — `build_catalog`, `series_for` and
+  `resolve_chart_series` name the subject whose charts they offer — and with it
+  the three Hevy readers those charts consult (`exercise_catalog`,
+  `working_weight_series`, `progression_for_exercise`), which had been reading
+  across the whole installation.
+
 - Closed the three HRT domains together — doses and side effects, cycles and
   their items, and the templates behind them — because a cycle read is a graph
   read and closing one without the others would have left the reader half

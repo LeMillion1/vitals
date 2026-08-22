@@ -638,12 +638,14 @@ async def test_real_postgres_0034_body_scan_stop_resume_and_restore(
                 session,
                 subject_id=identity.subject_id,
             ) == SCAN_IDS[0]
+            # The backfill is halfway: body_comp is closed, so the reader
+            # shows exactly the rows that already carry the subject and none of
+            # the ones still waiting for the next batch.
             visible = await body_scan_service.list_scans(
                 session,
                 subject_id=identity.subject_id,
-                include_legacy_unowned=True,
             )
-            assert {row.id for row in visible} == set(SCAN_IDS)
+            assert {row.id for row in visible} == {SCAN_IDS[0]}
             processed = next(row for row in visible if row.id == SCAN_IDS[0])
             assert processed.actor_user_id is None
 

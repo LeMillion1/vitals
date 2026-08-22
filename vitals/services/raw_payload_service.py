@@ -675,7 +675,6 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
             return await body_scan_service.reparse_owned_pending(
                 session,
                 identity=context.identity,
-                include_legacy_unowned=True,
             )
 
         async def _sweep_owned_genetics() -> int:

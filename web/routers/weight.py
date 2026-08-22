@@ -176,9 +176,9 @@ async def _section_context(
         assert prepared_weight_write is not None
         await body_scan_service.refresh_alerts(
             db,
+            subject_id=identity.subject_id,
             on_date=today,
             identity=identity,
-            include_legacy_unowned=True,
             prepared_weight_write=prepared_weight_write,
         )
     await db.commit()
@@ -232,7 +232,6 @@ async def _section_context(
         await body_scan_service.list_scans(
             db,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
         if body_comp_enabled
         else []
@@ -945,14 +944,13 @@ async def body_scan_confirm(
             note=payload.note,
             override=payload.override,
             identity=identity,
-            include_legacy_unowned=True,
             prepared_weight_write=prepared_weight_write,
         )
         await body_scan_service.refresh_alerts(
             db,
+            subject_id=identity.subject_id,
             on_date=on_date,
             identity=identity,
-            include_legacy_unowned=True,
             prepared_weight_write=prepared_weight_write,
         )
         await db.commit()
@@ -990,7 +988,6 @@ async def delete_body_scan_entry(
         db,
         scan_id,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     if scan is None:
         return _back(request)
@@ -1000,16 +997,16 @@ async def delete_body_scan_entry(
     deleted = await body_scan_service.delete_scan(
         db,
         scan_id,
+        subject_id=identity.subject_id,
         identity=identity,
-        include_legacy_unowned=True,
         prepared_weight_write=prepared_weight_write,
     )
     if deleted:
         await body_scan_service.refresh_alerts(
             db,
+            subject_id=identity.subject_id,
             on_date=operation_date,
             identity=identity,
-            include_legacy_unowned=True,
             prepared_weight_write=prepared_weight_write,
         )
     if deleted and file_asset_id is not None:

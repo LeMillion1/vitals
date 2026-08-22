@@ -395,9 +395,6 @@ async def test_body_and_lab_bare_ids_are_rejected_outside_subject_scope(db_sessi
         )
         is None
     )
-    assert not await body_scan_service.delete_scan(
-        db_session, scan.id, subject_id=owner_subject.id
-    )
     assert not await labs_service.delete_result(
         db_session, result.id, subject_id=owner_subject.id
     )
@@ -486,11 +483,6 @@ async def test_legacy_service_calls_remain_nullable_and_usable(db_session):
         on_date=date(2026, 8, 19),
         file_key="uploads/legacy.png",
     )
-    scan = await body_scan_service.save_scan(
-        db_session,
-        on_date=date(2026, 8, 19),
-        metrics=[{"label": "Белок", "value": 9.9}],
-    )
     results = await labs_service.confirm_extracted(
         db_session,
         on_date=date(2026, 8, 19),
@@ -502,14 +494,8 @@ async def test_legacy_service_calls_remain_nullable_and_usable(db_session):
         None,
         None,
     )
-    assert (scan.subject_id, scan.actor_user_id, scan.file_asset_id) == (
-        None,
-        None,
-        None,
-    )
     assert (results[0].subject_id, results[0].actor_user_id) == (None, None)
     assert await weight_service.delete_progress_photo(db_session, photo.id)
-    assert await body_scan_service.delete_scan(db_session, scan.id)
 
 
 async def _fake_lab_extract(contents, *, llm, content_type, filename=None):

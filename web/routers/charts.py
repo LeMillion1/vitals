@@ -35,14 +35,18 @@ async def charts_dashboard(
     lang = getattr(request.state, "lang", "ru")
     enabled = getattr(request.state, "enabled_modules", None) or {}
 
-    catalog = await chart_data_service.build_catalog(db, enabled, lang=lang)
+    catalog = await chart_data_service.build_catalog(
+        db, enabled, subject_id=ownership.subject_id, lang=lang
+    )
     charts = await custom_charts_service.list_charts(
         db,
         redis,
         subject_id=ownership.subject_id,
     )
     resolved = {
-        c["id"]: await chart_data_service.resolve_chart_series(db, c, lang=lang)
+        c["id"]: await chart_data_service.resolve_chart_series(
+            db, c, subject_id=ownership.subject_id, lang=lang
+        )
         for c in charts
     }
     overlays = (

@@ -158,7 +158,9 @@ async def test_generate_digest_without_llm_key_errors():
 
 
 # ── get_trend ─────────────────────────────────────────────────────────────────
-async def test_get_trend_weight_slope_and_projection(db_session):
+async def test_get_trend_weight_slope_and_projection(
+    db_session, owned_by_legacy_subject
+):
     await weight_service.log_weight(db_session, on_date=date(2026, 6, 1), weight_kg=92.0)
     await weight_service.log_weight(db_session, on_date=date(2026, 6, 8), weight_kg=91.0)
     await weight_service.log_weight(db_session, on_date=date(2026, 6, 15), weight_kg=90.0)
@@ -173,7 +175,7 @@ async def test_get_trend_weight_slope_and_projection(db_session):
     assert trend["projection"]["date"] > "2026-06-15"
 
 
-async def test_get_trend_excludes_noise(db_session):
+async def test_get_trend_excludes_noise(db_session, owned_by_legacy_subject):
     await weight_service.log_weight(db_session, on_date=date(2026, 6, 1), weight_kg=92.0)
     await weight_service.log_weight(db_session, on_date=date(2026, 6, 8), weight_kg=91.0)
     await weight_service.add_noise_marker(

@@ -572,9 +572,32 @@ async def owner_write(db_session, legacy_owner_roots):
             context=scoped,
         )
 
+    async def weight_write(on_date=None):
+        """The Weight variant of the same capability.
+
+        Body composition writes a weigh-in alongside the scan, and that path
+        takes the Weight lock order rather than the generic one, so it needs the
+        capability weight_service issues.
+        """
+
+        from vitals.services import weight_service
+
+        scoped = context
+        if on_date is not None:
+            scoped = await conflict_engine.resolve_legacy_conflict_write_context(
+                db_session,
+                actor_username=get_web_config().auth_username,
+                evaluation_date=on_date,
+            )
+        return await weight_service.prepare_weight_write(
+            db_session,
+            context=scoped,
+        )
+
     return SimpleNamespace(
         identity=context.identity,
         write=write,
+        weight_write=weight_write,
         context=context,
         subject_id=legacy_owner_roots.subject_id,
     )

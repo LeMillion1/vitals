@@ -701,7 +701,9 @@ async def _body_comp_block(
     from vitals.services.analytics.body_metrics import METRIC_REGISTRY, display_name
 
     lang = current_lang.get()
-    scans = await body_scan_service.list_scans(session, start=start, end=end)
+    scans = await body_scan_service.list_scans(
+        session, start=start, end=end, subject_id=subject_id
+    )
     rows = []
     for scan in scans:
         metrics = []

@@ -8,6 +8,8 @@ existing weight/hevy/labs charts (no client-side fetch).
 """
 from __future__ import annotations
 
+import uuid
+
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -21,11 +23,18 @@ _AGGREGATORS = {"avg": func.avg, "sum": func.sum, "max": func.max, "min": func.m
 
 
 async def build_catalog(
-    session: AsyncSession, enabled_modules: dict[str, bool], *, lang: str = "ru"
+    session: AsyncSession,
+    enabled_modules: dict[str, bool],
+    *,
+    subject_id: uuid.UUID,
+    lang: str = "ru",
 ) -> dict:
     """Nested {domain: {label, metrics: [{key, label, unit, param_kind, params}]}}
     for the chart-builder UI, embedded once via ``tojson`` on page load. Domains
-    gated behind a disabled Optional module are omitted entirely."""
+    gated behind a disabled Optional module are omitted entirely.
+
+    The catalog lists this person's markers, exercises and scan metrics, so it
+    is built for the subject whose charts it will offer."""
     catalog: dict = {}
     for domain in chart_registry.all_domains():
         fields = chart_registry.metrics_for_domain(domain)
@@ -43,27 +52,37 @@ async def build_catalog(
                 "param_kind": field.param_kind,
             }
             if field.param_kind == "labs_marker":
-                markers = await labs_service.list_markers(session)
+                markers = await labs_service.list_markers(
+                    session, subject_id=subject_id
+                )
                 entry["params"] = [{"value": m.name, "label": m.name} for m in markers]
             elif field.param_kind == "hevy_exercise":
-                exercises = await hevy_service.exercise_catalog(session)
+                exercises = await hevy_service.exercise_catalog(
+                    session, subject_id=subject_id
+                )
                 entry["params"] = [
                     {"value": e["exercise_template_id"], "label": e["title"]}
                     for e in exercises
                 ]
             elif field.param_kind == "body_scan_metric":
-                entry["params"] = await body_scan_service.available_metrics(session)
+                entry["params"] = await body_scan_service.available_metrics(
+                    session, subject_id=subject_id
+                )
             metrics.append(entry)
 
         catalog[domain] = {"label": label_ru if lang == "ru" else label_en, "metrics": metrics}
     return catalog
 
 
-async def _simple_series(session: AsyncSession, field: MetricField) -> list[dict]:
+async def _simple_series(
+    session: AsyncSession, field: MetricField, *, subject_id: uuid.UUID
+) -> list[dict]:
     """Generic ``GROUP BY date`` + aggregate for a plain-column metric."""
     agg_fn = _AGGREGATORS[field.aggregate]
     col = getattr(field.model, field.column)
-    stmt = select(field.model.date, agg_fn(col)).where(col.is_not(None))
+    stmt = select(field.model.date, agg_fn(col)).where(
+        col.is_not(None), field.model.subject_id == subject_id
+    )
     if field.extra_filter is not None:
         stmt = field.extra_filter(stmt)
     stmt = stmt.group_by(field.model.date).order_by(field.model.date)
@@ -81,7 +100,11 @@ async def _simple_series(session: AsyncSession, field: MetricField) -> list[dict
 
 
 async def series_for(
-    session: AsyncSession, *, metric_key: str, param: Optional[str] = None
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    metric_key: str,
+    param: Optional[str] = None,
 ) -> list[dict]:
     """Resolve one metric (+ optional param) to ``[{"date": iso, "value": float}]``,
     dispatching by ``param_kind``. Raises ``KeyError`` for an unknown metric key
@@ -89,13 +112,15 @@ async def series_for(
     field = chart_registry.get(metric_key)
 
     if field.param_kind == "none":
-        return await _simple_series(session, field)
+        return await _simple_series(session, field, subject_id=subject_id)
 
     if not param:
         raise ValueError(f"metric '{metric_key}' requires a param")
 
     if field.param_kind == "labs_marker":
-        rows = await labs_service.marker_history(session, param)
+        rows = await labs_service.marker_history(
+            session, param, subject_id=subject_id
+        )
         return [
             {"date": r["date"], "value": r["value"]}
             for r in rows
@@ -103,7 +128,9 @@ async def series_for(
         ]
 
     if field.param_kind == "hevy_exercise":
-        rows = await hevy_service.working_weight_series(session, param)
+        rows = await hevy_service.working_weight_series(
+            session, param, subject_id=subject_id
+        )
         return [
             {"date": r["date"], "value": r["weight_kg"]}
             for r in rows
@@ -113,7 +140,10 @@ async def series_for(
     if field.param_kind == "body_scan_metric":
         metric_key_part, _, segment = param.partition(":")
         rows = await body_scan_service.metric_history(
-            session, metric_key_part, segment=(segment or None)
+            session,
+            metric_key_part,
+            segment=(segment or None),
+            subject_id=subject_id,
         )
         return [
             {"date": r["date"], "value": r["value"]}
@@ -125,13 +155,17 @@ async def series_for(
 
 
 async def _unit_for(
-    session: AsyncSession, field: MetricField, param: Optional[str]
+    session: AsyncSession,
+    field: MetricField,
+    param: Optional[str],
+    *,
+    subject_id: uuid.UUID,
 ) -> Optional[str]:
     """The series's unit — a data-driven lookup for the two domains whose unit
     varies per parameter (a lab marker's unit, a BIA metric's unit); a constant
     from the registry for everything else."""
     if field.param_kind == "labs_marker" and param:
-        marker = await labs_service.get_marker(session, param)
+        marker = await labs_service.get_marker(session, param, subject_id=subject_id)
         return marker.unit if marker else None
     if field.param_kind == "body_scan_metric" and param:
         metric_key_part = param.split(":", 1)[0]
@@ -141,7 +175,12 @@ async def _unit_for(
 
 
 async def _auto_label(
-    session: AsyncSession, field: MetricField, param: Optional[str], *, lang: str = "ru"
+    session: AsyncSession,
+    field: MetricField,
+    param: Optional[str],
+    *,
+    subject_id: uuid.UUID,
+    lang: str = "ru",
 ) -> str:
     """Human-readable default label for a series with no explicit ``label``."""
     if field.param_kind == "none":
@@ -149,7 +188,9 @@ async def _auto_label(
     if field.param_kind == "labs_marker":
         return param or field.label_ru
     if field.param_kind == "hevy_exercise":
-        exercises = await hevy_service.exercise_catalog(session)
+        exercises = await hevy_service.exercise_catalog(
+            session, subject_id=subject_id
+        )
         for e in exercises:
             if e["exercise_template_id"] == param:
                 return e["title"]
@@ -164,7 +205,7 @@ async def _auto_label(
 
 
 async def resolve_chart_series(
-    session: AsyncSession, config: dict, *, lang: str = "ru"
+    session: AsyncSession, config: dict, *, subject_id: uuid.UUID, lang: str = "ru"
 ) -> list[dict]:
     """Resolve every series of one saved chart config to render-ready dicts
     (``label``/``unit``/``color_slot``/``points``). A series whose ``metric_key``
@@ -177,9 +218,13 @@ async def resolve_chart_series(
         except KeyError:
             continue
         param = entry.get("param")
-        points = await series_for(session, metric_key=field.key, param=param)
-        unit = await _unit_for(session, field, param)
-        label = entry.get("label") or await _auto_label(session, field, param, lang=lang)
+        points = await series_for(
+            session, subject_id=subject_id, metric_key=field.key, param=param
+        )
+        unit = await _unit_for(session, field, param, subject_id=subject_id)
+        label = entry.get("label") or await _auto_label(
+            session, field, param, subject_id=subject_id, lang=lang
+        )
         resolved.append({
             "label": label,
             "unit": unit,

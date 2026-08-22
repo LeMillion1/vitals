@@ -17,13 +17,11 @@ from datetime import date
 from sqlalchemy import select
 
 from vitals.enums import Source
-from vitals.models.body_scan import BodyScan
 from vitals.models.garmin import GarminActivity, GarminDaily
 from vitals.models.hevy import HevyWorkout
 from vitals.models.labs import LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.services import (
-    body_scan_service,
     garmin_service,
     hevy_service,
     labs_service,
@@ -165,21 +163,3 @@ async def test_labs_reparse_pending_recovers_an_unconfirmed_extraction(db_sessio
         select(LabResult).where(LabResult.raw_payload_id == raw.id)
     )).scalars().first()
     assert result is not None and result.marker == "Ferritin" and result.value == 95
-
-
-async def test_body_scan_reparse_pending_recovers_an_unconfirmed_extraction(db_session):
-    raw = await _seed_raw(
-        db_session, domain=body_scan_service.DOMAIN, source=Source.BODY_SCAN.value,
-        external_id="scan-1",
-        payload={
-            "date": "2026-06-10", "device": "МедАсс",
-            "metrics": [{"label": "Белок", "value": 10.2, "unit": "кг"}],
-        },
-    )
-    done = await body_scan_service.reparse_pending(db_session)
-    assert done == 1
-
-    scan = (await db_session.execute(
-        select(BodyScan).where(BodyScan.raw_payload_id == raw.id)
-    )).scalars().first()
-    assert scan is not None and scan.device == "МедАсс"

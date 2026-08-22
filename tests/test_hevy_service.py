@@ -124,7 +124,9 @@ async def test_sync_renormalises_changed_workout_without_orphans(db_session):
     assert n_raw == 1
 
 
-async def test_working_weight_series_and_catalog(db_session):
+async def test_working_weight_series_and_catalog(
+    db_session, owned_by_legacy_subject
+):
     client = FakeHevyClient(
         [
             _workout("w1", start="2026-06-01T10:00:00Z", updated="2026-06-01T11:00:00Z",
@@ -136,17 +138,23 @@ async def test_working_weight_series_and_catalog(db_session):
     await hevy_service.sync(db_session, client)
     await db_session.commit()
 
-    series = await hevy_service.working_weight_series(db_session, "BENCH")
+    series = await hevy_service.working_weight_series(
+        db_session, "BENCH", subject_id=owned_by_legacy_subject.subject_id
+    )
     assert [p["weight_kg"] for p in series] == [80.0, 82.5]
     assert series[0]["date"] == "2026-06-01"
 
-    catalog = await hevy_service.exercise_catalog(db_session)
+    catalog = await hevy_service.exercise_catalog(
+        db_session, subject_id=owned_by_legacy_subject.subject_id
+    )
     assert len(catalog) == 1
     assert catalog[0]["exercise_template_id"] == "BENCH"
     assert catalog[0]["sessions"] == 2
 
 
-async def test_progression_advance_when_top_of_range_hit(db_session):
+async def test_progression_advance_when_top_of_range_hit(
+    db_session, owned_by_legacy_subject
+):
     from vitals.services.analytics.progression import ProgressionConfig
 
     client = FakeHevyClient(
@@ -159,7 +167,10 @@ async def test_progression_advance_when_top_of_range_hit(db_session):
     await db_session.commit()
 
     verdict = await hevy_service.progression_for_exercise(
-        db_session, "BENCH", ProgressionConfig(rep_min=8, rep_max=12, increment_kg=2.5)
+        db_session,
+        "BENCH",
+        ProgressionConfig(rep_min=8, rep_max=12, increment_kg=2.5),
+        subject_id=owned_by_legacy_subject.subject_id,
     )
     assert verdict is not None
     assert verdict.status == ADVANCE

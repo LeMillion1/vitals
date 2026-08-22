@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="ALL" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="4f7d8d26-b83f-429b-a4a5-0ed778c9a66c" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/vitals/services/alerts_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/alerts_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/services/conflict_catalog.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/conflict_catalog.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/services/garmin_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/garmin_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/services/garmin_weight_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/garmin_weight_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/services/hevy_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/hevy_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/services/hrt_catalog.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/hrt_catalog.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/services/signals_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/signals_service.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_BRANCH_BY_REPOSITORY">
+      <map>
+        <entry key="$PROJECT_DIR$" value="fix/period-report-data-coverage" />
+      </map>
+    </option>
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitToolBoxStore">
+    <option name="recentBranches">
+      <RecentBranches>
+        <option name="branchesForRepo">
+          <list>
+            <RecentBranchesForRepo>
+              <option name="branches">
+                <list>
+                  <RecentBranch>
+                    <option name="branchName" value="commercial/main" />
+                    <option name="lastUsedInstant" value="1787315223" />
+                  </RecentBranch>
+                  <RecentBranch>
+                    <option name="branchName" value="fix/durable-inbound-delivery-race-tests" />
+                    <option name="lastUsedInstant" value="1787315012" />
+                  </RecentBranch>
+                  <RecentBranch>
+                    <option name="branchName" value="master" />
+                    <option name="lastUsedInstant" value="1787134786" />
+                  </RecentBranch>
+                </list>
+              </option>
+              <option name="repositoryRootUrl" value="file://$PROJECT_DIR$" />
+            </RecentBranchesForRepo>
+          </list>
+        </option>
+      </RecentBranches>
+    </option>
+  </component>
+  <component name="KubernetesApiPersistence">{}</component>
+  <component name="KubernetesApiProvider">{
+  &quot;isMigrated&quot;: true
+}</component>
+  <component name="McpProjectServerCommands">
+    <commands />
+    <urls />
+  </component>
+  <component name="NextEditCompletionFeaturesState">
+    <decayedCancelled>
+      <entry key="MS100" value="1.0004731365358939" />
+      <entry key="MS500" value="1.4970076753557917" />
+      <entry key="S2" value="3.3097749858104932" />
+      <entry key="S5" value="4.20341217083428" />
+      <entry key="S10" value="4.57815576804257" />
+      <entry key="S30" value="4.8537797253192" />
+      <entry key="S60" value="4.926165742194179" />
+      <entry key="M2" value="4.965401647980842" />
+      <entry key="M5" value="5.224304399061723" />
+      <entry key="M10" value="6.086142614463234" />
+      <entry key="M15" value="6.810102795926634" />
+      <entry key="M30" value="8.010047896790901" />
+      <entry key="H1" value="8.879822097669301" />
+      <entry key="H2" value="9.404526024857805" />
+      <entry key="H4" value="9.692882046766046" />
+      <entry key="D1" value="13.059691489292033" />
+      <entry key="W1" value="49.220140672583995" />
+    </decayedCancelled>
+    <decayedSelected>
+      <entry key="MS100" value="0.0" />
+      <entry key="MS500" value="0.0" />
+      <entry key="S2" value="0.0" />
+      <entry key="S5" value="0.0" />
+      <entry key="S10" value="0.0" />
+      <entry key="S30" value="0.0" />
+      <entry key="S60" value="0.0" />
+      <entry key="M2" value="0.0" />
+      <entry key="M5" value="0.0" />
+      <entry key="M10" value="0.0" />
+      <entry key="M15" value="0.0" />
+      <entry key="M30" value="0.0" />
+      <entry key="H1" value="0.0" />
+      <entry key="H2" value="0.0" />
+      <entry key="H4" value="0.0" />
+      <entry key="D1" value="0.0" />
+      <entry key="W1" value="0.0" />
+    </decayedSelected>
+    <decayedShown>
+      <entry key="MS100" value="0.9663848962669201" />
+      <entry key="MS500" value="1.485548530965844" />
+      <entry key="S2" value="3.303252248753738" />
+      <entry key="S5" value="4.2001236274860805" />
+      <entry key="S10" value="4.57637136194368" />
+      <entry key="S30" value="4.853150809186161" />
+      <entry key="S60" value="4.925846820196026" />
+      <entry key="M2" value="4.9652409312258206" />
+      <entry key="M5" value="5.2242351352850065" />
+      <entry key="M10" value="6.086099447889401" />
+      <entry key="M15" value="6.8100692293408915" />
+      <entry key="M30" value="8.010027142802834" />
+      <entry key="H1" value="8.879810281273384" />
+      <entry key="H2" value="9.404519682452328" />
+      <entry key="H4" value="9.692878756251671" />
+      <entry key="D1" value="13.059690688267503" />
+      <entry key="W1" value="49.220140090358484" />
+    </decayedShown>
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 5,
+  &quot;fromUser&quot;: false
+}</component>
+  <component name="ProjectId" id="3FuiVgLZo6zxlOrAu5Puu69V3Fo" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.MCP Project settings loaded": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "RunOnceActivity.wiremock.mcp.server.advertisement.wiremock.claude.code": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "git-widget-placeholder": "commercial/main",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.jshint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.jshint": "",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "com.intellij.mcpserver.settings",
+    "vue.rearranger.settings.migration": "true"
+  }
+}]]></component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/docs/local" />
+    </key>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-js-predefined-d6986cc7102b-4abd2a77f808-JavaScript-PY-262.9437.214" />
+        <option value="bundled-python-sdk-821f704e66d9-5bd6d13a2a75-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-262.9437.214" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="4f7d8d26-b83f-429b-a4a5-0ed778c9a66c" name="Changes" comment="" />
+      <created>1782931380386</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1782931380386</updated>
+      <workItem from="1782931381497" duration="29888000" />
+      <workItem from="1784309622656" duration="4000" />
+      <workItem from="1784309643642" duration="30875000" />
+      <workItem from="1786724999730" duration="7000" />
+      <workItem from="1786725020818" duration="6965000" />
+      <workItem from="1786814082863" duration="38781000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="feat: sync fresh weight entries to Garmin" />
+    <option name="LAST_COMMIT_MESSAGE" value="" />
+  </component>
+</project>

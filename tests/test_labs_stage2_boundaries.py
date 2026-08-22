@@ -453,7 +453,7 @@ async def test_nightly_labs_sweep_receives_system_identity_and_live_capability(
 
     monkeypatch.setattr(garmin_service, "reparse_owned_pending", no_op)
     monkeypatch.setattr(hevy_service, "reparse_owned_pending", no_op)
-    monkeypatch.setattr(body_scan_service, "reparse_pending", no_op)
+    monkeypatch.setattr(body_scan_service, "reparse_owned_pending", no_op)
     monkeypatch.setattr(labs_service, "reparse_owned_pending", labs_probe)
 
     await raw_payload_service.sweep_pending_job(session_factory)

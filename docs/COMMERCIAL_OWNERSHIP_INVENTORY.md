@@ -1229,11 +1229,12 @@ asserted now runs against the context and the header directly.
 | skincare | closed — routine, observations and product shelf all scoped |
 | genetics | closed — including the bare-key read; raw provenance proved on both the owned path and the resolver's bridge |
 | HRT (doses, cycles, templates) | closed as one — a cycle read is a graph read; the catalog's `active` flag stays frozen, not scoped |
+| body composition | closed — scan, metric sheet, raw payload, file and the weigh-in it bridges; the generic replay path is gone and the owned sweep decides adoption per raw |
 | everything else | still bridged; see `vitals/legacy_scope.py` |
 
 The counter moves only in the registry, and the contract test refuses to let it
 move the wrong way. It started at 266 functions across 25 modules; it is now
-248. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
+153 across 21. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
 its subject is mandatory, and the branch that adopted an unowned row on the way
 past has been removed — an unowned row then stays unowned and stays invisible,
 which is the whole point.
@@ -1248,6 +1249,24 @@ The engine still offers its callers a fully-unowned bridge, and a resolver has
 to honour the scope it is handed, so each closed domain keeps exactly one reader
 that can see a row with no subject. Those go together with the bridge, which is
 why the resolvers are last.
+
+Body composition adds a second such reader, and it is the one that shows what
+"closed" has to mean for a domain with raw provenance. Its nightly sweep is the
+path that turns an unowned upload into an owned scan, so it must be able to see
+a payload belonging to nobody — but it decides that per raw, from the raw's own
+roots, rather than from a flag the caller passes in. A fully-unowned payload and
+a Stage-3A parser payload adopt; anything else is judged exactly. The general
+rule the closures follow is that adoption stays only where it is the operation's
+purpose, and never where it is merely a convenience on the read path.
+
+Closing body composition also settled two questions the earlier leaves never
+raised. A migrated manual scan keeps its unknown actor null, because Stage 3B
+stamped subjects without inventing actors — so a null actor is accepted and any
+*other* user's id is refused. And an ownerless scan attached to this subject's
+raw is not a broken chain to report: mid-backfill that is exactly what a
+half-stamped table looks like, so the row is simply out of scope. During a
+rolling backfill the reader therefore shows precisely the rows already stamped,
+which the PostgreSQL stop/resume rehearsal now pins.
 
 ## Rollback boundary
 

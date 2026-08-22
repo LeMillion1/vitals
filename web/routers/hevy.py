@@ -40,7 +40,9 @@ async def hevy_dashboard(
         required_connections=tuple(IntegrationProvider),
     )
     workouts = await hevy_service.list_workouts(db, limit=30)
-    catalog = await hevy_service.exercise_catalog(db)
+    catalog = await hevy_service.exercise_catalog(
+        db, subject_id=ownership.subject_id
+    )
     count = await hevy_service.workout_count(db)
     last_date = await hevy_service.latest_workout_date(db)
     alerts = await legacy_subject_alerts.list_active(
@@ -56,8 +58,12 @@ async def hevy_dashboard(
     notes = None
     selected_title = None
     if selected:
-        series = await hevy_service.working_weight_series(db, selected)
-        verdict = await hevy_service.progression_for_exercise(db, selected)
+        series = await hevy_service.working_weight_series(
+            db, selected, subject_id=ownership.subject_id
+        )
+        verdict = await hevy_service.progression_for_exercise(
+            db, selected, subject_id=ownership.subject_id
+        )
         notes = await hevy_service.latest_notes(db, selected)
         selected_title = next(
             (c["title"] for c in catalog if c["exercise_template_id"] == selected), selected

@@ -1304,9 +1304,12 @@ async def latest_workout_date(session: AsyncSession) -> Optional[date_type]:
     return result.scalar()
 
 
-async def exercise_catalog(session: AsyncSession) -> list[dict]:
-    """Distinct exercises seen across all workouts, with the most recent working
-    weight + date — the picklist for the per-exercise history/progression view."""
+async def exercise_catalog(
+    session: AsyncSession, *, subject_id: uuid.UUID
+) -> list[dict]:
+    """Distinct exercises seen across this person's workouts, with the most
+    recent working weight + date — the picklist for the per-exercise
+    history/progression view."""
     result = await session.execute(
         select(
             HevyExercise.exercise_template_id,
@@ -1315,7 +1318,10 @@ async def exercise_catalog(session: AsyncSession) -> list[dict]:
             func.max(HevyWorkout.date).label("last_date"),
         )
         .join(HevyWorkout, HevyExercise.workout_id == HevyWorkout.id)
-        .where(HevyExercise.exercise_template_id.is_not(None))
+        .where(
+            HevyExercise.exercise_template_id.is_not(None),
+            HevyWorkout.subject_id == subject_id,
+        )
         .group_by(HevyExercise.exercise_template_id, HevyExercise.title)
         .order_by(func.max(HevyWorkout.date).desc())
     )
@@ -1331,14 +1337,17 @@ async def exercise_catalog(session: AsyncSession) -> list[dict]:
 
 
 async def _exercise_sessions(
-    session: AsyncSession, exercise_template_id: str
+    session: AsyncSession, exercise_template_id: str, *, subject_id: uuid.UUID
 ) -> list[tuple[date_type, list[HevySet], Optional[str]]]:
     """Per-session (date, working sets, latest notes) for one exercise, oldest
     first. A session = one workout containing the exercise."""
     result = await session.execute(
         select(HevyWorkout.date, HevyExercise.id, HevyExercise.notes)
         .join(HevyExercise, HevyExercise.workout_id == HevyWorkout.id)
-        .where(HevyExercise.exercise_template_id == exercise_template_id)
+        .where(
+            HevyExercise.exercise_template_id == exercise_template_id,
+            HevyWorkout.subject_id == subject_id,
+        )
         .order_by(HevyWorkout.date)
     )
     rows = result.all()
@@ -1365,10 +1374,12 @@ def _top_weight_session(on_date: date_type, sets: list[HevySet]) -> Optional[Ses
 
 
 async def working_weight_series(
-    session: AsyncSession, exercise_template_id: str
+    session: AsyncSession, exercise_template_id: str, *, subject_id: uuid.UUID
 ) -> list[dict]:
     """Top working weight per session over time — the working-weight history chart."""
-    sessions = await _exercise_sessions(session, exercise_template_id)
+    sessions = await _exercise_sessions(
+        session, exercise_template_id, subject_id=subject_id
+    )
     series: list[dict] = []
     for on_date, sets, _notes in sessions:
         sr = _top_weight_session(on_date, sets)
@@ -1388,9 +1399,13 @@ async def progression_for_exercise(
     session: AsyncSession,
     exercise_template_id: str,
     config: Optional[ProgressionConfig] = None,
+    *,
+    subject_id: uuid.UUID,
 ) -> Optional[ProgressionVerdict]:
     """The progression verdict (🟢/🟡/🔴) for one exercise from its history."""
-    sessions = await _exercise_sessions(session, exercise_template_id)
+    sessions = await _exercise_sessions(
+        session, exercise_template_id, subject_id=subject_id
+    )
     results = [
         sr
         for (on_date, sets, _notes) in sessions
