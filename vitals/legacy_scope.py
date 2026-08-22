@@ -47,13 +47,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
 
 
-        'vitals.services.hrt_reminders': frozenset(
-            {
-                'refresh_all',
-                'refresh_injection_due',
-                'refresh_labs_due',
-            }
-        ),
         'vitals.services.hrt_service': frozenset(
             {
                 'set_compound_active',
@@ -61,22 +54,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
 
 
-        'vitals.services.modules_service': frozenset(
-            {
-                'cache_key',
-                'get_enabled_modules',
-                'prime_cache',
-                'set_module_enabled',
-            }
-        ),
-        'vitals.services.proactive.brief': frozenset(
-            {
-                '_prepare_brief',
-                '_signals_since_yesterday',
-                'build_context',
-                'generate_brief',
-            }
-        ),
         'vitals.services.proactive.day_plan': frozenset(
             {
                 'get_week_template',
@@ -103,12 +80,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'resolve_active',
             }
         ),
-        'vitals.services.today_service': frozenset(
-            {
-                '_goal',
-                'build',
-            }
-        ),
     }
 )
 
@@ -132,7 +103,6 @@ LEGACY_BARE_ID_READS: Mapping[str, frozenset[str]] = MappingProxyType(
         "vitals.services.hrt_service": frozenset({"HrtCompound"}),
         "vitals.services.labs_service": frozenset({"RawPayload"}),
         "vitals.services.language_service": frozenset({"AppSetting"}),
-        "vitals.services.modules_service": frozenset({"AppSetting"}),
         "vitals.services.proactive.day_plan": frozenset({"AppSetting"}),
         "vitals.services.proactive.inbound": frozenset({"RawPayload"}),
         "vitals.services.twofa_service": frozenset({"AppSetting"}),

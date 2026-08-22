@@ -24,7 +24,6 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.models.app_settings import AppSetting
 from vitals.services.scoped_settings_service import (
     ScopedSettingKey,
     SettingScope,
@@ -34,15 +33,20 @@ from vitals.services.scoped_settings_service import (
 
 logger = logging.getLogger(__name__)
 
-SETTINGS_KEY = "enabled_modules"          # app_settings.key
+# The legacy app_settings key the scoped read still falls back to.
+SETTINGS_KEY = "enabled_modules"
 REDIS_KEY = "settings:enabled_modules"    # cache key
 REDIS_TTL = 300                           # seconds
 
 
-def cache_key(subject_id: uuid.UUID | None = None) -> str:
-    """Return the legacy or UUID-namespaced cache key."""
+def cache_key(subject_id: uuid.UUID) -> str:
+    """Return the UUID-namespaced cache key.
 
-    return REDIS_KEY if subject_id is None else f"{REDIS_KEY}:{subject_id}"
+    One cache entry per person: a shared key would serve one subject's module
+    state to the next request from another.
+    """
+
+    return f"{REDIS_KEY}:{subject_id}"
 
 
 class ModuleToggleError(ValueError):
@@ -258,11 +262,14 @@ async def get_enabled_modules(
     session: AsyncSession,
     redis: Optional[Redis] = None,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
 ) -> dict[str, bool]:
-    """Resolve the enabled-module map. Never raises — falls back to safe defaults.
+    """Resolve one subject's enabled-module map. Never raises — falls back to
+    safe defaults.
 
-    Order: Redis cache → DB (``app_settings``) → ``DEFAULT_STATE``.
+    Order: Redis cache → their scoped setting → ``DEFAULT_STATE``. The scoped
+    read still falls back to the legacy ``app_settings`` row on its own, so a
+    pre-backfill installation keeps its modules without a bridge here.
     """
     redis_key = cache_key(subject_id)
     # 1) Redis read-through cache.
@@ -278,37 +285,22 @@ async def get_enabled_modules(
 
     # 2) Database (source of truth).
     try:
-        if subject_id is not None:
-            raw = await get_scoped_setting(
-                session,
-                scope=SettingScope.SUBJECT,
-                key=ScopedSettingKey.ENABLED_MODULES,
-                subject_id=subject_id,
-                default=dict(DEFAULT_STATE),
-            )
-            if isinstance(raw, dict):
-                state = _sanitize(raw)
-                await prime_cache(redis, state, subject_id=subject_id)
-                return state
-            logger.warning(
-                "modules: subject setting is not an object (%s); using defaults",
-                type(raw).__name__,
-            )
-            return dict(DEFAULT_STATE)
-        row = await session.get(AppSetting, SETTINGS_KEY)
-        if row is not None:
-            if isinstance(row.value, dict):
-                state = _sanitize(row.value)
-                await prime_cache(redis, state)
-                return state
-            logger.warning(
-                "modules: app_settings[%s] is not an object (%s); using defaults",
-                SETTINGS_KEY,
-                type(row.value).__name__,
-            )
-            return dict(DEFAULT_STATE)
-        # Empty config is normal on a fresh DB — debug, not a warning.
-        logger.debug("modules: no app_settings row; using defaults")
+        raw = await get_scoped_setting(
+            session,
+            scope=SettingScope.SUBJECT,
+            key=ScopedSettingKey.ENABLED_MODULES,
+            subject_id=subject_id,
+            default=dict(DEFAULT_STATE),
+        )
+        if isinstance(raw, dict):
+            state = _sanitize(raw)
+            await prime_cache(redis, state, subject_id=subject_id)
+            return state
+        logger.warning(
+            "modules: subject setting is not an object (%s); using defaults",
+            type(raw).__name__,
+        )
+        return dict(DEFAULT_STATE)
     except Exception:
         logger.warning(
             "modules: DB read failed; using safe defaults", exc_info=True
@@ -323,7 +315,7 @@ async def set_module_enabled(
     *,
     key: str,
     enabled: bool,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
 ) -> dict[str, bool]:
     """Toggle an Optional module. Flushes (caller commits). Returns the new state.
 
@@ -334,53 +326,25 @@ async def set_module_enabled(
     if key in CORE_KEYS:
         raise ModuleToggleError(f"module '{key}' is core and cannot be disabled")
 
-    if subject_id is not None:
-        def _toggle(raw: Any) -> dict[str, bool]:
-            return {**_sanitize(raw), key: bool(enabled)}
+    def _toggle(raw: Any) -> dict[str, bool]:
+        return {**_sanitize(raw), key: bool(enabled)}
 
-        updated = await update_scoped_setting(
-            session,
-            scope=SettingScope.SUBJECT,
-            key=ScopedSettingKey.ENABLED_MODULES,
-            subject_id=subject_id,
-            default=dict(DEFAULT_STATE),
-            update=_toggle,
-        )
-        return _sanitize(updated)
-
-    # Lock the settings row FOR UPDATE so concurrent toggles serialize on it.
-    # This is a read-modify-write (read the JSON map, flip one key, write it back);
-    # without the row lock two near-simultaneous toggles both read the old map and
-    # the second write silently drops the first one's change (lost update). On
-    # SQLite (fast test path) with_for_update is a no-op, but there is no real
-    # concurrency there; the guarantee that matters is on Postgres in prod.
-    row = (
-        await session.execute(
-            select(AppSetting)
-            .where(AppSetting.key == SETTINGS_KEY)
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        state = dict(DEFAULT_STATE)
-        state[key] = bool(enabled)
-        session.add(AppSetting(key=SETTINGS_KEY, value=state))
-    else:
-        current = row.value if isinstance(row.value, dict) else {}
-        # Reassign a NEW dict so SQLAlchemy detects the change (column is plain
-        # JSON/JSONB, not a MutableDict).
-        row.value = {**_sanitize(current), key: bool(enabled)}
-
-    await session.flush()
-    new_state = await session.get(AppSetting, SETTINGS_KEY)
-    return _sanitize(new_state.value if new_state else None)
+    updated = await update_scoped_setting(
+        session,
+        scope=SettingScope.SUBJECT,
+        key=ScopedSettingKey.ENABLED_MODULES,
+        subject_id=subject_id,
+        default=dict(DEFAULT_STATE),
+        update=_toggle,
+    )
+    return _sanitize(updated)
 
 
 async def prime_cache(
     redis: Optional[Redis],
     state: dict[str, bool],
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
 ) -> None:
     """Write-through the resolved state into Redis. Best-effort (logged on fail)."""
     if redis is None:

@@ -2400,9 +2400,21 @@ async def test_aware_now_converts_once_to_subject_local_policy_date(
 @pytest.mark.asyncio
 async def test_zero_subject_send_starts_governance_guard_before_policy_reads(
     db_session,
-    signals_module_on,
 ):
-    del signals_module_on
+    # This path is about a database with no subjects at all, so the module
+    # state is the legacy installation-wide row rather than anybody's.
+    from vitals.models.app_settings import AppSetting
+    from vitals.services.modules_service import (
+        DEFAULT_STATE,
+        SETTINGS_KEY as MODULES_KEY,
+    )
+
+    await db_session.merge(
+        AppSetting(key=MODULES_KEY, value={**DEFAULT_STATE, "signals": True})
+    )
+    # The zero-subject path insists on a fresh guarded transaction, so the seed
+    # must be committed rather than left open.
+    await db_session.commit()
     statements: list[str] = []
 
     def record_statement(_conn, _cursor, statement, *_args):

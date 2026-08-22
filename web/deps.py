@@ -155,11 +155,16 @@ async def load_enabled_modules(
     from vitals.services import modules_service
 
     try:
+        # The module map is one person's; an anonymous request has no subject
+        # to read it for and keeps the safe defaults.
         ownership = await get_request_legacy_ownership(request, db)
+        if ownership is None:
+            request.state.enabled_modules = dict(modules_service.DEFAULT_STATE)
+            return
         request.state.enabled_modules = await modules_service.get_enabled_modules(
             db,
             redis,
-            subject_id=(ownership.subject_id if ownership is not None else None),
+            subject_id=ownership.subject_id,
         )
     except Exception:
         logger.exception("module-state load failed; using safe defaults")

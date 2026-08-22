@@ -382,7 +382,12 @@ async def test_disabled_module_is_absent_and_explicit_in_coverage(db_session, le
         alert_key="private-hrt-alert",
     )
     alert.created_at = stamp
-    await modules_service.set_module_enabled(db_session, key="hrt", enabled=False)
+    await modules_service.set_module_enabled(
+        db_session,
+        key="hrt",
+        enabled=False,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     await db_session.commit()
 
     ctx = await digest_service.assemble_context(

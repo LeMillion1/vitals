@@ -1186,6 +1186,21 @@ async def bot_enabled(
         )
         return bool(raw.get(MODULE_KEY)) if isinstance(raw, dict) else False
 
+    if subject_id is None:
+        # A database with no subjects has no per-person module state to read,
+        # only the installation-wide row the bootstrap will later split. This
+        # arm is the zero-subject compatibility gate and goes with it.
+        from sqlalchemy import select
+
+        from vitals.models.app_settings import AppSetting
+
+        raw = await session.scalar(
+            select(AppSetting.value).where(
+                AppSetting.key == modules_service.SETTINGS_KEY
+            )
+        )
+        state = raw if isinstance(raw, dict) else dict(modules_service.DEFAULT_STATE)
+        return bool(state.get(MODULE_KEY))
     state = await modules_service.get_enabled_modules(
         session,
         subject_id=subject_id,

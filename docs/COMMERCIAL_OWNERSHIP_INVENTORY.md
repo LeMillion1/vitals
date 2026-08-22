@@ -1237,11 +1237,12 @@ asserted now runs against the context and the header directly.
 | GLP-1 | closed — injections, dose phases, side effects and the plateau alert; phase bookkeeping is now unconditionally locked |
 | labs | closed — results, the marker catalog, the parsed-document chain and the hormone-panel seed; a legacy raw behind an owned parsed fact stays valid provenance |
 | weight | closed — weigh-ins, measurements, noise markers, progress photos, the chart series and the Garmin export outbox; the last legacy `enforce()` site went with it |
+| modules, brief, Today, HRT reminders | closed — module state is one person's preference, and the two composed screens are assembled from that person's domains |
 | everything else | still bridged; see `vitals/legacy_scope.py` |
 
 The counter moves only in the registry, and the contract test refuses to let it
 move the wrong way. It started at 266 functions across 25 modules; it is now
-27 across 12, and no legacy `enforce()` call site remains anywhere. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
+14 across 8, and no legacy `enforce()` call site remains anywhere. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
 its subject is mandatory, and the branch that adopted an unowned row on the way
 past has been removed — an unowned row then stays unowned and stays invisible,
 which is the whole point.

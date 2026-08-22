@@ -79,11 +79,9 @@ _DEFAULT_PANEL_WINDOW = 90
 def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
-    identity: WriteIdentity | None,
-    prepared: conflict_engine.PreparedConflictWrite | None,
-) -> conflict_engine.ConflictWriteContext | None:
-    if identity is None and prepared is None:
-        return None
+    identity: WriteIdentity,
+    prepared: conflict_engine.PreparedConflictWrite,
+) -> conflict_engine.ConflictWriteContext:
     if identity is None or prepared is None:
         raise conflict_engine.ConflictPreparedWriteError(
             "scoped HRT reminders require identity and a prepared conflict write"
@@ -96,11 +94,9 @@ def _require_scoped_prepared_write(
 
 
 def _reminder_date(
-    context: conflict_engine.ConflictWriteContext | None,
+    context: conflict_engine.ConflictWriteContext,
     on_date: date_type | None,
 ) -> date_type:
-    if context is None:
-        return on_date or today_local()
     if on_date is not None and on_date != context.evaluation_date:
         raise conflict_engine.ConflictPreparedWriteError(
             "HRT reminder date does not match prepared conflict evaluation date"
@@ -145,8 +141,6 @@ async def _active_cycle(
     on_date: date_type,
     context: conflict_engine.ConflictWriteContext | None,
 ) -> HrtCycle | None:
-    if context is None:
-        return None
     cycle = await session.scalar(
         select(HrtCycle)
         .where(
@@ -194,12 +188,6 @@ async def _resolve_alert(
     entity_ref: str,
     context: conflict_engine.ConflictWriteContext | None,
 ) -> object | None:
-    if context is None:
-        return await alerts_service.resolve_by_key(
-            session,
-            alert_key=alert_key,
-            entity_ref=entity_ref,
-        )
     return await alerts_service.resolve_scoped_by_key(
         session,
         context=_system_alert_context(context),
@@ -217,13 +205,6 @@ async def _was_dismissed_today(
     on_date: date_type,
     context: conflict_engine.ConflictWriteContext | None,
 ) -> bool:
-    if context is None:
-        return await alerts_service._was_dismissed_today(
-            session,
-            alert_key,
-            entity_ref,
-            on_date=on_date,
-        )
     return await alerts_service.was_scoped_dismissed_today(
         session,
         context=_system_alert_context(context),
@@ -243,15 +224,6 @@ async def _raise_alert(
     entity_ref: str,
     context: conflict_engine.ConflictWriteContext | None,
 ) -> object:
-    if context is None:
-        return await alerts_service.raise_alert(
-            session,
-            domain=Domain.HRT.value,
-            severity=severity.value,
-            message=message,
-            alert_key=alert_key,
-            entity_ref=entity_ref,
-        )
     return await alerts_service.raise_scoped_alert(
         session,
         context=_system_alert_context(context),
@@ -275,10 +247,6 @@ async def seed_hormone_panel(
     on an existing one only when unset (never clobbers a user's edit)."""
     created = 0
     updated = 0
-    if (identity is None) != (prepared_conflict_write is None):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "scoped hormone-panel seed requires identity and a prepared write"
-        )
     for name, interval in HORMONE_PANEL.items():
         _row, was_created, was_updated = (
             await labs_service.ensure_marker_catalog_entry(
@@ -304,14 +272,6 @@ async def _latest_panel_result_date(
     context: conflict_engine.ConflictWriteContext | None,
 ) -> Optional[date_type]:
     names = [labs_service.normalize_marker(n) for n in HORMONE_PANEL]
-    if context is None:
-        result = await session.execute(
-            select(LabResult.date)
-            .where(LabResult.marker.in_(names), LabResult.date <= on_date)
-            .order_by(LabResult.date.desc())
-            .limit(1)
-        )
-        return result.scalars().first()
     rows = await labs_service.list_results(
         session,
         end=on_date,
@@ -325,8 +285,8 @@ async def refresh_labs_due(
     session: AsyncSession,
     *,
     on_date: Optional[date_type] = None,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> None:
     """Raise/clear the bloodwork-due warn for the active cycle. No cycle → clear."""
     context = _require_scoped_prepared_write(
@@ -417,8 +377,8 @@ async def refresh_injection_due(
     session: AsyncSession,
     *,
     on_date: Optional[date_type] = None,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> None:
     """Per active-cycle-item: nag if the last shot the fixed grid expected by
     today hasn't been logged. Resolves per compound once caught up, and clears any
@@ -490,18 +450,12 @@ async def refresh_injection_due(
                 )
 
     # Clear stale nags for compounds no longer in the active plan.
-    if context is None:
-        active_alerts = await alerts_service.list_active(
-            session,
-            domain=Domain.HRT.value,
-        )
-    else:
-        active_alerts = await alerts_service.list_active_scoped(
-            session,
-            context=_system_alert_context(context),
-            domain=Domain.HRT,
-            legacy_bridge=_alert_bridge(context),
-        )
+    active_alerts = await alerts_service.list_active_scoped(
+        session,
+        context=_system_alert_context(context),
+        domain=Domain.HRT,
+        legacy_bridge=_alert_bridge(context),
+    )
     for alert in active_alerts:
         if alert.alert_key == INJECTION_DUE_KEY and alert.entity_ref not in planned_keys:
             await _resolve_alert(
@@ -516,8 +470,8 @@ async def refresh_all(
     session: AsyncSession,
     *,
     on_date: Optional[date_type] = None,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> None:
     """Run both reminders — called from the dashboard load and the scheduled job."""
     await refresh_labs_due(

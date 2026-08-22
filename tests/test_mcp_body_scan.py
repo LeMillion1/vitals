@@ -33,7 +33,7 @@ async def _enable_body_comp(db_session):
     await db_session.commit()
 
 
-async def test_log_get_history_delete_body_scan(db_session, session_factory, monkeypatch, owner_write):
+async def test_log_get_history_delete_body_scan(db_session, session_factory, monkeypatch, owner_write, legacy_owner_roots):
     await _enable_body_comp(db_session)
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
@@ -89,7 +89,7 @@ async def test_tools_blocked_when_module_disabled(db_session, session_factory, m
     )
 
 
-async def test_notes_for_body_comp_domain(db_session, session_factory, monkeypatch):
+async def test_notes_for_body_comp_domain(db_session, session_factory, monkeypatch, legacy_owner_roots):
     await _enable_body_comp(db_session)
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 

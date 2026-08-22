@@ -113,8 +113,7 @@ async def build(
     session: AsyncSession,
     *,
     enabled_modules: Optional[dict[str, bool]] = None,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     prepared_digest_owner=None,
 ) -> dict:
     """Everything ``today/index.html`` renders, as one plain dict."""
@@ -137,7 +136,6 @@ async def build(
     ctx = await brief.build_context(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     weight = ctx.get("weight") or {}
     garmin = ctx.get("garmin") or {}
@@ -312,7 +310,6 @@ async def build(
             session,
             series,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         ),
         "latest_weight": weight.get("latest_kg"),
     }
@@ -388,8 +385,7 @@ async def _goal(
     session: AsyncSession,
     series: dict,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Optional[dict]:
     """The first weight goal, as distance covered rather than distance left.
 

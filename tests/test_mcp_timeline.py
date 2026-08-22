@@ -16,7 +16,7 @@ async def _legacy_mcp_owner(legacy_owner_roots):
     """MCP v1 runs only after startup has materialized its sole owner roots."""
 
 
-async def _set_timeline_enabled(db_session, *, enabled: bool):
+async def _set_timeline_enabled(db_session, legacy_owner_roots, *, enabled: bool):
     subject_ids = list(
         await db_session.scalars(select(HealthSubject.id).order_by(HealthSubject.id))
     )
@@ -30,12 +30,16 @@ async def _set_timeline_enabled(db_session, *, enabled: bool):
     await db_session.commit()
 
 
-async def _enable_timeline(db_session):
-    await _set_timeline_enabled(db_session, enabled=True)
+async def _enable_timeline(db_session, legacy_owner_roots):
+    await _set_timeline_enabled(
+        db_session,
+        legacy_owner_roots,
+        enabled=True,
+    )
 
 
-async def test_log_event_and_get_timeline(db_session, session_factory, monkeypatch):
-    await _enable_timeline(db_session)
+async def test_log_event_and_get_timeline(db_session, session_factory, monkeypatch, legacy_owner_roots):
+    await _enable_timeline(db_session, legacy_owner_roots)
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
     res = await mcp_router.log_event(
@@ -60,17 +64,21 @@ async def test_log_event_and_get_timeline(db_session, session_factory, monkeypat
     assert by_range == []
 
 
-async def test_log_event_noop_when_module_disabled(db_session, session_factory, monkeypatch):
+async def test_log_event_noop_when_module_disabled(db_session, session_factory, monkeypatch, legacy_owner_roots):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
-    await _set_timeline_enabled(db_session, enabled=False)
+    await _set_timeline_enabled(
+        db_session,
+        legacy_owner_roots,
+        enabled=False,
+    )
 
     res = await mcp_router.log_event(title="Should not save", on_date="2026-06-01")
     assert res == {"error": "module 'timeline' is disabled"}
 
 
-async def test_update_event_keeps_what_the_call_left_out(db_session, session_factory, monkeypatch):
-    await _enable_timeline(db_session)
+async def test_update_event_keeps_what_the_call_left_out(db_session, session_factory, monkeypatch, legacy_owner_roots):
+    await _enable_timeline(db_session, legacy_owner_roots)
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
     created = await mcp_router.log_event(

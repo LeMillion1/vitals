@@ -35,6 +35,7 @@ from vitals.services.proactive import (
     day_plan,
     delivery,
     inbound,
+    prefs,
     question_ai_service,
     signal_ai_service,
 )
@@ -344,6 +345,101 @@ async def _journal_owned_message(
 
 
 # ── The door ──────────────────────────────────────────────────────────────────
+def _patch_owned_delivery(monkeypatch, notifier) -> None:
+    """Bind the fake notifier to whatever ownership the sweep resolves."""
+
+    async def build_bound(session, ownership, **kwargs):
+        del session, kwargs
+        notifier.binding = channels.DeliveryEndpointBinding(
+            subject_id=ownership.subject_id,
+            recipient_user_id=ownership.recipient_user_id,
+            integration_connection_id=ownership.connection_id,
+            channel=notifier.channel,
+        )
+        return notifier
+
+    def resolve_bound(binding, credential_ref, **kwargs):
+        del credential_ref, kwargs
+        notifier.binding = binding
+        return notifier
+
+    monkeypatch.setattr(channels, "build_legacy_bound_notifier", build_bound)
+    monkeypatch.setattr(channels, "resolve_legacy_bound_notifier", resolve_bound)
+
+
+@pytest_asyncio.fixture
+async def scoped_send(db_session, monkeypatch):
+    """One owned delivery, driven through the durable three-phase API.
+
+    ``delivery.send`` is the zero-subject compatibility entry point and refuses
+    an ownership context outright. A message addressed to a person goes through
+    prepare -> dispatch -> finalize, which is what the scheduler does; wrapping
+    it here keeps these tests about budget, quiet hours and dedupe.
+    """
+
+    from types import SimpleNamespace
+
+    notifier = FakeNotifier()
+    _patch_owned_delivery(monkeypatch, notifier)
+    ownership = await channels.resolve_legacy_channel_ownership(
+        db_session,
+        actor_username=None,
+    )
+    # The owned path reads the subject's own policy partitions, which the
+    # startup split creates once; a bare db_session test has to do the same.
+    await prefs.initialize_legacy_preferences(
+        db_session,
+        scope=await prefs.resolve_legacy_preferences_scope(
+            db_session,
+            actor_username=None,
+        ),
+    )
+    await db_session.commit()
+    counter = {"n": 0}
+
+    async def send(*, text, category, now=None, dedupe_key=None, **kwargs):
+        counter["n"] += 1
+        bound = await channels.build_legacy_bound_notifier(db_session, ownership)
+        # A nudge is rate-limited per policy key; every other category is not
+        # allowed to carry one at all.
+        if category == delivery.CATEGORY_NUDGE:
+            kwargs.setdefault(
+                "policy_key",
+                delivery.make_delivery_policy_key("nudge", "test"),
+            )
+        prepared = await delivery.prepare_delivery_intent(
+            db_session,
+            bound,
+            text=text,
+            category=category,
+            idempotency_key=delivery.make_delivery_idempotency_key(
+                "test", category, dedupe_key or counter["n"]
+            ),
+            legacy_dedupe_key=dedupe_key,
+            now=now,
+            ownership=ownership,
+            **kwargs,
+        )
+        await db_session.commit()
+        if prepared is None:
+            return None
+        lease = await delivery.start_delivery_dispatch(
+            db_session,
+            prepared,
+            now=now,
+            notifier_resolver=channels.resolve_legacy_bound_notifier,
+        )
+        await db_session.commit()
+        if lease is None:
+            return None
+        completion = await delivery.dispatch_delivery(lease)
+        row = await delivery.finalize_delivery(db_session, completion)
+        await db_session.commit()
+        return row
+
+    return SimpleNamespace(send=send, notifier=notifier, ownership=ownership)
+
+
 async def test_wrong_secret_header_is_rejected(bot_client):
     c, fake = bot_client
     r = await c.post(f"/tg/{WEBHOOK_PATH}", json=_text_update(1, "привет"),
@@ -1147,7 +1243,7 @@ async def test_nonempty_parser_junk_stays_pending_and_gets_an_honest_reply(
 
 
 async def test_the_off_switch_stops_the_parse_and_the_reply_but_keeps_the_text(
-    bot_client, db_session, monkeypatch
+    bot_client, db_session, monkeypatch, legacy_owner_roots
 ):
     """The switch is for the expensive and the outgoing half — a model call per
     message and every word back. It is not an amnesia switch: a message written
@@ -1187,7 +1283,7 @@ async def test_the_off_switch_stops_the_parse_and_the_reply_but_keeps_the_text(
     assert raw.processed_at is None
 
 
-async def test_a_tap_while_the_module_is_off_is_ignored(bot_client, db_session):
+async def test_a_tap_while_the_module_is_off_is_ignored(bot_client, db_session, legacy_owner_roots):
     """A tap answers a question this bot asked — with the module off there is
     nothing asking, so its durable raw is terminal without applying the tap."""
     from vitals.services import modules_service
@@ -1453,7 +1549,7 @@ async def test_edit_keeps_original_message_health_day_across_rollover(
 async def test_module_off_edit_still_supersedes_the_old_batch(
     bot_client,
     parses_to,
-    db_session,
+    db_session, legacy_owner_roots,
 ):
     from vitals.services import modules_service
 
@@ -1789,7 +1885,7 @@ async def test_command_prepare_failure_rolls_back_marker_then_duplicate_builds_t
 async def test_disable_after_initial_gate_terminalizes_command_without_later_send(
     bot_client,
     db_session,
-    monkeypatch,
+    monkeypatch, legacy_owner_roots,
 ):
     from vitals.services import modules_service
 
@@ -1857,7 +1953,7 @@ async def test_disable_before_signal_scope_cannot_resurrect_terminal_ai_echo(
     bot_client,
     parses_to,
     db_session,
-    monkeypatch,
+    monkeypatch, legacy_owner_roots,
 ):
     from vitals.services import modules_service
 
@@ -2410,67 +2506,52 @@ async def test_a_question_without_a_reply_still_sees_what_the_bot_just_said(
 
 
 # ── Budget & quiet hours ──────────────────────────────────────────────────────
-async def test_budget_cuts_the_fifth_self_initiated_message(db_session):
-    fake = FakeNotifier()
+async def test_budget_cuts_the_fifth_self_initiated_message(db_session, scoped_send):
     for i in range(delivery.DAILY_BUDGET):
-        assert await delivery.send(db_session, fake, text=f"нудж {i}",
-                                   category=delivery.CATEGORY_NUDGE, now=NOON) is not None
+        assert await scoped_send.send(text=f"нудж {i}", category=delivery.CATEGORY_NUDGE, now=NOON) is not None
 
-    assert await delivery.send(db_session, fake, text="пятый",
-                               category=delivery.CATEGORY_NUDGE, now=NOON) is None
-    assert len(fake.sent) == delivery.DAILY_BUDGET
+    assert await scoped_send.send(text="пятый", category=delivery.CATEGORY_NUDGE, now=NOON) is None
+    assert len(scoped_send.notifier.sent) == delivery.DAILY_BUDGET
 
 
-async def test_the_budget_never_gags_a_reply(db_session):
+async def test_the_budget_never_gags_a_reply(db_session, scoped_send):
     """The rule that is easiest to get wrong: after four nudges the bot must still
     answer you, or a spent budget reads as a broken bot."""
-    fake = FakeNotifier()
     for i in range(delivery.DAILY_BUDGET):
-        await delivery.send(db_session, fake, text=f"нудж {i}",
-                            category=delivery.CATEGORY_NUDGE, now=NOON)
+        await scoped_send.send(text=f"нудж {i}", category=delivery.CATEGORY_NUDGE, now=NOON)
 
-    assert await delivery.send(db_session, fake, text="ответ",
-                               category=delivery.CATEGORY_REPLY, now=NOON) is not None
-    assert await delivery.send(db_session, fake, text="эхо",
-                               category=delivery.CATEGORY_ECHO, now=NOON) is not None
+    assert await scoped_send.send(text="ответ", category=delivery.CATEGORY_REPLY, now=NOON) is not None
+    assert await scoped_send.send(text="эхо", category=delivery.CATEGORY_ECHO, now=NOON) is not None
     # …and the exempt ones didn't quietly eat tomorrow's budget either.
-    assert await delivery.sent_today(db_session, on_date=NOON.date()) == delivery.DAILY_BUDGET
+    assert await delivery.sent_today(
+        db_session, on_date=NOON.date(), ownership=scoped_send.ownership
+    ) == delivery.DAILY_BUDGET
 
 
-async def test_budget_is_per_calendar_day(db_session):
-    fake = FakeNotifier()
+async def test_budget_is_per_calendar_day(db_session, scoped_send):
     for i in range(delivery.DAILY_BUDGET):
-        await delivery.send(db_session, fake, text=f"нудж {i}",
-                            category=delivery.CATEGORY_NUDGE, now=NOON)
+        await scoped_send.send(text=f"нудж {i}", category=delivery.CATEGORY_NUDGE, now=NOON)
 
     tomorrow_noon = NOON.replace(day=NOON.day + 1)
-    assert await delivery.send(db_session, fake, text="завтрашний",
-                               category=delivery.CATEGORY_NUDGE, now=tomorrow_noon) is not None
+    assert await scoped_send.send(text="завтрашний", category=delivery.CATEGORY_NUDGE, now=tomorrow_noon) is not None
 
 
-async def test_quiet_hours_hold_initiative_but_not_answers(db_session):
-    fake = FakeNotifier()
-    assert await delivery.send(db_session, fake, text="нудж в три ночи",
-                               category=delivery.CATEGORY_NUDGE, now=NIGHT) is None
-    assert await delivery.send(db_session, fake, text="эхо в три ночи",
-                               category=delivery.CATEGORY_ECHO, now=NIGHT) is not None
-    assert len(fake.sent) == 1
+async def test_quiet_hours_hold_initiative_but_not_answers(db_session, scoped_send):
+    assert await scoped_send.send(text="нудж в три ночи", category=delivery.CATEGORY_NUDGE, now=NIGHT) is None
+    assert await scoped_send.send(text="эхо в три ночи", category=delivery.CATEGORY_ECHO, now=NIGHT) is not None
+    assert len(scoped_send.notifier.sent) == 1
 
 
-async def test_quiet_hours_hold_nudges_but_not_the_times_he_set_himself(db_session):
+async def test_quiet_hours_hold_nudges_but_not_the_times_he_set_himself(db_session, scoped_send):
     """The brief and the evening block go out at an hour typed by hand into the
     same settings card. If quiet hours could cancel them, one field would silently
     override another — a brief scheduled for 09:00 that simply never arrives."""
-    fake = FakeNotifier()
 
-    assert await delivery.send(db_session, fake, text="утренний разбор",
-                               category=delivery.CATEGORY_BRIEF, now=MORNING) is not None
-    assert await delivery.send(db_session, fake, text="итог дня",
-                               category=delivery.CATEGORY_EVENING, now=MORNING) is not None
+    assert await scoped_send.send(text="утренний разбор", category=delivery.CATEGORY_BRIEF, now=MORNING) is not None
+    assert await scoped_send.send(text="итог дня", category=delivery.CATEGORY_EVENING, now=MORNING) is not None
     # The bot's own idea of a good moment still waits for the window to close.
-    assert await delivery.send(db_session, fake, text="надж",
-                               category=delivery.CATEGORY_NUDGE, now=MORNING) is None
-    assert len(fake.sent) == 2
+    assert await scoped_send.send(text="надж", category=delivery.CATEGORY_NUDGE, now=MORNING) is None
+    assert len(scoped_send.notifier.sent) == 2
 
 
 def test_quiet_window_can_wrap_past_midnight():
@@ -2482,31 +2563,38 @@ def test_quiet_window_can_wrap_past_midnight():
     assert not delivery.in_quiet_hours(time(12, 0), start=time(23, 0), end=time(7, 0))
 
 
-async def test_dedupe_key_makes_a_second_send_a_no_op(db_session):
-    fake = FakeNotifier()
-    first = await delivery.send(db_session, fake, text="бриф", category=delivery.CATEGORY_BRIEF,
-                                dedupe_key="brief:2026-07-26", now=NOON)
-    second = await delivery.send(db_session, fake, text="бриф", category=delivery.CATEGORY_BRIEF,
-                                 dedupe_key="brief:2026-07-26", now=NOON)
+async def test_dedupe_key_makes_a_second_send_a_no_op(db_session, scoped_send):
+    first = await scoped_send.send(text="бриф", category=delivery.CATEGORY_BRIEF, dedupe_key="brief:2026-07-26", now=NOON)
+    second = await scoped_send.send(text="бриф", category=delivery.CATEGORY_BRIEF, dedupe_key="brief:2026-07-26", now=NOON)
 
     assert first is not None and second is None
-    assert len(fake.sent) == 1
+    assert len(scoped_send.notifier.sent) == 1
 
 
-async def test_a_failed_send_is_not_journalled_and_costs_no_budget(db_session):
+async def test_a_failed_send_is_not_journalled_and_costs_no_budget(db_session, scoped_send):
     """Telegram having a bad minute must not roll back the caller's DB work, and
     must not silently spend a slot on a message nobody received."""
     broken = FakeNotifier(fail=True)
 
-    assert await delivery.send(db_session, broken, text="нудж",
-                               category=delivery.CATEGORY_NUDGE, now=NOON) is None
+    assert await scoped_send.send(text="нудж", category=delivery.CATEGORY_NUDGE, now=NIGHT) is None
     assert (await db_session.execute(select(Notification))).scalars().all() == []
-    assert await delivery.sent_today(db_session, on_date=NOON.date()) == 0
+    assert await delivery.sent_today(
+        db_session, on_date=NOON.date(), ownership=scoped_send.ownership
+    ) == 0
 
 
-async def test_no_channel_configured_is_silence_not_an_error(db_session):
-    assert await delivery.send(db_session, None, text="нудж",
-                               category=delivery.CATEGORY_NUDGE, now=NOON) is None
+async def test_no_channel_configured_is_silence_not_an_error(db_session, scoped_send):
+    """No transport means no message — and no error, and no budget spent."""
+    assert await delivery.prepare_delivery_intent(
+        db_session,
+        None,
+        text="нудж",
+        category=delivery.CATEGORY_NUDGE,
+        idempotency_key=delivery.make_delivery_idempotency_key("test", "nudge", 1),
+        policy_key=delivery.make_delivery_policy_key("nudge", "test"),
+        now=NOON,
+        ownership=scoped_send.ownership,
+    ) is None
 
 
 # ── The Telegram wire format ──────────────────────────────────────────────────

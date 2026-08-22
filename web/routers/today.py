@@ -32,7 +32,6 @@ async def today_dashboard(
         db,
         enabled_modules=getattr(request.state, "enabled_modules", None),
         subject_id=scope.subject_id,
-        include_legacy_unowned=scope.include_legacy_unowned,
         prepared_digest_owner=digest_owner,
     )
     return templates.TemplateResponse(

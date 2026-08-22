@@ -11,7 +11,7 @@ import logging
 
 import pytest
 
-from vitals.models.app_settings import AppSetting
+from vitals.models.scoped_settings import SubjectSetting
 from vitals.services import modules_service
 from vitals.services.modules_service import (
     DEFAULT_STATE,
@@ -22,9 +22,12 @@ from vitals.services.modules_service import (
 
 
 
-async def test_defaults_on_empty_db(db_session):
+async def test_defaults_on_empty_db(db_session, legacy_owner_roots):
     """No config row → Core True, Optional False, never raises."""
-    state = await modules_service.get_enabled_modules(db_session)
+    state = await modules_service.get_enabled_modules(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     assert state["weight"] is True
     assert state["garmin"] is True
     assert state["labs"] is True
@@ -34,98 +37,187 @@ async def test_defaults_on_empty_db(db_session):
     assert state == DEFAULT_STATE
 
 
-async def test_core_forced_true_even_if_stored_false(db_session):
+async def test_core_forced_true_even_if_stored_false(db_session, legacy_owner_roots):
     """A stored Core=False must be ignored — Core is locked on."""
-    db_session.add(AppSetting(key=SETTINGS_KEY, value={"weight": False, "labs": False, "hevy": True}))
+    await db_session.merge(
+        SubjectSetting(
+            subject_id=legacy_owner_roots.subject_id,
+            key=SETTINGS_KEY,
+            value={"weight": False, "labs": False, "hevy": True},
+        )
+    )
     await db_session.commit()
 
-    state = await modules_service.get_enabled_modules(db_session)
+    state = await modules_service.get_enabled_modules(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     assert state["weight"] is True
     assert state["labs"] is True
     assert state["hevy"] is True
 
 
-async def test_set_optional_persists(db_session):
+async def test_set_optional_persists(db_session, legacy_owner_roots):
     """Enabling an Optional module persists to the DB."""
-    returned = await modules_service.set_module_enabled(db_session, key="hevy", enabled=True)
+    returned = await modules_service.set_module_enabled(
+        db_session,
+        key="hevy",
+        enabled=True,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     await db_session.commit()
     assert returned["hevy"] is True
 
-    fresh = await modules_service.get_enabled_modules(db_session, redis=None)
+    fresh = await modules_service.get_enabled_modules(
+        db_session,
+        redis=None,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     assert fresh["hevy"] is True
 
 
-async def test_toggle_isolation(db_session):
+async def test_toggle_isolation(db_session, legacy_owner_roots):
     """Toggling one Optional module leaves the others untouched."""
-    await modules_service.set_module_enabled(db_session, key="hevy", enabled=True)
-    await modules_service.set_module_enabled(db_session, key="supplements", enabled=True)
-    await modules_service.set_module_enabled(db_session, key="hevy", enabled=False)
+    await modules_service.set_module_enabled(
+        db_session,
+        key="hevy",
+        enabled=True,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    await modules_service.set_module_enabled(
+        db_session,
+        key="supplements",
+        enabled=True,
+        subject_id=legacy_owner_roots.subject_id,
+    )
+    await modules_service.set_module_enabled(
+        db_session,
+        key="hevy",
+        enabled=False,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     await db_session.commit()
 
-    state = await modules_service.get_enabled_modules(db_session, redis=None)
+    state = await modules_service.get_enabled_modules(
+        db_session,
+        redis=None,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     assert state["hevy"] is False
     assert state["supplements"] is True  # unaffected by the hevy toggle
     assert state["glp1"] is False        # still default
 
 
-async def test_cannot_disable_core(db_session):
+async def test_cannot_disable_core(db_session, legacy_owner_roots):
     """Core modules are not toggleable."""
     with pytest.raises(ModuleToggleError):
-        await modules_service.set_module_enabled(db_session, key="weight", enabled=False)
+        await modules_service.set_module_enabled(
+            db_session,
+            key="weight",
+            enabled=False,
+            subject_id=legacy_owner_roots.subject_id,
+        )
 
 
-async def test_unknown_module_raises(db_session):
+async def test_unknown_module_raises(db_session, legacy_owner_roots):
     """An unknown key is rejected loudly (Zero Silent Errors)."""
     with pytest.raises(ModuleToggleError):
-        await modules_service.set_module_enabled(db_session, key="does_not_exist", enabled=True)
+        await modules_service.set_module_enabled(
+            db_session,
+            key="does_not_exist",
+            enabled=True,
+            subject_id=legacy_owner_roots.subject_id,
+        )
 
 
-async def test_unknown_keys_dropped(db_session):
+async def test_unknown_keys_dropped(db_session, legacy_owner_roots):
     """Stale/unknown stored keys are projected away by the registry."""
-    db_session.add(AppSetting(key=SETTINGS_KEY, value={"foobar": True, "hevy": True}))
+    await db_session.merge(
+        SubjectSetting(
+            subject_id=legacy_owner_roots.subject_id,
+            key=SETTINGS_KEY,
+            value={"foobar": True, "hevy": True},
+        )
+    )
     await db_session.commit()
 
-    state = await modules_service.get_enabled_modules(db_session, redis=None)
+    state = await modules_service.get_enabled_modules(
+        db_session,
+        redis=None,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     assert "foobar" not in state
     assert state["hevy"] is True
     assert set(state) == set(DEFAULT_STATE)
 
 
-async def test_malformed_value_falls_back(db_session, caplog):
+async def test_malformed_value_falls_back(db_session, caplog, legacy_owner_roots):
     """A non-object value → safe defaults, and the fallback is LOGGED."""
-    db_session.add(AppSetting(key=SETTINGS_KEY, value="garbage-not-a-dict"))
+    await db_session.merge(
+        SubjectSetting(
+            subject_id=legacy_owner_roots.subject_id,
+            key=SETTINGS_KEY,
+            value="garbage-not-a-dict",
+        )
+    )
     await db_session.commit()
 
     with caplog.at_level(logging.WARNING):
-        state = await modules_service.get_enabled_modules(db_session, redis=None)
+        state = await modules_service.get_enabled_modules(
+            db_session,
+            redis=None,
+            subject_id=legacy_owner_roots.subject_id,
+        )
 
     assert state == DEFAULT_STATE
     assert any("not an object" in r.message or "not an object" in r.getMessage() for r in caplog.records)
 
 
-async def test_redis_cache_is_read_through(db_session, redis):
+async def test_redis_cache_is_read_through(db_session, redis, legacy_owner_roots):
     """A primed Redis value is served without touching the (empty) DB."""
-    await modules_service.prime_cache(redis, {**DEFAULT_STATE, "hevy": True})
+    await modules_service.prime_cache(
+        redis,
+        {**DEFAULT_STATE, "hevy": True},
+        subject_id=legacy_owner_roots.subject_id,
+    )
     # Sanity: the cache holds JSON we can read back.
-    assert json.loads(await redis.get(REDIS_KEY))["hevy"] is True
+    assert json.loads(await redis.get(
+        modules_service.cache_key(legacy_owner_roots.subject_id)
+    ))["hevy"] is True
 
-    state = await modules_service.get_enabled_modules(db_session, redis)
+    state = await modules_service.get_enabled_modules(
+        db_session,
+        redis,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     assert state["hevy"] is True  # came from cache; DB has no row
 
 
-async def test_get_primes_cache_from_db(db_session, redis):
+async def test_get_primes_cache_from_db(db_session, redis, legacy_owner_roots):
     """A DB read writes the resolved state through to Redis."""
-    db_session.add(AppSetting(key=SETTINGS_KEY, value={"glp1": True}))
+    await db_session.merge(
+        SubjectSetting(
+            subject_id=legacy_owner_roots.subject_id,
+            key=SETTINGS_KEY,
+            value={"glp1": True},
+        )
+    )
     await db_session.commit()
 
-    await modules_service.get_enabled_modules(db_session, redis)
+    await modules_service.get_enabled_modules(
+        db_session,
+        redis,
+        subject_id=legacy_owner_roots.subject_id,
+    )
 
-    cached = json.loads(await redis.get(REDIS_KEY))
+    cached = json.loads(await redis.get(
+        modules_service.cache_key(legacy_owner_roots.subject_id)
+    ))
     assert cached["glp1"] is True
 
 
 @pytest.mark.integration
-async def test_concurrent_toggles_do_not_lose_updates(db_session):
+async def test_concurrent_toggles_do_not_lose_updates(db_session, legacy_owner_roots):
     """Two concurrent toggles of *different* modules must both survive.
 
     ``set_module_enabled`` is a read-modify-write of a single JSON row: read the
@@ -140,7 +232,13 @@ async def test_concurrent_toggles_do_not_lose_updates(db_session):
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    db_session.add(AppSetting(key=SETTINGS_KEY, value=dict(DEFAULT_STATE)))
+    await db_session.merge(
+        SubjectSetting(
+            subject_id=legacy_owner_roots.subject_id,
+            key=SETTINGS_KEY,
+            value=dict(DEFAULT_STATE),
+        )
+    )
     await db_session.commit()
 
     factory = async_sessionmaker(db_session.bind, expire_on_commit=False, class_=AsyncSession)
@@ -148,13 +246,23 @@ async def test_concurrent_toggles_do_not_lose_updates(db_session):
     # Session A grabs the FOR UPDATE lock by toggling glp1, holding its transaction
     # open (no commit yet).
     session_a = factory()
-    await modules_service.set_module_enabled(session_a, key="glp1", enabled=True)
+    await modules_service.set_module_enabled(
+        session_a,
+        key="glp1",
+        enabled=True,
+        subject_id=legacy_owner_roots.subject_id,
+    )
 
     # Session B toggles hevy concurrently; with the row lock it must block on the
     # SELECT FOR UPDATE until A commits.
     async def toggle_b():
         async with factory() as session_b:
-            await modules_service.set_module_enabled(session_b, key="hevy", enabled=True)
+            await modules_service.set_module_enabled(
+                session_b,
+                key="hevy",
+                enabled=True,
+                subject_id=legacy_owner_roots.subject_id,
+            )
             await session_b.commit()
 
     task_b = asyncio.create_task(toggle_b())
@@ -166,7 +274,11 @@ async def test_concurrent_toggles_do_not_lose_updates(db_session):
     await asyncio.wait_for(task_b, timeout=5)
 
     async with factory() as verify:
-        state = await modules_service.get_enabled_modules(verify, redis=None)
+        state = await modules_service.get_enabled_modules(
+            verify,
+            redis=None,
+            subject_id=legacy_owner_roots.subject_id,
+        )
     assert state["glp1"] is True, "session A's toggle was lost"
     assert state["hevy"] is True, "session B's toggle was lost"
 

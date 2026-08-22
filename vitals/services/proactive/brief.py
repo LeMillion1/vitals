@@ -354,8 +354,7 @@ async def build_context(
     session: AsyncSession,
     *,
     on_date: Optional[date_type] = None,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> dict:
     """Today's cross-domain snapshot, minus the protocol, plus the day context.
 
@@ -385,7 +384,6 @@ async def build_context(
         session,
         on_date or today_local(),
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     today = on_date or today_local()
     # The one thing the brief could never do: compare. Handed a single day of
@@ -451,8 +449,7 @@ async def _signals_since_yesterday(
     session: AsyncSession,
     on_date: date_type,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Optional[list]:
     """Today's signals plus yesterday's — the evening before is where exposures
     live, and the metric they explain is this morning's."""
@@ -725,7 +722,6 @@ async def prepare_brief(
         session,
         on_date=frozen_date,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     if compose.is_empty_day(ctx, on_date=frozen_date):
         logger.info("Daily Brief skipped: empty day")
@@ -1232,11 +1228,17 @@ async def generate_brief(
     *,
     on_date: Optional[date_type] = None,
     source: str = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    llm_connection_id: uuid.UUID | None = None,
+    identity: WriteIdentity | None,
+    llm_connection_id: uuid.UUID | None,
 ) -> Optional[WeeklyDigest]:
-    """Zero-subject injected-client compatibility; never a production AI path."""
+    """The retired zero-subject entry point; it now only refuses.
+
+    Every domain the brief reads is closed, so there is no context to assemble
+    without a subject — and with one, the phased gateway APIs are the only way
+    in. What survives here is the refusal itself, so a caller that still reaches
+    for this spelling fails loudly instead of quietly producing nothing.
+    """
+    del llm, on_date, source
     await acquire_identity_governance_lock(session)
     if identity is not None or llm_connection_id is not None:
         raise BriefOwnershipError(
@@ -1246,18 +1248,9 @@ async def generate_brief(
         raise BriefOwnershipError(
             "identity-bearing Daily Brief generation requires phased gateway APIs"
         )
-    prepared = await _prepare_brief(
-        session,
-        on_date=on_date,
-        source=source,
-        identity=None,
-        include_legacy_unowned=include_legacy_unowned,
-        llm_connection_id=None,
+    raise BriefOwnershipError(
+        "Daily Brief generation requires phased gateway APIs"
     )
-    if prepared is None:
-        return None
-    rendered = await _render_brief(llm, prepared)
-    return await _persist_brief(session, rendered)
 
 
 async def _prepare_brief(
@@ -1265,23 +1258,13 @@ async def _prepare_brief(
     *,
     on_date: Optional[date_type] = None,
     source: str = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
+    identity: WriteIdentity,
     llm_connection_id: uuid.UUID | None = None,
 ) -> _PreparedBrief | None:
     """Read and freeze one brief context without calling an external service."""
-    if identity is None:
-        if llm_connection_id is not None:
-            raise BriefOwnershipError(
-                "LLM provenance requires an explicit write identity"
-            )
-    else:
-        if not isinstance(identity, WriteIdentity):
-            raise BriefOwnershipError("identity must be a WriteIdentity or None")
-        if not isinstance(llm_connection_id, uuid.UUID):
-            raise BriefOwnershipError(
-                "owned brief generation requires an LLM connection UUID"
-            )
+    if not isinstance(identity, WriteIdentity):
+        raise BriefOwnershipError("identity must be a WriteIdentity")
+    if llm_connection_id is not None:
         await _require_llm_connection_scope(
             session,
             identity=identity,
@@ -1291,8 +1274,7 @@ async def _prepare_brief(
     ctx = await build_context(
         session,
         on_date=on_date,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if compose.is_empty_day(ctx, on_date=on_date):
         logger.info("no brief for %s: no sleep and nothing new", on_date)
@@ -1352,8 +1334,8 @@ async def _persist_brief(
         )
 
     row = WeeklyDigest(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         integration_connection_id=(
             prepared.llm_connection_id if rendered.used_llm else None
         ),

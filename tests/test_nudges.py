@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 
 from vitals.enums import NotificationDeliveryStatus
@@ -97,36 +98,58 @@ def _patch_owned_delivery(monkeypatch, notifier) -> None:
 
 
 # ── Conditions stay quiet unless they actually hold ───────────────────────────
-async def test_nothing_holds_nothing_is_sent(db_session):
+@pytest_asyncio.fixture
+async def scoped_nudges(db_session, monkeypatch):
+    """Run the nudge sweep for the sole owner, through the owned delivery path.
+
+    Nudges are addressed to a person on a channel, so the run carries the
+    ownership context the scheduler resolves in production rather than the
+    zero-subject compatibility one.
+    """
+
+    from types import SimpleNamespace
+
+    notifier = FakeNotifier()
+    _patch_owned_delivery(monkeypatch, notifier)
+    ownership = await channels.resolve_legacy_channel_ownership(
+        db_session,
+        actor_username=None,
+    )
+    await db_session.commit()
+
+    async def run(**kwargs):
+        return await nudges.run(db_session, notifier, ownership=ownership, **kwargs)
+
+    return SimpleNamespace(run=run, notifier=notifier, ownership=ownership)
+
+
+async def test_nothing_holds_nothing_is_sent(db_session, scoped_nudges):
     """The common case: an ordinary evening with the day on track."""
     await _seed_steps(db_session, nudges.STEPS_TARGET + 500)
-    notifier = FakeNotifier()
 
-    assert await nudges.run(db_session, notifier, now=EVENING) == []
-    assert notifier.sent == []
+    assert await scoped_nudges.run(now=EVENING) == []
+    assert scoped_nudges.notifier.sent == []
 
 
-async def test_steps_nudge_waits_for_the_evening(db_session):
+async def test_steps_nudge_waits_for_the_evening(db_session, scoped_nudges):
     """Same data, wrong hour: at 17:00 a low step count is not yet news."""
     await _seed_steps(db_session, 3000)
-    notifier = FakeNotifier()
 
-    assert await nudges.run(db_session, notifier, now=AFTERNOON) == []
+    assert await scoped_nudges.run(now=AFTERNOON) == []
 
-    sent = await nudges.run(db_session, notifier, now=EVENING)
+    sent = await scoped_nudges.run(now=EVENING)
     assert len(sent) == 1
-    assert "3000" in notifier.sent[0]
+    assert "3000" in scoped_nudges.notifier.sent[0]
     assert sent[0].category == delivery.CATEGORY_NUDGE
 
 
-async def test_missing_data_is_not_a_nudge(db_session):
+async def test_missing_data_is_not_a_nudge(db_session, scoped_nudges):
     """No Garmin row means the watch hasn't synced, not that he sat still — and
     no meals logged means an untracked day, not a missed protein target."""
-    notifier = FakeNotifier()
-    assert await nudges.run(db_session, notifier, now=EVENING) == []
+    assert await scoped_nudges.run(now=EVENING) == []
 
     await _seed_steps(db_session, 0)
-    assert await nudges.run(db_session, notifier, now=EVENING) == []
+    assert await scoped_nudges.run(now=EVENING) == []
 
 
 async def test_protein_nudge_fires_while_the_day_is_still_open(
@@ -163,61 +186,57 @@ async def test_protein_nudge_fires_while_the_day_is_still_open(
     ) == []
 
 
-async def test_garmin_silence_needs_two_days_and_some_history(db_session):
+async def test_garmin_silence_needs_two_days_and_some_history(db_session, scoped_nudges):
     """Never fires on an empty lake: that's an integration nobody set up."""
-    notifier = FakeNotifier()
-    assert await nudges.run(db_session, notifier, now=AFTERNOON) == []
+    assert await scoped_nudges.run(now=AFTERNOON) == []
 
     # One day behind is an ordinary gap between polls, not a broken watch.
     await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=1))
-    assert await nudges.run(db_session, notifier, now=AFTERNOON) == []
+    assert await scoped_nudges.run(now=AFTERNOON) == []
 
 
-async def test_garmin_silence_fires_after_two_days(db_session):
+async def test_garmin_silence_fires_after_two_days(db_session, scoped_nudges):
     await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2))
-    notifier = FakeNotifier()
 
-    sent = await nudges.run(db_session, notifier, now=AFTERNOON)
+    sent = await scoped_nudges.run(now=AFTERNOON)
     assert len(sent) == 1
-    assert "Garmin" in notifier.sent[0]
+    assert "Garmin" in scoped_nudges.notifier.sent[0]
 
 
-async def test_garmin_silence_is_announced_once_per_episode(db_session):
+async def test_garmin_silence_is_announced_once_per_episode(db_session, scoped_nudges):
     """The 24-hour cooldown alone re-sends the same sentence every morning for
     as long as the watch stays unworn. It is only news once."""
     await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2))
-    notifier = FakeNotifier()
 
-    assert len(await nudges.run(db_session, notifier, now=AFTERNOON)) == 1
+    assert len(await scoped_nudges.run(now=AFTERNOON)) == 1
     await db_session.commit()
 
     # A day later the cooldown is spent — but it is the same silence.
     tomorrow = AFTERNOON + timedelta(days=1)
-    assert await nudges.run(db_session, notifier, now=tomorrow) == []
-    assert len(notifier.sent) == 1
+    assert await scoped_nudges.run(now=tomorrow) == []
+    assert len(scoped_nudges.notifier.sent) == 1
 
     # The watch syncs, then goes quiet again: a new episode, worth saying once.
     await _seed_steps(db_session, 5000, on_date=tomorrow.date())
-    assert len(await nudges.run(db_session, notifier, now=tomorrow + timedelta(days=2))) == 1
+    assert len(await scoped_nudges.run(now=tomorrow + timedelta(days=2))) == 1
 
 
 # ── The cooldown ──────────────────────────────────────────────────────────────
-async def test_cooldown_holds_the_second_run(db_session):
+async def test_cooldown_holds_the_second_run(db_session, scoped_nudges):
     """The job runs hourly; without the cooldown the same sentence arrives at
     19:05, 20:05 and 21:05."""
     await _seed_steps(db_session, 3000)
-    notifier = FakeNotifier()
 
-    assert len(await nudges.run(db_session, notifier, now=EVENING)) == 1
+    assert len(await scoped_nudges.run(now=EVENING)) == 1
     await db_session.commit()
 
-    assert await nudges.run(db_session, notifier, now=EVENING + timedelta(hours=1)) == []
-    assert len(notifier.sent) == 1
+    assert await scoped_nudges.run(now=EVENING + timedelta(hours=1)) == []
+    assert len(scoped_nudges.notifier.sent) == 1
 
     # A day later — same story, new day — the nudge is allowed again.
     later = EVENING + timedelta(hours=25)
     await _seed_steps(db_session, 3000, on_date=later.date())
-    assert len(await nudges.run(db_session, notifier, now=later)) == 1
+    assert len(await scoped_nudges.run(now=later)) == 1
 
 
 async def test_owned_nudge_uses_opaque_durable_claim_and_transaction_free_send(
@@ -381,7 +400,7 @@ async def test_budget_cuts_the_nudge_that_does_not_fit(
     assert len(notifier.sent) == 1
 
 
-async def test_a_broken_condition_does_not_take_the_others_down(db_session, monkeypatch):
+async def test_a_broken_condition_does_not_take_the_others_down(db_session, monkeypatch, scoped_nudges):
     """A registry is only safe to extend if one bad entry can't silence the rest."""
 
     async def _boom(session, ctx):
@@ -390,9 +409,7 @@ async def test_a_broken_condition_does_not_take_the_others_down(db_session, monk
     await _seed_steps(db_session, 3000)
     broken = nudges.NudgeSpec("broken", "test", _boom, lambda ctx: "never")
     monkeypatch.setattr(nudges, "NUDGES", (broken,) + nudges.NUDGES)
-
-    notifier = FakeNotifier()
-    assert len(await nudges.run(db_session, notifier, now=EVENING)) == 1
+    assert len(await scoped_nudges.run(now=EVENING)) == 1
 
 
 # ── The light pulse (N3) ──────────────────────────────────────────────────────

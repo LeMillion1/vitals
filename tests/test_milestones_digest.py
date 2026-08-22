@@ -164,7 +164,12 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
 
     # 2. Enable body_comp module and save a scan with 15.5% fat on DAY + 1 day
     from vitals.services.modules_service import set_module_enabled
-    await set_module_enabled(db_session, key="body_comp", enabled=True)
+    await set_module_enabled(
+        db_session,
+        key="body_comp",
+        enabled=True,
+        subject_id=owner_write.subject_id,
+    )
     
     from vitals.models.body_scan import BodyScan, BodyScanMetric
 

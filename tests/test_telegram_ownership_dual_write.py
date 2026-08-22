@@ -857,7 +857,6 @@ async def test_late_plan_never_downgrades_answer_source_or_first_guess(db_sessio
 
 async def test_legacy_null_rows_are_visible_only_through_verified_bridge(
     db_session,
-    signals_module_on,
 ):
     graph = await _graph(db_session, "legacy-bridge")
     legacy = ProactiveOwnershipContext(
@@ -2081,7 +2080,6 @@ async def test_postgres_edit_processed_before_late_original_cannot_resurrect_fac
 
 async def test_delivery_journal_and_reply_lookup_are_fully_scoped(
     db_session,
-    signals_module_on,
 ):
     first = await _graph(db_session, "first")
     second = await _graph(db_session, "second")
@@ -2163,7 +2161,6 @@ async def test_delivery_journal_and_reply_lookup_are_fully_scoped(
 
 async def test_multi_subject_legacy_transport_fails_before_network_send(
     db_session,
-    signals_module_on,
 ):
     first = await _graph(db_session, "dedupe-first")
     await _graph(db_session, "dedupe-second")
@@ -2251,7 +2248,6 @@ async def test_cross_subject_notification_connection_cannot_leak_or_send(db_sess
 @pytest.mark.parametrize("invalid_kind", ["pending", "wrong_channel"])
 async def test_invalid_historical_notification_cannot_suppress_or_start_cooldown(
     db_session,
-    signals_module_on,
     invalid_kind,
 ):
     graph = await _graph(db_session, f"notification-{invalid_kind}")
@@ -2419,7 +2415,6 @@ async def test_delivery_revalidates_subject_recipient_and_connection_before_netw
 )
 async def test_connection_rotation_does_not_reset_budget_or_dedupe(
     db_session,
-    signals_module_on,
     historical_status,
 ):
     graph = await _graph(db_session, "rotated")
@@ -2484,7 +2479,6 @@ async def test_connection_rotation_does_not_reset_budget_or_dedupe(
 
 async def test_raw_commit_survives_normalized_and_journal_rollback(
     db_session,
-    signals_module_on,
 ):
     graph = await _graph(db_session, "rollback")
     expected_roots = (

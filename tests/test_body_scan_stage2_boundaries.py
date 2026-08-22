@@ -87,7 +87,7 @@ async def _prepared_weight(
     )
 
 
-async def _enable_body_comp(session: AsyncSession) -> None:
+async def _enable_body_comp(session: AsyncSession, legacy_owner_roots) -> None:
     subject_ids = list(
         await session.scalars(select(HealthSubject.id).order_by(HealthSubject.id))
     )
@@ -314,7 +314,10 @@ async def test_mcp_structured_write_is_raw_first_and_splits_scan_from_weight_sou
     monkeypatch,
 ):
     mcp_router = pytest.importorskip("web.routers.mcp")
-    await _enable_body_comp(db_session)
+    await _enable_body_comp(
+        db_session,
+        legacy_owner_roots,
+    )
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     original_ingest = body_scan_service.ingest_structured_scan
     original_refresh = body_scan_service.refresh_alerts
@@ -753,7 +756,10 @@ async def test_mcp_note_delete_and_web_delete_prepare_before_target_reads(
     from web.routers import weight as weight_router
 
     identity = _identity(legacy_owner_roots)
-    await _enable_body_comp(db_session)
+    await _enable_body_comp(
+        db_session,
+        legacy_owner_roots,
+    )
     mcp_scan = await _rawless_scan(
         db_session,
         identity=identity,

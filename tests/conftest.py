@@ -232,19 +232,21 @@ async def session_factory(db_session):
 
 
 @pytest_asyncio.fixture
-async def signals_module_on(db_session):
+async def signals_module_on(db_session, legacy_owner_roots):
     """Switch the ``signals`` module on for a bare ``db_session`` test.
 
     The proactive layer is gated on that module (it is the emergency switch, and
     it defaults **off**), so a service-level test that doesn't go through the
     ``client`` fixture has to set the same thing up the owner does in Settings —
     otherwise ``delivery.send`` correctly refuses to send anything.
+
+    Module state is one person's now, so the sole owner has to exist before
+    there is anybody to switch it on for.
     """
     from vitals.services import modules_service
     from sqlalchemy import select
     from vitals.models.identity import HealthSubject
 
-    await modules_service.set_module_enabled(db_session, key="signals", enabled=True)
     subject_ids = list(await db_session.scalars(select(HealthSubject.id)))
     for subject_id in subject_ids:
         await modules_service.set_module_enabled(
@@ -257,7 +259,7 @@ async def signals_module_on(db_session):
 
 
 @pytest_asyncio.fixture
-async def all_modules_on(db_session):
+async def all_modules_on(db_session, legacy_owner_roots):
     """Mirror the migration seed for service tests that exercise the full lake.
 
     Bare ``create_all`` databases intentionally use the fail-safe optional-off

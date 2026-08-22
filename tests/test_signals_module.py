@@ -43,23 +43,29 @@ def test_signals_is_optional_and_off_by_default():
     assert modules_service.DEFAULT_STATE["signals"] is False
 
 
-async def test_disabled_module_makes_the_bot_silent(db_session):
+async def test_disabled_module_makes_the_bot_silent(db_session, legacy_owner_roots):
     """The switch has to reach *sending*, not just the nav — otherwise turning the
-    feature off still leaves the brief arriving every morning."""
-    fake = FakeNotifier()
+    feature off still leaves the brief arriving every morning.
 
-    assert await delivery.send(
-        db_session, fake, text="бриф", category=delivery.CATEGORY_BRIEF
-    ) is None
-    assert fake.sent == []
+    Module state is one person's now, so the gate is asked about that person.
+    """
+    from vitals.services.proactive import prefs
 
-    await modules_service.set_module_enabled(db_session, key="signals", enabled=True)
+    assert await prefs.bot_enabled(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    ) is False
+
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=True,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     await db_session.commit()
 
-    assert await delivery.send(
-        db_session, fake, text="бриф", category=delivery.CATEGORY_BRIEF
-    ) is not None
-    assert fake.sent == ["бриф"]
+    assert await prefs.bot_enabled(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    ) is True
 
 
 async def test_disabled_module_hides_the_page(auth_client):

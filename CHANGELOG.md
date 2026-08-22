@@ -10,6 +10,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the module state, the daily brief, the Today screen and the HRT
+  reminders together — thirteen bridges. Which modules are on is one person's
+  preference, and the brief and the Today screen are assembled from that
+  person's domains, so none of them has a meaning without a subject.
+- The module cache is keyed per person, like the chart cache before it: a shared
+  Redis key would serve one subject's module state to the next request from
+  another.
+- `brief.generate_brief` is retired to a refusal. It was the zero-subject
+  injected-client path and already declined whenever any subject existed; with
+  every domain it reads now closed, there is no context to assemble without one.
+  The refusal itself stays so a caller reaching for that spelling fails loudly.
+- `prefs.bot_enabled` reads the installation-wide module row directly when there
+  is no subject. That arm is the zero-subject delivery gate and goes with it; a
+  database with no subjects has no per-person state to consult.
+
 - Closed the weight domain — thirty-nine bridges, the largest in the codebase
   and the one every other domain leans on: weigh-ins, body measurements, noise
   markers, progress photos, the chart series, and the Garmin export outbox

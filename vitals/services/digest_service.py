@@ -817,7 +817,9 @@ async def assemble_context(
     from vitals.services import modules_service
 
     if enabled_modules is None:
-        enabled = await modules_service.get_enabled_modules(session)
+        enabled = await modules_service.get_enabled_modules(
+            session, subject_id=subject_id
+        )
     else:
         enabled = {
             key: (

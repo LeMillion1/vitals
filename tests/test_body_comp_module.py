@@ -16,16 +16,27 @@ def test_body_comp_registered_as_optional():
     assert modules_service.DEFAULT_STATE["body_comp"] is False
 
 
-async def test_get_enabled_modules_defaults_body_comp_off(db_session):
+async def test_get_enabled_modules_defaults_body_comp_off(db_session, legacy_owner_roots):
     # No app_settings row → safe defaults (core on, optional off).
-    state = await modules_service.get_enabled_modules(db_session)
+    state = await modules_service.get_enabled_modules(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     assert state["body_comp"] is False
     assert state["weight"] is True
 
 
-async def test_toggle_body_comp_on(db_session):
-    state = await modules_service.set_module_enabled(db_session, key="body_comp", enabled=True)
+async def test_toggle_body_comp_on(db_session, legacy_owner_roots):
+    state = await modules_service.set_module_enabled(
+        db_session,
+        key="body_comp",
+        enabled=True,
+        subject_id=legacy_owner_roots.subject_id,
+    )
     await db_session.commit()
     assert state["body_comp"] is True
     # Re-resolved from the DB.
-    assert (await modules_service.get_enabled_modules(db_session))["body_comp"] is True
+    assert (await modules_service.get_enabled_modules(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+    ))["body_comp"] is True
