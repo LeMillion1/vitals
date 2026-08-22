@@ -11,7 +11,6 @@ file bytes and it never commits; callers own the surrounding transaction.
 """
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -20,12 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import (
     FileAssetPurpose,
     FileAssetStatus,
-    IntegrationConnectionStatus,
-    IntegrationConnectionType,
-    IntegrationProvider,
 )
 from vitals.models.raw_payload import RawPayload
-from vitals.models.tenancy import FileAsset, IntegrationConnection
+from vitals.models.tenancy import FileAsset
 from vitals.ownership import WriteIdentity
 
 
@@ -43,56 +39,6 @@ class OwnedUploadReference:
     @property
     def storage_ref(self) -> str:
         return self.file_asset.storage_ref
-
-
-async def require_live_upload_connection(
-    session: AsyncSession,
-    *,
-    identity: WriteIdentity,
-    connection_id: uuid.UUID,
-    provider: IntegrationProvider,
-    connection_type: IntegrationConnectionType,
-) -> IntegrationConnection:
-    """Lock one live provider root before an upload leaves the process.
-
-    Historical disabled/retired connections remain valid provenance for replay,
-    but they must not authorize a new external extraction or a new raw link.
-    """
-
-    if not isinstance(identity, WriteIdentity):
-        raise UploadOwnershipError("identity must be a WriteIdentity")
-    if not isinstance(connection_id, uuid.UUID):
-        raise UploadOwnershipError("connection_id must be a UUID")
-    if not isinstance(provider, IntegrationProvider):
-        raise UploadOwnershipError("provider must be an IntegrationProvider")
-    if not isinstance(connection_type, IntegrationConnectionType):
-        raise UploadOwnershipError(
-            "connection_type must be an IntegrationConnectionType"
-        )
-    connection = await session.scalar(
-        select(IntegrationConnection)
-        .where(IntegrationConnection.id == connection_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if connection is None or connection.subject_id != identity.subject_id:
-        raise UploadOwnershipError(
-            "upload connection does not exist in subject scope"
-        )
-    if (
-        connection.provider != provider.value
-        or connection.connection_type != connection_type.value
-    ):
-        raise UploadOwnershipError("upload connection has the wrong provider or type")
-    known_statuses = {status.value for status in IntegrationConnectionStatus}
-    if connection.status not in known_statuses:
-        raise UploadOwnershipError("upload connection has an unknown lifecycle state")
-    if connection.status not in {
-        IntegrationConnectionStatus.LEGACY.value,
-        IntegrationConnectionStatus.ACTIVE.value,
-    }:
-        raise UploadOwnershipError("inactive upload connection cannot extract data")
-    return connection
 
 
 def _coerce_purpose(purpose: FileAssetPurpose | str) -> FileAssetPurpose:
@@ -172,6 +118,5 @@ async def resolve_owned_upload_reference(
 __all__ = [
     "OwnedUploadReference",
     "UploadOwnershipError",
-    "require_live_upload_connection",
     "resolve_owned_upload_reference",
 ]

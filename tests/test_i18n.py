@@ -5,11 +5,8 @@ import pathlib
 import re
 
 import pytest
-from sqlalchemy import select
 from vitals.i18n import t, plural, current_lang
 from vitals.services.digest_service import build_prompt
-from vitals.models.app_settings import AppSetting
-from vitals.services.language_service import SETTINGS_KEY as LANG_SETTINGS_KEY
 
 
 def test_translation_basic():
@@ -82,7 +79,7 @@ def test_days_word_agrees_with_the_count():
 
 def test_digest_build_prompt():
     context = {"test": "data"}
-    
+
     # RU prompt
     prompt_ru = build_prompt(context, lang="ru")
     assert "Структурный срез данных за период" in prompt_ru
@@ -99,7 +96,7 @@ async def test_oauth_page_renders_localized(auth_client, db_session, redis):
     # Set language to RU
     response = await auth_client.post("/settings/language", data={"language": "ru"})
     assert response.status_code == 303
-    
+
     # Query authorization view
     r = await auth_client.get("/oauth/authorize?response_type=code&client_id=test-id&redirect_uri=http://localhost&state=123", headers={"Accept": "text/html"})
     assert r.status_code == 200
@@ -109,7 +106,7 @@ async def test_oauth_page_renders_localized(auth_client, db_session, redis):
     # Set language to EN
     response = await auth_client.post("/settings/language", data={"language": "en"})
     assert response.status_code == 303
-    
+
     # Query authorization view again
     r = await auth_client.get("/oauth/authorize?response_type=code&client_id=test-id&redirect_uri=http://localhost&state=123", headers={"Accept": "text/html"})
     assert r.status_code == 200

@@ -215,7 +215,7 @@ async def get_injection_for_update(
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[Injection]:
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
@@ -317,7 +317,7 @@ async def delete_injection(
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
@@ -514,7 +514,7 @@ async def delete_dose_phase(
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
@@ -615,7 +615,7 @@ async def delete_side_effect(
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,

@@ -89,7 +89,7 @@ async def get_meal_for_update(
 ) -> Optional[MealLog]:
     """Lock and refresh a scoped meal for a caller-side partial merge."""
 
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
@@ -291,7 +291,7 @@ async def delete_meal(
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
-    scoped_context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
@@ -318,7 +318,7 @@ async def update_meal_note(
 ) -> Optional[MealLog]:
     """Update only a meal note under the same subject lock as meal CRUD."""
 
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,

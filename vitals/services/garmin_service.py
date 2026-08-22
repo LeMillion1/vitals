@@ -979,41 +979,6 @@ async def get_daily(session: AsyncSession, on_date: date_type) -> Optional[Garmi
     return result.scalars().first()
 
 
-async def get_owned_daily(
-    session: AsyncSession,
-    on_date: date_type,
-    *,
-    identity: WriteIdentity,
-    integration_connection_id: uuid.UUID,
-) -> Optional[GarminDaily]:
-    """Return exactly one daily row in an explicit ``S+C`` scope."""
-
-    await _load_owned_garmin_connection(
-        session,
-        identity=identity,
-        integration_connection_id=integration_connection_id,
-        # Reads and historical reparses retain provenance after retirement.
-        allow_retired=True,
-    )
-    rows = list(
-        await session.scalars(
-            select(GarminDaily)
-            .where(
-                GarminDaily.subject_id == identity.subject_id,
-                GarminDaily.integration_connection_id
-                == integration_connection_id,
-                GarminDaily.date == on_date,
-            )
-            .limit(2)
-        )
-    )
-    if len(rows) > 1:
-        raise GarminOwnershipAmbiguityError(
-            f"multiple owned Garmin daily rows exist for {on_date.isoformat()}"
-        )
-    return rows[0] if rows else None
-
-
 async def _apply_owned_daily_raw(
     session: AsyncSession,
     on_date: date_type,

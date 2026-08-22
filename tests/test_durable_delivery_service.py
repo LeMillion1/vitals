@@ -6,7 +6,7 @@ import asyncio
 import copy
 import pickle
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import httpx
 import pytest

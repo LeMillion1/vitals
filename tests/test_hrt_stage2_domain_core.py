@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 
 from vitals.enums import Domain, RuleType, Severity, Source, UserStatus
 from vitals.models.conflict_rule import ConflictRule
-from vitals.models.hrt import HrtCycle, HrtDose, HrtSideEffect
+from vitals.models.hrt import HrtCycle, HrtDose
 from vitals.models.identity import HealthSubject, User
 from vitals.models.system_alert import SystemAlert
 from vitals.ownership import WriteIdentity

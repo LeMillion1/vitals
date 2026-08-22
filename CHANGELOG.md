@@ -8,6 +8,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- Ten public service functions with no caller anywhere: a digest-owner alias, an
+  owned Garmin daily reader, the three quarantined legacy weight-export hooks,
+  a genetics update path the router never used, a Telegram chat-id helper, a
+  preferences alias, an upload-connection guard, and a progress-photo reader.
+  Each had been superseded rather than removed when its replacement landed.
+- Two dead translation keys per language. Both were defined twice in the same
+  dictionary, so the second silently won and the first had never been seen.
+
+### Fixed
+
+- `web/main.py` referenced `HTMLResponse` without importing it, so a browser
+  refused by the policy engine would have crashed instead of receiving a 403.
+  The test only exercised the JSON branch; it now covers both.
+- The MCP `get_measurements` tool never imported the service it calls and would
+  have raised `NameError` on any invocation.
+- `web/routers/oauth.py` imported `SESSION_COOKIE` from two modules, the second
+  shadowing the first.
+- `vitals/services/proactive/prefs.py` and `upload_ownership_service.py` listed
+  names in `__all__` that no longer exist, breaking `import *`.
+
+### Added — tooling
+
+- `ruff.toml` selects the correctness rules — undefined names, unused imports,
+  `__all__` entries with nothing behind them, duplicate dictionary keys — and
+  deliberately does not enforce formatting. `tests/test_lint_contract.py` runs it
+  as part of the suite, so a defect it can see fails a test run rather than
+  waiting for somebody to remember the command.
+
+
 ### Added — scoped services (PR-04)
 
 - **The policy engine has a caller.** `vitals/access.py` had been complete and

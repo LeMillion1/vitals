@@ -14,7 +14,6 @@ from vitals.enums import (
     AIInvocationStatus,
     DigestKind,
     Domain,
-    IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
     Source,

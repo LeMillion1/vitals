@@ -37,7 +37,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date as date_type
 from enum import StrEnum
-from typing import Any, Awaitable, Callable, Optional, Protocol, Sequence
+from typing import Any, Optional, Protocol, Sequence
 
 from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession

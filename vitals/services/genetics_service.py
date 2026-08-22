@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final, Optional, Sequence
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import (
+    func,
+    or_,
+    select,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Source
@@ -512,9 +516,7 @@ async def _validate_variant_graph(
     owner_user_id = await _subject_owner_user_id(session, subject_id)
     row_is_legacy = _variant_is_fully_unowned(row)
     if row.subject_id == subject_id:
-        if row.actor_user_id != owner_user_id and not (
-            row.actor_user_id is None
-        ):
+        if row.actor_user_id != owner_user_id and row.actor_user_id is not None:
             raise GeneticsOwnershipError(
                 "genetic variant actor is foreign to its subject owner"
             )
@@ -835,89 +837,6 @@ async def upsert_by_rsid(
     row.gene = gene.strip()
     _apply_patch(
         row,
-        genotype=genotype,
-        marker=marker,
-        impact=impact,
-        impact_domain=impact_domain,
-        interpretation=interpretation,
-        action_notes=action_notes,
-    )
-    await session.flush()
-    return row
-
-
-async def update_variant(
-    session: AsyncSession,
-    variant_id: int,
-    *,
-    gene: object = PATCH_UNSET,
-    rsid: object = PATCH_UNSET,
-    genotype: object = PATCH_UNSET,
-    marker: object = PATCH_UNSET,
-    impact: object = PATCH_UNSET,
-    impact_domain: object = PATCH_UNSET,
-    interpretation: object = PATCH_UNSET,
-    action_notes: object = PATCH_UNSET,
-    identity: WriteIdentity,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
-) -> GeneticVariant | None:
-    """Patch a locked scoped fact; omitted fields differ from explicit clears."""
-
-    context = _require_scoped_prepared_write(
-        session,
-        identity=identity,
-        prepared=prepared_conflict_write,
-    )
-    assert context is not None
-    owner_user_id = await _subject_owner_user_id(session, identity.subject_id)
-    if identity.actor_user_id != owner_user_id:
-        raise conflict_engine.ConflictPreparedWriteError(
-            "genetics writes require the subject owner actor"
-        )
-    row = await _lock_scoped_variant(
-        session,
-        variant_id,
-        context=context,
-    )
-    if row is None:
-        return None
-    if gene is not PATCH_UNSET and (
-        not isinstance(gene, str) or not gene.strip()
-    ):
-        raise GeneticsValidationError("gene must be a non-blank string")
-    if rsid is not PATCH_UNSET:
-        normalized_rsid = None if rsid is None else _normalize_rsid(rsid)
-        if row.source == Source.VCF_IMPORT.value and normalized_rsid != row.rsid:
-            raise GeneticsValidationError(
-                "VCF-origin rsID identity cannot be changed in place"
-            )
-        if normalized_rsid is not None and normalized_rsid != row.rsid:
-            # An rsID identifies a locus, not a person: the destination is
-            # occupied only when *this* subject already holds it.
-            occupied = await session.scalar(
-                select(GeneticVariant.id)
-                .where(
-                    func.lower(GeneticVariant.rsid) == normalized_rsid,
-                    GeneticVariant.subject_id == identity.subject_id,
-                    GeneticVariant.id != row.id,
-                )
-                .limit(1)
-                .with_for_update()
-            )
-            if occupied is not None:
-                raise GeneticsRsidOccupiedError(
-                    "this subject already holds a variant for the destination rsID"
-                )
-    if _variant_is_fully_unowned(row):
-        row.subject_id = identity.subject_id
-    _apply_patch(
-        row,
-        gene=gene.strip() if isinstance(gene, str) else gene,
-        rsid=(
-            normalized_rsid
-            if rsid is not PATCH_UNSET
-            else PATCH_UNSET
-        ),
         genotype=genotype,
         marker=marker,
         impact=impact,

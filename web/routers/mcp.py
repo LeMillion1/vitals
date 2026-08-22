@@ -24,7 +24,6 @@ from __future__ import annotations
 import functools
 import importlib
 import logging
-import os
 import uuid
 from datetime import date as date_type, timedelta
 from typing import Optional
@@ -657,7 +656,7 @@ async def get_skincare_logs(
         )
 
         return {
-            "logs": [serialize_row(l) for l in logs],
+            "logs": [serialize_row(row) for row in logs],
             "observations": [serialize_row(o) for o in observations],
         }
 
@@ -954,7 +953,6 @@ async def log_meal(
     blocks the save, returns ``{"blocked": true, "violations": [...]}`` instead
     of saving; call again with ``override=True`` to save anyway.
     """
-    from datetime import time as time_type
     from vitals.services import nutrition_service
     from vitals.utils.timeutils import today_local
 
@@ -1735,6 +1733,8 @@ async def get_measurements(
 ) -> list[dict]:
     """Retrieves body measurements (neck, waist, hips, body-fat %, LBM) for a date
     range. Defaults to the most recent 100 rows."""
+    from vitals.services import weight_service
+
     session_factory = get_session_factory()
     start = _parse_date(start_date, field="start_date")
     end = _parse_date(end_date, field="end_date")
@@ -2175,7 +2175,6 @@ async def delete_record(domain: str, record_id: int) -> dict:
         service = importlib.import_module(f"vitals.services.{service_name}")
         owned_kwargs = {}
         if domain == "weight":
-            from vitals.services import weight_service
 
             conflict_context, prepared = await _mcp_v1_weight_write(session)
             owned_kwargs = {
@@ -2393,7 +2392,7 @@ async def log_body_scan(
     immediately. No-op with an error if the body_comp module is disabled. If a hard
     conflict rule blocks the save, returns ``{"blocked": true, ...}``; call again
     with ``override=True``."""
-    from vitals.services import body_scan_service, weight_service
+    from vitals.services import body_scan_service
     from vitals.utils.timeutils import today_local
 
     session_factory = get_session_factory()

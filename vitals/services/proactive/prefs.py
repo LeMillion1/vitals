@@ -1154,10 +1154,6 @@ async def get_prefs(session: AsyncSession) -> dict[str, Any]:
     return await get_pre_identity_legacy_prefs(session)
 
 
-async def set_prefs(session: AsyncSession, raw: Any) -> dict[str, Any]:
-    return await set_pre_identity_legacy_prefs(session, raw)
-
-
 async def bot_enabled(
     session: AsyncSession,
     *,
@@ -1259,5 +1255,4 @@ __all__ = [
     "sanitize",
     "set_preferences_bundle",
     "set_pre_identity_legacy_prefs",
-    "set_prefs",
 ]

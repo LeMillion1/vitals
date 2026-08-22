@@ -465,7 +465,6 @@ async def store_raw_text(
     attempt and pays for a second parse and a second reply to the same message.
     """
     _validate_identity(identity, integration_connection_id)
-    subject: HealthSubject | None = None
     if integration_connection_id is None:
         raise SignalOwnershipError(
             "owned channel raw payload requires a recipient connection"

@@ -15,7 +15,6 @@ from vitals.models.scoped_settings import SubjectSetting
 from vitals.services import modules_service
 from vitals.services.modules_service import (
     DEFAULT_STATE,
-    REDIS_KEY,
     SETTINGS_KEY,
     ModuleToggleError,
 )

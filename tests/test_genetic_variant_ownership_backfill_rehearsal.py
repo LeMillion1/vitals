@@ -23,7 +23,6 @@ from sqlalchemy.pool import NullPool
 
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
-from vitals.enums import Source
 from vitals.models.base import Base
 from vitals.ownership import WriteIdentity
 from vitals.services import (

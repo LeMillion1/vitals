@@ -1,0 +1,36 @@
+# Linting for correctness, not for style.
+#
+# The rules selected here find defects: a name that does not exist, an import of
+# something that was deleted, an `__all__` entry with nothing behind it, a dict
+# key written twice so the first value is silently discarded. Every one of those
+# has actually occurred in this repository — two of them were introduced and
+# caught on the same day this file was added.
+#
+# Formatting is deliberately not enforced. This codebase is written by hand and
+# reads that way; a formatter's diff would bury the changes that matter.
+
+target-version = "py313"
+line-length = 100
+
+[lint]
+select = [
+  "F",   # pyflakes — undefined names, unused imports, duplicate keys
+  "E4",  # import placement and shape
+  "E7",  # statement-level mistakes: ambiguous names, semicolons, `not ... is`
+  "E9",  # syntax and IO errors
+  "W",   # trailing whitespace, missing final newline
+]
+
+ignore = [
+  # Deliberate throughout: conftest sets environment variables before importing
+  # application modules, services import each other inside functions to break
+  # cycles, and migrations import after their revision identifiers. Enforcing
+  # top-of-file imports would mean rewriting all three patterns to satisfy a
+  # rule none of them is violating by accident.
+  "E402",
+]
+
+[lint.per-file-ignores]
+# Applied migrations are history. A dead local inside one is harmless, and
+# editing a revision that has already run somewhere is a habit worth not having.
+"migrations/versions/*.py" = ["F841"]

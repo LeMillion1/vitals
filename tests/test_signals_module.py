@@ -17,7 +17,7 @@ import pytest
 from vitals.scheduler import scheduler as scheduler_mod
 from vitals.scheduler.jobs import register_all_jobs
 from vitals.services import modules_service, signals_service
-from vitals.services.proactive import delivery, prefs
+from vitals.services.proactive import prefs
 
 
 class FakeNotifier:

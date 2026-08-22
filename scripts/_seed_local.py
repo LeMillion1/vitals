@@ -1,5 +1,9 @@
 # Local scratch seeder — UTF-8 safe (run with the venv python).
-import time, urllib.parse, urllib.request, http.cookiejar, json
+import time
+import urllib.parse
+import urllib.request
+import http.cookiejar
+import json
 
 BASE = "http://127.0.0.1:8000"
 cj = http.cookiejar.CookieJar()
@@ -26,7 +30,8 @@ def post_json(path, data):
 # wait for server
 for _ in range(30):
     try:
-        opener.open(BASE + "/login"); break
+        opener.open(BASE + "/login")
+        break
     except Exception:
         time.sleep(0.5)
 

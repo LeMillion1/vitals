@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, date, datetime
 
 import pytest
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, select, update
 
 from vitals.enums import (
     AIInvocationPurpose,

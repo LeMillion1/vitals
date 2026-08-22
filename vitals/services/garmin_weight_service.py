@@ -64,11 +64,7 @@ from vitals.models.scoped_settings import IntegrationConnectionSetting
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, conflict_engine, scoped_settings_service
-from vitals.services.identity_service import (
-    PreIdentityCompatibilityError,
-    acquire_identity_governance_lock,
-    require_pre_identity_compatibility,
-)
+from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.proactive import prefs as proactive_prefs
 from vitals.utils.timeutils import now_local
 
@@ -647,32 +643,6 @@ async def lock_active_weight_change(session: AsyncSession) -> None:
     await _acquire_operation_lock(session)
 
 
-async def prepare_legacy_active_weight_change(session: AsyncSession) -> None:
-    """Take identity governance before the outbox advisory on the legacy path.
-
-    A scoped writer proves this order through ``prepare_weight_write``: identity
-    governance first, then the installation-wide Garmin outbox advisory, then the
-    subject and actor rows. A legacy (zero-subject) writer has no prepared token
-    to carry that proof, so it used to reach identity governance only at the very
-    end, inside ``handle_legacy_active_weight_*`` — after the outbox advisory and
-    after every row lock. That inversion is the deadlock the canonical order
-    exists to prevent, and because the compatibility guard fails closed on it, the
-    outbox projection was silently skipped instead.
-
-    Establishing the root here restores the order. A database that is no longer
-    pre-identity (or that holds pending subject state) simply leaves it
-    unestablished: the local health write still goes ahead, and the legacy hooks
-    at the end of that write decline the global outbox projection on their own.
-    """
-
-    try:
-        await require_pre_identity_compatibility(session)
-    except PreIdentityCompatibilityError:
-        # Nothing to establish, and nothing to raise: a bootstrapped database
-        # still accepts the local health write, it just loses the outbox.
-        return
-
-
 async def handle_active_weight_changed(
     session: AsyncSession, *, now: Optional[datetime] = None
 ) -> None:
@@ -685,27 +655,6 @@ async def handle_active_weight_changed(
     await _acquire_operation_lock(session)
     if await is_enabled(session):
         await reconcile_latest(session, now=now)
-
-
-async def handle_legacy_active_weight_changed(
-    session: AsyncSession,
-    *,
-    now: Optional[datetime] = None,
-) -> bool:
-    """Quarantine the pre-identity compatibility hook.
-
-    A database with identity roots must use the prepared scoped hook. Returning
-    ``False`` keeps a local health write available when an old caller has not
-    yet supplied the destination context, without permitting a global outbox
-    mutation. Only a genuinely pre-identity schema may enter the legacy path.
-    """
-
-    try:
-        await proactive_prefs.get_pre_identity_legacy_prefs_in_transaction(session)
-    except proactive_prefs.ProactivePreferencesError:
-        return False
-    await handle_active_weight_changed(session, now=now)
-    return True
 
 
 async def handle_active_weight_changed_scoped(
@@ -1642,32 +1591,6 @@ async def handle_active_weight_deleted_scoped(
             replacement=replacement,
             now=now,
         )
-
-
-async def handle_legacy_active_weight_deleted(
-    session: AsyncSession,
-    *,
-    deleted_id: int,
-    on_date: date_type,
-    deleted_weight_kg: float,
-    replacement: Optional[WeightLog],
-    now: Optional[datetime] = None,
-) -> bool:
-    """Quarantine deletion projection for databases without identity roots."""
-
-    try:
-        await proactive_prefs.get_pre_identity_legacy_prefs_in_transaction(session)
-    except proactive_prefs.ProactivePreferencesError:
-        return False
-    await handle_active_weight_deleted(
-        session,
-        deleted_id=deleted_id,
-        on_date=on_date,
-        deleted_weight_kg=deleted_weight_kg,
-        replacement=replacement,
-        now=now,
-    )
-    return True
 
 
 def _due(row: GarminWeightExport, now: datetime, *, force: bool = False) -> bool:

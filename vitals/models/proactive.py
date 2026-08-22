@@ -40,7 +40,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.enums import (
-    NotificationDeliveryErrorCode,
     NotificationDeliveryStatus,
 )
 from vitals.models.base import Base

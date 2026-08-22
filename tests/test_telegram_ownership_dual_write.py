@@ -1556,12 +1556,14 @@ async def test_recovery_classifies_commands_questions_and_bot_replies_before_par
         "message_id": int(evening.external_id)
     }
     claims = []
-    for update in updates:
+    # Named ``payload`` rather than ``update`` so it stops shadowing the
+    # SQLAlchemy import of the same name at module scope.
+    for payload in updates:
         claims.append(
             await inbound._claim_update_raw(
                 db_session,
-                external_id=f"tg:{update['update_id']}",
-                payload=update,
+                external_id=f"tg:{payload['update_id']}",
+                payload=payload,
                 ownership=graph.ownership,
             )
         )

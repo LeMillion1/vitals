@@ -2285,7 +2285,6 @@ async def _progress_photo_scope_rows(
     }
     assets: dict[uuid.UUID, FileAsset] = {}
     counts: dict[uuid.UUID, int] = {}
-    shadowed_legacy_keys: set[str] = set()
     shadowed_document_aliases: set[str] = set()
     key_counts = {
         file_key: count
@@ -2318,7 +2317,7 @@ async def _progress_photo_scope_rows(
             if file_asset_id is not None
         }
     if legacy_file_keys:
-        shadowed_legacy_keys = set(
+        set(
             (
                 await session.scalars(
                     select(FileAsset.storage_ref).where(
@@ -2517,20 +2516,6 @@ async def list_progress_photos(
         filters=tuple(filters),
     )
     return sorted(rows, key=lambda row: (row.date, row.id), reverse=True)
-
-
-async def get_progress_photo(
-    session: AsyncSession,
-    photo_id: int,
-    *,
-    subject_id: uuid.UUID,
-) -> ProgressPhoto | None:
-    rows = await _progress_photo_scope_rows(
-        session,
-        subject_id=subject_id,
-        filters=(ProgressPhoto.id == photo_id,),
-    )
-    return rows[0] if rows else None
 
 
 async def get_progress_photo_by_file_key(
@@ -3024,7 +3009,7 @@ async def delete_body_measurement(
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     """Delete a body measurement record by ID."""
-    context = _require_aux_prepared_write(
+    _require_aux_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
@@ -3050,7 +3035,7 @@ async def delete_progress_photo(
 ) -> ProgressPhotoDeletion | None:
     """Delete a photo fact and retire its file metadata in one transaction."""
 
-    context = _require_aux_prepared_write(
+    _require_aux_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
@@ -3349,7 +3334,7 @@ async def update_body_measurement_note(
 ) -> BodyMeasurement | None:
     """Update only a measurement note inside one prepared subject scope."""
 
-    context = _require_aux_prepared_write(
+    _require_aux_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,

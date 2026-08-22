@@ -1235,7 +1235,6 @@ async def _validate_persisted_scan(
     if scan.domain != DOMAIN or scan.subject_id != subject_id:
         raise BodyScanOwnershipError("body scan is outside the requested scope")
     owner_user_id = await _subject_owner_user_id(session, subject_id)
-    is_legacy_scan = False
     if any(metric.subject_id != scan.subject_id for metric in scan.metrics):
         raise BodyScanOwnershipError(
             "body-scan metric ownership does not inherit its scan"
@@ -1251,7 +1250,6 @@ async def _validate_persisted_scan(
     if scan.source == Source.MANUAL.value:
         # A migrated manual scan keeps its unknown actor null, so the reviewed
         # compatibility bridge must recognise that shape as well as the owner.
-        # A migrated manual scan keeps its unknown actor null.
         if scan.actor_user_id not in {owner_user_id, None}:
             raise BodyScanOwnershipError(
                 "manual body-scan actor does not match the subject owner"

@@ -26,8 +26,6 @@ from sqlalchemy.orm import attributes
 from vitals.enums import (
     Domain,
     IntegrationConnectionStatus,
-    IntegrationConnectionType,
-    IntegrationProvider,
     Source,
     UserStatus,
 )

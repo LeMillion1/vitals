@@ -19,18 +19,14 @@ from enum import StrEnum
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
-from sqlalchemy import Table, and_, func, or_, select, update
+from sqlalchemy import Table, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
 from vitals.enums import (
     Severity,
-    AIInvocationPurpose,
-    Domain,
     IntegrationConnectionStatus,
-    IntegrationConnectionType,
     IntegrationProvider,
-    Source,
     UserStatus,
 )
 from vitals.models.identity import HealthSubject, User

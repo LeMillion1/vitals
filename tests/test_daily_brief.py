@@ -1003,7 +1003,6 @@ async def test_job_sends_the_brief_even_when_garmin_sync_explodes(
 def _patch_job(monkeypatch, notifier, llm):
     """Wire brief_job to a fake channel, a fake model and a no-op Garmin sync."""
     from vitals.integrations import llm_client
-    from vitals.services.proactive import channels
 
     async def _no_sync(*a, **kw):
         return None

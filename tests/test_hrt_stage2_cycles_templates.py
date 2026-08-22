@@ -11,7 +11,6 @@ from vitals.enums import Source, UserStatus
 from vitals.models.hrt import (
     DOMAIN,
     HrtCycle,
-    HrtCycleItem,
     HrtCycleTemplate,
     HrtCycleTemplateItem,
 )

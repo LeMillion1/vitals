@@ -10,7 +10,6 @@ from sqlalchemy import delete, select
 
 from vitals.enums import (
     Domain,
-    IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
 )

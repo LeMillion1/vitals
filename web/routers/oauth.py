@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from web.auth import read_session, _get_mcp_serializer
 from web.config import SESSION_COOKIE, get_web_config
-from web.deps import get_redis, SESSION_COOKIE
+from web.deps import get_redis
 
 logger = logging.getLogger(__name__)
 

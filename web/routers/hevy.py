@@ -150,7 +150,7 @@ async def sync_now(
             legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
         )
         await db.commit()
-        
+
         import time
         await redis.set("sync:last_success:hevy", str(int(time.time())))
     except hevy_service.HevyOwnershipInactiveConnectionError:

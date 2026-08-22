@@ -30,15 +30,15 @@ def test_format_date_handles_various_inputs():
     # Datetime and date objects
     assert format_date(datetime.date(2026, 6, 25)) == "25-06-2026"
     assert format_date(datetime.datetime(2026, 6, 25, 12, 30)) == "25-06-2026"
-    
+
     # ISO strings
     assert format_date("2026-06-25") == "25-06-2026"
     assert format_date("2026-06-25 15:45:00") == "25-06-2026"
-    
+
     # Already formatted or other styles
     assert format_date("25-06-2026") == "25-06-2026"
     assert format_date("25.06.2026") == "25-06-2026"
-    
+
     # Non-date strings and None
     assert format_date(None) == ""
     assert format_date("") == ""

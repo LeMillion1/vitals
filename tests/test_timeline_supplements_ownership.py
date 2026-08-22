@@ -42,7 +42,6 @@ from vitals.services import (
     milestones_service,
     supplements_service,
     timeline_service,
-    weight_service,
 )
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 

@@ -1,6 +1,5 @@
 import asyncio
 import os
-import sys
 
 # Set up local testing environment variables
 os.environ["VITALS_DATABASE_URL"] = "sqlite+aiosqlite:///local_vitals.db"

@@ -12,7 +12,7 @@ import uuid
 from datetime import date as date_type
 from typing import Optional, Sequence
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, MilestoneStatus

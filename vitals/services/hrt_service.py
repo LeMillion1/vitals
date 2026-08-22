@@ -37,7 +37,6 @@ from vitals.models.hrt import (
 )
 from vitals.ownership import WriteIdentity
 from vitals.services import conflict_engine
-from vitals.utils.timeutils import today_local
 
 # A compound counts as part of the "current protocol" for conflict matching if
 # it was dosed within this trailing window. A coarse stand-in until cycles
@@ -453,7 +452,7 @@ async def get_dose_for_update(
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[HrtDose]:
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
@@ -565,7 +564,7 @@ async def delete_dose(
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
@@ -688,7 +687,7 @@ async def delete_side_effect(
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,

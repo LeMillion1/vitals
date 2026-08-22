@@ -557,7 +557,6 @@ async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
 ):
     notifier = FakeNotifier()
     from vitals.integrations import llm_client
-    from vitals.services.proactive import channels
 
     async def _no_sync(*a, **kw):
         return None

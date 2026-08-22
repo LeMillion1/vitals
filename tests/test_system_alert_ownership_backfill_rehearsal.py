@@ -23,7 +23,6 @@ from sqlalchemy.pool import NullPool
 
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
-from vitals.enums import Source
 from vitals.models.base import Base
 from vitals.ownership_deploy import OWNERSHIP_BACKFILL_SEQUENCE
 from vitals.services import (
@@ -31,67 +30,16 @@ from vitals.services import (
     data_portability_service,
     hrt_catalog,
 )
-from vitals.services.conflict_rule_ownership_backfill_service import (
-    CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.day_context_ownership_backfill_service import (
-    DAY_CONTEXT_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.hevy_child_ownership_backfill_service import (
-    HEVY_CHILD_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.hrt_child_ownership_backfill_service import (
-    HRT_CHILD_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.hrt_compound_ownership_backfill_service import (
-    HRT_COMPOUND_OWNERSHIP_BACKFILL_PHASE,
-)
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
 from vitals.services.normalized_ownership_backfill_service import (
     NORMALIZED_MANUAL_BACKFILL_PHASE,
 )
-from vitals.services.progress_photo_ownership_backfill_service import (
-    PROGRESS_PHOTO_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.provider_raw_ownership_backfill_service import (
-    PROVIDER_RAW_OWNERSHIP_BACKFILL_PHASE,
-)
 from vitals.services.raw_ownership_backfill_service import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
 )
-from vitals.services.shared_report_ownership_backfill_service import (
-    SHARED_REPORT_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.signal_ownership_backfill_service import (
-    SIGNAL_OWNERSHIP_BACKFILL_PHASE,
-)
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
-from vitals.services.weight_log_ownership_backfill_service import (
-    WEIGHT_LOG_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.body_scan_metric_ownership_backfill_service import (
-    BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.garmin_weight_export_ownership_backfill_service import (
-    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.notification_ownership_backfill_service import (
-    NOTIFICATION_OWNERSHIP_BACKFILL_PHASE,
-)
 from vitals.services.system_alert_ownership_backfill_service import (
     SYSTEM_ALERT_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.weekly_digest_ownership_backfill_service import (
-    WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.body_scan_ownership_backfill_service import (
-    BODY_SCAN_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.genetic_variant_ownership_backfill_service import (
-    GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.lab_result_ownership_backfill_service import (
-    LAB_RESULT_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.ownership import PRE_OWNERSHIP_CONTRACT_REVISION
 

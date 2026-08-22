@@ -24,17 +24,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
 from vitals.enums import (
-    AIInvocationPurpose,
-    Domain,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
-    Source,
     UserStatus,
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.models.ai import AIInvocation
 from vitals.models.tenancy import IntegrationConnection
 from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
 from vitals.models.garmin import (

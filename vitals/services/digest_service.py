@@ -38,7 +38,10 @@ from vitals.enums import (
     Source,
     UserStatus,
 )
-from vitals.integrations.llm_client import LLMCallResult, LLMClient, LLMEmptyResponse
+from vitals.integrations.llm_client import (
+    LLMCallResult,
+    LLMClient,
+)
 from vitals.models.ai import AIInvocation
 from vitals.models.identity import HealthSubject, User
 from vitals.models.milestones import DOMAIN, WeeklyDigest
@@ -3347,16 +3350,6 @@ async def prepare_digest_owner_for_identity(
         owner_user_id=owner_user_id,
         actor_user_id=identity.actor_user_id,
     )
-
-
-async def prepare_legacy_digest_owner(
-    session: AsyncSession,
-    *,
-    actor_username: str | None,
-) -> PreparedDigestOwner:
-    """Compatibility alias for exact-one callers during AccessContext cutover."""
-
-    return await prepare_digest_owner(session, actor_username=actor_username)
 
 
 async def _owner_or_zero_subject_legacy(

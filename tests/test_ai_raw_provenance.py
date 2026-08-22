@@ -26,8 +26,6 @@ from vitals.enums import (
 )
 from vitals.models.ai import (
     AIInvocation,
-    AIPlatformQuotaPeriod,
-    AISubjectQuotaPeriod,
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.proactive import Notification

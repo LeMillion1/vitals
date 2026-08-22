@@ -19,7 +19,7 @@ from enum import StrEnum
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
-from sqlalchemy import Table, and_, func, select, update
+from sqlalchemy import Table, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
@@ -45,9 +45,6 @@ from vitals.services.hrt_compound_ownership_backfill_service import (
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.normalized_ownership_backfill_service import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
-)
-from vitals.services.progress_photo_ownership_backfill_service import (
-    PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.provider_raw_ownership_backfill_service import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,

@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import timedelta
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession

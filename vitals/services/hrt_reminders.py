@@ -30,7 +30,6 @@ from vitals.enums import Domain, Severity
 from vitals.i18n import current_lang, t
 from vitals.models.hrt import DOMAIN, HrtCycle, HrtCycleItem
 from vitals.models.identity import HealthSubject
-from vitals.models.labs import LabMarker, LabResult
 from vitals.ownership import WriteIdentity
 from vitals.services import (
     alerts_service,

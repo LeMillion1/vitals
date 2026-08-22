@@ -124,7 +124,7 @@ async def test_real_postgres_contract_refuses_an_unfinished_backfill(
     alembic_config = AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
     await db_session.close()
     engine = create_async_engine(database_url, poolclass=NullPool)
-    revision = _revision_module()
+    _revision_module()
 
     try:
         async with engine.begin() as connection:

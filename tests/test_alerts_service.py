@@ -191,12 +191,12 @@ async def test_dismissed_today_accepts_an_explicit_date(db_session):
 
 async def test_resolve_all_can_be_scoped_to_a_domain(db_session):
     w = await _raise(db_session, entity="w", domain=Domain.WEIGHT.value)
-    l = await _raise(db_session, entity="l", domain=Domain.LABS.value)
+    labs_alert = await _raise(db_session, entity="l", domain=Domain.LABS.value)
     await alerts_service.resolve_all(db_session, domain=Domain.WEIGHT.value)
     await db_session.commit()
 
     assert (await db_session.get(SystemAlert, w.id)).resolved_at is not None
-    assert (await db_session.get(SystemAlert, l.id)).resolved_at is None
+    assert (await db_session.get(SystemAlert, labs_alert.id)).resolved_at is None
 
 
 def test_is_blocking_only_for_block():

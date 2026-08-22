@@ -656,7 +656,7 @@ async def seed_workouts(session):
     for idx, days_ago in enumerate(workout_days):
         title, program, exercises = programs[idx % len(programs)]
         d = _d(days_ago)
-        start_hour = random.choice([9, 10, 17, 18])
+        random.choice([9, 10, 17, 18])
 
         workout = HevyWorkout(
             date=d,

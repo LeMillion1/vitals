@@ -19,7 +19,7 @@ from vitals.models.garmin import (
     SERIES_STRESS,
     SLEEP_SERIES_TYPES,
 )
-from vitals.services import alerts_service, garmin_service, legacy_subject_alerts
+from vitals.services import garmin_service, legacy_subject_alerts
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
@@ -215,7 +215,7 @@ async def sync_now(
 
     if summary.get("error"):
         return _redirect(request, f"?sync={summary['error']}")
-    
+
     import time
     await redis.set("sync:last_success:garmin", str(int(time.time())))
     return _redirect(request, f"?sync=ok&synced={summary['days']}")

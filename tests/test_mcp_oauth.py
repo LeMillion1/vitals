@@ -6,11 +6,10 @@ import json
 from datetime import date
 from urllib.parse import parse_qs, urlsplit
 import pytest
-from sqlalchemy import select
 
 from vitals.enums import Source
 from vitals.models import WeightLog, GarminDaily, GarminActivity, HevyWorkout, LabResult
-from web.auth import create_session, read_session, _get_mcp_serializer, _get_serializer
+from web.auth import create_session, _get_mcp_serializer, _get_serializer
 from web.config import SESSION_COOKIE
 
 # PKCE pair used across the flow tests: CODE_CHALLENGE is the S256 of CODE_VERIFIER.

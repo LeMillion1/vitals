@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import pickle
-import uuid
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -15,7 +14,6 @@ from vitals.enums import (
     AIInvocationPurpose,
     AIInvocationSource,
     AIInvocationStatus,
-    IntegrationConnectionStatus,
     UserRoleName,
     UserStatus,
 )
@@ -24,7 +22,7 @@ from vitals.models.ai import (
     AIPlatformQuotaPeriod,
     AISubjectQuotaPeriod,
 )
-from vitals.models.identity import User, UserRole
+from vitals.models.identity import User
 from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import ai_gateway_service as gateway

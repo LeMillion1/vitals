@@ -75,20 +75,20 @@ async def skincare_dashboard(
         today,
         subject_id=identity.subject_id,
     )
-    
+
     # Load products dynamically
     products = await skincare_service.list_products(
         db,
         subject_id=identity.subject_id,
     )
-    
+
     # Load active skincare rules inside the same proved legacy-owner boundary.
     conflict_rules = await conflict_engine.load_scoped_rules(
         db,
         scope=context.scope,
         domain=Domain.SKINCARE,
     )
-    
+
     return templates.TemplateResponse(
         request,
         "skincare/index.html",

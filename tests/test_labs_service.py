@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from vitals.i18n import t
-from vitals.models.labs import LabMarker, LabResult
+from vitals.models.labs import LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.services import alerts_service, labs_service
 

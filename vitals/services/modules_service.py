@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from redis.asyncio import Redis
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.services.scoped_settings_service import (

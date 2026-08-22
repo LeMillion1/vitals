@@ -7,7 +7,6 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.enums import Domain, UserStatus

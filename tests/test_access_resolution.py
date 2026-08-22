@@ -23,7 +23,6 @@ from vitals.enums import UserRoleName, UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.services.access_resolution import (
     AccessDeniedError,
-    AccessResolutionError,
     NoAccessibleSubjectError,
     PrincipalNotFoundError,
     SubjectNotFoundError,
@@ -266,8 +265,14 @@ async def test_the_export_route_decides_rather_than_assumes(
 
     monkeypatch.setattr(access_resolution, "is_allowed", _refuse)
 
-    for path in ("/settings/export", "/settings/export-llm"):
-        refused = await auth_client.get(path)
+    # Both branches of the handler: a browser asks for HTML, everything else
+    # gets JSON. The first version of this test only exercised the JSON branch,
+    # which is how an undefined name in the HTML one went unnoticed.
+    for path, accept in (
+        ("/settings/export", "text/html,application/xhtml+xml"),
+        ("/settings/export-llm", "application/json"),
+    ):
+        refused = await auth_client.get(path, headers={"Accept": accept})
         assert refused.status_code == 403
         # The refusal says nothing about whose record was reached for or
         # whether it exists: a denial and a miss look the same from outside.

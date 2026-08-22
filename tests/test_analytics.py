@@ -1,7 +1,6 @@
 """Pure-logic unit tests for the weight analytics (no DB)."""
 from __future__ import annotations
 
-import math
 from datetime import date, timedelta
 
 import pytest

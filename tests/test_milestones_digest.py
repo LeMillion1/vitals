@@ -7,14 +7,11 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from vitals.ownership import WriteIdentity
-from sqlalchemy import select
 
 from vitals.enums import Domain, Source
-from vitals.models.milestones import WeeklyDigest
 from vitals.services import (
     digest_service,
     garmin_service,
-    hevy_service,
     milestones_service,
     weight_service,
 )
@@ -144,7 +141,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
         prepared_conflict_write=await owner_write.write(DAY),
     )
 
-    m = await milestones_service.create_milestone(
+    await milestones_service.create_milestone(
         db_session, name="Снизить жир до 12%", domain="body_comp", target_value=12.0,
         target_unit="%", deadline=DAY + timedelta(days=60),
         identity=owner_write.identity,

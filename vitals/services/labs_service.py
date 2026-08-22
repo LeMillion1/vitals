@@ -32,7 +32,7 @@ import uuid
 from datetime import date as date_type, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
@@ -376,7 +376,7 @@ async def ensure_marker_catalog_entry(
     unknown historical actor remains unchanged.
     """
 
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
@@ -1142,7 +1142,7 @@ async def update_result_note(
 ) -> Optional[LabResult]:
     """Update only a result note without changing its source/raw provenance."""
 
-    context = _require_scoped_prepared_write(
+    _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,

@@ -195,19 +195,6 @@ def _telegram_message_day(message: dict) -> date_type | None:
 
 
 # ── Telegram update shape (the only place that knows it) ──────────────────────
-def chat_id_of(update: dict) -> Optional[str]:
-    """The chat an update came from, whichever shape it arrived in."""
-    for holder in (
-        update.get("message"),
-        update.get("edited_message"),
-        (update.get("callback_query") or {}).get("message"),
-    ):
-        chat = (holder or {}).get("chat") or {}
-        if chat.get("id") is not None:
-            return str(chat["id"])
-    return None
-
-
 def is_private_recipient_update(update: dict, expected_recipient_id: str) -> bool:
     """Accept only a private chat authored by the configured recipient."""
 

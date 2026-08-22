@@ -121,7 +121,6 @@ async def build(
         alerts_service,
         digest_service,
         garmin_service,
-        milestones_service,
         nutrition_service,
         signals_service,
         timeline_service,

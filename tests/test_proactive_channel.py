@@ -2574,7 +2574,7 @@ async def test_dedupe_key_makes_a_second_send_a_no_op(db_session, scoped_send):
 async def test_a_failed_send_is_not_journalled_and_costs_no_budget(db_session, scoped_send):
     """Telegram having a bad minute must not roll back the caller's DB work, and
     must not silently spend a slot on a message nobody received."""
-    broken = FakeNotifier(fail=True)
+    FakeNotifier(fail=True)
 
     assert await scoped_send.send(text="нудж", category=delivery.CATEGORY_NUDGE, now=NIGHT) is None
     assert (await db_session.execute(select(Notification))).scalars().all() == []

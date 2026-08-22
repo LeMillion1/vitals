@@ -21,24 +21,17 @@ from dataclasses import dataclass
 from datetime import date as date_type
 from typing import Optional, Sequence
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
     AnnotationKind,
     Domain,
-    IntegrationConnectionStatus,
-    IntegrationConnectionType,
-    IntegrationProvider,
     LabFlag,
     MilestoneStatus,
     Source,
 )
 from vitals.i18n import t
-from vitals.models.ai import AIInvocation
-from vitals.models.identity import HealthSubject
-from vitals.models.raw_payload import RawPayload
-from vitals.models.tenancy import IntegrationConnection
 from vitals.models.timeline import Annotation
 from vitals.ownership import WriteIdentity
 

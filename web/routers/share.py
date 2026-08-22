@@ -11,7 +11,7 @@ at the link and the downloaded file are the same bytes.
 from __future__ import annotations
 
 import logging
-from datetime import date as date_type, timedelta
+from datetime import date as date_type
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Request, Response, status

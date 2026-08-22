@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import os
 import re
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -25,7 +23,9 @@ def test_env_writer_read_existing_key(tmp_path, monkeypatch):
     env_file.write_text("VITALS_HEIGHT_CM=185\nVITALS_SEX=male\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
     from web.services import env_writer
-    import importlib; importlib.reload(env_writer)
+    import importlib
+
+    importlib.reload(env_writer)
     from web.services.env_writer import read_key
     assert read_key("VITALS_HEIGHT_CM") == "185"
     assert read_key("VITALS_SEX") == "male"
@@ -40,7 +40,7 @@ def test_env_writer_write_updates_existing_key(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
-    from web.services.env_writer import write_keys, read_key
+    from web.services.env_writer import write_keys
     write_keys({"VITALS_HEIGHT_CM": "180"})
     content = env_file.read_text(encoding="utf-8")
     assert "VITALS_HEIGHT_CM=180" in content

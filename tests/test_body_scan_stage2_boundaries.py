@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from io import BytesIO
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.datastructures import Headers, UploadFile
 from starlette.requests import Request
@@ -35,7 +35,6 @@ from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import WeightLog
 from vitals.ownership import WriteIdentity
 from vitals.services import (
-    body_scan_ai_service,
     body_scan_service,
     conflict_engine,
     file_asset_service,
