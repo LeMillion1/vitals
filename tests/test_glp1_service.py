@@ -265,7 +265,7 @@ async def test_refresh_plateau_raises_and_resolves(db_session, owner_write, owne
     assert alert.severity == Severity.NOTE.value
     assert alerts_service.is_blocking(alert.severity) is False
 
-    active = await alerts_service.list_active(db_session, domain="glp1")
+    active = await alerts_service.list_active(db_session, domain="glp1", subject_id=owner_write.subject_id)
     assert any(a.alert_key == glp1_service.PLATEAU_ALERT_KEY for a in active)
 
     # Now add strong loss → plateau clears.
@@ -284,7 +284,7 @@ async def test_refresh_plateau_raises_and_resolves(db_session, owner_write, owne
         prepared_conflict_write=await owner_write.write(today),
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="glp1")
+    active = await alerts_service.list_active(db_session, domain="glp1", subject_id=owner_write.subject_id)
     assert not any(a.alert_key == glp1_service.PLATEAU_ALERT_KEY for a in active)
 
 

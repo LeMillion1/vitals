@@ -425,7 +425,7 @@ async def test_failure_sets_backoff_and_warn_alert(db_session, owner_write, garm
     assert row.attempts == 1
     assert row.next_attempt_at == NOW + timedelta(minutes=15)
     assert "Garmin unavailable" in row.last_error
-    alerts = await alerts_service.list_active(db_session, domain="garmin")
+    alerts = await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id)
     assert [a.alert_key for a in alerts] == [garmin_weight_service.ALERT_KEY]
 
     # A scheduler tick inside the backoff window makes no upstream request.
@@ -443,7 +443,7 @@ async def test_retry_preflight_keeps_previous_alert_until_recovery(db_session, o
     failed_client = FakeWeightClient(fail_fetch=RuntimeError("Garmin unavailable"))
     await garmin_export.export_latest(failed_client, now=NOW)
     await db_session.commit()
-    assert await alerts_service.list_active(db_session, domain="garmin")
+    assert await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id)
 
     fetch_started = asyncio.Event()
     never_resume = asyncio.Event()
@@ -466,7 +466,7 @@ async def test_retry_preflight_keeps_previous_alert_until_recovery(db_session, o
     row = await _outbox(db_session)
     assert row.status == WEIGHT_EXPORT_CHECKING
     assert "Garmin unavailable" in row.last_error
-    assert await alerts_service.list_active(db_session, domain="garmin")
+    assert await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id)
 
 
 async def test_export_uses_live_freshness_and_retry_preferences(db_session, owner_write, garmin_export):
@@ -582,7 +582,7 @@ async def test_unconfigured_job_does_not_reconcile_retry_or_alert(
         assert row.status == WEIGHT_EXPORT_PENDING
         assert row.attempts == 3
         assert row.last_error == "unchanged"
-        assert await alerts_service.list_active(session, domain="garmin") == []
+        assert await alerts_service.list_active(session, domain="garmin", subject_id=owner_write.subject_id) == []
 
 
 async def test_weight_job_surfaces_garmin_token_cache_warnings(
@@ -607,7 +607,7 @@ async def test_weight_job_surfaces_garmin_token_cache_warnings(
     await garmin_weight_service.export_job(session_factory, redis=None)
 
     async with session_factory() as session:
-        alerts = await alerts_service.list_active(session, domain="garmin")
+        alerts = await alerts_service.list_active(session, domain="garmin", subject_id=owner_write.subject_id)
         token_alerts = [
             alert for alert in alerts if alert.alert_key == garmin_service.TOKEN_ALERT_KEY
         ]
@@ -2128,7 +2128,7 @@ async def test_alert_keeps_the_highest_priority_outstanding_issue(db_session, ow
     result = await garmin_export.export_latest(FakeWeightClient(fail_fetch=RuntimeError("new send failed")), now=NOW)
 
     assert result["status"] == WEIGHT_EXPORT_FAILED
-    alerts = await alerts_service.list_active(db_session, domain="garmin")
+    alerts = await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id)
     assert len(alerts) == 1
     assert older.isoformat() in alerts[0].message
     assert "owned cleanup failed" in alerts[0].message
@@ -2144,7 +2144,7 @@ async def test_deleting_a_conflicted_local_weight_resolves_its_alert(db_session,
     client = FakeWeightClient([{"samplePk": "external", "weight": 85000}])
     result = await garmin_export.export_latest(client, now=NOW)
     assert result["status"] == WEIGHT_EXPORT_CONFLICT
-    assert await alerts_service.list_active(db_session, domain="garmin")
+    assert await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id)
 
     assert await _delete_weight(
         db_session,
@@ -2152,7 +2152,7 @@ async def test_deleting_a_conflicted_local_weight_resolves_its_alert(db_session,
         local.id,
     ) is True
 
-    assert await alerts_service.list_active(db_session, domain="garmin") == []
+    assert await alerts_service.list_active(db_session, domain="garmin", subject_id=owner_write.subject_id) == []
     assert (await _outbox(db_session)).status == WEIGHT_EXPORT_DELETED
 
 

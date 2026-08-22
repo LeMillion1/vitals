@@ -59,7 +59,7 @@ async def test_different_entity_ref_is_a_different_alert(db_session):
     await db_session.commit()
 
     assert a.id != b.id
-    assert len(await alerts_service.list_active(db_session)) == 2
+    assert len(await alerts_service.list_active(db_session, subject_id=None)) == 2
 
 
 async def test_raise_overridden_stamps_override_once(db_session):
@@ -84,7 +84,7 @@ async def test_resolve_by_key_frees_the_slot(db_session):
     await db_session.commit()
     assert second.id != first.id
     assert len(await _all_rows(db_session)) == 2
-    assert [a.id for a in await alerts_service.list_active(db_session)] == [second.id]
+    assert [a.id for a in await alerts_service.list_active(db_session, subject_id=None)] == [second.id]
 
 
 async def test_resolve_by_key_is_a_noop_when_nothing_active(db_session):
@@ -99,7 +99,7 @@ async def test_resolve_alert_touches_only_its_own_row(db_session):
     await alerts_service.resolve_alert(db_session, a.id)
     await db_session.commit()
 
-    assert [x.id for x in await alerts_service.list_active(db_session)] == [b.id]
+    assert [x.id for x in await alerts_service.list_active(db_session, subject_id=None)] == [b.id]
 
 
 # ── resolve_superseded: prefix logic ──────────────────────────────────────────
@@ -213,7 +213,7 @@ async def test_note_tone_dedupes_like_every_other_severity(db_session):
     assert first.id == second.id
     assert second.severity == Severity.NOTE.value
     assert len(await _all_rows(db_session)) == 1
-    assert [a.id for a in await alerts_service.list_active(db_session)] == [first.id]
+    assert [a.id for a in await alerts_service.list_active(db_session, subject_id=None)] == [first.id]
 
 
 # ── Postgres-only invariants (SQLite fakes these) ─────────────────────────────

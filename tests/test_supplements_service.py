@@ -7,11 +7,13 @@ import pytest
 from vitals.models.conflict_rule import ConflictRule
 from vitals.services import (
     alerts_service,
+    conflict_engine,
     conflict_registrations,
     genetics_service,
     supplements_service,
 )
 from vitals.services.conflict_engine import ConflictBlocked
+from vitals.utils.timeutils import today_local
 
 # No module-level asyncio mark: async DB tests are auto-detected (asyncio_mode=
 # auto); test_slugify below is a pure sync test.
@@ -103,8 +105,17 @@ async def test_add_list_toggle_delete(db_session, owner_write):
 async def test_resolver_shape(db_session, owner_write):
     await supplements_service.add_supplement(db_session, name="Iron", key="iron", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
-    items = await supplements_service.resolve_active(db_session)
-    assert {"key": "iron", "active": True, "name": "Iron", "timing_slot": None} in items
+    items = await supplements_service.resolve_active_scoped(
+        db_session,
+        scope=conflict_engine.ConflictScope(
+            subject_id=owner_write.subject_id,
+            evaluation_date=today_local(),
+        ),
+    )
+    assert [
+        {k: v for k, v in item.items() if k != conflict_engine.CONFLICT_ENTITY_KEY}
+        for item in items
+    ] == [{"key": "iron", "active": True, "name": "Iron", "timing_slot": None}]
 
 
 async def _seed_iron_rule(db_session):
@@ -178,7 +189,7 @@ async def test_iron_override_saves_and_stamps_alert(db_session, owner_write):
     await db_session.commit()
     assert s.id is not None
 
-    active = await alerts_service.list_active(db_session, domain="supplements")
+    active = await alerts_service.list_active(db_session, domain="supplements", subject_id=owner_write.subject_id)
     assert len(active) == 1
     assert active[0].override_at is not None
 

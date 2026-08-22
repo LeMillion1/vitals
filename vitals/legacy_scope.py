@@ -29,17 +29,6 @@ from types import MappingProxyType
 # or an ``include_legacy_unowned`` escape hatch.
 LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        'vitals.services.garmin_service': frozenset(
-            {
-                'latest_daily',
-                'list_daily_between',
-            }
-        ),
-        'vitals.services.alerts_service': frozenset(
-            {
-                'list_active',
-            }
-        ),
         'vitals.services.ai_gateway_service': frozenset(
             {
                 '_ensure_nonoverlapping_period',
@@ -54,12 +43,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
 
 
-        'vitals.services.proactive.day_plan': frozenset(
-            {
-                'get_week_template',
-                'set_week_template',
-            }
-        ),
         'vitals.services.proactive.prefs': frozenset(
             {
                 'bot_enabled',
@@ -74,12 +57,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
             }
         ),
 
-        'vitals.services.supplements_service': frozenset(
-            {
-                '_supplement_subject_scope',
-                'resolve_active',
-            }
-        ),
     }
 )
 
@@ -103,7 +80,6 @@ LEGACY_BARE_ID_READS: Mapping[str, frozenset[str]] = MappingProxyType(
         "vitals.services.hrt_service": frozenset({"HrtCompound"}),
         "vitals.services.labs_service": frozenset({"RawPayload"}),
         "vitals.services.language_service": frozenset({"AppSetting"}),
-        "vitals.services.proactive.day_plan": frozenset({"AppSetting"}),
         "vitals.services.proactive.inbound": frozenset({"RawPayload"}),
         "vitals.services.twofa_service": frozenset({"AppSetting"}),
     }

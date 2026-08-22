@@ -73,7 +73,20 @@ class PulseClient:
 
 
 async def _seed_steps(db_session, steps: int, *, on_date=TODAY):
-    await garmin_service.ingest_daily(db_session, on_date, {"summary": {"totalSteps": steps}})
+    """A day of watch data belonging to this installation's sole owner.
+
+    The legacy ingest still writes an unstamped row, so the seeder attaches the
+    owner afterwards: the silence nudge reads its history through the scoped
+    reader, and a row nobody owns is a row it correctly refuses to speak for.
+    """
+    from sqlalchemy import select
+
+    from vitals.models.identity import HealthSubject
+
+    row = await garmin_service.ingest_daily(
+        db_session, on_date, {"summary": {"totalSteps": steps}}
+    )
+    row.subject_id = await db_session.scalar(select(HealthSubject.id).limit(2))
     await db_session.commit()
 
 

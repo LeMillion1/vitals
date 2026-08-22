@@ -134,24 +134,22 @@ async def _garmin_silent(session: AsyncSession, ctx: dict) -> bool:
     """
     from vitals.services import garmin_service
 
-    row = await garmin_service.latest_daily(session, before_or_on=ctx["today"])
+    ownership = ctx.get("ownership")
+    if ownership is None:
+        # Whose watch went quiet? Without a subject the question has no answer,
+        # and the newest row in the database is somebody else's evidence.
+        return False
+    row = await garmin_service.latest_daily(
+        session, subject_id=ownership.subject_id, before_or_on=ctx["today"]
+    )
     if row is None:
         return False
     gap = (ctx["today"] - row.date).days
     if gap < GARMIN_SILENT_DAYS:
         return False
+    # The once-per-episode check lives on the owned send path, which reads the
+    # same episode start through the delivery policy clock.
     ctx["garmin_episode_start"] = row.date + timedelta(days=GARMIN_SILENT_DAYS)
-    if ctx.get("ownership") is None:
-        last = await last_sent_at(
-            session,
-            GARMIN_SILENT_KEY,
-            ownership=None,
-        )
-        if (
-            last is not None
-            and last.date() >= row.date + timedelta(days=GARMIN_SILENT_DAYS)
-        ):
-            return False
     ctx["garmin_last_date"] = row.date
     ctx["garmin_gap_days"] = gap
     return True

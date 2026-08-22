@@ -150,7 +150,7 @@ async def test_refresh_alerts_raises_and_resolves(db_session, owner_write):
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="labs")
+    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
     assert any(a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:") for a in active)
 
     # A later in-range value clears it.
@@ -173,7 +173,7 @@ async def test_refresh_alerts_raises_and_resolves(db_session, owner_write):
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs")
+    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
     assert not any(a.alert_key == labs_service.OUT_OF_RANGE_KEY for a in active)
 
 
@@ -201,7 +201,7 @@ async def test_out_of_range_alert_message_uses_localized_flag(db_session, owner_
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="labs")
+    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
     alert = next(a for a in active if a.alert_key == labs_service.OUT_OF_RANGE_KEY)
     assert "critical_high" not in alert.message
     assert t("enum.flag.critical_high") in alert.message
@@ -235,7 +235,7 @@ async def test_overdue_retest_alert_and_defer(db_session, owner_write):
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs")
+    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
     assert any(a.alert_key == labs_service.RETEST_DUE_KEY for a in active)
 
     # Defer pushes it out and resolves the alert.
@@ -256,7 +256,7 @@ async def test_overdue_retest_alert_and_defer(db_session, owner_write):
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs")
+    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
     assert not any(a.alert_key == labs_service.RETEST_DUE_KEY for a in active)
 
 
@@ -287,7 +287,7 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
             subject_id=owner_write.subject_id,
         )
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="labs")
+        active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
         alert = next(
             (a for a in active if a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")),
             None,
@@ -307,7 +307,7 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
             subject_id=owner_write.subject_id,
         )
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="labs")
+        active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
         assert not any(
             a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")
             for a in active
@@ -324,7 +324,7 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
             subject_id=owner_write.subject_id,
         )
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="labs")
+        active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
         assert not any(
             a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")
             for a in active
@@ -351,7 +351,7 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
             subject_id=owner_write.subject_id,
         )
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="labs")
+        active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
         new_alerts = [
             a for a in active
             if a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")
@@ -383,7 +383,7 @@ async def test_new_out_of_range_result_supersedes_previous_alert(db_session, own
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs")
+    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
     tsh_alerts = [a for a in active if a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")]
     assert len(tsh_alerts) == 1
     old_entity = tsh_alerts[0].entity_ref
@@ -408,7 +408,7 @@ async def test_new_out_of_range_result_supersedes_previous_alert(db_session, own
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="labs")
+    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
     tsh_alerts = [a for a in active if a.alert_key == labs_service.OUT_OF_RANGE_KEY and a.entity_ref.startswith("TSH:")]
     assert len(tsh_alerts) == 1, "The stale alert for the old result must be superseded, not left active"
     assert tsh_alerts[0].entity_ref != old_entity
@@ -444,7 +444,7 @@ async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_sessi
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs")
+    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
     alert = next((a for a in active if a.alert_key == labs_service.RETEST_DUE_KEY), None)
     assert alert is not None
 
@@ -462,7 +462,7 @@ async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_sessi
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs")
+    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
     assert not any(a.alert_key == labs_service.RETEST_DUE_KEY for a in active)
 
     # The user finally retests — once the new result in turn becomes overdue,
@@ -488,7 +488,7 @@ async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_sessi
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="labs")
+    active = await alerts_service.list_active(db_session, domain="labs", subject_id=owner_write.subject_id)
     assert any(a.alert_key == labs_service.RETEST_DUE_KEY for a in active)
 
 

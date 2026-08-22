@@ -245,8 +245,8 @@ async def resolve_all(session: AsyncSession, *, domain: Optional[str] = None) ->
 async def list_active(
     session: AsyncSession,
     *,
+    subject_id: uuid.UUID | None,
     domain: Optional[str] = None,
-    subject_id: uuid.UUID | None = None,
 ) -> Sequence[SystemAlert]:
     """Active (unresolved) alerts, newest first, optionally filtered by domain.
 
@@ -256,13 +256,19 @@ async def list_active(
     legitimately different alerts that shared templated wording and made the
     result nondeterministic.)
 
-    ``subject_id`` restricts the result to one person's alerts, which is what a
-    composed report needs; the platform's own alerts are not that person's and
-    are excluded with it.
+    ``subject_id`` is mandatory and says whose alerts are being asked for: a
+    person's id returns that person's alerts and nobody else's, and ``None``
+    means the platform's own — the installation-level alerts that belong to no
+    patient. There is no third reading. The parameter used to default to
+    ``None`` and mean "every alert in the database", which is how a report for
+    one person could quietly show another person's warnings.
     """
-    stmt = select(SystemAlert).where(SystemAlert.resolved_at.is_(None))
-    if subject_id is not None:
-        stmt = stmt.where(SystemAlert.subject_id == subject_id)
+    stmt = select(SystemAlert).where(
+        SystemAlert.resolved_at.is_(None),
+        SystemAlert.subject_id == subject_id
+        if subject_id is not None
+        else SystemAlert.subject_id.is_(None),
+    )
     if domain is not None:
         stmt = stmt.where(SystemAlert.domain == domain)
     stmt = stmt.order_by(SystemAlert.created_at.desc(), SystemAlert.id.desc())

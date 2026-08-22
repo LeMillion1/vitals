@@ -173,7 +173,7 @@ def test_switching_the_pulse_off_removes_the_job():
     assert "garmin_pulse" not in scheduler_mod._registry
 
 
-async def test_saving_reschedules_without_a_restart(auth_client, db_session):
+async def test_saving_reschedules_without_a_restart(auth_client, db_session, legacy_owner_roots):
     """The whole point: the live scheduler is rebuilt in the same request."""
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -236,7 +236,9 @@ async def test_saving_reschedules_without_a_restart(auth_client, db_session):
 
         from vitals.services.proactive import day_plan
 
-        template = await day_plan.get_week_template(db_session)
+        template = await day_plan.get_week_template(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    )
         assert template["mon"]["gym"] is True
         assert template["tue"]["gym"] is False
     finally:

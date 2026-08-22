@@ -377,7 +377,7 @@ async def test_enforce_day_end_raises_the_alert_when_violated(db_session, owner_
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="supplements")
+    active = await alerts_service.list_active(db_session, domain="supplements", subject_id=owner_write.subject_id)
     assert any(a.message == "test day-end rule" for a in active)
 
 
@@ -420,7 +420,7 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, o
     await db_session.commit()
     assert any(
         a.message == "test day-end rule"
-        for a in await alerts_service.list_active(db_session, domain="supplements")
+        for a in await alerts_service.list_active(db_session, domain="supplements", subject_id=owner_write.subject_id)
     )
 
     # A later, in-range result becomes the latest for the marker — potassium is
@@ -452,7 +452,7 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, o
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="supplements")
+    active = await alerts_service.list_active(db_session, domain="supplements", subject_id=owner_write.subject_id)
     assert not any(a.message == "test day-end rule" for a in active)
 
 
@@ -480,7 +480,11 @@ async def test_timing_separation_fires_when_same_slot(db_session, owner_write):
     await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", timing="утро", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
-    violations = await conflict_engine.evaluate(db_session, "supplements")
+    violations = await conflict_engine.evaluate_scoped(
+        db_session,
+        scope=owner_write.context.scope,
+        domain="supplements",
+    )
     assert any(v.rule_type == "timing_separation" for v in violations)
 
 
@@ -491,7 +495,11 @@ async def test_timing_separation_silent_when_different_slot(db_session, owner_wr
     await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", timing="вечер", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await db_session.commit()
 
-    violations = await conflict_engine.evaluate(db_session, "supplements")
+    violations = await conflict_engine.evaluate_scoped(
+        db_session,
+        scope=owner_write.context.scope,
+        domain="supplements",
+    )
     assert not any(v.rule_type == "timing_separation" for v in violations)
 
 
@@ -502,7 +510,11 @@ async def test_timing_separation_silent_when_slot_unknown(db_session, owner_writ
     await supplements_service.add_supplement(db_session, name="Zinc", key="zinc", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())  # no timing
     await db_session.commit()
 
-    violations = await conflict_engine.evaluate(db_session, "supplements")
+    violations = await conflict_engine.evaluate_scoped(
+        db_session,
+        scope=owner_write.context.scope,
+        domain="supplements",
+    )
     assert not any(v.rule_type == "timing_separation" for v in violations)
 
 

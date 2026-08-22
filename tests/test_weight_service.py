@@ -418,7 +418,7 @@ async def test_noise_alert_raise_and_resolve(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(date(2026, 6, 10)),
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="weight")
+    active = await alerts_service.list_active(db_session, domain="weight", subject_id=owner_write.subject_id)
     assert any(a.alert_key == weight_service.NOISE_ALERT_KEY for a in active)
     assert active[0].severity == "info"
 
@@ -430,7 +430,7 @@ async def test_noise_alert_raise_and_resolve(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(date(2026, 7, 10)),
     )
     await db_session.commit()
-    active2 = await alerts_service.list_active(db_session, domain="weight")
+    active2 = await alerts_service.list_active(db_session, domain="weight", subject_id=owner_write.subject_id)
     assert not any(a.alert_key == weight_service.NOISE_ALERT_KEY for a in active2)
 
 

@@ -45,7 +45,7 @@ async def garmin_dashboard(
         actor_username=username,
         required_connections=tuple(IntegrationProvider),
     )
-    latest = await garmin_service.latest_daily(db)
+    latest = await garmin_service.latest_daily(db, subject_id=ownership.subject_id)
     history = await garmin_service.list_daily(db, limit=30)
     # The latest day's stress / Body Battery / heart-rate curves (empty dict on a
     # day that has only day-level scalars — the template then hides the chart

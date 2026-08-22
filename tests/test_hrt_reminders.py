@@ -70,7 +70,7 @@ async def test_labs_due_raised_on_cycle_without_bloodwork(db_session, owner_writ
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value)
+    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert any(a.alert_key == hrt_reminders.LABS_DUE_KEY for a in alerts)
 
 
@@ -106,7 +106,7 @@ async def test_labs_due_cleared_by_recent_panel_result(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value)
+    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert not any(a.alert_key == hrt_reminders.LABS_DUE_KEY for a in alerts)
 
 
@@ -122,7 +122,7 @@ async def test_labs_due_absent_without_active_cycle(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value)
+    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert not any(a.alert_key == hrt_reminders.LABS_DUE_KEY for a in alerts)
 
 
@@ -148,7 +148,7 @@ async def test_injection_due_raised_when_shot_missed(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value)
+    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     due = [a for a in alerts if a.alert_key == hrt_reminders.INJECTION_DUE_KEY]
     assert due and due[0].entity_ref == "testosterone_enanthate"
 
@@ -186,7 +186,7 @@ async def test_injection_due_cleared_after_logging(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value)
+    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert not any(a.alert_key == hrt_reminders.INJECTION_DUE_KEY for a in alerts)
 
 
@@ -366,7 +366,7 @@ async def test_injection_due_not_raised_before_item_offset(db_session, owner_wri
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value)
+    alerts = await alerts_service.list_active(db_session, domain=Domain.HRT.value, subject_id=owner_write.subject_id)
     assert not any(
         a.alert_key == hrt_reminders.INJECTION_DUE_KEY
         and a.entity_ref == "stanozolol_oral"

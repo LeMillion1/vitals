@@ -90,7 +90,7 @@ async def _recovery_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     """Last night's sleep, with training readiness as the note."""
     from vitals.services import garmin_service
 
-    row = await garmin_service.latest_daily(session)
+    row = await garmin_service.latest_daily(session, subject_id=subject_id)
     if row is None:
         return None
     gap = (today_local() - row.date).days

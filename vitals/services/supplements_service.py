@@ -105,28 +105,10 @@ def _proposed(key: str, active: bool, timing_slot: Optional[str] = None) -> dict
     return {"key": key, "active": active, "timing_slot": timing_slot}
 
 
-def _supplement_subject_scope(
-    subject_id: uuid.UUID,
-    *,
-    include_legacy_unowned: bool = False,
-):
-    """Restrict a supplement query to one person's regimen.
+def _supplement_subject_scope(subject_id: uuid.UUID):
+    """Restrict a supplement query to one person's regimen."""
 
-    ``include_legacy_unowned`` survives only for the conflict-engine resolver,
-    which still has a compatibility entry point of its own. Every other path
-    here requires the subject and sees nothing outside it.
-    """
-
-    scope = Supplement.subject_id == subject_id
-    if include_legacy_unowned:
-        scope = or_(
-            scope,
-            and_(
-                Supplement.subject_id.is_(None),
-                Supplement.actor_user_id.is_(None),
-            ),
-        )
-    return scope
+    return Supplement.subject_id == subject_id
 
 
 def _require_scoped_prepared_write(
@@ -390,22 +372,20 @@ async def delete_supplement(
 async def resolve_active(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
     _include_conflict_entity_key: bool = False,
 ) -> list[dict]:
     """Conflict-engine resolver: the catalog as match items (key + active flag +
-    parsed timing slot, used by timing_separation rules)."""
-    stmt = select(Supplement)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _supplement_subject_scope(
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy supplement compatibility requires a subject_id")
+    parsed timing slot, used by timing_separation rules).
+
+    The engine's compatibility arm has no scope to hand down, so this reader
+    still spans the installation. It goes when that arm does; every other read
+    in this module already requires its subject. Fully unowned only: a row with
+    an actor but no subject is partial provenance and was never legacy data.
+    """
+    stmt = select(Supplement).where(
+        Supplement.subject_id.is_(None),
+        Supplement.actor_user_id.is_(None),
+    )
     result = await session.execute(stmt)
     return [
         {
@@ -428,11 +408,30 @@ async def resolve_active_scoped(
     *,
     scope: conflict_engine.ConflictScope,
 ) -> list[dict]:
-    """Conflict resolver restricted to one explicit subject boundary."""
+    """Conflict resolver restricted to one explicit subject boundary.
 
-    return await resolve_active(
-        session,
-        subject_id=scope.subject_id,
-        include_legacy_unowned=scope.include_legacy_unowned,
-        _include_conflict_entity_key=True,
-    )
+    The conflict engine still offers a fully-unowned bridge to its callers, and
+    a resolver has to honour the scope it is handed. This is the last place in
+    the module that can see a row with no subject; it goes when the bridge does.
+    """
+
+    subject_scope = Supplement.subject_id == scope.subject_id
+    if scope.include_legacy_unowned:
+        subject_scope = or_(
+            subject_scope,
+            and_(
+                Supplement.subject_id.is_(None),
+                Supplement.actor_user_id.is_(None),
+            ),
+        )
+    rows = await session.scalars(select(Supplement).where(subject_scope))
+    return [
+        {
+            conflict_engine.CONFLICT_ENTITY_KEY: str(row.id),
+            "key": row.key,
+            "active": row.active,
+            "name": row.name,
+            "timing_slot": _parse_slot(row.timing),
+        }
+        for row in rows
+    ]

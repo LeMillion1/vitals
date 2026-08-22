@@ -385,9 +385,14 @@ async def test_platform_scheduler_diagnostics_never_reach_today_attention(
     legacy_owner_roots,
 ):
     sentinel = "secret-path:/srv/private/trace.sql"
+    # All four rows name this subject, the sentinel included: the reader already
+    # refuses anyone else's alerts, so leaving the platform diagnostic ownerless
+    # would let that scope filter pass the test and never exercise the key
+    # classifier this test is about.
     db_session.add_all(
         [
             SystemAlert(
+                subject_id=legacy_owner_roots.subject_id,
                 domain=Domain.SYSTEM.value,
                 severity=Severity.WARN.value,
                 message=sentinel,
@@ -395,6 +400,7 @@ async def test_platform_scheduler_diagnostics_never_reach_today_attention(
                 entity_ref="raw_payload_sweep",
             ),
             SystemAlert(
+                subject_id=legacy_owner_roots.subject_id,
                 domain=Domain.SYSTEM.value,
                 severity=Severity.INFO.value,
                 message="subject-visible",
@@ -402,6 +408,7 @@ async def test_platform_scheduler_diagnostics_never_reach_today_attention(
                 entity_ref="",
             ),
             SystemAlert(
+                subject_id=legacy_owner_roots.subject_id,
                 domain=Domain.SYSTEM.value,
                 severity=Severity.WARN.value,
                 message="subject-job-visible",
@@ -409,6 +416,7 @@ async def test_platform_scheduler_diagnostics_never_reach_today_attention(
                 entity_ref="weekly_digest",
             ),
             SystemAlert(
+                subject_id=legacy_owner_roots.subject_id,
                 domain=Domain.SYSTEM.value,
                 severity=Severity.WARN.value,
                 message="provider-job-visible",

@@ -2792,18 +2792,24 @@ async def list_daily_between(
     start: date_type,
     end: date_type,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
 ) -> Sequence[GarminDaily]:
     """Every day in a date range, chronological. ``list_daily`` counts backwards
     from the newest row, which answers "the last N days I have" — not "the days
-    between these two dates", the question every period report actually asks."""
+    between these two dates", the question every period report actually asks.
+
+    ``subject_id`` is required: a watch belongs to a person, so "the days" is
+    always somebody's days. Rows the backfill has not stamped yet are simply not
+    theirs to show, and the range comes back short rather than borrowed."""
     stmt = (
         select(GarminDaily)
-        .where(GarminDaily.date >= start, GarminDaily.date <= end)
+        .where(
+            GarminDaily.subject_id == subject_id,
+            GarminDaily.date >= start,
+            GarminDaily.date <= end,
+        )
         .order_by(GarminDaily.date)
     )
-    if subject_id is not None:
-        stmt = stmt.where(GarminDaily.subject_id == subject_id)
     result = await session.execute(stmt)
     return result.scalars().all()
 
@@ -2894,8 +2900,8 @@ _REPORTED_DAILY_COLS = (
 async def latest_daily(
     session: AsyncSession,
     *,
+    subject_id: uuid.UUID,
     before_or_on: Optional[date_type] = None,
-    subject_id: uuid.UUID | None = None,
 ) -> Optional[GarminDaily]:
     """The newest day that actually carries numbers, not merely the newest row.
 
@@ -2904,10 +2910,15 @@ async def latest_daily(
     silence nudge, for which a row with nothing on it is exactly the silence it
     is looking for. The placeholder is still stored and still shows up in the
     history list; it just stops being "the latest day".
+
+    ``subject_id`` is required for the same reason it is on ``list_daily_between``:
+    every screen this feeds is one person's recovery, and "the newest row in the
+    database" is not an answer to that question.
     """
-    stmt = select(GarminDaily).where(or_(*(col.is_not(None) for col in _REPORTED_DAILY_COLS)))
-    if subject_id is not None:
-        stmt = stmt.where(GarminDaily.subject_id == subject_id)
+    stmt = select(GarminDaily).where(
+        GarminDaily.subject_id == subject_id,
+        or_(*(col.is_not(None) for col in _REPORTED_DAILY_COLS)),
+    )
     if before_or_on is not None:
         stmt = stmt.where(GarminDaily.date <= before_or_on)
     stmt = stmt.order_by(GarminDaily.date.desc()).limit(1)

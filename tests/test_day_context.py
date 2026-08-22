@@ -430,60 +430,77 @@ def test_an_unanswered_question_is_left_unsaid():
 
 
 # ── The template ──────────────────────────────────────────────────────────────
-async def test_template_is_stored_per_weekday_and_sanitized(db_session):
+async def test_template_is_stored_per_weekday_and_sanitized(db_session, legacy_owner_roots):
     await day_plan.set_week_template(
         db_session,
         {"sun": {"where": "remote", "gym": True, "нечто": 1}, "junk": {}},
+        subject_id=legacy_owner_roots.subject_id,
     )
     await db_session.commit()
 
-    template = await day_plan.get_week_template(db_session)
+    template = await day_plan.get_week_template(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    )
     assert set(template) == set(day_plan.WEEKDAYS)
     assert template["sun"] == {"where": "remote", "gym": True}
     assert template["mon"] == day_plan.DEFAULT_DAY
     assert day_plan.guess_for(template, DAY) == template["sun"]  # DAY is a Sunday
 
 
-async def test_the_template_never_carries_the_day_type(db_session):
+async def test_the_template_never_carries_the_day_type(db_session, legacy_owner_roots):
     """A weekday cannot know how heavy a day will be, so it is not offered in
     Settings — and a hand-edited row that smuggles one in gets dropped."""
     assert "load" not in day_plan.DEFAULT_DAY
     assert "load" not in {q.key for q in day_plan.TEMPLATE_QUESTIONS}
 
-    await day_plan.set_week_template(db_session, {"sun": {"load": "heavy"}})
+    await day_plan.set_week_template(
+        db_session, {"sun": {"load": "heavy"}}, subject_id=legacy_owner_roots.subject_id
+    )
     await db_session.commit()
 
-    assert "load" not in (await day_plan.get_week_template(db_session))["sun"]
+    assert "load" not in (await day_plan.get_week_template(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    ))["sun"]
 
 
-async def test_a_day_off_is_a_kind_of_day_and_the_weekend_defaults_to_it(db_session):
+async def test_a_day_off_is_a_kind_of_day_and_the_weekend_defaults_to_it(db_session, legacy_owner_roots):
     assert day_plan.DEFAULT_TEMPLATE["sat"]["where"] == "off"
     assert day_plan.DEFAULT_TEMPLATE["sun"]["where"] == "off"
     assert day_plan.DEFAULT_TEMPLATE["mon"]["where"] == "office"
 
-    await day_plan.set_week_template(db_session, {"mon": {"where": "off"}})
+    await day_plan.set_week_template(
+        db_session, {"mon": {"where": "off"}}, subject_id=legacy_owner_roots.subject_id
+    )
     await db_session.commit()
 
-    template = await day_plan.get_week_template(db_session)
+    template = await day_plan.get_week_template(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    )
     assert template["mon"]["where"] == "off"
     assert day_plan.describe(template["mon"]).startswith("выходной")
 
 
-async def test_a_broken_template_row_does_not_take_the_evening_block_down(db_session):
+async def test_a_broken_template_row_does_not_take_the_evening_block_down(db_session, legacy_owner_roots):
     """Hand-editable JSON is a trust boundary: garbage degrades to the default."""
     db_session.add(AppSetting(key=day_plan.SETTINGS_KEY, value="что-то не то"))
     await db_session.commit()
 
-    assert await day_plan.get_week_template(db_session) == day_plan.DEFAULT_TEMPLATE
+    assert await day_plan.get_week_template(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    ) == day_plan.DEFAULT_TEMPLATE
 
 
 async def test_an_out_of_registry_value_falls_back_instead_of_reaching_the_message(
-    db_session,
+    db_session, legacy_owner_roots,
 ):
-    await day_plan.set_week_template(db_session, {"sun": {"where": "на луне"}})
+    await day_plan.set_week_template(
+        db_session, {"sun": {"where": "на луне"}}, subject_id=legacy_owner_roots.subject_id
+    )
     await db_session.commit()
 
-    template = await day_plan.get_week_template(db_session)
+    template = await day_plan.get_week_template(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    )
     assert template["sun"]["where"] == "off"  # Sunday's default, not the garbage
 
 
@@ -500,7 +517,9 @@ async def test_brief_prefers_his_answer_to_the_template(
     """And only for the question he actually answered: one tap must not silently
     cancel the rest of the guess he was correcting."""
     await _seed_brief_day(db_session)
-    await day_plan.set_week_template(db_session, {"sun": {"where": "remote", "gym": False}})
+    await day_plan.set_week_template(
+        db_session, {"sun": {"where": "remote", "gym": False}}, subject_id=legacy_owner_roots.subject_id
+    )
     await day_plan.record_answer(
         db_session,
         DAY, "gym", True,
@@ -532,7 +551,7 @@ async def test_brief_prefers_his_answer_to_the_template(
 
 @pytest.mark.usefixtures("owned_by_legacy_subject")
 async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     notifier = FakeNotifier()
     from vitals.integrations import llm_client
@@ -547,7 +566,9 @@ async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
     monkeypatch.setattr(day_plan, "today_local", lambda: DAY)
 
-    await day_plan.set_week_template(db_session, {"sun": {"where": "remote"}})
+    await day_plan.set_week_template(
+        db_session, {"sun": {"where": "remote"}}, subject_id=legacy_owner_roots.subject_id
+    )
     await _seed_brief_day(db_session)
 
     await brief.brief_job(session_factory)

@@ -10,6 +10,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the supplements catalog, the week template, the alert reader and the
+  Garmin daily readers — nine bridges. `alerts_service.list_active` and both
+  Garmin day readers now demand a scope instead of defaulting to "everything in
+  the database": a report built for one person could quietly carry another
+  person's warnings and another person's watch.
+- `alerts_service.list_active(subject_id=...)` is mandatory and has exactly two
+  readings — a person's id returns their alerts, `None` returns the platform's
+  own installation-level alerts. The old default returned every row.
+- `garmin_service.latest_daily` / `list_daily_between` take a required
+  `subject_id`. A day the backfill has not stamped yet is simply not that
+  person's day, so the range comes back short rather than borrowed.
+- The Garmin silence nudge no longer has a zero-subject arm: "whose watch went
+  quiet" is not a question the newest row in the database can answer. Its
+  once-per-episode check already lives on the owned send path.
+
 - Closed the module state, the daily brief, the Today screen and the HRT
   reminders together — thirteen bridges. Which modules are on is one person's
   preference, and the brief and the Today screen are assembled from that

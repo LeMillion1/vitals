@@ -121,6 +121,7 @@ async def test_a_domain_with_nothing_logged_yet_gets_no_row(db_session, owner_wr
 async def test_a_disabled_module_gets_no_row(db_session, owner_write, owned_by_legacy_subject):
     db_session.add(
         GarminDaily(
+            subject_id=owner_write.subject_id,
             date=today_local(),
             domain=GARMIN_DOMAIN,
             source=Source.GARMIN_API.value,
@@ -151,13 +152,16 @@ async def test_status_rows_never_raise_on_a_broken_session():
 
 # ── The card has to survive a boosted navigation ─────────────────────────────
 
-async def test_status_card_survives_a_boosted_navigation(auth_client, db_session):
+async def test_status_card_survives_a_boosted_navigation(
+    auth_client, db_session, legacy_owner_roots
+):
     """The regression: hx-boost sends no Accept header at all, so a guard that
     required "text/html" skipped the reads on exactly the requests that
     re-render the whole rail — the card vanished on every click and came back on
     every reload."""
     db_session.add(
         GarminDaily(
+            subject_id=legacy_owner_roots.subject_id,
             date=today_local(),
             domain=GARMIN_DOMAIN,
             source=Source.GARMIN_API.value,

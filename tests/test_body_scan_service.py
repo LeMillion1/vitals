@@ -345,7 +345,7 @@ async def test_refresh_alerts_visceral_high_then_resolves(db_session, owner_writ
     await db_session.commit()
     await _refresh(db_session, owner_write)
     await db_session.commit()
-    active = await alerts_service.list_active(db_session, domain="body_comp")
+    active = await alerts_service.list_active(db_session, domain="body_comp", subject_id=owner_write.subject_id)
     assert len(active) == 1
 
     # A later, in-range scan resolves it — this also guards the supersede logic:
@@ -357,7 +357,7 @@ async def test_refresh_alerts_visceral_high_then_resolves(db_session, owner_writ
     await db_session.commit()
     await _refresh(db_session, owner_write)
     await db_session.commit()
-    active2 = await alerts_service.list_active(db_session, domain="body_comp")
+    active2 = await alerts_service.list_active(db_session, domain="body_comp", subject_id=owner_write.subject_id)
     assert active2 == []
 
 
@@ -377,7 +377,7 @@ async def test_dismissed_visceral_alert_stays_hidden_until_new_scan(
     with freeze_time("2026-06-10 10:00:00"):
         await _refresh(db_session, owner_write, on_date=DAY)
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="body_comp")
+        active = await alerts_service.list_active(db_session, domain="body_comp", subject_id=owner_write.subject_id)
         alert = next((a for a in active if a.alert_key == body_scan_service.VISCERAL_ALERT_KEY), None)
         assert alert is not None
 
@@ -386,7 +386,7 @@ async def test_dismissed_visceral_alert_stays_hidden_until_new_scan(
 
         await _refresh(db_session, owner_write, on_date=DAY)
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="body_comp")
+        active = await alerts_service.list_active(db_session, domain="body_comp", subject_id=owner_write.subject_id)
         assert not any(a.alert_key == body_scan_service.VISCERAL_ALERT_KEY for a in active)
 
     # Next calendar day, same scan: still hidden — under the old daily-nag
@@ -394,7 +394,7 @@ async def test_dismissed_visceral_alert_stays_hidden_until_new_scan(
     with freeze_time("2026-06-11 10:00:00"):
         await _refresh(db_session, owner_write, on_date=DAY)
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="body_comp")
+        active = await alerts_service.list_active(db_session, domain="body_comp", subject_id=owner_write.subject_id)
         assert not any(
             a.alert_key == body_scan_service.VISCERAL_ALERT_KEY for a in active
         ), "Alert should stay hidden indefinitely for the same scan"
@@ -406,7 +406,7 @@ async def test_dismissed_visceral_alert_stays_hidden_until_new_scan(
         await db_session.commit()
         await _refresh(db_session, owner_write, on_date=DAY)
         await db_session.commit()
-        active = await alerts_service.list_active(db_session, domain="body_comp")
+        active = await alerts_service.list_active(db_session, domain="body_comp", subject_id=owner_write.subject_id)
         assert any(a.alert_key == body_scan_service.VISCERAL_ALERT_KEY for a in active)
 
 

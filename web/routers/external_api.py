@@ -112,14 +112,12 @@ async def _weight_block(
     }
 
 
-async def _recovery_block(session: AsyncSession) -> Optional[dict[str, Any]]:
+async def _recovery_block(session: AsyncSession, scope) -> Optional[dict[str, Any]]:
     """The most recent Garmin daily row's recovery numbers — raw values only, so
     the caller renders its own advice/labels from thresholds it owns."""
     from vitals.services import garmin_service
 
-    # Garmin's compatibility reader is not subject-aware yet. external_summary
-    # resolves the sole subject under governance before reaching this call.
-    g = await garmin_service.latest_daily(session)
+    g = await garmin_service.latest_daily(session, subject_id=scope.subject_id)
     if g is None:
         return None
     return {
@@ -195,6 +193,6 @@ async def external_summary(session: AsyncSession = Depends(get_session)) -> dict
     return {
         "weight": await _weight_block(session, scope),
         "nutrition_today": nutrition_today,
-        "recovery": await _recovery_block(session),
+        "recovery": await _recovery_block(session, scope),
         "activity": await _activity_block(session, scope),
     }

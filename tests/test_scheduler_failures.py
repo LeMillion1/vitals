@@ -49,7 +49,7 @@ async def test_failing_job_raises_owned_provider_alert_and_does_not_propagate(
 
     await _runner(session_factory, "garmin_sync", boom)()  # must not raise
 
-    alerts = await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value)
+    alerts = await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
     failed = [a for a in alerts if a.alert_key == "scheduler.job_failed:garmin_sync"]
     assert len(failed) == 1
     assert failed[0].severity == "warn"
@@ -79,7 +79,7 @@ async def test_repeated_failures_do_not_pile_up(
     await run()
     await run()
 
-    alerts = await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value)
+    alerts = await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
     failed = [a for a in alerts if a.alert_key == "scheduler.job_failed:hevy_sync"]
     assert len(failed) == 1, "the alert key must dedupe, not add a row per failed tick"
 
@@ -98,14 +98,14 @@ async def test_successful_run_clears_the_alert_without_a_human_actor(
     run = _runner(session_factory, "hevy_sync", flaky)
     await run()
     assert [
-        a for a in await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value)
+        a for a in await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
         if a.alert_key == "scheduler.job_failed:hevy_sync"
     ]
 
     state["fail"] = False
     await run()
     assert not [
-        a for a in await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value)
+        a for a in await alerts_service.list_active(db_session, domain=Domain.SYSTEM.value, subject_id=legacy_owner_roots.subject_id)
         if a.alert_key == "scheduler.job_failed:hevy_sync"
     ]
     row = await db_session.scalar(

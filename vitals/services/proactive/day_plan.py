@@ -38,7 +38,6 @@ from typing import Any, Collection, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Source
-from vitals.models.app_settings import AppSetting
 from vitals.models.signals import DayContext
 from vitals.ownership import WriteIdentity
 from vitals.services import signals_service
@@ -157,56 +156,41 @@ def sanitize_template(raw: Any) -> dict[str, dict]:
 async def get_week_template(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
 ) -> dict[str, dict]:
-    """The stored template, or the neutral default.
+    """One person's stored template, or the neutral default.
 
-    Legacy unscoped reads keep their historical soft fallback. Subject-scoped
-    reads intentionally propagate ownership/bridge errors so a second subject
-    cannot fall through to the installation-wide template.
+    Ownership and bridge errors propagate on purpose, so a second subject
+    cannot fall through to the installation-wide template. The scoped read
+    still falls back to the legacy ``app_settings`` row on its own, so a
+    pre-backfill installation keeps its template without a bridge here.
 
     No Redis cache on purpose: this is read twice a day by two jobs.
     """
-    if subject_id is not None:
-        value = await get_scoped_setting(
-            session,
-            scope=SettingScope.SUBJECT,
-            key=ScopedSettingKey.WEEK_TEMPLATE,
-            subject_id=subject_id,
-            default=None,
-        )
-        return sanitize_template(value)
-    try:
-        row = await session.get(AppSetting, SETTINGS_KEY)
-    except Exception:
-        logger.warning("week template: DB read failed; using defaults", exc_info=True)
-        return sanitize_template(None)
-    return sanitize_template(row.value if row is not None else None)
+    value = await get_scoped_setting(
+        session,
+        scope=SettingScope.SUBJECT,
+        key=ScopedSettingKey.WEEK_TEMPLATE,
+        subject_id=subject_id,
+        default=None,
+    )
+    return sanitize_template(value)
 
 
 async def set_week_template(
     session: AsyncSession,
     template: Any,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
 ) -> dict[str, dict]:
-    """Store the template (sanitized). Flushes; the caller commits."""
-    clean = sanitize_template(template)
-    if subject_id is not None:
-        return await set_scoped_setting(
-            session,
-            scope=SettingScope.SUBJECT,
-            key=ScopedSettingKey.WEEK_TEMPLATE,
-            subject_id=subject_id,
-            value=clean,
-        )
-    row = await session.get(AppSetting, SETTINGS_KEY)
-    if row is None:
-        session.add(AppSetting(key=SETTINGS_KEY, value=clean))
-    else:
-        row.value = clean  # a new dict, so SQLAlchemy sees the change
-    await session.flush()
-    return clean
+    """Store one person's template (sanitized). Flushes; the caller commits."""
+    return await set_scoped_setting(
+        session,
+        scope=SettingScope.SUBJECT,
+        key=ScopedSettingKey.WEEK_TEMPLATE,
+        subject_id=subject_id,
+        value=sanitize_template(template),
+    )
 
 
 async def update_week_template(

@@ -131,9 +131,7 @@ async def test_nonempty_junk_parser_output_stays_pending_and_reports_failure(
     )
     assert raw is not None and raw.processed_at is None
     assert (outcome.successes, outcome.failures) == (0, 1)
-    assert await alerts_service.list_active(
-        db_session, domain=Domain.SIGNALS.value
-    ) == []
+    assert await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value, subject_id=signals_owner.subject_id) == []
 
 
 async def test_signals_link_back_to_their_raw_row(db_session, signals_owner):
@@ -391,9 +389,7 @@ async def test_parser_failure_and_success_are_reported_without_global_alerts(
     )
     await db_session.commit()
     assert (outcome.successes, outcome.failures) == (1, 1)
-    assert await alerts_service.list_active(
-        db_session, domain=Domain.SIGNALS.value
-    ) == []
+    assert await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value, subject_id=signals_owner.subject_id) == []
 
 
 async def test_reparse_success_and_explicit_empty_report_success(db_session, signals_owner):
@@ -420,9 +416,7 @@ async def test_reparse_success_and_explicit_empty_report_success(db_session, sig
     )
     await db_session.commit()
     assert (outcome.successes, outcome.failures) == (2, 0)
-    assert await alerts_service.list_active(
-        db_session, domain=Domain.SIGNALS.value
-    ) == []
+    assert await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value, subject_id=signals_owner.subject_id) == []
 
 
 async def test_reparse_recovers_a_message_the_model_choked_on(db_session, signals_owner):
@@ -506,9 +500,7 @@ async def test_reparse_batch_any_failure_wins_over_success(db_session, signals_o
     assert (outcome.successes, outcome.failures) == (1, 1)
     await db_session.refresh(raw)
     assert raw.processed_at is None
-    assert await alerts_service.list_active(
-        db_session, domain=Domain.SIGNALS.value
-    ) == []
+    assert await alerts_service.list_active(db_session, domain=Domain.SIGNALS.value, subject_id=signals_owner.subject_id) == []
 
 
 async def test_reparse_ignores_taps_and_anything_older_than_the_window(db_session, signals_owner):

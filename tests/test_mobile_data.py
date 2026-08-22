@@ -29,18 +29,26 @@ LIGHTBOX = "web/templates/weight/measures.html"
 
 
 @pytest.mark.asyncio
-async def test_a_placeholder_row_is_not_the_latest_day(db_session):
+async def test_a_placeholder_row_is_not_the_latest_day(db_session, legacy_owner_roots):
     """The sync writes a row when the date turns, hours before the watch reports
     anything. Returned as "the latest day" that empty row drew a whole screen of
     dashes with yesterday's complete row sitting right behind it."""
     db_session.add_all([
-        GarminDaily(date=date(2026, 8, 1), domain="garmin", sleep_score=82, steps=9000),
+        GarminDaily(
+            subject_id=legacy_owner_roots.subject_id,
+            date=date(2026, 8, 1), domain="garmin", sleep_score=82, steps=9000,
+        ),
         # today: the row exists, the watch has reported nothing onto it yet
-        GarminDaily(date=date(2026, 8, 2), domain="garmin"),
+        GarminDaily(
+            subject_id=legacy_owner_roots.subject_id,
+            date=date(2026, 8, 2), domain="garmin",
+        ),
     ])
     await db_session.flush()
 
-    latest = await garmin_service.latest_daily(db_session)
+    latest = await garmin_service.latest_daily(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    )
     assert latest is not None
     assert latest.date == date(2026, 8, 1)
     assert latest.sleep_score == 82

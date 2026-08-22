@@ -902,7 +902,7 @@ async def test_sync_raises_warn_alert_when_the_token_store_fails(db_session):
     await db_session.commit()
 
     assert summary["error"] is None  # the data still arrived
-    active = await alerts_service.list_active(db_session, domain="garmin")
+    active = await alerts_service.list_active(db_session, domain="garmin", subject_id=None)
     token_alerts = [a for a in active if a.alert_key == garmin_service.TOKEN_ALERT_KEY]
     assert len(token_alerts) == 1
     assert token_alerts[0].severity == "warn"
@@ -918,7 +918,7 @@ async def test_healthy_token_store_resolves_the_alert(db_session):
     await garmin_service.sync(db_session, FakeGarminClient(), days=1, on_date=DAY)
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="garmin")
+    active = await alerts_service.list_active(db_session, domain="garmin", subject_id=None)
     assert not [a for a in active if a.alert_key == garmin_service.TOKEN_ALERT_KEY]
 
 
@@ -1166,7 +1166,7 @@ async def test_sync_mfa_raises_warn_alert(db_session):
     await db_session.commit()
 
     assert summary["error"] == "mfa"
-    active = await alerts_service.list_active(db_session, domain="garmin")
+    active = await alerts_service.list_active(db_session, domain="garmin", subject_id=None)
     assert any(a.alert_key == garmin_service.AUTH_ALERT_KEY for a in active)
     assert all(a.severity == "warn" for a in active)
 
@@ -1182,7 +1182,7 @@ async def test_sync_reports_a_throttled_login_separately_from_bad_credentials(db
     await db_session.commit()
 
     assert summary["error"] == "throttled"
-    active = await alerts_service.list_active(db_session, domain="garmin")
+    active = await alerts_service.list_active(db_session, domain="garmin", subject_id=None)
     assert any(a.alert_key == garmin_service.AUTH_ALERT_KEY for a in active)
 
 

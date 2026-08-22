@@ -883,7 +883,9 @@ async def test_garmin_health_auto_export_upload(auth_client, db_session):
     assert row is not None and row.steps == 7200
 
 
-async def test_garmin_dashboard_day_strip_renders_in_masthead(auth_client, db_session):
+async def test_garmin_dashboard_day_strip_renders_in_masthead(
+    auth_client, db_session, legacy_owner_roots
+):
     """The day-strip (steps/stress/sleep score/intensity minutes/active calories)
     used to live only in a classic-only grid, so masthead lost 5 of 9 daily
     metrics. It's now a shared card — regression-check it actually shows up
@@ -897,6 +899,7 @@ async def test_garmin_dashboard_day_strip_renders_in_masthead(auth_client, db_se
     from vitals.models.garmin import GarminDaily
 
     db_session.add(GarminDaily(
+        subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 6, 15), domain="garmin", source="garmin_api",
         steps=12345, avg_stress=33, sleep_score=86, active_calories=612,
         intensity_minutes_moderate=36, intensity_minutes_vigorous=22,
@@ -1432,6 +1435,7 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(
     # markers/rows); their message text differs only by ё/о + case. They must
     # NOT be treated as duplicates.
     alert1 = SystemAlert(
+        subject_id=legacy_owner_roots.subject_id,
         domain="labs",
         severity="info",
         message="Средний объём эритроцитов: 97.7 фл вне нормы (high).",
@@ -1439,6 +1443,7 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(
         entity_ref="marker_1"
     )
     alert2 = SystemAlert(
+        subject_id=legacy_owner_roots.subject_id,
         domain="labs",
         severity="info",
         message="Средний объем эритроцитов: 97.7 фл вне нормы (high).",
@@ -1446,6 +1451,7 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(
         entity_ref="marker_2"
     )
     alert3 = SystemAlert(
+        subject_id=legacy_owner_roots.subject_id,
         domain="labs",
         severity="info",
         message="Другой маркер вне нормы.",
@@ -1453,6 +1459,7 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(
         entity_ref="marker_3"
     )
     alert4 = SystemAlert(
+        subject_id=legacy_owner_roots.subject_id,
         domain="weight",
         severity="info",
         message="Вес колеблется.",
@@ -1464,7 +1471,7 @@ async def test_alerts_with_same_text_are_distinct_and_resolve_all(
 
     # 1. list_active returns every distinct (key, entity) — all three labs alerts,
     #    including the two that share normalized text.
-    active_labs = await alerts_service.list_active(db_session, domain="labs")
+    active_labs = await alerts_service.list_active(db_session, domain="labs", subject_id=legacy_owner_roots.subject_id)
     assert len(active_labs) == 3
     assert {a.entity_ref for a in active_labs} == {"marker_1", "marker_2", "marker_3"}
 

@@ -171,7 +171,7 @@ async def test_update_result_refreshes_alerts(db_session, owner_write):
         subject_id=owner_write.subject_id,
     )
     await db_session.commit()
-    active = await alerts_service.list_active(db_session)
+    active = await alerts_service.list_active(db_session, subject_id=owner_write.subject_id)
     assert any(a.alert_key == labs_service.OUT_OF_RANGE_KEY for a in active)
 
     await labs_service.update_result(
@@ -183,7 +183,7 @@ async def test_update_result_refreshes_alerts(db_session, owner_write):
     )
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session)
+    active = await alerts_service.list_active(db_session, subject_id=owner_write.subject_id)
     assert not any(a.alert_key == labs_service.OUT_OF_RANGE_KEY for a in active)
 
 
