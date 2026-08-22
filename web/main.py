@@ -176,7 +176,6 @@ async def lifespan(app: FastAPI):
         await hrt_reminders.seed_hormone_panel(
             session,
             identity=conflict_context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await session.commit()

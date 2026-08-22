@@ -10,6 +10,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the labs domain — twenty-four bridges, the largest leaf in the codebase
+  and the one with the deepest provenance chain: a result, its marker catalog
+  row, the raw payload it was parsed from, the document behind that, and the
+  paid AI invocation that read it. The generic replay trio goes with the bridge,
+  as it did for body composition; `reparse_owned_pending` is the only sweep left
+  and decides adoption per raw from the raw's own roots.
+- `ingest_extracted` now insists on the raw payload the boundary created. That
+  was already true in practice — the unowned arm was the only path that built
+  one itself — so the signature now says it.
+- A garbled row costs that row, not the document. The batch preflight used to
+  raise on an implausible value while the ingest loop skipped it; both skip now,
+  which is what the function has always claimed to do.
+- A legacy raw behind an owned parsed fact is valid provenance, because the
+  nightly replay deliberately produces that shape: it owns the normalized facts
+  and leaves a raw with no provider or file roots to adopt alone. An MCP fact
+  gets no such latitude — it is written raw-first and must cite a raw of its own.
+- `hrt_reminders.seed_hormone_panel` closed with it, since it exists to write
+  into one person's marker catalog.
+
 - Closed the GLP-1 domain. Twenty bridges — the largest single leaf so far, and
   the first with an alert of its own. Every read takes the subject, every write
   takes the subject with its conflict decision, and two more legacy `enforce()`

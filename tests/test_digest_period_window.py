@@ -261,7 +261,7 @@ async def test_training_cadence_survives_the_window_edge(db_session, legacy_owne
     assert hevy["mean_gap_days"] == 3.5, "the rhythm does not move with it"
 
 
-async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session, legacy_owner_roots):
+async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session, legacy_owner_roots, owner_write):
     """A marker sliding 120 → 95 → 80 never trips a flag, so out_of_range never
     sees it — and a table of current values shows one green number."""
     from vitals.services import labs_service
@@ -275,11 +275,20 @@ async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session, le
             unit="нг/мл",
             ref_low=30.0,
             ref_high=400.0,
+            identity=owner_write.identity,
+            prepared_conflict_write=await owner_write.write(DAY - timedelta(days=offset)),
         )
     # One-off marker: no trajectory, nothing to say, stays out.
     await labs_service.add_result(
-        db_session, on_date=DAY, marker="Кальций общий", value=2.4,
-        unit="ммоль/л", ref_low=2.1, ref_high=2.6,
+        db_session,
+        on_date=DAY,
+        marker="Кальций общий",
+        value=2.4,
+        unit="ммоль/л",
+        ref_low=2.1,
+        ref_high=2.6,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY),
     )
     await db_session.commit()
 

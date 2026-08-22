@@ -52,7 +52,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'refresh_all',
                 'refresh_injection_due',
                 'refresh_labs_due',
-                'seed_hormone_panel',
             }
         ),
         'vitals.services.hrt_service': frozenset(
@@ -61,34 +60,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
             }
         ),
 
-        'vitals.services.labs_service': frozenset(
-            {
-                '_ensure_marker',
-                '_get_result_for_update',
-                '_lock_result_provenance_before_row',
-                '_marker_for_update',
-                '_require_legacy_bridge',
-                '_result_by_id_stmt',
-                '_result_exists',
-                '_subject_scope',
-                'add_result',
-                'confirm_extracted',
-                'defer_retest',
-                'delete_result',
-                'ensure_marker_catalog_entry',
-                'get_marker',
-                'get_result_for_update',
-                'ingest_extracted',
-                'latest_per_marker',
-                'list_markers',
-                'list_results',
-                'marker_history',
-                'refresh_alerts',
-                'reparse_owned_pending',
-                'update_result',
-                'update_result_note',
-            }
-        ),
 
         'vitals.services.modules_service': frozenset(
             {

@@ -19,12 +19,10 @@ from sqlalchemy import select
 from vitals.enums import Source
 from vitals.models.garmin import GarminActivity, GarminDaily
 from vitals.models.hevy import HevyWorkout
-from vitals.models.labs import LabResult
 from vitals.models.raw_payload import RawPayload
 from vitals.services import (
     garmin_service,
     hevy_service,
-    labs_service,
     raw_payload_service,
 )
 
@@ -146,20 +144,3 @@ async def test_hevy_reparse_pending_recovers_pending_workout(db_session):
         select(HevyWorkout).where(HevyWorkout.external_id == "w-reparse")
     )).scalars().first()
     assert workout is not None and workout.raw_payload_id == raw.id
-
-
-async def test_labs_reparse_pending_recovers_an_unconfirmed_extraction(db_session):
-    """The owner uploaded a lab photo, extraction ran, but the preview was never
-    confirmed — the raw row is the only trace. The sweep must finish the job."""
-    raw = await _seed_raw(
-        db_session, domain=labs_service.DOMAIN, source=Source.LAB_PARSER.value,
-        external_id="lab-doc-1",
-        payload={"date": "2026-06-10", "results": [{"marker": "Ferritin", "value": 95}]},
-    )
-    done = await labs_service.reparse_pending(db_session)
-    assert done == 1
-
-    result = (await db_session.execute(
-        select(LabResult).where(LabResult.raw_payload_id == raw.id)
-    )).scalars().first()
-    assert result is not None and result.marker == "Ferritin" and result.value == 95

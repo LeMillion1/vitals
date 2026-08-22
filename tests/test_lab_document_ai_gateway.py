@@ -642,7 +642,6 @@ async def test_replay_normalizes_only_successful_platform_extraction(
         db_session,
         identity=context.identity,
         prepared_conflict_write=prepared_write,
-        include_legacy_unowned=True,
     )
     await db_session.commit()
 

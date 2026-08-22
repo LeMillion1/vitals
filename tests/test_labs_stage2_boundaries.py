@@ -366,7 +366,6 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
         session,
         *,
         identity,
-        include_legacy_unowned,
         prepared_conflict_write,
     ):
         context = conflict_engine.require_prepared_identity(
@@ -374,7 +373,8 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
             prepared=prepared_conflict_write,
             identity=identity,
         )
-        calls.append((identity, include_legacy_unowned, context.legacy_bridge))
+        # Labs is closed: the boundary carries the subject, not an escape hatch.
+        calls.append((identity, identity.subject_id, context.legacy_bridge))
         return {"created": 0, "updated": 0}
 
     async def get_prefs_probe(session):
@@ -418,7 +418,7 @@ async def test_startup_hormone_seed_receives_one_subject_system_capability(
     assert calls == [
         (
             WriteIdentity(legacy_owner_roots.subject_id, None),
-            True,
+            legacy_owner_roots.subject_id,
             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
         )
     ]
@@ -441,14 +441,13 @@ async def test_nightly_labs_sweep_receives_system_identity_and_live_capability(
         *,
         identity,
         prepared_conflict_write,
-        include_legacy_unowned,
     ):
         context = conflict_engine.require_prepared_identity(
             session,
             prepared=prepared_conflict_write,
             identity=identity,
         )
-        calls.append((identity, include_legacy_unowned, context.legacy_bridge))
+        calls.append((identity, identity.subject_id, context.legacy_bridge))
         return 0
 
     monkeypatch.setattr(garmin_service, "reparse_owned_pending", no_op)
@@ -461,7 +460,7 @@ async def test_nightly_labs_sweep_receives_system_identity_and_live_capability(
     assert calls == [
         (
             WriteIdentity(legacy_owner_roots.subject_id, None),
-            True,
+            legacy_owner_roots.subject_id,
             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
         )
     ]
@@ -476,9 +475,9 @@ async def test_more_labs_read_uses_resolved_exact_subject_scope(
 
     calls = []
 
-    async def latest_probe(session, *, subject_id, include_legacy_unowned):
+    async def latest_probe(session, *, subject_id):
         assert session is db_session
-        calls.append((subject_id, include_legacy_unowned))
+        calls.append(subject_id)
         return []
 
     monkeypatch.setattr(labs_service, "latest_per_marker", latest_probe)
@@ -503,7 +502,7 @@ async def test_more_labs_read_uses_resolved_exact_subject_scope(
         username="tester",
     )
 
-    assert calls == [(legacy_owner_roots.subject_id, True)]
+    assert calls == [legacy_owner_roots.subject_id]
     assert context["labs_out_of_range"] == 0
 
 
@@ -722,7 +721,6 @@ async def test_stage3a_parser_history_replays_without_becoming_live_upload(
             source=Source.LAB_PARSER.value,
             raw_payload_id=raw.id,
             identity=system,
-            include_legacy_unowned=True,
             prepared_conflict_write=live_prepared,
         )
     await db_session.rollback()
@@ -735,7 +733,6 @@ async def test_stage3a_parser_history_replays_without_becoming_live_upload(
         db_session,
         identity=system,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     ) == 1
     result = await db_session.scalar(
         select(LabResult).where(LabResult.raw_payload_id == raw.id)

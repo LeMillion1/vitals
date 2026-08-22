@@ -742,7 +742,9 @@ async def _labs_block(
     # since, and the markers it is actually about fall off the bottom of the cap.
     # ponytail: the cap now limits how far *back* history reaches, which is all the
     # two previous readings need.
-    rows = await labs_service.list_results(session, end=end, limit=2000)  # newest first
+    rows = await labs_service.list_results(  # newest first
+        session, end=end, limit=2000, subject_id=subject_id
+    )
     by_marker: dict[str, list] = {}
     for r in rows:
         by_marker.setdefault(r.marker, []).append(r)

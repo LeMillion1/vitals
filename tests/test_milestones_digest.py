@@ -277,7 +277,7 @@ async def test_signals_reach_the_digest_context(db_session, legacy_owner_roots):
 
 
 @composed
-async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots):
+async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots, owner_write):
     from vitals.services import labs_service
 
     await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
@@ -286,7 +286,14 @@ async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots
                           "sleep": {"dailySleepDTO": {"sleepScores": {"overall": {"value": 80}}}}}
     )
     await labs_service.add_result(
-        db_session, on_date=DAY - timedelta(days=10), marker="TSH", value=5.5, ref_low=0.4, ref_high=4.0
+        db_session,
+        on_date=DAY - timedelta(days=10),
+        marker="TSH",
+        value=5.5,
+        ref_low=0.4,
+        ref_high=4.0,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY - timedelta(days=10)),
     )
     await db_session.commit()
 

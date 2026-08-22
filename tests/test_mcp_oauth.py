@@ -496,6 +496,7 @@ async def test_mcp_read_only_tools_execution(
     db_session,
     session_factory,
     legacy_owner_roots,
+    owned_by_legacy_subject,
 ):
     """Test that the read-only MCP tools execute and return valid serializable schemas."""
     # Pre-seed some test data

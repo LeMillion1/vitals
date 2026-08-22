@@ -50,7 +50,14 @@ async def test_add_result_blocks_on_a_hard_rule(db_session, owner_write):
 
     with pytest.raises(ConflictBlocked):
         await labs_service.add_result(
-            db_session, on_date=DAY, marker="Калий", value=5.5, ref_low=3.5, ref_high=5.1
+            db_session,
+            on_date=DAY,
+            marker="Калий",
+            value=5.5,
+            ref_low=3.5,
+            ref_high=5.1,
+            identity=owner_write.identity,
+            prepared_conflict_write=await owner_write.write(DAY),
         )
 
 
@@ -58,16 +65,30 @@ async def test_add_result_saves_with_override(db_session, owner_write):
     await _potassium_hard_rule(db_session, owner_write)
 
     row = await labs_service.add_result(
-        db_session, on_date=DAY, marker="Калий", value=5.5,
-        ref_low=3.5, ref_high=5.1, override=True,
+        db_session,
+        on_date=DAY,
+        marker="Калий",
+        value=5.5,
+        ref_low=3.5,
+        ref_high=5.1,
+        override=True,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY),
     )
     assert row.id is not None
     assert row.flag == "high"
 
 
-async def test_add_result_still_saves_when_nothing_conflicts(db_session):
+async def test_add_result_still_saves_when_nothing_conflicts(db_session, owner_write):
     row = await labs_service.add_result(
-        db_session, on_date=DAY, marker="Калий", value=4.2, ref_low=3.5, ref_high=5.1
+        db_session,
+        on_date=DAY,
+        marker="Калий",
+        value=4.2,
+        ref_low=3.5,
+        ref_high=5.1,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY),
     )
     assert row.flag == "normal"
 
@@ -101,14 +122,27 @@ async def test_log_lab_results_batch_reports_the_block(session_factory, owner_wr
 
 
 # ── Editing a result ──────────────────────────────────────────────────────────
-async def test_update_result_recomputes_the_flag(db_session):
+async def test_update_result_recomputes_the_flag(db_session, owner_write):
     row = await labs_service.add_result(
-        db_session, on_date=DAY, marker="Ферритин", value=700, ref_low=30, ref_high=400
+        db_session,
+        on_date=DAY,
+        marker="Ферритин",
+        value=700,
+        ref_low=30,
+        ref_high=400,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY),
     )
     await db_session.commit()
     assert row.flag == "critical_high"
 
-    updated = await labs_service.update_result(db_session, row.id, value=200)
+    updated = await labs_service.update_result(
+        db_session,
+        row.id,
+        value=200,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY),
+    )
     assert updated.value == 200
     assert updated.flag == "normal"
     # Untouched fields survive the edit.
@@ -116,18 +150,37 @@ async def test_update_result_recomputes_the_flag(db_session):
     assert (updated.ref_low, updated.ref_high) == (30, 400)
 
 
-async def test_update_result_refreshes_alerts(db_session):
+async def test_update_result_refreshes_alerts(db_session, owner_write):
     from vitals.services import alerts_service
 
     row = await labs_service.add_result(
-        db_session, on_date=DAY, marker="Ферритин", value=700, ref_low=30, ref_high=400
+        db_session,
+        on_date=DAY,
+        marker="Ферритин",
+        value=700,
+        ref_low=30,
+        ref_high=400,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY),
     )
-    await labs_service.refresh_alerts(db_session, on_date=DAY)
+    await labs_service.refresh_alerts(
+        db_session,
+        on_date=DAY,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY),
+        subject_id=owner_write.subject_id,
+    )
     await db_session.commit()
     active = await alerts_service.list_active(db_session)
     assert any(a.alert_key == labs_service.OUT_OF_RANGE_KEY for a in active)
 
-    await labs_service.update_result(db_session, row.id, value=200)
+    await labs_service.update_result(
+        db_session,
+        row.id,
+        value=200,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY),
+    )
     await db_session.commit()
 
     active = await alerts_service.list_active(db_session)

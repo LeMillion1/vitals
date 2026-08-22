@@ -1002,7 +1002,14 @@ async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_
 
     day = today_local()
     result = await labs_service.add_result(
-        db_session, on_date=day, marker="TSH", value=5.5, ref_low=0.4, ref_high=4.0
+        db_session,
+        on_date=day,
+        marker="TSH",
+        value=5.5,
+        ref_low=0.4,
+        ref_high=4.0,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(day),
     )
     log = await skincare_service.upsert_log(db_session, on_date=day, retinoid=True,
         identity=owner_write.identity,

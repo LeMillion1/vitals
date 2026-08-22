@@ -151,11 +151,15 @@ async def test_invalid_capability_fails_before_target_lock(
             identity=mismatched,
             prepared_conflict_write=prepared,
         )
+    # The signature now refuses a write with no capability at all, so what is
+    # left to prove at runtime is a capability that does not match the writer.
     with pytest.raises(conflict_engine.ConflictPreparedWriteError):
         await labs_service.delete_result(
             db_session,
             1,
-            identity=identity,
+            identity=mismatched,
+            prepared_conflict_write=prepared,
+            subject_id=mismatched.subject_id,
         )
     assert calls == 0
 
@@ -302,6 +306,7 @@ async def test_scoped_alerts_are_actorless_but_defer_is_human_attributed(
         db_session,
         identity=identity,
         prepared_conflict_write=refresh_prepared,
+        subject_id=identity.subject_id,
     )
     alerts = list(
         await db_session.scalars(
@@ -326,6 +331,7 @@ async def test_scoped_alerts_are_actorless_but_defer_is_human_attributed(
         db_session,
         identity=identity,
         prepared_conflict_write=refresh_prepared,
+        subject_id=identity.subject_id,
     )
     retest = await db_session.scalar(
         select(SystemAlert).where(
@@ -342,6 +348,7 @@ async def test_scoped_alerts_are_actorless_but_defer_is_human_attributed(
         until=TODAY + timedelta(days=30),
         identity=identity,
         prepared_conflict_write=refresh_prepared,
+        subject_id=identity.subject_id,
     )
     assert retest.resolved_at is not None
     assert retest.resolved_by_user_id == identity.actor_user_id
@@ -404,7 +411,6 @@ async def test_owned_reparse_requires_boundary_and_preserves_legacy_actor(
         db_session,
         identity=boundary_identity,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     ) == 1
     result = await db_session.scalar(
         select(LabResult).where(LabResult.raw_payload_id == raw.id)
@@ -420,7 +426,6 @@ async def test_owned_reparse_requires_boundary_and_preserves_legacy_actor(
         result.id,
         note="legacy provenance remains writable through the bridge",
         identity=WriteIdentity(legacy_owner_roots.subject_id, None),
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     assert updated is result
@@ -461,7 +466,6 @@ async def test_owned_reparse_does_not_duplicate_any_existing_normalized_fact(
         db_session,
         identity=boundary_identity,
         prepared_conflict_write=prepared,
-        include_legacy_unowned=True,
     ) == 0
     rows = list(
         await db_session.scalars(
@@ -512,6 +516,5 @@ async def test_owned_reparse_rejects_partial_normalized_provenance(
             db_session,
             identity=boundary_identity,
             prepared_conflict_write=prepared,
-            include_legacy_unowned=True,
         )
     assert raw.processed_at is None

@@ -358,7 +358,7 @@ async def test_progress_photo_reads_and_deletes_are_strictly_subject_scoped(
 
 
 async def test_body_and_lab_bare_ids_are_rejected_outside_subject_scope(db_session):
-    _owner, owner_subject, _owner_identity = await _identity_graph(
+    _owner, owner_subject, owner_identity = await _identity_graph(
         db_session, "fact-owner"
     )
     foreign, foreign_subject, _foreign_identity = await _identity_graph(
@@ -396,7 +396,11 @@ async def test_body_and_lab_bare_ids_are_rejected_outside_subject_scope(db_sessi
         is None
     )
     assert not await labs_service.delete_result(
-        db_session, result.id, subject_id=owner_subject.id
+        db_session,
+        result.id,
+        subject_id=owner_subject.id,
+        identity=owner_identity,
+        prepared_conflict_write=await _prepared(db_session, owner_identity),
     )
     assert (
         await labs_service.defer_retest(
@@ -404,6 +408,8 @@ async def test_body_and_lab_bare_ids_are_rejected_outside_subject_scope(db_sessi
             "TSH",
             until=date(2026, 9, 1),
             subject_id=owner_subject.id,
+            identity=owner_identity,
+            prepared_conflict_write=await _prepared(db_session, owner_identity),
         )
         is None
     )
@@ -478,15 +484,16 @@ async def test_owned_pending_upload_reparse_preserves_ownership(
 
 
 async def test_legacy_service_calls_remain_nullable_and_usable(db_session):
+    """Only the progress-photo path still writes without naming a subject.
+
+    Labs closed alongside body composition, so its half of this contract moved
+    to the scoped tests; what is left here is the one upload domain that has
+    not been closed yet.
+    """
     photo = await weight_service.add_progress_photo(
         db_session,
         on_date=date(2026, 8, 19),
         file_key="uploads/legacy.png",
-    )
-    results = await labs_service.confirm_extracted(
-        db_session,
-        on_date=date(2026, 8, 19),
-        markers=[{"marker": "TSH", "value": 2.0}],
     )
 
     assert (photo.subject_id, photo.actor_user_id, photo.file_asset_id) == (
@@ -494,7 +501,6 @@ async def test_legacy_service_calls_remain_nullable_and_usable(db_session):
         None,
         None,
     )
-    assert (results[0].subject_id, results[0].actor_user_id) == (None, None)
     assert await weight_service.delete_progress_photo(db_session, photo.id)
 
 

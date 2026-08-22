@@ -1912,7 +1912,6 @@ async def log_note(
                 record_id,
                 note=note,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
             if row is None:
@@ -2090,9 +2089,6 @@ async def get_notes(
                 rows = await labs_service.list_results(
                     session,
                     subject_id=labs_scope.subject_id,
-                    include_legacy_unowned=(
-                        labs_scope.include_legacy_unowned
-                    ),
                     start=start,
                     end=end,
                     has_note=True,
@@ -2249,8 +2245,8 @@ async def delete_record(domain: str, record_id: int) -> dict:
                 context=conflict_context,
             )
             owned_kwargs = {
+                "subject_id": conflict_context.identity.subject_id,
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
         elif domain == "genetics":
@@ -2499,7 +2495,6 @@ async def get_lab_results(
             end=end,
             limit=limit,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
         )
         return [serialize_row(r) for r in results]
 
@@ -2574,13 +2569,13 @@ async def log_lab_result(
                 raw_payload_id=raw.id,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
             raw.processed_at = now_local()
             await session.flush()
             await labs_service.refresh_alerts(
                 session,
+                subject_id=conflict_context.identity.subject_id,
                 identity=conflict_context.identity,
                 prepared_conflict_write=prepared,
             )
@@ -2629,7 +2624,6 @@ async def update_lab_result(
             session,
             result_id,
             identity=conflict_context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         if current is None:
@@ -2658,7 +2652,6 @@ async def update_lab_result(
                 note=note,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
@@ -2734,6 +2727,7 @@ async def log_lab_results(
             )
             await labs_service.refresh_alerts(
                 session,
+                subject_id=conflict_context.identity.subject_id,
                 identity=conflict_context.identity,
                 prepared_conflict_write=prepared,
             )

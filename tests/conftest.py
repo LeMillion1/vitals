@@ -593,6 +593,18 @@ async def owner_write(db_session, legacy_owner_roots):
         actor_username=get_web_config().auth_username,
     )
 
+    def _clock_date(on_date):
+        """Rebuild the day under whatever clock is running right now.
+
+        The capability compares its evaluation date by exact type, and a frozen
+        clock swaps that type out — so a module-level date built before the
+        freeze is the wrong class inside it.
+        """
+
+        from datetime import date as clock_date
+
+        return clock_date(on_date.year, on_date.month, on_date.day)
+
     async def write(on_date=None):
         """A capability is bound to its transaction, so mint a fresh one.
 
@@ -603,6 +615,7 @@ async def owner_write(db_session, legacy_owner_roots):
 
         scoped = context
         if on_date is not None:
+            on_date = _clock_date(on_date)
             scoped = await conflict_engine.resolve_legacy_conflict_write_context(
                 db_session,
                 actor_username=get_web_config().auth_username,
@@ -625,6 +638,7 @@ async def owner_write(db_session, legacy_owner_roots):
 
         scoped = context
         if on_date is not None:
+            on_date = _clock_date(on_date)
             scoped = await conflict_engine.resolve_legacy_conflict_write_context(
                 db_session,
                 actor_username=get_web_config().auth_username,

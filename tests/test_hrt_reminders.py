@@ -11,6 +11,7 @@ from vitals.services import (
     alerts_service,
     conflict_catalog,
     conflict_engine,
+    conflict_registrations,
     hrt_catalog,
     hrt_cycle_service,
     hrt_reminders,
@@ -20,22 +21,44 @@ from vitals.services import (
 from vitals.utils.timeutils import today_local
 
 
+@pytest.fixture(autouse=True)
+def _scoped_resolvers():
+    """A scoped write consults every registered domain, so register them all."""
+    conflict_registrations.register_all_resolvers()
+
+
 
 # ── Hormone panel seed ────────────────────────────────────────────────────────
-async def test_seed_hormone_panel_idempotent(db_session):
-    r1 = await hrt_reminders.seed_hormone_panel(db_session)
+async def test_seed_hormone_panel_idempotent(db_session, owner_write):
+    r1 = await hrt_reminders.seed_hormone_panel(
+        db_session,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
     assert r1["created"] == len(hrt_reminders.HORMONE_PANEL)
-    r2 = await hrt_reminders.seed_hormone_panel(db_session)
+    r2 = await hrt_reminders.seed_hormone_panel(
+        db_session,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
     assert r2["created"] == 0
-    alt = await labs_service.get_marker(db_session, "АЛТ")
+    alt = await labs_service.get_marker(
+        db_session,
+        "АЛТ",
+        subject_id=owner_write.subject_id,
+    )
     assert alt is not None and alt.retest_interval_days == 90
 
 
 # ── Bloodwork-due reminder ────────────────────────────────────────────────────
 async def test_labs_due_raised_on_cycle_without_bloodwork(db_session, owner_write):
-    await hrt_reminders.seed_hormone_panel(db_session)
+    await hrt_reminders.seed_hormone_panel(
+        db_session,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await hrt_cycle_service.add_cycle(
         db_session, kind="course", start_date=today_local() - timedelta(days=3),
         identity=owner_write.identity,
@@ -52,7 +75,11 @@ async def test_labs_due_raised_on_cycle_without_bloodwork(db_session, owner_writ
 
 
 async def test_labs_due_cleared_by_recent_panel_result(db_session, owner_write):
-    await hrt_reminders.seed_hormone_panel(db_session)
+    await hrt_reminders.seed_hormone_panel(
+        db_session,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await hrt_cycle_service.add_cycle(
         db_session, kind="course", start_date=today_local() - timedelta(days=3),
         identity=owner_write.identity,
@@ -66,7 +93,12 @@ async def test_labs_due_cleared_by_recent_panel_result(db_session, owner_write):
     await db_session.commit()
     # A fresh panel result clears it.
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="Тестостерон общий", value=25,
+        db_session,
+        on_date=today_local(),
+        marker="Тестостерон общий",
+        value=25,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
     await hrt_reminders.refresh_labs_due(db_session,
@@ -79,7 +111,11 @@ async def test_labs_due_cleared_by_recent_panel_result(db_session, owner_write):
 
 
 async def test_labs_due_absent_without_active_cycle(db_session, owner_write):
-    await hrt_reminders.seed_hormone_panel(db_session)
+    await hrt_reminders.seed_hormone_panel(
+        db_session,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
     await hrt_reminders.refresh_labs_due(db_session,
         identity=owner_write.identity,
@@ -156,56 +192,89 @@ async def test_injection_due_cleared_after_logging(db_session, owner_write):
 
 # ── Conflict rules (hrt ↔ labs) ───────────────────────────────────────────────
 async def _register_hrt_labs_resolvers():
-    conflict_engine.register_domain_resolver(Domain.HRT.value, hrt_service.resolve_active)
-    conflict_engine.register_domain_resolver(Domain.LABS.value, labs_service.resolve_latest)
+    """Both domains are closed, so both facts are read inside the subject."""
+    conflict_registrations.register_all_resolvers()
 
 
-async def test_oral_17aa_high_alt_fires_soft_warn(db_session):
+async def test_oral_17aa_high_alt_fires_soft_warn(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
     await _register_hrt_labs_resolvers()
     # High ALT on the panel.
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="АЛТ", value=120,
-        ref_low=0, ref_high=40,
+        db_session,
+        on_date=today_local(),
+        marker="АЛТ",
+        value=120,
+        ref_low=0,
+        ref_high=40,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
     # Logging an oral 17aa while ALT is high fires the soft_warn.
-    violations = await conflict_engine.evaluate(
-        db_session, Domain.HRT.value,
-        {"compound_key": "oxandrolone", "compound_class": "oral_aas"},
+    violations = await conflict_engine.evaluate_scoped(
+        db_session,
+        scope=conflict_engine.ConflictScope(
+            subject_id=owner_write.subject_id,
+            evaluation_date=today_local(),
+        ),
+        domain=Domain.HRT.value,
+        proposed_state={"compound_key": "oxandrolone", "compound_class": "oral_aas"},
     )
     assert any(v.category == "lab_safety" and v.severity == "warn" for v in violations)
 
 
-async def test_testosterone_high_hematocrit_fires(db_session):
+async def test_testosterone_high_hematocrit_fires(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
     await _register_hrt_labs_resolvers()
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="Гематокрит", value=55,
-        ref_low=39, ref_high=50,
+        db_session,
+        on_date=today_local(),
+        marker="Гематокрит",
+        value=55,
+        ref_low=39,
+        ref_high=50,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    violations = await conflict_engine.evaluate(
-        db_session, Domain.HRT.value,
-        {"compound_key": "testosterone_enanthate", "compound_class": "testosterone"},
+    violations = await conflict_engine.evaluate_scoped(
+        db_session,
+        scope=conflict_engine.ConflictScope(
+            subject_id=owner_write.subject_id,
+            evaluation_date=today_local(),
+        ),
+        domain=Domain.HRT.value,
+        proposed_state={"compound_key": "testosterone_enanthate", "compound_class": "testosterone"},
     )
     assert any(v.category == "lab_safety" for v in violations)
 
 
-async def test_no_conflict_when_labs_normal(db_session):
+async def test_no_conflict_when_labs_normal(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await conflict_catalog.sync_catalog(db_session)
     await _register_hrt_labs_resolvers()
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="АЛТ", value=25,
-        ref_low=0, ref_high=40,  # normal
+        db_session,
+        on_date=today_local(),
+        marker="АЛТ",
+        value=25,
+        ref_low=0,
+        ref_high=40,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    violations = await conflict_engine.evaluate(
-        db_session, Domain.HRT.value,
-        {"compound_key": "oxandrolone", "compound_class": "oral_aas"},
+    violations = await conflict_engine.evaluate_scoped(
+        db_session,
+        scope=conflict_engine.ConflictScope(
+            subject_id=owner_write.subject_id,
+            evaluation_date=today_local(),
+        ),
+        domain=Domain.HRT.value,
+        proposed_state={"compound_key": "oxandrolone", "compound_class": "oral_aas"},
     )
     assert not any(v.category == "lab_safety" for v in violations)
 

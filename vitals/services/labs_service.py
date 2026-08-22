@@ -32,7 +32,7 @@ import uuid
 from datetime import date as date_type, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
@@ -82,13 +82,11 @@ CRITICAL_MARGIN = 0.30
 def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
-    identity: WriteIdentity | None,
-    prepared: conflict_engine.PreparedConflictWrite | None,
-) -> conflict_engine.ConflictWriteContext | None:
-    """Separate deprecated singleton calls from explicit subject writes."""
+    identity: WriteIdentity,
+    prepared: conflict_engine.PreparedConflictWrite,
+) -> conflict_engine.ConflictWriteContext:
+    """Prove the write names a subject and the decision that authorized it."""
 
-    if identity is None and prepared is None:
-        return None
     if identity is None or prepared is None:
         raise conflict_engine.ConflictPreparedWriteError(
             "scoped lab writes require identity and a prepared conflict write"
@@ -110,32 +108,8 @@ def _require_evaluation_date(
         )
 
 
-def _require_legacy_bridge(
-    context: conflict_engine.ConflictWriteContext,
-    *,
-    include_legacy_unowned: bool,
-) -> None:
-    if (
-        include_legacy_unowned
-        and context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy lab access requires a fully-unowned bridge"
-        )
-
-
-def _subject_scope(model, subject_id: uuid.UUID, *, include_legacy_unowned: bool):
-    scope = model.subject_id == subject_id
-    if include_legacy_unowned:
-        scope = or_(
-            scope,
-            and_(
-                model.subject_id.is_(None),
-                model.actor_user_id.is_(None),
-            ),
-        )
-    return scope
+def _subject_scope(model, subject_id: uuid.UUID):
+    return model.subject_id == subject_id
 
 
 def _alert_bridge(
@@ -300,21 +274,11 @@ async def get_marker(
     session: AsyncSession,
     name: str,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Optional[LabMarker]:
     name = normalize_marker(name)
     stmt = select(LabMarker).where(LabMarker.name == name)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                LabMarker,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy lab compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(LabMarker, subject_id))
     result = await session.execute(stmt)
     return result.scalars().first()
 
@@ -323,21 +287,11 @@ async def _marker_for_update(
     session: AsyncSession,
     name: str,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> LabMarker | None:
     name = normalize_marker(name)
     stmt = select(LabMarker).where(LabMarker.name == name)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                LabMarker,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy lab compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(LabMarker, subject_id))
     marker = await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
@@ -368,27 +322,23 @@ async def _ensure_marker(
     unit: Optional[str] = None,
     ref_low: Optional[float] = None,
     ref_high: Optional[float] = None,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
+    identity: WriteIdentity,
 ) -> LabMarker:
     """Compatibility helper for non-conflicting catalog-only callers."""
 
     marker = await _marker_for_update(
         session,
         name,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if marker is None:
         marker = LabMarker(
-            subject_id=identity.subject_id if identity is not None else None,
-            actor_user_id=identity.actor_user_id if identity is not None else None,
+            subject_id=identity.subject_id,
+            actor_user_id=identity.actor_user_id,
             domain=DOMAIN,
             name=normalize_marker(name),
         )
         session.add(marker)
-    elif marker.subject_id is None and identity is not None:
-        marker.subject_id = identity.subject_id
     _apply_marker_defaults(
         marker,
         unit=unit,
@@ -402,20 +352,10 @@ async def _ensure_marker(
 async def list_markers(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Sequence[LabMarker]:
     stmt = select(LabMarker)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                LabMarker,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy lab compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(LabMarker, subject_id))
     result = await session.execute(stmt.order_by(LabMarker.name))
     return result.scalars().all()
 
@@ -427,7 +367,6 @@ async def ensure_marker_catalog_entry(
     category: str | None = None,
     retest_interval_days: int | None = None,
     identity: WriteIdentity,
-    include_legacy_unowned: bool = False,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> tuple[LabMarker, bool, bool]:
     """Create or backfill one scoped catalog row for startup/domain seeds.
@@ -442,11 +381,6 @@ async def ensure_marker_catalog_entry(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    assert context is not None
-    _require_legacy_bridge(
-        context,
-        include_legacy_unowned=include_legacy_unowned,
-    )
     normalized = normalize_marker(name)
     if not normalized:
         raise ValueError("marker is required")
@@ -456,7 +390,6 @@ async def ensure_marker_catalog_entry(
         session,
         normalized,
         subject_id=identity.subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     created = row is None
     updated = False
@@ -490,10 +423,9 @@ async def defer_retest(
     *,
     until: date_type,
     note: Optional[str] = None,
-    subject_id: uuid.UUID | None = None,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    subject_id: uuid.UUID,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[LabMarker]:
     """Pause the overdue-retest alert for a marker until ``until``."""
     context = _require_scoped_prepared_write(
@@ -501,52 +433,35 @@ async def defer_retest(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
+    if identity is None or identity.actor_user_id is None:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "lab retest deferral requires an active human actor"
         )
-        if identity is None or identity.actor_user_id is None:
-            raise conflict_engine.ConflictPreparedWriteError(
-                "lab retest deferral requires an active human actor"
-            )
-        if subject_id is not None and subject_id != identity.subject_id:
-            raise conflict_engine.ConflictPreparedWriteError(
-                "subject_id does not match prepared lab write identity"
-            )
-        subject_id = identity.subject_id
+    if subject_id is not None and subject_id != identity.subject_id:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "subject_id does not match prepared lab write identity"
+        )
+    subject_id = identity.subject_id
     marker = normalize_marker(marker)
     row = await _marker_for_update(
         session,
         marker,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if row is None:
         return None
-    if row.subject_id is None and identity is not None:
-        row.subject_id = identity.subject_id
     row.defer_until = until
     if note is not None:
         row.note = note
     await session.flush()
-    if context is None:
-        await alerts_service.resolve_superseded(
-            session,
-            alert_key=RETEST_DUE_KEY,
-            marker=marker,
-            keep_entity=None,
-        )
-    else:
-        assert identity is not None
-        await alerts_service.resolve_scoped_superseded(
-            session,
-            context=alerts_service.HealthAlertContext(identity),
-            alert_key=RETEST_DUE_KEY,
-            marker=marker,
-            keep_entity=None,
-            legacy_bridge=_alert_bridge(context),
-        )
+    await alerts_service.resolve_scoped_superseded(
+        session,
+        context=alerts_service.HealthAlertContext(identity),
+        alert_key=RETEST_DUE_KEY,
+        marker=marker,
+        keep_entity=None,
+        legacy_bridge=_alert_bridge(context),
+    )
     return row
 
 
@@ -554,20 +469,10 @@ async def defer_retest(
 def _result_by_id_stmt(
     result_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ):
     stmt = select(LabResult).where(LabResult.id == result_id)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                LabResult,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy lab compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(LabResult, subject_id))
     return stmt
 
 
@@ -575,14 +480,12 @@ async def _get_result_for_update(
     session: AsyncSession,
     result_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> LabResult | None:
     return await session.scalar(
         _result_by_id_stmt(
             result_id,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
         .with_for_update()
         .execution_options(populate_existing=True)
@@ -594,7 +497,6 @@ async def _lock_result_provenance_before_row(
     result_id: int,
     *,
     context: conflict_engine.ConflictWriteContext,
-    include_legacy_unowned: bool,
 ) -> tuple[int | None, str] | None:
     """Read the scoped FK, then lock raw/file roots before the result row."""
 
@@ -605,7 +507,6 @@ async def _lock_result_provenance_before_row(
                 _subject_scope(
                     LabResult,
                     context.identity.subject_id,
-                    include_legacy_unowned=include_legacy_unowned,
                 ),
             )
         )
@@ -620,7 +521,9 @@ async def _lock_result_provenance_before_row(
             context=context,
             source=source,
             require_mcp_roots=source == Source.MCP.value,
-            allow_historical_parser_raw=include_legacy_unowned,
+            # The real gate is inside: a Stage-3A parser raw is adopted only on
+            # a fully-unowned conflict bridge, and only for a parser source.
+            allow_historical_parser_raw=True,
         )
     return raw_payload_id, source
 
@@ -630,7 +533,6 @@ async def get_result_for_update(
     result_id: int,
     *,
     identity: WriteIdentity,
-    include_legacy_unowned: bool = False,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> LabResult | None:
     """Lock one visible result for a boundary-side partial-update merge."""
@@ -640,22 +542,15 @@ async def get_result_for_update(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    assert context is not None
-    _require_legacy_bridge(
-        context,
-        include_legacy_unowned=include_legacy_unowned,
-    )
     provenance = await _lock_result_provenance_before_row(
         session,
         result_id,
         context=context,
-        include_legacy_unowned=include_legacy_unowned,
     )
     row = await _get_result_for_update(
         session,
         result_id,
         subject_id=identity.subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if row is not None and provenance != (row.raw_payload_id, row.source):
         raise conflict_engine.ConflictRawOwnershipError(
@@ -1026,9 +921,8 @@ async def add_result(
     source: str = Source.MANUAL.value,
     raw_payload_id: Optional[int] = None,
     override: bool = False,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
     allow_historical_parser_raw: bool = False,
 ) -> LabResult:
     """Record a marker value, computing its flag and ensuring its catalog row.
@@ -1042,21 +936,16 @@ async def add_result(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
+    _require_evaluation_date(context, on_date)
+    if raw_payload_id is not None:
+        await _lock_result_raw(
+            session,
+            raw_payload_id=raw_payload_id,
+            context=context,
+            source=source,
+            require_mcp_roots=source == Source.MCP.value,
+            allow_historical_parser_raw=allow_historical_parser_raw,
         )
-        if raw_payload_id is not None:
-            await _lock_result_raw(
-                session,
-                raw_payload_id=raw_payload_id,
-                context=context,
-                source=source,
-                require_mcp_roots=source == Source.MCP.value,
-                allow_historical_parser_raw=allow_historical_parser_raw,
-            )
     marker = normalize_marker(marker)
     if not marker:
         raise ValueError("marker is required")
@@ -1065,8 +954,7 @@ async def add_result(
     catalog = await _marker_for_update(
         session,
         marker,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     eff_low = ref_low if ref_low is not None else (catalog.ref_low if catalog else None)
     eff_high = ref_high if ref_high is not None else (catalog.ref_high if catalog else None)
@@ -1077,35 +965,24 @@ async def add_result(
     # result) stops the save unless the caller overrides, and soft rules keep
     # doing what they did — an alert, never a block.
     proposed = _proposed_result(marker=marker, value=value, flag=flag)
-    if context is None:
-        await conflict_engine.enforce(
-            session,
-            Domain.LABS.value,
-            proposed,
-            override=override,
-            entity_ref=f"labs:{marker}",
-        )
-    else:
-        assert prepared_conflict_write is not None
-        await conflict_engine.enforce_prepared(
-            session,
-            prepared=prepared_conflict_write,
-            domain=Domain.LABS,
-            proposed_state=proposed,
-            override=override,
-            entity_ref=f"labs:{marker}",
-        )
+    assert prepared_conflict_write is not None
+    await conflict_engine.enforce_prepared(
+        session,
+        prepared=prepared_conflict_write,
+        domain=Domain.LABS,
+        proposed_state=proposed,
+        override=override,
+        entity_ref=f"labs:{marker}",
+    )
 
     if catalog is None:
         catalog = LabMarker(
-            subject_id=identity.subject_id if identity is not None else None,
-            actor_user_id=identity.actor_user_id if identity is not None else None,
+            subject_id=identity.subject_id,
+            actor_user_id=identity.actor_user_id,
             domain=DOMAIN,
             name=marker,
         )
         session.add(catalog)
-    elif catalog.subject_id is None and identity is not None:
-        catalog.subject_id = identity.subject_id
     _apply_marker_defaults(
         catalog,
         unit=unit,
@@ -1114,8 +991,8 @@ async def add_result(
     )
 
     row = LabResult(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         date=on_date,
         domain=DOMAIN,
         source=source,
@@ -1147,9 +1024,8 @@ async def update_result(
     lab_name: Optional[str] = None,
     note: Optional[str] = None,
     override: bool = False,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[LabResult]:
     """Correct an existing result — a mistyped value or a range read off the wrong
     column. Only the fields passed are changed; ``flag`` is recomputed from the
@@ -1162,29 +1038,14 @@ async def update_result(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-        if on_date is not None:
-            _require_evaluation_date(context, on_date)
-    if context is None:
-        row = await _get_result_for_update(
-            session,
-            result_id,
-            subject_id=None,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-    else:
-        assert identity is not None and prepared_conflict_write is not None
-        row = await get_result_for_update(
-            session,
-            result_id,
-            identity=identity,
-            include_legacy_unowned=include_legacy_unowned,
-            prepared_conflict_write=prepared_conflict_write,
-        )
+    if on_date is not None:
+        _require_evaluation_date(context, on_date)
+    row = await get_result_for_update(
+        session,
+        result_id,
+        identity=identity,
+        prepared_conflict_write=prepared_conflict_write,
+    )
     if row is None:
         return None
 
@@ -1200,8 +1061,7 @@ async def update_result(
             raise ValueError(f"implausible lab value for {next_marker}: {value!r}")
         next_value = value
     next_date = on_date if on_date is not None else row.date
-    if context is not None:
-        _require_evaluation_date(context, next_date)
+    _require_evaluation_date(context, next_date)
 
     next_unit = unit if unit is not None else row.unit
     next_low = ref_low if ref_low is not None else row.ref_low
@@ -1209,8 +1069,7 @@ async def update_result(
     catalog = await _marker_for_update(
         session,
         next_marker,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if next_low is None and catalog is not None:
         next_low = catalog.ref_low
@@ -1224,28 +1083,25 @@ async def update_result(
         flag=next_flag,
         result_id=row.id,
     )
-    if context is not None:
-        assert prepared_conflict_write is not None
-        await conflict_engine.enforce_prepared(
-            session,
-            prepared=prepared_conflict_write,
-            domain=Domain.LABS,
-            proposed_state=proposed,
-            override=override,
-            entity_ref=f"labs:{next_marker}",
-            replace_entity_key=_result_entity_key(row.id),
-        )
+    assert prepared_conflict_write is not None
+    await conflict_engine.enforce_prepared(
+        session,
+        prepared=prepared_conflict_write,
+        domain=Domain.LABS,
+        proposed_state=proposed,
+        override=override,
+        entity_ref=f"labs:{next_marker}",
+        replace_entity_key=_result_entity_key(row.id),
+    )
 
     if catalog is None:
         catalog = LabMarker(
-            subject_id=identity.subject_id if identity is not None else None,
-            actor_user_id=identity.actor_user_id if identity is not None else None,
+            subject_id=identity.subject_id,
+            actor_user_id=identity.actor_user_id,
             domain=DOMAIN,
             name=next_marker,
         )
         session.add(catalog)
-    elif catalog.subject_id is None and identity is not None:
-        catalog.subject_id = identity.subject_id
     _apply_marker_defaults(
         catalog,
         unit=next_unit,
@@ -1253,8 +1109,6 @@ async def update_result(
         ref_high=next_high,
     )
 
-    if row.subject_id is None and identity is not None:
-        row.subject_id = identity.subject_id
     row.date = next_date
     row.marker = next_marker
     row.value = next_value
@@ -1268,17 +1122,13 @@ async def update_result(
         row.note = note
 
     await session.flush()
-    if context is None:
-        await refresh_alerts(session)
-    else:
-        assert identity is not None and prepared_conflict_write is not None
-        await refresh_alerts(
-            session,
-            on_date=context.evaluation_date,
-            identity=identity,
-            include_legacy_unowned=include_legacy_unowned,
-            prepared_conflict_write=prepared_conflict_write,
-        )
+    await refresh_alerts(
+        session,
+        subject_id=identity.subject_id,
+        on_date=context.evaluation_date,
+        identity=identity,
+        prepared_conflict_write=prepared_conflict_write,
+    )
     return row
 
 
@@ -1288,7 +1138,6 @@ async def update_result_note(
     *,
     note: str,
     identity: WriteIdentity,
-    include_legacy_unowned: bool = False,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[LabResult]:
     """Update only a result note without changing its source/raw provenance."""
@@ -1298,16 +1147,10 @@ async def update_result_note(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    assert context is not None
-    _require_legacy_bridge(
-        context,
-        include_legacy_unowned=include_legacy_unowned,
-    )
     row = await get_result_for_update(
         session,
         result_id,
         identity=identity,
-        include_legacy_unowned=include_legacy_unowned,
         prepared_conflict_write=prepared_conflict_write,
     )
     if row is None:
@@ -1327,22 +1170,11 @@ async def list_results(
     end: Optional[date_type] = None,
     has_note: bool = False,
     limit: int = 200,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Sequence[LabResult]:
     """Newest first. ``end`` anchors the read at a date instead of at "now", so a
     report about a past window is not filled by results drawn after it."""
-    filters = []
-    if subject_id is not None:
-        filters.append(
-            _subject_scope(
-                LabResult,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy lab compatibility requires a subject_id")
+    filters = [_subject_scope(LabResult, subject_id)]
     if marker is not None:
         marker = normalize_marker(marker)
         filters.append(LabResult.marker == marker)
@@ -1354,43 +1186,43 @@ async def list_results(
         filters.extend((LabResult.note.is_not(None), LabResult.note != ""))
 
     stmt = select(LabResult).where(*filters)
-    if subject_id is not None:
-        scope = conflict_engine.ConflictScope(
-            subject_id=subject_id,
-            evaluation_date=end or today_local(),
-            legacy_bridge=(
-                conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-                if include_legacy_unowned
-                else conflict_engine.LegacyConflictBridge.REJECT
-            ),
+    scope = conflict_engine.ConflictScope(
+        subject_id=subject_id,
+        evaluation_date=end or today_local(),
+    )
+    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+        scope
+    )
+    # The nightly replay deliberately owns the normalized facts while leaving a
+    # legacy raw legacy — it has no authoritative provider or file roots to
+    # adopt. That shape is valid provenance for a parsed fact that already names
+    # its subject. An MCP fact has no such history: it is written raw-first and
+    # must cite a raw of its own.
+    allowed_linked_raw = or_(
+        exact_raw,
+        and_(fully_unowned_raw, LabResult.source == Source.LAB_PARSER.value),
+    )
+    invalid = await session.scalar(
+        select(1)
+        .select_from(LabResult)
+        .outerjoin(RawPayload, LabResult.raw_payload_id == RawPayload.id)
+        .where(
+            *filters,
+            LabResult.raw_payload_id.is_not(None),
+            allowed_linked_raw.is_not(True),
         )
-        exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
-            scope
+        .limit(1)
+    )
+    if invalid is not None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "lab result links to foreign or partial raw provenance"
         )
-        allowed_linked_raw = exact_raw
-        if include_legacy_unowned:
-            allowed_linked_raw = or_(allowed_linked_raw, fully_unowned_raw)
-        invalid = await session.scalar(
-            select(1)
-            .select_from(LabResult)
-            .outerjoin(RawPayload, LabResult.raw_payload_id == RawPayload.id)
-            .where(
-                *filters,
-                LabResult.raw_payload_id.is_not(None),
-                allowed_linked_raw.is_not(True),
-            )
-            .limit(1)
-        )
-        if invalid is not None:
-            raise conflict_engine.ConflictRawOwnershipError(
-                "lab result links to foreign or partial raw provenance"
-            )
-        stmt = stmt.outerjoin(
-            RawPayload,
-            LabResult.raw_payload_id == RawPayload.id,
-        ).where(
-            or_(LabResult.raw_payload_id.is_(None), allowed_linked_raw)
-        )
+    stmt = stmt.outerjoin(
+        RawPayload,
+        LabResult.raw_payload_id == RawPayload.id,
+    ).where(
+        or_(LabResult.raw_payload_id.is_(None), allowed_linked_raw)
+    )
     stmt = stmt.order_by(LabResult.date.desc(), LabResult.id.desc()).limit(limit)
     result = await session.execute(stmt)
     return result.scalars().all()
@@ -1400,8 +1232,7 @@ async def marker_history(
     session: AsyncSession,
     marker: str,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> list[dict]:
     """Chronological series for one marker (the per-marker chart)."""
     rows = await list_results(
@@ -1409,7 +1240,6 @@ async def marker_history(
         marker=marker,
         limit=1_000_000,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     return [
         {
@@ -1427,8 +1257,7 @@ async def latest_per_marker(
     session: AsyncSession,
     *,
     end: date_type | None = None,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> list[LabResult]:
     """The most recent result for each marker (table + alert source)."""
     rows = await list_results(
@@ -1436,7 +1265,6 @@ async def latest_per_marker(
         end=end,
         limit=1_000_000,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     seen: dict[str, LabResult] = {}
     for r in rows:
@@ -1447,9 +1275,47 @@ async def latest_per_marker(
 async def resolve_latest(session: AsyncSession) -> list[dict]:
     """Conflict-engine resolver: the latest value+flag per marker as match items
     — lets a lab_safety rule reference e.g. {"marker": "Калий", "value": {"$gt":
-    5.0}} against the current panel, not just a freshly logged result."""
-    latest = await latest_per_marker(session)
-    return [{"marker": r.marker, "value": r.value, "flag": r.flag} for r in latest]
+    5.0}} against the current panel, not just a freshly logged result.
+
+    The engine's compatibility arm has no scope to hand down, so this reader
+    still spans the installation. It goes when that arm does; every other read
+    in this module already requires its subject. Fully unowned only: a row with
+    an actor but no subject is partial provenance and was never legacy data.
+    """
+    unowned = and_(
+        LabResult.subject_id.is_(None),
+        LabResult.actor_user_id.is_(None),
+    )
+    newest = (
+        select(
+            LabResult.marker.label("marker"),
+            func.max(LabResult.date).label("date"),
+        )
+        .where(unowned)
+        .group_by(LabResult.marker)
+        .subquery()
+    )
+    rows = list(
+        await session.scalars(
+            select(LabResult)
+            .join(
+                newest,
+                and_(
+                    LabResult.marker == newest.c.marker,
+                    LabResult.date == newest.c.date,
+                ),
+            )
+            .where(unowned)
+            .order_by(LabResult.marker, LabResult.id.desc())
+        )
+    )
+    latest: dict[str, LabResult] = {}
+    for row in rows:
+        latest.setdefault(row.marker, row)
+    return [
+        {"marker": r.marker, "value": r.value, "flag": r.flag}
+        for r in latest.values()
+    ]
 
 
 async def resolve_latest_scoped(
@@ -1532,62 +1398,37 @@ async def delete_result(
     session: AsyncSession,
     result_id: int,
     *,
-    subject_id: uuid.UUID | None = None,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    subject_id: uuid.UUID,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
+    if subject_id is not None and subject_id != identity.subject_id:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "subject_id does not match prepared lab write identity"
         )
-        if subject_id is not None and subject_id != identity.subject_id:
-            raise conflict_engine.ConflictPreparedWriteError(
-                "subject_id does not match prepared lab write identity"
-            )
-        subject_id = identity.subject_id
-    if context is None:
-        row = await _get_result_for_update(
-            session,
-            result_id,
-            subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-    else:
-        assert identity is not None and prepared_conflict_write is not None
-        row = await get_result_for_update(
-            session,
-            result_id,
-            identity=identity,
-            include_legacy_unowned=include_legacy_unowned,
-            prepared_conflict_write=prepared_conflict_write,
-        )
+    subject_id = identity.subject_id
+    row = await get_result_for_update(
+        session,
+        result_id,
+        identity=identity,
+        prepared_conflict_write=prepared_conflict_write,
+    )
     if row is None:
         return False
     await session.delete(row)
     await session.flush()
-    if context is None:
-        await refresh_alerts(
-            session,
-            on_date=today_local(),
-            subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-    else:
-        assert identity is not None and prepared_conflict_write is not None
-        await refresh_alerts(
-            session,
-            on_date=context.evaluation_date,
-            identity=identity,
-            include_legacy_unowned=include_legacy_unowned,
-            prepared_conflict_write=prepared_conflict_write,
-        )
+    await refresh_alerts(
+        session,
+        subject_id=identity.subject_id,
+        on_date=context.evaluation_date,
+        identity=identity,
+        prepared_conflict_write=prepared_conflict_write,
+    )
     return True
 
 
@@ -1596,10 +1437,9 @@ async def refresh_alerts(
     session: AsyncSession,
     *,
     on_date: Optional[date_type] = None,
-    subject_id: uuid.UUID | None = None,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    subject_id: uuid.UUID,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> None:
     """Raise/clear out-of-range + overdue-retest alerts from the latest values.
     Idempotent — safe on every dashboard load / scheduler tick. Each alert is
@@ -1611,93 +1451,72 @@ async def refresh_alerts(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
+    if on_date is not None:
+        _require_evaluation_date(context, on_date)
+    if subject_id is not None and subject_id != identity.subject_id:
+        raise conflict_engine.ConflictPreparedWriteError(
+            "subject_id does not match prepared lab write identity"
         )
-        if on_date is not None:
-            _require_evaluation_date(context, on_date)
-        if subject_id is not None and subject_id != identity.subject_id:
-            raise conflict_engine.ConflictPreparedWriteError(
-                "subject_id does not match prepared lab write identity"
-            )
-        subject_id = identity.subject_id
-        on_date = context.evaluation_date
-        # Derived health alerts are system reconciliations even when a human
-        # write caused the refresh. Lock facts/catalog before alert-key locks.
-        result_scope = _subject_scope(
-            LabResult,
-            subject_id,
-            include_legacy_unowned=include_legacy_unowned,
+    subject_id = identity.subject_id
+    on_date = context.evaluation_date
+    # Derived health alerts are system reconciliations even when a human
+    # write caused the refresh. Lock facts/catalog before alert-key locks.
+    result_scope = _subject_scope(
+        LabResult,
+        subject_id,
+    )
+    marker_scope = _subject_scope(
+        LabMarker,
+        subject_id,
+    )
+    list(
+        await session.scalars(
+            select(LabResult)
+            .where(result_scope)
+            .order_by(LabResult.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        marker_scope = _subject_scope(
-            LabMarker,
-            subject_id,
-            include_legacy_unowned=include_legacy_unowned,
+    )
+    list(
+        await session.scalars(
+            select(LabMarker)
+            .where(marker_scope)
+            .order_by(LabMarker.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        list(
-            await session.scalars(
-                select(LabResult)
-                .where(result_scope)
-                .order_by(LabResult.id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        )
-        list(
-            await session.scalars(
-                select(LabMarker)
-                .where(marker_scope)
-                .order_by(LabMarker.id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        )
+    )
     today = on_date or today_local()
     latest = await latest_per_marker(
         session,
         end=today,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     markers = {
         m.name: m
         for m in await list_markers(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
     }
 
     latest_by_name = {row.marker: row for row in latest}
     names = sorted(set(markers) | set(latest_by_name))
-    alert_context = _system_alert_context(context) if context is not None else None
-    bridge = _alert_bridge(context) if context is not None else None
+    alert_context = _system_alert_context(context)
+    bridge = _alert_bridge(context)
 
     async def resolve_superseded(key: str, marker: str, keep: str | None) -> None:
-        if alert_context is None:
-            await alerts_service.resolve_superseded(
-                session,
-                alert_key=key,
-                marker=marker,
-                keep_entity=keep,
-            )
-        else:
-            assert bridge is not None
-            await alerts_service.resolve_scoped_superseded(
-                session,
-                context=alert_context,
-                alert_key=key,
-                marker=marker,
-                keep_entity=keep,
-                legacy_bridge=bridge,
-            )
+        await alerts_service.resolve_scoped_superseded(
+            session,
+            context=alert_context,
+            alert_key=key,
+            marker=marker,
+            keep_entity=keep,
+            legacy_bridge=bridge,
+        )
 
     async def was_dismissed(key: str, entity: str) -> bool:
-        if alert_context is None:
-            return await alerts_service._was_ever_dismissed(session, key, entity)
-        assert bridge is not None
         return await alerts_service.was_scoped_ever_dismissed(
             session,
             context=alert_context,
@@ -1707,46 +1526,27 @@ async def refresh_alerts(
         )
 
     async def resolve_current(key: str, entity: str) -> None:
-        if alert_context is None:
-            await alerts_service.resolve_by_key(
-                session,
-                alert_key=key,
-                entity_ref=entity,
-            )
-        else:
-            assert bridge is not None
-            await alerts_service.resolve_scoped_by_key(
-                session,
-                context=alert_context,
-                alert_key=key,
-                entity_ref=entity,
-                legacy_bridge=bridge,
-            )
+        await alerts_service.resolve_scoped_by_key(
+            session,
+            context=alert_context,
+            alert_key=key,
+            entity_ref=entity,
+            legacy_bridge=bridge,
+        )
 
     async def raise_derived(
         *, key: str, entity: str, severity: Severity, message: str
     ) -> None:
-        if alert_context is None:
-            await alerts_service.raise_alert(
-                session,
-                domain=Domain.LABS.value,
-                severity=severity.value,
-                message=message,
-                alert_key=key,
-                entity_ref=entity,
-            )
-        else:
-            assert bridge is not None
-            await alerts_service.raise_scoped_alert(
-                session,
-                context=alert_context,
-                domain=Domain.LABS,
-                severity=severity,
-                message=message,
-                alert_key=key,
-                entity_ref=entity,
-                legacy_bridge=bridge,
-            )
+        await alerts_service.raise_scoped_alert(
+            session,
+            context=alert_context,
+            domain=Domain.LABS,
+            severity=severity,
+            message=message,
+            alert_key=key,
+            entity_ref=entity,
+            legacy_bridge=bridge,
+        )
 
     for marker_name in names:
         r = latest_by_name.get(marker_name)
@@ -1988,12 +1788,13 @@ async def _preflight_scoped_panel(
         if not marker or value is None:
             continue
         if not math.isfinite(value) or abs(value) > _VALUE_ABS_MAX:
-            raise ValueError(f"implausible lab value for {marker}: {value!r}")
+            # A garbled row costs that row, not the document: the ingest loop
+            # skips it, and there is nothing here for a conflict rule to judge.
+            continue
         catalog = await _marker_for_update(
             session,
             marker,
             subject_id=context.identity.subject_id,
-            include_legacy_unowned=context.scope.include_legacy_unowned,
         )
         low = _num(item.get("ref_low"))
         high = _num(item.get("ref_high"))
@@ -2036,8 +1837,8 @@ async def confirm_extracted(
     raw_payload_id: Optional[int] = None,
     file_key: Optional[str] = None,
     override: bool = False,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> list[LabResult]:
     """Persist the owner-edited marker rows from the upload preview (step 2 of
     upload -> preview -> confirm). Marks the raw payload processed. Does not
@@ -2049,8 +1850,7 @@ async def confirm_extracted(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
+    _require_evaluation_date(context, on_date)
     owned_raw: RawPayload | None = None
     if identity is not None and raw_payload_id is not None:
         upload = await _resolve_confirm_upload(
@@ -2063,13 +1863,12 @@ async def confirm_extracted(
     elif identity is not None:
         raise ValueError("owned lab upload confirmation requires a raw upload")
 
-    if context is not None:
-        await _preflight_scoped_panel(
-            session,
-            markers=markers,
-            context=context,
-            override=override,
-        )
+    await _preflight_scoped_panel(
+        session,
+        markers=markers,
+        context=context,
+        override=override,
+    )
 
     created: list[LabResult] = []
     for item in markers:
@@ -2090,9 +1889,6 @@ async def confirm_extracted(
             raw_payload_id=raw_payload_id,
             override=override,
             identity=identity,
-            include_legacy_unowned=(
-                context.scope.include_legacy_unowned if context is not None else False
-            ),
             prepared_conflict_write=prepared_conflict_write,
         )
         created.append(row)
@@ -2127,7 +1923,6 @@ async def ingest_structured_results(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    assert context is not None
     on_date = _parse_date(extracted.get("date")) or context.evaluation_date
     _require_evaluation_date(context, on_date)
     if not isinstance(raw_payload, RawPayload) or raw_payload.id is None:
@@ -2183,7 +1978,6 @@ async def ingest_structured_results(
             raw_payload_id=raw_row.id,
             override=override,
             identity=identity,
-            include_legacy_unowned=context.scope.include_legacy_unowned,
             prepared_conflict_write=prepared_conflict_write,
         )
         summary["results"].append(row)
@@ -2200,9 +1994,9 @@ async def ingest_extracted(
     *,
     file_key: Optional[str] = None,
     override: bool = False,
-    identity: WriteIdentity | None = None,
-    existing_raw_payload: RawPayload | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    existing_raw_payload: RawPayload,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> dict:
     """Persist an extracted document: keep it raw, then create a result row per
     marker (deduping identical (date, marker, value)). Does not commit.
@@ -2217,41 +2011,29 @@ async def ingest_extracted(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
+    _require_evaluation_date(context, on_date)
     lab_name = extracted.get("lab_name")
     results = extracted.get("results") or []
 
-    if existing_raw_payload is not None:
-        if identity is None:
-            raise ValueError("existing owned raw payload requires a write identity")
-        upload = await _resolve_replay_upload(
-            session,
-            identity=identity,
-            raw_payload_id=existing_raw_payload.id,
-            file_key=file_key,
-        )
-        raw_row = upload.raw_payload
-    elif identity is not None:
+    if existing_raw_payload is None:
         raise ValueError(
-            "owned extraction requires an existing raw payload; create it at the boundary"
+            "owned extraction requires an existing raw payload; create it at the "
+            "boundary"
         )
-    else:
-        raw_row = await raw_payload_service.upsert_raw_payload(
-            session,
-            domain=DOMAIN,
-            source=Source.LAB_PARSER.value,
-            external_id=file_key or f"lab:{on_date.isoformat()}:{lab_name or '?'}",
-            payload=extracted,
-        )
+    upload = await _resolve_replay_upload(
+        session,
+        identity=identity,
+        raw_payload_id=existing_raw_payload.id,
+        file_key=file_key,
+    )
+    raw_row = upload.raw_payload
 
-    if context is not None:
-        await _preflight_scoped_panel(
-            session,
-            markers=results,
-            context=context,
-            override=override,
-        )
+    await _preflight_scoped_panel(
+        session,
+        markers=results,
+        context=context,
+        override=override,
+    )
 
     summary = {"created": 0, "skipped": 0, "results": []}
     for item in results:
@@ -2272,7 +2054,7 @@ async def ingest_extracted(
             on_date,
             marker,
             value,
-            subject_id=identity.subject_id if identity is not None else None,
+            subject_id=identity.subject_id,
         ):
             summary["skipped"] += 1
             continue
@@ -2289,11 +2071,6 @@ async def ingest_extracted(
             raw_payload_id=raw_row.id,
             override=override,
             identity=identity,
-            include_legacy_unowned=(
-                context.scope.include_legacy_unowned
-                if context is not None
-                else False
-            ),
             prepared_conflict_write=prepared_conflict_write,
         )
         summary["results"].append(row)
@@ -2304,31 +2081,11 @@ async def ingest_extracted(
     return summary
 
 
-async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
-    """Re-run extraction ingest against a lab payload already on disk — no new
-    upload. Covers uploads the owner never confirmed (extracted but abandoned
-    at the preview step), so those markers aren't lost. Reuses
-    :func:`ingest_extracted` (dedupes by date+marker+value, so this is safe even
-    if some rows were confirmed by hand before the sweep got to it). Preserves
-    ``fetched_at``: this is a reparse, not a new upload. Used by
-    :func:`reparse_pending` (the nightly sweep — raw_payload_service.
-    sweep_pending_job)."""
-    extracted = raw_row.payload if isinstance(raw_row.payload, dict) else {}
-    original_fetched_at = raw_row.fetched_at
-    if raw_row.subject_id is not None:
-        raise ValueError(
-            "owned lab raw payloads require reparse_owned_pending boundary proof"
-        )
-    await ingest_extracted(session, extracted, file_key=raw_row.external_id)
-    raw_row.fetched_at = original_fetched_at
-
-
 async def reparse_owned_pending(
     session: AsyncSession,
     *,
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
-    include_legacy_unowned: bool = False,
     limit: int = raw_payload_service.REPARSE_BATCH,
     since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
 ) -> int:
@@ -2340,10 +2097,6 @@ async def reparse_owned_pending(
         prepared=prepared_conflict_write,
     )
     assert boundary is not None
-    _require_legacy_bridge(
-        boundary,
-        include_legacy_unowned=include_legacy_unowned,
-    )
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ValueError("limit must be a positive integer")
     if (
@@ -2353,27 +2106,26 @@ async def reparse_owned_pending(
     ):
         raise ValueError("since_days must be a non-negative integer")
 
-    raw_scope = RawPayload.subject_id == identity.subject_id
-    if include_legacy_unowned:
-        raw_scope = or_(
-            raw_scope,
-            and_(
-                RawPayload.subject_id.is_(None),
-                RawPayload.actor_user_id.is_(None),
-                RawPayload.integration_connection_id.is_(None),
-                RawPayload.file_asset_id.is_(None),
-            ),
-        )
+    # The replay is the one reader labs keeps that can see a raw belonging to
+    # nobody: adopting that payload into this subject's history is the whole
+    # point of the sweep.
+    raw_scope = or_(
+        RawPayload.subject_id == identity.subject_id,
+        and_(
+            RawPayload.subject_id.is_(None),
+            RawPayload.actor_user_id.is_(None),
+            RawPayload.integration_connection_id.is_(None),
+            RawPayload.file_asset_id.is_(None),
+        ),
+    )
     cutoff = now_local() - timedelta(days=since_days)
-    allowed_result_scope = LabResult.subject_id == identity.subject_id
-    if include_legacy_unowned:
-        allowed_result_scope = or_(
-            allowed_result_scope,
-            and_(
-                LabResult.subject_id.is_(None),
-                LabResult.actor_user_id.is_(None),
-            ),
-        )
+    allowed_result_scope = or_(
+        LabResult.subject_id == identity.subject_id,
+        and_(
+            LabResult.subject_id.is_(None),
+            LabResult.actor_user_id.is_(None),
+        ),
+    )
     invalid_link = await session.scalar(
         select(LabResult.id)
         .join(RawPayload, LabResult.raw_payload_id == RawPayload.id)
@@ -2422,16 +2174,15 @@ async def reparse_owned_pending(
             succeeded_platform_parse,
         ),
     )
-    if include_legacy_unowned:
-        eligible_parser_provenance = or_(
-            eligible_parser_provenance,
-            and_(
-                RawPayload.subject_id.is_(None),
-                RawPayload.actor_user_id.is_(None),
-                RawPayload.integration_connection_id.is_(None),
-                RawPayload.file_asset_id.is_(None),
-            ),
-        )
+    eligible_parser_provenance = or_(
+        eligible_parser_provenance,
+        and_(
+            RawPayload.subject_id.is_(None),
+            RawPayload.actor_user_id.is_(None),
+            RawPayload.integration_connection_id.is_(None),
+            RawPayload.file_asset_id.is_(None),
+        ),
+    )
     done = 0
     last_raw_id = 0
     while done < limit:
@@ -2501,9 +2252,11 @@ async def reparse_owned_pending(
                     row_context = conflict_engine.ConflictWriteContext(
                         identity=origin_identity,
                         evaluation_date=prepared_date,
+                        # The replay decides adoption per raw, from the raw's
+                        # own roots, rather than from a caller's flag.
                         legacy_bridge=(
                             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-                            if include_legacy_unowned
+                            if probe_is_legacy or probe_is_historical_parser
                             else conflict_engine.LegacyConflictBridge.REJECT
                         ),
                     )
@@ -2516,7 +2269,7 @@ async def reparse_owned_pending(
                         raw_payload_id=raw_id,
                         context=row_context,
                         source=Source.LAB_PARSER.value,
-                        allow_historical_parser_raw=include_legacy_unowned,
+                        allow_historical_parser_raw=probe_is_historical_parser,
                     )
                     if raw.processed_at is not None:
                         continue
@@ -2583,7 +2336,6 @@ async def reparse_owned_pending(
                                 source=Source.LAB_PARSER.value,
                                 raw_payload_id=raw.id,
                                 identity=origin_identity,
-                                include_legacy_unowned=True,
                                 prepared_conflict_write=prepared,
                                 allow_historical_parser_raw=(
                                     is_historical_parser
@@ -2603,8 +2355,8 @@ async def reparse_owned_pending(
                         )
                     await refresh_alerts(
                         session,
+                        subject_id=identity.subject_id,
                         identity=origin_identity,
-                        include_legacy_unowned=include_legacy_unowned,
                         prepared_conflict_write=prepared,
                     )
                     raw.processed_at = now_local()
@@ -2622,34 +2374,13 @@ async def reparse_owned_pending(
     return done
 
 
-async def reparse_pending(
-    session: AsyncSession,
-    *,
-    limit: int = raw_payload_service.REPARSE_BATCH,
-    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
-) -> int:
-    """Sweep lab raw payloads (extractions never confirmed by the owner) still
-    pending a normalized row. Does not commit."""
-    has_normalized = (
-        select(LabResult.id).where(LabResult.raw_payload_id == RawPayload.id).exists()
-    )
-    return await raw_payload_service.sweep_domain(
-        session,
-        domain=DOMAIN,
-        reparse=reparse_from_raw,
-        has_normalized=has_normalized,
-        limit=limit,
-        since_days=since_days,
-    )
-
-
 async def _result_exists(
     session: AsyncSession,
     on_date: date_type,
     marker: str,
     value: float,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
 ) -> bool:
     stmt = select(LabResult.id).where(
         LabResult.date == on_date,

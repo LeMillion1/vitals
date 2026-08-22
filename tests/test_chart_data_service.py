@@ -96,9 +96,25 @@ async def test_series_for_labs_marker_requires_param(db_session, owned_by_legacy
         await chart_data_service.series_for(db_session, subject_id=owned_by_legacy_subject.subject_id, metric_key="labs.marker")
 
 
-async def test_series_for_labs_marker_matches_marker_history(db_session, owned_by_legacy_subject):
-    await labs_service.add_result(db_session, on_date=DAY1, marker="TSH", value=2.1, unit="mIU/L")
-    await labs_service.add_result(db_session, on_date=DAY2, marker="TSH", value=2.4, unit="mIU/L")
+async def test_series_for_labs_marker_matches_marker_history(db_session, owned_by_legacy_subject, owner_write):
+    await labs_service.add_result(
+        db_session,
+        on_date=DAY1,
+        marker="TSH",
+        value=2.1,
+        unit="mIU/L",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY1),
+    )
+    await labs_service.add_result(
+        db_session,
+        on_date=DAY2,
+        marker="TSH",
+        value=2.4,
+        unit="mIU/L",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY2),
+    )
     await db_session.commit()
 
     points = await chart_data_service.series_for(db_session, subject_id=owned_by_legacy_subject.subject_id, metric_key="labs.marker", param="TSH")
@@ -182,8 +198,15 @@ async def test_build_catalog_omits_disabled_optional_domain(db_session, owned_by
     assert "nutrition" not in catalog
 
 
-async def test_build_catalog_includes_enabled_optional_domain_with_params(db_session, owned_by_legacy_subject):
-    await labs_service.add_result(db_session, on_date=DAY1, marker="TSH", value=2.1)
+async def test_build_catalog_includes_enabled_optional_domain_with_params(db_session, owned_by_legacy_subject, owner_write):
+    await labs_service.add_result(
+        db_session,
+        on_date=DAY1,
+        marker="TSH",
+        value=2.1,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY1),
+    )
     await db_session.commit()
 
     enabled = {k: True for k in MODULE_REGISTRY}
@@ -232,8 +255,16 @@ async def test_resolve_chart_series_skips_unknown_metric_key(db_session, owned_b
     assert resolved == []
 
 
-async def test_resolve_chart_series_labs_marker_unit_from_catalog(db_session, owned_by_legacy_subject):
-    await labs_service.add_result(db_session, on_date=DAY1, marker="TSH", value=2.1, unit="mIU/L")
+async def test_resolve_chart_series_labs_marker_unit_from_catalog(db_session, owned_by_legacy_subject, owner_write):
+    await labs_service.add_result(
+        db_session,
+        on_date=DAY1,
+        marker="TSH",
+        value=2.1,
+        unit="mIU/L",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY1),
+    )
     await db_session.commit()
 
     config = {"series": [{"domain": "labs", "metric_key": "labs.marker", "param": "TSH", "color_slot": 0}]}

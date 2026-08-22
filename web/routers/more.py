@@ -42,7 +42,6 @@ async def more_screen(
         latest = await labs_service.latest_per_marker(
             db,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
         )
         out_of_range = sum(1 for r in latest if labs_service.is_out_of_range(r.flag))
 

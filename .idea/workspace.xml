@@ -5,13 +5,30 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="4f7d8d26-b83f-429b-a4a5-0ed778c9a66c" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/vitals/services/alerts_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/alerts_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/conflict_catalog.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/conflict_catalog.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/garmin_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/garmin_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/garmin_weight_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/garmin_weight_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/hevy_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/hevy_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/hrt_catalog.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/hrt_catalog.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/signals_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/signals_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/conftest.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/conftest.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_chart_data_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_chart_data_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_conflict_engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_conflict_engine.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_digest_period_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_digest_period_window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_hrt_reminders.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_hrt_reminders.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_lab_document_ai_gateway.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_lab_document_ai_gateway.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_labs_conflict_writer_scoped.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_labs_conflict_writer_scoped.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_labs_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_labs_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_labs_stage2_boundaries.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_labs_stage2_boundaries.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_mcp_labs_gate.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_mcp_labs_gate.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_mcp_oauth.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_mcp_oauth.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_milestones_digest.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_milestones_digest.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_raw_payload_reparse.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_raw_payload_reparse.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_share_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_share_router.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_upload_dual_write.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_upload_dual_write.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_web.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_web.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/services/hrt_reminders.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/hrt_reminders.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/services/labs_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/labs_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/services/raw_payload_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/raw_payload_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vitals/services/share_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/share_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/web/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/web/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/web/routers/labs.py" beforeDir="false" afterPath="$PROJECT_DIR$/web/routers/labs.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/web/routers/mcp.py" beforeDir="false" afterPath="$PROJECT_DIR$/web/routers/mcp.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/web/routers/more.py" beforeDir="false" afterPath="$PROJECT_DIR$/web/routers/more.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -178,7 +195,7 @@
       <workItem from="1784309643642" duration="30875000" />
       <workItem from="1786724999730" duration="7000" />
       <workItem from="1786725020818" duration="6965000" />
-      <workItem from="1786814082863" duration="38781000" />
+      <workItem from="1786814082863" duration="39384000" />
     </task>
     <servers />
   </component>

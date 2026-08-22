@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from vitals.enums import Domain
 from vitals.models.conflict_rule import ConflictRule
 from vitals.services import alerts_service, conflict_engine, conflict_registrations, labs_service, supplements_service
 from vitals.services.conflict_engine import ConflictBlocked, _matches
@@ -185,13 +186,29 @@ async def test_glp1_resolve_active_shape(db_session, owner_write):
     ]
 
 
-async def test_labs_resolve_latest_shape(db_session):
+async def test_labs_resolve_latest_shape(db_session, owner_write):
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="Калий", value=5.5, ref_low=3.5, ref_high=5.1
+        db_session,
+        on_date=today_local(),
+        marker="Калий",
+        value=5.5,
+        ref_low=3.5,
+        ref_high=5.1,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    items = await labs_service.resolve_latest(db_session)
-    assert items == [{"marker": "Калий", "value": 5.5, "flag": "high"}]
+    items = await labs_service.resolve_latest_scoped(
+        db_session,
+        scope=conflict_engine.ConflictScope(
+            subject_id=owner_write.subject_id,
+            evaluation_date=today_local(),
+        ),
+    )
+    assert [
+        {"marker": i["marker"], "value": i["value"], "flag": i["flag"]}
+        for i in items
+    ] == [{"marker": "Калий", "value": 5.5, "flag": "high"}]
 
 
 async def test_nutrition_resolve_today_shape(db_session, owner_write):
@@ -224,7 +241,7 @@ async def test_nutrition_resolve_today_shape(db_session, owner_write):
 # the live/synchronous save path (see nutrition_service.log_meal's plain
 # ``enforce()`` call, which never passes include_day_end).
 
-async def test_day_end_only_rule_skipped_by_default(db_session):
+async def test_day_end_only_rule_skipped_by_default(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
@@ -238,15 +255,35 @@ async def test_day_end_only_rule_skipped_by_default(db_session):
         )
     )
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="Калий", value=5.5, ref_low=3.5, ref_high=5.1
+        db_session,
+        on_date=today_local(),
+        marker="Калий",
+        value=5.5,
+        ref_low=3.5,
+        ref_high=5.1,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
 
-    live = await conflict_engine.evaluate(db_session, "supplements", {"key": "potassium", "active": True})
+    live = await conflict_engine.evaluate_scoped(
+        db_session,
+        # These rules are this person's own custom state, which the engine
+        # reaches through the same compatibility scope a legacy writer uses.
+        scope=owner_write.context.scope,
+        domain="supplements",
+        proposed_state={"key": "potassium", "active": True},
+    )
     assert live == []
 
-    day_end = await conflict_engine.evaluate(
-        db_session, "supplements", {"key": "potassium", "active": True}, include_day_end=True
+    day_end = await conflict_engine.evaluate_scoped(
+        db_session,
+        # These rules are this person's own custom state, which the engine
+        # reaches through the same compatibility scope a legacy writer uses.
+        scope=owner_write.context.scope,
+        domain="supplements",
+        proposed_state={"key": "potassium", "active": True},
+        include_day_end=True,
     )
     assert len(day_end) == 1
     assert day_end[0].message == "test day-end rule"
@@ -321,11 +358,23 @@ async def test_enforce_day_end_raises_the_alert_when_violated(db_session, owner_
     )
     await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="Калий", value=5.5, ref_low=3.5, ref_high=5.1
+        db_session,
+        on_date=today_local(),
+        marker="Калий",
+        value=5.5,
+        ref_low=3.5,
+        ref_high=5.1,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
 
-    await conflict_engine.enforce_day_end(db_session, "supplements", entity_ref="day:1")
+    await conflict_engine.reconcile_day_end_scoped(
+        db_session,
+        context=owner_write.context,
+        domain=Domain.SUPPLEMENTS,
+        entity_ref="day:1",
+    )
     await db_session.commit()
 
     active = await alerts_service.list_active(db_session, domain="supplements")
@@ -352,10 +401,22 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, o
     )
     await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="Калий", value=5.5, ref_low=3.5, ref_high=5.1
+        db_session,
+        on_date=today_local(),
+        marker="Калий",
+        value=5.5,
+        ref_low=3.5,
+        ref_high=5.1,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    await conflict_engine.enforce_day_end(db_session, "supplements", entity_ref="day:1")
+    await conflict_engine.reconcile_day_end_scoped(
+        db_session,
+        context=owner_write.context,
+        domain=Domain.SUPPLEMENTS,
+        entity_ref="day:1",
+    )
     await db_session.commit()
     assert any(
         a.message == "test day-end rule"
@@ -366,11 +427,29 @@ async def test_enforce_day_end_auto_clears_once_no_longer_violated(db_session, o
     # no longer flagged, so the day-end check must clear the earlier alert,
     # even though it's keyed under yesterday's entity_ref, not today's.
     await labs_service.add_result(
-        db_session, on_date=today_local() + timedelta(days=1), marker="Калий",
-        value=4.0, ref_low=3.5, ref_high=5.1,
+        db_session,
+        on_date=today_local() + timedelta(days=1),
+        marker="Калий",
+        value=4.0,
+        ref_low=3.5,
+        ref_high=5.1,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local() + timedelta(days=1)),
     )
     await db_session.commit()
-    await conflict_engine.enforce_day_end(db_session, "supplements", entity_ref="day:2")
+    # The scoped resolver anchors at the day it is asked about, so the check
+    # that should clear the alert has to be the *next* day's check.
+    tomorrow_context = await conflict_engine.resolve_legacy_conflict_write_context(
+        db_session,
+        actor_username=None,
+        evaluation_date=today_local() + timedelta(days=1),
+    )
+    await conflict_engine.reconcile_day_end_scoped(
+        db_session,
+        context=tomorrow_context,
+        domain=Domain.SUPPLEMENTS,
+        entity_ref="day:2",
+    )
     await db_session.commit()
 
     active = await alerts_service.list_active(db_session, domain="supplements")
@@ -442,7 +521,14 @@ async def test_operator_rule_fires_on_lab_value_threshold(db_session, owner_writ
         )
     )
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="Калий", value=5.5, ref_low=3.5, ref_high=5.1
+        db_session,
+        on_date=today_local(),
+        marker="Калий",
+        value=5.5,
+        ref_low=3.5,
+        ref_high=5.1,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
 
@@ -450,7 +536,7 @@ async def test_operator_rule_fires_on_lab_value_threshold(db_session, owner_writ
         await supplements_service.add_supplement(db_session, name="Potassium", key="potassium", active=True, identity=owner_write.identity, prepared_conflict_write=await owner_write.write())
 
 
-async def test_violation_carries_catalog_metadata(db_session):
+async def test_violation_carries_catalog_metadata(db_session, owner_write):
     conflict_registrations.register_all_resolvers()
     db_session.add(
         ConflictRule(
@@ -462,11 +548,25 @@ async def test_violation_carries_catalog_metadata(db_session):
         )
     )
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="Калий", value=5.5, ref_low=3.5, ref_high=5.1
+        db_session,
+        on_date=today_local(),
+        marker="Калий",
+        value=5.5,
+        ref_low=3.5,
+        ref_high=5.1,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
 
-    violations = await conflict_engine.evaluate(db_session, "supplements", {"key": "potassium", "active": True})
+    violations = await conflict_engine.evaluate_scoped(
+        db_session,
+        # These rules are this person's own custom state, which the engine
+        # reaches through the same compatibility scope a legacy writer uses.
+        scope=owner_write.context.scope,
+        domain="supplements",
+        proposed_state={"key": "potassium", "active": True},
+    )
     assert len(violations) == 1
     v = violations[0]
     assert v.category == "lab_safety"
@@ -488,7 +588,14 @@ async def test_operator_rule_silent_when_lab_value_below_threshold(db_session, o
         )
     )
     await labs_service.add_result(
-        db_session, on_date=today_local(), marker="Калий", value=4.2, ref_low=3.5, ref_high=5.1
+        db_session,
+        on_date=today_local(),
+        marker="Калий",
+        value=4.2,
+        ref_low=3.5,
+        ref_high=5.1,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
 

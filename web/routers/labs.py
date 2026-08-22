@@ -81,15 +81,14 @@ async def labs_dashboard(
     )
     await labs_service.refresh_alerts(
         db,
+        subject_id=conflict_context.identity.subject_id,
         identity=conflict_context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
 
     latest = await labs_service.latest_per_marker(
         db,
         subject_id=conflict_context.identity.subject_id,
-        include_legacy_unowned=True,
     )
     # Sort latest: out-of-range first (newest to oldest), then normal (newest to oldest)
     latest = sorted(
@@ -100,7 +99,6 @@ async def labs_dashboard(
     markers = await labs_service.list_markers(
         db,
         subject_id=conflict_context.identity.subject_id,
-        include_legacy_unowned=True,
     )
     alerts = await alerts_service.list_active_scoped(
         db,
@@ -115,7 +113,6 @@ async def labs_dashboard(
             db,
             selected,
             subject_id=conflict_context.identity.subject_id,
-            include_legacy_unowned=True,
         )
         if selected
         else []
@@ -182,11 +179,11 @@ async def add_result(
             note=note,
             override=override,
             identity=conflict_context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await labs_service.refresh_alerts(
             db,
+            subject_id=conflict_context.identity.subject_id,
             identity=conflict_context.identity,
             prepared_conflict_write=prepared,
         )
@@ -493,6 +490,7 @@ async def labs_confirm(
         )
         await labs_service.refresh_alerts(
             db,
+            subject_id=conflict_context.identity.subject_id,
             identity=conflict_context.identity,
             prepared_conflict_write=prepared,
         )
@@ -531,7 +529,6 @@ async def defer_marker(
         until=date_type.fromisoformat(until),
         note=note,
         identity=conflict_context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -556,7 +553,6 @@ async def delete_result(
         db,
         result_id,
         identity=conflict_context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()

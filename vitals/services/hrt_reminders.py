@@ -267,13 +267,12 @@ async def _raise_alert(
 async def seed_hormone_panel(
     session: AsyncSession,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> dict[str, int]:
-    """Register the panel markers in the Labs catalog. Idempotent — creates a
-    missing marker, and backfills ``category``/``retest_interval_days`` on an
-    existing one only when unset (never clobbers a user's edit)."""
+    """Register the panel markers in this subject's Labs catalog. Idempotent —
+    creates a missing marker, and backfills ``category``/``retest_interval_days``
+    on an existing one only when unset (never clobbers a user's edit)."""
     created = 0
     updated = 0
     if (identity is None) != (prepared_conflict_write is None):
@@ -281,43 +280,18 @@ async def seed_hormone_panel(
             "scoped hormone-panel seed requires identity and a prepared write"
         )
     for name, interval in HORMONE_PANEL.items():
-        if identity is not None:
-            assert prepared_conflict_write is not None
-            _row, was_created, was_updated = (
-                await labs_service.ensure_marker_catalog_entry(
-                    session,
-                    name=name,
-                    category=_PANEL_CATEGORY,
-                    retest_interval_days=interval,
-                    identity=identity,
-                    include_legacy_unowned=include_legacy_unowned,
-                    prepared_conflict_write=prepared_conflict_write,
-                )
+        _row, was_created, was_updated = (
+            await labs_service.ensure_marker_catalog_entry(
+                session,
+                name=name,
+                category=_PANEL_CATEGORY,
+                retest_interval_days=interval,
+                identity=identity,
+                prepared_conflict_write=prepared_conflict_write,
             )
-            created += int(was_created)
-            updated += int(was_updated)
-            continue
-        row = await labs_service.get_marker(session, name)
-        if row is None:
-            session.add(
-                LabMarker(
-                    domain=labs_service.DOMAIN,
-                    name=labs_service.normalize_marker(name),
-                    category=_PANEL_CATEGORY,
-                    retest_interval_days=interval,
-                )
-            )
-            created += 1
-        else:
-            touched = False
-            if row.category is None:
-                row.category = _PANEL_CATEGORY
-                touched = True
-            if row.retest_interval_days is None:
-                row.retest_interval_days = interval
-                touched = True
-            if touched:
-                updated += 1
+        )
+        created += int(was_created)
+        updated += int(was_updated)
     await session.flush()
     logger.info("hrt_reminders.seed_hormone_panel: %d created, %d updated", created, updated)
     return {"created": created, "updated": updated}
@@ -343,7 +317,6 @@ async def _latest_panel_result_date(
         end=on_date,
         limit=1_000_000,
         subject_id=context.identity.subject_id,
-        include_legacy_unowned=context.scope.include_legacy_unowned,
     )
     return max((row.date for row in rows if row.marker in names), default=None)
 
