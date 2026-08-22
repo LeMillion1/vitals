@@ -380,16 +380,17 @@ async def test_exact_s_a_f_graph_rejects_partial_and_cross_root_rows(
         await weight_service.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
 
 @pytest.mark.parametrize("partial_root", ["actor", "file"])
-async def test_legacy_bridge_accepts_only_fully_null_s_a_f(
+async def test_a_photo_with_partial_roots_is_out_of_every_scope(
     db_session,
     legacy_owner_roots,
     partial_root,
 ):
+    """A half-owned photo used to be reported; now it is simply not this
+    subject's row, and the scoped read passes over it like any other."""
     identity = _identity(legacy_owner_roots)
     asset = await _asset(db_session, identity, f"partial-{partial_root}")
     partial = ProgressPhoto(
@@ -403,21 +404,22 @@ async def test_legacy_bridge_accepts_only_fully_null_s_a_f(
     db_session.add(partial)
     await db_session.commit()
 
-    with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
-        match="partial legacy ownership roots",
-    ):
-        await weight_service.list_progress_photos(
-            db_session,
-            subject_id=identity.subject_id,
-            include_legacy_unowned=True,
-        )
+    assert await weight_service.list_progress_photos(
+        db_session,
+        subject_id=identity.subject_id,
+    ) == []
 
 
-async def test_fully_null_legacy_photo_is_visible_and_deletable_only_via_bridge(
+async def test_fully_null_legacy_photo_is_invisible_and_undeletable(
     db_session,
     legacy_owner_roots,
 ):
+    """The bridge that surfaced and adopted an ownerless photo is gone.
+
+    A progress photo is among the most sensitive rows in the lake, so the rule
+    reads plainly here: one that belongs to nobody is nobody's to see and
+    nobody's to delete, whatever bridge the caller asks for.
+    """
     identity = _identity(legacy_owner_roots)
     legacy = ProgressPhoto(
         date=PHOTO_DATE,
@@ -433,37 +435,19 @@ async def test_fully_null_legacy_photo_is_visible_and_deletable_only_via_bridge(
         db_session,
         subject_id=identity.subject_id,
     ) == []
-    visible = await weight_service.list_progress_photos(
-        db_session,
-        subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    )
-    assert [row.id for row in visible] == [legacy.id]
 
-    with pytest.raises(conflict_engine.ConflictPreparedWriteError):
-        await weight_service.delete_progress_photo(
+    for legacy_bridge in (False, True):
+        assert await weight_service.delete_progress_photo(
             db_session,
             legacy.id,
             identity=identity,
-            include_legacy_unowned=True,
-            prepared_conflict_write=await _prepared(db_session, identity),
-        )
-
-    receipt = await weight_service.delete_progress_photo(
-        db_session,
-        legacy.id,
-        identity=identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=await _prepared(
-            db_session,
-            identity,
-            legacy=True,
-        ),
-    )
-    assert receipt == weight_service.ProgressPhotoDeletion(
-        file_key="uploads/synthetic-legacy.png",
-        file_asset_id=None,
-    )
+            prepared_conflict_write=await _prepared(
+                db_session,
+                identity,
+                legacy=legacy_bridge,
+            ),
+        ) is None
+    assert await db_session.get(ProgressPhoto, legacy.id) is not None
 
 
 async def test_completed_stage3h_bridge_exposes_actorless_migrated_history(
@@ -491,7 +475,6 @@ async def test_completed_stage3h_bridge_exposes_actorless_migrated_history(
     visible = await weight_service.list_progress_photos(
         db_session,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     assert visible == [photo]
     assert photo.actor_user_id is None
@@ -541,9 +524,10 @@ async def test_running_stage3h_bridge_accepts_processed_and_preserves_legacy_row
     visible = await weight_service.list_progress_photos(
         db_session,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
-    assert {row.id for row in visible} == {processed.id, unprocessed.id}
+    # Only the row the backfill has already stamped is in scope; the one still
+    # waiting for the next batch belongs to nobody yet.
+    assert {row.id for row in visible} == {processed.id}
 
     _tail_asset, tail = await _migrated_photo(
         db_session,
@@ -559,7 +543,6 @@ async def test_running_stage3h_bridge_accepts_processed_and_preserves_legacy_row
         await weight_service.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
 
@@ -579,7 +562,6 @@ async def test_actorless_owned_photo_requires_a_valid_processed_checkpoint(
         await weight_service.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
     blocked = _photo_checkpoint(
@@ -600,23 +582,36 @@ async def test_actorless_owned_photo_requires_a_valid_processed_checkpoint(
         await weight_service.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
 
-async def test_malicious_legacy_file_key_is_data_not_an_alpine_expression(
+async def test_malicious_file_key_is_data_not_an_alpine_expression(
     auth_client,
     db_session,
+    legacy_owner_roots,
+    owner_write,
 ):
+    identity = _identity(legacy_owner_roots)
     file_key = "uploads/synthetic-');window.photo_pwned=1;('-.png"
-    photo = ProgressPhoto(
-        date=PHOTO_DATE,
-        domain=Domain.WEIGHT.value,
-        source=Source.MANUAL.value,
+    asset = await file_asset_service.register_legacy_local(
+        db_session,
+        subject_id=identity.subject_id,
+        uploaded_by_user_id=identity.actor_user_id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO,
+        storage_ref=file_key,
+        media_type="image/png",
+        size_bytes=1,
+        content_sha256="9" * 64,
+    )
+    photo = await weight_service.add_progress_photo(
+        db_session,
+        on_date=PHOTO_DATE,
         file_key=file_key,
         note="synthetic template escaping probe",
+        identity=owner_write.identity,
+        file_asset_id=asset.id,
+        prepared_conflict_write=await owner_write.write(PHOTO_DATE),
     )
-    db_session.add(photo)
     await db_session.commit()
 
     response = await auth_client.get(
@@ -696,7 +691,6 @@ async def test_completed_migrated_bridge_rejects_nonnull_asset_uploader(
         await weight_service.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
 
@@ -736,7 +730,6 @@ async def test_completed_migrated_bridge_requires_root_level_safe_image_key(
         await weight_service.list_progress_photos(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
 
@@ -750,7 +743,7 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
     legacy_owner_roots,
     tmp_path,
     monkeypatch,
-    shadow_state,
+    shadow_state, owner_write,
 ):
     from web import main as web_main
 
@@ -783,15 +776,33 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
         if shadow_state == "purged":
             asset.purged_at = asset.deleted_at
     await db_session.flush()
-    with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
-        match="conflicts with file-asset metadata",
-    ):
+    if shadow_state == "valid_live":
+        # A live asset this subject owns is a legitimate destination; the write
+        # succeeds and the shadowed legacy row below is what stays unreachable.
         await weight_service.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
             file_key=file_key,
+            identity=owner_write.identity,
+            file_asset_id=asset.id,
+            prepared_conflict_write=await owner_write.write(PHOTO_DATE),
         )
+        # The rest of this test is about the shadowed legacy row, which only
+        # the refused states leave as the sole fact on that key.
+        return
+    else:
+        with pytest.raises(
+            weight_service.ProgressPhotoOwnershipError,
+            match="file asset is not authoritative in subject scope",
+        ):
+            await weight_service.add_progress_photo(
+                db_session,
+                on_date=PHOTO_DATE,
+                file_key=file_key,
+                identity=owner_write.identity,
+                file_asset_id=asset.id,
+                prepared_conflict_write=await owner_write.write(PHOTO_DATE),
+            )
 
     # Persist a pre-hardening shape so read/download/delete are verified too.
     legacy = ProgressPhoto(
@@ -813,41 +824,32 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
         asset.purged_at,
     )
 
-    with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
-        match="conflicts with file-asset metadata",
-    ):
-        await weight_service.list_progress_photos(
-            db_session,
-            subject_id=identity.subject_id,
-            include_legacy_unowned=True,
-        )
+    assert await weight_service.list_progress_photos(
+        db_session,
+        subject_id=identity.subject_id,
+    ) == []
 
     response = await auth_client.get(f"/static/uploads/{route_key}")
     assert response.status_code == 404
     assert contents not in response.content
 
-    with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
-        match="conflicts with file-asset metadata",
-    ):
-        await weight_service.delete_progress_photo(db_session, legacy.id)
+    assert await weight_service.delete_progress_photo(
+        db_session,
+        legacy.id,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    ) is None
 
-    with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
-        match="conflicts with file-asset metadata",
-    ):
-        await weight_service.delete_progress_photo(
-            db_session,
-            legacy.id,
-            identity=identity,
-            include_legacy_unowned=True,
-            prepared_conflict_write=await _prepared(
-                db_session,
-                identity,
-                legacy=True,
-            ),
-        )
+    assert await weight_service.delete_progress_photo(
+        db_session,
+        legacy.id,
+        identity=identity,
+        prepared_conflict_write=await _prepared(
+        db_session,
+        identity,
+        legacy=True,
+        ),
+    ) is None
 
     persisted_photo_roots = (
         await db_session.execute(
@@ -888,35 +890,53 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
 
 
 @pytest.mark.parametrize("route_prefix", ["labs", "body"])
-async def test_legacy_nested_photo_without_document_metadata_remains_valid(
+async def test_nested_photo_key_is_owned_like_any_other(
     db_session,
     legacy_owner_roots,
-    route_prefix,
+    route_prefix, owner_write,
 ):
+    """A key that merely looks like a document path is still a photo.
+
+    The nesting under ``uploads/labs/`` or ``uploads/body/`` used to be the
+    thing that distinguished a legacy photo from a document; now every photo
+    names its subject and its file asset, so the path is just a path.
+    """
     identity = _identity(legacy_owner_roots)
-    file_key = f"uploads/{route_prefix}/synthetic-valid-legacy-nested.png"
+    file_key = f"uploads/{route_prefix}/synthetic-valid-nested.png"
+    asset = await file_asset_service.register_legacy_local(
+        db_session,
+        subject_id=identity.subject_id,
+        uploaded_by_user_id=identity.actor_user_id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO,
+        storage_ref=file_key,
+        media_type="image/png",
+        size_bytes=1,
+        content_sha256="e" * 64,
+    )
     photo = await weight_service.add_progress_photo(
         db_session,
         on_date=PHOTO_DATE,
         file_key=file_key,
+        identity=owner_write.identity,
+        file_asset_id=asset.id,
+        prepared_conflict_write=await owner_write.write(PHOTO_DATE),
     )
 
     visible = await weight_service.list_progress_photos(
         db_session,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     assert visible == [photo]
     assert (photo.subject_id, photo.actor_user_id, photo.file_asset_id) == (
-        None,
-        None,
-        None,
+        identity.subject_id,
+        identity.actor_user_id,
+        asset.id,
     )
 
 
 async def test_prepared_capability_is_required_and_checked_before_file_resolution(
     db_session,
-    legacy_owner_roots,
+    legacy_owner_roots, owner_write,
 ):
     identity = _identity(legacy_owner_roots)
     _, _, foreign = await _new_owner(db_session, "photo-capability-foreign")
@@ -929,6 +949,7 @@ async def test_prepared_capability_is_required_and_checked_before_file_resolutio
             on_date=PHOTO_DATE,
             identity=identity,
             file_asset_id=asset.id,
+            prepared_conflict_write=wrong,
         )
     with pytest.raises(conflict_engine.ConflictPreparedWriteError):
         await weight_service.add_progress_photo(
@@ -1000,7 +1021,6 @@ async def test_delete_requires_subject_owner_actor_for_exact_and_legacy_rows(
             db_session,
             legacy.id,
             identity=system,
-            include_legacy_unowned=True,
             prepared_conflict_write=await _prepared(
                 db_session,
                 system,
@@ -1349,7 +1369,7 @@ async def test_prefixed_progress_photo_download_uses_photo_graph_authorization(
 async def test_legacy_prefixed_photo_create_and_delete_reject_document_disk_alias(
     db_session,
     legacy_owner_roots,
-    route_prefix,
+    route_prefix, owner_write,
 ):
     identity = _identity(legacy_owner_roots)
     route_key = f"{route_prefix}/synthetic-legacy-delete-alias.png"
@@ -1370,12 +1390,15 @@ async def test_legacy_prefixed_photo_create_and_delete_reject_document_disk_alia
     )
     with pytest.raises(
         weight_service.ProgressPhotoOwnershipError,
-        match="conflicts with file-asset metadata",
+        match="file asset is not authoritative in subject scope",
     ):
         await weight_service.add_progress_photo(
             db_session,
             on_date=PHOTO_DATE,
             file_key=file_key,
+            identity=owner_write.identity,
+            file_asset_id=asset.id,
+            prepared_conflict_write=await owner_write.write(PHOTO_DATE),
         )
 
     # Simulate a pre-hardening row so both compatibility delete paths are also
@@ -1389,26 +1412,24 @@ async def test_legacy_prefixed_photo_create_and_delete_reject_document_disk_alia
     db_session.add(photo)
     await db_session.commit()
 
-    with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
-        match="conflicts with file-asset metadata",
-    ):
-        await weight_service.delete_progress_photo(db_session, photo.id)
-    with pytest.raises(
-        weight_service.ProgressPhotoOwnershipError,
-        match="aliases document file metadata",
-    ):
-        await weight_service.delete_progress_photo(
+    assert await weight_service.delete_progress_photo(
+        db_session,
+        photo.id,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    ) is None
+    # The compatibility bridge that could reach this row is gone, so the second
+    # delete path is the same as the first: it simply finds nothing.
+    assert await weight_service.delete_progress_photo(
+        db_session,
+        photo.id,
+        identity=identity,
+        prepared_conflict_write=await _prepared(
             db_session,
-            photo.id,
-            identity=identity,
-            include_legacy_unowned=True,
-            prepared_conflict_write=await _prepared(
-                db_session,
-                identity,
-                legacy=True,
-            ),
-        )
+            identity,
+            legacy=True,
+        ),
+    ) is None
 
     assert await db_session.get(ProgressPhoto, photo.id) is not None
     assert await db_session.get(FileAsset, asset.id) is not None

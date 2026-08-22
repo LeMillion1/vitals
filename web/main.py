@@ -278,7 +278,6 @@ async def serve_upload(
             db,
             file_key=f"uploads/{key}",
             subject_id=ownership.subject_id,
-            include_legacy_unowned=True,
         )
     except weight_service.ProgressPhotoOwnershipError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None

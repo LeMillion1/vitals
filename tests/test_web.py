@@ -321,11 +321,17 @@ async def test_csp_headers_and_no_cdn_references(client):
     assert "/static/vendor/alpine.min.js?v=" in html
 
 
-async def test_delete_weight_entry(auth_client, db_session):
+async def test_delete_weight_entry(auth_client, db_session, owner_write):
     from datetime import date
     from vitals.services import weight_service
     # Seed a weight log
-    w = await weight_service.log_weight(db_session, on_date=date(2026, 6, 12), weight_kg=85.0)
+    w = await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 6, 12),
+        weight_kg=85.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 6, 12)),
+    )
     await db_session.commit()
 
     response = await auth_client.post(f"/weight/log/{w.id}/delete")
@@ -496,11 +502,17 @@ async def test_genetics_save_dedupes_by_rsid(auth_client, db_session):
     assert rows[0].genotype == "A/G"
 
 
-async def test_edit_weight_entry(auth_client, db_session):
+async def test_edit_weight_entry(auth_client, db_session, owner_write):
     from datetime import date
     from vitals.services import weight_service
     # Seed a weight log
-    w = await weight_service.log_weight(db_session, on_date=date(2026, 6, 12), weight_kg=85.0)
+    w = await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 6, 12),
+        weight_kg=85.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 6, 12)),
+    )
     await db_session.commit()
 
     response = await auth_client.post(
@@ -515,7 +527,7 @@ async def test_edit_weight_entry(auth_client, db_session):
     assert w.note == "Edited weight"
 
 
-async def test_edit_measurement_blank_field_clears_it(auth_client, db_session):
+async def test_edit_measurement_blank_field_clears_it(auth_client, db_session, owner_write):
     """The edit form posts every field it renders, so an emptied input has to
     delete the value. FastAPI turns a blank number input into None, which the
     service's partial merge used to read as "not passed" and silently restore."""
@@ -528,6 +540,8 @@ async def test_edit_measurement_blank_field_clears_it(auth_client, db_session):
         neck_cm=39.0,
         waist_cm=86.0,
         note="morning",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(date(2026, 6, 13)),
     )
     await db_session.commit()
 

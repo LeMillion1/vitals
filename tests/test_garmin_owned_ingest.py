@@ -171,7 +171,9 @@ async def test_owned_daily_preserves_legacy_weight_and_appends_exact_raw_link(db
     assert legacy_weight.actor_user_id is None
     assert legacy_weight.integration_connection_id is None
     assert legacy_weight.raw_payload_id is None
-    assert legacy_weight.superseded is True
+    # Supersession happens inside a scope; the legacy row is in none, so it is
+    # neither a competitor nor a casualty.
+    assert legacy_weight.superseded is False
     assert owned_weight.subject_id == subject.id
     assert owned_weight.actor_user_id == owner.id
     assert owned_weight.integration_connection_id == connection.id

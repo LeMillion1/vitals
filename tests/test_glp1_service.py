@@ -192,7 +192,13 @@ async def _seed_phase_and_weights(
         prepared_conflict_write=await owner_write.write(start),
     )
     for offset, kg in weights_by_offset:
-        await weight_service.log_weight(db_session, on_date=start + timedelta(days=offset), weight_kg=kg)
+        await weight_service.log_weight(
+            db_session,
+            on_date=start + timedelta(days=offset),
+            weight_kg=kg,
+            identity=owner_write.identity,
+            prepared_weight_write=await owner_write.weight_write(start + timedelta(days=offset)),
+        )
     await db_session.commit()
 
 
@@ -263,7 +269,13 @@ async def test_refresh_plateau_raises_and_resolves(db_session, owner_write, owne
     assert any(a.alert_key == glp1_service.PLATEAU_ALERT_KEY for a in active)
 
     # Now add strong loss → plateau clears.
-    await weight_service.log_weight(db_session, on_date=today, weight_kg=84.0)
+    await weight_service.log_weight(
+        db_session,
+        on_date=today,
+        weight_kg=84.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(today),
+    )
     await db_session.commit()
     await glp1_service.refresh_plateau_alert(
         db_session,

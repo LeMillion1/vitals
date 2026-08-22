@@ -1098,12 +1098,10 @@ async def ingest_daily(
             raw_payload_id=raw_row.id, source=source,
         )
 
-    weight_kg = _extract_weight_kg(raw)
-    if weight_kg is not None:
-        # The weight service enforces manual-over-Garmin priority for the date.
-        await weight_service.log_weight(
-            session, on_date=on_date, weight_kg=weight_kg, source=Source.GARMIN_API.value
-        )
+    # The weigh-in inside a daily bundle is projected only on the owned ingest
+    # path (``_apply_owned_daily_raw``). Weight is a closed domain: without a
+    # subject and the capability that authorises the write there is nobody for
+    # this reading to belong to, and the Garmin row itself is kept regardless.
     return row
 
 
@@ -1173,7 +1171,6 @@ async def _apply_owned_daily_raw(
             raw_payload_id=raw_row.id,
             identity=identity,
             integration_connection_id=integration_connection_id,
-            include_legacy_unowned=True,
             prepared_weight_write=prepared_weight_write,
             origin_actor_user_id=raw_row.actor_user_id,
         )

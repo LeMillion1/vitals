@@ -33,7 +33,7 @@ async def _enable_body_comp(db_session):
     await db_session.commit()
 
 
-async def test_log_get_history_delete_body_scan(db_session, session_factory, monkeypatch):
+async def test_log_get_history_delete_body_scan(db_session, session_factory, monkeypatch, owner_write):
     await _enable_body_comp(db_session)
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
@@ -52,7 +52,11 @@ async def test_log_get_history_delete_body_scan(db_session, session_factory, mon
 
     # The scan's weight was bridged into the weight domain as a body_scan source.
     from vitals.services import weight_service
-    active = await weight_service.get_active_weight(db_session, date(2026, 6, 10))
+    active = await weight_service.get_active_weight(
+        db_session,
+        date(2026, 6, 10),
+        subject_id=owner_write.subject_id,
+    )
     assert active is not None and active.source == "body_scan"
 
     scans = await mcp_router.get_body_scans(start_date="2026-06-01", end_date="2026-06-30")

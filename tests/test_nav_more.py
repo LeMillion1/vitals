@@ -53,7 +53,7 @@ async def test_more_screen_reports_how_many_modules_are_on(auth_client):
 
 # ── The rail's status card ───────────────────────────────────────────────────
 
-async def test_status_card_reports_todays_weight_and_the_weeks_direction(db_session, owner_write):
+async def test_status_card_reports_todays_weight_and_the_weeks_direction(db_session, owner_write, owned_by_legacy_subject):
     """The card exists to say where he is, not how the plumbing is doing — the
     first version reported "labs · 99 days ago" every single day."""
     for days_ago, kg in ((9, 87.0), (0, 86.1)):
@@ -75,7 +75,7 @@ async def test_status_card_reports_todays_weight_and_the_weeks_direction(db_sess
     assert rows["weight"].tone == "good"
 
 
-async def test_a_source_that_went_quiet_says_so_instead_of_a_number(db_session, owner_write):
+async def test_a_source_that_went_quiet_says_so_instead_of_a_number(db_session, owner_write, owned_by_legacy_subject):
     db_session.add(
         GarminDaily(
             date=today_local() - timedelta(days=6),
@@ -93,7 +93,7 @@ async def test_a_source_that_went_quiet_says_so_instead_of_a_number(db_session, 
     assert "6" in rows["recovery"].value
 
 
-async def test_last_nights_sleep_reads_as_hours_and_minutes(db_session, owner_write):
+async def test_last_nights_sleep_reads_as_hours_and_minutes(db_session, owner_write, owned_by_legacy_subject):
     db_session.add(
         GarminDaily(
             date=today_local(),
@@ -112,13 +112,13 @@ async def test_last_nights_sleep_reads_as_hours_and_minutes(db_session, owner_wr
     assert "62" in rows["recovery"].sub
 
 
-async def test_a_domain_with_nothing_logged_yet_gets_no_row(db_session, owner_write):
+async def test_a_domain_with_nothing_logged_yet_gets_no_row(db_session, owner_write, owned_by_legacy_subject):
     assert await nav_status_service.rail_stats(
         db_session, subject_id=owner_write.subject_id
     ) == []
 
 
-async def test_a_disabled_module_gets_no_row(db_session, owner_write):
+async def test_a_disabled_module_gets_no_row(db_session, owner_write, owned_by_legacy_subject):
     db_session.add(
         GarminDaily(
             date=today_local(),

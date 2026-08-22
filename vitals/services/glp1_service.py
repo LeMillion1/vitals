@@ -703,17 +703,11 @@ async def evaluate_plateau(
         start=phase.start_date,
         end=today,
         subject_id=subject_id,
-        include_legacy_unowned=(
-            scope.include_legacy_unowned if scope is not None else False
-        ),
     )
     points = [(w.date, w.weight_kg) for w in weights]
     ranges = await weight_service._noise_ranges(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=(
-            scope.include_legacy_unowned if scope is not None else False
-        ),
         start=phase.start_date,
         end=today,
     )

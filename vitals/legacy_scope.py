@@ -109,49 +109,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'build',
             }
         ),
-        'vitals.services.weight_service': frozenset(
-            {
-                '_apply_body_measurement_values',
-                '_assert_weight_scope_integrity',
-                '_body_measurement_scope_condition',
-                '_get_body_measurement_for_date_update',
-                '_get_body_measurement_for_update',
-                '_get_noise_marker_for_update',
-                '_get_weight_log_date_in_scope',
-                '_get_weight_log_for_update',
-                '_glp1_phase_overlays',
-                '_noise_marker_scope_condition',
-                '_noise_ranges',
-                '_progress_photo_scope_rows',
-                '_recompute_lbm_for_date',
-                '_recompute_lbm_for_date_null',
-                '_require_legacy_bridge',
-                '_validate_persisted_weight_provenance',
-                '_weight_scope_condition',
-                'add_noise_marker',
-                'add_progress_photo',
-                'chart_series',
-                'delete_body_measurement',
-                'delete_noise_marker',
-                'delete_progress_photo',
-                'delete_weight_log',
-                'get_active_weight',
-                'get_progress_photo',
-                'get_progress_photo_by_file_key',
-                'list_active_weights',
-                'list_body_measurements',
-                'list_noise_markers',
-                'list_progress_photos',
-                'list_weight_notes',
-                'log_weight',
-                'refresh_noise_alert',
-                'update_body_measurement',
-                'update_body_measurement_note',
-                'update_weight_log',
-                'update_weight_note',
-                'upsert_body_measurement',
-            }
-        ),
     }
 )
 
@@ -179,7 +136,6 @@ LEGACY_BARE_ID_READS: Mapping[str, frozenset[str]] = MappingProxyType(
         "vitals.services.proactive.day_plan": frozenset({"AppSetting"}),
         "vitals.services.proactive.inbound": frozenset({"RawPayload"}),
         "vitals.services.twofa_service": frozenset({"AppSetting"}),
-        "vitals.services.weight_service": frozenset({"ProgressPhoto"}),
     }
 )
 

@@ -10,6 +10,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the weight domain — thirty-nine bridges, the largest in the codebase
+  and the one every other domain leans on: weigh-ins, body measurements, noise
+  markers, progress photos, the chart series, and the Garmin export outbox
+  behind them. With it, **the last legacy `enforce()` call site in the codebase
+  is gone**: every conflict-gated write now names its subject and the decision
+  that authorised it.
+- Adoption on write is gone everywhere it survived — a note, an edit, or a
+  delete no longer claims an ownerless weigh-in on the way past. The two
+  remaining `_adopt_weight_provenance` calls are the dedupe path, where the row
+  is already in scope and only its connection and raw link are being filled in.
+- The integrity validators stop scanning rows that belong to nobody. A
+  half-migrated graph was worth reporting while the bridge could reach it; now
+  such a row is outside every scope, and what these validators still guard is a
+  row that names *this* subject and then cites provenance that does not.
+- A Garmin weigh-in inside a daily bundle is projected on the owned ingest path
+  only. A legacy ingest keeps the Garmin row and stops there, because without a
+  subject there is nobody for the reading to belong to.
+- `handle_active_weight_deleted` clears the outbox link itself rather than
+  depending on `ON DELETE SET NULL`. The caller already knows which id it
+  deleted, and the two dialects enforce the constraint differently.
+- Progress photos close with the rest: every upload domain now refuses a write
+  that does not name a subject, which is what `test_upload_dual_write` asserts
+  in place of the permissive path it used to describe.
+
 - Closed the labs domain — twenty-four bridges, the largest leaf in the codebase
   and the one with the deepest provenance chain: a result, its marker catalog
   row, the raw payload it was parsed from, the document behind that, and the

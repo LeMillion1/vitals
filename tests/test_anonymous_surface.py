@@ -127,19 +127,32 @@ async def test_the_owner_still_gets_the_file(
     auth_client,
     db_session,
     an_uploaded_file,
+    legacy_owner_roots,
+    owner_write,
 ):
     from datetime import date
 
-    from vitals.enums import Domain, Source
-    from vitals.models.weight import ProgressPhoto
+    from vitals.enums import FileAssetPurpose
+    from vitals.services import file_asset_service, weight_service
 
-    db_session.add(
-        ProgressPhoto(
-            date=date(2026, 8, 20),
-            domain=Domain.WEIGHT.value,
-            source=Source.MANUAL.value,
-            file_key=f"uploads/{an_uploaded_file}",
-        )
+    file_key = f"uploads/{an_uploaded_file}"
+    asset = await file_asset_service.register_legacy_local(
+        db_session,
+        subject_id=owner_write.subject_id,
+        uploaded_by_user_id=owner_write.identity.actor_user_id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO,
+        storage_ref=file_key,
+        media_type="image/png",
+        size_bytes=15,
+        content_sha256="8" * 64,
+    )
+    await weight_service.add_progress_photo(
+        db_session,
+        on_date=date(2026, 8, 20),
+        file_key=file_key,
+        identity=owner_write.identity,
+        file_asset_id=asset.id,
+        prepared_conflict_write=await owner_write.write(date(2026, 8, 20)),
     )
     await db_session.commit()
 

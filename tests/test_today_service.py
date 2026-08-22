@@ -204,10 +204,14 @@ async def test_yesterdays_brief_does_not_stand_in_for_today(db_session, legacy_o
     assert "Вчерашний текст." != ctx["narrative"]
 
 
-async def test_weight_drives_the_figure_and_the_fallback_sentence(db_session, legacy_owner_roots):
+async def test_weight_drives_the_figure_and_the_fallback_sentence(db_session, legacy_owner_roots, owner_write):
     for offset, kg in ((14, 95.0), (7, 93.5), (0, 92.0)):
         await weight_service.log_weight(
-            db_session, on_date=today_local() - timedelta(days=offset), weight_kg=kg
+            db_session,
+            on_date=today_local() - timedelta(days=offset),
+            weight_kg=kg,
+            identity=owner_write.identity,
+            prepared_weight_write=await owner_write.weight_write(today_local() - timedelta(days=offset)),
         )
     await db_session.commit()
 
@@ -311,7 +315,11 @@ async def test_goal_reads_as_distance_covered(db_session, legacy_owner_roots, ow
     — the first logged weight is what "11.2 of 17.5 covered" is measured from."""
     for offset, kg in ((30, 100.0), (0, 94.0)):
         await weight_service.log_weight(
-            db_session, on_date=today_local() - timedelta(days=offset), weight_kg=kg
+            db_session,
+            on_date=today_local() - timedelta(days=offset),
+            weight_kg=kg,
+            identity=owner_write.identity,
+            prepared_weight_write=await owner_write.weight_write(today_local() - timedelta(days=offset)),
         )
     await milestones_service.create_milestone(
         db_session, name="Дойти до 85", domain=Domain.WEIGHT.value,

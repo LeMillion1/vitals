@@ -1063,7 +1063,6 @@ async def test_replay_normalizes_only_successful_platform_extraction(
         db_session,
         DAY,
         subject_id=legacy_owner_roots.subject_id,
-        include_legacy_unowned=True,
     )
     assert weight is not None
     assert (
@@ -1132,7 +1131,6 @@ async def test_derived_weight_rejects_broken_platform_parser_graph(
             db_session,
             DAY,
             subject_id=legacy_owner_roots.subject_id,
-            include_legacy_unowned=True,
         )
 
 
@@ -1162,7 +1160,6 @@ async def test_retained_weight_accepts_monotonically_retired_scan_file(
         db_session,
         DAY,
         subject_id=legacy_owner_roots.subject_id,
-        include_legacy_unowned=True,
     )
     assert weight is not None and weight.raw_payload_id == raw.id
 
@@ -1233,7 +1230,6 @@ async def test_mcp_scan_and_derived_weight_reject_mixed_parser_invocation(
             db_session,
             DAY,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
 
 

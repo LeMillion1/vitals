@@ -22,14 +22,6 @@ _LEGACY_WRITER_APIS = frozenset({"enforce", "enforce_day_end"})
 
 _EXPECTED_LEGACY_CALLS = Counter(
     {
-        ("vitals/services/body_scan_service.py", "save_scan", "enforce"): 1,
-        ("vitals/services/weight_service.py", "log_weight", "enforce"): 1,
-        (
-            "vitals/services/weight_service.py",
-            "_enforce_body_measurement_write",
-            "enforce",
-        ): 1,
-        ("vitals/services/weight_service.py", "update_weight_log", "enforce"): 1,
     }
 )
 
@@ -434,10 +426,9 @@ def test_legacy_conflict_writer_inventory_is_exact() -> None:
     actual = Counter(_audit().legacy_calls)
 
     assert actual == _EXPECTED_LEGACY_CALLS
-    # Four legacy enforce sites remain, all in weight_service: supplements
-    # closed three, skincare one, HRT two, nutrition one, GLP-1 two and labs one
-    # when they started demanding a subject and a conflict decision.
-    assert sum(count for (*_, api), count in actual.items() if api == "enforce") == 4
+    # No legacy enforce site remains: every domain that had one now demands a
+    # subject and the conflict decision that authorised the write.
+    assert sum(count for (*_, api), count in actual.items() if api == "enforce") == 0
     assert (
         sum(
             count

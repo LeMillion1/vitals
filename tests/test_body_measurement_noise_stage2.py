@@ -149,10 +149,16 @@ async def test_scoped_measurement_crud_preserves_identity_and_origin(
     ) == []
 
 
-async def test_measurement_legacy_bridge_adopts_only_fully_unowned_rows(
+async def test_measurement_rows_without_a_subject_are_out_of_every_scope(
     db_session,
     legacy_owner_roots,
 ):
+    """Neither a fully-unowned nor a half-owned measurement is reachable now.
+
+    The bridge used to distinguish the two — surfacing and adopting the first,
+    reporting the second. Closing the domain removes the distinction: the
+    subject is the whole scope, and neither row carries one.
+    """
     identity = _identity(legacy_owner_roots)
     legacy = BodyMeasurement(
         date=MEASUREMENT_DATE,
@@ -170,36 +176,23 @@ async def test_measurement_legacy_bridge_adopts_only_fully_unowned_rows(
     db_session.add_all([legacy, partial])
     await db_session.commit()
 
-    with pytest.raises(weight_service.WeightOwnershipError, match="partial"):
-        await weight_service.list_body_measurements(
-            db_session,
-            subject_id=identity.subject_id,
-            include_legacy_unowned=True,
-        )
-    with pytest.raises(weight_service.WeightOwnershipError, match="partial"):
-        await weight_service.update_body_measurement(
-            db_session,
-            partial.id,
-            on_date=MOVED_DATE,
-            waist_cm=89,
-            identity=identity,
-            include_legacy_unowned=True,
-            prepared_conflict_write=await _prepared(
-                db_session,
-                identity,
-                on_date=MOVED_DATE,
-                legacy=True,
-            ),
-        )
-    await db_session.delete(partial)
-    await db_session.flush()
-
-    visible = await weight_service.list_body_measurements(
+    assert await weight_service.list_body_measurements(
         db_session,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    )
-    assert [row.id for row in visible] == [legacy.id]
+    ) == []
+    assert await weight_service.update_body_measurement(
+        db_session,
+        partial.id,
+        on_date=MOVED_DATE,
+        waist_cm=89,
+        identity=identity,
+        prepared_conflict_write=await _prepared(
+            db_session,
+            identity,
+            on_date=MOVED_DATE,
+            legacy=True,
+        ),
+    ) is None
 
     adopted = await weight_service.update_body_measurement(
         db_session,
@@ -207,18 +200,17 @@ async def test_measurement_legacy_bridge_adopts_only_fully_unowned_rows(
         on_date=MEASUREMENT_DATE,
         waist_cm=86,
         identity=identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=await _prepared(
             db_session,
             identity,
             legacy=True,
         ),
     )
-    assert adopted is legacy
-    assert (legacy.subject_id, legacy.actor_user_id, legacy.source) == (
-        identity.subject_id,
+    assert adopted is None
+    assert (legacy.subject_id, legacy.actor_user_id, legacy.waist_cm) == (
         None,
-        Source.MANUAL.value,
+        None,
+        87,
     )
 
 
@@ -304,10 +296,16 @@ async def test_measurement_and_noise_foreign_ids_are_non_enumerating(
     ) is False
 
 
-async def test_partial_root_noise_marker_fails_closed_on_read_refresh_and_delete(
+async def test_partial_root_noise_marker_is_out_of_scope_everywhere(
     db_session,
     legacy_owner_roots,
 ):
+    """A half-owned marker used to be reported; now it is simply not found.
+
+    The read passes over it, the alert refresh does not see an active interval,
+    and the delete has nothing to remove — the row survives untouched either
+    way, which is what actually protects it.
+    """
     identity = _identity(legacy_owner_roots)
     partial = NoiseMarker(
         actor_user_id=identity.actor_user_id,
@@ -320,29 +318,24 @@ async def test_partial_root_noise_marker_fails_closed_on_read_refresh_and_delete
     db_session.add(partial)
     await db_session.commit()
 
-    with pytest.raises(weight_service.WeightOwnershipError, match="partial"):
-        await weight_service.list_noise_markers(
-            db_session,
-            subject_id=identity.subject_id,
-            include_legacy_unowned=True,
-        )
+    assert await weight_service.list_noise_markers(
+        db_session,
+        subject_id=identity.subject_id,
+    ) == []
 
     prepared = await _prepared(db_session, identity, legacy=True)
-    with pytest.raises(weight_service.WeightOwnershipError, match="partial"):
-        await weight_service.refresh_noise_alert(
-            db_session,
-            on_date=MEASUREMENT_DATE,
-            identity=identity,
-            prepared_conflict_write=prepared,
-        )
-    with pytest.raises(weight_service.WeightOwnershipError, match="partial"):
-        await weight_service.delete_noise_marker(
-            db_session,
-            partial.id,
-            identity=identity,
-            include_legacy_unowned=True,
-            prepared_conflict_write=prepared,
-        )
+    assert await weight_service.refresh_noise_alert(
+        db_session,
+        on_date=MEASUREMENT_DATE,
+        identity=identity,
+        prepared_conflict_write=prepared,
+    ) is None
+    assert await weight_service.delete_noise_marker(
+        db_session,
+        partial.id,
+        identity=identity,
+        prepared_conflict_write=prepared,
+    ) is False
     assert await db_session.get(NoiseMarker, partial.id) is partial
     assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 0
 
@@ -751,7 +744,8 @@ async def test_web_and_mcp_writes_are_scoped_and_keep_surface_provenance(
                 (
                     name,
                     kwargs["identity"],
-                    kwargs["include_legacy_unowned"],
+                    # The boundary carries the subject, not an escape hatch.
+                    kwargs["identity"].subject_id,
                     context.legacy_bridge,
                     kwargs.get("source"),
                 )
@@ -824,35 +818,35 @@ async def test_web_and_mcp_writes_are_scoped_and_keep_surface_provenance(
         (
             "upsert_body_measurement",
             _identity(legacy_owner_roots),
-            True,
+            legacy_owner_roots.subject_id,
             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
             Source.MCP.value,
         ),
         (
             "add_noise_marker",
             _identity(legacy_owner_roots),
-            True,
+            legacy_owner_roots.subject_id,
             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
             Source.MCP.value,
         ),
         (
             "update_body_measurement",
             _identity(legacy_owner_roots),
-            True,
+            legacy_owner_roots.subject_id,
             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
             None,
         ),
         (
             "update_body_measurement_note",
             _identity(legacy_owner_roots),
-            True,
+            legacy_owner_roots.subject_id,
             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
             None,
         ),
         (
             "delete_noise_marker",
             _identity(legacy_owner_roots),
-            True,
+            legacy_owner_roots.subject_id,
             conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
             None,
         ),

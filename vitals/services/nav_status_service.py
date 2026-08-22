@@ -62,7 +62,9 @@ async def _weight_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     from vitals.services import weight_service
 
     today = today_local()
-    logs = await weight_service.list_active_weights(session, start=today - timedelta(days=21))
+    logs = await weight_service.list_active_weights(
+        session, start=today - timedelta(days=21), subject_id=subject_id
+    )
     if not logs:
         return None
     latest = logs[-1]

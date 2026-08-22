@@ -83,11 +83,17 @@ async def test_log_meal_override_saves_through_block(db_session, session_factory
 
 
 # ── get_full_snapshot ─────────────────────────────────────────────────────────
-async def test_get_full_snapshot_returns_cross_domain_context(db_session, session_factory, monkeypatch):
+async def test_get_full_snapshot_returns_cross_domain_context(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import date
 
-    await weight_service.log_weight(db_session, on_date=date(2026, 7, 1), weight_kg=90.0)
+    await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 7, 1),
+        weight_kg=90.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 7, 1)),
+    )
     await db_session.commit()
 
     snap = await mcp_router.get_full_snapshot()
@@ -108,14 +114,18 @@ async def test_get_full_snapshot_rejects_unbounded_period(
 
 
 # ── export_everything ─────────────────────────────────────────────────────────
-async def test_export_everything_includes_history(db_session, session_factory, monkeypatch):
+async def test_export_everything_includes_history(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import timedelta
 
     from vitals.utils.timeutils import today_local
 
     await weight_service.log_weight(
-        db_session, on_date=today_local() - timedelta(days=3), weight_kg=88.5
+        db_session,
+        on_date=today_local() - timedelta(days=3),
+        weight_kg=88.5,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(today_local() - timedelta(days=3)),
     )
     await db_session.commit()
 
@@ -126,7 +136,7 @@ async def test_export_everything_includes_history(db_session, session_factory, m
 
 
 async def test_export_everything_defaults_to_the_last_90_days(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, owner_write
 ):
     """Without a window the export is years of daily rows — it fills the conversation
     before the question gets asked. The default is a window; the full history is a
@@ -138,8 +148,20 @@ async def test_export_everything_defaults_to_the_last_90_days(
 
     recent = today_local() - timedelta(days=10)
     ancient = today_local() - timedelta(days=400)
-    await weight_service.log_weight(db_session, on_date=recent, weight_kg=88.5)
-    await weight_service.log_weight(db_session, on_date=ancient, weight_kg=110.0)
+    await weight_service.log_weight(
+        db_session,
+        on_date=recent,
+        weight_kg=88.5,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(recent),
+    )
+    await weight_service.log_weight(
+        db_session,
+        on_date=ancient,
+        weight_kg=110.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(ancient),
+    )
     await db_session.commit()
 
     default = await mcp_router.export_everything()
@@ -151,7 +173,7 @@ async def test_export_everything_defaults_to_the_last_90_days(
 
 
 async def test_export_everything_narrows_to_named_domains(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, monkeypatch, owner_write
 ):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import timedelta
@@ -159,7 +181,11 @@ async def test_export_everything_narrows_to_named_domains(
     from vitals.utils.timeutils import today_local
 
     await weight_service.log_weight(
-        db_session, on_date=today_local() - timedelta(days=1), weight_kg=88.5
+        db_session,
+        on_date=today_local() - timedelta(days=1),
+        weight_kg=88.5,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(today_local() - timedelta(days=1)),
     )
     await db_session.commit()
 
@@ -173,12 +199,24 @@ async def test_export_everything_narrows_to_named_domains(
 
 
 # ── get_data_overview ─────────────────────────────────────────────────────────
-async def test_get_data_overview_reports_counts_and_range(db_session, session_factory, monkeypatch):
+async def test_get_data_overview_reports_counts_and_range(db_session, session_factory, monkeypatch, owner_write):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import date
 
-    await weight_service.log_weight(db_session, on_date=date(2026, 6, 1), weight_kg=91.0)
-    await weight_service.log_weight(db_session, on_date=date(2026, 6, 10), weight_kg=90.0)
+    await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 6, 1),
+        weight_kg=91.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 6, 1)),
+    )
+    await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 6, 10),
+        weight_kg=90.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 6, 10)),
+    )
     await db_session.commit()
 
     overview = await mcp_router.get_data_overview()

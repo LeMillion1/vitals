@@ -530,10 +530,6 @@ async def _validate_linked_weight(
         session,
         weight,
         subject_id=context.identity.subject_id,
-        include_legacy_unowned=(
-            context.legacy_bridge
-            is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-        ),
     )
     if weight.date != row.date:
         raise GarminWeightExportOwnershipError(
@@ -1390,10 +1386,6 @@ async def reconcile_latest(
             session,
             end=clock.date(),
             subject_id=context.identity.subject_id,
-            include_legacy_unowned=(
-                context.legacy_bridge
-                is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-            ),
         )
         local = max(rows, key=lambda row: (row.date, row.id), default=None)
     requested_by_user_id = (
@@ -1529,6 +1521,12 @@ async def handle_active_weight_deleted(
         .execution_options(populate_existing=True)
     )
     outbox = result.scalar_one_or_none()
+    if outbox is not None and outbox.weight_log_id == deleted_id:
+        # The fact this row cites is gone. ``ON DELETE SET NULL`` says so on
+        # PostgreSQL, but the caller already knows which id it deleted, so say
+        # it here too rather than depending on the dialect's enforcement.
+        outbox.weight_log_id = None
+        await session.flush()
     if outbox is not None and context is not None:
         exact_or_legacy = (
             outbox.subject_id == context.identity.subject_id

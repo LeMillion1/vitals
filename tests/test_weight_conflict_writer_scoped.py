@@ -311,10 +311,16 @@ async def test_exact_subject_reads_and_mutations_hide_foreign_rows(
     assert foreign.note is None
 
 
-async def test_fully_unowned_row_is_visible_and_adopted_only_through_bridge(
+async def test_fully_unowned_row_is_neither_visible_nor_adoptable(
     db_session,
     legacy_owner_roots,
 ):
+    """Weight's compatibility bridge is gone, on the read and on the write.
+
+    A weigh-in that belongs to nobody used to be visible to the sole owner and
+    claimable by the first note they wrote on it. Now the subject is the whole
+    scope: the row is not found, and nothing claims it.
+    """
     legacy = WeightLog(
         date=EVALUATION_DATE,
         domain=Domain.WEIGHT.value,
@@ -329,30 +335,19 @@ async def test_fully_unowned_row_is_visible_and_adopted_only_through_bridge(
         db_session,
         subject_id=identity.subject_id,
     ) == []
-    assert [row.id for row in await weight_service.list_active_weights(
-        db_session,
-        subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    )] == [legacy.id]
 
     context, prepared = await _legacy_prepared(db_session)
-    adopted = await weight_service.update_weight_note(
+    assert await weight_service.update_weight_note(
         db_session,
         legacy.id,
         note="claimed safely",
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_weight_write=prepared,
-    )
-    assert adopted is legacy
-    assert (legacy.subject_id, legacy.actor_user_id, legacy.note) == (
-        identity.subject_id,
-        None,
-        "claimed safely",
-    )
+    ) is None
+    assert (legacy.subject_id, legacy.note) == (None, None)
 
 
-async def test_legacy_weights_remain_readable_after_exact_raw_backfill(
+async def test_a_backfilled_raw_does_not_lend_its_fact_a_subject(
     db_session,
     legacy_owner_roots,
 ):
@@ -401,34 +396,21 @@ async def test_legacy_weights_remain_readable_after_exact_raw_backfill(
     db_session.add_all([garmin_weight, mcp_body_weight])
     await db_session.commit()
 
+    # The raw-first backfill stamped the payloads; the facts that cite them are
+    # still waiting for the normalized phase, and until then they are nobody's.
     assert await weight_service.list_active_weights(
         db_session,
         subject_id=identity.subject_id,
     ) == []
-    visible = await weight_service.list_active_weights(
-        db_session,
-        subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    )
-    assert {row.id for row in visible} == {
-        garmin_weight.id,
-        mcp_body_weight.id,
-    }
-    assert await weight_service.get_active_weight(
-        db_session,
-        OTHER_DATE,
-        subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    ) is garmin_weight
-    assert await weight_service.get_active_weight(
-        db_session,
-        EVALUATION_DATE,
-        subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    ) is mcp_body_weight
+    for on_date in (OTHER_DATE, EVALUATION_DATE):
+        assert await weight_service.get_active_weight(
+            db_session,
+            on_date,
+            subject_id=identity.subject_id,
+        ) is None
 
 
-async def test_partial_actor_connection_and_raw_roots_fail_closed(
+async def test_partial_actor_connection_and_raw_roots_are_out_of_scope(
     db_session,
     legacy_owner_roots,
 ):
@@ -472,30 +454,14 @@ async def test_partial_actor_connection_and_raw_roots_fail_closed(
     db_session.add_all(partial_rows)
     await db_session.commit()
 
-    accepted_partial_roots: list[str] = []
-    for root_name, row in zip(
-        ("actor", "connection", "raw"),
-        partial_rows,
-        strict=True,
-    ):
-        try:
-            await weight_service.get_active_weight(
-                db_session,
-                row.date,
-                subject_id=identity.subject_id,
-                include_legacy_unowned=True,
-            )
-        except (
-            weight_service.WeightOwnershipError,
-            conflict_engine.ConflictRawOwnershipError,
-        ) as exc:
-            if root_name == "raw":
-                assert isinstance(exc, conflict_engine.ConflictRawOwnershipError)
-            else:
-                assert isinstance(exc, weight_service.WeightOwnershipError)
-        else:
-            accepted_partial_roots.append(root_name)
-    assert accepted_partial_roots == []
+    # None of these rows names a subject, so none of them is this subject's to
+    # read — the reader passes over them rather than reporting them.
+    for row in partial_rows:
+        assert await weight_service.get_active_weight(
+            db_session,
+            row.date,
+            subject_id=identity.subject_id,
+        ) is None
 
 
 async def test_manual_mcp_garmin_and_body_scan_provenance(

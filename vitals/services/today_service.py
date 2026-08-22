@@ -145,7 +145,6 @@ async def build(
     series = await weight_service.chart_series(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
 
     # ── Key figures ──────────────────────────────────────────────────────────

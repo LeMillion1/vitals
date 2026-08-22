@@ -909,7 +909,6 @@ async def test_legacy_raw_replay_weight_bridge_remains_scoped_readable(
         db_session,
         SCAN_DATE,
         subject_id=system.subject_id,
-        include_legacy_unowned=True,
     )
     assert bridged is not None
     assert (
@@ -979,7 +978,6 @@ async def test_stage3a_parser_history_replays_scan_and_weight_without_file_adopt
         db_session,
         SCAN_DATE,
         subject_id=system.subject_id,
-        include_legacy_unowned=True,
     )
     raw = await db_session.get(RawPayload, raw.id)
     assert scan is not None and weight is not None and raw is not None

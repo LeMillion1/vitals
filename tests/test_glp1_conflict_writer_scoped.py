@@ -810,10 +810,15 @@ async def test_plateau_rejects_weight_linked_to_foreign_raw_provenance(
         )
 
 
-async def test_plateau_rejects_legacy_weight_linked_to_partial_raw_provenance(
+async def test_plateau_ignores_a_weight_that_names_no_subject(
     db_session,
     legacy_owner_roots,
 ):
+    """A plateau is read from this person's weight trend, and only theirs.
+
+    The weigh-in here belongs to nobody, so it is not part of the trend at all;
+    what its raw looks like never comes up.
+    """
     identity = WriteIdentity(
         legacy_owner_roots.subject_id,
         legacy_owner_roots.user_id,
@@ -850,12 +855,11 @@ async def test_plateau_rejects_legacy_weight_linked_to_partial_raw_provenance(
     )
     await db_session.commit()
 
-    with pytest.raises(conflict_engine.ConflictRawOwnershipError):
-        await glp1_service.evaluate_plateau(
-            db_session,
-            subject_id=identity.subject_id,
-            scope=_context(identity, legacy_bridge=True).scope,
-        )
+    assert await glp1_service.evaluate_plateau(
+        db_session,
+        subject_id=identity.subject_id,
+        scope=_context(identity, legacy_bridge=True).scope,
+    ) is None
 
 
 async def test_plateau_job_is_noop_when_subject_module_is_disabled(

@@ -483,26 +483,30 @@ async def test_owned_pending_upload_reparse_preserves_ownership(
     assert normalized.raw_payload_id == raw.id
 
 
-async def test_legacy_service_calls_remain_nullable_and_usable(db_session):
-    """Only the progress-photo path still writes without naming a subject.
+async def test_no_upload_domain_writes_without_naming_a_subject(db_session):
+    """Every upload path now demands the subject and its conflict decision.
 
-    Labs closed alongside body composition, so its half of this contract moved
-    to the scoped tests; what is left here is the one upload domain that has
-    not been closed yet.
+    Progress photos were the last of the three to keep a nullable write; labs
+    and body composition closed before it. What this file used to assert about
+    a permissive path is now asserted about the absence of one — the signature
+    itself refuses, which is what makes the closure checkable.
     """
-    photo = await weight_service.add_progress_photo(
-        db_session,
-        on_date=date(2026, 8, 19),
-        file_key="uploads/legacy.png",
-    )
+    import inspect
 
-    assert (photo.subject_id, photo.actor_user_id, photo.file_asset_id) == (
-        None,
-        None,
-        None,
-    )
-    assert await weight_service.delete_progress_photo(db_session, photo.id)
-
+    for service, name in (
+        (weight_service, "add_progress_photo"),
+        (labs_service, "add_result"),
+        (body_scan_service, "save_scan"),
+    ):
+        signature = inspect.signature(getattr(service, name))
+        identity = signature.parameters["identity"]
+        assert identity.default is inspect.Parameter.empty, name
+        capability = next(
+            parameter
+            for parameter_name, parameter in signature.parameters.items()
+            if parameter_name.startswith("prepared_")
+        )
+        assert capability.default is inspect.Parameter.empty, name
 
 async def _fake_lab_extract(contents, *, llm, content_type, filename=None):
     return {

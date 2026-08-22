@@ -562,12 +562,14 @@ async def test_real_postgres_0034_progress_photo_stop_resume_and_restore(
                 session,
                 subject_id=identity.subject_id,
             ) == PHOTO_IDS[0]
+            # The backfill is halfway: weight is closed, so the reader shows
+            # exactly the photos that already carry the subject and none of the
+            # ones still waiting for the next batch.
             visible = await weight_service.list_progress_photos(
                 session,
                 subject_id=identity.subject_id,
-                include_legacy_unowned=True,
             )
-            assert {row.id for row in visible} == set(PHOTO_IDS)
+            assert {row.id for row in visible} == {PHOTO_IDS[0]}
             processed = next(row for row in visible if row.id == PHOTO_IDS[0])
             assert processed.actor_user_id is None
 

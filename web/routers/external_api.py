@@ -68,7 +68,6 @@ async def _weight_block(
     weights = await weight_service.list_active_weights(
         session,
         subject_id=scope.subject_id,
-        include_legacy_unowned=scope.include_legacy_unowned,
     )
     latest = weights[-1] if weights else None
 
@@ -88,7 +87,6 @@ async def _weight_block(
     series = await weight_service.chart_series(
         session,
         subject_id=scope.subject_id,
-        include_legacy_unowned=scope.include_legacy_unowned,
         goal_kg=goal_kg,
     )
     sparkline = [{"date": p["date"], "kg": p["weight_kg"]} for p in series["trend_ma"]]
@@ -152,7 +150,6 @@ async def _activity_block(
         start=since,
         end=today,
         subject_id=scope.subject_id,
-        include_legacy_unowned=scope.include_legacy_unowned,
     )
     meals = await nutrition_service.list_meals(
         session,

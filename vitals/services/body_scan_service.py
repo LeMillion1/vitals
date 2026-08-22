@@ -793,8 +793,6 @@ async def save_scan(
         value is not None for value in (file_key, file_asset_id)
     ):
         raise ValueError("owned scan file references require a raw upload")
-    elif weight_context is None and file_asset_id is not None:
-        raise ValueError("file_asset_id requires an explicit write identity")
 
     # Authorization precedes the conflict engine because a rejected client id
     # must not be able to trigger even an alert side effect in this transaction.
@@ -802,28 +800,18 @@ async def save_scan(
     conflict_entity_ref = _create_conflict_entity_ref(
         owned_raw.id if owned_raw is not None else raw_payload_id
     )
-    if weight_context is None:
-        await conflict_engine.enforce(
-            session,
-            Domain.BODY_COMPOSITION.value,
-            proposed,
-            override=override,
-            entity_ref=conflict_entity_ref,
-        )
-    else:
-        assert prepared_weight_write is not None
-        await conflict_engine.enforce_prepared(
-            session,
-            prepared=prepared_weight_write.conflict_write,
-            domain=Domain.BODY_COMPOSITION,
-            proposed_state=proposed,
-            override=override,
-            entity_ref=conflict_entity_ref,
-        )
+    await conflict_engine.enforce_prepared(
+        session,
+        prepared=prepared_weight_write.conflict_write,
+        domain=Domain.BODY_COMPOSITION,
+        proposed_state=proposed,
+        override=override,
+        entity_ref=conflict_entity_ref,
+    )
 
     scan = BodyScan(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         file_asset_id=authoritative_file_asset_id,
         date=on_date,
         domain=DOMAIN,

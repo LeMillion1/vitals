@@ -149,7 +149,6 @@ async def test_weight_capability_projects_exact_destination_without_rewriting_sc
         identity=identity,
         integration_connection_id=openrouter.id,
         raw_payload_id=raw.id,
-        include_legacy_unowned=True,
         prepared_weight_write=prepared,
     )
     outbox = await db_session.scalar(

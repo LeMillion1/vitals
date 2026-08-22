@@ -187,22 +187,18 @@ async def _section_context(
     weights = await weight_service.list_active_weights(
         db,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     measurements = await weight_service.list_body_measurements(
         db,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     noise_markers = await weight_service.list_noise_markers(
         db,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     photos = await weight_service.list_progress_photos(
         db,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     alerts = await alerts_service.list_active_scoped(
         db,
@@ -222,7 +218,6 @@ async def _section_context(
     series = await weight_service.chart_series(
         db,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
         include_bia=body_comp_enabled,
         include_timeline=timeline_enabled,
     )
@@ -395,7 +390,6 @@ async def log_weight_entry(
                 note=note,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_weight_write=prepared,
             )
         else:
@@ -406,7 +400,6 @@ async def log_weight_entry(
                 note=note,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_weight_write=prepared,
             )
         await db.commit()
@@ -465,7 +458,6 @@ async def log_measurement_entry(
                 override=override,
                 partial=False,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         else:
@@ -479,7 +471,6 @@ async def log_measurement_entry(
                 source=Source.MANUAL.value,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         await db.commit()
@@ -528,7 +519,6 @@ async def add_noise_entry(
             direction=dir_value,
             source=Source.MANUAL.value,
             identity=conflict_context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await db.commit()
@@ -1058,7 +1048,6 @@ async def delete_weight_entry(
         db,
         id,
         identity=conflict_context.identity,
-        include_legacy_unowned=True,
         prepared_weight_write=prepared,
     )
     await db.commit()
@@ -1082,7 +1071,6 @@ async def delete_measurement_entry(
         db,
         id,
         identity=conflict_context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -1106,7 +1094,6 @@ async def delete_noise_marker_entry(
         db,
         id,
         identity=conflict_context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -1131,7 +1118,6 @@ async def delete_photo_entry(
         db,
         id,
         identity=conflict_context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()

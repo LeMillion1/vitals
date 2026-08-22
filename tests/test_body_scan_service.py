@@ -202,7 +202,11 @@ async def test_scan_weight_supersedes_garmin(db_session, owner_write):
     await _save(db_session, owner_write, metrics=[{"label": "Вес", "value": 71.5}])
     await db_session.commit()
 
-    active = await weight_service.get_active_weight(db_session, DAY)
+    active = await weight_service.get_active_weight(
+        db_session,
+        DAY,
+        subject_id=owner_write.subject_id,
+    )
     assert active.source == Source.BODY_SCAN.value
     assert active.weight_kg == 71.5
 
@@ -222,7 +226,11 @@ async def test_garmin_never_supersedes_a_scan(db_session, owner_write):
     await _owned_garmin_weight(db_session, owner_write, on_date=DAY2, weight_kg=79.0)
     await db_session.commit()
 
-    active = await weight_service.get_active_weight(db_session, DAY2)
+    active = await weight_service.get_active_weight(
+        db_session,
+        DAY2,
+        subject_id=owner_write.subject_id,
+    )
     assert active.source == Source.BODY_SCAN.value
     assert active.weight_kg == 80.0
 

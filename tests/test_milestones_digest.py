@@ -31,7 +31,13 @@ composed = pytest.mark.usefixtures("owned_by_legacy_subject")
 # ── Milestones ────────────────────────────────────────────────────────────────
 @composed
 async def test_create_and_progress_weight_goal(db_session, owner_write):
-    await weight_service.log_weight(db_session, on_date=DAY, weight_kg=90.0)
+    await weight_service.log_weight(
+        db_session,
+        on_date=DAY,
+        weight_kg=90.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(DAY),
+    )
     m = await milestones_service.create_milestone(
         db_session, name="Дойти до 82", domain="weight", target_value=82.0,
         target_unit="кг", deadline=DAY + timedelta(days=60),
@@ -74,7 +80,13 @@ async def test_progress_guards_against_unit_domain_mismatch(db_session, owner_wr
     copy-pasted from a body-fat goal) must not compute current/remaining — on the
     old code this compared a percentage target against a kilogram reading and
     printed a nonsense "remaining"."""
-    await weight_service.log_weight(db_session, on_date=DAY, weight_kg=86.1)
+    await weight_service.log_weight(
+        db_session,
+        on_date=DAY,
+        weight_kg=86.1,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(DAY),
+    )
     m = await milestones_service.create_milestone(
         db_session, name="Body fat under 15%", domain="weight", target_value=15.0,
         target_unit="%",
@@ -116,9 +128,20 @@ async def test_progress_guards_against_unit_domain_mismatch(db_session, owner_wr
 @composed
 async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_write):
     # 1. Log Navy body fat (approx 14.52% for height=190, neck=38, waist=85, weight=88)
-    await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
+    await weight_service.log_weight(
+        db_session,
+        on_date=DAY,
+        weight_kg=88.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(DAY),
+    )
     await weight_service.upsert_body_measurement(
-        db_session, on_date=DAY, neck_cm=38, waist_cm=85
+        db_session,
+        on_date=DAY,
+        neck_cm=38,
+        waist_cm=85,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY),
     )
     
     m = await milestones_service.create_milestone(
@@ -193,7 +216,12 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
     # available, this isn't a "most recent date wins" contest.
     monkeypatch.delenv("VITALS_BODY_FAT_SOURCE", raising=False)
     await weight_service.upsert_body_measurement(
-        db_session, on_date=DAY + timedelta(days=2), neck_cm=39, waist_cm=90
+        db_session,
+        on_date=DAY + timedelta(days=2),
+        neck_cm=39,
+        waist_cm=90,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY + timedelta(days=2)),
     )
     await db_session.commit()
     cards = await milestones_service.dashboard_cards(db_session,
@@ -280,7 +308,13 @@ async def test_signals_reach_the_digest_context(db_session, legacy_owner_roots):
 async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots, owner_write):
     from vitals.services import labs_service
 
-    await weight_service.log_weight(db_session, on_date=DAY, weight_kg=88.0)
+    await weight_service.log_weight(
+        db_session,
+        on_date=DAY,
+        weight_kg=88.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(DAY),
+    )
     await garmin_service.ingest_daily(
         db_session, DAY, {"summary": {"restingHeartRate": 52},
                           "sleep": {"dailySleepDTO": {"sleepScores": {"overall": {"value": 80}}}}}
@@ -659,7 +693,7 @@ async def test_complete_text_warns_when_the_answer_is_cut_by_the_token_limit(cap
 
 
 @composed
-async def test_assemble_context_includes_intersecting_noise_markers(db_session, legacy_owner_roots):
+async def test_assemble_context_includes_intersecting_noise_markers(db_session, legacy_owner_roots, owner_write):
     # Add noise markers: some overlapping, some not.
     # DAY is 2026-06-10. Current is [06-04, 06-10], previous [05-28, 06-03].
     
@@ -668,28 +702,36 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session, 
         db_session,
         start_date=date(2026, 6, 1),
         end_date=date(2026, 6, 5),
-        reason="sodium spike"
+        reason="sodium spike",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(date(2026, 6, 1)),
     )
     # 2. Ongoing noise marker starting during the period
     await weight_service.add_noise_marker(
         db_session,
         start_date=date(2026, 6, 8),
         end_date=None,
-        reason="creatine load"
+        reason="creatine load",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(date(2026, 6, 8)),
     )
     # 3. Non-overlapping noise marker in the future
     await weight_service.add_noise_marker(
         db_session,
         start_date=date(2026, 6, 12),
         end_date=date(2026, 6, 15),
-        reason="future noise"
+        reason="future noise",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(date(2026, 6, 12)),
     )
     # 4. Marker in the comparison window
     await weight_service.add_noise_marker(
         db_session,
         start_date=date(2026, 5, 20),
         end_date=date(2026, 6, 2),
-        reason="past noise"
+        reason="past noise",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(date(2026, 5, 20)),
     )
     await db_session.commit()
 
@@ -727,7 +769,7 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session, 
 
 
 @composed
-async def test_assemble_context_trend_excludes_noise(db_session, legacy_owner_roots):
+async def test_assemble_context_trend_excludes_noise(db_session, legacy_owner_roots, owner_write):
     """The weight trend handed to the LLM must be computed on noise-excluded
     points — otherwise the digest reasons about a spike it's told to discount."""
     import pytest
@@ -735,17 +777,27 @@ async def test_assemble_context_trend_excludes_noise(db_session, legacy_owner_ro
     base = date(2026, 6, 1)
     for i in range(11):
         await weight_service.log_weight(
-            db_session, on_date=base + timedelta(days=i), weight_kg=100.0 - i
+            db_session,
+            on_date=base + timedelta(days=i),
+            weight_kg=100.0 - i,
+            identity=owner_write.identity,
+            prepared_weight_write=await owner_write.weight_write(base + timedelta(days=i)),
         )
     # Water-weight spike on 06-06, marked as noise.
     await weight_service.log_weight(
-        db_session, on_date=base + timedelta(days=5), weight_kg=120.0
+        db_session,
+        on_date=base + timedelta(days=5),
+        weight_kg=120.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(base + timedelta(days=5)),
     )
     await weight_service.add_noise_marker(
         db_session,
         start_date=base + timedelta(days=5),
         end_date=base + timedelta(days=5),
         reason="sodium",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(base + timedelta(days=5)),
     )
     await db_session.commit()
 

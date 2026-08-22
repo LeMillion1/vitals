@@ -631,10 +631,12 @@ async def owner_write(db_session, legacy_owner_roots):
 
         Body composition writes a weigh-in alongside the scan, and that path
         takes the Weight lock order rather than the generic one, so it needs the
-        capability weight_service issues.
+        capability weight_service issues. Like the router, it carries the Garmin
+        destination when one is configured, so a weigh-in that changes reaches
+        the export outbox instead of silently skipping it.
         """
 
-        from vitals.services import weight_service
+        from vitals.services import garmin_weight_service, weight_service
 
         scoped = context
         if on_date is not None:
@@ -644,9 +646,16 @@ async def owner_write(db_session, legacy_owner_roots):
                 actor_username=get_web_config().auth_username,
                 evaluation_date=on_date,
             )
+        export_context = (
+            await garmin_weight_service.resolve_optional_legacy_export_context(
+                db_session,
+                actor_username=get_web_config().auth_username,
+            )
+        )
         return await weight_service.prepare_weight_write(
             db_session,
             context=scoped,
+            garmin_weight_export_context=export_context,
         )
 
     return SimpleNamespace(

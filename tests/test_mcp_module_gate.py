@@ -127,13 +127,19 @@ async def test_delete_record_unknown_domain_lists_the_valid_ones():
     assert "nutrition" in result["error"]
 
 
-async def test_delete_record_deletes_a_core_domain_row(db_session):
+async def test_delete_record_deletes_a_core_domain_row(db_session, owner_write):
     """Core domains have no gate — and a missing id is a clean ``deleted: false``."""
     from datetime import date
 
     from vitals.services import weight_service
 
-    row = await weight_service.log_weight(db_session, on_date=date(2026, 7, 1), weight_kg=90.0)
+    row = await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 7, 1),
+        weight_kg=90.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 7, 1)),
+    )
     await db_session.commit()
 
     assert await mcp_router.delete_record("weight", row.id) == {

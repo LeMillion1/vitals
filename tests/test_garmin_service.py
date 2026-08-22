@@ -39,7 +39,9 @@ from vitals.models.garmin import (
 )
 from vitals.models.raw_payload import RawPayload
 from vitals.models.weight import WeightLog
-from vitals.services import garmin_service, weight_service
+from vitals.services import conflict_engine, garmin_service
+from vitals.services import weight_service
+from web.config import get_web_config
 from vitals.utils.timeutils import to_local_naive
 
 # asyncio_mode=auto (pytest.ini) runs the async tests; the pure normalisation
@@ -753,19 +755,62 @@ async def test_sync_persists_training_status_columns(db_session):
 
 
 # ── Weight bridge + manual-over-Garmin priority ───────────────────────────────
-async def test_daily_bridges_weigh_in_and_manual_supersedes(db_session):
-    await garmin_service.ingest_daily(db_session, DAY, RAW_DAY)
+async def test_owned_daily_bridges_weigh_in_and_manual_supersedes(
+    db_session, owner_write
+):
+    """The weigh-in inside a daily bundle is projected on the owned path only.
+
+    Weight is a closed domain, so a legacy ingest with no subject has nobody to
+    project the reading onto; it keeps the Garmin row and stops there.
+    """
+    from vitals.enums import (
+        IntegrationConnectionStatus,
+        IntegrationConnectionType,
+        IntegrationProvider,
+    )
+    from vitals.models.tenancy import IntegrationConnection
+
+    connection = IntegrationConnection(
+        subject_id=owner_write.subject_id,
+        provider=IntegrationProvider.GARMIN.value,
+        connection_type=IntegrationConnectionType.ACCOUNT.value,
+        external_account_discriminator="synthetic-garmin-daily",
+        status=IntegrationConnectionStatus.ACTIVE.value,
+    )
+    db_session.add(connection)
+    await db_session.flush()
+    await garmin_service.ingest_owned_daily(
+        db_session,
+        DAY,
+        RAW_DAY,
+        identity=owner_write.identity,
+        integration_connection_id=connection.id,
+    )
     await db_session.commit()
 
-    active = await weight_service.get_active_weight(db_session, DAY)
+    active = await weight_service.get_active_weight(
+        db_session,
+        DAY,
+        subject_id=owner_write.subject_id,
+    )
     assert active is not None
     assert active.weight_kg == 85.0
     assert active.source == "garmin_api"
 
     # A manual entry for the same date wins.
-    await weight_service.log_weight(db_session, on_date=DAY, weight_kg=84.0)
+    await weight_service.log_weight(
+        db_session,
+        on_date=DAY,
+        weight_kg=84.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(DAY),
+    )
     await db_session.commit()
-    active = await weight_service.get_active_weight(db_session, DAY)
+    active = await weight_service.get_active_weight(
+        db_session,
+        DAY,
+        subject_id=owner_write.subject_id,
+    )
     assert active.weight_kg == 84.0
     assert active.source == "manual"
     # Garmin row kept, just superseded (data lake — never deleted).
@@ -878,7 +923,9 @@ async def test_healthy_token_store_resolves_the_alert(db_session):
 
 
 @pytest.mark.integration
-async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(db_session):
+async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(
+    db_session, legacy_owner_roots
+):
     """A second Garmin fetch must not block a concurrent local weight save."""
     factory = async_sessionmaker(
         db_session.bind, expire_on_commit=False, class_=AsyncSession
@@ -911,11 +958,29 @@ async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(db_session):
             await session.commit()
             return result
 
+    # The fixture session must hold no identity-governance advisory while the
+    # concurrent writers below take their own.
+    await db_session.commit()
     sync_task = asyncio.create_task(syncing())
     await asyncio.wait_for(second_fetch_started.wait(), timeout=2)
 
     async with factory() as session:
-        await weight_service.log_weight(session, on_date=DAY, weight_kg=84.0)
+        # A capability belongs to the transaction that issued it, so the
+        # concurrent writer mints its own instead of borrowing the fixture's.
+        context = await conflict_engine.resolve_legacy_conflict_write_context(
+            session,
+            actor_username=get_web_config().auth_username,
+            evaluation_date=DAY,
+        )
+        await weight_service.log_weight(
+            session,
+            on_date=DAY,
+            weight_kg=84.0,
+            identity=context.identity,
+            prepared_weight_write=await weight_service.prepare_weight_write(
+                session, context=context
+            ),
+        )
         await asyncio.wait_for(session.commit(), timeout=2)
 
     resume_fetch.set()
@@ -923,7 +988,11 @@ async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(db_session):
     assert summary["days"] == 2
 
     async with factory() as session:
-        active = await weight_service.get_active_weight(session, DAY)
+        active = await weight_service.get_active_weight(
+            session,
+            DAY,
+            subject_id=legacy_owner_roots.subject_id,
+        )
         assert active is not None
         assert active.weight_kg == 84.0
 

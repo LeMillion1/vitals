@@ -159,11 +159,29 @@ async def test_generate_digest_without_llm_key_errors():
 
 # ── get_trend ─────────────────────────────────────────────────────────────────
 async def test_get_trend_weight_slope_and_projection(
-    db_session, owned_by_legacy_subject
+    db_session, owned_by_legacy_subject, owner_write
 ):
-    await weight_service.log_weight(db_session, on_date=date(2026, 6, 1), weight_kg=92.0)
-    await weight_service.log_weight(db_session, on_date=date(2026, 6, 8), weight_kg=91.0)
-    await weight_service.log_weight(db_session, on_date=date(2026, 6, 15), weight_kg=90.0)
+    await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 6, 1),
+        weight_kg=92.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 6, 1)),
+    )
+    await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 6, 8),
+        weight_kg=91.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 6, 8)),
+    )
+    await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 6, 15),
+        weight_kg=90.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 6, 15)),
+    )
     await db_session.commit()
 
     trend = await mcp_router.get_trend("weight.weight_kg", target=88.0)
@@ -175,11 +193,28 @@ async def test_get_trend_weight_slope_and_projection(
     assert trend["projection"]["date"] > "2026-06-15"
 
 
-async def test_get_trend_excludes_noise(db_session, owned_by_legacy_subject):
-    await weight_service.log_weight(db_session, on_date=date(2026, 6, 1), weight_kg=92.0)
-    await weight_service.log_weight(db_session, on_date=date(2026, 6, 8), weight_kg=91.0)
+async def test_get_trend_excludes_noise(db_session, owned_by_legacy_subject, owner_write):
+    await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 6, 1),
+        weight_kg=92.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 6, 1)),
+    )
+    await weight_service.log_weight(
+        db_session,
+        on_date=date(2026, 6, 8),
+        weight_kg=91.0,
+        identity=owner_write.identity,
+        prepared_weight_write=await owner_write.weight_write(date(2026, 6, 8)),
+    )
     await weight_service.add_noise_marker(
-        db_session, start_date=date(2026, 6, 8), end_date=date(2026, 6, 8), reason="creatine"
+        db_session,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 8),
+        reason="creatine",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(date(2026, 6, 8)),
     )
     await db_session.commit()
 

@@ -512,7 +512,6 @@ async def test_brief_prefers_his_answer_to_the_template(
         db_session,
         on_date=DAY,
         subject_id=legacy_owner_roots.subject_id,
-        include_legacy_unowned=True,
     )
     content = brief._render_base_content(context)
     prompt = brief.build_prompt(context)

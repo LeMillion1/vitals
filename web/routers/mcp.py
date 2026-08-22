@@ -395,14 +395,12 @@ async def get_weight_logs(
             start=start,
             end=end,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
         )
         weights = sorted(weights, key=lambda w: w.date, reverse=True)[:limit]
 
         measurements = await weight_service.list_body_measurements(
             session,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
             start=start,
             end=end,
         )
@@ -413,7 +411,6 @@ async def get_weight_logs(
         noise = await weight_service.list_noise_markers(
             session,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
             start=start,
             end=end,
         )
@@ -1180,7 +1177,6 @@ async def log_weight(
                 source=Source.MCP.value,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_weight_write=prepared,
             )
         except ConflictBlocked as e:
@@ -1719,7 +1715,7 @@ async def log_measurement(
                 session, on_date=parsed_date, neck_cm=neck_cm, waist_cm=waist_cm,
                 hips_cm=hips_cm, note=note, source=Source.MCP.value,
                 override=override, identity=conflict_context.identity,
-                include_legacy_unowned=True, prepared_conflict_write=prepared,
+                prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
             await session.rollback()
@@ -1748,7 +1744,6 @@ async def get_measurements(
         rows = await weight_service.list_body_measurements(
             session,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
             start=start,
             end=end,
         )
@@ -1796,7 +1791,6 @@ async def log_note(
                 record_id,
                 note=note,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_weight_write=prepared,
             )
             if row is None:
@@ -1812,7 +1806,6 @@ async def log_note(
                 record_id,
                 note=note,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
             if row is None:
@@ -2000,9 +1993,6 @@ async def get_notes(
                 rows = await weight_service.list_weight_notes(
                     session,
                     subject_id=weight_scope.subject_id,
-                    include_legacy_unowned=(
-                        weight_scope.include_legacy_unowned
-                    ),
                     start=start,
                     end=end,
                     limit=limit,
@@ -2036,9 +2026,6 @@ async def get_notes(
                 rows = await weight_service.list_body_measurements(
                     session,
                     subject_id=measurement_scope.subject_id,
-                    include_legacy_unowned=(
-                        measurement_scope.include_legacy_unowned
-                    ),
                     start=start,
                     end=end,
                     has_note=True,
@@ -2193,14 +2180,12 @@ async def delete_record(domain: str, record_id: int) -> dict:
             conflict_context, prepared = await _mcp_v1_weight_write(session)
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
                 "prepared_weight_write": prepared,
             }
         elif domain in {"measurement", "noise_marker"}:
             conflict_context, prepared = await _mcp_v1_aux_weight_write(session)
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
         elif domain == "body_comp":
@@ -3494,7 +3479,6 @@ async def update_measurement(
                 session, measurement_id, on_date=parsed_date, neck_cm=neck_cm,
                 waist_cm=waist_cm, hips_cm=hips_cm, note=note, override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         except ConflictBlocked as e:
@@ -3535,7 +3519,6 @@ async def add_noise_marker(
                 session, start_date=parsed_start, end_date=parsed_end,
                 reason=reason, direction=direction, source=Source.MCP.value,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         except ValueError as exc:
@@ -3744,7 +3727,6 @@ async def get_trend(
             markers = await weight_service.list_noise_markers(
                 session,
                 subject_id=scope.subject_id,
-                include_legacy_unowned=scope.include_legacy_unowned,
             )
             ranges = [(m.start_date, m.end_date) for m in markers]
             if ranges:

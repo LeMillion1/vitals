@@ -199,8 +199,6 @@ def _require_scoped_prepared_write(
     identity: WriteIdentity | None,
     prepared: PreparedWeightWrite | None,
 ) -> conflict_engine.ConflictWriteContext | None:
-    if identity is None and prepared is None:
-        return None
     if identity is None or prepared is None:
         raise conflict_engine.ConflictPreparedWriteError(
             "scoped weight writes require identity and a prepared weight write"
@@ -233,17 +231,16 @@ def require_prepared_weight_identity(
         identity=identity,
         prepared=prepared,
     )
-    assert context is not None
     return context
 
 
 def _require_aux_prepared_write(
     session: AsyncSession,
     *,
-    identity: WriteIdentity | None,
-    prepared: conflict_engine.PreparedConflictWrite | None,
-) -> conflict_engine.ConflictWriteContext | None:
-    """Separate singleton compatibility calls from scoped auxiliary writes.
+    identity: WriteIdentity,
+    prepared: conflict_engine.PreparedConflictWrite,
+) -> conflict_engine.ConflictWriteContext:
+    """Prove an auxiliary write names a subject and its conflict decision.
 
     Body measurements, noise markers, and progress-photo metadata do not mutate
     active Weight truth or the Garmin export outbox, so they use the generic
@@ -251,8 +248,6 @@ def _require_aux_prepared_write(
     advisory lock.
     """
 
-    if identity is None and prepared is None:
-        return None
     if identity is None or prepared is None:
         raise conflict_engine.ConflictPreparedWriteError(
             "scoped auxiliary weight writes require identity and a prepared "
@@ -274,20 +269,6 @@ def _require_evaluation_date(
             "weight write date does not match prepared conflict evaluation date"
         )
 
-
-def _require_legacy_bridge(
-    context: conflict_engine.ConflictWriteContext,
-    *,
-    include_legacy_unowned: bool,
-) -> None:
-    if (
-        include_legacy_unowned
-        and context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy weight access requires a fully-unowned bridge"
-        )
 
 # Cached at first use. NOTE: height/sex changes via Settings only take effect after
 # a container restart (this cache + load_config() read env once) — unlike the login
@@ -413,7 +394,6 @@ def _historical_provider_raw_scope(subject_id: uuid.UUID):
 def _weight_scope_condition(
     *,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool,
     evaluation_date: date_type,
 ):
     from vitals.models.identity import HealthSubject
@@ -432,19 +412,14 @@ def _weight_scope_condition(
     raw_scope = conflict_engine.ConflictScope(
         subject_id=subject_id,
         evaluation_date=evaluation_date,
-        legacy_bridge=(
-            conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-            if include_legacy_unowned
-            else conflict_engine.LegacyConflictBridge.REJECT
-        ),
     )
     exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
         raw_scope
     )
-    historical_provider_raw = _historical_provider_raw_scope(subject_id)
-    exact_fact_raw = exact_raw
-    if include_legacy_unowned:
-        exact_fact_raw = or_(exact_fact_raw, fully_unowned_raw)
+    # A weigh-in that names its subject may still cite a raw the backfill left
+    # legacy — there were no provider or file roots on it to adopt. A raw
+    # belonging to somebody else is a different matter and stays out.
+    exact_fact_raw = or_(exact_raw, fully_unowned_raw)
     exact = and_(
         WeightLog.subject_id == subject_id,
         or_(
@@ -472,23 +447,7 @@ def _weight_scope_condition(
             ),
         ),
     )
-    if not include_legacy_unowned:
-        return exact
-    fully_unowned = and_(
-        WeightLog.subject_id.is_(None),
-        WeightLog.actor_user_id.is_(None),
-        WeightLog.integration_connection_id.is_(None),
-        or_(
-            WeightLog.raw_payload_id.is_(None),
-            exists(
-                select(1).where(
-                    RawPayload.id == WeightLog.raw_payload_id,
-                    or_(fully_unowned_raw, historical_provider_raw),
-                )
-            ),
-        ),
-    )
-    return or_(exact, fully_unowned)
+    return exact
 
 
 async def _assert_weight_scope_integrity(
@@ -496,7 +455,6 @@ async def _assert_weight_scope_integrity(
     *,
     subject_id: uuid.UUID,
     evaluation_date: date_type,
-    include_legacy_unowned: bool,
     filters: Sequence = (),
 ) -> None:
     """Reject partial roots instead of silently treating them as absent."""
@@ -510,16 +468,14 @@ async def _assert_weight_scope_integrity(
         raw_scope
     )
     historical_provider_raw = _historical_provider_raw_scope(subject_id)
-    exact_fact_raw = exact_raw
-    if include_legacy_unowned:
-        exact_fact_raw = or_(exact_fact_raw, fully_unowned_raw)
+    exact_fact_raw = or_(exact_raw, fully_unowned_raw)
     invalid_raw = await session.scalar(
         select(WeightLog.id)
         .where(
-            or_(
-                WeightLog.subject_id == subject_id,
-                WeightLog.subject_id.is_(None),
-            ),
+            # A row that names nobody is outside this scope entirely; what this
+            # validator still guards is a row that names *this* subject and then
+            # cites provenance that does not.
+            WeightLog.subject_id == subject_id,
             *filters,
             WeightLog.raw_payload_id.is_not(None),
             or_(
@@ -552,16 +508,12 @@ async def _assert_weight_scope_integrity(
 
     structurally_valid_scope = _weight_scope_condition(
         subject_id=subject_id,
-        include_legacy_unowned=True,
         evaluation_date=evaluation_date,
     )
     invalid = await session.scalar(
         select(WeightLog.id)
         .where(
-            or_(
-                WeightLog.subject_id == subject_id,
-                WeightLog.subject_id.is_(None),
-            ),
+            WeightLog.subject_id == subject_id,
             *filters,
             structurally_valid_scope.is_not(True),
         )
@@ -577,43 +529,36 @@ async def get_active_weight(
     session: AsyncSession,
     on_date: date_type,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     for_update: bool = False,
 ) -> Optional[WeightLog]:
     stmt = select(WeightLog).where(
         WeightLog.date == on_date,
         WeightLog.superseded.is_(False),
     )
-    if subject_id is not None:
-        scope = _weight_scope_condition(
-            subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
-            evaluation_date=on_date,
-        )
-        await _assert_weight_scope_integrity(
-            session,
-            subject_id=subject_id,
-            evaluation_date=on_date,
-            include_legacy_unowned=include_legacy_unowned,
-            filters=(
-                WeightLog.date == on_date,
-                WeightLog.superseded.is_(False),
-            ),
-        )
-        stmt = stmt.where(scope)
-    elif include_legacy_unowned:
-        raise ValueError("legacy weight compatibility requires a subject_id")
+    scope = _weight_scope_condition(
+        subject_id=subject_id,
+        evaluation_date=on_date,
+    )
+    await _assert_weight_scope_integrity(
+        session,
+        subject_id=subject_id,
+        evaluation_date=on_date,
+        filters=(
+            WeightLog.date == on_date,
+            WeightLog.superseded.is_(False),
+        ),
+    )
+    stmt = stmt.where(scope)
     if for_update:
         stmt = stmt.with_for_update()
     result = await session.execute(stmt.execution_options(populate_existing=True))
     row = result.scalar_one_or_none()
-    if row is not None and subject_id is not None:
+    if row is not None:
         await _validate_persisted_weight_provenance(
             session,
             row,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
     return row
 
@@ -1011,26 +956,13 @@ async def _validate_persisted_weight_provenance(
     row: WeightLog,
     *,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool,
 ) -> None:
     """Validate the durable source -> C/raw chain for one scoped Weight fact."""
 
     from vitals.models.tenancy import IntegrationConnection
 
-    is_legacy = row.subject_id is None
-    if row.subject_id not in {None, subject_id}:
+    if row.subject_id != subject_id:
         raise WeightOwnershipError("weight fact belongs to another subject")
-    if is_legacy:
-        if not include_legacy_unowned or any(
-            root is not None
-            for root in (
-                row.actor_user_id,
-                row.integration_connection_id,
-            )
-        ):
-            raise WeightOwnershipError(
-                "weight fact has partial or conflicting ownership provenance"
-            )
     if row.domain != DOMAIN:
         raise WeightOwnershipError("weight fact has an invalid domain")
 
@@ -1066,15 +998,12 @@ async def _validate_persisted_weight_provenance(
             raise conflict_engine.ConflictRawOwnershipError(
                 "weight fact references a missing raw payload"
             )
-        historical_provider_raw = (
-            include_legacy_unowned
-            and await _validate_historical_provider_raw(
-                session,
-                raw=raw,
-                subject_id=subject_id,
-                fact_source=row.source,
-                for_update=False,
-            )
+        historical_provider_raw = await _validate_historical_provider_raw(
+            session,
+            raw=raw,
+            subject_id=subject_id,
+            fact_source=row.source,
+            for_update=False,
         )
         if historical_provider_raw:
             if (
@@ -1095,16 +1024,12 @@ async def _validate_persisted_weight_provenance(
                 raw.file_asset_id,
             )
         )
-        if is_legacy:
-            if not raw_is_fully_unowned:
-                raise conflict_engine.ConflictRawOwnershipError(
-                    "legacy weight fact links to partially owned raw provenance"
-                )
-        elif raw.subject_id != subject_id:
-            if not include_legacy_unowned or not raw_is_fully_unowned:
-                raise conflict_engine.ConflictRawOwnershipError(
-                    "weight fact links to raw provenance outside its subject scope"
-                )
+        if raw.subject_id != subject_id and not raw_is_fully_unowned:
+            # A weigh-in may still cite a raw the backfill left legacy; one
+            # belonging to somebody else is a different matter.
+            raise conflict_engine.ConflictRawOwnershipError(
+                "weight fact links to raw provenance outside its subject scope"
+            )
         if raw.actor_user_id != row.actor_user_id:
             raise conflict_engine.ConflictRawOwnershipError(
                 "weight actor does not match durable raw provenance"
@@ -1130,16 +1055,6 @@ async def _validate_persisted_weight_provenance(
         return
 
     if row.source == Source.GARMIN_API.value:
-        if is_legacy:
-            if raw is not None and (
-                raw.domain != Domain.GARMIN.value
-                or raw.source != Source.GARMIN_API.value
-                or raw.file_asset_id is not None
-            ):
-                raise conflict_engine.ConflictRawOwnershipError(
-                    "legacy Garmin weight raw provenance is incompatible"
-                )
-            return
         if (
             connection is None
             or connection.provider != IntegrationProvider.GARMIN.value
@@ -1246,45 +1161,39 @@ async def _get_weight_log_for_update(
     session: AsyncSession,
     weight_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
     evaluation_date: date_type,
 ) -> WeightLog | None:
     stmt = select(WeightLog).where(WeightLog.id == weight_id)
-    if subject_id is not None:
-        scope = _weight_scope_condition(
-            subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
-            evaluation_date=evaluation_date,
+    scope = _weight_scope_condition(
+        subject_id=subject_id,
+        evaluation_date=evaluation_date,
+    )
+    invalid = await session.scalar(
+        select(WeightLog.id)
+        .where(
+            WeightLog.id == weight_id,
+            # A row that names nobody is outside this scope entirely; what is
+            # still worth reporting is a row that names *this* subject and then
+            # fails the structural scope anyway.
+            WeightLog.subject_id == subject_id,
+            scope.is_not(True),
         )
-        invalid = await session.scalar(
-            select(WeightLog.id)
-            .where(
-                WeightLog.id == weight_id,
-                or_(
-                    WeightLog.subject_id == subject_id,
-                    WeightLog.subject_id.is_(None),
-                ),
-                scope.is_not(True),
-            )
-            .limit(1)
+        .limit(1)
+    )
+    if invalid is not None:
+        raise WeightOwnershipError(
+            "weight fact has partial or conflicting ownership provenance"
         )
-        if invalid is not None:
-            raise WeightOwnershipError(
-                "weight fact has partial or conflicting ownership provenance"
-            )
-        stmt = stmt.where(scope)
-    elif include_legacy_unowned:
-        raise ValueError("legacy weight compatibility requires a subject_id")
+    stmt = stmt.where(scope)
     row = await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
-    if row is not None and subject_id is not None:
+    if row is not None:
         await _validate_persisted_weight_provenance(
             session,
             row,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
     return row
 
@@ -1294,21 +1203,18 @@ async def _get_weight_log_date_in_scope(
     weight_id: int,
     *,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool,
     evaluation_date: date_type,
 ) -> date_type | None:
     """Read only the target date after the caller has locked its subject roots."""
 
     scope = _weight_scope_condition(
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         evaluation_date=evaluation_date,
     )
     await _assert_weight_scope_integrity(
         session,
         subject_id=subject_id,
         evaluation_date=evaluation_date,
-        include_legacy_unowned=include_legacy_unowned,
         filters=(WeightLog.id == weight_id,),
     )
     return await session.scalar(
@@ -1359,10 +1265,9 @@ async def log_weight(
     raw_payload_id: Optional[int] = None,
     note: Optional[str] = None,
     override: bool = False,
-    identity: WriteIdentity | None = None,
+    identity: WriteIdentity,
     integration_connection_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_weight_write: PreparedWeightWrite | None = None,
+    prepared_weight_write: PreparedWeightWrite,
     origin_actor_user_id: uuid.UUID | None | object = _ORIGIN_ACTOR_UNSET,
     allow_historical_parser_raw: bool = False,
 ) -> WeightLog:
@@ -1380,25 +1285,16 @@ async def log_weight(
         identity=identity,
         prepared=prepared_weight_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-        await _validate_new_weight_provenance(
-            session,
-            context=context,
-            source=source,
-            integration_connection_id=integration_connection_id,
-            raw_payload_id=raw_payload_id,
-            origin_actor_user_id=origin_actor_user_id,
-            allow_historical_parser_raw=allow_historical_parser_raw,
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy weight compatibility requires a scoped writer")
-    elif integration_connection_id is not None:
-        raise ValueError("weight origin connection requires a scoped writer")
+    _require_evaluation_date(context, on_date)
+    await _validate_new_weight_provenance(
+        session,
+        context=context,
+        source=source,
+        integration_connection_id=integration_connection_id,
+        raw_payload_id=raw_payload_id,
+        origin_actor_user_id=origin_actor_user_id,
+        allow_historical_parser_raw=allow_historical_parser_raw,
+    )
 
     # Every active-weight writer participates in the Garmin outbox lock before
     # it changes local truth (including conflict-alert writes). The hook below
@@ -1410,15 +1306,12 @@ async def log_weight(
     # keeps the legacy branch serialized too. A legacy caller has no prepared
     # token, so it establishes identity governance here — before the advisory,
     # in the same order ``prepare_weight_write`` uses.
-    if context is None:
-        await garmin_weight_service.prepare_legacy_active_weight_change(session)
     await garmin_weight_service.lock_active_weight_change(session)
 
     existing = await get_active_weight(
         session,
         on_date,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
         for_update=True,
     )
     # A re-import of a fact we already hold is not a new reading. Garmin's daily
@@ -1462,14 +1355,12 @@ async def log_weight(
         if identity is not None:
             duplicate_scope = _weight_scope_condition(
                 subject_id=identity.subject_id,
-                include_legacy_unowned=include_legacy_unowned,
                 evaluation_date=on_date,
             )
             await _assert_weight_scope_integrity(
                 session,
                 subject_id=identity.subject_id,
                 evaluation_date=on_date,
-                include_legacy_unowned=include_legacy_unowned,
                 filters=(
                     WeightLog.date == on_date,
                     WeightLog.source == source,
@@ -1513,27 +1404,18 @@ async def log_weight(
     )
     if insert_as_active:
         proposed = {"weight_kg": weight_kg, "source": source}
-        if context is None:
-            await conflict_engine.enforce(
-                session,
-                Domain.WEIGHT.value,
-                proposed,
-                override=override,
-                entity_ref=f"weight:{on_date.isoformat()}",
-            )
-        else:
-            assert prepared_weight_write is not None
-            await conflict_engine.enforce_prepared(
-                session,
-                prepared=prepared_weight_write.conflict_write,
-                domain=Domain.WEIGHT,
-                proposed_state=proposed,
-                override=override,
-                entity_ref=f"weight:{on_date.isoformat()}",
-                replace_entity_key=(
-                    _weight_entity_key(existing) if existing is not None else None
-                ),
-            )
+        assert prepared_weight_write is not None
+        await conflict_engine.enforce_prepared(
+            session,
+            prepared=prepared_weight_write.conflict_write,
+            domain=Domain.WEIGHT,
+            proposed_state=proposed,
+            override=override,
+            entity_ref=f"weight:{on_date.isoformat()}",
+            replace_entity_key=(
+                _weight_entity_key(existing) if existing is not None else None
+            ),
+        )
 
     if existing is not None:
         if insert_as_active:
@@ -1550,7 +1432,7 @@ async def log_weight(
             insert_as_active = False
 
     row = WeightLog(
-        subject_id=identity.subject_id if identity is not None else None,
+        subject_id=identity.subject_id,
         actor_user_id=(
             identity.actor_user_id
             if origin_actor_user_id is _ORIGIN_ACTOR_UNSET and identity is not None
@@ -1580,13 +1462,10 @@ async def log_weight(
             session,
             on_date,
             active_weight,
-            subject_id=identity.subject_id if identity is not None else None,
-            include_legacy_unowned=include_legacy_unowned,
+            subject_id=identity.subject_id,
         )
     if insert_as_active:
-        if context is None:
-            await garmin_weight_service.handle_legacy_active_weight_changed(session)
-        elif prepared_weight_write.garmin_weight_export is not None:
+        if prepared_weight_write.garmin_weight_export is not None:
             await garmin_weight_service.handle_active_weight_changed_scoped(
                 session,
                 prepared=prepared_weight_write.garmin_weight_export,
@@ -1610,7 +1489,6 @@ async def _adopt_weight_provenance(
         session,
         row,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
     )
     if row.subject_id not in {None, identity.subject_id}:
         raise WeightOwnershipError("weight fact belongs to another subject")
@@ -1667,7 +1545,6 @@ async def _adopt_weight_provenance(
         session,
         row,
         subject_id=identity.subject_id,
-        include_legacy_unowned=False,
     )
 
 
@@ -1676,8 +1553,7 @@ async def list_active_weights(
     *,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Sequence[WeightLog]:
     stmt = select(WeightLog).where(WeightLog.superseded.is_(False))
     date_filters = []
@@ -1685,22 +1561,17 @@ async def list_active_weights(
         date_filters.append(WeightLog.date >= start)
     if end is not None:
         date_filters.append(WeightLog.date <= end)
-    if subject_id is not None:
-        scope = _weight_scope_condition(
-            subject_id=subject_id,
-            evaluation_date=end or start or today_local(),
-            include_legacy_unowned=include_legacy_unowned,
-        )
-        await _assert_weight_scope_integrity(
-            session,
-            subject_id=subject_id,
-            evaluation_date=end or start or today_local(),
-            include_legacy_unowned=include_legacy_unowned,
-            filters=(WeightLog.superseded.is_(False), *date_filters),
-        )
-        stmt = stmt.where(scope)
-    elif include_legacy_unowned:
-        raise ValueError("legacy weight compatibility requires a subject_id")
+    scope = _weight_scope_condition(
+        subject_id=subject_id,
+        evaluation_date=end or start or today_local(),
+    )
+    await _assert_weight_scope_integrity(
+        session,
+        subject_id=subject_id,
+        evaluation_date=end or start or today_local(),
+        filters=(WeightLog.superseded.is_(False), *date_filters),
+    )
+    stmt = stmt.where(scope)
     if date_filters:
         stmt = stmt.where(*date_filters)
     stmt = stmt.order_by(WeightLog.date)
@@ -1712,7 +1583,6 @@ async def list_active_weights(
                 session,
                 row,
                 subject_id=subject_id,
-                include_legacy_unowned=include_legacy_unowned,
             )
     return rows
 
@@ -1721,7 +1591,6 @@ async def list_weight_notes(
     session: AsyncSession,
     *,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool = False,
     start: date_type | None = None,
     end: date_type | None = None,
     limit: int = 50,
@@ -1735,14 +1604,12 @@ async def list_weight_notes(
         filters.append(WeightLog.date <= end)
     scope = _weight_scope_condition(
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         evaluation_date=end or start or today_local(),
     )
     await _assert_weight_scope_integrity(
         session,
         subject_id=subject_id,
         evaluation_date=end or start or today_local(),
-        include_legacy_unowned=include_legacy_unowned,
         filters=tuple(filters),
     )
     rows = tuple(
@@ -1758,7 +1625,6 @@ async def list_weight_notes(
             session,
             row,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
     return rows
 
@@ -1783,7 +1649,6 @@ async def resolve_active_scoped(
         session,
         scope.evaluation_date,
         subject_id=scope.subject_id,
-        include_legacy_unowned=scope.include_legacy_unowned,
     )
     if row is None:
         return []
@@ -1800,7 +1665,6 @@ async def resolve_active_scoped(
 def _body_measurement_scope_condition(
     *,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool,
 ):
     from vitals.models.identity import HealthSubject
 
@@ -1817,22 +1681,11 @@ def _body_measurement_scope_condition(
             BodyMeasurement.actor_user_id == owner_user_id,
         ),
     )
-    if not include_legacy_unowned:
-        return exact
-    return or_(
-        exact,
-        and_(
-            BodyMeasurement.domain == DOMAIN,
-            BodyMeasurement.subject_id.is_(None),
-            BodyMeasurement.actor_user_id.is_(None),
-        ),
-    )
-
+    return exact
 
 def _noise_marker_scope_condition(
     *,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool,
 ):
     from vitals.models.identity import HealthSubject
 
@@ -1849,17 +1702,7 @@ def _noise_marker_scope_condition(
             NoiseMarker.actor_user_id == owner_user_id,
         ),
     )
-    if not include_legacy_unowned:
-        return exact
-    return or_(
-        exact,
-        and_(
-            NoiseMarker.domain == DOMAIN,
-            NoiseMarker.subject_id.is_(None),
-            NoiseMarker.actor_user_id.is_(None),
-        ),
-    )
-
+    return exact
 
 async def _assert_body_measurement_scope_integrity(
     session: AsyncSession,
@@ -1869,15 +1712,12 @@ async def _assert_body_measurement_scope_integrity(
 ) -> None:
     valid = _body_measurement_scope_condition(
         subject_id=subject_id,
-        include_legacy_unowned=True,
     )
     invalid = await session.scalar(
         select(BodyMeasurement.id)
         .where(
-            or_(
-                BodyMeasurement.subject_id == subject_id,
-                BodyMeasurement.subject_id.is_(None),
-            ),
+            # A row that names nobody is outside this scope entirely.
+            BodyMeasurement.subject_id == subject_id,
             *filters,
             valid.is_not(True),
         )
@@ -1897,15 +1737,12 @@ async def _assert_noise_marker_scope_integrity(
 ) -> None:
     valid = _noise_marker_scope_condition(
         subject_id=subject_id,
-        include_legacy_unowned=True,
     )
     invalid = await session.scalar(
         select(NoiseMarker.id)
         .where(
-            or_(
-                NoiseMarker.subject_id == subject_id,
-                NoiseMarker.subject_id.is_(None),
-            ),
+            # A row that names nobody is outside this scope entirely.
+            NoiseMarker.subject_id == subject_id,
             *filters,
             valid.is_not(True),
         )
@@ -1921,24 +1758,19 @@ async def _get_noise_marker_for_update(
     session: AsyncSession,
     marker_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> NoiseMarker | None:
     stmt = select(NoiseMarker).where(NoiseMarker.id == marker_id)
-    if subject_id is not None:
-        await _assert_noise_marker_scope_integrity(
-            session,
+    await _assert_noise_marker_scope_integrity(
+        session,
+        subject_id=subject_id,
+        filters=(NoiseMarker.id == marker_id,),
+    )
+    stmt = stmt.where(
+        _noise_marker_scope_condition(
             subject_id=subject_id,
-            filters=(NoiseMarker.id == marker_id,),
         )
-        stmt = stmt.where(
-            _noise_marker_scope_condition(
-                subject_id=subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy noise compatibility requires a subject_id")
+    )
     return await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
@@ -1948,24 +1780,19 @@ async def _get_body_measurement_for_update(
     session: AsyncSession,
     measurement_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> BodyMeasurement | None:
     stmt = select(BodyMeasurement).where(BodyMeasurement.id == measurement_id)
-    if subject_id is not None:
-        await _assert_body_measurement_scope_integrity(
-            session,
+    await _assert_body_measurement_scope_integrity(
+        session,
+        subject_id=subject_id,
+        filters=(BodyMeasurement.id == measurement_id,),
+    )
+    stmt = stmt.where(
+        _body_measurement_scope_condition(
             subject_id=subject_id,
-            filters=(BodyMeasurement.id == measurement_id,),
         )
-        stmt = stmt.where(
-            _body_measurement_scope_condition(
-                subject_id=subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy body-measurement compatibility requires a subject_id")
+    )
     return await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
@@ -1975,24 +1802,19 @@ async def _get_body_measurement_for_date_update(
     session: AsyncSession,
     on_date: date_type,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> BodyMeasurement | None:
     stmt = select(BodyMeasurement).where(BodyMeasurement.date == on_date)
-    if subject_id is not None:
-        await _assert_body_measurement_scope_integrity(
-            session,
+    await _assert_body_measurement_scope_integrity(
+        session,
+        subject_id=subject_id,
+        filters=(BodyMeasurement.date == on_date,),
+    )
+    stmt = stmt.where(
+        _body_measurement_scope_condition(
             subject_id=subject_id,
-            filters=(BodyMeasurement.date == on_date,),
         )
-        stmt = stmt.where(
-            _body_measurement_scope_condition(
-                subject_id=subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy body-measurement compatibility requires a subject_id")
+    )
     row = await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
@@ -2034,8 +1856,7 @@ async def _apply_body_measurement_values(
     waist_cm: Optional[float],
     hips_cm: Optional[float],
     note: Optional[str],
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> None:
     height_cm, sex = _body_config()
     body_fat_pct = None
@@ -2057,7 +1878,6 @@ async def _apply_body_measurement_values(
             session,
             on_date,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
         if active is not None:
             lbm_kg = lean_body_mass_kg(active.weight_kg, body_fat_pct)
@@ -2080,15 +1900,6 @@ async def _enforce_body_measurement_write(
     override: bool,
 ) -> None:
     proposed = {"measurement": True}
-    if context is None:
-        await conflict_engine.enforce(
-            session,
-            Domain.WEIGHT.value,
-            proposed,
-            override=override,
-            entity_ref=f"body_measurement:{on_date.isoformat()}",
-        )
-        return
     assert prepared_conflict_write is not None
     await conflict_engine.enforce_prepared(
         session,
@@ -2111,9 +1922,8 @@ async def upsert_body_measurement(
     source: str | Source = Source.MANUAL.value,
     override: bool = False,
     partial: bool = True,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> BodyMeasurement:
     """Create/update the day's measurement and (re)derive body-fat % + LBM.
 
@@ -2132,28 +1942,15 @@ async def upsert_body_measurement(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-        source_value = _require_aux_source(source)
-    else:
-        if include_legacy_unowned:
-            raise ValueError(
-                "legacy body-measurement compatibility requires a scoped writer"
-            )
-        source_value = source.value if isinstance(source, Source) else source
-
+    _require_evaluation_date(context, on_date)
+    source_value = _require_aux_source(source)
     _check_range("neck_cm", neck_cm, _CIRCUMFERENCE_CM_RANGE)
     _check_range("waist_cm", waist_cm, _CIRCUMFERENCE_CM_RANGE)
     _check_range("hips_cm", hips_cm, _CIRCUMFERENCE_CM_RANGE)
     row = await _get_body_measurement_for_date_update(
         session,
         on_date,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     effective_neck, effective_waist, effective_hips, effective_note = (
         _effective_measurement_values(
@@ -2175,15 +1972,13 @@ async def upsert_body_measurement(
 
     if row is None:
         row = BodyMeasurement(
-            subject_id=identity.subject_id if identity is not None else None,
-            actor_user_id=identity.actor_user_id if identity is not None else None,
+            subject_id=identity.subject_id,
+            actor_user_id=identity.actor_user_id,
             date=on_date,
             domain=DOMAIN,
             source=source_value,
         )
         session.add(row)
-    elif row.subject_id is None and identity is not None:
-        row.subject_id = identity.subject_id
 
     await _apply_body_measurement_values(
         session,
@@ -2193,8 +1988,7 @@ async def upsert_body_measurement(
         waist_cm=effective_waist,
         hips_cm=effective_hips,
         note=effective_note,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     await session.flush()
     return row
@@ -2205,35 +1999,28 @@ async def _recompute_lbm_for_date(
     on_date: date_type,
     weight_kg: float,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> None:
     """Refresh a measurement's LBM after the day's active weight changes."""
     stmt = select(BodyMeasurement).where(BodyMeasurement.date == on_date)
-    if subject_id is not None:
-        scope = _body_measurement_scope_condition(
-            subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
+    scope = _body_measurement_scope_condition(
+        subject_id=subject_id,
+    )
+    invalid = await session.scalar(
+        select(BodyMeasurement.id)
+        .where(
+            BodyMeasurement.date == on_date,
+            # A row that names nobody is outside this scope entirely.
+            BodyMeasurement.subject_id == subject_id,
+            scope.is_not(True),
         )
-        invalid = await session.scalar(
-            select(BodyMeasurement.id)
-            .where(
-                BodyMeasurement.date == on_date,
-                or_(
-                    BodyMeasurement.subject_id == subject_id,
-                    BodyMeasurement.subject_id.is_(None),
-                ),
-                scope.is_not(True),
-            )
-            .limit(1)
+        .limit(1)
+    )
+    if invalid is not None:
+        raise WeightOwnershipError(
+            "body measurement has partial ownership provenance"
         )
-        if invalid is not None:
-            raise WeightOwnershipError(
-                "body measurement has partial ownership provenance"
-            )
-        stmt = stmt.where(scope)
-    elif include_legacy_unowned:
-        raise ValueError("legacy body-measurement compatibility requires a subject_id")
+    stmt = stmt.where(scope)
     result = await session.execute(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
@@ -2246,8 +2033,7 @@ async def _recompute_lbm_for_date(
 async def list_body_measurements(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     start: date_type | None = None,
     end: date_type | None = None,
     has_note: bool = False,
@@ -2261,20 +2047,16 @@ async def list_body_measurements(
     if has_note:
         filters.extend((BodyMeasurement.note.is_not(None), BodyMeasurement.note != ""))
     stmt = select(BodyMeasurement).where(*filters)
-    if subject_id is not None:
-        await _assert_body_measurement_scope_integrity(
-            session,
+    await _assert_body_measurement_scope_integrity(
+        session,
+        subject_id=subject_id,
+        filters=tuple(filters),
+    )
+    stmt = stmt.where(
+        _body_measurement_scope_condition(
             subject_id=subject_id,
-            filters=tuple(filters),
         )
-        stmt = stmt.where(
-            _body_measurement_scope_condition(
-                subject_id=subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy body-measurement compatibility requires a subject_id")
+    )
     stmt = stmt.order_by(BodyMeasurement.date)
     if limit is not None:
         stmt = stmt.limit(limit)
@@ -2291,25 +2073,15 @@ async def add_noise_marker(
     reason: str,
     direction: Optional[str] = None,
     source: str | Source = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> NoiseMarker:
     context = _require_aux_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-        source_value = _require_aux_source(source)
-    else:
-        if include_legacy_unowned:
-            raise ValueError("legacy noise compatibility requires a scoped writer")
-        source_value = source.value if isinstance(source, Source) else source
+    source_value = _require_aux_source(source)
     reason = reason.strip()
     if not reason:
         raise ValueError("noise marker reason must not be blank")
@@ -2318,8 +2090,8 @@ async def add_noise_marker(
     if direction not in {None, "up", "down", "neutral"}:
         raise ValueError("noise marker direction must be up, down, neutral, or null")
     marker = NoiseMarker(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         domain=DOMAIN,
         source=source_value,
         start_date=start_date,
@@ -2329,22 +2101,19 @@ async def add_noise_marker(
     )
     session.add(marker)
     await session.flush()
-    if context is not None:
-        assert identity is not None and prepared_conflict_write is not None
-        await refresh_noise_alert(
-            session,
-            on_date=context.evaluation_date,
-            identity=identity,
-            prepared_conflict_write=prepared_conflict_write,
-        )
+    await refresh_noise_alert(
+        session,
+        on_date=context.evaluation_date,
+        identity=identity,
+        prepared_conflict_write=prepared_conflict_write,
+    )
     return marker
 
 
 async def list_noise_markers(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     start: date_type | None = None,
     end: date_type | None = None,
 ) -> Sequence[NoiseMarker]:
@@ -2356,20 +2125,16 @@ async def list_noise_markers(
         )
     if end is not None:
         filters.append(NoiseMarker.start_date <= end)
-    if subject_id is not None:
-        await _assert_noise_marker_scope_integrity(
-            session,
+    await _assert_noise_marker_scope_integrity(
+        session,
+        subject_id=subject_id,
+        filters=tuple(filters),
+    )
+    stmt = stmt.where(
+        _noise_marker_scope_condition(
             subject_id=subject_id,
-            filters=tuple(filters),
         )
-        stmt = stmt.where(
-            _noise_marker_scope_condition(
-                subject_id=subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy weight compatibility requires a subject_id")
+    )
     if filters:
         stmt = stmt.where(*filters)
     result = await session.execute(stmt.order_by(NoiseMarker.start_date))
@@ -2379,15 +2144,13 @@ async def list_noise_markers(
 async def _noise_ranges(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     start: date_type | None = None,
     end: date_type | None = None,
 ) -> list[tuple[date_type, Optional[date_type]]]:
     markers = await list_noise_markers(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         start=start,
         end=end,
     )
@@ -2471,7 +2234,6 @@ async def _progress_photo_scope_rows(
     session: AsyncSession,
     *,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool,
     filters: Sequence = (),
     for_update: bool = False,
 ) -> list[ProgressPhoto]:
@@ -2487,11 +2249,6 @@ async def _progress_photo_scope_rows(
     if not isinstance(subject_id, uuid.UUID):
         raise ProgressPhotoOwnershipError("progress-photo subject_id must be a UUID")
     candidate_scope = ProgressPhoto.subject_id == subject_id
-    if include_legacy_unowned:
-        candidate_scope = or_(
-            candidate_scope,
-            ProgressPhoto.subject_id.is_(None),
-        )
     stmt = select(ProgressPhoto).where(candidate_scope, *filters)
     if for_update:
         stmt = stmt.with_for_update()
@@ -2595,20 +2352,6 @@ async def _progress_photo_scope_rows(
             raise ProgressPhotoOwnershipError(
                 "progress photo aliases document file metadata"
             )
-        if row.subject_id is None:
-            if row.actor_user_id is not None or row.file_asset_id is not None:
-                raise ProgressPhotoOwnershipError(
-                    "progress photo has partial legacy ownership roots"
-                )
-            if not include_legacy_unowned:
-                raise ProgressPhotoOwnershipError(
-                    "progress photo requires the fully-unowned legacy bridge"
-                )
-            if row.file_key in shadowed_legacy_keys:
-                raise ProgressPhotoOwnershipError(
-                    "legacy progress photo conflicts with file-asset metadata"
-                )
-            continue
         if row.subject_id != subject_id:
             raise ProgressPhotoOwnershipError(
                 "progress photo belongs to another subject"
@@ -2665,117 +2408,85 @@ async def add_progress_photo(
     on_date: date_type,
     file_key: str | None = None,
     note: Optional[str] = None,
-    identity: WriteIdentity | None = None,
+    identity: WriteIdentity,
     file_asset_id: uuid.UUID | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> ProgressPhoto:
     context = _require_aux_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is None:
-        if file_asset_id is not None:
-            raise ProgressPhotoOwnershipError(
-                "legacy progress photos cannot carry a file asset root"
-            )
-        if not isinstance(file_key, str) or not file_key:
-            raise ValueError("legacy progress photo requires a file_key")
-        conflicting_refs = [file_key]
-        document_alias = _progress_photo_document_alias(file_key)
-        if document_alias is not None:
-            conflicting_refs.append(document_alias)
-        shadow_asset_id = await session.scalar(
-            select(FileAsset.id)
-            .where(FileAsset.storage_ref.in_(conflicting_refs))
-            .with_for_update()
-        )
-        if shadow_asset_id is not None:
-            raise ProgressPhotoOwnershipError(
-                "legacy progress photo conflicts with file-asset metadata"
-            )
-        existing_photo_id = await session.scalar(
-            select(ProgressPhoto.id)
-            .where(ProgressPhoto.file_key == file_key)
-            .with_for_update()
-        )
-        if existing_photo_id is not None:
-            raise ProgressPhotoOwnershipError(
-                "progress-photo file key already has a fact"
-            )
-        authoritative_file_key = file_key
-    else:
-        assert identity is not None
-        from vitals.models.identity import HealthSubject
+    from vitals.models.identity import HealthSubject
 
-        _require_evaluation_date(context, on_date)
-        if identity.actor_user_id is None:
-            raise ProgressPhotoOwnershipError(
-                "progress photo creation requires a human owner actor"
-            )
-        owner_user_id = await session.scalar(
-            select(HealthSubject.owner_user_id).where(
-                HealthSubject.id == identity.subject_id
-            )
+    _require_evaluation_date(context, on_date)
+    if identity.actor_user_id is None:
+        raise ProgressPhotoOwnershipError(
+            "progress photo creation requires a human owner actor"
         )
-        if owner_user_id != identity.actor_user_id:
-            raise ProgressPhotoOwnershipError(
-                "progress photo actor does not match the subject owner"
-            )
-        if not isinstance(file_asset_id, uuid.UUID):
-            raise ProgressPhotoOwnershipError(
-                "owned progress photo requires a file_asset_id"
-            )
-        asset = await session.scalar(
-            select(FileAsset)
-            .where(FileAsset.id == file_asset_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
+    owner_user_id = await session.scalar(
+        select(HealthSubject.owner_user_id).where(
+            HealthSubject.id == identity.subject_id
         )
-        if asset is None or (
-            asset.subject_id != identity.subject_id
-            or asset.uploaded_by_user_id != identity.actor_user_id
-            or asset.purpose != FileAssetPurpose.PROGRESS_PHOTO.value
-            or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
-            or asset.status not in _PROGRESS_PHOTO_LIVE_ASSET_STATUSES
-        ):
-            raise ProgressPhotoOwnershipError(
-                "progress photo file asset is not authoritative in subject scope"
-            )
-        if file_key is not None and file_key != asset.storage_ref:
-            raise ProgressPhotoOwnershipError(
-                "progress photo file key conflicts with its file asset"
-            )
-        document_alias = _progress_photo_document_alias(asset.storage_ref)
-        if document_alias is not None:
-            aliased_asset_id = await session.scalar(
-                select(FileAsset.id)
-                .where(FileAsset.storage_ref == document_alias)
-                .with_for_update()
-            )
-            if aliased_asset_id is not None:
-                raise ProgressPhotoOwnershipError(
-                    "progress photo aliases document file metadata"
-                )
-        existing = await session.scalar(
-            select(ProgressPhoto.id)
-            .where(
-                or_(
-                    ProgressPhoto.file_asset_id == file_asset_id,
-                    ProgressPhoto.file_key == asset.storage_ref,
-                )
-            )
+    )
+    if owner_user_id != identity.actor_user_id:
+        raise ProgressPhotoOwnershipError(
+            "progress photo actor does not match the subject owner"
+        )
+    if not isinstance(file_asset_id, uuid.UUID):
+        raise ProgressPhotoOwnershipError(
+            "owned progress photo requires a file_asset_id"
+        )
+    asset = await session.scalar(
+        select(FileAsset)
+        .where(FileAsset.id == file_asset_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if asset is None or (
+        asset.subject_id != identity.subject_id
+        or asset.uploaded_by_user_id != identity.actor_user_id
+        or asset.purpose != FileAssetPurpose.PROGRESS_PHOTO.value
+        or asset.storage_backend != FileStorageBackend.LEGACY_LOCAL.value
+        or asset.status not in _PROGRESS_PHOTO_LIVE_ASSET_STATUSES
+    ):
+        raise ProgressPhotoOwnershipError(
+            "progress photo file asset is not authoritative in subject scope"
+        )
+    if file_key is not None and file_key != asset.storage_ref:
+        raise ProgressPhotoOwnershipError(
+            "progress photo file key conflicts with its file asset"
+        )
+    document_alias = _progress_photo_document_alias(asset.storage_ref)
+    if document_alias is not None:
+        aliased_asset_id = await session.scalar(
+            select(FileAsset.id)
+            .where(FileAsset.storage_ref == document_alias)
             .with_for_update()
         )
-        if existing is not None:
+        if aliased_asset_id is not None:
             raise ProgressPhotoOwnershipError(
-                "progress photo file asset already has a fact"
+                "progress photo aliases document file metadata"
             )
-        authoritative_file_key = asset.storage_ref
+    existing = await session.scalar(
+        select(ProgressPhoto.id)
+        .where(
+            or_(
+                ProgressPhoto.file_asset_id == file_asset_id,
+                ProgressPhoto.file_key == asset.storage_ref,
+            )
+        )
+        .with_for_update()
+    )
+    if existing is not None:
+        raise ProgressPhotoOwnershipError(
+            "progress photo file asset already has a fact"
+        )
+    authoritative_file_key = asset.storage_ref
 
     photo = ProgressPhoto(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         file_asset_id=file_asset_id,
         date=on_date,
         domain=DOMAIN,
@@ -2791,8 +2502,7 @@ async def add_progress_photo(
 async def list_progress_photos(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     start: date_type | None = None,
     end: date_type | None = None,
 ) -> Sequence[ProgressPhoto]:
@@ -2801,16 +2511,9 @@ async def list_progress_photos(
         filters.append(ProgressPhoto.date >= start)
     if end is not None:
         filters.append(ProgressPhoto.date <= end)
-    if subject_id is None:
-        if include_legacy_unowned:
-            raise ValueError("legacy progress-photo compatibility requires a subject_id")
-        stmt = select(ProgressPhoto).where(*filters)
-        result = await session.execute(stmt.order_by(ProgressPhoto.date.desc()))
-        return result.scalars().all()
     rows = await _progress_photo_scope_rows(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         filters=tuple(filters),
     )
     return sorted(rows, key=lambda row: (row.date, row.id), reverse=True)
@@ -2820,17 +2523,11 @@ async def get_progress_photo(
     session: AsyncSession,
     photo_id: int,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> ProgressPhoto | None:
-    if subject_id is None:
-        if include_legacy_unowned:
-            raise ValueError("legacy progress-photo compatibility requires a subject_id")
-        return await session.get(ProgressPhoto, photo_id)
     rows = await _progress_photo_scope_rows(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         filters=(ProgressPhoto.id == photo_id,),
     )
     return rows[0] if rows else None
@@ -2841,14 +2538,12 @@ async def get_progress_photo_by_file_key(
     *,
     file_key: str,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool = False,
 ) -> ProgressPhoto | None:
     if not isinstance(file_key, str) or not file_key:
         raise ProgressPhotoOwnershipError("progress-photo file_key must be non-blank")
     rows = await _progress_photo_scope_rows(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         filters=(ProgressPhoto.file_key == file_key,),
     )
     if len(rows) > 1:
@@ -2863,8 +2558,8 @@ async def refresh_noise_alert(
     session: AsyncSession,
     *,
     on_date: Optional[date_type] = None,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[object]:
     """Raise an ``info`` alert while today sits inside a noise range; resolve it
     once it doesn't. Idempotent (safe to call on every dashboard load / tick)."""
@@ -2874,18 +2569,19 @@ async def refresh_noise_alert(
         prepared=prepared_conflict_write,
     )
     today = on_date or today_local()
-    if context is not None:
-        _require_evaluation_date(context, today)
-    include_legacy_unowned = bool(
-        context is not None
-        and context.legacy_bridge
+    _require_evaluation_date(context, today)
+    # The alerts domain still offers a compatibility bridge; the weight domain
+    # no longer needs one of its own, so this is read off the capability.
+    alert_bridge = (
+        alerts_service.LegacyAlertBridge.FULLY_UNOWNED
+        if context.legacy_bridge
         is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+        else alerts_service.LegacyAlertBridge.REJECT
     )
     active_reason = None
     for marker in await list_noise_markers(
         session,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     ):
         end = marker.end_date
         if (end is None and today >= marker.start_date) or (
@@ -2897,25 +2593,8 @@ async def refresh_noise_alert(
     if active_reason is not None:
         # Don't re-raise if the user already dismissed this alert today — it will
         # reappear automatically the next calendar day.
-        if context is None:
-            if await alerts_service._was_dismissed_today(
-                session, NOISE_ALERT_KEY, ""
-            ):
-                return None
-            return await alerts_service.raise_alert(
-                session,
-                domain=Domain.WEIGHT.value,
-                severity=Severity.INFO.value,
-                message=t("alert.weight_noisy", reason=active_reason),
-                alert_key=NOISE_ALERT_KEY,
-            )
         system_context = alerts_service.HealthAlertContext(
             WriteIdentity(context.identity.subject_id, None)
-        )
-        alert_bridge = (
-            alerts_service.LegacyAlertBridge.FULLY_UNOWNED
-            if include_legacy_unowned
-            else alerts_service.LegacyAlertBridge.REJECT
         )
         if await alerts_service.was_scoped_dismissed_today(
             session,
@@ -2935,10 +2614,6 @@ async def refresh_noise_alert(
             alert_key=NOISE_ALERT_KEY,
             legacy_bridge=alert_bridge,
         )
-    if context is None:
-        return await alerts_service.resolve_by_key(
-            session, alert_key=NOISE_ALERT_KEY
-        )
     system_context = alerts_service.HealthAlertContext(
         WriteIdentity(context.identity.subject_id, None)
     )
@@ -2946,11 +2621,7 @@ async def refresh_noise_alert(
         session,
         context=system_context,
         alert_key=NOISE_ALERT_KEY,
-        legacy_bridge=(
-            alerts_service.LegacyAlertBridge.FULLY_UNOWNED
-            if include_legacy_unowned
-            else alerts_service.LegacyAlertBridge.REJECT
-        ),
+        legacy_bridge=alert_bridge,
     )
 
 
@@ -2958,8 +2629,7 @@ async def refresh_noise_alert(
 async def chart_series(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     goal_kg: Optional[float] = None,
     include_bia: bool = False,
     include_timeline: bool = False,
@@ -2990,7 +2660,6 @@ async def chart_series(
         session,
         end=end,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     raw_points = [(w.date, w.weight_kg) for w in weights]
 
@@ -3002,7 +2671,6 @@ async def chart_series(
         for start, range_end in await _noise_ranges(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
             end=end,
         )
         if end is None or start <= end
@@ -3015,7 +2683,6 @@ async def chart_series(
         for row in await list_body_measurements(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
             end=end,
         )
         if end is None or row.date <= end
@@ -3049,7 +2716,6 @@ async def chart_series(
         await _glp1_phase_overlays(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
         if include_glp1
         else []
@@ -3101,8 +2767,7 @@ async def chart_series(
 async def _glp1_phase_overlays(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> list[dict]:
     """GLP-1 dose phases for the chart overlay. Imported lazily so the weight
     module never depends on glp1 at import time (the cross-module link only
@@ -3130,9 +2795,8 @@ async def delete_weight_log(
     session: AsyncSession,
     log_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_weight_write: PreparedWeightWrite | None = None,
+    identity: WriteIdentity,
+    prepared_weight_write: PreparedWeightWrite,
 ) -> bool:
     """Delete a weight log by ID. If it was active, reactivate the next highest
     priority safe log for that date and recompute LBM.
@@ -3146,37 +2810,28 @@ async def delete_weight_log(
         identity=identity,
         prepared=prepared_weight_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy weight compatibility requires a scoped writer")
 
     effective_prepared = prepared_weight_write
-    if context is not None:
-        assert identity is not None and prepared_weight_write is not None
-        target_date_hint = await _get_weight_log_date_in_scope(
-            session,
-            log_id,
-            subject_id=identity.subject_id,
-            include_legacy_unowned=include_legacy_unowned,
-            evaluation_date=context.evaluation_date,
-        )
-        if target_date_hint is None:
-            return False
-        effective_prepared = await _prepared_weight_write_for_date(
-            session,
-            identity=identity,
-            prepared=prepared_weight_write,
-            on_date=target_date_hint,
-        )
-        context = require_prepared_weight_identity(
-            session,
-            prepared=effective_prepared,
-            identity=identity,
-        )
+    assert identity is not None and prepared_weight_write is not None
+    target_date_hint = await _get_weight_log_date_in_scope(
+        session,
+        log_id,
+        subject_id=identity.subject_id,
+        evaluation_date=context.evaluation_date,
+    )
+    if target_date_hint is None:
+        return False
+    effective_prepared = await _prepared_weight_write_for_date(
+        session,
+        identity=identity,
+        prepared=prepared_weight_write,
+        on_date=target_date_hint,
+    )
+    context = require_prepared_weight_identity(
+        session,
+        prepared=effective_prepared,
+        identity=identity,
+    )
 
     # Classify active/superseded only after joining the shared outbox lock. A
     # concurrent deletion can reactivate a row that this reusable session loaded
@@ -3186,24 +2841,18 @@ async def delete_weight_log(
     # identity governance a legacy writer establishes for itself first.
     from vitals.services import garmin_weight_service
 
-    if context is None:
-        await garmin_weight_service.prepare_legacy_active_weight_change(session)
     await garmin_weight_service.lock_active_weight_change(session)
     row = await _get_weight_log_for_update(
         session,
         log_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
-        evaluation_date=(
-            context.evaluation_date if context is not None else today_local()
-        ),
+        subject_id=identity.subject_id,
+        evaluation_date=context.evaluation_date,
     )
     if not row:
         return False
     was_active = not row.superseded
     target_date = row.date
-    if context is not None:
-        _require_evaluation_date(context, target_date)
+    _require_evaluation_date(context, target_date)
     deleted_id = row.id
     deleted_weight_kg = row.weight_kg
 
@@ -3216,14 +2865,12 @@ async def delete_weight_log(
         if identity is not None:
             remaining_scope = _weight_scope_condition(
                 subject_id=identity.subject_id,
-                include_legacy_unowned=include_legacy_unowned,
                 evaluation_date=target_date,
             )
             await _assert_weight_scope_integrity(
                 session,
                 subject_id=identity.subject_id,
                 evaluation_date=target_date,
-                include_legacy_unowned=include_legacy_unowned,
                 filters=(
                     WeightLog.date == target_date,
                     WeightLog.id != row.id,
@@ -3242,53 +2889,31 @@ async def delete_weight_log(
                     session,
                     candidate,
                     subject_id=identity.subject_id,
-                    include_legacy_unowned=include_legacy_unowned,
                 )
         # Reactivate the highest-priority source (manual/scan beat Garmin), and
         # among ties the newest row (id desc, already the scan order).
         next_row = max(
             rows, key=lambda r: (_source_priority(r.source), r.id), default=None
         )
-        if next_row is not None and context is not None:
-            assert effective_prepared is not None
-            # A legacy provider fact cannot be adopted without an authoritative
-            # historical C. Keep it as history rather than guessing provenance.
-            if (
-                next_row.subject_id is None
-                and next_row.source == Source.GARMIN_API.value
-            ):
+        if next_row is not None:
+            try:
+                await conflict_engine.enforce_prepared(
+                    session,
+                    prepared=effective_prepared.conflict_write,
+                    domain=Domain.WEIGHT,
+                    proposed_state={
+                        "weight_kg": next_row.weight_kg,
+                        "source": next_row.source,
+                    },
+                    override=False,
+                    entity_ref=f"weight:{target_date.isoformat()}",
+                    replace_entity_key=_weight_entity_key(row),
+                )
+            except conflict_engine.ConflictBlocked:
+                # Deletion itself removes data from the active state. If the
+                # historical fallback is unsafe, leave it superseded rather
+                # than requiring an override merely to remove the current row.
                 next_row = None
-            else:
-                try:
-                    await conflict_engine.enforce_prepared(
-                        session,
-                        prepared=effective_prepared.conflict_write,
-                        domain=Domain.WEIGHT,
-                        proposed_state={
-                            "weight_kg": next_row.weight_kg,
-                            "source": next_row.source,
-                        },
-                        override=False,
-                        entity_ref=f"weight:{target_date.isoformat()}",
-                        replace_entity_key=_weight_entity_key(row),
-                    )
-                except conflict_engine.ConflictBlocked:
-                    # Deletion itself removes data from the active state. If the
-                    # historical fallback is unsafe, leave it superseded rather
-                    # than requiring an override merely to remove the current row.
-                    next_row = None
-        if (
-            next_row is not None
-            and identity is not None
-            and next_row.subject_id is None
-        ):
-            await _adopt_weight_provenance(
-                session,
-                next_row,
-                identity=identity,
-                integration_connection_id=next_row.integration_connection_id,
-                raw_payload_id=next_row.raw_payload_id,
-            )
 
     # The replacement's scope, provenance, and conflict state are validated
     # before the selected active fact is deleted.
@@ -3303,30 +2928,20 @@ async def delete_weight_log(
                 session,
                 target_date,
                 next_row.weight_kg,
-                subject_id=identity.subject_id if identity is not None else None,
-                include_legacy_unowned=include_legacy_unowned,
+                subject_id=identity.subject_id,
             )
         else:
             await _recompute_lbm_for_date_null(
                 session,
                 target_date,
-                subject_id=identity.subject_id if identity is not None else None,
-                include_legacy_unowned=include_legacy_unowned,
+                subject_id=identity.subject_id,
             )
 
         # Keep Garmin cleanup inside the same local transaction, but never make a
         # network call here. The export job will delete only a remote sample that
         # Vitals owns, and its monotonic cursor prevents an older date surfacing as
         # an accidental backfill after this row disappears.
-        if context is None:
-            await garmin_weight_service.handle_legacy_active_weight_deleted(
-                session,
-                deleted_id=deleted_id,
-                on_date=target_date,
-                deleted_weight_kg=deleted_weight_kg,
-                replacement=next_row,
-            )
-        elif effective_prepared.garmin_weight_export is not None:
+        if effective_prepared.garmin_weight_export is not None:
             await garmin_weight_service.handle_active_weight_deleted_scoped(
                 session,
                 prepared=effective_prepared.garmin_weight_export,
@@ -3344,7 +2959,6 @@ async def update_weight_note(
     *,
     note: str,
     identity: WriteIdentity,
-    include_legacy_unowned: bool = False,
     prepared_weight_write: PreparedWeightWrite,
 ) -> WeightLog | None:
     """Update only a scoped weight note without changing fact provenance."""
@@ -3354,28 +2968,14 @@ async def update_weight_note(
         identity=identity,
         prepared=prepared_weight_write,
     )
-    assert context is not None
-    _require_legacy_bridge(
-        context,
-        include_legacy_unowned=include_legacy_unowned,
-    )
     row = await _get_weight_log_for_update(
         session,
         log_id,
         subject_id=identity.subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         evaluation_date=context.evaluation_date,
     )
     if row is None:
         return None
-    if row.subject_id is None:
-        await _adopt_weight_provenance(
-            session,
-            row,
-            identity=identity,
-            integration_connection_id=row.integration_connection_id,
-            raw_payload_id=row.raw_payload_id,
-        )
     row.note = note
     await session.flush()
     return row
@@ -3385,35 +2985,28 @@ async def _recompute_lbm_for_date_null(
     session: AsyncSession,
     on_date: date_type,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> None:
     """Clear LBM for a date because no active weight log remains."""
     stmt = select(BodyMeasurement).where(BodyMeasurement.date == on_date)
-    if subject_id is not None:
-        scope = _body_measurement_scope_condition(
-            subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
+    scope = _body_measurement_scope_condition(
+        subject_id=subject_id,
+    )
+    invalid = await session.scalar(
+        select(BodyMeasurement.id)
+        .where(
+            BodyMeasurement.date == on_date,
+            # A row that names nobody is outside this scope entirely.
+            BodyMeasurement.subject_id == subject_id,
+            scope.is_not(True),
         )
-        invalid = await session.scalar(
-            select(BodyMeasurement.id)
-            .where(
-                BodyMeasurement.date == on_date,
-                or_(
-                    BodyMeasurement.subject_id == subject_id,
-                    BodyMeasurement.subject_id.is_(None),
-                ),
-                scope.is_not(True),
-            )
-            .limit(1)
+        .limit(1)
+    )
+    if invalid is not None:
+        raise WeightOwnershipError(
+            "body measurement has partial ownership provenance"
         )
-        if invalid is not None:
-            raise WeightOwnershipError(
-                "body measurement has partial ownership provenance"
-            )
-        stmt = stmt.where(scope)
-    elif include_legacy_unowned:
-        raise ValueError("legacy body-measurement compatibility requires a subject_id")
+    stmt = stmt.where(scope)
     result = await session.execute(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
@@ -3427,9 +3020,8 @@ async def delete_body_measurement(
     session: AsyncSession,
     measurement_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     """Delete a body measurement record by ID."""
     context = _require_aux_prepared_write(
@@ -3437,20 +3029,10 @@ async def delete_body_measurement(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-    elif include_legacy_unowned:
-        raise ValueError(
-            "legacy body-measurement compatibility requires a scoped writer"
-        )
     row = await _get_body_measurement_for_update(
         session,
         measurement_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if not row:
         return False
@@ -3463,9 +3045,8 @@ async def delete_progress_photo(
     session: AsyncSession,
     photo_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> ProgressPhotoDeletion | None:
     """Delete a photo fact and retire its file metadata in one transaction."""
 
@@ -3474,107 +3055,39 @@ async def delete_progress_photo(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-        assert identity is not None
-        from vitals.models.identity import HealthSubject
+    from vitals.models.identity import HealthSubject
 
-        owner_user_id = await session.scalar(
-            select(HealthSubject.owner_user_id).where(
-                HealthSubject.id == identity.subject_id
+    owner_user_id = await session.scalar(
+        select(HealthSubject.owner_user_id).where(
+            HealthSubject.id == identity.subject_id
+        )
+    )
+    if identity.actor_user_id is None or owner_user_id != identity.actor_user_id:
+        raise ProgressPhotoOwnershipError(
+            "progress photo deletion requires the subject owner actor"
+        )
+    candidate = (
+        await session.execute(
+            select(
+                ProgressPhoto.subject_id,
+                ProgressPhoto.actor_user_id,
+                ProgressPhoto.file_asset_id,
+                ProgressPhoto.file_key,
+            ).where(
+                ProgressPhoto.id == photo_id,
+                or_(
+                    ProgressPhoto.subject_id == identity.subject_id,
+                    ProgressPhoto.subject_id.is_(None),
+                ),
             )
         )
-        if identity.actor_user_id is None or owner_user_id != identity.actor_user_id:
-            raise ProgressPhotoOwnershipError(
-                "progress photo deletion requires the subject owner actor"
-            )
-        candidate = (
-            await session.execute(
-                select(
-                    ProgressPhoto.subject_id,
-                    ProgressPhoto.actor_user_id,
-                    ProgressPhoto.file_asset_id,
-                    ProgressPhoto.file_key,
-                ).where(
-                    ProgressPhoto.id == photo_id,
-                    or_(
-                        ProgressPhoto.subject_id == identity.subject_id,
-                        ProgressPhoto.subject_id.is_(None),
-                    ),
-                )
-            )
-        ).one_or_none()
-    else:
-        if include_legacy_unowned:
-            raise ValueError(
-                "legacy progress-photo compatibility requires a scoped writer"
-            )
-        candidate = (
-            await session.execute(
-                select(
-                    ProgressPhoto.subject_id,
-                    ProgressPhoto.actor_user_id,
-                    ProgressPhoto.file_asset_id,
-                    ProgressPhoto.file_key,
-                ).where(ProgressPhoto.id == photo_id)
-            )
-        ).one_or_none()
+    ).one_or_none()
     if candidate is None:
         return None
 
     candidate_subject_id, candidate_actor_id, candidate_file_id, candidate_key = (
         candidate
     )
-    if context is None:
-        if any(
-            value is not None
-            for value in (
-                candidate_subject_id,
-                candidate_actor_id,
-                candidate_file_id,
-            )
-        ):
-            raise ProgressPhotoOwnershipError(
-                "unscoped deletion is limited to fully-unowned progress photos"
-            )
-        row = await session.scalar(
-            select(ProgressPhoto)
-            .where(ProgressPhoto.id == photo_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-        if row is None:
-            return None
-        if (
-            row.subject_id is not None
-            or row.actor_user_id is not None
-            or row.file_asset_id is not None
-            or row.domain != DOMAIN
-            or row.source != Source.MANUAL.value
-        ):
-            raise ProgressPhotoOwnershipError(
-                "legacy progress photo changed ownership before deletion"
-            )
-        conflicting_refs = [row.file_key]
-        document_alias = _progress_photo_document_alias(row.file_key)
-        if document_alias is not None:
-            conflicting_refs.append(document_alias)
-        shadow_asset_id = await session.scalar(
-            select(FileAsset.id).where(FileAsset.storage_ref.in_(conflicting_refs))
-        )
-        if shadow_asset_id is not None:
-            raise ProgressPhotoOwnershipError(
-                "legacy progress photo conflicts with file-asset metadata"
-            )
-        receipt = ProgressPhotoDeletion(row.file_key, None)
-        await session.delete(row)
-        await session.flush()
-        return receipt
-
-    assert identity is not None
     asset = None
     if candidate_file_id is not None:
         asset = await session.scalar(
@@ -3586,7 +3099,6 @@ async def delete_progress_photo(
     rows = await _progress_photo_scope_rows(
         session,
         subject_id=identity.subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         filters=(ProgressPhoto.id == photo_id,),
         for_update=True,
     )
@@ -3624,9 +3136,8 @@ async def delete_noise_marker(
     session: AsyncSession,
     marker_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     """Delete a noise marker record by ID."""
     context = _require_aux_prepared_write(
@@ -3634,31 +3145,21 @@ async def delete_noise_marker(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy noise compatibility requires a scoped writer")
     row = await _get_noise_marker_for_update(
         session,
         marker_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if not row:
         return False
     await session.delete(row)
     await session.flush()
-    if context is not None:
-        assert identity is not None and prepared_conflict_write is not None
-        await refresh_noise_alert(
-            session,
-            on_date=context.evaluation_date,
-            identity=identity,
-            prepared_conflict_write=prepared_conflict_write,
-        )
+    await refresh_noise_alert(
+        session,
+        on_date=context.evaluation_date,
+        identity=identity,
+        prepared_conflict_write=prepared_conflict_write,
+    )
     return True
 
 
@@ -3670,9 +3171,8 @@ async def update_weight_log(
     weight_kg: float,
     note: Optional[str] = None,
     override: bool = False,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_weight_write: PreparedWeightWrite | None = None,
+    identity: WriteIdentity,
+    prepared_weight_write: PreparedWeightWrite,
 ) -> Optional[WeightLog]:
     """Edit an existing weight log. If the date has changed, delete the old row
     (triggering reactivation of other rows) and insert a new log."""
@@ -3681,28 +3181,18 @@ async def update_weight_log(
         identity=identity,
         prepared=prepared_weight_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy weight compatibility requires a scoped writer")
+    _require_evaluation_date(context, on_date)
 
     _check_range("weight_kg", weight_kg, _WEIGHT_KG_RANGE)
     from vitals.services import garmin_weight_service
 
     # Identity governance before the outbox advisory, exactly as
     # ``prepare_weight_write`` orders them for a scoped edit.
-    if context is None:
-        await garmin_weight_service.prepare_legacy_active_weight_change(session)
     await garmin_weight_service.lock_active_weight_change(session)
     row = await _get_weight_log_for_update(
         session,
         log_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
         evaluation_date=on_date,
     )
     if not row:
@@ -3723,7 +3213,6 @@ async def update_weight_log(
             override=override,
             identity=identity,
             integration_connection_id=row.integration_connection_id,
-            include_legacy_unowned=include_legacy_unowned,
             prepared_weight_write=prepared_weight_write,
             origin_actor_user_id=row.actor_user_id,
         )
@@ -3731,7 +3220,6 @@ async def update_weight_log(
             session,
             log_id,
             identity=identity,
-            include_legacy_unowned=include_legacy_unowned,
             prepared_weight_write=prepared_weight_write,
         )
         if not deleted:  # pragma: no cover - target is locked above
@@ -3739,32 +3227,15 @@ async def update_weight_log(
         return moved
     if not row.superseded:
         proposed = {"weight_kg": weight_kg, "source": row.source}
-        if context is None:
-            await conflict_engine.enforce(
-                session,
-                Domain.WEIGHT.value,
-                proposed,
-                override=override,
-                entity_ref=f"weight:{on_date.isoformat()}",
-            )
-        else:
-            assert prepared_weight_write is not None
-            await conflict_engine.enforce_prepared(
-                session,
-                prepared=prepared_weight_write.conflict_write,
-                domain=Domain.WEIGHT,
-                proposed_state=proposed,
-                override=override,
-                entity_ref=f"weight:{on_date.isoformat()}",
-                replace_entity_key=_weight_entity_key(row),
-            )
-    if row.subject_id is None and identity is not None:
-        await _adopt_weight_provenance(
+        assert prepared_weight_write is not None
+        await conflict_engine.enforce_prepared(
             session,
-            row,
-            identity=identity,
-            integration_connection_id=row.integration_connection_id,
-            raw_payload_id=row.raw_payload_id,
+            prepared=prepared_weight_write.conflict_write,
+            domain=Domain.WEIGHT,
+            proposed_state=proposed,
+            override=override,
+            entity_ref=f"weight:{on_date.isoformat()}",
+            replace_entity_key=_weight_entity_key(row),
         )
     row.weight_kg = weight_kg
     row.note = note
@@ -3776,12 +3247,9 @@ async def update_weight_log(
             session,
             on_date,
             weight_kg,
-            subject_id=identity.subject_id if identity is not None else None,
-            include_legacy_unowned=include_legacy_unowned,
+            subject_id=identity.subject_id,
         )
-        if context is None:
-            await garmin_weight_service.handle_legacy_active_weight_changed(session)
-        elif prepared_weight_write.garmin_weight_export is not None:
+        if prepared_weight_write.garmin_weight_export is not None:
             await garmin_weight_service.handle_active_weight_changed_scoped(
                 session,
                 prepared=prepared_weight_write.garmin_weight_export,
@@ -3800,9 +3268,8 @@ async def update_body_measurement(
     note: Optional[str] = None,
     override: bool = False,
     partial: bool = True,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[BodyMeasurement]:
     """Edit an existing body measurement. If the date has changed, delete the old row
     and upsert the new one.
@@ -3815,16 +3282,7 @@ async def update_body_measurement(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
-        _require_legacy_bridge(
-            context,
-            include_legacy_unowned=include_legacy_unowned,
-        )
-    elif include_legacy_unowned:
-        raise ValueError(
-            "legacy body-measurement compatibility requires a scoped writer"
-        )
+    _require_evaluation_date(context, on_date)
     _check_range("neck_cm", neck_cm, _CIRCUMFERENCE_CM_RANGE)
     _check_range("waist_cm", waist_cm, _CIRCUMFERENCE_CM_RANGE)
     _check_range("hips_cm", hips_cm, _CIRCUMFERENCE_CM_RANGE)
@@ -3832,8 +3290,7 @@ async def update_body_measurement(
     row = await _get_body_measurement_for_update(
         session,
         measurement_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if not row:
         return None
@@ -3842,8 +3299,7 @@ async def update_body_measurement(
         occupied = await _get_body_measurement_for_date_update(
             session,
             on_date,
-            subject_id=identity.subject_id if identity is not None else None,
-            include_legacy_unowned=include_legacy_unowned,
+            subject_id=identity.subject_id,
         )
         if occupied is not None and occupied.id != row.id:
             raise BodyMeasurementDateOccupiedError(
@@ -3877,8 +3333,7 @@ async def update_body_measurement(
         waist_cm=effective_waist,
         hips_cm=effective_hips,
         note=effective_note,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     await session.flush()
     return row
@@ -3890,7 +3345,6 @@ async def update_body_measurement_note(
     *,
     note: str,
     identity: WriteIdentity,
-    include_legacy_unowned: bool = False,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> BodyMeasurement | None:
     """Update only a measurement note inside one prepared subject scope."""
@@ -3900,16 +3354,10 @@ async def update_body_measurement_note(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    assert context is not None
-    _require_legacy_bridge(
-        context,
-        include_legacy_unowned=include_legacy_unowned,
-    )
     row = await _get_body_measurement_for_update(
         session,
         measurement_id,
         subject_id=identity.subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if row is None:
         return None

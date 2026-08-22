@@ -673,7 +673,7 @@ async def _weight_block(
     """
     from vitals.services import weight_service
 
-    series = await weight_service.chart_series(session)
+    series = await weight_service.chart_series(session, subject_id=subject_id)
     in_window = [
         p for p in series["raw"] if start.isoformat() <= p["date"] <= end.isoformat()
     ]
