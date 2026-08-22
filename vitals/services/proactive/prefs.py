@@ -1161,10 +1161,17 @@ async def set_prefs(session: AsyncSession, raw: Any) -> dict[str, Any]:
 async def bot_enabled(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID | None,
     strict: bool = False,
 ) -> bool:
-    """Return the subject module gate; strict mode rejects an absent subject."""
+    """Return the subject module gate; strict mode rejects an absent subject.
+
+    ``subject_id`` is mandatory: whether the bot may speak is one person's
+    setting, and every caller already knows whose delivery it is about. ``None``
+    remains a legal value and means the zero-subject installation gate — the
+    single installation-wide row a database with no subjects still has — but a
+    caller has to ask for it rather than fall into it by omission.
+    """
 
     from vitals.services import modules_service
 
@@ -1181,7 +1188,7 @@ async def bot_enabled(
             session,
             scope=SettingScope.SUBJECT,
             key=ScopedSettingKey.ENABLED_MODULES,
-            subject_id=subject_id,
+            scope_id=subject_id,
             default=dict(modules_service.DEFAULT_STATE),
         )
         return bool(raw.get(MODULE_KEY)) if isinstance(raw, dict) else False

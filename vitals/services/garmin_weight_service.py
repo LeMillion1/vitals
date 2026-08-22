@@ -1030,8 +1030,8 @@ async def is_enabled(session: AsyncSession) -> bool:
             session,
             scope=scoped_settings_service.SettingScope.INTEGRATION_CONNECTION,
             key=scoped_settings_service.ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
-            subject_id=context.identity.subject_id,
-            integration_connection_id=context.integration_connection_id,
+            expected_subject_id=context.identity.subject_id,
+            scope_id=context.integration_connection_id,
             default=False,
         )
         return value is True
@@ -1132,8 +1132,8 @@ async def set_enabled_scoped(
                     .GARMIN_WEIGHT_EXPORT_ENABLED
                 ),
                 value=clean,
-                subject_id=context.identity.subject_id,
-                integration_connection_id=context.integration_connection_id,
+                expected_subject_id=context.identity.subject_id,
+                scope_id=context.integration_connection_id,
             )
         else:
             scoped = await session.scalar(

@@ -289,7 +289,7 @@ async def get_enabled_modules(
             session,
             scope=SettingScope.SUBJECT,
             key=ScopedSettingKey.ENABLED_MODULES,
-            subject_id=subject_id,
+            scope_id=subject_id,
             default=dict(DEFAULT_STATE),
         )
         if isinstance(raw, dict):
@@ -333,7 +333,7 @@ async def set_module_enabled(
         session,
         scope=SettingScope.SUBJECT,
         key=ScopedSettingKey.ENABLED_MODULES,
-        subject_id=subject_id,
+        scope_id=subject_id,
         default=dict(DEFAULT_STATE),
         update=_toggle,
     )

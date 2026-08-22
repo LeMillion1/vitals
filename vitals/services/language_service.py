@@ -62,7 +62,7 @@ async def get_language(
                 session,
                 scope=SettingScope.USER,
                 key=ScopedSettingKey.UI_LANGUAGE,
-                user_id=user_id,
+                scope_id=user_id,
                 default=DEFAULT,
             )
             lang = _sanitize(raw)
@@ -93,7 +93,7 @@ async def set_language(
             session,
             scope=SettingScope.USER,
             key=ScopedSettingKey.UI_LANGUAGE,
-            user_id=user_id,
+            scope_id=user_id,
             value=lang,
         )
     else:

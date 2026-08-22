@@ -886,10 +886,28 @@ async def _ensure_nonoverlapping_period(
     session: AsyncSession,
     model,
     *,
+    subject_id: uuid.UUID | None,
     period_start: date,
     period_end: date,
-    subject_id: uuid.UUID | None = None,
 ):
+    """Lock the periods this one would straddle and refuse a partial overlap.
+
+    ``subject_id`` is mandatory and pairs with ``model``: a subject period is
+    always looked up inside one person's ledger, and ``None`` belongs to the
+    platform table, which has no subject column to scope by. Passing ``None``
+    for a subject model would compare one person's budget against everybody's,
+    so it is refused rather than silently widened.
+    """
+
+    if subject_id is None:
+        if model is not AIPlatformQuotaPeriod:
+            raise AIGatewayConfigurationError(
+                "a subject quota period must name the subject it belongs to"
+            )
+    elif model is AIPlatformQuotaPeriod:
+        raise AIGatewayConfigurationError(
+            "the platform quota ledger belongs to no subject"
+        )
     query = select(model).where(
         model.period_start < period_end,
         model.period_end > period_start,
@@ -943,6 +961,7 @@ async def configure_platform_quota_period(
     row = await _ensure_nonoverlapping_period(
         session,
         AIPlatformQuotaPeriod,
+        subject_id=None,
         period_start=period_start,
         period_end=period_end,
     )

@@ -171,7 +171,7 @@ async def get_week_template(
         session,
         scope=SettingScope.SUBJECT,
         key=ScopedSettingKey.WEEK_TEMPLATE,
-        subject_id=subject_id,
+        scope_id=subject_id,
         default=None,
     )
     return sanitize_template(value)
@@ -188,7 +188,7 @@ async def set_week_template(
         session,
         scope=SettingScope.SUBJECT,
         key=ScopedSettingKey.WEEK_TEMPLATE,
-        subject_id=subject_id,
+        scope_id=subject_id,
         value=sanitize_template(template),
     )
 
@@ -211,7 +211,7 @@ async def update_week_template(
         session,
         scope=SettingScope.SUBJECT,
         key=ScopedSettingKey.WEEK_TEMPLATE,
-        subject_id=subject_id,
+        scope_id=subject_id,
         default=None,
         update=_merge,
     )

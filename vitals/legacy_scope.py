@@ -29,33 +29,10 @@ from types import MappingProxyType
 # or an ``include_legacy_unowned`` escape hatch.
 LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        'vitals.services.ai_gateway_service': frozenset(
-            {
-                '_ensure_nonoverlapping_period',
-            }
-        ),
 
 
-        'vitals.services.hrt_service': frozenset(
-            {
-                'set_compound_active',
-            }
-        ),
 
 
-        'vitals.services.proactive.prefs': frozenset(
-            {
-                'bot_enabled',
-            }
-        ),
-        'vitals.services.scoped_settings_service': frozenset(
-            {
-                'get_scoped_setting',
-                'mirror_legacy_setting',
-                'set_scoped_setting',
-                'update_scoped_setting',
-            }
-        ),
 
     }
 )

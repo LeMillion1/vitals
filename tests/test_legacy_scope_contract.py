@@ -92,14 +92,16 @@ def test_the_registry_records_no_bridge_that_is_already_closed():
         )
 
 
-def test_the_registry_is_immutable_and_still_has_work_left():
+def test_the_registry_is_immutable_and_empty():
     import pytest
 
     with pytest.raises(TypeError):
         LEGACY_SCOPE_BRIDGES["x"] = frozenset()  # type: ignore[index]
-    # When this reaches zero, AccessContext is mandatory everywhere and the
-    # compatibility columns can become NOT NULL.
-    assert bridge_total() >= 0
+    # Zero. Every service now demands its scope, which is the precondition for
+    # making the compatibility columns NOT NULL and for turning on FORCE RLS.
+    # This is an equality, not a bound: the ratchet held all the way down and
+    # nothing may reopen a bridge without deleting this line.
+    assert bridge_total() == 0
 
 
 def _observed_bare_id_reads() -> dict[str, frozenset[str]]:

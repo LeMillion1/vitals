@@ -94,18 +94,18 @@ def _request(
 ) -> dict[str, Any]:
     route = SCOPED_SETTING_REGISTRY[key]
     if route.scope is SettingScope.USER:
-        return {"scope": route.scope, "key": key, "user_id": graph.user.id}
+        return {"scope": route.scope, "key": key, "scope_id": graph.user.id}
     if route.scope is SettingScope.SUBJECT:
         return {
             "scope": route.scope,
             "key": key,
-            "subject_id": graph.subject.id,
+            "scope_id": graph.subject.id,
         }
     return {
         "scope": route.scope,
         "key": key,
-        "subject_id": graph.subject.id,
-        "integration_connection_id": graph.garmin.id,
+        "scope_id": graph.garmin.id,
+        "expected_subject_id": graph.subject.id,
     }
 
 
@@ -208,7 +208,7 @@ async def test_read_returns_detached_default_when_both_rows_are_missing(db_sessi
         db_session,
         scope=SettingScope.SUBJECT,
         key=ScopedSettingKey.ENABLED_MODULES,
-        subject_id=graph.subject.id,
+        scope_id=graph.subject.id,
         default=default,
     )
 
@@ -259,7 +259,7 @@ async def test_set_flushes_but_leaves_commit_and_rollback_to_caller(db_session):
         db_session,
         scope=SettingScope.SUBJECT,
         key=ScopedSettingKey.WEEK_TEMPLATE,
-        subject_id=subject_id,
+        scope_id=subject_id,
         value={"monday": "training"},
     )
 
@@ -375,7 +375,7 @@ async def test_secret_like_keys_are_rejected_before_any_legacy_read(db_session, 
             db_session,
             scope=SettingScope.USER,
             key=key,
-            user_id=graph.user.id,
+            scope_id=graph.user.id,
         )
 
 
@@ -396,7 +396,7 @@ async def test_unknown_and_excluded_keys_are_rejected_without_guessing_scope(
             db_session,
             scope=SettingScope.USER,
             key=key,
-            user_id=graph.user.id,
+            scope_id=graph.user.id,
         )
 
 
@@ -408,54 +408,81 @@ async def test_key_scope_mismatch_and_platform_scope_are_rejected(db_session):
             db_session,
             scope=SettingScope.USER,
             key=ScopedSettingKey.ENABLED_MODULES,
-            user_id=graph.user.id,
+            scope_id=graph.user.id,
         )
     with pytest.raises(ScopedSettingValidationError, match="unknown.*scope"):
         await get_scoped_setting(
             db_session,
             scope="platform",
             key=ScopedSettingKey.UI_LANGUAGE,
-            user_id=graph.user.id,
+            scope_id=graph.user.id,
         )
 
 
 @pytest.mark.parametrize("bad_id", [None, "not-a-uuid", uuid.UUID(int=0)])
 async def test_missing_or_non_uuid_scope_is_rejected(db_session, bad_id):
-    with pytest.raises(ScopedSettingValidationError, match="user_id"):
+    with pytest.raises(ScopedSettingValidationError, match="user id"):
         await get_scoped_setting(
             db_session,
             scope=SettingScope.USER,
             key=ScopedSettingKey.UI_LANGUAGE,
-            user_id=bad_id,
+            scope_id=bad_id,
         )
 
 
-async def test_irrelevant_scope_identifiers_are_rejected(db_session):
+async def test_an_identifier_of_the_wrong_kind_finds_nothing(db_session):
+    """One id slot, so a caller can no longer offer three and hope one fits.
+
+    The mismatch that used to be possible — handing a user id and a subject id
+    to the same call and letting the service pick — cannot be written any more.
+    What survives is a caller passing the wrong *kind* of id into the one slot,
+    and that must not resolve to anybody: a user's id is not a subject, so the
+    subject-scoped read finds no such subject rather than falling through to the
+    installation-wide legacy row.
+    """
+
+    graph = await _graph(db_session)
+
+    with pytest.raises(ScopedSettingTargetNotFoundError):
+        await get_scoped_setting(
+            db_session,
+            scope=SettingScope.SUBJECT,
+            key=ScopedSettingKey.WEEK_TEMPLATE,
+            scope_id=graph.user.id,
+        )
+    with pytest.raises(ScopedSettingTargetNotFoundError):
+        await get_scoped_setting(
+            db_session,
+            scope=SettingScope.USER,
+            key=ScopedSettingKey.UI_LANGUAGE,
+            scope_id=graph.subject.id,
+        )
+    with pytest.raises(ScopedSettingTargetNotFoundError):
+        await get_scoped_setting(
+            db_session,
+            scope=SettingScope.INTEGRATION_CONNECTION,
+            key=ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
+            scope_id=graph.user.id,
+        )
+
+
+async def test_expected_subject_is_refused_outside_connection_scope(db_session):
+    """``expected_subject_id`` cross-checks a connection's owner, nothing else.
+
+    A user or subject setting is already scoped by its own id; accepting a
+    second subject alongside it would reintroduce exactly the two-ids ambiguity
+    the single slot removed.
+    """
+
     graph = await _graph(db_session)
 
     with pytest.raises(ScopedSettingScopeMismatchError):
         await get_scoped_setting(
             db_session,
-            scope=SettingScope.USER,
-            key=ScopedSettingKey.UI_LANGUAGE,
-            user_id=graph.user.id,
-            subject_id=graph.subject.id,
-        )
-    with pytest.raises(ScopedSettingScopeMismatchError):
-        await get_scoped_setting(
-            db_session,
             scope=SettingScope.SUBJECT,
             key=ScopedSettingKey.WEEK_TEMPLATE,
-            user_id=graph.user.id,
-            subject_id=graph.subject.id,
-        )
-    with pytest.raises(ScopedSettingScopeMismatchError):
-        await get_scoped_setting(
-            db_session,
-            scope=SettingScope.INTEGRATION_CONNECTION,
-            key=ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
-            user_id=graph.user.id,
-            integration_connection_id=graph.garmin.id,
+            scope_id=graph.subject.id,
+            expected_subject_id=graph.subject.id,
         )
 
 
@@ -468,16 +495,12 @@ async def test_nonexistent_scope_cannot_leak_a_legacy_singleton(db_session, scop
     )
     db_session.add(AppSetting(key=key.value, value="private legacy value"))
     await db_session.flush()
-    kwargs = {"user_id": uuid.uuid4()} if scope is SettingScope.USER else {
-        "subject_id": uuid.uuid4()
-    }
-
     with pytest.raises(ScopedSettingTargetNotFoundError):
         await get_scoped_setting(
             db_session,
             scope=scope,
             key=key,
-            **kwargs,
+            scope_id=uuid.uuid4(),
         )
 
 
@@ -490,16 +513,16 @@ async def test_garmin_setting_rejects_wrong_provider_and_subject(db_session):
             db_session,
             scope=SettingScope.INTEGRATION_CONNECTION,
             key=ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
-            subject_id=first.subject.id,
-            integration_connection_id=first.hevy.id,
+            expected_subject_id=first.subject.id,
+            scope_id=first.hevy.id,
         )
     with pytest.raises(ScopedSettingOwnershipError, match="does not belong"):
         await set_scoped_setting(
             db_session,
             scope=SettingScope.INTEGRATION_CONNECTION,
             key=ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
-            subject_id=second.subject.id,
-            integration_connection_id=first.garmin.id,
+            expected_subject_id=second.subject.id,
+            scope_id=first.garmin.id,
             value=True,
         )
 
@@ -520,15 +543,15 @@ async def test_garmin_subject_check_is_optional_but_connection_must_exist(db_ses
         db_session,
         scope=SettingScope.INTEGRATION_CONNECTION,
         key=ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
-        integration_connection_id=graph.garmin.id,
+        scope_id=graph.garmin.id,
         value=True,
     )
     assert await get_scoped_setting(
         db_session,
         scope=SettingScope.INTEGRATION_CONNECTION,
         key=ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
-        subject_id=graph.subject.id,
-        integration_connection_id=graph.garmin.id,
+        expected_subject_id=graph.subject.id,
+        scope_id=graph.garmin.id,
     ) is True
 
     with pytest.raises(ScopedSettingTargetNotFoundError):
@@ -536,7 +559,7 @@ async def test_garmin_subject_check_is_optional_but_connection_must_exist(db_ses
             db_session,
             scope=SettingScope.INTEGRATION_CONNECTION,
             key=ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
-            integration_connection_id=uuid.uuid4(),
+            scope_id=uuid.uuid4(),
         )
 
 
@@ -587,14 +610,14 @@ async def test_user_bridge_requires_the_sole_subjects_active_owner(db_session):
             db_session,
             scope=SettingScope.USER,
             key=ScopedSettingKey.UI_LANGUAGE,
-            user_id=other_user.id,
+            scope_id=other_user.id,
         )
     with pytest.raises(LegacyScopedSettingBridgeClosedError):
         await set_scoped_setting(
             db_session,
             scope=SettingScope.USER,
             key=ScopedSettingKey.UI_LANGUAGE,
-            user_id=other_user.id,
+            scope_id=other_user.id,
             value="en",
         )
 
@@ -620,14 +643,14 @@ async def test_inactive_sole_owner_closes_legacy_fallback_and_writes(db_session)
             db_session,
             scope=SettingScope.SUBJECT,
             key=ScopedSettingKey.ENABLED_MODULES,
-            subject_id=graph.subject.id,
+            scope_id=graph.subject.id,
         )
     with pytest.raises(LegacyScopedSettingBridgeClosedError, match="active"):
         await set_scoped_setting(
             db_session,
             scope=SettingScope.SUBJECT,
             key=ScopedSettingKey.ENABLED_MODULES,
-            subject_id=graph.subject.id,
+            scope_id=graph.subject.id,
             value={"weight": False},
         )
 
@@ -690,7 +713,7 @@ async def test_postgres_concurrent_first_writes_are_serialized_by_scope_root(
         session_a,
         scope=SettingScope.SUBJECT,
         key=ScopedSettingKey.WEEK_TEMPLATE,
-        subject_id=subject_id,
+        scope_id=subject_id,
         value={"writer": "a"},
     )
 
@@ -700,7 +723,7 @@ async def test_postgres_concurrent_first_writes_are_serialized_by_scope_root(
                 session_b,
                 scope=SettingScope.SUBJECT,
                 key=ScopedSettingKey.WEEK_TEMPLATE,
-                subject_id=subject_id,
+                scope_id=subject_id,
                 value={"writer": "b"},
             )
             await session_b.commit()

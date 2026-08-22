@@ -267,7 +267,7 @@ async def set_compound_active(
     compound_id: int,
     *,
     active: bool,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID | None,
 ) -> Optional[HrtCompound]:
     """The catalog's active flag is frozen, not scoped.
 
@@ -275,6 +275,10 @@ async def set_compound_active(
     cannot be scoped without a reviewed SubjectSetting mapping. Passing a
     subject is refused rather than silently writing one person's choice onto
     everybody's catalog.
+
+    ``subject_id`` is mandatory even though ``None`` is its only legal value:
+    the caller has to say out loud that it is writing the installation-wide
+    catalog flag, and cannot arrive at that by omission.
     """
 
     if subject_id is not None:

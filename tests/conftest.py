@@ -382,7 +382,7 @@ async def legacy_owner_roots(db_session):
         db_session,
         scope=SettingScope.SUBJECT,
         key=ScopedSettingKey.ENABLED_MODULES,
-        subject_id=identity.subject_id,
+        scope_id=identity.subject_id,
         value=enabled_modules,
     )
     from vitals.services.proactive import prefs

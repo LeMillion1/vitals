@@ -190,14 +190,34 @@ def _optional_uuid(value: object, *, field: str) -> uuid.UUID | None:
     return _required_uuid(value, field=field)
 
 
+_SCOPE_ID_FIELD = {
+    SettingScope.USER: "user id",
+    SettingScope.SUBJECT: "health subject id",
+    SettingScope.INTEGRATION_CONNECTION: "integration connection id",
+}
+
+
 def _validate_request(
     *,
     scope: SettingScope | str,
     key: ScopedSettingKey | str,
-    user_id: uuid.UUID | None,
-    subject_id: uuid.UUID | None,
-    integration_connection_id: uuid.UUID | None,
+    scope_id: uuid.UUID,
+    expected_subject_id: uuid.UUID | None,
 ) -> _ValidatedRequest:
+    """Resolve one settings request against the key's registered route.
+
+    ``scope`` names which kind of thing owns the value and ``scope_id`` is that
+    thing's id — one mandatory pair, not three optional ones. The three-id
+    spelling this replaced let a caller reach a function with every id left out
+    and be told so only at runtime; there was no way to write the call without a
+    scope, but also no way to see from the signature that one was required.
+
+    ``expected_subject_id`` is not a scope. It applies to connection-scoped keys
+    only and asserts which person the connection belongs to, so a caller holding
+    a connection id from elsewhere cannot read settings off somebody else's
+    integration.
+    """
+
     parsed_scope = _as_scope(scope)
     parsed_key = _as_key(key)
     route = SCOPED_SETTING_REGISTRY[parsed_key]
@@ -207,36 +227,24 @@ def _validate_request(
             f"not {parsed_scope.value!r}"
         )
 
-    if parsed_scope is SettingScope.USER:
-        if subject_id is not None or integration_connection_id is not None:
-            raise ScopedSettingScopeMismatchError(
-                "user settings accept only user_id"
-            )
-        scope_id = _required_uuid(user_id, field="user_id")
-        expected_subject_id = None
-    elif parsed_scope is SettingScope.SUBJECT:
-        if user_id is not None or integration_connection_id is not None:
-            raise ScopedSettingScopeMismatchError(
-                "subject settings accept only subject_id"
-            )
-        scope_id = _required_uuid(subject_id, field="subject_id")
-        expected_subject_id = None
-    else:
-        if user_id is not None:
-            raise ScopedSettingScopeMismatchError(
-                "integration-connection settings do not accept user_id"
-            )
-        scope_id = _required_uuid(
-            integration_connection_id,
-            field="integration_connection_id",
+    resolved_id = _required_uuid(scope_id, field=_SCOPE_ID_FIELD[parsed_scope])
+    if parsed_scope is SettingScope.INTEGRATION_CONNECTION:
+        resolved_subject_id = _optional_uuid(
+            expected_subject_id, field="expected_subject_id"
         )
-        expected_subject_id = _optional_uuid(subject_id, field="subject_id")
+    else:
+        if expected_subject_id is not None:
+            raise ScopedSettingScopeMismatchError(
+                "expected_subject_id applies to integration-connection settings "
+                "only; a user or subject setting is already scoped by its own id"
+            )
+        resolved_subject_id = None
 
     return _ValidatedRequest(
         key=parsed_key,
         route=route,
-        scope_id=scope_id,
-        expected_subject_id=expected_subject_id,
+        scope_id=resolved_id,
+        expected_subject_id=resolved_subject_id,
     )
 
 
@@ -427,9 +435,8 @@ async def get_scoped_setting(
     *,
     scope: SettingScope | str,
     key: ScopedSettingKey | str,
-    user_id: uuid.UUID | None = None,
-    subject_id: uuid.UUID | None = None,
-    integration_connection_id: uuid.UUID | None = None,
+    scope_id: uuid.UUID,
+    expected_subject_id: uuid.UUID | None = None,
     default: Any = None,
 ) -> Any:
     """Read scoped state first and fall back to its one allowlisted legacy key.
@@ -442,9 +449,8 @@ async def get_scoped_setting(
     request = _validate_request(
         scope=scope,
         key=key,
-        user_id=user_id,
-        subject_id=subject_id,
-        integration_connection_id=integration_connection_id,
+        scope_id=scope_id,
+        expected_subject_id=expected_subject_id,
     )
     await _require_scope_target(session, request, for_update=False)
     scoped = await _scoped_row(session, request, for_update=False)
@@ -469,9 +475,8 @@ async def set_scoped_setting(
     scope: SettingScope | str,
     key: ScopedSettingKey | str,
     value: Any,
-    user_id: uuid.UUID | None = None,
-    subject_id: uuid.UUID | None = None,
-    integration_connection_id: uuid.UUID | None = None,
+    scope_id: uuid.UUID,
+    expected_subject_id: uuid.UUID | None = None,
 ) -> Any:
     """Atomically replace one scoped value and its legacy compatibility row.
 
@@ -484,9 +489,8 @@ async def set_scoped_setting(
     request = _validate_request(
         scope=scope,
         key=key,
-        user_id=user_id,
-        subject_id=subject_id,
-        integration_connection_id=integration_connection_id,
+        scope_id=scope_id,
+        expected_subject_id=expected_subject_id,
     )
     await acquire_identity_governance_lock(session)
     connection = await _require_scope_target(session, request, for_update=True)
@@ -516,9 +520,8 @@ async def update_scoped_setting(
     scope: SettingScope | str,
     key: ScopedSettingKey | str,
     update: Callable[[Any], Any],
-    user_id: uuid.UUID | None = None,
-    subject_id: uuid.UUID | None = None,
-    integration_connection_id: uuid.UUID | None = None,
+    scope_id: uuid.UUID,
+    expected_subject_id: uuid.UUID | None = None,
     default: Any = None,
 ) -> Any:
     """Atomically read, transform, and dual-write one scoped setting.
@@ -535,9 +538,8 @@ async def update_scoped_setting(
     request = _validate_request(
         scope=scope,
         key=key,
-        user_id=user_id,
-        subject_id=subject_id,
-        integration_connection_id=integration_connection_id,
+        scope_id=scope_id,
+        expected_subject_id=expected_subject_id,
     )
     await acquire_identity_governance_lock(session)
     connection = await _require_scope_target(session, request, for_update=True)
@@ -571,9 +573,8 @@ async def mirror_legacy_setting(
     *,
     scope: SettingScope | str,
     key: ScopedSettingKey | str,
-    user_id: uuid.UUID | None = None,
-    subject_id: uuid.UUID | None = None,
-    integration_connection_id: uuid.UUID | None = None,
+    scope_id: uuid.UUID,
+    expected_subject_id: uuid.UUID | None = None,
 ) -> bool:
     """Idempotently copy one allowlisted legacy value into its scoped row.
 
@@ -586,9 +587,8 @@ async def mirror_legacy_setting(
     request = _validate_request(
         scope=scope,
         key=key,
-        user_id=user_id,
-        subject_id=subject_id,
-        integration_connection_id=integration_connection_id,
+        scope_id=scope_id,
+        expected_subject_id=expected_subject_id,
     )
     await acquire_identity_governance_lock(session)
     connection = await _require_scope_target(session, request, for_update=True)

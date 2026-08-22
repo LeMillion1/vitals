@@ -10,6 +10,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- **Every legacy scope bridge is closed.** The registry that started PR-04 at
+  168 bridged functions is empty, and its contract test now asserts equality
+  rather than a bound: no service can accept an omittable subject again without
+  deleting that line. This is the precondition for the `NOT NULL` ownership
+  contract and for FORCE RLS.
+- The last seven went together. `ai_gateway_service._ensure_nonoverlapping_period`
+  now takes a mandatory subject paired with its model and refuses the two
+  mismatches outright — a subject period without a subject, and a platform
+  period with one. `hrt_service.set_compound_active` and `prefs.bot_enabled`
+  keep `None` as a legal value but no longer as a default, so a caller has to
+  say out loud that it means the installation-wide flag.
+- `scoped_settings_service` swaps three optional ids for one mandatory
+  `scope_id`. The old spelling let a caller reach any of the four entry points
+  with every id left out and learn about it only at runtime; worse, it accepted
+  two at once and picked. `expected_subject_id` keeps its own name because it is
+  not a scope — it cross-checks which person a connection belongs to, and is
+  refused outside connection-scoped keys.
+
 - Closed the supplements catalog, the week template, the alert reader and the
   Garmin daily readers — nine bridges. `alerts_service.list_active` and both
   Garmin day readers now demand a scope instead of defaulting to "everything in

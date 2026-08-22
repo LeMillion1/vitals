@@ -136,7 +136,7 @@ async def list_charts(
             session,
             scope=SettingScope.SUBJECT,
             key=ScopedSettingKey.CUSTOM_CHARTS,
-            subject_id=subject_id,
+            scope_id=subject_id,
             default=[],
         )
         if isinstance(raw, list):
@@ -235,7 +235,7 @@ async def create_chart(
         session,
         scope=SettingScope.SUBJECT,
         key=ScopedSettingKey.CUSTOM_CHARTS,
-        subject_id=subject_id,
+        scope_id=subject_id,
         default=[],
         update=_append,
     )
@@ -264,7 +264,7 @@ async def delete_chart(
         session,
         scope=SettingScope.SUBJECT,
         key=ScopedSettingKey.CUSTOM_CHARTS,
-        subject_id=subject_id,
+        scope_id=subject_id,
         default=[],
         update=_remove,
     )

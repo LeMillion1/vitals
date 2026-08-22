@@ -452,7 +452,9 @@ async def test_set_compound_active_hides_from_active_list(db_session, owner_writ
             active=False,
             subject_id=owner_write.subject_id,
         )
-    await hrt_service.set_compound_active(db_session, ana.id, active=False)
+    await hrt_service.set_compound_active(
+        db_session, ana.id, active=False, subject_id=None
+    )
     await db_session.commit()
     active_ais = await hrt_service.list_compounds(db_session, compound_class="ai",
         subject_id=owner_write.subject_id,

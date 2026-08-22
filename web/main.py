@@ -92,7 +92,7 @@ async def _bootstrap_legacy_identity(
                 session,
                 scope=SettingScope.SUBJECT,
                 key=ScopedSettingKey.ENABLED_MODULES,
-                subject_id=identity.subject_id,
+                scope_id=identity.subject_id,
                 value=enabled_modules,
             )
             preference_scope = await prefs.resolve_legacy_preferences_scope(
