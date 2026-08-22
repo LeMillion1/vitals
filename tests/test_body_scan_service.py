@@ -381,7 +381,7 @@ async def test_dismissed_visceral_alert_stays_hidden_until_new_scan(
         alert = next((a for a in active if a.alert_key == body_scan_service.VISCERAL_ALERT_KEY), None)
         assert alert is not None
 
-        await alerts_service.resolve_alert(db_session, alert.id)
+        await alerts_service.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
         await db_session.commit()
 
         await _refresh(db_session, owner_write, on_date=DAY)

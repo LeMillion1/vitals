@@ -839,7 +839,15 @@ async def save_scan(
     # edits live only in the normalized rows, so the original extraction is an
     # audit trail we can always re-parse).
     if raw_payload_id is not None:
-        raw = owned_raw or await session.get(RawPayload, raw_payload_id)
+        # The fallback is scoped: an id alone proves nothing about who a
+        # payload belongs to, and stamping ``processed_at`` on somebody else's
+        # is a write across the boundary rather than a read past it.
+        raw = owned_raw or await session.scalar(
+            select(RawPayload).where(
+                RawPayload.id == raw_payload_id,
+                RawPayload.subject_id == identity.subject_id,
+            )
+        )
         if raw is not None:
             raw.processed_at = now_local()
 

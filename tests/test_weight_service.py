@@ -458,7 +458,7 @@ async def test_dismissed_noise_alert_returns_after_local_midnight(db_session, ow
             prepared_conflict_write=await owner_write.write(today_local()),
         )
         assert alert is not None
-        await alerts_service.resolve_alert(db_session, alert.id)
+        await alerts_service.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
         await db_session.commit()
         # Same local day → stays dismissed.
         assert await weight_service.refresh_noise_alert(

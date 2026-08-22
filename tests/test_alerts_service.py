@@ -98,7 +98,7 @@ async def test_resolve_alert_touches_only_its_own_row(db_session):
     are distinct alerts and must not be collapsed."""
     a = await _raise(db_session, entity="glucose:1", message="одинаковый текст")
     b = await _raise(db_session, entity="glucose:2", message="одинаковый текст")
-    await alerts_service.resolve_alert(db_session, a.id)
+    await alerts_service.resolve_alert(db_session, a.id, subject_id=None)
     await db_session.commit()
 
     assert [x.id for x in await alerts_service.list_active(db_session, subject_id=None)] == [b.id]
@@ -170,7 +170,7 @@ async def test_dismissed_today_vs_ever_dismissed(db_session):
 
 async def test_dismissed_today_is_per_entity(db_session):
     a = await _raise(db_session, entity="glucose:1")
-    await alerts_service.resolve_alert(db_session, a.id)
+    await alerts_service.resolve_alert(db_session, a.id, subject_id=None)
     await db_session.flush()
 
     assert await alerts_service._was_dismissed_today(db_session, KEY, "glucose:1") is True
@@ -179,7 +179,7 @@ async def test_dismissed_today_is_per_entity(db_session):
 
 async def test_dismissed_today_accepts_an_explicit_date(db_session):
     a = await _raise(db_session)
-    await alerts_service.resolve_alert(db_session, a.id)
+    await alerts_service.resolve_alert(db_session, a.id, subject_id=None)
     await db_session.flush()
 
     tomorrow = today_local() + timedelta(days=1)

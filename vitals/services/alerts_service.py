@@ -185,7 +185,9 @@ async def raise_alert(
     return alert
 
 
-async def resolve_alert(session: AsyncSession, alert_id: int) -> Optional[SystemAlert]:
+async def resolve_alert(
+    session: AsyncSession, alert_id: int, *, subject_id: uuid.UUID | None
+) -> Optional[SystemAlert]:
     """Mark exactly the one alert identified by ``alert_id`` resolved. Returns the
     target row, or None if it doesn't exist.
 
@@ -195,8 +197,20 @@ async def resolve_alert(session: AsyncSession, alert_id: int) -> Optional[System
     NOT be collapsed. Stale per-row duplicates from a re-imported source are
     cleaned up structurally by :func:`resolve_superseded`, never by fuzzy text
     matching (which previously could resolve an unrelated alert — even in another
-    domain — that happened to read the same)."""
-    alert = await session.get(SystemAlert, alert_id)
+    domain — that happened to read the same).
+
+    ``subject_id`` is mandatory and says whose alert this id is expected to be:
+    a person's, or ``None`` for the platform's own. An id alone proves nothing
+    about who a row belongs to, and resolving somebody else's alert is a write
+    across the boundary rather than a read past it."""
+    alert = await session.scalar(
+        select(SystemAlert).where(
+            SystemAlert.id == alert_id,
+            SystemAlert.subject_id == subject_id
+            if subject_id is not None
+            else SystemAlert.subject_id.is_(None),
+        )
+    )
     if alert is None:
         return None
     if alert.resolved_at is None:
@@ -216,17 +230,6 @@ async def resolve_by_key(
     existing.resolved_at = now_local()
     await session.flush()
     return existing
-
-
-async def override_alert(session: AsyncSession, alert_id: int) -> Optional[SystemAlert]:
-    """Stamp ``override_at`` on an existing alert (the user chose 'Save anyway')."""
-    alert = await session.get(SystemAlert, alert_id)
-    if alert is None:
-        return None
-    if alert.override_at is None:
-        alert.override_at = now_local()
-        await session.flush()
-    return alert
 
 
 async def resolve_all(session: AsyncSession, *, domain: Optional[str] = None) -> None:

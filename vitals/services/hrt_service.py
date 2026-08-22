@@ -285,7 +285,15 @@ async def set_compound_active(
             "subject-scoped HRT catalog activation requires a reviewed "
             "SubjectSetting mapping; the global catalog flag is frozen"
         )
-    row = await session.get(HrtCompound, compound_id)
+    # The flag is the installation's, so only a curated compound may carry it.
+    # A bare key would have reached a subject's own custom compound and flipped
+    # a global flag on a row that is not global.
+    row = await session.scalar(
+        select(HrtCompound).where(
+            HrtCompound.id == compound_id,
+            HrtCompound.subject_id.is_(None),
+        )
+    )
     if row is None:
         return None
     row.active = active

@@ -50,14 +50,6 @@ def bridge_total() -> int:
 # place where PR-04 has to make the scope explicit instead.
 LEGACY_BARE_ID_READS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        "vitals.services.alerts_service": frozenset({"SystemAlert"}),
-        "vitals.services.body_scan_service": frozenset({"RawPayload"}),
-        "vitals.services.garmin_weight_service": frozenset({"AppSetting"}),
-        "vitals.services.hrt_service": frozenset({"HrtCompound"}),
-        "vitals.services.labs_service": frozenset({"RawPayload"}),
-        "vitals.services.language_service": frozenset({"AppSetting"}),
-        "vitals.services.proactive.inbound": frozenset({"RawPayload"}),
-        "vitals.services.twofa_service": frozenset({"AppSetting"}),
     }
 )
 

@@ -41,6 +41,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- **The bare-key ratchet reached zero too.** Every subject-owned row is now
+  resolved inside the caller's scope rather than by a primary key, which proves
+  nothing about who it belongs to. Both inventories assert equality rather than
+  a bound, so reopening either means deleting an assertion.
+- `app_settings` was classified `MIXED` — a claim the schema cannot satisfy,
+  since it has no subject column. Corrected to `NONE`, which is what a
+  string-keyed installation-wide store is.
+- `alerts_service.override_alert` is deleted (no caller; both live surfaces use
+  the scoped `legacy_subject_alerts.override`) and `resolve_alert` takes a
+  mandatory subject.
+- `hrt_service.set_compound_active` sees only curated compounds. A bare key
+  could reach a subject's own custom compound and flip a global flag on a row
+  that is not global.
+- Six `RawPayload` reads across labs, body composition and the Telegram inbound
+  path are scoped. Each was on the way to stamping `processed_at`, which is a
+  write — a payload outside the caller's subject is now missing rather than
+  mutated.
+
 - **Revision 0051 finishes row security.** The ten tables with a nullable
   subject get a policy too, in two groups: the catalogs and the platform's own
   rows share (*mine or the installation's*), the inherited children hide (*mine*

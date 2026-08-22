@@ -295,7 +295,7 @@ async def test_dismissed_out_of_range_alert_stays_hidden_until_new_result(db_ses
         assert alert is not None
 
         # User dismisses the alert.
-        await alerts_service.resolve_alert(db_session, alert.id)
+        await alerts_service.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
         await db_session.commit()
 
         # Second load (same day): stays hidden.
@@ -448,7 +448,7 @@ async def test_dismissed_retest_due_alert_stays_hidden_until_new_result(db_sessi
     alert = next((a for a in active if a.alert_key == labs_service.RETEST_DUE_KEY), None)
     assert alert is not None
 
-    await alerts_service.resolve_alert(db_session, alert.id)
+    await alerts_service.resolve_alert(db_session, alert.id, subject_id=owner_write.subject_id)
     await db_session.commit()
 
     # Much later, still no new test taken: stays hidden — under the old

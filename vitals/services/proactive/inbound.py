@@ -1497,10 +1497,13 @@ async def _deliver_owned_raw(
             subject_id=ownership.subject_id,
             strict=True,
         ):
-            current_raw = await session.get(
-                RawPayload,
-                raw_payload_id,
-                populate_existing=True,
+            current_raw = await session.scalar(
+                select(RawPayload)
+                .where(
+                    RawPayload.id == raw_payload_id,
+                    RawPayload.subject_id == ownership.subject_id,
+                )
+                .execution_options(populate_existing=True)
             )
             if current_raw is None:
                 raise InboundOwnershipError(
@@ -1713,7 +1716,17 @@ async def _platform_signal_t1_state(
         category=delivery.CATEGORY_ECHO,
         ownership=ownership,
     )
-    raw = await session.get(RawPayload, raw_payload_id, populate_existing=True)
+    # ``_validate_raw_root`` below proves the roots either way; scoping the read
+    # means a payload outside this subject is missing rather than rejected, which
+    # is the same answer every other reader gives.
+    raw = await session.scalar(
+        select(RawPayload)
+        .where(
+            RawPayload.id == raw_payload_id,
+            RawPayload.subject_id == ownership.subject_id,
+        )
+        .execution_options(populate_existing=True)
+    )
     if raw is None:
         raise InboundOwnershipError("platform signal completion raw disappeared")
     await _validate_raw_root(
@@ -3168,7 +3181,14 @@ async def _raw_recovery_state(
     ):
         await session.commit()
         return _RawRecoveryState.AUTHORITATIVE
-    current = await session.get(RawPayload, raw.id, populate_existing=True)
+    current = await session.scalar(
+        select(RawPayload)
+        .where(
+            RawPayload.id == raw.id,
+            RawPayload.subject_id == ownership.subject_id,
+        )
+        .execution_options(populate_existing=True)
+    )
     if current is None:
         raise InboundOwnershipError("Telegram recovery raw disappeared")
     await _validate_raw_root(
@@ -3347,7 +3367,14 @@ async def _recover_claimed_text(
     if state is not _RawRecoveryState.UNCLAIMED:
         return state is _RawRecoveryState.RECOVERED
 
-    raw = await session.get(RawPayload, raw.id, populate_existing=True)
+    raw = await session.scalar(
+        select(RawPayload)
+        .where(
+            RawPayload.id == raw.id,
+            RawPayload.subject_id == ownership.subject_id,
+        )
+        .execution_options(populate_existing=True)
+    )
     if raw is None or raw.processed_at is not None:
         if raw is None:
             await session.commit()
@@ -3753,7 +3780,13 @@ async def _run_question_recovery_raw(
             )
         elif not isinstance(module_enabled, bool):
             raise TypeError("module_enabled must be a bool or None")
-        raw = await session.get(RawPayload, raw_payload_id)
+        raw = await session.scalar(
+            select(RawPayload)
+            .where(
+                RawPayload.id == raw_payload_id,
+                RawPayload.subject_id == ownership.subject_id,
+            )
+        )
         if raw is None:
             await session.commit()
             return False
@@ -4294,7 +4327,13 @@ async def _reparse_pending_platform(
                         prepared.fallback
                         is signal_ai_service.SignalParseFallback.INPUT_TOO_LARGE
                     ):
-                        current = await session.get(RawPayload, raw_id)
+                        current = await session.scalar(
+                            select(RawPayload)
+                            .where(
+                                RawPayload.id == raw_id,
+                                RawPayload.subject_id == ownership.subject_id,
+                            )
+                        )
                         if current is not None:
                             await _mark_raw_processed(
                                 session,

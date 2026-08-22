@@ -1246,27 +1246,32 @@ The counter moves only in the registry, and the contract test refuses to let it
 move the wrong way. It started at 266 functions across 25 modules and is now
 **zero**.
 
-The second inventory in the same file, `LEGACY_BARE_ID_READS`, is not zero. It
-records modules that still fetch a subject-owned row by bare primary key, and it
-went from fourteen to eight as the domains closed — genetics and Garmin gave up
-theirs outright, the rest went with the functions that were deleted. What
-remains falls into three groups, and none of them is a leak today:
+The second inventory in the same file, `LEGACY_BARE_ID_READS`, is zero as well.
+It recorded modules that fetched a subject-owned row by bare primary key, which
+proves nothing about who the row belongs to, and it went from fourteen to none.
 
-| module | model | why it is still there |
-| --- | --- | --- |
-| `alerts_service` | `SystemAlert` | The scoped reader exists; the bare read is the resolve-by-id path a router hands a clicked alert. |
-| `body_scan_service`, `labs_service`, `proactive.inbound` | `RawPayload` | Each re-reads a payload it has already proved the ownership of, on the way to reparsing it. |
-| `garmin_weight_service`, `language_service`, `twofa_service` | `AppSetting` | Installation-wide settings, which have no subject to be scoped by — they move when the key moves to `scoped_settings_service`. |
-| `hrt_service` | `HrtCompound` | The catalog is `MIXED`: a curated compound belongs to nobody. |
+Three of the last eight turned out not to be debt at all. They read
+`app_settings`, which the registry classified `MIXED` — a claim the schema
+cannot satisfy, because that table has no subject column to be mixed about. It
+is the pre-commercial key/value store, keyed by a string and installation-wide by
+construction; rows leave it for `subject_settings`, which does carry a subject.
+Correcting the classification to `NONE` made three ordinary reads stop looking
+like unscoped ones.
 
-A bare read proves nothing about who a row belongs to, which is why they are
-counted; each of these has established that separately, and the ratchet is what
-keeps that claim honest as the code changes. Closing them is PR-10 work, not a
-precondition for anything in Stage 6. The contract test asserts equality rather than a lower bound, so a
-reopened bridge cannot pass without deleting that assertion. A leaf is "closed"
-when its `include_legacy_unowned` parameters are gone, its subject is mandatory,
-and the branch that adopted an unowned row on the way past has been removed — an
-unowned row then stays unowned and stays invisible, which is the whole point.
+The rest were real, in two shapes. `alerts_service.override_alert` had no caller
+anywhere — both live surfaces use the scoped `legacy_subject_alerts.override` —
+and went; `resolve_alert` took a mandatory subject, because resolving somebody
+else's alert is a write across the boundary rather than a read past it.
+`hrt_service.set_compound_active` sets the installation-wide catalog flag, and a
+bare key could have reached a subject's own custom compound and flipped a global
+flag on a row that is not global; it now sees only curated rows. The six
+`RawPayload` reads across labs, body composition and the Telegram inbound path
+all re-read a payload on the way to stamping `processed_at` on it, which is a
+write; each is now scoped to the caller's subject, so a payload outside it is
+missing rather than mutated.
+
+Both ratchets now assert equality rather than a bound. Reopening either means
+deleting an assertion, not adding an entry.
 
 Two invariants survive every closure rather than going with the bridge: a row
 with an actor but no subject is broken provenance and is reported, not passed

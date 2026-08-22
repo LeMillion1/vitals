@@ -131,7 +131,13 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
     "annotations": _SUBJECT,
     "app_settings": OwnershipSpec(
         OwnershipClass.LEGACY_COMPAT,
-        subject=TargetColumn.MIXED,
+        # ``MIXED`` until it was noticed that this table has no subject column
+        # to be mixed about. It is the pre-commercial key/value store, keyed by
+        # a string and installation-wide by construction; rows leave it for
+        # ``subject_settings``, which does carry a subject. Claiming a boundary
+        # the schema cannot express made three ordinary reads look like
+        # unscoped ones in the bare-key inventory.
+        subject=TargetColumn.NONE,
     ),
     "audit_events": OwnershipSpec(
         OwnershipClass.PLATFORM_JOURNAL,

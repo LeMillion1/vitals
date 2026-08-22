@@ -163,4 +163,8 @@ def test_the_bare_key_registry_records_nothing_already_closed():
             f"{module} no longer reads {stale} by bare primary key. Remove them "
             "from vitals/legacy_scope.py so the remaining work stays honest."
         )
-    assert bare_id_read_total() >= 0
+    # Zero, like its sibling above. Every subject-owned row is now resolved
+    # inside the caller's scope rather than by a key that proves nothing about
+    # who it belongs to. An equality rather than a bound: a new bare read has to
+    # delete this line, not merely add an entry.
+    assert bare_id_read_total() == 0
