@@ -500,7 +500,6 @@ async def test_completed_stage3h_bridge_exposes_actorless_migrated_history(
     events = await timeline_service.list_events(
         db_session,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
         start=PHOTO_DATE,
         end=PHOTO_DATE,
     )
@@ -1110,7 +1109,6 @@ async def test_timeline_uses_validated_ranged_marker_projection(
     events = await timeline_service.list_events(
         db_session,
         subject_id=identity.subject_id,
-        include_legacy_unowned=True,
         start=PHOTO_DATE,
         end=PHOTO_DATE,
     )
@@ -1127,7 +1125,6 @@ async def test_timeline_uses_validated_ranged_marker_projection(
         await timeline_service.list_events(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
             start=PHOTO_DATE,
             end=PHOTO_DATE,
         )

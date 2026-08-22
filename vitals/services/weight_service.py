@@ -3076,7 +3076,6 @@ async def chart_series(
         annotations = await timeline_service.overlays_for(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
             domain=DOMAIN,
         )
 

@@ -52,7 +52,6 @@ async def timeline_feed(
     events = await timeline_service.list_events(
         db,
         subject_id=scope.subject_id,
-        include_legacy_unowned=scope.include_legacy_unowned,
     )
 
     return templates.TemplateResponse(
@@ -122,7 +121,6 @@ async def delete_annotation_entry(
         db,
         annotation_id,
         identity=ownership.owner_action(),
-        include_legacy_unowned=True,
     )
     await db.commit()
 

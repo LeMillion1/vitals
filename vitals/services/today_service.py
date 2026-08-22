@@ -230,7 +230,9 @@ async def build(
     # ── The day's feed ───────────────────────────────────────────────────────
     feed: list[dict] = []
     if em.get("timeline"):
-        for e in await timeline_service.list_events(session, start=today, end=today):
+        for e in await timeline_service.list_events(
+            session, start=today, end=today, subject_id=subject_id
+        ):
             feed.append({
                 "time": "",
                 "dot": "good" if e.source == "manual" else "cool",

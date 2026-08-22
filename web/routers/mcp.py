@@ -2785,7 +2785,6 @@ async def get_timeline(
         events = await timeline_service.list_events(
             session,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
             domains=domains,
             start=start,
             end=end,
@@ -2862,7 +2861,6 @@ async def update_event(
             session,
             event_id,
             subject_id=ownership.subject_id,
-            include_legacy_unowned=True,
         )
         if current is None:
             return {"error": f"Event {event_id} not found"}
@@ -2879,7 +2877,6 @@ async def update_event(
             event_id,
             on_date=merged.pop("date"),
             identity=ownership.owner_action(),
-            include_legacy_unowned=True,
             **merged,
         )
         await session.commit()

@@ -56,123 +56,8 @@ _TONE_BY_KIND: dict[str, str] = {
 }
 
 
-def _fully_legacy_row_scope(
-    model,
-    *,
-    ownership_roots: tuple,
-    raw_link=None,
-    subject_id: uuid.UUID | None = None,
-    historical_raw_specs: tuple[
-        tuple[str, str, str, str | None, str | None], ...
-    ] = (),
-):
-    """Match only a genuinely unowned pre-Stage-1 row.
-
-    The root list is explicit at every selector so adding a new ownership
-    column forces the Timeline contract and its tests to change deliberately.
-    Existing raw links remain portable only when the linked raw is fully
-    unowned too; a half-migrated row must never enter the sole-subject bridge.
-    """
-
-    clauses = [model.subject_id.is_(None)]
-    clauses.extend(root.is_(None) for root in ownership_roots)
-    if raw_link is not None:
-        raw_scopes = [
-            and_(
-                RawPayload.subject_id.is_(None),
-                RawPayload.actor_user_id.is_(None),
-                RawPayload.integration_connection_id.is_(None),
-                RawPayload.file_asset_id.is_(None),
-            )
-        ]
-        if subject_id is not None and historical_raw_specs:
-            exact_one_subject = and_(
-                select(HealthSubject.id)
-                .where(HealthSubject.id == subject_id)
-                .exists(),
-                ~select(HealthSubject.id)
-                .where(HealthSubject.id != subject_id)
-                .exists(),
-            )
-            historical_statuses = tuple(
-                status.value
-                for status in IntegrationConnectionStatus
-                if status is not IntegrationConnectionStatus.PENDING
-            )
-            for (
-                normalized_source,
-                raw_domain,
-                raw_source,
-                connection_provider,
-                connection_type,
-            ) in historical_raw_specs:
-                historical_raw = and_(
-                    model.source == normalized_source,
-                    RawPayload.subject_id == subject_id,
-                    RawPayload.actor_user_id.is_(None),
-                    RawPayload.file_asset_id.is_(None),
-                    RawPayload.domain == raw_domain,
-                    RawPayload.source == raw_source,
-                    exact_one_subject,
-                    ~select(AIInvocation.id)
-                    .where(AIInvocation.raw_payload_id == RawPayload.id)
-                    .exists(),
-                )
-                if connection_provider is None and connection_type is None:
-                    historical_raw = and_(
-                        historical_raw,
-                        RawPayload.integration_connection_id.is_(None),
-                    )
-                elif (
-                    connection_provider is not None
-                    and connection_type is not None
-                ):
-                    historical_raw = and_(
-                        historical_raw,
-                        RawPayload.integration_connection_id.is_not(None),
-                        select(IntegrationConnection.id)
-                        .where(
-                            IntegrationConnection.id
-                            == RawPayload.integration_connection_id,
-                            IntegrationConnection.subject_id == subject_id,
-                            IntegrationConnection.provider == connection_provider,
-                            IntegrationConnection.connection_type == connection_type,
-                            IntegrationConnection.status.in_(historical_statuses),
-                        )
-                        .exists(),
-                    )
-                else:
-                    raise ValueError(
-                        "timeline historical connection provider/type must be paired"
-                    )
-                raw_scopes.append(historical_raw)
-        legacy_raw = (
-            select(RawPayload.id)
-            .where(
-                RawPayload.id == raw_link,
-                or_(*raw_scopes),
-            )
-            .exists()
-        )
-        clauses.append(or_(raw_link.is_(None), legacy_raw))
-    return and_(*clauses)
-
-
-def _annotation_subject_scope(
-    subject_id: uuid.UUID,
-    *,
-    include_legacy_unowned: bool,
-):
-    scope = Annotation.subject_id == subject_id
-    if include_legacy_unowned:
-        scope = or_(
-            scope,
-            _fully_legacy_row_scope(
-                Annotation,
-                ownership_roots=(Annotation.actor_user_id,),
-            ),
-        )
-    return scope
+def _annotation_subject_scope(subject_id: uuid.UUID):
+    return Annotation.subject_id == subject_id
 
 
 @dataclass(frozen=True)
@@ -212,11 +97,11 @@ async def create_annotation(
     domain: str = DOMAIN,
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
+    identity: WriteIdentity,
 ) -> Annotation:
     row = Annotation(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         date=on_date,
         end_date=end_date,
         domain=domain,
@@ -240,26 +125,13 @@ async def update_annotation(
     kind: str,
     domain: str,
     note: Optional[str] = None,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
+    identity: WriteIdentity,
 ) -> Optional[Annotation]:
     stmt = select(Annotation).where(Annotation.id == annotation_id)
-    if identity is not None:
-        stmt = stmt.where(
-            _annotation_subject_scope(
-                identity.subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy annotation compatibility requires a write identity")
+    stmt = stmt.where(_annotation_subject_scope(identity.subject_id))
     row = await session.scalar(stmt)
     if row is None:
         return None
-    if row.subject_id is None and identity is not None:
-        # The caller may opt into this only after the legacy resolver has proved
-        # there is exactly one subject. Historical authorship stays unknown.
-        row.subject_id = identity.subject_id
     row.title = title
     row.date = on_date
     row.end_date = end_date
@@ -274,19 +146,10 @@ async def get_annotation(
     session: AsyncSession,
     annotation_id: int,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Optional[Annotation]:
     stmt = select(Annotation).where(Annotation.id == annotation_id)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _annotation_subject_scope(
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy annotation compatibility requires a subject_id")
+    stmt = stmt.where(_annotation_subject_scope(subject_id))
     return await session.scalar(stmt)
 
 
@@ -294,19 +157,10 @@ async def delete_annotation(
     session: AsyncSession,
     annotation_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
+    identity: WriteIdentity,
 ) -> bool:
     stmt = select(Annotation).where(Annotation.id == annotation_id)
-    if identity is not None:
-        stmt = stmt.where(
-            _annotation_subject_scope(
-                identity.subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy annotation compatibility requires a write identity")
+    stmt = stmt.where(_annotation_subject_scope(identity.subject_id))
     row = await session.scalar(stmt)
     if row is None:
         return False
@@ -318,8 +172,7 @@ async def delete_annotation(
 async def list_annotations(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     domain: Optional[str] = None,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
@@ -328,15 +181,7 @@ async def list_annotations(
     annotation (``end_date is None``) overlaps a range iff its ``date`` falls
     inside it; a ranged one overlaps iff the two ranges intersect."""
     stmt = select(Annotation)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _annotation_subject_scope(
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy annotation compatibility requires a subject_id")
+    stmt = stmt.where(_annotation_subject_scope(subject_id))
     if domain is not None:
         stmt = stmt.where(Annotation.domain == domain)
     effective_end = func.coalesce(Annotation.end_date, Annotation.date)
@@ -353,42 +198,14 @@ async def list_annotations(
 async def _derived_events(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
     start: Optional[date_type],
     end: Optional[date_type],
 ) -> list[TimelineEvent]:
     events: list[TimelineEvent] = []
 
-    def scoped(
-        stmt,
-        model,
-        *,
-        legacy_roots: tuple,
-        raw_link=None,
-        historical_raw_specs: tuple[
-            tuple[str, str, str, str | None, str | None], ...
-        ] = (),
-    ):
-        if subject_id is None:
-            if include_legacy_unowned:
-                raise ValueError(
-                    "legacy timeline compatibility requires a subject_id"
-                )
-            return stmt
-        subject_scope = model.subject_id == subject_id
-        if include_legacy_unowned:
-            subject_scope = or_(
-                subject_scope,
-                _fully_legacy_row_scope(
-                    model,
-                    ownership_roots=legacy_roots,
-                    raw_link=raw_link,
-                    subject_id=subject_id,
-                    historical_raw_specs=historical_raw_specs,
-                ),
-            )
-        return stmt.where(subject_scope)
+    def scoped(stmt, model):
+        return stmt.where(model.subject_id == subject_id)
 
     # GLP-1 dose phase starts — the injection log itself is too frequent to
     # surface individually here (it would flood the feed); a phase *change* is
@@ -399,7 +216,6 @@ async def _derived_events(
     p_stmt = scoped(
         select(DosePhase).where(DosePhase.domain == GLP1_DOMAIN),
         DosePhase,
-        legacy_roots=(DosePhase.actor_user_id,),
     )
     if start is not None:
         p_stmt = p_stmt.where(func.coalesce(DosePhase.end_date, DosePhase.start_date) >= start)
@@ -426,7 +242,6 @@ async def _derived_events(
             SideEffect.domain == GLP1_DOMAIN, SideEffect.severity >= 3
         ),
         SideEffect,
-        legacy_roots=(SideEffect.actor_user_id,),
     )
     if start is not None:
         se_stmt = se_stmt.where(SideEffect.date >= start)
@@ -450,24 +265,6 @@ async def _derived_events(
             LabResult.domain == LABS_DOMAIN
         ),
         LabResult,
-        legacy_roots=(LabResult.actor_user_id,),
-        raw_link=LabResult.raw_payload_id,
-        historical_raw_specs=(
-            (
-                Source.LAB_PARSER.value,
-                Domain.LABS.value,
-                Source.LAB_PARSER.value,
-                IntegrationProvider.OPENROUTER.value,
-                IntegrationConnectionType.AI_GATEWAY.value,
-            ),
-            (
-                Source.MCP.value,
-                Domain.LABS.value,
-                Source.MCP.value,
-                None,
-                None,
-            ),
-        ),
     )
     if start is not None:
         l_stmt = l_stmt.where(LabResult.date >= start)
@@ -494,24 +291,6 @@ async def _derived_events(
     b_stmt = scoped(
         select(BodyScan).where(BodyScan.domain == BODY_DOMAIN),
         BodyScan,
-        legacy_roots=(BodyScan.actor_user_id, BodyScan.file_asset_id),
-        raw_link=BodyScan.raw_payload_id,
-        historical_raw_specs=(
-            (
-                Source.BODY_SCAN.value,
-                Domain.BODY_COMPOSITION.value,
-                Source.BODY_SCAN.value,
-                IntegrationProvider.OPENROUTER.value,
-                IntegrationConnectionType.AI_GATEWAY.value,
-            ),
-            (
-                Source.MCP.value,
-                Domain.BODY_COMPOSITION.value,
-                Source.MCP.value,
-                None,
-                None,
-            ),
-        ),
     )
     if start is not None:
         b_stmt = b_stmt.where(BodyScan.date >= start)
@@ -537,7 +316,6 @@ async def _derived_events(
     photos = await weight_service.list_progress_photos(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         start=start,
         end=end,
     )
@@ -593,7 +371,6 @@ async def _derived_events(
     n_stmt = scoped(
         select(NoiseMarker).where(NoiseMarker.domain == WEIGHT_DOMAIN),
         NoiseMarker,
-        legacy_roots=(NoiseMarker.actor_user_id,),
     )
     if start is not None:
         n_stmt = n_stmt.where(func.coalesce(NoiseMarker.end_date, NoiseMarker.start_date) >= start)
@@ -615,7 +392,6 @@ async def _derived_events(
     sup_stmt = scoped(
         select(Supplement).where(Supplement.domain == SUPP_DOMAIN),
         Supplement,
-        legacy_roots=(Supplement.actor_user_id,),
     )
     for s in (await session.execute(sup_stmt)).scalars().all():
         started = s.created_at.date()
@@ -643,7 +419,6 @@ async def _derived_events(
     sp_stmt = scoped(
         select(SkincareProduct),
         SkincareProduct,
-        legacy_roots=(SkincareProduct.actor_user_id,),
     )
     for sp in (await session.execute(sp_stmt)).scalars().all():
         added = sp.created_at.date()
@@ -671,17 +446,6 @@ async def _derived_events(
     gv_stmt = scoped(
         select(GeneticVariant).where(GeneticVariant.domain == GENETICS_DOMAIN),
         GeneticVariant,
-        legacy_roots=(GeneticVariant.actor_user_id,),
-        raw_link=GeneticVariant.raw_payload_id,
-        historical_raw_specs=(
-            (
-                Source.VCF_IMPORT.value,
-                Domain.GENETICS.value,
-                Source.VCF_IMPORT.value,
-                None,
-                None,
-            ),
-        ),
     )
     variants_by_day: dict[date_type, int] = {}
     for v in (await session.execute(gv_stmt)).scalars().all():
@@ -701,8 +465,7 @@ async def _derived_events(
 async def list_events(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     domains: Optional[Sequence[str]] = None,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
@@ -714,7 +477,6 @@ async def list_events(
     for a in await list_annotations(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         start=start,
         end=end,
     ):
@@ -728,7 +490,6 @@ async def list_events(
         await _derived_events(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
             start=start,
             end=end,
         )
@@ -746,8 +507,7 @@ async def list_events(
 async def overlays_for(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     domain: str,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
@@ -759,7 +519,6 @@ async def overlays_for(
     own = await list_annotations(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         domain=domain,
         start=start,
         end=end,
@@ -768,7 +527,6 @@ async def overlays_for(
         await list_annotations(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
             domain=DOMAIN,
             start=start,
             end=end,

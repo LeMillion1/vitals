@@ -10,6 +10,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the timeline domain, both halves of it: the manual annotations a person
+  writes and the derived feed re-shaped from ten other domains' rows. Ten
+  bridges. `_fully_legacy_row_scope` is gone with them — the selector that
+  decided whether an ownerless row was "genuinely legacy" by inspecting its
+  actor, file and raw links, including the Stage-3A provider-connection rules.
+  A row's own subject is now the whole answer, which is what that hundred-line
+  predicate was standing in for.
+- Whose payload a row cites does not decide whose row it is. An unowned row
+  whose raw is also unowned used to be admitted; an exact Stage-3A raw naming
+  the subject used to lend it one. Neither does now.
+- Closed the custom-charts domain. Six bridges, including the shared Redis key:
+  one cache entry per person, because a global key would serve one subject's
+  chart list to the next request from another. The `app_settings` write branch
+  is gone — the scoped setting read already falls back to that row on its own,
+  so pre-backfill installations keep their charts without a bridge here.
+- `today_service.build` was the last entry on the composition-reader allowlist
+  in the timeline contract test; that allowlist is now empty.
+
 - Closed the nutrition domain. Eight bridges. Every read takes the subject and
   every write takes the subject with its conflict decision; the day's running
   total is one person's total, which is what the GLP-1 low-intake rules compare

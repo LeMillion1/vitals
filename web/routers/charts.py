@@ -92,7 +92,6 @@ async def _overlays_by_chart(
             for o in await timeline_service.overlays_for(
                 db,
                 subject_id=subject_id,
-                include_legacy_unowned=True,
                 domain=d,
             ):
                 key = (o["start"], o["end"], o["label"])

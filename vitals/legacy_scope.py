@@ -45,16 +45,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 '_ensure_nonoverlapping_period',
             }
         ),
-        'vitals.services.custom_charts_service': frozenset(
-            {
-                'cache_key',
-                'create_chart',
-                'delete_chart',
-                'get_chart',
-                'list_charts',
-                'prime_cache',
-            }
-        ),
 
         'vitals.services.glp1_service': frozenset(
             {
@@ -166,20 +156,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'resolve_active',
             }
         ),
-        'vitals.services.timeline_service': frozenset(
-            {
-                '_annotation_subject_scope',
-                '_derived_events',
-                '_fully_legacy_row_scope',
-                'create_annotation',
-                'delete_annotation',
-                'get_annotation',
-                'list_annotations',
-                'list_events',
-                'overlays_for',
-                'update_annotation',
-            }
-        ),
         'vitals.services.today_service': frozenset(
             {
                 '_goal',
@@ -247,7 +223,6 @@ LEGACY_BARE_ID_READS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
         "vitals.services.alerts_service": frozenset({"SystemAlert"}),
         "vitals.services.body_scan_service": frozenset({"RawPayload"}),
-        "vitals.services.custom_charts_service": frozenset({"AppSetting"}),
         "vitals.services.garmin_service": frozenset({"RawPayload"}),
         "vitals.services.garmin_weight_service": frozenset({"AppSetting"}),
         "vitals.services.hrt_service": frozenset({"HrtCompound"}),

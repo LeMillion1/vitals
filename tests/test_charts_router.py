@@ -12,19 +12,19 @@ from vitals.services import custom_charts_service
 DAY = date(2026, 6, 1)
 
 
-async def test_charts_page_requires_auth(client):
+async def test_charts_page_requires_auth(client, legacy_owner_roots):
     r = await client.get("/charts")
     assert r.status_code in (302, 303, 401)
 
 
-async def test_charts_page_renders(auth_client):
+async def test_charts_page_renders(auth_client, legacy_owner_roots):
     r = await auth_client.get("/charts")
     assert r.status_code == 200
     assert "chartBuilder" in r.text
     assert "Кастомные графики" in r.text or "charts.page_title" not in r.text
 
 
-async def test_create_chart_valid_series(auth_client, db_session):
+async def test_create_chart_valid_series(auth_client, db_session, legacy_owner_roots):
     db_session.add(WeightLog(date=DAY, domain="weight", source="manual", weight_kg=88.0, superseded=False))
     await db_session.commit()
 
@@ -37,7 +37,7 @@ async def test_create_chart_valid_series(auth_client, db_session):
     assert r.status_code == 303
     assert r.headers["location"] == "/charts"
 
-    charts = await custom_charts_service.list_charts(db_session, redis=None)
+    charts = await custom_charts_service.list_charts(db_session, redis=None, subject_id=legacy_owner_roots.subject_id)
     assert len(charts) == 1
     assert charts[0]["name"] == "Вес и стресс"
     assert len(charts[0]["series"]) == 2
@@ -47,7 +47,7 @@ async def test_create_chart_valid_series(auth_client, db_session):
     assert 'id="customChart-' in page.text
 
 
-async def test_create_chart_invalid_metric_redirects_with_error(auth_client, db_session):
+async def test_create_chart_invalid_metric_redirects_with_error(auth_client, db_session, legacy_owner_roots):
     r = await auth_client.post("/charts", data={
         "name": "Bad chart",
         "domain": ["weight"],
@@ -57,11 +57,11 @@ async def test_create_chart_invalid_metric_redirects_with_error(auth_client, db_
     assert r.status_code == 303
     assert r.headers["location"] == "/charts?error=invalid"
 
-    charts = await custom_charts_service.list_charts(db_session, redis=None)
+    charts = await custom_charts_service.list_charts(db_session, redis=None, subject_id=legacy_owner_roots.subject_id)
     assert charts == []
 
 
-async def test_create_chart_with_param(auth_client, db_session):
+async def test_create_chart_with_param(auth_client, db_session, legacy_owner_roots):
     r = await auth_client.post("/charts", data={
         "name": "TSH trend",
         "domain": ["labs"],
@@ -69,29 +69,31 @@ async def test_create_chart_with_param(auth_client, db_session):
         "param": ["TSH"],
     })
     assert r.status_code == 303
-    charts = await custom_charts_service.list_charts(db_session, redis=None)
+    charts = await custom_charts_service.list_charts(db_session, redis=None, subject_id=legacy_owner_roots.subject_id)
     assert charts[0]["series"][0]["param"] == "TSH"
 
 
-async def test_delete_chart(auth_client, db_session):
+async def test_delete_chart(auth_client, db_session, legacy_owner_roots):
     created = await custom_charts_service.create_chart(
-        db_session, name="To delete", series=[{"domain": "weight", "metric_key": "weight.weight_kg"}]
+        db_session, name="To delete", series=[{"domain": "weight", "metric_key": "weight.weight_kg"}],
+        subject_id=legacy_owner_roots.subject_id,
     )
     await db_session.commit()
 
     r = await auth_client.post(f"/charts/{created['id']}/delete")
     assert r.status_code == 303
 
-    charts = await custom_charts_service.list_charts(db_session, redis=None)
+    charts = await custom_charts_service.list_charts(db_session, redis=None, subject_id=legacy_owner_roots.subject_id)
     assert charts == []
 
 
 async def test_charts_page_lists_and_renders_saved_chart_data(
     auth_client, db_session, owned_by_legacy_subject
-):
+, legacy_owner_roots):
     db_session.add(WeightLog(date=DAY, domain="weight", source="manual", weight_kg=88.0, superseded=False))
     await custom_charts_service.create_chart(
-        db_session, name="Weight only", series=[{"domain": "weight", "metric_key": "weight.weight_kg"}]
+        db_session, name="Weight only", series=[{"domain": "weight", "metric_key": "weight.weight_kg"}],
+        subject_id=legacy_owner_roots.subject_id,
     )
     await db_session.commit()
 

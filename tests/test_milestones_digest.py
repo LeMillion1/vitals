@@ -459,10 +459,19 @@ async def test_assemble_context_includes_hrt_and_timeline(db_session, legacy_own
     await timeline_service.create_annotation(
         db_session, title="Грипп", on_date=DAY - timedelta(days=3),
         end_date=DAY - timedelta(days=1), kind="illness",
+        identity=WriteIdentity(
+            legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+        ),
     )
     # Outside the 7-day window — must not leak in.
     await timeline_service.create_annotation(
-        db_session, title="Старая поездка", on_date=DAY - timedelta(days=60), kind="travel"
+        db_session,
+        title="Старая поездка",
+        on_date=DAY - timedelta(days=60),
+        kind="travel",
+        identity=WriteIdentity(
+            legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+        ),
     )
     await db_session.commit()
 

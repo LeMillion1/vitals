@@ -1232,11 +1232,13 @@ asserted now runs against the context and the header directly.
 | body composition | closed — scan, metric sheet, raw payload, file and the weigh-in it bridges; the generic replay path is gone and the owned sweep decides adoption per raw |
 | signals | closed — captured text, its day context, and the two `day_plan` wrappers over them; an incoming message now refuses to be handled without ownership |
 | nutrition | closed — meals and the day's running total, plus the nav rail's status card that reads it |
+| custom charts | closed — including the Redis key, which is now one entry per person |
+| timeline | closed — manual annotations and the derived feed over ten domains; the legacy-row selector went with it |
 | everything else | still bridged; see `vitals/legacy_scope.py` |
 
 The counter moves only in the registry, and the contract test refuses to let it
 move the wrong way. It started at 266 functions across 25 modules; it is now
-127 across 17. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
+111 across 15. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
 its subject is mandatory, and the branch that adopted an unowned row on the way
 past has been removed — an unowned row then stays unowned and stays invisible,
 which is the whole point.

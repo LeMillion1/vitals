@@ -356,18 +356,18 @@ async def test_each_derived_timeline_selector_rejects_cross_subject_rows(
     assert _derived_ref(selector, owner_row) not in foreign_refs
 
 
-# The goal domain has no legacy bridge left: a goal without a subject is
-# nobody's, and the timeline reads goals through the scoped service.
-_LEGACY_BRIDGED_SELECTORS = tuple(
-    selector for selector in _DERIVED_TIMELINE_SELECTORS if selector != "milestone"
-)
-
-
-@pytest.mark.parametrize("selector", _LEGACY_BRIDGED_SELECTORS)
-async def test_each_derived_timeline_selector_requires_explicit_legacy_null_bridge(
+@pytest.mark.parametrize("selector", _DERIVED_TIMELINE_SELECTORS)
+async def test_no_derived_timeline_selector_can_reach_an_unowned_row(
     db_session,
     selector,
 ):
+    """The timeline's compatibility bridge is gone, for every selector.
+
+    Each of these selectors used to offer the sole owner an explicit read of
+    rows belonging to nobody. Closing the domain removes the question: the
+    feed shows this subject's own rows and nothing else, whichever domain the
+    derived event is re-shaped from.
+    """
     owner = await _identity(db_session, f"derived-legacy-{selector}")
     owner_row = _derived_row(
         selector,
@@ -390,19 +390,9 @@ async def test_each_derived_timeline_selector_requires_explicit_legacy_null_brid
             subject_id=owner.subject_id,
         )
     }
-    compatibility_refs = {
-        event.ref
-        for event in await timeline_service.list_events(
-            db_session,
-            subject_id=owner.subject_id,
-            include_legacy_unowned=True,
-        )
-    }
 
     assert _derived_ref(selector, owner_row) in scoped_refs
     assert _derived_ref(selector, legacy_row) not in scoped_refs
-    assert _derived_ref(selector, owner_row) in compatibility_refs
-    assert _derived_ref(selector, legacy_row) in compatibility_refs
 
 
 @pytest.mark.parametrize("selector", _DERIVED_TIMELINE_SELECTORS)
@@ -417,17 +407,14 @@ async def test_derived_timeline_bridge_rejects_partial_actor_roots(
     db_session.add(partial)
     await db_session.flush()
 
-    if selector in {"progress_photo", "milestone"}:
-        expected_error = (
-            weight_service.ProgressPhotoOwnershipError
-            if selector == "progress_photo"
-            else milestones_service.MilestoneOwnershipError
-        )
-        with pytest.raises(expected_error):
+    # A goal is read through its own scoped service, which reports a
+    # half-migrated row rather than passing over it. Every other selector now
+    # simply cannot see one.
+    if selector == "milestone":
+        with pytest.raises(milestones_service.MilestoneOwnershipError):
             await timeline_service.list_events(
                 db_session,
                 subject_id=owner.subject_id,
-                include_legacy_unowned=True,
             )
         return
 
@@ -436,7 +423,6 @@ async def test_derived_timeline_bridge_rejects_partial_actor_roots(
         for event in await timeline_service.list_events(
             db_session,
             subject_id=owner.subject_id,
-            include_legacy_unowned=True,
         )
     }
 
@@ -471,21 +457,11 @@ async def test_derived_timeline_bridge_rejects_partial_file_roots(
     db_session.add(partial)
     await db_session.flush()
 
-    if selector == "progress_photo":
-        with pytest.raises(weight_service.ProgressPhotoOwnershipError):
-            await timeline_service.list_events(
-                db_session,
-                subject_id=owner.subject_id,
-                include_legacy_unowned=True,
-            )
-        return
-
     refs = {
         event.ref
         for event in await timeline_service.list_events(
             db_session,
             subject_id=owner.subject_id,
-            include_legacy_unowned=True,
         )
     }
 
@@ -493,10 +469,16 @@ async def test_derived_timeline_bridge_rejects_partial_file_roots(
 
 
 @pytest.mark.parametrize("selector", tuple(_DERIVED_RAW_LINKS))
-async def test_derived_timeline_bridge_validates_linked_raw_ownership(
+async def test_derived_timeline_never_reaches_an_unowned_row_through_its_raw(
     db_session,
     selector,
 ):
+    """Whose payload a row cites does not decide whose row it is.
+
+    The bridge used to admit an unowned row whose raw was unowned too, and
+    refuse one whose raw belonged to somebody else. With the bridge gone the
+    row's own subject is the whole answer, so neither reaches this subject.
+    """
     owner = await _identity(db_session, f"derived-raw-owner-{selector}")
     foreign = await _identity(db_session, f"derived-raw-foreign-{selector}")
     foreign_raw = RawPayload(
@@ -527,12 +509,11 @@ async def test_derived_timeline_bridge_validates_linked_raw_ownership(
         for event in await timeline_service.list_events(
             db_session,
             subject_id=owner.subject_id,
-            include_legacy_unowned=True,
         )
     }
 
     assert _derived_ref(selector, partial) not in refs
-    assert _derived_ref(selector, legacy) in refs
+    assert _derived_ref(selector, legacy) not in refs
 
 
 @pytest.mark.parametrize(
@@ -558,13 +539,19 @@ async def test_derived_timeline_bridge_validates_linked_raw_ownership(
         ),
     ),
 )
-async def test_timeline_keeps_exact_stage3a_connectionless_history(
+async def test_timeline_drops_stage3a_history_that_kept_no_subject(
     db_session,
     selector,
     raw_domain,
     raw_source,
     normalized_source,
 ):
+    """A Stage-3A raw that names the subject does not lend it to its row.
+
+    The bridge used to admit a subjectless row on the strength of the exact
+    connectionless raw behind it. With the bridge gone the row has to carry
+    its own subject, which is what the normalized backfill gave it.
+    """
     owner = await _identity(db_session, f"stage3a-timeline-{selector}")
     raw = RawPayload(
         subject_id=owner.subject_id,
@@ -597,25 +584,16 @@ async def test_timeline_keeps_exact_stage3a_connectionless_history(
     db_session.add_all([historical, wrong_source])
     await db_session.flush()
 
-    strict_refs = {
+    refs = {
         event.ref
         for event in await timeline_service.list_events(
             db_session,
             subject_id=owner.subject_id,
-        )
-    }
-    bridge_refs = {
-        event.ref
-        for event in await timeline_service.list_events(
-            db_session,
-            subject_id=owner.subject_id,
-            include_legacy_unowned=True,
         )
     }
 
-    assert _derived_ref(selector, historical) not in strict_refs
-    assert _derived_ref(selector, historical) in bridge_refs
-    assert _derived_ref(selector, wrong_source) not in bridge_refs
+    assert _derived_ref(selector, historical) not in refs
+    assert _derived_ref(selector, wrong_source) not in refs
 
 
 @pytest.mark.parametrize(
@@ -675,23 +653,16 @@ async def test_timeline_provider_history_requires_exclusive_subject_connection(
     db_session.add(historical)
     await db_session.flush()
 
-    strict_refs = {
+    refs = {
         event.ref
         for event in await timeline_service.list_events(
             db_session,
             subject_id=identity.subject_id,
         )
     }
-    bridge_refs = {
-        event.ref
-        for event in await timeline_service.list_events(
-            db_session,
-            subject_id=identity.subject_id,
-            include_legacy_unowned=True,
-        )
-    }
-    assert _derived_ref(selector, historical) not in strict_refs
-    assert _derived_ref(selector, historical) in bridge_refs
+    # An exclusive provider connection behind the raw no longer lends the row a
+    # subject: the row has to carry its own.
+    assert _derived_ref(selector, historical) not in refs
 
     db_session.add(
         AIInvocation(
@@ -719,7 +690,6 @@ async def test_timeline_provider_history_requires_exclusive_subject_connection(
         for event in await timeline_service.list_events(
             db_session,
             subject_id=identity.subject_id,
-            include_legacy_unowned=True,
         )
     }
     assert _derived_ref(selector, historical) not in mixed_refs
@@ -750,7 +720,6 @@ async def test_direct_legacy_bridge_rejects_partial_actor_roots(db_session):
         db_session,
         annotation.id,
         subject_id=owner.subject_id,
-        include_legacy_unowned=True,
     ) is None
     assert await timeline_service.update_annotation(
         db_session,
@@ -760,13 +729,11 @@ async def test_direct_legacy_bridge_rejects_partial_actor_roots(db_session):
         kind=annotation.kind,
         domain=annotation.domain,
         identity=owner,
-        include_legacy_unowned=True,
     ) is None
     assert await timeline_service.delete_annotation(
         db_session,
         annotation.id,
         identity=owner,
-        include_legacy_unowned=True,
     ) is False
     assert await supplements_service.get_supplement(
         db_session,
@@ -928,7 +895,14 @@ async def test_crud_and_timeline_feed_reject_cross_subject_ids(db_session):
     assert supplement.active is True
 
 
-async def test_legacy_null_rows_need_explicit_sole_subject_bridge(db_session):
+async def test_legacy_null_rows_are_outside_every_scope(db_session):
+    """Neither domain has a bridge left, so neither row belongs to anybody.
+
+    An annotation and a supplement written before ownership existed used to be
+    reachable by the sole owner through an explicit compatibility read, and the
+    annotation was adoptable on update. Both domains are closed now: the rows
+    stay unowned, invisible, and unclaimable.
+    """
     identity = await _identity(db_session, "ownership-legacy")
     legacy_annotation = Annotation(
         date=date(2026, 8, 18),
@@ -956,23 +930,8 @@ async def test_legacy_null_rows_need_explicit_sole_subject_bridge(db_session):
             db_session, subject_id=identity.subject_id
         )
     ) == []
-    assert list(
-        await timeline_service.list_annotations(
-            db_session,
-            subject_id=identity.subject_id,
-            include_legacy_unowned=True,
-        )
-    ) == [legacy_annotation]
-    # A supplement without a subject is nobody's regimen: the scoped read never
-    # returns it, and there is no bridge left that would adopt it.
-    assert list(
-        await supplements_service.list_supplements(
-            db_session,
-            subject_id=identity.subject_id,
-        )
-    ) == []
 
-    await timeline_service.update_annotation(
+    assert await timeline_service.update_annotation(
         db_session,
         legacy_annotation.id,
         title="Adopted annotation",
@@ -980,9 +939,9 @@ async def test_legacy_null_rows_need_explicit_sole_subject_bridge(db_session):
         kind=legacy_annotation.kind,
         domain=legacy_annotation.domain,
         identity=identity,
-        include_legacy_unowned=True,
-    )
-    assert legacy_annotation.subject_id == identity.subject_id
+    ) is None
+    assert legacy_annotation.subject_id is None
+    assert legacy_annotation.title == "Legacy annotation"
     assert legacy_supplement.subject_id is None
     assert legacy_annotation.actor_user_id is None
     assert legacy_supplement.actor_user_id is None
@@ -1020,10 +979,15 @@ async def test_web_creates_use_authenticated_owner_identity(auth_client, db_sess
     )
 
 
-async def test_web_sole_subject_bridge_keeps_legacy_annotations_working(
+async def test_web_pages_show_no_unowned_history_from_either_domain(
     auth_client, db_session
 ):
-    """Timeline still bridges its unowned history; supplements no longer does."""
+    """Neither domain bridges its unowned history any more.
+
+    Both pages used to differ here — the timeline still surfaced and deleted an
+    ownerless annotation while supplements already refused. Now both refuse:
+    the row is not listed and the action it would need has nothing to act on.
+    """
 
     annotation = Annotation(
         date=date(2026, 8, 17),
@@ -1050,9 +1014,9 @@ async def test_web_sole_subject_bridge_keeps_legacy_annotations_working(
     )
     assert timeline_page.status_code == 200
     assert supplements_page.status_code == 200
-    assert "Legacy web annotation" in timeline_page.text
-    # A supplement with no subject is nobody's regimen; the page does not show
-    # it, and the toggle has nothing to act on.
+    # Neither row has a subject, so neither page shows it and neither action
+    # has anything to act on.
+    assert "Legacy web annotation" not in timeline_page.text
     assert "Legacy web supplement" not in supplements_page.text
 
     toggle = await auth_client.post(
@@ -1066,7 +1030,9 @@ async def test_web_sole_subject_bridge_keeps_legacy_annotations_working(
     assert subject is not None
     assert supplement.subject_id is None
     assert supplement.active is True
-    assert await db_session.get(Annotation, annotation.id) is None
+    await db_session.refresh(annotation)
+    assert annotation.subject_id is None
+    assert await db_session.get(Annotation, annotation.id) is not None
 
 
 async def test_web_legacy_owner_bridge_closes_with_second_subject(
@@ -1187,9 +1153,7 @@ _READS = {
 # allowlist literal makes the remaining PR-04/report cutover debt visible and
 # prevents a new unscoped reader from entering unnoticed. The exact assertion
 # also forces a scoped migration to remove its stale exception immediately.
-_KNOWN_LEGACY_READERS = {
-    ("vitals/services/today_service.py", "build", "list_events"),
-}
+_KNOWN_LEGACY_READERS: set[tuple[str, str, str]] = set()
 
 
 def _production_calls():
