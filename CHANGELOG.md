@@ -10,6 +10,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- **Revision 0050 enforces subject isolation in the database.** Forty-one
+  tables get `FORCE ROW LEVEL SECURITY` and a policy comparing `subject_id` to
+  the `vitals.subject_id` session setting. An unbound session sees nothing
+  rather than everything; a stranger's id opens nothing; `WITH CHECK` refuses a
+  write addressed outside the bound scope.
+- `rls_session.bind_session_subject` sets that value with
+  `set_config(..., is_local => true)`, so it is discarded at commit and cannot
+  ride a pooled connection into the next request. The subject is remembered on
+  the session and re-applied when a new transaction begins, so a service that
+  commits mid-work does not carry on against a policy that matches nothing.
+  Rebinding to a different subject is refused.
+- The binding happens in `resolve_legacy_ownership_context`, right after the
+  subject is read and before the first read of a protected table.
+- `system_alerts`, `conflict_rules` and the inherited children are deliberately
+  excluded: they need "mine or the installation's" rather than "mine", which is
+  a different predicate and needs its own review.
+
 - **Revision 0049 makes ownership mandatory.** Thirty-nine `REQUIRED`
   references become `NOT NULL` in the database and in the models together, so
   the schema the fast suite builds and the one a real installation runs finally

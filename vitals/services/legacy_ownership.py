@@ -28,6 +28,7 @@ from vitals.enums import (
 from vitals.models.identity import HealthSubject, User
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
+from vitals.services.rls_session import bind_session_subject
 from vitals.services.identity_service import IdentityValidationError, normalize_username
 from vitals.services.tenancy_bootstrap import LEGACY_CONNECTION_TYPES
 
@@ -239,6 +240,13 @@ async def resolve_legacy_ownership_context(
             )
         subject_id, owner_user_id = subject_rows[0]
 
+    # Bind before the first read of a policy-protected table. ``health_subjects``
+    # and ``users`` are the roots the boundary is defined *from*, so they carry
+    # no policy; ``integration_connections`` below does, and the lookup would
+    # come back empty against an unbound session.
+    await bind_session_subject(session, subject_id)
+
+    with session.no_autoflush:
         owner_row = (
             await session.execute(
                 select(User.id, User.normalized_username, User.status).where(

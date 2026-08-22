@@ -1382,26 +1382,66 @@ without the column actually becoming `NOT NULL` fails too. Same ratchet as
 
 #### Stage 6E — FORCE RLS, the second boundary
 
-Row-level security is the next step and the last one in Stage 6. It was never
-safe before now for a reason worth stating plainly: a policy that compares
-`subject_id` to the session's subject does not reject a row whose `subject_id`
-is null, it silently omits it. Applied to a lake with nullable ownership,
-RLS would have looked like a boundary while quietly hiding exactly the rows
-the backfill had not reached — and it would have hidden them from their owner
-too. With the contract migration in place every row names a subject, so the
-policy's comparison is total: each row is either this session's or refused.
+Revision 0050 gives each of the forty-one tables whose `subject_id` is mandatory
+a policy comparing it to `vitals.subject_id`, a session setting the application
+assigns. It could not have shipped earlier for a reason worth stating plainly: a
+policy that compares `subject_id` to the session's subject does not *reject* a
+row whose `subject_id` is null, it silently omits it. Applied to a lake with
+nullable ownership, RLS would have looked like a boundary while hiding exactly
+the rows the backfill had not reached — from their owner as much as from anyone
+else. With the contract migration in place the comparison is total: every row is
+either this session's or refused.
+
+Application scoping and the policy are not redundant. Scoping is a property of
+the code that happens to be running; a policy is a property of the data, and it
+survives a query written in a hurry, a report assembled by hand, and a console
+session opened during an incident.
+
+An unbound session is not an unrestricted one. `current_setting` returns NULL
+when nothing was set, the comparison is NULL, and no row qualifies — code that
+forgot to say whose data it wants sees nothing rather than everything. `NULLIF`
+guards the empty string, which is not a UUID and would raise instead of filter;
+empty and unset have to mean the same thing.
 
 `FORCE` is the operative word. PostgreSQL exempts a table's owner from its own
-policies unless the table is `FORCE ROW LEVEL SECURITY`, and the application
-connects as the owner. Without `FORCE` the policies would be inert for the one
-role that matters.
+policies unless the table forces them, and the application connects as the
+owner, so without it every policy would be inert for the one role that matters.
+Roles that must see across subjects — the migration runner, the ownership
+backfill, the platform control plane — are exempt by role attribute
+(`BYPASSRLS`) or by being superuser. That is deliberate, not an oversight: a
+backfill that could not see an unstamped row could not stamp it.
 
-Two things have to land with it and neither is schema: the session variable the
-policies read has to be set on every checkout of a pooled connection, and reset
-on return, or one request's subject leaks into the next request that reuses the
-connection. And the backfill services, the migration runner, and the platform
-control plane need a role that is exempt by design — a backfill that could not
-see an unstamped row could not stamp it.
+`vitals/services/rls_session.py` is the other half. `bind_session_subject` sets
+the value with `set_config(..., is_local => true)`, so it is discarded at commit
+or rollback and cannot outlive the request that resolved it or ride a pooled
+connection into the next one — the leak that makes connection-level session
+variables a liability. Because it is discarded at commit, the subject is
+remembered on the session and re-applied by an `after_begin` listener, so a
+service that commits and keeps working does not carry on against a policy that
+now matches nothing. Rebinding to a *different* subject is refused: one
+transaction serves one person, and switching would leave rows already in the
+identity map under the wrong policy.
+
+The binding happens in `resolve_legacy_ownership_context`, immediately after the
+subject is read and before the first read of a protected table. `health_subjects`
+and `users` are the roots the boundary is defined *from* and carry no policy;
+`integration_connections` does, and the resolver's own lookup would come back
+empty against an unbound session.
+
+Two groups are deliberately not covered by this blanket policy. `system_alerts`
+(subject `OPTIONAL`) and `conflict_rules` (`MIXED`) need "mine or the
+installation's" rather than "mine" — a platform alert and a curated rule belong
+to nobody and must stay visible. And the inherited children carry a nullable
+subject whose NULL means something different per table: unmigrated for
+`hevy_sets`, curated-and-global for `hrt_compound_components`. Each needs its own
+reviewed predicate rather than a shared one.
+
+Neither the fast suite nor the ordinary integration tests are affected, because
+both build their schema with `create_all`, which knows about columns and
+constraints and nothing about policies. `tests/test_row_level_security.py`
+therefore builds a migrated database and connects as a role with no special
+attributes — the suite's own superuser bypasses row security by definition,
+which is precisely why the boundary needs a proof that does not use it.
 
 ## Rollback boundary
 
