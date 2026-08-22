@@ -54,21 +54,18 @@ async def nutrition_dashboard(
         db,
         selected_date,
         subject_id=conflict_context.identity.subject_id,
-        include_unowned_legacy=True,
     )
     summary = await nutrition_service.daily_summary(
         db,
         selected_date,
         cfg,
         subject_id=conflict_context.identity.subject_id,
-        include_unowned_legacy=True,
     )
     history = await nutrition_service.list_meals(
         db,
         start=None,
         end=None,
         subject_id=conflict_context.identity.subject_id,
-        include_unowned_legacy=True,
     )
     alerts = await alerts_service.list_active_scoped(
         db,
@@ -144,7 +141,6 @@ async def add_meal(
                 note=note,
                 override=override,
                 identity=conflict_context.identity,
-                include_unowned_legacy=True,
                 prepared_conflict_write=prepared,
             )
         else:
@@ -191,7 +187,6 @@ async def delete_meal(
         db,
         id,
         identity=conflict_context.identity,
-        include_unowned_legacy=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()

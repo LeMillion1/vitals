@@ -53,7 +53,7 @@ async def test_more_screen_reports_how_many_modules_are_on(auth_client):
 
 # ── The rail's status card ───────────────────────────────────────────────────
 
-async def test_status_card_reports_todays_weight_and_the_weeks_direction(db_session):
+async def test_status_card_reports_todays_weight_and_the_weeks_direction(db_session, owner_write):
     """The card exists to say where he is, not how the plumbing is doing — the
     first version reported "labs · 99 days ago" every single day."""
     for days_ago, kg in ((9, 87.0), (0, 86.1)):
@@ -67,13 +67,15 @@ async def test_status_card_reports_todays_weight_and_the_weeks_direction(db_sess
         )
     await db_session.flush()
 
-    rows = {r.key: r for r in await nav_status_service.rail_stats(db_session)}
+    rows = {r.key: r for r in await nav_status_service.rail_stats(
+        db_session, subject_id=owner_write.subject_id
+    )}
     assert rows["weight"].value.startswith("86.1")
     assert rows["weight"].sub == "−0.9"
     assert rows["weight"].tone == "good"
 
 
-async def test_a_source_that_went_quiet_says_so_instead_of_a_number(db_session):
+async def test_a_source_that_went_quiet_says_so_instead_of_a_number(db_session, owner_write):
     db_session.add(
         GarminDaily(
             date=today_local() - timedelta(days=6),
@@ -84,12 +86,14 @@ async def test_a_source_that_went_quiet_says_so_instead_of_a_number(db_session):
     )
     await db_session.flush()
 
-    rows = {r.key: r for r in await nav_status_service.rail_stats(db_session)}
+    rows = {r.key: r for r in await nav_status_service.rail_stats(
+        db_session, subject_id=owner_write.subject_id
+    )}
     assert rows["recovery"].tone == "warn"
     assert "6" in rows["recovery"].value
 
 
-async def test_last_nights_sleep_reads_as_hours_and_minutes(db_session):
+async def test_last_nights_sleep_reads_as_hours_and_minutes(db_session, owner_write):
     db_session.add(
         GarminDaily(
             date=today_local(),
@@ -101,16 +105,20 @@ async def test_last_nights_sleep_reads_as_hours_and_minutes(db_session):
     )
     await db_session.flush()
 
-    rows = {r.key: r for r in await nav_status_service.rail_stats(db_session)}
+    rows = {r.key: r for r in await nav_status_service.rail_stats(
+        db_session, subject_id=owner_write.subject_id
+    )}
     assert rows["recovery"].value == "7:20"
     assert "62" in rows["recovery"].sub
 
 
-async def test_a_domain_with_nothing_logged_yet_gets_no_row(db_session):
-    assert await nav_status_service.rail_stats(db_session) == []
+async def test_a_domain_with_nothing_logged_yet_gets_no_row(db_session, owner_write):
+    assert await nav_status_service.rail_stats(
+        db_session, subject_id=owner_write.subject_id
+    ) == []
 
 
-async def test_a_disabled_module_gets_no_row(db_session):
+async def test_a_disabled_module_gets_no_row(db_session, owner_write):
     db_session.add(
         GarminDaily(
             date=today_local(),
@@ -122,18 +130,23 @@ async def test_a_disabled_module_gets_no_row(db_session):
     await db_session.flush()
 
     enabled = {"garmin": False, "weight": True}
-    assert await nav_status_service.rail_stats(db_session, enabled) == []
+    assert await nav_status_service.rail_stats(
+        db_session, enabled, subject_id=owner_write.subject_id
+    ) == []
 
 
 async def test_status_rows_never_raise_on_a_broken_session():
     """The rail is chrome: an unreadable domain must lose its row, not 500 the
     page it is drawn on."""
+    import uuid as _uuid
 
     class Boom:
         async def execute(self, *a, **kw):
             raise RuntimeError("db is down")
 
-    assert await nav_status_service.rail_stats(Boom()) == []
+    assert await nav_status_service.rail_stats(
+        Boom(), subject_id=_uuid.uuid4()
+    ) == []
 
 
 # ── The card has to survive a boosted navigation ─────────────────────────────

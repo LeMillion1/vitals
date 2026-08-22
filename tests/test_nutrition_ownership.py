@@ -5,7 +5,7 @@ from datetime import date
 
 from sqlalchemy import select
 
-from vitals.enums import UserStatus
+from vitals.enums import Domain, Source, UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.nutrition import MealLog
 from vitals.ownership import WriteIdentity
@@ -133,14 +133,23 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
     assert await db_session.get(MealLog, row.id) is None
 
 
-async def test_unowned_legacy_rows_require_explicit_compatibility_read(db_session):
+async def test_unowned_legacy_rows_are_outside_every_scope(db_session):
+    """The compatibility read is gone, so a meal belonging to nobody is nobody's.
+
+    While nutrition still had a bridge, the sole owner could ask for unowned
+    rows explicitly. Closing the domain removes the question: the subject is the
+    whole scope, and a row without one is invisible to every reader.
+    """
     identity = await _identity(db_session, "nutrition-legacy-owner")
     on_date = date(2026, 8, 19)
-    legacy = await nutrition_service.log_meal(
-        db_session,
-        on_date=on_date,
+    legacy = MealLog(
+        domain=Domain.NUTRITION.value,
+        source=Source.MANUAL.value,
+        date=on_date,
         name="legacy meal",
     )
+    db_session.add(legacy)
+    await db_session.flush()
 
     assert list(
         await nutrition_service.list_meals_for_date(
@@ -149,14 +158,6 @@ async def test_unowned_legacy_rows_require_explicit_compatibility_read(db_sessio
             subject_id=identity.subject_id,
         )
     ) == []
-    assert list(
-        await nutrition_service.list_meals_for_date(
-            db_session,
-            on_date,
-            subject_id=identity.subject_id,
-            include_unowned_legacy=True,
-        )
-    ) == [legacy]
 
 
 async def test_web_create_uses_authenticated_legacy_owner_context(

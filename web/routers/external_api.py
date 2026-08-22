@@ -159,7 +159,6 @@ async def _activity_block(
         start=since,
         end=today,
         subject_id=scope.subject_id,
-        include_unowned_legacy=scope.include_legacy_unowned,
     )
     # Garmin's current compatibility reader has no subject arguments; the
     # summary-level exact-one governance proof remains its read boundary.
@@ -194,7 +193,6 @@ async def external_summary(session: AsyncSession = Depends(get_session)) -> dict
         today_local(),
         cfg,
         subject_id=scope.subject_id,
-        include_unowned_legacy=scope.include_legacy_unowned,
     )
 
     return {

@@ -233,10 +233,15 @@ async def test_weight_drives_the_figure_and_the_fallback_sentence(db_session, le
     assert ctx["changes"][0]["href"] == "/weight"
 
 
-async def test_a_disabled_module_contributes_nothing(db_session, legacy_owner_roots):
+async def test_a_disabled_module_contributes_nothing(db_session, legacy_owner_roots, owner_write):
     """Nutrition off: no calories figure, no meal in the feed — not an empty card."""
     await nutrition_service.log_meal(
-        db_session, on_date=today_local(), name="Курица с рисом", calories=520
+        db_session,
+        on_date=today_local(),
+        name="Курица с рисом",
+        calories=520,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
 
@@ -269,7 +274,7 @@ async def test_a_disabled_module_contributes_nothing(db_session, legacy_owner_ro
     assert [row["text"] for row in on["feed"]] == ["Курица с рисом"]
 
 
-async def test_calories_change_compares_logged_days(db_session, legacy_owner_roots):
+async def test_calories_change_compares_logged_days(db_session, legacy_owner_roots, owner_write):
     """Intake week over week is per *logged* day: a week with three days filled in
     must not read as a crash in intake that never happened."""
     for offset, cal in ((10, 1800.0), (9, 2000.0), (2, 1500.0)):
@@ -278,6 +283,8 @@ async def test_calories_change_compares_logged_days(db_session, legacy_owner_roo
             on_date=today_local() - timedelta(days=offset),
             name="Обед",
             calories=cal,
+            identity=owner_write.identity,
+            prepared_conflict_write=await owner_write.write(today_local() - timedelta(days=offset)),
         )
     await db_session.commit()
 
@@ -423,12 +430,17 @@ async def test_platform_scheduler_diagnostics_never_reach_today_attention(
     assert sentinel not in messages
 
 
-async def test_feed_stays_a_glance_on_a_busy_day(db_session, legacy_owner_roots):
+async def test_feed_stays_a_glance_on_a_busy_day(db_session, legacy_owner_roots, owner_write):
     """Every seeded goal and supplement carries today's date on a first run — the
     card is the day at a glance, so it is capped rather than left unbounded."""
     for i in range(20):
         await nutrition_service.log_meal(
-            db_session, on_date=today_local(), name=f"Приём {i}", calories=100
+            db_session,
+            on_date=today_local(),
+            name=f"Приём {i}",
+            calories=100,
+            identity=owner_write.identity,
+            prepared_conflict_write=await owner_write.write(today_local()),
         )
     await db_session.commit()
 

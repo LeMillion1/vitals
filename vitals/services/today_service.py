@@ -165,7 +165,9 @@ async def build(
 
     calories = None
     if em.get("nutrition"):
-        summary = await nutrition_service.daily_summary(session, today, cfg)
+        summary = await nutrition_service.daily_summary(
+            session, today, cfg, subject_id=subject_id
+        )
         calories = summary["totals"]["calories"]
         goals = summary["goals"]
         figures.append(
@@ -202,10 +204,14 @@ async def build(
 
     if em.get("nutrition"):
         this_cal = await nutrition_service.nutrition_summary(
-            session, today - timedelta(days=6), today, cfg
+            session, today - timedelta(days=6), today, cfg, subject_id=subject_id
         )
         last_cal = await nutrition_service.nutrition_summary(
-            session, today - timedelta(days=13), today - timedelta(days=7), cfg
+            session,
+            today - timedelta(days=13),
+            today - timedelta(days=7),
+            cfg,
+            subject_id=subject_id,
         )
         if this_cal["days_with_logs"] and last_cal["days_with_logs"]:
             # Per *logged* day, not per calendar day: a week with three days
@@ -232,7 +238,9 @@ async def build(
                 "detail": e.detail or "",
             })
     if em.get("nutrition"):
-        for m in await nutrition_service.list_meals_for_date(session, today):
+        for m in await nutrition_service.list_meals_for_date(
+            session, today, subject_id=subject_id
+        ):
             feed.append({
                 "time": m.eaten_at.strftime("%H:%M") if m.eaten_at else "",
                 "dot": "good",

@@ -187,7 +187,7 @@ async def test_a_past_period_ends_on_its_own_date(db_session, monkeypatch, legac
     assert meta["period_start"] == (DAY - timedelta(days=6)).isoformat()
 
 
-async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch, legacy_owner_roots):
+async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch, legacy_owner_roots, owner_write):
     """The links the report kept failing to find need the domains on one row."""
     from vitals.services import nutrition_service, signals_service
 
@@ -207,7 +207,13 @@ async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch, 
         ]
     )
     await nutrition_service.log_meal(
-        db_session, on_date=session_day, name="ужин", calories=800, protein_g=60.0
+        db_session,
+        on_date=session_day,
+        name="ужин",
+        calories=800,
+        protein_g=60.0,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(session_day),
     )
     await signals_service.set_day_context(
         db_session, session_day, answers={"where": "office", "gym": True, "load": "heavy"},

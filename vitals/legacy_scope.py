@@ -132,18 +132,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'set_module_enabled',
             }
         ),
-        'vitals.services.nutrition_service': frozenset(
-            {
-                'daily_summary',
-                'delete_meal',
-                'list_meals',
-                'list_meals_for_date',
-                'log_meal',
-                'nutrition_summary',
-                'resolve_today',
-                'update_meal',
-            }
-        ),
         'vitals.services.proactive.brief': frozenset(
             {
                 '_prepare_brief',

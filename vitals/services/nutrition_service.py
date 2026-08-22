@@ -30,13 +30,11 @@ def _day_entity_key(on_date: date_type) -> str:
 def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
-    identity: WriteIdentity | None,
-    prepared: conflict_engine.PreparedConflictWrite | None,
-) -> conflict_engine.ConflictWriteContext | None:
-    """Separate deprecated singleton calls from subject-aware writes."""
+    identity: WriteIdentity,
+    prepared: conflict_engine.PreparedConflictWrite,
+) -> conflict_engine.ConflictWriteContext:
+    """Prove the write names a subject and the decision that authorized it."""
 
-    if identity is None and prepared is None:
-        return None
     if identity is None or prepared is None:
         raise conflict_engine.ConflictPreparedWriteError(
             "scoped nutrition writes require identity and a prepared conflict write"
@@ -58,55 +56,25 @@ def _require_evaluation_date(
         )
 
 
-def _meal_subject_scope(
-    subject_id: uuid.UUID,
-    *,
-    include_unowned_legacy: bool,
-):
-    scope = MealLog.subject_id == subject_id
-    if include_unowned_legacy:
-        scope = or_(
-            scope,
-            and_(
-                MealLog.subject_id.is_(None),
-                MealLog.actor_user_id.is_(None),
-            ),
-        )
-    return scope
+def _meal_subject_scope(subject_id: uuid.UUID):
+    return MealLog.subject_id == subject_id
 
 
-def _meal_by_id_stmt(
-    meal_id: int,
-    *,
-    subject_id: uuid.UUID | None,
-    include_unowned_legacy: bool,
-):
-    stmt = select(MealLog).where(MealLog.id == meal_id)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _meal_subject_scope(
-                subject_id,
-                include_unowned_legacy=include_unowned_legacy,
-            )
-        )
-    elif include_unowned_legacy:
-        raise ValueError("legacy nutrition compatibility requires a subject_id")
-    return stmt
+def _meal_by_id_stmt(meal_id: int, *, subject_id: uuid.UUID):
+    return select(MealLog).where(
+        MealLog.id == meal_id,
+        _meal_subject_scope(subject_id),
+    )
 
 
 async def _get_meal_for_update(
     session: AsyncSession,
     meal_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_unowned_legacy: bool,
+    subject_id: uuid.UUID,
 ) -> Optional[MealLog]:
     return await session.scalar(
-        _meal_by_id_stmt(
-            meal_id,
-            subject_id=subject_id,
-            include_unowned_legacy=include_unowned_legacy,
-        )
+        _meal_by_id_stmt(meal_id, subject_id=subject_id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
@@ -117,7 +85,6 @@ async def get_meal_for_update(
     meal_id: int,
     *,
     identity: WriteIdentity,
-    include_unowned_legacy: bool = False,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[MealLog]:
     """Lock and refresh a scoped meal for a caller-side partial merge."""
@@ -127,20 +94,10 @@ async def get_meal_for_update(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    assert context is not None
-    if (
-        include_unowned_legacy
-        and context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy nutrition adoption requires a fully-unowned bridge"
-        )
     return await _get_meal_for_update(
         session,
         meal_id,
         subject_id=identity.subject_id,
-        include_unowned_legacy=include_unowned_legacy,
     )
 
 
@@ -198,8 +155,8 @@ async def log_meal(
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
     override: bool = False,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> MealLog:
     scoped_context = _require_scoped_prepared_write(
         session,
@@ -216,42 +173,31 @@ async def log_meal(
         "fat_g": fat_g,
         "carbs_g": carbs_g,
     }
-    if scoped_context is None:
-        await conflict_engine.enforce(
-            session,
-            Domain.NUTRITION.value,
-            proposed,
-            override=override,
-            entity_ref=f"meal:{on_date.isoformat()}",
-        )
-    else:
-        _require_evaluation_date(scoped_context, on_date)
-        assert identity is not None and prepared_conflict_write is not None
-        meals = await list_meals_for_date(
-            session,
-            on_date,
-            subject_id=identity.subject_id,
-            include_unowned_legacy=scoped_context.scope.include_legacy_unowned,
-        )
-        projected_total = _projected_day_total(
-            meals,
-            replaced=None,
-            proposed=proposed_macros,
-        )
-        await conflict_engine.enforce_prepared(
-            session,
-            prepared=prepared_conflict_write,
-            domain=Domain.NUTRITION,
-            proposed_state=[proposed, projected_total],
-            override=override,
-            entity_ref=f"meal:{on_date.isoformat()}",
-            replace_entity_key=_day_entity_key(on_date),
-        )
+    _require_evaluation_date(scoped_context, on_date)
+    meals = await list_meals_for_date(
+        session,
+        on_date,
+        subject_id=identity.subject_id,
+    )
+    projected_total = _projected_day_total(
+        meals,
+        replaced=None,
+        proposed=proposed_macros,
+    )
+    await conflict_engine.enforce_prepared(
+        session,
+        prepared=prepared_conflict_write,
+        domain=Domain.NUTRITION,
+        proposed_state=[proposed, projected_total],
+        override=override,
+        entity_ref=f"meal:{on_date.isoformat()}",
+        replace_entity_key=_day_entity_key(on_date),
+    )
     if eaten_at is None:
         eaten_at = now_local().time()
     row = MealLog(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         date=on_date,
         domain=DOMAIN,
         source=source,
@@ -281,31 +227,19 @@ async def update_meal(
     carbs_g: Optional[float] = None,
     note: Optional[str] = None,
     override: bool = False,
-    identity: WriteIdentity | None = None,
-    include_unowned_legacy: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[MealLog]:
     scoped_context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if scoped_context is not None:
-        _require_evaluation_date(scoped_context, on_date)
-    if (
-        include_unowned_legacy
-        and scoped_context is not None
-        and scoped_context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy nutrition adoption requires a fully-unowned bridge"
-        )
+    _require_evaluation_date(scoped_context, on_date)
     row = await _get_meal_for_update(
         session,
         meal_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_unowned_legacy=include_unowned_legacy,
+        subject_id=identity.subject_id,
     )
     if row is None:
         return None
@@ -319,32 +253,25 @@ async def update_meal(
         "fat_g": fat_g,
         "carbs_g": carbs_g,
     }
-    if scoped_context is not None:
-        assert identity is not None and prepared_conflict_write is not None
-        meals = await list_meals_for_date(
-            session,
-            on_date,
-            subject_id=identity.subject_id,
-            include_unowned_legacy=scoped_context.scope.include_legacy_unowned,
-        )
-        projected_total = _projected_day_total(
-            meals,
-            replaced=row if row.date == on_date else None,
-            proposed=proposed_macros,
-        )
-        await conflict_engine.enforce_prepared(
-            session,
-            prepared=prepared_conflict_write,
-            domain=Domain.NUTRITION,
-            proposed_state=[proposed, projected_total],
-            override=override,
-            entity_ref=f"meal:{on_date.isoformat()}",
-            replace_entity_key=_day_entity_key(on_date),
-        )
-    if row.subject_id is None and identity is not None:
-        # Compatibility adoption is allowed only after a successful scoped
-        # conflict evaluation. Preserve the unknown historical actor.
-        row.subject_id = identity.subject_id
+    meals = await list_meals_for_date(
+        session,
+        on_date,
+        subject_id=identity.subject_id,
+    )
+    projected_total = _projected_day_total(
+        meals,
+        replaced=row if row.date == on_date else None,
+        proposed=proposed_macros,
+    )
+    await conflict_engine.enforce_prepared(
+        session,
+        prepared=prepared_conflict_write,
+        domain=Domain.NUTRITION,
+        proposed_state=[proposed, projected_total],
+        override=override,
+        entity_ref=f"meal:{on_date.isoformat()}",
+        replace_entity_key=_day_entity_key(on_date),
+    )
     row.date = on_date
     row.name = name
     row.eaten_at = eaten_at
@@ -361,29 +288,18 @@ async def delete_meal(
     session: AsyncSession,
     meal_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_unowned_legacy: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     scoped_context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if (
-        include_unowned_legacy
-        and scoped_context is not None
-        and scoped_context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy nutrition deletion requires a fully-unowned bridge"
-        )
     row = await _get_meal_for_update(
         session,
         meal_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_unowned_legacy=include_unowned_legacy,
+        subject_id=identity.subject_id,
     )
     if row is None:
         return False
@@ -398,7 +314,6 @@ async def update_meal_note(
     *,
     note: str,
     identity: WriteIdentity,
-    include_unowned_legacy: bool = False,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[MealLog]:
     """Update only a meal note under the same subject lock as meal CRUD."""
@@ -408,20 +323,10 @@ async def update_meal_note(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    assert context is not None
-    if (
-        include_unowned_legacy
-        and context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy nutrition note adoption requires a fully-unowned bridge"
-        )
     row = await _get_meal_for_update(
         session,
         meal_id,
         subject_id=identity.subject_id,
-        include_unowned_legacy=include_unowned_legacy,
     )
     if row is None:
         return None
@@ -438,25 +343,11 @@ async def list_meals_for_date(
     session: AsyncSession,
     on_date: date_type,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_unowned_legacy: bool = False,
+    subject_id: uuid.UUID,
 ) -> Sequence[MealLog]:
-    """List one day's meals inside an exact subject boundary.
-
-    ``include_unowned_legacy`` is a temporary pre-backfill bridge. It may be
-    enabled only by a boundary that has independently proved the installation
-    still contains exactly one health subject.
-    """
+    """List one day's meals inside an exact subject boundary."""
     stmt = select(MealLog).where(MealLog.date == on_date)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _meal_subject_scope(
-                subject_id,
-                include_unowned_legacy=include_unowned_legacy,
-            )
-        )
-    elif include_unowned_legacy:
-        raise ValueError("legacy nutrition compatibility requires a subject_id")
+    stmt = stmt.where(_meal_subject_scope(subject_id))
     result = await session.execute(
         stmt.order_by(MealLog.eaten_at.asc().nulls_last(), MealLog.id)
         .execution_options(populate_existing=True)
@@ -469,27 +360,14 @@ async def list_meals(
     *,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
-    subject_id: uuid.UUID | None = None,
-    include_unowned_legacy: bool = False,
+    subject_id: uuid.UUID,
     name_query: str | None = None,
     has_note: bool = False,
     limit: int | None = None,
 ) -> Sequence[MealLog]:
-    """List meals, optionally in one exact subject scope.
-
-    The unowned-row bridge has the same sole-subject precondition as
-    :func:`list_meals_for_date` and must disappear after ownership backfill.
-    """
+    """List meals inside one exact subject scope."""
     stmt = select(MealLog)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _meal_subject_scope(
-                subject_id,
-                include_unowned_legacy=include_unowned_legacy,
-            )
-        )
-    elif include_unowned_legacy:
-        raise ValueError("legacy nutrition compatibility requires a subject_id")
+    stmt = stmt.where(_meal_subject_scope(subject_id))
     if start is not None:
         stmt = stmt.where(MealLog.date >= start)
     if end is not None:
@@ -545,20 +423,24 @@ def macro_energy_shares(totals: dict[str, float]) -> dict[str, float]:
 
 # ── Conflict-engine resolver ──────────────────────────────────────────────────
 
-async def resolve_today(
-    session: AsyncSession,
-    *,
-    subject_id: uuid.UUID | None = None,
-    include_unowned_legacy: bool = False,
-) -> list[dict]:
+async def resolve_today(session: AsyncSession) -> list[dict]:
     """Conflict-engine resolver: today's macro totals as a single match item —
     lets a rule reference e.g. {"calories": {"$gt": 4000}} against the running
-    daily total, not just the one meal being logged right now."""
-    meals = await list_meals_for_date(
-        session,
-        today_local(),
-        subject_id=subject_id,
-        include_unowned_legacy=include_unowned_legacy,
+    daily total, not just the one meal being logged right now.
+
+    The engine's compatibility arm has no scope to hand down, so this reader
+    still spans the installation. It goes when that arm does; every other read
+    in this module already requires its subject. Fully unowned only: a row with
+    an actor but no subject is partial provenance and was never legacy data.
+    """
+    meals = list(
+        await session.scalars(
+            select(MealLog).where(
+                MealLog.date == today_local(),
+                MealLog.subject_id.is_(None),
+                MealLog.actor_user_id.is_(None),
+            )
+        )
     )
     return [_sum_macros(meals)]
 
@@ -568,13 +450,29 @@ async def resolve_today_scoped(
     *,
     scope: conflict_engine.ConflictScope,
 ) -> list[dict]:
-    """Conflict resolver for one subject and one subject-local calendar day."""
+    """Conflict resolver for one subject and one subject-local calendar day.
 
-    meals = await list_meals_for_date(
-        session,
-        scope.evaluation_date,
-        subject_id=scope.subject_id,
-        include_unowned_legacy=scope.include_legacy_unowned,
+    The conflict engine still offers a fully-unowned bridge to its callers, and
+    a resolver has to honour the scope it is handed. This is the last place in
+    the module that can see a row with no subject; it goes when the bridge does.
+    """
+
+    subject_scope = MealLog.subject_id == scope.subject_id
+    if scope.include_legacy_unowned:
+        subject_scope = or_(
+            subject_scope,
+            and_(
+                MealLog.subject_id.is_(None),
+                MealLog.actor_user_id.is_(None),
+            ),
+        )
+    meals = list(
+        await session.scalars(
+            select(MealLog).where(
+                MealLog.date == scope.evaluation_date,
+                subject_scope,
+            )
+        )
     )
     return [
         {
@@ -628,14 +526,12 @@ async def daily_summary(
     on_date: date_type,
     cfg: Config,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_unowned_legacy: bool = False,
+    subject_id: uuid.UUID,
 ) -> dict[str, Any]:
     meals = await list_meals_for_date(
         session,
         on_date,
         subject_id=subject_id,
-        include_unowned_legacy=include_unowned_legacy,
     )
     totals = _sum_macros(meals)
     goals = get_goals(cfg)
@@ -654,15 +550,13 @@ async def nutrition_summary(
     end: date_type,
     cfg: Config,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_unowned_legacy: bool = False,
+    subject_id: uuid.UUID,
 ) -> dict[str, Any]:
     meals = await list_meals(
         session,
         start=start,
         end=end,
         subject_id=subject_id,
-        include_unowned_legacy=include_unowned_legacy,
     )
     totals = _sum_macros(meals)
     goals = get_goals(cfg)

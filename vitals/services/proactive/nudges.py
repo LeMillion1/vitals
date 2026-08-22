@@ -99,7 +99,14 @@ async def _protein_short(session: AsyncSession, ctx: dict) -> bool:
 
     if not 16 <= ctx["now"].hour < 21:
         return False
-    meals = await nutrition_service.list_meals_for_date(session, ctx["today"])
+    ownership = ctx.get("ownership")
+    if ownership is None:
+        # A protein nudge is about one person's day; without a subject there is
+        # nobody to be behind on it.
+        return False
+    meals = await nutrition_service.list_meals_for_date(
+        session, ctx["today"], subject_id=ownership.subject_id
+    )
     if not meals:
         return False
     eaten = sum(m.protein_g or 0 for m in meals)

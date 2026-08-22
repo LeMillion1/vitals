@@ -129,21 +129,38 @@ async def test_missing_data_is_not_a_nudge(db_session):
     assert await nudges.run(db_session, notifier, now=EVENING) == []
 
 
-async def test_protein_nudge_fires_while_the_day_is_still_open(db_session):
+async def test_protein_nudge_fires_while_the_day_is_still_open(
+    db_session, owner_write, monkeypatch
+):
     await nutrition_service.log_meal(
-        db_session, on_date=TODAY, name="Курица с рисом", protein_g=60.0
+        db_session,
+        on_date=TODAY,
+        name="Курица с рисом",
+        protein_g=60.0,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(TODAY),
+    )
+    notifier = FakeNotifier()
+    _patch_owned_delivery(monkeypatch, notifier)
+    # A protein nudge is about one person's day, so the run is scoped.
+    ownership = await channels.resolve_legacy_channel_ownership(
+        db_session,
+        actor_username=None,
     )
     await db_session.commit()
-    notifier = FakeNotifier()
 
-    sent = await nudges.run(db_session, notifier, now=AFTERNOON)
+    sent = await nudges.run(
+        db_session, notifier, now=AFTERNOON, ownership=ownership
+    )
     assert len(sent) == 1
     assert "60" in notifier.sent[0] and "150" in notifier.sent[0]
 
     # …and not at 22:00, when there is nothing left to fix.
     await db_session.execute(Notification.__table__.delete())
     await db_session.commit()
-    assert await nudges.run(db_session, notifier, now=EVENING.replace(hour=22)) == []
+    assert await nudges.run(
+        db_session, notifier, now=EVENING.replace(hour=22), ownership=ownership
+    ) == []
 
 
 async def test_garmin_silence_needs_two_days_and_some_history(db_session):
@@ -325,13 +342,20 @@ async def test_ambiguous_garmin_silence_claim_blocks_the_whole_episode(
 
 
 # ── The budget ────────────────────────────────────────────────────────────────
-async def test_budget_cuts_the_nudge_that_does_not_fit(db_session):
+async def test_budget_cuts_the_nudge_that_does_not_fit(
+    db_session, owner_write, monkeypatch
+):
     """Two conditions hold, one slot is left — so exactly one goes out. The brief
     and the evening block spend two of the four every day, which is why a nudge
     is never the message that matters most."""
     await _seed_steps(db_session, 3000)  # steps: short
     await nutrition_service.log_meal(
-        db_session, on_date=TODAY, name="Творог", protein_g=40.0
+        db_session,
+        on_date=TODAY,
+        name="Творог",
+        protein_g=40.0,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(TODAY),
     )  # protein: behind
     for i in range(delivery.DAILY_BUDGET - 1):  # brief, evening, one earlier nudge
         db_session.add(
@@ -342,10 +366,17 @@ async def test_budget_cuts_the_nudge_that_does_not_fit(db_session):
                 dedupe_key=f"spent:{i}",
             )
         )
+    notifier = FakeNotifier()
+    _patch_owned_delivery(monkeypatch, notifier)
+    ownership = await channels.resolve_legacy_channel_ownership(
+        db_session,
+        actor_username=None,
+    )
     await db_session.commit()
 
-    notifier = FakeNotifier()
-    sent = await nudges.run(db_session, notifier, now=EVENING)
+    sent = await nudges.run(
+        db_session, notifier, now=EVENING, ownership=ownership
+    )
     assert len(sent) == 1
     assert len(notifier.sent) == 1
 

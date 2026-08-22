@@ -403,29 +403,29 @@ async def test_foreign_partial_and_legacy_roots_obey_bridge_contract(
     )
     prepared = await _prepared(db_session, context)
 
+    # Nutrition is closed: adoption on write is gone, so a row belonging to
+    # nobody is simply out of scope rather than claimable, and a partial row
+    # with an actor and no subject stays exactly as unreachable as it was.
     assert await nutrition_service.update_meal(
         db_session,
         partial.id,
         on_date=EVALUATION_DATE,
         name="forged",
         identity=context.identity,
-        include_unowned_legacy=True,
         prepared_conflict_write=prepared,
     ) is None
     assert partial.name == "partial"
 
-    adopted = await nutrition_service.update_meal(
+    assert await nutrition_service.update_meal(
         db_session,
         legacy.id,
         on_date=EVALUATION_DATE,
         name="adopted",
         identity=context.identity,
-        include_unowned_legacy=True,
         prepared_conflict_write=prepared,
-    )
-    assert adopted is legacy
-    assert legacy.subject_id == legacy_owner_roots.subject_id
-    assert legacy.actor_user_id is None
+    ) is None
+    assert legacy.name == "legacy"
+    assert legacy.subject_id is None
 
 
 async def test_prepared_mismatch_and_committed_capability_are_rejected(

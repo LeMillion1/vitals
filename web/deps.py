@@ -196,8 +196,16 @@ async def load_nav_status(
     from vitals.services import nav_status_service
 
     try:
+        # The card is one person's day, so it needs a subject. Resolving it is
+        # inside the guard because chrome must never raise: an installation the
+        # sole-owner adapter refuses simply draws no card.
+        ownership = await get_request_legacy_ownership(request, db)
+        if ownership is None:
+            return
         request.state.nav_status = await nav_status_service.rail_stats(
-            db, getattr(request.state, "enabled_modules", None)
+            db,
+            getattr(request.state, "enabled_modules", None),
+            subject_id=ownership.subject_id,
         )
     except Exception:
         logger.exception("nav status load failed; hiding the status card")

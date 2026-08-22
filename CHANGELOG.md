@@ -10,6 +10,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the nutrition domain. Eight bridges. Every read takes the subject and
+  every write takes the subject with its conflict decision; the day's running
+  total is one person's total, which is what the GLP-1 low-intake rules compare
+  against. Adoption on write is gone: a meal belonging to nobody is out of scope
+  rather than claimable, and the last `enforce()` call in the module went with
+  it — seven legacy enforce sites left across the codebase.
+- The nav rail's status card now names the subject whose day it reports, which
+  meant scoping `nutrition_service.daily_summary` behind it; the ownership
+  resolution sits inside the card's fail-safe guard, because chrome must draw
+  nothing rather than raise.
+- The protein nudge refuses to run without ownership — being behind on protein
+  is something a person is, not an installation.
+
 - Closed the signals domain — what a person types to the bot, and the per-day
   context they answer with a tap. Fourteen bridges. Every read takes the
   subject; every write takes the identity, and a captured message also names the

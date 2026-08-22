@@ -176,12 +176,26 @@ async def test_labs_resolve_latest_shape(db_session):
     assert items == [{"marker": "Калий", "value": 5.5, "flag": "high"}]
 
 
-async def test_nutrition_resolve_today_shape(db_session):
+async def test_nutrition_resolve_today_shape(db_session, owner_write):
     from vitals.services import nutrition_service
 
-    await nutrition_service.log_meal(db_session, on_date=today_local(), name="Test meal", calories=500, protein_g=40)
+    await nutrition_service.log_meal(
+        db_session,
+        on_date=today_local(),
+        name="Test meal",
+        calories=500,
+        protein_g=40,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
+    )
     await db_session.commit()
-    items = await nutrition_service.resolve_today(db_session)
+    items = await nutrition_service.resolve_today_scoped(
+        db_session,
+        scope=conflict_engine.ConflictScope(
+            subject_id=owner_write.subject_id,
+            evaluation_date=today_local(),
+        ),
+    )
     assert items[0]["calories"] == 500
     assert items[0]["protein_g"] == 40
 
@@ -220,7 +234,9 @@ async def test_day_end_only_rule_skipped_by_default(db_session):
     assert day_end[0].message == "test day-end rule"
 
 
-async def test_glp1_low_intake_rules_skip_mid_day_but_fire_at_day_end(db_session):
+async def test_glp1_low_intake_rules_skip_mid_day_but_fire_at_day_end(
+    db_session, owner_write
+):
     """End-to-end against the real curated catalog — the exact bug reported:
     a small breakfast while on GLP-1 must not raise the low-calorie/protein
     warnings live, only once the day-end job re-checks with include_day_end."""
@@ -228,20 +244,43 @@ async def test_glp1_low_intake_rules_skip_mid_day_but_fire_at_day_end(db_session
 
     conflict_registrations.register_all_resolvers()
     await conflict_catalog.sync_catalog(db_session)
+    # Both halves of the rule belong to the same person, so both are written
+    # inside that scope — otherwise the scoped evaluation sees only one of them.
     await glp1_service.add_dose_phase(
-        db_session, start_date=today_local(), drug="semaglutide", dose_mg=1.0
+        db_session,
+        start_date=today_local(),
+        drug="semaglutide",
+        dose_mg=1.0,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await nutrition_service.log_meal(
-        db_session, on_date=today_local(), name="breakfast", calories=300, protein_g=20
+        db_session,
+        on_date=today_local(),
+        name="breakfast",
+        calories=300,
+        protein_g=20,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
 
-    live = await conflict_engine.evaluate(db_session, "nutrition")
+    # Nutrition is closed, so the day's totals are read inside the subject's
+    # scope rather than across the installation.
+    scope = conflict_engine.ConflictScope(
+        subject_id=owner_write.subject_id,
+        evaluation_date=today_local(),
+    )
+    live = await conflict_engine.evaluate_scoped(
+        db_session, scope=scope, domain="nutrition"
+    )
     assert not any("низкое" in v.message.lower() for v in live), (
         "a partial-day total must not raise the low-calorie/protein warnings"
     )
 
-    day_end = await conflict_engine.evaluate(db_session, "nutrition", include_day_end=True)
+    day_end = await conflict_engine.evaluate_scoped(
+        db_session, scope=scope, domain="nutrition", include_day_end=True
+    )
     messages = [v.message for v in day_end]
     assert any("Очень низкое потребление калорий" in m for m in messages)
     assert any("Низкое потребление белка" in m for m in messages)

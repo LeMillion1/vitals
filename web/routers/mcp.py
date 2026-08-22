@@ -1026,7 +1026,6 @@ async def get_nutrition_summary(
                 start,
                 cfg,
                 subject_id=scope.subject_id,
-                include_unowned_legacy=scope.include_legacy_unowned,
             )
     else:
         async with session_factory() as session:
@@ -1037,7 +1036,6 @@ async def get_nutrition_summary(
                 end,
                 cfg,
                 subject_id=scope.subject_id,
-                include_unowned_legacy=scope.include_legacy_unowned,
             )
 
 
@@ -1082,7 +1080,6 @@ async def update_meal(
             session,
             meal_id,
             identity=conflict_context.identity,
-            include_unowned_legacy=True,
             prepared_conflict_write=prepared,
         )
         if current is None:
@@ -1114,7 +1111,6 @@ async def update_meal(
                 on_date=final_date,
                 override=override,
                 identity=conflict_context.identity,
-                include_unowned_legacy=True,
                 prepared_conflict_write=prepared,
                 **merged,
             )
@@ -1148,7 +1144,6 @@ async def search_meals(
             start=start,
             end=end,
             subject_id=scope.subject_id,
-            include_unowned_legacy=scope.include_legacy_unowned,
             name_query=query,
             limit=limit,
         )
@@ -1859,7 +1854,6 @@ async def log_note(
                 record_id,
                 note=note,
                 identity=conflict_context.identity,
-                include_unowned_legacy=True,
                 prepared_conflict_write=prepared,
             )
             if row is None:
@@ -2032,9 +2026,6 @@ async def get_notes(
                     start=start,
                     end=end,
                     subject_id=nutrition_scope.subject_id,
-                    include_unowned_legacy=(
-                        nutrition_scope.include_legacy_unowned
-                    ),
                     has_note=True,
                     limit=limit,
                 )
@@ -2256,8 +2247,6 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                "include_unowned_legacy": True,
-                "include_legacy_unowned": True,
                 "prepared_conflict_write": prepared,
             }
         elif domain == "labs":

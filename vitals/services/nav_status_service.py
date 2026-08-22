@@ -56,7 +56,7 @@ def _enabled(em: dict[str, bool], key: str) -> bool:
     return bool(em.get(key, key in CORE_KEYS))
 
 
-async def _weight_row(session: AsyncSession) -> Optional[StatRow]:
+async def _weight_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     """Latest weight, and the week's direction beside it — the direction is the
     reason to look, not the number."""
     from vitals.services import weight_service
@@ -84,7 +84,7 @@ async def _weight_row(session: AsyncSession) -> Optional[StatRow]:
     )
 
 
-async def _recovery_row(session: AsyncSession) -> Optional[StatRow]:
+async def _recovery_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     """Last night's sleep, with training readiness as the note."""
     from vitals.services import garmin_service
 
@@ -105,12 +105,14 @@ async def _recovery_row(session: AsyncSession) -> Optional[StatRow]:
     return StatRow(key="recovery", value=f"{hours}:{minutes:02d}", sub=sub)
 
 
-async def _nutrition_row(session: AsyncSession) -> Optional[StatRow]:
+async def _nutrition_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     """Today's intake against the ceiling, protein beside it."""
     from vitals.config import load_config
     from vitals.services import nutrition_service
 
-    summary = await nutrition_service.daily_summary(session, today_local(), load_config())
+    summary = await nutrition_service.daily_summary(
+        session, today_local(), load_config(), subject_id=subject_id
+    )
     if not summary["meal_count"]:
         return None
     totals, goals = summary["totals"], summary["goals"]
@@ -125,7 +127,7 @@ async def _nutrition_row(session: AsyncSession) -> Optional[StatRow]:
     )
 
 
-async def _workouts_row(session: AsyncSession) -> Optional[StatRow]:
+async def _workouts_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     """When the last session was — the only workout fact worth a nav rail."""
     from vitals.services import hevy_service
 
@@ -151,16 +153,22 @@ _ROWS = (
 
 
 async def rail_stats(
-    session: AsyncSession, enabled: Optional[dict[str, bool]] = None
+    session: AsyncSession,
+    enabled: Optional[dict[str, bool]] = None,
+    *,
+    subject_id,
 ) -> list[StatRow]:
-    """Today's readout for every enabled domain, in display order. Never raises."""
+    """Today's readout for every enabled domain, in display order. Never raises.
+
+    The card is one person's day, so every row is built inside their scope.
+    """
     em = enabled or {}
     rows: list[StatRow] = []
     for module_key, build in _ROWS:
         if not _enabled(em, module_key):
             continue
         try:
-            row = await build(session)
+            row = await build(session, subject_id)
         except Exception:
             logger.warning("nav status: %s row failed", module_key, exc_info=True)
             continue

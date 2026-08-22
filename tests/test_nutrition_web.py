@@ -15,12 +15,19 @@ async def test_nutrition_dashboard_defaults_to_today(auth_client):
     assert r.status_code == 200
 
 
-async def test_nutrition_dashboard_by_date_shows_that_days_meals_only(auth_client, db_session):
+async def test_nutrition_dashboard_by_date_shows_that_days_meals_only(auth_client, db_session, owner_write):
     day_with_food = today_local() - timedelta(days=30)
     empty_day = today_local() - timedelta(days=31)
     await nutrition_service.log_meal(
-        db_session, on_date=day_with_food, name="Овсянка с бананом",
-        calories=420, protein_g=15, fat_g=8, carbs_g=70,
+        db_session,
+        on_date=day_with_food,
+        name="Овсянка с бананом",
+        calories=420,
+        protein_g=15,
+        fat_g=8,
+        carbs_g=70,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(day_with_food),
     )
     await db_session.commit()
 
@@ -43,7 +50,7 @@ async def test_nutrition_dashboard_invalid_date_rejected(auth_client):
     assert r.status_code == 422
 
 
-async def test_nutrition_dashboard_masthead_day_nav_and_empty_state(auth_client, db_session):
+async def test_nutrition_dashboard_masthead_day_nav_and_empty_state(auth_client, db_session, owner_write):
     """Masthead layout: prev/next day links, the ring/bars card, and the
     date-aware empty state."""
     day_with_food = today_local() - timedelta(days=30)
@@ -52,8 +59,15 @@ async def test_nutrition_dashboard_masthead_day_nav_and_empty_state(auth_client,
     empty_day = today_local() - timedelta(days=31)
 
     await nutrition_service.log_meal(
-        db_session, on_date=day_with_food, name="Гречка с курицей",
-        calories=520, protein_g=40, fat_g=12, carbs_g=55,
+        db_session,
+        on_date=day_with_food,
+        name="Гречка с курицей",
+        calories=520,
+        protein_g=40,
+        fat_g=12,
+        carbs_g=55,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(day_with_food),
     )
     await db_session.commit()
 
@@ -69,13 +83,20 @@ async def test_nutrition_dashboard_masthead_day_nav_and_empty_state(auth_client,
     assert "В этот день приёмов нет." in r_empty.text
 
 
-async def test_intake_uses_the_shared_meter_not_a_bespoke_ring(auth_client, db_session):
+async def test_intake_uses_the_shared_meter_not_a_bespoke_ring(auth_client, db_session, owner_write):
     """One progress language. Calories used to be an SVG donut and protein an
     inline bar right beside it — the same fact drawn as two different kinds of
     thing. Both are now .v-meter, and the ring is gone from the codebase."""
     await nutrition_service.log_meal(
-        db_session, on_date=today_local(), name="Овсянка",
-        calories=400, protein_g=20, fat_g=10, carbs_g=50,
+        db_session,
+        on_date=today_local(),
+        name="Овсянка",
+        calories=400,
+        protein_g=20,
+        fat_g=10,
+        carbs_g=50,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
 
