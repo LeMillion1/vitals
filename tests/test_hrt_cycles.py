@@ -189,7 +189,9 @@ async def test_resolve_active_includes_cycle_compound(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    items = await hrt_service.resolve_active(db_session)
+    items = await hrt_service.resolve_active_scoped(
+        db_session, scope=owner_write.context.scope
+    )
     keys = {i["compound_key"]: i for i in items}
     assert "trenbolone_acetate" in keys
     assert keys["trenbolone_acetate"]["compound_class"] == "trenbolone"

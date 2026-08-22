@@ -1272,52 +1272,6 @@ async def latest_per_marker(
     return list(seen.values())
 
 
-async def resolve_latest(session: AsyncSession) -> list[dict]:
-    """Conflict-engine resolver: the latest value+flag per marker as match items
-    — lets a lab_safety rule reference e.g. {"marker": "Калий", "value": {"$gt":
-    5.0}} against the current panel, not just a freshly logged result.
-
-    The engine's compatibility arm has no scope to hand down, so this reader
-    still spans the installation. It goes when that arm does; every other read
-    in this module already requires its subject. Fully unowned only: a row with
-    an actor but no subject is partial provenance and was never legacy data.
-    """
-    unowned = and_(
-        LabResult.subject_id.is_(None),
-        LabResult.actor_user_id.is_(None),
-    )
-    newest = (
-        select(
-            LabResult.marker.label("marker"),
-            func.max(LabResult.date).label("date"),
-        )
-        .where(unowned)
-        .group_by(LabResult.marker)
-        .subquery()
-    )
-    rows = list(
-        await session.scalars(
-            select(LabResult)
-            .join(
-                newest,
-                and_(
-                    LabResult.marker == newest.c.marker,
-                    LabResult.date == newest.c.date,
-                ),
-            )
-            .where(unowned)
-            .order_by(LabResult.marker, LabResult.id.desc())
-        )
-    )
-    latest: dict[str, LabResult] = {}
-    for row in rows:
-        latest.setdefault(row.marker, row)
-    return [
-        {"marker": r.marker, "value": r.value, "flag": r.flag}
-        for r in latest.values()
-    ]
-
-
 async def resolve_latest_scoped(
     session: AsyncSession,
     *,

@@ -370,33 +370,6 @@ async def active_dose_phase(
     return match
 
 
-async def resolve_active(session: AsyncSession) -> list[dict]:
-    """Conflict-engine resolver: the current dose phase (if any) as a match item
-    — lets a rule reference "on drug X at dose >= Y" against the ongoing phase,
-    not just a one-off injection being logged right now.
-
-    The engine's compatibility arm has no scope to hand down, so this reader
-    still spans the installation. It goes when that arm does; every other read
-    in this module already requires its subject. Fully unowned only: a row with
-    an actor but no subject is partial provenance and was never legacy data.
-    """
-    on_date = today_local()
-    phase = await session.scalar(
-        select(DosePhase)
-        .where(
-            DosePhase.domain == DOMAIN,
-            DosePhase.subject_id.is_(None),
-            DosePhase.actor_user_id.is_(None),
-            DosePhase.start_date <= on_date,
-            or_(DosePhase.end_date.is_(None), DosePhase.end_date >= on_date),
-        )
-        .order_by(DosePhase.start_date.desc(), DosePhase.id.desc())
-    )
-    if phase is None:
-        return []
-    return [{"drug": phase.drug, "dose_mg": phase.dose_mg, "active": True}]
-
-
 async def resolve_active_scoped(
     session: AsyncSession,
     *,

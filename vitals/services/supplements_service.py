@@ -369,40 +369,6 @@ async def delete_supplement(
     return True
 
 
-async def resolve_active(
-    session: AsyncSession,
-    *,
-    _include_conflict_entity_key: bool = False,
-) -> list[dict]:
-    """Conflict-engine resolver: the catalog as match items (key + active flag +
-    parsed timing slot, used by timing_separation rules).
-
-    The engine's compatibility arm has no scope to hand down, so this reader
-    still spans the installation. It goes when that arm does; every other read
-    in this module already requires its subject. Fully unowned only: a row with
-    an actor but no subject is partial provenance and was never legacy data.
-    """
-    stmt = select(Supplement).where(
-        Supplement.subject_id.is_(None),
-        Supplement.actor_user_id.is_(None),
-    )
-    result = await session.execute(stmt)
-    return [
-        {
-            **(
-                {conflict_engine.CONFLICT_ENTITY_KEY: str(s.id)}
-                if _include_conflict_entity_key
-                else {}
-            ),
-            "key": s.key,
-            "active": s.active,
-            "name": s.name,
-            "timing_slot": _parse_slot(s.timing),
-        }
-        for s in result.scalars().all()
-    ]
-
-
 async def resolve_active_scoped(
     session: AsyncSession,
     *,

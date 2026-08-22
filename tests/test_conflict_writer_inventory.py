@@ -1,9 +1,10 @@
-"""Static migration gate for the remaining singleton conflict writers.
+"""Static gate keeping the singleton conflict writers from coming back.
 
-The scoped conflict reader is already available, but write callers still use the
-legacy singleton adapter.  Keep that debt finite while the callers are migrated:
-new write sites, aliases, and direct imports must fail this inventory rather than
-quietly bypassing it.
+``enforce`` and ``enforce_day_end`` no longer exist: every write path hands the
+engine a subject and the conflict decision together.  This inventory outlived
+the migration it was written for and now guards the result — a reintroduced
+spelling, an alias, or a direct import fails here rather than quietly restoring
+an unscoped write.
 """
 
 from __future__ import annotations
@@ -437,6 +438,23 @@ def test_legacy_conflict_writer_inventory_is_exact() -> None:
         )
         == 0
     )
+
+
+def test_the_unscoped_engine_entry_points_are_gone() -> None:
+    """The inventory counts call sites; this counts the functions themselves.
+
+    A zero-call-site inventory would still pass if somebody re-added ``enforce``
+    and left it unused, and the next caller would find it waiting.
+    """
+
+    from vitals.services import conflict_engine
+
+    for name in sorted(_LEGACY_WRITER_APIS | {"evaluate"}):
+        assert not hasattr(conflict_engine, name), (
+            f"conflict_engine.{name} is back. Every evaluation is scoped: use "
+            "evaluate_scoped/enforce_scoped, or enforce_prepared when the write "
+            "path already holds a prepared capability."
+        )
 
 
 def test_legacy_conflict_writers_have_no_alias_or_direct_import_bypass() -> None:

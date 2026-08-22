@@ -10,6 +10,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- **The conflict engine has no unscoped path left.** The seven
+  `legacy_resolver=` registrations are gone, and with them the engine's second
+  resolver arm, the `evaluate`/`enforce`/`enforce_day_end` entry points, and the
+  seven unscoped domain readers they existed to call. A rule is now evaluated
+  for one person or not at all.
+- `register_domain_resolver` refuses a reader that does not take a keyword-only
+  `scope` with no default. A resolver that would happily answer without a
+  subject can no longer be registered, so the arm cannot grow back by accident.
+- Unstamped rows stay reachable through `ConflictScope`'s explicit
+  `FULLY_UNOWNED` bridge, which needs a subject to bridge *from* and which
+  `evaluate_scoped` proves is still the installation's only one. That is the
+  backfill's bridge and outlives PR-04.
+- The writer inventory now asserts the functions are absent, not merely
+  uncalled: a zero-call-site count would still pass with `enforce` sitting there
+  waiting for its next caller.
+
 - **Every legacy scope bridge is closed.** The registry that started PR-04 at
   168 bridged functions is empty, and its contract test now asserts equality
   rather than a bound: no service can accept an omittable subject again without

@@ -4,8 +4,9 @@
 evaluates the active rules against proposed state and the current state of other
 domains, producing :class:`Violation`s, and enforces the override flow:
 
-    1. A mutating service calls :func:`enforce(session, domain, proposed_state,
-       override=...)` before it persists.
+    1. A mutating service calls :func:`enforce_prepared` (or
+       :func:`enforce_scoped`) before it persists, handing over the subject and
+       the conflict decision together.
     2. Any ``block`` violation with ``override=False`` → raises
        :class:`ConflictBlocked` (the router turns this into HTTP 409 + the
        violations payload; the UI offers "Save anyway (Override)").
@@ -14,10 +15,18 @@ domains, producing :class:`Violation`s, and enforces the override flow:
     4. ``soft_warn`` / ``timing_separation`` / ``info`` violations never block —
        they're written as passive alert rows.
 
+Every evaluation is scoped. There is no longer an unscoped ``enforce`` /
+``evaluate`` pair, and no second, unscoped resolver arm: a rule is evaluated for
+one person or not at all. Rows the ownership backfill has not stamped yet are
+still reachable, but only through :class:`ConflictScope`'s explicit
+``FULLY_UNOWNED`` bridge — which needs a subject to bridge *from*, and which
+:func:`evaluate_scoped` independently proves is still the installation's only
+one.
+
 How a domain's *current* state is known is module-specific, so modules register a
-resolver via :func:`register_domain_resolver`. The foundation ships only the
-framework + a subset-equality matcher; Supplements / Genetics / Skincare register
-real resolvers and seed real rules.
+resolver via :func:`register_domain_resolver`. A resolver proves it is scoped by
+taking a keyword-only ``scope`` with no default, so a reader that would answer
+without one cannot be registered.
 """
 from __future__ import annotations
 
@@ -203,13 +212,11 @@ class DomainResolver(Protocol):
     ) -> Sequence[Mapping[str, Any]]: ...
 
 
-LegacyDomainResolver = Callable[[AsyncSession], Awaitable[Sequence[dict]]]
 
 
 @dataclass(frozen=True, slots=True)
 class _ResolverRegistration:
-    scoped: DomainResolver | None
-    legacy: LegacyDomainResolver | None = None
+    scoped: DomainResolver
 
 
 _resolvers: dict[str, _ResolverRegistration] = {}
@@ -219,37 +226,26 @@ class ConflictResolverUnavailable(RuntimeError):
     """An active scoped rule references a domain without a scoped resolver."""
 
 
-def register_domain_resolver(
-    domain: str,
-    resolver: DomainResolver | LegacyDomainResolver,
-    *,
-    legacy_resolver: LegacyDomainResolver | None = None,
-) -> None:
-    """Register scoped and transitional legacy readers for one domain.
+def register_domain_resolver(domain: str, resolver: DomainResolver) -> None:
+    """Register one domain's subject-scoped reader.
 
-    The primary resolver is always subject-scoped. ``legacy_resolver`` exists
-    only so unchanged write paths can keep their pre-commercial behaviour while
-    Stage 1 migrates read boundaries; no new read caller may use it.
+    Every resolver is scoped; there is no second, unscoped arm any more. A
+    resolver proves it is scoped by taking a keyword-only ``scope`` with no
+    default, so a function that would happily answer without one cannot be
+    registered at all.
     """
 
-    # Pre-Stage-1 tests and write-only extensions registered ``resolver(session)``
-    # positionally. Keep those functions in the explicitly legacy arm; a real
-    # scoped resolver must expose the keyword-only ``scope`` parameter.
     scope_parameter = inspect.signature(resolver).parameters.get("scope")
-    if scope_parameter is not None and (
+    if scope_parameter is None:
+        raise TypeError(
+            "a conflict resolver must accept the scope it answers for"
+        )
+    if (
         scope_parameter.kind is not inspect.Parameter.KEYWORD_ONLY
         or scope_parameter.default is not inspect.Parameter.empty
     ):
         raise TypeError("a scoped conflict resolver requires keyword-only scope")
-    has_scope = scope_parameter is not None
-    _resolvers[domain] = _ResolverRegistration(
-        scoped=resolver if has_scope else None,
-        legacy=(
-            legacy_resolver
-            if legacy_resolver is not None
-            else (resolver if not has_scope else None)
-        ),
-    )
+    _resolvers[domain] = _ResolverRegistration(scoped=resolver)
 
 
 def clear_domain_resolvers() -> None:
@@ -415,7 +411,7 @@ async def _domain_items(
     changed_domain: str,
     proposed_items: list[dict],
     *,
-    scope: ConflictScope | None,
+    scope: ConflictScope,
     replace_entity_key: str | None = None,
 ) -> list[dict]:
     """Current items of ``domain``, plus the proposed items when ``domain`` is the
@@ -423,16 +419,11 @@ async def _domain_items(
     the same domain, e.g. retinoid + peel the same evening)."""
     items: list[dict] = []
     registration = _resolvers.get(domain)
-    if scope is not None:
-        if registration is None or registration.scoped is None:
-            raise ConflictResolverUnavailable(
-                f"no scoped conflict resolver is registered for domain {domain!r}"
-            )
-        items.extend(await registration.scoped(session, scope=scope))
-    elif registration is not None and registration.legacy is not None:
-        # Transitional write-path compatibility. Scoped readers never enter this
-        # arm; it is retired with the remaining legacy ``enforce`` callers.
-        items.extend(await registration.legacy(session))
+    if registration is None:
+        raise ConflictResolverUnavailable(
+            f"no scoped conflict resolver is registered for domain {domain!r}"
+        )
+    items.extend(await registration.scoped(session, scope=scope))
     if domain == changed_domain and replace_entity_key is not None:
         items = [
             item
@@ -936,7 +927,7 @@ async def _evaluate(
     proposed_state: Any = None,
     *,
     include_day_end: bool = False,
-    scope: ConflictScope | None,
+    scope: ConflictScope,
     replace_entity_key: str | None = None,
 ) -> list[Violation]:
     """Evaluate active rules touching ``domain`` against ``proposed_state`` and the
@@ -953,20 +944,11 @@ async def _evaluate(
     """
     proposed_items = _normalize_proposed(proposed_state)
 
-    if scope is None:
-        result = await session.execute(
-            select(ConflictRule).where(
-                ConflictRule.active.is_(True),
-                (ConflictRule.domain_a == domain) | (ConflictRule.domain_b == domain),
-            )
-        )
-        rules = result.scalars().all()
-    else:
-        rules = await _load_scoped_rules_unchecked(
-            session,
-            scope=scope,
-            domain=domain,
-        )
+    rules = await _load_scoped_rules_unchecked(
+        session,
+        scope=scope,
+        domain=domain,
+    )
 
     violations: list[Violation] = []
     item_cache: dict[str, list[dict]] = {}
@@ -1129,30 +1111,6 @@ async def evaluate_legacy_single_subject(
         domain=domain,
         proposed_state=proposed_state,
         include_day_end=include_day_end,
-    )
-
-
-async def evaluate(
-    session: AsyncSession,
-    domain: str,
-    proposed_state: Any = None,
-    *,
-    include_day_end: bool = False,
-) -> list[Violation]:
-    """Deprecated unscoped compatibility for unchanged Stage-1 write paths.
-
-    New read callers must use :func:`evaluate_scoped` or the explicit exact-one
-    adapter. This function remains only because ``enforce`` and its domain
-    writers are deliberately outside this bounded read slice.
-    """
-
-    return await _evaluate(
-        session,
-        domain,
-        proposed_state,
-        include_day_end=include_day_end,
-        scope=None,
-        replace_entity_key=None,
     )
 
 
@@ -1376,91 +1334,6 @@ async def reconcile_day_end_scoped(
             alert_key=planned_key,
             entity_ref=entity_ref,
             legacy_bridge=alert_bridge,
-        )
-    return violations
-
-
-async def enforce(
-    session: AsyncSession,
-    domain: str,
-    proposed_state: Any = None,
-    *,
-    override: bool = False,
-    entity_ref: str = "",
-    include_day_end: bool = False,
-) -> list[Violation]:
-    """Evaluate + apply the override flow.
-
-    Raises :class:`ConflictBlocked` when a ``block`` violation fires without
-    ``override``. Otherwise writes an alert row per violation (stamping
-    ``override_at`` on overridden blocks) and returns all violations so the caller
-    can surface the non-blocking ones. See :func:`evaluate` for ``include_day_end``.
-    """
-    violations = await evaluate(session, domain, proposed_state, include_day_end=include_day_end)
-    blocking = [v for v in violations if v.is_blocking]
-
-    if blocking and not override:
-        raise ConflictBlocked(violations)
-
-    for v in violations:
-        overridden = v.is_blocking and override
-        await alerts_service.raise_alert(
-            session,
-            domain=domain,
-            severity=v.severity,
-            message=v.message,
-            alert_key=f"conflict:{v.rule_id}",
-            entity_ref=entity_ref,
-            overridden=overridden,
-        )
-    return violations
-
-
-async def enforce_day_end(
-    session: AsyncSession, domain: str, *, entity_ref: str = ""
-) -> list[Violation]:
-    """Like :func:`enforce`, but for ``day_end_only`` rules specifically —
-    call once daily (see ``nutrition_service.day_end_job``), never from a live
-    save path.
-
-    Unlike ``enforce()``, this also *resolves* the alert for any day_end_only
-    rule touching ``domain`` that is **not** currently violated. Plain
-    ``enforce()`` only ever raises — it has no notion of a rule "clearing" —
-    which is fine for rules re-evaluated on every save (an unrelated later
-    save naturally re-raises or leaves it alone), but wrong here: each day's
-    check uses a fresh ``entity_ref`` (today's date), so a rule that stops
-    matching would otherwise leave yesterday's alert active forever, needing
-    a manual dismiss even after the day's numbers are actually fine.
-    """
-    violations = await evaluate(session, domain, include_day_end=True)
-    fired = {v.rule_id: v for v in violations if (v.params or {}).get("day_end_only")}
-
-    result = await session.execute(
-        select(ConflictRule).where(
-            ConflictRule.active.is_(True),
-            (ConflictRule.domain_a == domain) | (ConflictRule.domain_b == domain),
-        )
-    )
-    day_end_rules = [r for r in result.scalars().all() if (r.params or {}).get("day_end_only")]
-
-    for rule in day_end_rules:
-        key = f"conflict:{rule.id}"
-        v = fired.get(rule.id)
-        if v is None:
-            # No longer violated — clear whatever entity_ref it was last
-            # raised under (could be an earlier day), not just today's.
-            await alerts_service.resolve_superseded(session, alert_key=key, keep_entity=None)
-            continue
-        # Still/newly violated — supersede a stale earlier-day row, then
-        # raise (or refresh) today's.
-        await alerts_service.resolve_superseded(session, alert_key=key, keep_entity=entity_ref)
-        await alerts_service.raise_alert(
-            session,
-            domain=domain,
-            severity=v.severity,
-            message=v.message,
-            alert_key=key,
-            entity_ref=entity_ref,
         )
     return violations
 

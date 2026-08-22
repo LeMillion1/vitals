@@ -625,33 +625,6 @@ async def test_legacy_adapter_accepts_only_fully_unowned_facts(
     assert [violation.message for violation in fully_unowned] == ["scope probe"]
 
 
-async def test_legacy_genetics_resolver_rejects_partial_fact(
-    db_session,
-    legacy_owner_roots,
-):
-    db_session.add(
-        _subject_probe_rule(
-            fact_domain=Domain.GENETICS.value,
-            subject_id=None,
-        )
-    )
-    await _seed_fact(
-        db_session,
-        domain=Domain.GENETICS.value,
-        subject_id=None,
-        actor_user_id=legacy_owner_roots.user_id,
-    )
-    await db_session.commit()
-    conflict_registrations.register_all_resolvers()
-
-    with pytest.raises(genetics_service.GeneticsOwnershipError, match="partial"):
-        await conflict_engine.evaluate(
-            db_session,
-            domain=PROBE_DOMAIN,
-            proposed_state={"probe": True},
-        )
-
-
 async def test_legacy_adapter_closes_when_second_subject_exists(
     db_session,
     legacy_owner_roots,

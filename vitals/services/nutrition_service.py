@@ -423,28 +423,6 @@ def macro_energy_shares(totals: dict[str, float]) -> dict[str, float]:
 
 # ── Conflict-engine resolver ──────────────────────────────────────────────────
 
-async def resolve_today(session: AsyncSession) -> list[dict]:
-    """Conflict-engine resolver: today's macro totals as a single match item —
-    lets a rule reference e.g. {"calories": {"$gt": 4000}} against the running
-    daily total, not just the one meal being logged right now.
-
-    The engine's compatibility arm has no scope to hand down, so this reader
-    still spans the installation. It goes when that arm does; every other read
-    in this module already requires its subject. Fully unowned only: a row with
-    an actor but no subject is partial provenance and was never legacy data.
-    """
-    meals = list(
-        await session.scalars(
-            select(MealLog).where(
-                MealLog.date == today_local(),
-                MealLog.subject_id.is_(None),
-                MealLog.actor_user_id.is_(None),
-            )
-        )
-    )
-    return [_sum_macros(meals)]
-
-
 async def resolve_today_scoped(
     session: AsyncSession,
     *,

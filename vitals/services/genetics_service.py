@@ -1322,19 +1322,6 @@ async def delete_variant(
     return True
 
 
-async def resolve_variants(session: AsyncSession) -> list[dict]:
-    # Legacy writers still call the unscoped conflict API during the staged
-    # cutover. Corrupt half-owned rows must stop those health-safety checks,
-    # never disappear from them or be treated as valid global facts.
-    await _reject_partial_legacy_rows(session)
-    result = await session.execute(select(GeneticVariant))
-    return [
-        {"marker": row.marker, "gene": row.gene, "genotype": row.genotype}
-        for row in result.scalars().all()
-        if row.marker
-    ]
-
-
 async def resolve_variants_scoped(
     session: AsyncSession,
     *,

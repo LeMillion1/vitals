@@ -322,7 +322,9 @@ async def test_resolve_active_returns_recent_compound_class(db_session, owner_wr
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    items = await hrt_service.resolve_active(db_session)
+    items = await hrt_service.resolve_active_scoped(
+        db_session, scope=owner_write.context.scope
+    )
     keys = {i["compound_key"]: i for i in items}
     assert "oxandrolone" in keys
     assert keys["oxandrolone"]["compound_class"] == "oral_aas"
@@ -338,7 +340,9 @@ async def test_resolve_active_ignores_old_doses(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(date(2020, 1, 1)),
     )
     await db_session.commit()
-    assert await hrt_service.resolve_active(db_session) == []
+    assert await hrt_service.resolve_active_scoped(
+        db_session, scope=owner_write.context.scope
+    ) == []
 
 
 # ── Catalog validation (pure, no DB) ──────────────────────────────────────────
@@ -571,7 +575,18 @@ async def test_side_effect_list_and_delete(db_session, owner_write):
     ) == []
 
 
-async def test_resolve_active_dedupes_multiple_doses(db_session, owner_write):
+async def test_resolve_active_reports_one_entity_per_dose_of_one_compound(
+    db_session, owner_write
+):
+    """Three doses of one compound are three entities, one protocol.
+
+    The retired unscoped resolver collapsed them into a single item keyed by
+    compound. The scoped one keeps a distinct entity key per dose, which is what
+    lets an update replace exactly one row instead of re-evaluating the whole
+    domain — and the rule side is unaffected, because a rule that names the
+    compound matches whether it sees the compound once or three times.
+    """
+
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()
     for _ in range(3):
@@ -582,9 +597,13 @@ async def test_resolve_active_dedupes_multiple_doses(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(today_local()),
     )
     await db_session.commit()
-    items = await hrt_service.resolve_active(db_session)
+    items = await hrt_service.resolve_active_scoped(
+        db_session, scope=owner_write.context.scope
+    )
     oxa = [i for i in items if i["compound_key"] == "oxandrolone"]
-    assert len(oxa) == 1
+    assert len(oxa) == 3
+    assert {i["compound_class"] for i in oxa} == {"oral_aas"}
+    assert len({i[conflict_engine.CONFLICT_ENTITY_KEY] for i in oxa}) == 3
 
 
 # ── Dashboard route ───────────────────────────────────────────────────────────

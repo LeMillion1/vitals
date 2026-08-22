@@ -5,6 +5,13 @@ active state — that's module-specific, so modules register a resolver. This
 module gathers those registrations behind :func:`register_all_resolvers`, invoked
 once from the web lifespan (and by tests that exercise cross-domain rules).
 
+Every resolver here is subject-scoped. Seven domains used to register a second,
+unscoped reader alongside it, so that a write path arriving without a subject
+still got an answer — assembled from every row in the installation. That is
+gone: a rule is evaluated for one person or not at all. Rows the backfill has
+not stamped yet are still reachable, but only through the scope's explicit
+``FULLY_UNOWNED`` bridge, which requires a subject to bridge *from*.
+
 Kept out of service-import time so importing a service for a unit test never
 mutates the global resolver registry (the test fixture clears it per test).
 """
@@ -31,37 +38,30 @@ def register_all_resolvers() -> None:
     conflict_engine.register_domain_resolver(
         Domain.SUPPLEMENTS.value,
         supplements_service.resolve_active_scoped,
-        legacy_resolver=supplements_service.resolve_active,
     )
     conflict_engine.register_domain_resolver(
         Domain.GENETICS.value,
         genetics_service.resolve_variants_scoped,
-        legacy_resolver=genetics_service.resolve_variants,
     )
     conflict_engine.register_domain_resolver(
         Domain.SKINCARE.value,
         skincare_service.resolve_today_scoped,
-        legacy_resolver=skincare_service.resolve_today,
     )
     conflict_engine.register_domain_resolver(
         Domain.GLP1.value,
         glp1_service.resolve_active_scoped,
-        legacy_resolver=glp1_service.resolve_active,
     )
     conflict_engine.register_domain_resolver(
         Domain.LABS.value,
         labs_service.resolve_latest_scoped,
-        legacy_resolver=labs_service.resolve_latest,
     )
     conflict_engine.register_domain_resolver(
         Domain.NUTRITION.value,
         nutrition_service.resolve_today_scoped,
-        legacy_resolver=nutrition_service.resolve_today,
     )
     conflict_engine.register_domain_resolver(
         Domain.HRT.value,
         hrt_service.resolve_active_scoped,
-        legacy_resolver=hrt_service.resolve_active,
     )
     conflict_engine.register_domain_resolver(
         Domain.WEIGHT.value,

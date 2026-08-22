@@ -151,10 +151,12 @@ def test_nested_any_of_all():
 
 # ── Resolver shapes (Phase 2) — DB-touching, default sqlite is fine here ────
 
-async def test_glp1_resolve_active_empty_without_phase(db_session):
+async def test_glp1_resolve_active_empty_without_phase(db_session, owner_write):
     from vitals.services import glp1_service
 
-    assert await glp1_service.resolve_active(db_session) == []
+    assert await glp1_service.resolve_active_scoped(
+        db_session, scope=owner_write.context.scope
+    ) == []
 
 
 async def test_glp1_resolve_active_shape(db_session, owner_write):

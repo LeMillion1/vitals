@@ -350,37 +350,6 @@ async def delete_observation(
 
 
 # ── Conflict-engine resolver ──────────────────────────────────────────────────
-async def resolve_today(session: AsyncSession) -> list[dict]:
-    """Today's checklist flags as a single match item (empty list if no log yet).
-
-    The conflict engine's compatibility arm has no scope to hand down, so this
-    reader still spans the installation. It goes when that arm does; every other
-    read in this module already requires its subject.
-    """
-
-    on_date = today_local()
-    # Fully unowned only: a row with an actor but no subject is partial
-    # provenance and was never legacy-owned data.
-    row = await session.scalar(
-        select(SkincareLog)
-        .where(
-            SkincareLog.date == on_date,
-            SkincareLog.subject_id.is_(None),
-            SkincareLog.actor_user_id.is_(None),
-        )
-        .order_by(SkincareLog.id)
-        .limit(1)
-    )
-    if row is None:
-        return []
-    return [
-        {
-            conflict_engine.CONFLICT_ENTITY_KEY: _day_entity_key(on_date),
-            **{flag: getattr(row, flag) for flag in _FLAGS},
-        }
-    ]
-
-
 async def resolve_today_scoped(
     session: AsyncSession,
     *,

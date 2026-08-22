@@ -19,7 +19,9 @@ async def test_add_and_resolver(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    items = await genetics_service.resolve_variants(db_session)
+    items = await genetics_service.resolve_variants_scoped(
+        db_session, scope=owner_write.context.scope
+    )
     assert {"marker": "hemochromatosis_carrier", "gene": "HFE", "genotype": None} in items
 
 
@@ -29,7 +31,9 @@ async def test_resolver_skips_markerless(db_session, owner_write):
         prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    items = await genetics_service.resolve_variants(db_session)
+    items = await genetics_service.resolve_variants_scoped(
+        db_session, scope=owner_write.context.scope
+    )
     assert items == []
 
 
