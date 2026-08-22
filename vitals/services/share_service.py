@@ -816,9 +816,13 @@ async def _hrt_block(
     from vitals.services import hrt_service
 
     hrt = ctx.get("hrt") or {}
-    doses = await hrt_service.list_doses(session, start=start, end=end)
+    doses = await hrt_service.list_doses(
+        session, start=start, end=end, subject_id=subject_id
+    )
     effects = [
-        e for e in await hrt_service.list_side_effects(session) if start <= e.date <= end
+        e
+        for e in await hrt_service.list_side_effects(session, subject_id=subject_id)
+        if start <= e.date <= end
     ]
     cycle = hrt.get("cycle")
     if not cycle and not doses and not effects:
@@ -826,7 +830,9 @@ async def _hrt_block(
 
     # A doctor gets the molecule's name, not the catalog slug ("test_enanthate").
     lang = current_lang.get()
-    compounds = await hrt_service.list_compounds(session, active_only=False)
+    compounds = await hrt_service.list_compounds(
+        session, subject_id=subject_id, active_only=False
+    )
     names = {
         c.key: ((c.name_ru or c.name) if lang == "ru" else (c.name or c.name_ru))
         for c in compounds

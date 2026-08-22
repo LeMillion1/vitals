@@ -1228,6 +1228,7 @@ asserted now runs against the context and the header directly.
 | milestones | closed — same, plus progress refuses another subject's goal |
 | skincare | closed — routine, observations and product shelf all scoped |
 | genetics | closed — including the bare-key read; raw provenance proved on both the owned path and the resolver's bridge |
+| HRT (doses, cycles, templates) | closed as one — a cycle read is a graph read; the catalog's `active` flag stays frozen, not scoped |
 | everything else | still bridged; see `vitals/legacy_scope.py` |
 
 The counter moves only in the registry, and the contract test refuses to let it

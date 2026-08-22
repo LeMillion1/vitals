@@ -10,6 +10,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the three HRT domains together — doses and side effects, cycles and
+  their items, and the templates behind them — because a cycle read is a graph
+  read and closing one without the others would have left the reader half
+  scoped. Forty-nine bridges across the three, and two more legacy `enforce`
+  call sites with them. A cycle whose items are not yet owned is now refused
+  rather than half-read: the scoped reader reports the graph instead of
+  returning the parent and dropping the children.
+- Left the HRT catalog's `active` flag frozen rather than scoping it. It is a
+  per-person preference stored on a global catalog row, so scoping it needs a
+  reviewed SubjectSetting mapping; passing a subject is refused rather than
+  silently writing one person's choice onto everybody's catalog. That refusal
+  is the one deliberate exception in the module and is documented as such.
 - Closed the genetics domain, the first one whose facts carry raw provenance.
   Every read takes the subject, every write takes the subject with its conflict
   decision, and `get_variant` no longer falls back to a bare primary-key fetch —

@@ -99,29 +99,7 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'update_injection_note',
             }
         ),
-        'vitals.services.hrt_cycle_service': frozenset(
-            {
-                '_actual_contributions',
-                '_lock_cycle_graph',
-                '_lock_cycle_graph_for_item',
-                '_planned_contributions',
-                '_require_scoped_prepared_write',
-                '_resolve_scoped_compound',
-                '_row_in_scope',
-                '_subject_scope',
-                '_validate_cycle_graph',
-                'active_cycle',
-                'add_cycle',
-                'add_cycle_item',
-                'close_cycle',
-                'delete_cycle',
-                'delete_cycle_item',
-                'list_cycles',
-                'planned_administrations',
-                'release_series',
-                'update_cycle_item',
-            }
-        ),
+
         'vitals.services.hrt_reminders': frozenset(
             {
                 'refresh_all',
@@ -132,42 +110,10 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
         ),
         'vitals.services.hrt_service': frozenset(
             {
-                '_owned_row_for_update',
-                '_require_legacy_bridge',
-                '_subject_scope',
-                'delete_dose',
-                'delete_side_effect',
-                'get_compound',
-                'get_dose_for_update',
-                'last_dose',
-                'list_compounds',
-                'list_doses',
-                'list_side_effects',
-                'log_dose',
-                'log_side_effect',
                 'set_compound_active',
-                'update_dose',
-                'update_side_effect',
             }
         ),
-        'vitals.services.hrt_template_service': frozenset(
-            {
-                '_lock_template_graph',
-                '_require_scoped_prepared_write',
-                '_row_in_scope',
-                '_subject_scope',
-                '_validate_export_scope',
-                '_validate_template_graph',
-                'create_cycle_from_template',
-                'delete_template',
-                'export_template',
-                'export_template_json',
-                'get_template',
-                'import_template',
-                'list_templates',
-                'save_cycle_as_template',
-            }
-        ),
+
         'vitals.services.labs_service': frozenset(
             {
                 '_ensure_marker',

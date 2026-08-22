@@ -119,56 +119,6 @@ async def test_cycle_roots_children_reads_and_auto_close_are_exact_subject(db_se
     ) is False
 
 
-async def test_fully_null_cycle_graph_adopts_only_subject_and_partial_root_fails(db_session):
-    identity = await _identity(db_session, "hrt-cycle-legacy")
-    legacy = HrtCycle(
-        domain=DOMAIN,
-        source=Source.MCP.value,
-        kind="course",
-        start_date=ON_DATE,
-    )
-    partial = HrtCycle(
-        actor_user_id=identity.actor_user_id,
-        domain=DOMAIN,
-        source=Source.MANUAL.value,
-        kind="course",
-        start_date=ON_DATE - timedelta(days=5),
-    )
-    db_session.add_all([legacy, partial])
-    await db_session.flush()
-    legacy_item = HrtCycleItem(
-        cycle=legacy,
-        compound_key="legacy-free-text",
-        unit="mg",
-        schedule=SCHEDULE,
-    )
-    db_session.add(legacy_item)
-    await db_session.flush()
-
-    prepared = await _prepared(db_session, identity, legacy=True)
-    adopted = await hrt_cycle_service.close_cycle(
-        db_session,
-        legacy.id,
-        end_date=ON_DATE,
-        identity=identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=prepared,
-    )
-    assert adopted is legacy
-    assert (legacy.subject_id, legacy.actor_user_id, legacy.source) == (
-        identity.subject_id,
-        None,
-        Source.MCP.value,
-    )
-    assert legacy_item.subject_id == identity.subject_id
-    assert await hrt_cycle_service.close_cycle(
-        db_session,
-        partial.id,
-        end_date=ON_DATE,
-        identity=identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=prepared,
-    ) is None
 
 
 async def test_invalid_prepared_capability_is_rejected_before_cycle_target_use(db_session):
@@ -358,5 +308,4 @@ async def test_template_graph_rejects_foreign_child_and_partial_legacy_parent(db
         db_session,
         partial.id,
         subject_id=first.subject_id,
-        include_legacy_unowned=True,
     ) is None

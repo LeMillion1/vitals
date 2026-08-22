@@ -115,7 +115,6 @@ async def hrt_dashboard(
     )
     scope_kwargs = {
         "subject_id": context.identity.subject_id,
-        "include_legacy_unowned": True,
     }
     compounds = await hrt_service.list_compounds(
         db,
@@ -278,7 +277,6 @@ async def add_dose(
             await hrt_service.update_dose(
                 db,
                 id,
-                include_legacy_unowned=True,
                 **kwargs,
             )
         else:
@@ -331,7 +329,6 @@ async def add_cycle(
             note=note,
             source=Source.MANUAL.value,
             identity=context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await db.commit()
@@ -385,7 +382,7 @@ async def add_cycle_item(
         await hrt_cycle_service.add_cycle_item(
             db, cycle_id, compound_key=compound_key, schedule=[segment],
             unit=unit or None, start_offset_days=offset_days, note=note,
-            identity=context.identity, include_legacy_unowned=True,
+            identity=context.identity,
             prepared_conflict_write=prepared,
         )
         await db.commit()
@@ -417,7 +414,6 @@ async def close_cycle(
             cycle_id,
             end_date=end,
             identity=context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await db.commit()
@@ -445,7 +441,6 @@ async def delete_cycle(
         db,
         cycle_id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -494,7 +489,6 @@ async def edit_cycle_item(
             schedule=schedule,
             start_offset_days=offset,
             identity=context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         if item is None:
@@ -526,7 +520,6 @@ async def delete_cycle_item(
         db,
         item_id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -553,7 +546,6 @@ async def save_cycle_template(
             name=name,
             source=Source.MANUAL.value,
             identity=context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await db.commit()
@@ -588,7 +580,6 @@ async def create_cycle_from_template(
             name=name,
             source=Source.MANUAL.value,
             identity=context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await db.commit()
@@ -616,7 +607,6 @@ async def delete_template(
         db,
         template_id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -636,7 +626,6 @@ async def export_template(
     )
     scope_kwargs = {
         "subject_id": ownership.subject_id,
-        "include_legacy_unowned": True,
     }
     template = await hrt_template_service.get_template(
         db,
@@ -675,7 +664,6 @@ async def import_template(
             payload,
             source=Source.MANUAL.value,
             identity=context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         await db.commit()
@@ -703,7 +691,6 @@ async def release_json(
         db, start=today - timedelta(days=days_back),
         end=today + timedelta(days=days_forward),
         subject_id=ownership.subject_id,
-        include_legacy_unowned=True,
     )
     return JSONResponse(content={"series": series, "today": today.isoformat()})
 
@@ -761,7 +748,6 @@ async def delete_dose(
         db,
         id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()
@@ -784,7 +770,6 @@ async def delete_side_effect(
         db,
         id,
         identity=context.identity,
-        include_legacy_unowned=True,
         prepared_conflict_write=prepared,
     )
     await db.commit()

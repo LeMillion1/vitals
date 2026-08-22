@@ -335,12 +335,10 @@ async def _strict_consumers(engine: AsyncEngine, subject_id: Any) -> None:
         cycles = await hrt_cycle_service.list_cycles(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=False,
         )
         templates = await hrt_template_service.list_templates(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=False,
         )
         cycle = next(row for row in cycles if row.id == ROW_IDS["hrt_cycles"][0])
         template = next(

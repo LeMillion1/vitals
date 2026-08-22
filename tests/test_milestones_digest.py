@@ -428,21 +428,27 @@ async def test_assemble_context_with_custom_period_days(db_session, legacy_owner
 
 
 @composed
-async def test_assemble_context_includes_hrt_and_timeline(db_session, legacy_owner_roots):
+async def test_assemble_context_includes_hrt_and_timeline(db_session, legacy_owner_roots, owner_write):
     """Hormones and the timeline must reach the digest. Without them the
     strongest intervention in the lake (a compound change) and the ready-made
     explanation for a dip (illness, travel) were invisible to the narrative."""
     from vitals.services import hrt_cycle_service, hrt_service, timeline_service
 
     await hrt_cycle_service.add_cycle(
-        db_session, kind="course", name="TRT", start_date=DAY - timedelta(days=30)
+        db_session, kind="course", name="TRT", start_date=DAY - timedelta(days=30),
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await hrt_service.log_dose(
         db_session, compound_key="testosterone_enanthate", on_date=DAY - timedelta(days=2),
         dose=125.0, unit="mg", site="glute_left",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY - timedelta(days=2)),
     )
     await hrt_service.log_side_effect(
-        db_session, on_date=DAY - timedelta(days=1), effect_type="acne", severity=2
+        db_session, on_date=DAY - timedelta(days=1), effect_type="acne", severity=2,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(DAY - timedelta(days=1)),
     )
     await timeline_service.create_annotation(
         db_session, title="Грипп", on_date=DAY - timedelta(days=3),

@@ -47,10 +47,9 @@ def _normalized_unit(value: str | None, *, default: str) -> str:
 def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
-    identity: WriteIdentity | None,
-    prepared: conflict_engine.PreparedConflictWrite | None,
-    include_legacy_unowned: bool,
-) -> conflict_engine.ConflictWriteContext | None:
+    identity: WriteIdentity,
+    prepared: conflict_engine.PreparedConflictWrite,
+) -> conflict_engine.ConflictWriteContext:
     """Validate the opaque writer before any scoped target is queried.
 
     Cycles do not have one conflict-evaluation date: a mutation may describe a
@@ -59,66 +58,39 @@ def _require_scoped_prepared_write(
     not compared with a cycle boundary.
     """
 
-    if identity is None and prepared is None:
-        if include_legacy_unowned:
-            raise ValueError("legacy HRT compatibility requires a WriteIdentity")
-        return None
-    if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
-            "scoped HRT cycle writes require identity and a prepared conflict write"
-        )
     context = conflict_engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
     )
-    if (
-        include_legacy_unowned
-        and context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy HRT cycle access requires a fully-unowned bridge"
-        )
     return context
 
 
-def _subject_scope(model, subject_id: uuid.UUID, *, include_legacy_unowned: bool):
-    exact = model.subject_id == subject_id
-    if not include_legacy_unowned:
-        return exact
-    legacy = model.subject_id.is_(None)
-    if hasattr(model, "actor_user_id"):
-        legacy = and_(legacy, model.actor_user_id.is_(None))
-    return or_(exact, legacy)
+def _subject_scope(model, subject_id: uuid.UUID):
+    """An HRT cycle belongs to the person it was written for."""
+
+    return model.subject_id == subject_id
 
 
 def _row_in_scope(
     row,
     *,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool,
 ) -> bool:
-    if row.subject_id == subject_id:
-        return True
-    if not include_legacy_unowned or row.subject_id is not None:
-        return False
-    return not hasattr(row, "actor_user_id") or row.actor_user_id is None
+    return row.subject_id == subject_id
 
 
 def _validate_cycle_graph(
     cycle: HrtCycle,
     items: Sequence[HrtCycleItem],
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> None:
     if subject_id is None:
         return
     if not _row_in_scope(
         cycle,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     ):
         raise conflict_engine.ConflictScopeError(
             "HRT cycle is outside the requested subject scope"
@@ -127,7 +99,6 @@ def _validate_cycle_graph(
         if not _row_in_scope(
             item,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         ):
             raise conflict_engine.ConflictScopeError(
                 "HRT cycle contains an item outside the requested subject scope"
@@ -153,23 +124,13 @@ async def _lock_cycle_graph(
     session: AsyncSession,
     cycle_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> tuple[HrtCycle, list[HrtCycleItem]] | None:
     stmt = select(HrtCycle).where(
         HrtCycle.id == cycle_id,
         HrtCycle.domain == DOMAIN,
     )
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                HrtCycle,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy HRT compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(HrtCycle, subject_id))
     cycle = await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
@@ -188,7 +149,6 @@ async def _lock_cycle_graph(
         cycle,
         items,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     return cycle, items
 
@@ -197,24 +157,14 @@ async def _lock_cycle_graph_for_item(
     session: AsyncSession,
     item_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> tuple[HrtCycle, list[HrtCycleItem], HrtCycleItem] | None:
     stmt = (
         select(HrtCycle)
         .join(HrtCycleItem, HrtCycleItem.cycle_id == HrtCycle.id)
         .where(HrtCycleItem.id == item_id, HrtCycle.domain == DOMAIN)
     )
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                HrtCycle,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy HRT compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(HrtCycle, subject_id))
     cycle = await session.scalar(
         stmt.limit(1)
         .with_for_update(of=HrtCycle)
@@ -235,7 +185,6 @@ async def _lock_cycle_graph_for_item(
         cycle,
         items,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     item = next((row for row in items if row.id == item_id), None)
     if item is None:
@@ -247,8 +196,7 @@ async def _resolve_scoped_compound(
     session: AsyncSession,
     key: str,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> Optional[HrtCompound]:
     if subject_id is None:
         return await hrt_service.get_compound(session, key)
@@ -265,14 +213,6 @@ async def _resolve_scoped_compound(
         HrtCompound.key.in_(curated_keys),
     )
     permitted = or_(same_subject, curated_global)
-    if include_legacy_unowned:
-        permitted = or_(
-            permitted,
-            and_(
-                HrtCompound.subject_id.is_(None),
-                HrtCompound.actor_user_id.is_(None),
-            ),
-        )
     compound = await session.scalar(
         select(HrtCompound)
         .where(HrtCompound.key == key, permitted)
@@ -440,20 +380,10 @@ def expand_item_schedule(
 async def list_cycles(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Sequence[HrtCycle]:
     stmt = select(HrtCycle).where(HrtCycle.domain == DOMAIN)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                HrtCycle,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy HRT compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(HrtCycle, subject_id))
     cycles = list(
         await session.scalars(
             stmt.order_by(HrtCycle.start_date.desc(), HrtCycle.id.desc())
@@ -465,7 +395,6 @@ async def list_cycles(
             cycle,
             cycle.items,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
     return cycles
 
@@ -474,8 +403,7 @@ async def active_cycle(
     session: AsyncSession,
     *,
     on_date: Optional[date_type] = None,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Optional[HrtCycle]:
     """The cycle covering ``on_date`` (today by default). The newest match wins —
     ordered by start date then id, so a same-day supersede picks the one created
@@ -484,7 +412,6 @@ async def active_cycle(
     cycles = await list_cycles(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     for cycle in cycles:
         if cycle.start_date <= day and (cycle.end_date is None or day <= cycle.end_date):
@@ -501,9 +428,8 @@ async def add_cycle(
     end_date: Optional[date_type] = None,
     note: Optional[str] = None,
     source: str | Source = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> HrtCycle:
     """Create a cycle. An open-ended one closes every other still-open cycle so at
     most one protocol is current — the day before the new one starts, but never
@@ -513,7 +439,6 @@ async def add_cycle(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
-        include_legacy_unowned=include_legacy_unowned,
     )
     valid_kinds = {k.value for k in CycleKind}
     if kind not in valid_kinds:
@@ -530,7 +455,6 @@ async def add_cycle(
                 _subject_scope(
                     HrtCycle,
                     identity.subject_id,
-                    include_legacy_unowned=include_legacy_unowned,
                 )
             )
         open_cycles = list(
@@ -545,7 +469,6 @@ async def add_cycle(
                 session,
                 open_cycle.id,
                 subject_id=identity.subject_id if identity is not None else None,
-                include_legacy_unowned=include_legacy_unowned,
             )
             assert graph is not None
             locked_cycle, locked_items = graph
@@ -581,21 +504,18 @@ async def add_cycle_item(
     unit: Optional[str] = None,
     start_offset_days: int = 0,
     note: Optional[str] = None,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[HrtCycleItem]:
     _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
-        include_legacy_unowned=include_legacy_unowned,
     )
     graph = await _lock_cycle_graph(
         session,
         cycle_id,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if graph is None:
         return None
@@ -611,7 +531,6 @@ async def add_cycle_item(
         session,
         key,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if identity is not None:
         _adopt_cycle_graph(cycle, items, identity=identity)
@@ -641,9 +560,8 @@ async def update_cycle_item(
     unit: Optional[str] = None,
     start_offset_days: Optional[int] = None,
     note: Optional[str] = None,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[HrtCycleItem]:
     """Edit an item in place — dose tweaks mid-course shouldn't require
     delete + re-add. ``None`` keeps the current value; a new ``schedule`` goes
@@ -652,13 +570,11 @@ async def update_cycle_item(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
-        include_legacy_unowned=include_legacy_unowned,
     )
     graph = await _lock_cycle_graph_for_item(
         session,
         item_id,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if graph is None:
         return None
@@ -685,21 +601,18 @@ async def close_cycle(
     cycle_id: int,
     *,
     end_date: date_type,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[HrtCycle]:
     _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
-        include_legacy_unowned=include_legacy_unowned,
     )
     graph = await _lock_cycle_graph(
         session,
         cycle_id,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if graph is None:
         return None
@@ -718,21 +631,18 @@ async def delete_cycle(
     session: AsyncSession,
     cycle_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
-        include_legacy_unowned=include_legacy_unowned,
     )
     graph = await _lock_cycle_graph(
         session,
         cycle_id,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if graph is None:
         return False
@@ -746,21 +656,18 @@ async def delete_cycle_item(
     session: AsyncSession,
     item_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
-        include_legacy_unowned=include_legacy_unowned,
     )
     graph = await _lock_cycle_graph_for_item(
         session,
         item_id,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if graph is None:
         return False
@@ -777,8 +684,7 @@ async def planned_administrations(
     start: date_type,
     end: date_type,
     cycle: Optional[HrtCycle] = None,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> list[dict]:
     """Planned administrations from the active cycle within ``[start, end]``, one
     entry per shot: ``{date, compound_key, unit, dose}``. Empty when no cycle is
@@ -789,7 +695,6 @@ async def planned_administrations(
         cycle = await active_cycle(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
     if cycle is None:
         return []
@@ -797,7 +702,6 @@ async def planned_administrations(
         cycle,
         cycle.items,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     window_start = max(start, cycle.start_date)
     window_end = min(end, cycle.end_date) if cycle.end_date else end
@@ -831,22 +735,12 @@ async def _actual_contributions(
     session: AsyncSession,
     *,
     end: date_type,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> list[tuple[date_type, float, float, str]]:
     """Actual logged doses up to ``end`` as ``(date, active_mg, half_life_days,
     compound_class)`` — only those that can be modelled (mg + known half-life)."""
     stmt = select(HrtDose).where(HrtDose.date <= end)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                HrtDose,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy HRT compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(HrtDose, subject_id))
     doses = list(await session.scalars(stmt))
     contribs: list[tuple[date_type, float, float, str]] = []
     for dose_row in doses:
@@ -854,7 +748,6 @@ async def _actual_contributions(
             session,
             dose_row.compound_key,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
         if dose_row.compound_id is not None and (
             compound is None or compound.id != dose_row.compound_id
@@ -877,8 +770,7 @@ async def _planned_contributions(
     start: date_type,
     end: date_type,
     cycle: Optional[HrtCycle] = None,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> list[tuple[date_type, float, float, str]]:
     """Future planned administrations (from the active cycle) as release
     contributions, resolving each item's compound for half-life/fraction."""
@@ -886,7 +778,6 @@ async def _planned_contributions(
         cycle = await active_cycle(
             session,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
     if cycle is None:
         return []
@@ -894,7 +785,6 @@ async def _planned_contributions(
         cycle,
         cycle.items,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     contribs: list[tuple[date_type, float, float, str]] = []
     for item in cycle.items:
@@ -902,7 +792,6 @@ async def _planned_contributions(
             session,
             item.compound_key,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
         window_start = max(start, cycle.start_date)
         window_end = min(end, cycle.end_date) if cycle.end_date else end
@@ -926,8 +815,7 @@ async def release_series(
     step_days: int = 1,
     include_planned: bool = True,
     cycle: Optional[HrtCycle] = None,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> list[dict]:
     """Daily active-hormone-in-body estimate over ``[start, end]``. Sums the
     exponential decay of every modelable administration (actual up to ``end``,
@@ -938,7 +826,6 @@ async def release_series(
         session,
         end=end,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if include_planned:
         today = today_local()
@@ -948,7 +835,6 @@ async def release_series(
             end=end,
             cycle=cycle,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         ):
             contribs.append((adm_date, active, hl, cls))
 

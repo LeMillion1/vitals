@@ -1268,10 +1268,7 @@ async def get_hrt_logs(
 
     async with session_factory() as session:
         scope = await _mcp_v1_conflict_scope(session)
-        scope_kwargs = {
-            "subject_id": scope.subject_id,
-            "include_legacy_unowned": scope.include_legacy_unowned,
-        }
+        scope_kwargs = {"subject_id": scope.subject_id}
         doses = await hrt_service.list_doses(
             session,
             start=start,
@@ -1388,7 +1385,6 @@ async def add_hrt_cycle(
                 session, kind=kind, start_date=start, name=name, end_date=end, note=note,
                 source=Source.MCP.value,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         except ValueError as e:
@@ -1442,7 +1438,6 @@ async def add_hrt_cycle_item(
                 session, cycle_id, compound_key=compound_key, schedule=schedule,
                 unit=unit, start_offset_days=int(start_offset_days or 0), note=note,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         except ValueError as e:
@@ -1494,7 +1489,6 @@ async def update_hrt_dose(
             session,
             dose_id,
             identity=conflict_context.identity,
-            include_legacy_unowned=True,
             prepared_conflict_write=prepared,
         )
         if current is None:
@@ -1540,7 +1534,6 @@ async def update_hrt_dose(
                 on_date=final_date,
                 override=override,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
                 **merged,
             )
@@ -1620,7 +1613,6 @@ async def close_hrt_cycle(cycle_id: int, end_date: Optional[str] = None) -> dict
                 cycle_id,
                 end_date=end,
                 identity=conflict_context.identity,
-                include_legacy_unowned=True,
                 prepared_conflict_write=prepared,
             )
         except ValueError as e:
@@ -1644,7 +1636,6 @@ async def get_hrt_cycles() -> dict:
         cycles = await hrt_cycle_service.list_cycles(
             session,
             subject_id=scope.subject_id,
-            include_legacy_unowned=scope.include_legacy_unowned,
         )
         out = []
         for c in cycles:
@@ -2226,22 +2217,22 @@ async def delete_record(domain: str, record_id: int) -> dict:
             conflict_context, prepared = await _mcp_v1_weight_write(session)
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                        "include_legacy_unowned": True,
-                        "prepared_weight_write": prepared,
+                "include_legacy_unowned": True,
+                "prepared_weight_write": prepared,
             }
         elif domain in {"measurement", "noise_marker"}:
             conflict_context, prepared = await _mcp_v1_aux_weight_write(session)
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                        "include_legacy_unowned": True,
-                        "prepared_conflict_write": prepared,
+                "include_legacy_unowned": True,
+                "prepared_conflict_write": prepared,
             }
         elif domain == "body_comp":
             conflict_context, prepared = await _mcp_v1_weight_write(session)
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                        "include_legacy_unowned": True,
-                        "prepared_weight_write": prepared,
+                "include_legacy_unowned": True,
+                "prepared_weight_write": prepared,
             }
         elif domain == "milestones":
             conflict_context = await _mcp_v1_conflict_write_context(session)
@@ -2281,8 +2272,8 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                        "include_legacy_unowned": True,
-                        "prepared_conflict_write": prepared,
+                "include_legacy_unowned": True,
+                "prepared_conflict_write": prepared,
             }
         elif domain == "genetics":
             conflict_context = await _mcp_v1_conflict_write_context(session)
@@ -2312,8 +2303,8 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                        "include_legacy_unowned": True,
-                        "prepared_conflict_write": prepared,
+                "include_legacy_unowned": True,
+                "prepared_conflict_write": prepared,
             }
         elif domain in {
             "hrt_dose",
@@ -2328,14 +2319,11 @@ async def delete_record(domain: str, record_id: int) -> dict:
             )
             owned_kwargs = {
                 "identity": conflict_context.identity,
-                        "include_legacy_unowned": True,
-                        "prepared_conflict_write": prepared,
+                "prepared_conflict_write": prepared,
             }
         elif domain == "signals":
             ownership = await _mcp_v1_legacy_owner(session)
-            owned_kwargs = {
-                "subject_id": ownership.subject_id,
-                    }
+            owned_kwargs = {"subject_id": ownership.subject_id}
         ok = await getattr(service, fn_name)(session, record_id, **owned_kwargs)
         if domain == "body_comp" and ok:
             await service.refresh_alerts(

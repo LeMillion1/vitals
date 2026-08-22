@@ -146,7 +146,7 @@ async def _active_cycle(
     context: conflict_engine.ConflictWriteContext | None,
 ) -> HrtCycle | None:
     if context is None:
-        return await hrt_cycle_service.active_cycle(session, on_date=on_date)
+        return None
     cycle = await session.scalar(
         select(HrtCycle)
         .where(
@@ -434,10 +434,7 @@ async def _last_actual_dose_date(
 ) -> Optional[date_type]:
     rows = await hrt_service.list_doses(
         session,
-        subject_id=(context.identity.subject_id if context is not None else None),
-        include_legacy_unowned=(
-            context.scope.include_legacy_unowned if context is not None else False
-        ),
+        subject_id=context.identity.subject_id,
         end=on_date,
     )
     return next((row.date for row in rows if row.compound_key == compound_key), None)

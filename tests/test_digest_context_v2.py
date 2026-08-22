@@ -443,7 +443,7 @@ async def test_lab_history_is_bounded_per_marker_and_reports_truncation(db_sessi
     assert ctx["coverage"]["labs"]["history_limit_per_marker"] == 3
 
 
-async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_owner_roots):
+async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_owner_roots, owner_write):
     db_session.add(
         HrtCompound(
             subject_id=legacy_owner_roots.subject_id,
@@ -498,12 +498,16 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_
         kind="course",
         start_date=DAY - timedelta(days=10),
         name="TRT",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await hrt_cycle_service.add_cycle_item(
         db_session,
         cycle.id,
         compound_key="test_enanthate",
         schedule=[{"dose": 100, "interval_days": 7, "duration_days": 35}],
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     db_session.add_all(
         [

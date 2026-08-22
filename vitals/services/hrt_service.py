@@ -93,32 +93,10 @@ def _require_evaluation_date(
         )
 
 
-def _require_legacy_bridge(
-    context: conflict_engine.ConflictWriteContext,
-    *,
-    include_legacy_unowned: bool,
-) -> None:
-    if (
-        include_legacy_unowned
-        and context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy HRT access requires a fully-unowned bridge"
-        )
+def _subject_scope(model, subject_id: uuid.UUID):
+    """A dose and the effect it caused belong to the person who took it."""
 
-
-def _subject_scope(model, subject_id: uuid.UUID, *, include_legacy_unowned: bool):
-    scope = model.subject_id == subject_id
-    if include_legacy_unowned:
-        scope = or_(
-            scope,
-            and_(
-                model.subject_id.is_(None),
-                model.actor_user_id.is_(None),
-            ),
-        )
-    return scope
+    return model.subject_id == subject_id
 
 
 async def _owned_row_for_update(
@@ -126,20 +104,13 @@ async def _owned_row_for_update(
     model,
     row_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ):
-    stmt = select(model).where(model.id == row_id)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                model,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy HRT compatibility requires a subject_id")
+    stmt = (
+        select(model)
+        .where(model.id == row_id)
+        .where(_subject_scope(model, subject_id))
+    )
     return await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
@@ -245,7 +216,7 @@ async def get_compound(
     session: AsyncSession,
     key: str,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
 ) -> Optional[HrtCompound]:
     if subject_id is not None:
         return await _get_curated_compound(session, key)
@@ -256,7 +227,7 @@ async def get_compound(
 async def list_compounds(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
     active_only: bool = True,
     compound_class: Optional[str] = None,
 ) -> Sequence[HrtCompound]:
@@ -298,6 +269,14 @@ async def set_compound_active(
     active: bool,
     subject_id: uuid.UUID | None = None,
 ) -> Optional[HrtCompound]:
+    """The catalog's active flag is frozen, not scoped.
+
+    ``active`` is a per-person preference stored on a global catalog row, so it
+    cannot be scoped without a reviewed SubjectSetting mapping. Passing a
+    subject is refused rather than silently writing one person's choice onto
+    everybody's catalog.
+    """
+
     if subject_id is not None:
         raise HrtCompoundActivationCutoverRequiredError(
             "subject-scoped HRT catalog activation requires a reviewed "
@@ -368,25 +347,20 @@ async def log_dose(
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
     override: bool = False,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> HrtDose:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
+    _require_evaluation_date(context, on_date)
     key = (compound_key or "").strip()
     if not key:
         raise ValueError("compound_key is required")
-    compound = (
-        await _curated_compound_for_write(session, key)
-        if context is not None
-        else await get_compound(session, key)
-    )
-    if context is not None and compound is None:
+    compound = await _curated_compound_for_write(session, key)
+    if compound is None:
         raise ValueError("compound_key must reference the checked-in HRT catalog")
 
     dose_v, unit_v = _resolve_amount(
@@ -404,28 +378,18 @@ async def log_dose(
         "compound_key": key,
         "compound_class": compound.compound_class if compound else None,
     }
-    if context is None:
-        await conflict_engine.enforce(
-            session,
-            Domain.HRT.value,
-            proposed,
-            override=override,
-            entity_ref=f"dose:{on_date.isoformat()}:{key}",
-        )
-    else:
-        assert prepared_conflict_write is not None
-        await conflict_engine.enforce_prepared(
-            session,
-            prepared=prepared_conflict_write,
-            domain=Domain.HRT,
-            proposed_state=proposed,
-            override=override,
-            entity_ref=f"dose:{on_date.isoformat()}:{key}",
-        )
+    await conflict_engine.enforce_prepared(
+        session,
+        prepared=prepared_conflict_write,
+        domain=Domain.HRT,
+        proposed_state=proposed,
+        override=override,
+        entity_ref=f"dose:{on_date.isoformat()}:{key}",
+    )
 
     row = HrtDose(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         date=on_date,
         domain=DOMAIN,
         source=source,
@@ -449,23 +413,12 @@ async def log_dose(
 async def list_doses(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
     limit: Optional[int] = None,
 ) -> Sequence[HrtDose]:
-    stmt = select(HrtDose)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                HrtDose,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy HRT compatibility requires a subject_id")
+    stmt = select(HrtDose).where(_subject_scope(HrtDose, subject_id))
     if start is not None:
         stmt = stmt.where(HrtDose.date >= start)
     if end is not None:
@@ -479,13 +432,11 @@ async def list_doses(
 async def last_dose(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Optional[HrtDose]:
     rows = await list_doses(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
         limit=1,
     )
     return rows[0] if rows else None
@@ -496,7 +447,6 @@ async def get_dose_for_update(
     dose_id: int,
     *,
     identity: WriteIdentity,
-    include_legacy_unowned: bool = False,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[HrtDose]:
     context = _require_scoped_prepared_write(
@@ -504,14 +454,11 @@ async def get_dose_for_update(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    assert context is not None
-    _require_legacy_bridge(context, include_legacy_unowned=include_legacy_unowned)
     return await _owned_row_for_update(
         session,
         HrtDose,
         dose_id,
         subject_id=identity.subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
 
 
@@ -541,36 +488,28 @@ async def update_dose(
     site: Optional[str] = None,
     note: Optional[str] = None,
     override: bool = False,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[HrtDose]:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
-        _require_legacy_bridge(context, include_legacy_unowned=include_legacy_unowned)
+    _require_evaluation_date(context, on_date)
     row = await _owned_row_for_update(
         session,
         HrtDose,
         dose_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if row is None:
         return None
     key = (compound_key or "").strip()
     if not key:
         raise ValueError("compound_key is required")
-    compound = (
-        await _curated_compound_for_write(session, key)
-        if context is not None
-        else await get_compound(session, key)
-    )
-    if context is not None and compound is None:
+    compound = await _curated_compound_for_write(session, key)
+    if compound is None:
         raise ValueError("compound_key must reference the checked-in HRT catalog")
     dose_v, unit_v = _resolve_amount(
         dose=dose,
@@ -587,25 +526,15 @@ async def update_dose(
         "compound_key": key,
         "compound_class": compound.compound_class if compound else None,
     }
-    if context is None:
-        await conflict_engine.enforce(
-            session,
-            Domain.HRT.value,
-            proposed,
-            override=override,
-            entity_ref=f"dose:{on_date.isoformat()}:{key}",
-        )
-    else:
-        assert prepared_conflict_write is not None
-        await conflict_engine.enforce_prepared(
-            session,
-            prepared=prepared_conflict_write,
-            domain=Domain.HRT,
-            proposed_state=proposed,
-            override=override,
-            entity_ref=f"dose:{on_date.isoformat()}:{key}",
-            replace_entity_key=_dose_entity_key(row.id),
-        )
+    await conflict_engine.enforce_prepared(
+        session,
+        prepared=prepared_conflict_write,
+        domain=Domain.HRT,
+        proposed_state=proposed,
+        override=override,
+        entity_ref=f"dose:{on_date.isoformat()}:{key}",
+        replace_entity_key=_dose_entity_key(row.id),
+    )
 
     if row.subject_id is None and identity is not None:
         row.subject_id = identity.subject_id
@@ -629,23 +558,19 @@ async def delete_dose(
     session: AsyncSession,
     dose_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(context, include_legacy_unowned=include_legacy_unowned)
     row = await _owned_row_for_update(
         session,
         HrtDose,
         dose_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if row is None:
         return False
@@ -663,24 +588,23 @@ async def log_side_effect(
     severity: int,
     note: Optional[str] = None,
     source: str = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> HrtSideEffect:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
+    _require_evaluation_date(context, on_date)
     clean_type = (effect_type or "").strip()
     if not clean_type:
         raise ValueError("effect_type is required")
     if severity is None or not (1 <= severity <= 5):
         raise ValueError("severity must be between 1 and 5")
     row = HrtSideEffect(
-        subject_id=identity.subject_id if identity is not None else None,
-        actor_user_id=identity.actor_user_id if identity is not None else None,
+        subject_id=identity.subject_id,
+        actor_user_id=identity.actor_user_id,
         date=on_date,
         domain=DOMAIN,
         source=source,
@@ -696,23 +620,12 @@ async def log_side_effect(
 async def list_side_effects(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
     start: date_type | None = None,
     end: date_type | None = None,
     limit: int | None = None,
 ) -> Sequence[HrtSideEffect]:
-    stmt = select(HrtSideEffect)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                HrtSideEffect,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy HRT compatibility requires a subject_id")
+    stmt = select(HrtSideEffect).where(_subject_scope(HrtSideEffect, subject_id))
     if start is not None:
         stmt = stmt.where(HrtSideEffect.date >= start)
     if end is not None:
@@ -732,24 +645,20 @@ async def update_side_effect(
     effect_type: str,
     severity: int,
     note: Optional[str] = None,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[HrtSideEffect]:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_evaluation_date(context, on_date)
-        _require_legacy_bridge(context, include_legacy_unowned=include_legacy_unowned)
+    _require_evaluation_date(context, on_date)
     row = await _owned_row_for_update(
         session,
         HrtSideEffect,
         effect_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if row is None:
         return None
@@ -772,23 +681,19 @@ async def delete_side_effect(
     session: AsyncSession,
     effect_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     context = _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    if context is not None:
-        _require_legacy_bridge(context, include_legacy_unowned=include_legacy_unowned)
     row = await _owned_row_for_update(
         session,
         HrtSideEffect,
         effect_id,
-        subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
+        subject_id=identity.subject_id,
     )
     if row is None:
         return False

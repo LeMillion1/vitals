@@ -1013,7 +1013,10 @@ async def test_delete_controls_render_for_labs_skincare_and_hrt(auth_client, db_
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(day),
     )
-    cycle = await hrt_cycle_service.add_cycle(db_session, kind="course", start_date=day)
+    cycle = await hrt_cycle_service.add_cycle(db_session, kind="course", start_date=day,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
 
     page = (await auth_client.get("/labs", headers={"Accept": "text/html"})).text

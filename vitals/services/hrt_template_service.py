@@ -46,76 +46,48 @@ _MAX_ITEMS = 50  # no real protocol stacks this many compounds
 def _require_scoped_prepared_write(
     session: AsyncSession,
     *,
-    identity: WriteIdentity | None,
-    prepared: conflict_engine.PreparedConflictWrite | None,
-    include_legacy_unowned: bool,
-) -> conflict_engine.ConflictWriteContext | None:
+    identity: WriteIdentity,
+    prepared: conflict_engine.PreparedConflictWrite,
+) -> conflict_engine.ConflictWriteContext:
     """Prove the session/transaction/identity before any target lookup.
 
     Templates are date-free, so the prepared context's evaluation date is a
     governance serialization token rather than a semantic template field.
     """
 
-    if identity is None and prepared is None:
-        if include_legacy_unowned:
-            raise ValueError("legacy HRT template compatibility requires a WriteIdentity")
-        return None
-    if identity is None or prepared is None:
-        raise conflict_engine.ConflictPreparedWriteError(
-            "scoped HRT template writes require identity and a prepared conflict write"
-        )
     context = conflict_engine.require_prepared_identity(
         session,
         prepared=prepared,
         identity=identity,
     )
-    if (
-        include_legacy_unowned
-        and context.legacy_bridge
-        is not conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
-    ):
-        raise conflict_engine.ConflictPreparedWriteError(
-            "legacy HRT template access requires a fully-unowned bridge"
-        )
     return context
 
 
-def _subject_scope(model, subject_id: uuid.UUID, *, include_legacy_unowned: bool):
-    exact = model.subject_id == subject_id
-    if not include_legacy_unowned:
-        return exact
-    legacy = model.subject_id.is_(None)
-    if hasattr(model, "actor_user_id"):
-        legacy = and_(legacy, model.actor_user_id.is_(None))
-    return or_(exact, legacy)
+def _subject_scope(model, subject_id: uuid.UUID):
+    """An HRT template belongs to the person it was written for."""
+
+    return model.subject_id == subject_id
 
 
 def _row_in_scope(
     row,
     *,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool,
 ) -> bool:
-    if row.subject_id == subject_id:
-        return True
-    if not include_legacy_unowned or row.subject_id is not None:
-        return False
-    return not hasattr(row, "actor_user_id") or row.actor_user_id is None
+    return row.subject_id == subject_id
 
 
 def _validate_template_graph(
     template: HrtCycleTemplate,
     items: Sequence[HrtCycleTemplateItem],
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> None:
     if subject_id is None:
         return
     if not _row_in_scope(
         template,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     ):
         raise conflict_engine.ConflictScopeError(
             "HRT template is outside the requested subject scope"
@@ -124,7 +96,6 @@ def _validate_template_graph(
         if not _row_in_scope(
             item,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         ):
             raise conflict_engine.ConflictScopeError(
                 "HRT template contains an item outside the requested subject scope"
@@ -135,23 +106,13 @@ async def _lock_template_graph(
     session: AsyncSession,
     template_id: int,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> tuple[HrtCycleTemplate, list[HrtCycleTemplateItem]] | None:
     stmt = select(HrtCycleTemplate).where(
         HrtCycleTemplate.id == template_id,
         HrtCycleTemplate.domain == DOMAIN,
     )
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                HrtCycleTemplate,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy HRT template compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(HrtCycleTemplate, subject_id))
     template = await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
@@ -170,7 +131,6 @@ async def _lock_template_graph(
         template,
         items,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     return template, items
 
@@ -178,16 +138,12 @@ async def _lock_template_graph(
 def _validate_export_scope(
     template: HrtCycleTemplate,
     *,
-    subject_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
+    subject_id: uuid.UUID,
 ) -> None:
-    if subject_id is None and include_legacy_unowned:
-        raise ValueError("legacy HRT template compatibility requires a subject_id")
     _validate_template_graph(
         template,
         template.items,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
 
 
@@ -195,20 +151,10 @@ def _validate_export_scope(
 async def list_templates(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Sequence[HrtCycleTemplate]:
     stmt = select(HrtCycleTemplate).where(HrtCycleTemplate.domain == DOMAIN)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                HrtCycleTemplate,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy HRT template compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(HrtCycleTemplate, subject_id))
     templates = list(
         await session.scalars(
             stmt.order_by(HrtCycleTemplate.name, HrtCycleTemplate.id)
@@ -220,7 +166,6 @@ async def list_templates(
             template,
             template.items,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
     return templates
 
@@ -229,8 +174,7 @@ async def get_template(
     session: AsyncSession,
     template_id: int,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> Optional[HrtCycleTemplate]:
     # populate_existing: the instance may sit expired in the identity map after
     # a commit — a lazy .items load on it would MissingGreenlet under asyncio.
@@ -238,23 +182,13 @@ async def get_template(
         HrtCycleTemplate.id == template_id,
         HrtCycleTemplate.domain == DOMAIN,
     )
-    if subject_id is not None:
-        stmt = stmt.where(
-            _subject_scope(
-                HrtCycleTemplate,
-                subject_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
-        )
-    elif include_legacy_unowned:
-        raise ValueError("legacy HRT template compatibility requires a subject_id")
+    stmt = stmt.where(_subject_scope(HrtCycleTemplate, subject_id))
     template = await session.scalar(stmt.execution_options(populate_existing=True))
     if template is not None:
         _validate_template_graph(
             template,
             template.items,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         )
     return template
 
@@ -263,21 +197,18 @@ async def delete_template(
     session: AsyncSession,
     template_id: int,
     *,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> bool:
     _require_scoped_prepared_write(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
-        include_legacy_unowned=include_legacy_unowned,
     )
     graph = await _lock_template_graph(
         session,
         template_id,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if graph is None:
         return False
@@ -295,9 +226,8 @@ async def save_cycle_as_template(
     name: str,
     note: Optional[str] = None,
     source: str | Source = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[HrtCycleTemplate]:
     """Snapshot a cycle's plan into a new template. The snapshot is by value —
     later edits to the cycle don't touch the template."""
@@ -305,13 +235,11 @@ async def save_cycle_as_template(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
-        include_legacy_unowned=include_legacy_unowned,
     )
     graph = await hrt_cycle_service._lock_cycle_graph(
         session,
         cycle_id,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if graph is None:
         return None
@@ -349,7 +277,6 @@ async def save_cycle_as_template(
         session,
         template.id,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=False,
     )
     assert locked is not None
     return locked[0]
@@ -362,9 +289,8 @@ async def create_cycle_from_template(
     start_date: date_type,
     name: Optional[str] = None,
     source: str | Source = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> Optional[HrtCycle]:
     """Materialize a template into a real cycle starting on ``start_date``.
     Goes through ``hrt_cycle_service`` item-by-item so compound resolution and
@@ -373,13 +299,11 @@ async def create_cycle_from_template(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
-        include_legacy_unowned=include_legacy_unowned,
     )
     graph = await _lock_template_graph(
         session,
         template_id,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if graph is None:
         return None
@@ -392,7 +316,6 @@ async def create_cycle_from_template(
         note=template.note,
         source=source,
         identity=identity,
-        include_legacy_unowned=include_legacy_unowned,
         prepared_conflict_write=prepared_conflict_write,
     )
     for item in template_items:
@@ -405,7 +328,6 @@ async def create_cycle_from_template(
             start_offset_days=item.start_offset_days or 0,
             note=item.note,
             identity=identity,
-            include_legacy_unowned=include_legacy_unowned,
             prepared_conflict_write=prepared_conflict_write,
         )
     await session.flush()
@@ -432,8 +354,7 @@ def _signature(kind: str, items: Sequence[HrtCycleTemplateItem]) -> tuple:
 def export_template(
     template: HrtCycleTemplate,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> dict:
     """A template as a portable dict — self-describing envelope, relative items
     only. ``json.dumps(..., ensure_ascii=False, indent=2)`` of this is the
@@ -441,7 +362,6 @@ def export_template(
     _validate_export_scope(
         template,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     return {
         "format": EXPORT_FORMAT,
@@ -465,14 +385,12 @@ def export_template(
 def export_template_json(
     template: HrtCycleTemplate,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> str:
     return json.dumps(
         export_template(
             template,
             subject_id=subject_id,
-            include_legacy_unowned=include_legacy_unowned,
         ),
         ensure_ascii=False,
         indent=2,
@@ -484,9 +402,8 @@ async def import_template(
     payload: dict | str,
     *,
     source: str | Source = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
-    prepared_conflict_write: conflict_engine.PreparedConflictWrite | None = None,
+    identity: WriteIdentity,
+    prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> HrtCycleTemplate:
     """Validate a pasted share payload and save it as a new local template.
     Rejects (with a message naming the problem) rather than half-importing:
@@ -496,7 +413,6 @@ async def import_template(
         session,
         identity=identity,
         prepared=prepared_conflict_write,
-        include_legacy_unowned=include_legacy_unowned,
     )
     if isinstance(payload, str):
         try:
@@ -539,7 +455,6 @@ async def import_template(
             session,
             key,
             subject_id=identity.subject_id if identity is not None else None,
-            include_legacy_unowned=include_legacy_unowned,
         )
         if compound is None:
             missing.append(key)
@@ -585,7 +500,6 @@ async def import_template(
             _subject_scope(
                 HrtCycleTemplate,
                 identity.subject_id,
-                include_legacy_unowned=include_legacy_unowned,
             )
         )
     existing_roots = list(
@@ -601,7 +515,6 @@ async def import_template(
             session,
             root.id,
             subject_id=identity.subject_id if identity is not None else None,
-            include_legacy_unowned=include_legacy_unowned,
         )
         assert graph is not None
         existing.append(graph[0])
@@ -637,7 +550,6 @@ async def import_template(
         session,
         template.id,
         subject_id=identity.subject_id if identity is not None else None,
-        include_legacy_unowned=False,
     )
     assert locked is not None
     return locked[0]

@@ -4123,7 +4123,11 @@ def test_every_domain_is_mapped_to_export_keys():
     assert set(DOMAIN_EXPORT_KEYS) == set(Domain)
 
 
-async def _seed_every_domain(session) -> None:
+async def _seed_every_domain(session, owner_write) -> None:
+    from vitals.services import conflict_registrations
+
+    # A scoped write consults every registered domain resolver.
+    conflict_registrations.register_all_resolvers()
     """One row per domain — the domains _seed/_seed_hrt don't already cover."""
     from vitals.models.body_scan import BodyScan, BodyScanMetric
     from vitals.models.genetics import GeneticVariant
@@ -4136,7 +4140,7 @@ async def _seed_every_domain(session) -> None:
     from vitals.models.weight import NoiseMarker
 
     await _seed(session)
-    await _seed_hrt(session)
+    await _seed_hrt(session, owner_write)
 
     d = date(2026, 4, 25)
     scan = BodyScan(date=d, domain="body_comp", source="body_scan", device="InBody 770")
@@ -4188,10 +4192,10 @@ async def _seed_every_domain(session) -> None:
     await session.commit()
 
 
-async def test_llm_export_covers_every_domain(db_session):
+async def test_llm_export_covers_every_domain(db_session, owner_write):
     """With one row seeded per domain, every mapped export key must be non-empty —
     the test that fails when a domain is added but never wired into export_llm."""
-    await _seed_every_domain(db_session)
+    await _seed_every_domain(db_session, owner_write)
     out = await export_llm(db_session)
 
     empty = [
@@ -4289,7 +4293,7 @@ async def test_import_endpoint_rejects_wrong_extension(auth_client):
 
 
 # ── HRT in the exports (PR #7 review item) ────────────────────────────────────
-async def _seed_hrt(session):
+async def _seed_hrt(session, owner_write):
     from vitals.services import hrt_catalog, hrt_cycle_service, hrt_service, hrt_template_service
     from vitals.utils.timeutils import today_local
 
@@ -4297,24 +4301,35 @@ async def _seed_hrt(session):
     await hrt_service.log_dose(
         session, compound_key="testosterone_enanthate", on_date=today_local(),
         dose=250, unit="mg", brand="TestBrand", lab="UGL",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     await hrt_service.log_side_effect(
         session, on_date=today_local(), effect_type="acne", severity=2,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(today_local()),
     )
     cycle = await hrt_cycle_service.add_cycle(
         session, kind="course", start_date=today_local(), name="Cut",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await hrt_cycle_service.add_cycle_item(
         session, cycle.id, compound_key="stanozolol_oral",
         schedule=[{"dose": 30, "interval_days": 1, "duration_days": 28}],
         start_offset_days=28,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
-    await hrt_template_service.save_cycle_as_template(session, cycle.id, name="Cut tpl")
+    await hrt_template_service.save_cycle_as_template(session, cycle.id, name="Cut tpl",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await session.commit()
 
 
-async def test_llm_export_includes_hrt(db_session):
-    await _seed_hrt(db_session)
+async def test_llm_export_includes_hrt(db_session, owner_write):
+    await _seed_hrt(db_session, owner_write)
     out = await export_llm(db_session)
     assert out["hrt_doses"][0]["compound"] == "testosterone_enanthate"
     assert out["hrt_doses"][0]["brand"] == "TestBrand"
@@ -4326,12 +4341,12 @@ async def test_llm_export_includes_hrt(db_session):
     assert tpl["name"] == "Cut tpl" and tpl["items"][0]["compound"] == "stanozolol_oral"
 
 
-async def test_full_backup_round_trips_hrt(db_session):
+async def test_full_backup_round_trips_hrt(db_session, owner_write):
     """The generic full backup must carry every HRT table through wipe+restore."""
     from sqlalchemy import func, select
     from vitals.models.hrt import HrtCycle, HrtCycleItem, HrtCycleTemplate, HrtDose
 
-    await _seed_hrt(db_session)
+    await _seed_hrt(db_session, owner_write)
     snapshot = await export_full(db_session)
     for table in ("hrt_doses", "hrt_cycles", "hrt_cycle_items",
                   "hrt_side_effects", "hrt_cycle_templates", "hrt_cycle_template_items"):

@@ -252,24 +252,15 @@ async def test_backfilled_actorless_history_is_visible_to_scoped_consumers(
     assert list(await supplements_service.list_supplements(
         db_session, subject_id=subject_id
     )) == [rows[12]]
-    # Stage-3B owns only the HRT parents. Strict child graphs remain a later
-    # phase, while the exact-one legacy bridge keeps the current app usable.
+    # Stage-3B owns only the HRT parents. A cycle whose items are still unowned
+    # is a graph the scoped reader refuses rather than half-reads; the strict
+    # child phase is what makes it readable again.
     with pytest.raises(ConflictScopeError):
         await hrt_cycle_service.list_cycles(db_session, subject_id=subject_id)
     with pytest.raises(ConflictScopeError):
         await hrt_template_service.list_templates(
             db_session, subject_id=subject_id
         )
-    assert list(await hrt_cycle_service.list_cycles(
-        db_session,
-        subject_id=subject_id,
-        include_legacy_unowned=True,
-    )) == [rows[13]]
-    assert list(await hrt_template_service.list_templates(
-        db_session,
-        subject_id=subject_id,
-        include_legacy_unowned=True,
-    )) == [rows[14]]
     assert list(await hrt_service.list_doses(
         db_session, subject_id=subject_id
     )) == [rows[15]]

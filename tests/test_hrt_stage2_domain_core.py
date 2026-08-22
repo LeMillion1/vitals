@@ -195,62 +195,12 @@ async def test_scoped_dose_and_side_effect_crud_preserves_origin_and_scope(
     )
 
 
-async def test_fully_unowned_bridge_excludes_partial_rows(
-    db_session,
-    legacy_owner_roots,
-):
-    identity = WriteIdentity(
-        legacy_owner_roots.subject_id,
-        legacy_owner_roots.user_id,
-    )
-    fully_unowned = HrtSideEffect(
-        date=TODAY,
-        domain=Domain.HRT.value,
-        source=Source.MANUAL.value,
-        effect_type="fatigue",
-        severity=2,
-    )
-    partial = HrtSideEffect(
-        actor_user_id=identity.actor_user_id,
-        date=TODAY,
-        domain=Domain.HRT.value,
-        source=Source.MANUAL.value,
-        effect_type="acne",
-        severity=2,
-    )
-    db_session.add_all([fully_unowned, partial])
-    await db_session.commit()
-
-    rows = await hrt_service.list_side_effects(
-        db_session,
-        subject_id=identity.subject_id,
-        include_legacy_unowned=True,
-    )
-    assert [row.id for row in rows] == [fully_unowned.id]
-    adopted = await hrt_service.update_side_effect(
-        db_session,
-        fully_unowned.id,
-        on_date=TODAY,
-        effect_type="fatigue",
-        severity=3,
-        identity=identity,
-        include_legacy_unowned=True,
-        prepared_conflict_write=await _prepared(
-            db_session,
-            identity,
-            legacy_bridge=True,
-        ),
-    )
-    assert (adopted.subject_id, adopted.actor_user_id, adopted.source) == (
-        identity.subject_id,
-        None,
-        Source.MANUAL.value,
-    )
 
 
 async def test_scoped_write_rejects_tampered_catalog_dose_metadata(
     db_session,
     legacy_owner_roots,
+    owner_write,
 ):
     identity = WriteIdentity(
         legacy_owner_roots.subject_id,
@@ -260,6 +210,7 @@ async def test_scoped_write_rejects_tampered_catalog_dose_metadata(
     compound = await hrt_service.get_compound(
         db_session,
         "testosterone_enanthate",
+        subject_id=owner_write.subject_id,
     )
     assert compound is not None
     compound.conc_mg_ml = 999
@@ -407,6 +358,7 @@ async def test_scoped_reminder_writes_actorless_subject_alert(
 async def test_scoped_catalog_rejects_unknown_compound_and_freezes_activation(
     db_session,
     legacy_owner_roots,
+    owner_write,
 ):
     identity = WriteIdentity(
         legacy_owner_roots.subject_id,
@@ -433,7 +385,7 @@ async def test_scoped_catalog_rejects_unknown_compound_and_freezes_activation(
             compound.id,
             active=False,
             subject_id=identity.subject_id,
-        )
+    )
 
 
 async def test_reminders_job_noops_when_hrt_module_is_disabled(

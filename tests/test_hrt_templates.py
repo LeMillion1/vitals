@@ -16,30 +16,38 @@ from vitals.utils.timeutils import today_local
 
 
 
-async def _build_staggered_cycle(db_session):
+async def _build_staggered_cycle(db_session, owner_write):
     """A realistic week-anchored course: test wk 1-13, winstrol wk 5-9."""
     await hrt_catalog.sync_catalog(db_session)
     cycle = await hrt_cycle_service.add_cycle(
         db_session, kind="course", start_date=today_local(), name="Cut stack",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await hrt_cycle_service.add_cycle_item(
         db_session, cycle.id, compound_key="testosterone_enanthate",
         schedule=[{"dose": 250, "interval_days": 3.5, "duration_days": 91}],
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await hrt_cycle_service.add_cycle_item(
         db_session, cycle.id, compound_key="stanozolol_oral",
         schedule=[{"dose": 30, "interval_days": 1, "duration_days": 28}],
         start_offset_days=28,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     return cycle
 
 
 # ── Save as template ──────────────────────────────────────────────────────────
-async def test_save_cycle_as_template_snapshots_items(db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_save_cycle_as_template_snapshots_items(db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     template = await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="Cut v1",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     await db_session.refresh(template)
@@ -50,43 +58,60 @@ async def test_save_cycle_as_template_snapshots_items(db_session):
     assert by_key["testosterone_enanthate"].schedule[0]["dose"] == 250
 
 
-async def test_save_template_requires_name_and_items(db_session):
+async def test_save_template_requires_name_and_items(db_session, owner_write):
     cycle = await hrt_cycle_service.add_cycle(
         db_session, kind="course", start_date=today_local(),
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     with pytest.raises(ValueError):
         await hrt_template_service.save_cycle_as_template(
             db_session, cycle.id, name="   ",
-        )
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     with pytest.raises(ValueError):  # no items on the cycle
         await hrt_template_service.save_cycle_as_template(
             db_session, cycle.id, name="Empty",
-        )
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
 
 
-async def test_template_survives_cycle_deletion(db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_template_survives_cycle_deletion(db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     template = await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="Keeper",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    await hrt_cycle_service.delete_cycle(db_session, cycle.id)
+    await hrt_cycle_service.delete_cycle(db_session, cycle.id,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
-    kept = await hrt_template_service.get_template(db_session, template.id)
+    kept = await hrt_template_service.get_template(db_session, template.id,
+        subject_id=owner_write.subject_id,
+    )
     assert kept is not None and len(kept.items) == 2
 
 
 # ── Create cycle from template ────────────────────────────────────────────────
-async def test_create_cycle_from_template_materializes_plan(db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_create_cycle_from_template_materializes_plan(db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     template = await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="Cut v1",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     start = today_local() + timedelta(days=30)
     new_cycle = await hrt_template_service.create_cycle_from_template(
         db_session, template.id, start_date=start,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     await db_session.refresh(new_cycle)
@@ -99,14 +124,18 @@ async def test_create_cycle_from_template_materializes_plan(db_session):
     assert by_key["testosterone_enanthate"].compound_id is not None
 
 
-async def test_create_from_template_closes_open_cycle(db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_create_from_template_closes_open_cycle(db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     template = await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="Next",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     new_cycle = await hrt_template_service.create_cycle_from_template(
         db_session, template.id, start_date=today_local() + timedelta(days=7),
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     await db_session.refresh(cycle)
@@ -114,26 +143,37 @@ async def test_create_from_template_closes_open_cycle(db_session):
     assert new_cycle.end_date is None
 
 
-async def test_delete_template_cascades_items(db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_delete_template_cascades_items(db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     template = await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="Gone",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    assert await hrt_template_service.delete_template(db_session, template.id) is True
+    assert await hrt_template_service.delete_template(db_session, template.id,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    ) is True
     await db_session.commit()
-    assert await hrt_template_service.get_template(db_session, template.id) is None
+    assert await hrt_template_service.get_template(db_session, template.id,
+        subject_id=owner_write.subject_id,
+    ) is None
 
 
 # ── Export / import (share) ───────────────────────────────────────────────────
-async def test_export_is_date_free_and_versioned(db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_export_is_date_free_and_versioned(db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     template = await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="Cut v1",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     await db_session.refresh(template)
-    payload = hrt_template_service.export_template(template)
+    payload = hrt_template_service.export_template(template,
+        subject_id=owner_write.subject_id,
+    )
     assert payload["format"] == hrt_template_service.EXPORT_FORMAT
     assert payload["version"] == hrt_template_service.EXPORT_VERSION
     assert "start_date" not in json.dumps(payload)  # relative only, no dates
@@ -142,18 +182,25 @@ async def test_export_is_date_free_and_versioned(db_session):
     }
 
 
-async def test_import_round_trip(db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_import_round_trip(db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     template = await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="Cut v1",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     await db_session.refresh(template)
-    shared = json.loads(hrt_template_service.export_template_json(template))
+    shared = json.loads(hrt_template_service.export_template_json(template,
+        subject_id=owner_write.subject_id,
+    ))
     # An untouched re-import is rejected as a duplicate, so share under a new name.
     shared["name"] = "Cut v1 (import)"
 
-    imported = await hrt_template_service.import_template(db_session, shared)
+    imported = await hrt_template_service.import_template(db_session, shared,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
     await db_session.refresh(imported)
     assert imported.id != template.id
@@ -163,20 +210,28 @@ async def test_import_round_trip(db_session):
     assert by_key["testosterone_enanthate"].schedule[0]["interval_days"] == 3.5
 
 
-async def test_import_rejects_garbage_and_wrong_envelope(db_session):
+async def test_import_rejects_garbage_and_wrong_envelope(db_session, owner_write):
     with pytest.raises(ValueError, match="JSON"):
-        await hrt_template_service.import_template(db_session, "not json {")
+        await hrt_template_service.import_template(db_session, "not json {",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     with pytest.raises(ValueError, match="format"):
-        await hrt_template_service.import_template(db_session, {"format": "other"})
+        await hrt_template_service.import_template(db_session, {"format": "other"},
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     with pytest.raises(ValueError, match="version"):
         await hrt_template_service.import_template(
             db_session,
             {"format": hrt_template_service.EXPORT_FORMAT, "version": 99,
              "name": "X", "kind": "course", "items": [{}]},
-        )
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
 
 
-async def test_import_rejects_unknown_compound_key(db_session):
+async def test_import_rejects_unknown_compound_key(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()
     payload = {
@@ -186,10 +241,13 @@ async def test_import_rejects_unknown_compound_key(db_session):
                    "schedule": [{"dose": 10, "interval_days": 1}]}],
     }
     with pytest.raises(ValueError, match="not_a_real_compound"):
-        await hrt_template_service.import_template(db_session, payload)
+        await hrt_template_service.import_template(db_session, payload,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
 
 
-async def test_import_rejects_bad_kind_offset_and_schedule(db_session):
+async def test_import_rejects_bad_kind_offset_and_schedule(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()
     base = {
@@ -199,20 +257,29 @@ async def test_import_rejects_bad_kind_offset_and_schedule(db_session):
                    "schedule": [{"dose": 10, "interval_days": 1}]}],
     }
     with pytest.raises(ValueError, match="kind"):
-        await hrt_template_service.import_template(db_session, {**base, "kind": "yolo"})
+        await hrt_template_service.import_template(db_session, {**base, "kind": "yolo"},
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     bad_offset = {**base, "kind": "course", "items": [
         {**base["items"][0], "start_offset_days": -3}
     ]}
     with pytest.raises(ValueError, match="start_offset_days"):
-        await hrt_template_service.import_template(db_session, bad_offset)
+        await hrt_template_service.import_template(db_session, bad_offset,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     bad_schedule = {**base, "kind": "course", "items": [
         {"compound_key": "oxandrolone", "schedule": [{"dose": -5, "interval_days": 1}]}
     ]}
     with pytest.raises(ValueError, match="positive"):
-        await hrt_template_service.import_template(db_session, bad_schedule)
+        await hrt_template_service.import_template(db_session, bad_schedule,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
 
 
-async def test_import_normalizes_schedule_via_validator(db_session):
+async def test_import_normalizes_schedule_via_validator(db_session, owner_write):
     """Pasted JSON can carry junk keys — the stored schedule keeps known keys only."""
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()
@@ -223,7 +290,10 @@ async def test_import_normalizes_schedule_via_validator(db_session):
                    "schedule": [{"dose": 20, "interval_days": 1,
                                  "duration_days": 14, "evil": "<script>"}]}],
     }
-    imported = await hrt_template_service.import_template(db_session, payload)
+    imported = await hrt_template_service.import_template(db_session, payload,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
     await db_session.refresh(imported)
     assert imported.items[0].schedule == [
@@ -232,13 +302,15 @@ async def test_import_normalizes_schedule_via_validator(db_session):
 
 
 # ── Route-level flows ─────────────────────────────────────────────────────────
-async def test_route_save_and_apply_template(auth_client, db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_route_save_and_apply_template(auth_client, db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     r = await auth_client.post(
         f"/hrt/cycle/{cycle.id}/save-template", data={"name": "UI template"},
     )
     assert r.status_code == 303
-    templates = await hrt_template_service.list_templates(db_session)
+    templates = await hrt_template_service.list_templates(db_session,
+        subject_id=owner_write.subject_id,
+    )
     assert [tp.name for tp in templates] == ["UI template"]
 
     start = (today_local() + timedelta(days=14)).isoformat()
@@ -250,10 +322,12 @@ async def test_route_save_and_apply_template(auth_client, db_session):
     assert "UI template" in page.text
 
 
-async def test_route_export_download_and_import(auth_client, db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_route_export_download_and_import(auth_client, db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     template = await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="Shared",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
 
@@ -275,7 +349,9 @@ async def test_route_export_download_and_import(auth_client, db_session):
         "/hrt/template/import", data={"payload": json.dumps(payload)},
     )
     assert r.status_code == 303
-    names = [tp.name for tp in await hrt_template_service.list_templates(db_session)]
+    names = [tp.name for tp in await hrt_template_service.list_templates(db_session,
+        subject_id=owner_write.subject_id,
+    )]
     assert sorted(names) == ["Shared", "Shared by a friend"]
 
 
@@ -285,10 +361,12 @@ async def test_route_import_invalid_payload_is_422(auth_client):
     assert "error" in r.json()
 
 
-async def test_route_template_rendered_on_dashboard(auth_client, db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_route_template_rendered_on_dashboard(auth_client, db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="Visible name",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     page = await auth_client.get("/hrt")
@@ -305,28 +383,36 @@ async def test_route_export_missing_template_is_404(auth_client):
     assert r.status_code == 404
 
 
-async def test_create_from_template_same_day_supersedes(db_session):
+async def test_create_from_template_same_day_supersedes(db_session, owner_write):
     """Applying a template on the active cycle's own start date must win the
     active_cycle tie-break, exactly like a hand-built same-day cycle."""
-    cycle = await _build_staggered_cycle(db_session)
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     template = await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="Same day",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     new_cycle = await hrt_template_service.create_cycle_from_template(
         db_session, template.id, start_date=cycle.start_date,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
-    active = await hrt_cycle_service.active_cycle(db_session)
+    active = await hrt_cycle_service.active_cycle(db_session,
+        subject_id=owner_write.subject_id,
+    )
     assert active.id == new_cycle.id
     await db_session.refresh(cycle)
     assert cycle.end_date == cycle.start_date  # clamped, not inverted
 
 
-async def test_route_create_from_template_garbage_date_is_422(auth_client, db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_route_create_from_template_garbage_date_is_422(auth_client, db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     template = await hrt_template_service.save_cycle_as_template(
         db_session, cycle.id, name="T",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     r = await auth_client.post(
@@ -348,73 +434,99 @@ def _payload(name="P", kind="course", items=None):
     }
 
 
-async def test_import_rejects_empty_name(db_session):
+async def test_import_rejects_empty_name(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()
     with pytest.raises(ValueError, match="name"):
-        await hrt_template_service.import_template(db_session, _payload(name="   "))
+        await hrt_template_service.import_template(db_session, _payload(name="   "),
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
 
 
-async def test_import_rejects_too_many_items(db_session):
+async def test_import_rejects_too_many_items(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()
     item = {"compound_key": "oxandrolone", "schedule": [{"dose": 20, "interval_days": 1}]}
     with pytest.raises(ValueError, match="too many"):
         await hrt_template_service.import_template(
             db_session, _payload(items=[item] * 51),
-        )
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
 
 
-async def test_import_rejects_unknown_unit(db_session):
+async def test_import_rejects_unknown_unit(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()
     bad = _payload(items=[{"compound_key": "oxandrolone", "unit": "pills",
                            "schedule": [{"dose": 20, "interval_days": 1}]}])
     with pytest.raises(ValueError, match="unit"):
-        await hrt_template_service.import_template(db_session, bad)
+        await hrt_template_service.import_template(db_session, bad,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
 
 
-async def test_import_preserves_notes(db_session):
+async def test_import_preserves_notes(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()
     payload = _payload(name="Noted")
     payload["note"] = "template-level note"
     payload["items"][0]["note"] = "item-level note"
-    imported = await hrt_template_service.import_template(db_session, payload)
+    imported = await hrt_template_service.import_template(db_session, payload,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
     await db_session.refresh(imported)
     assert imported.note == "template-level note"
     assert imported.items[0].note == "item-level note"
 
 
-async def test_import_exact_duplicate_rejected(db_session):
+async def test_import_exact_duplicate_rejected(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()
-    await hrt_template_service.import_template(db_session, _payload(name="Dup"))
+    await hrt_template_service.import_template(db_session, _payload(name="Dup"),
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
     with pytest.raises(ValueError, match="already imported"):
-        await hrt_template_service.import_template(db_session, _payload(name="Dup"))
+        await hrt_template_service.import_template(db_session, _payload(name="Dup"),
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
 
 
-async def test_import_name_clash_gets_numbered_name(db_session):
+async def test_import_name_clash_gets_numbered_name(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()
-    await hrt_template_service.import_template(db_session, _payload(name="Clash"))
+    await hrt_template_service.import_template(db_session, _payload(name="Clash"),
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
     other = _payload(name="Clash", items=[
         {"compound_key": "oxandrolone", "schedule": [{"dose": 40, "interval_days": 1}]}
     ])
-    imported = await hrt_template_service.import_template(db_session, other)
+    imported = await hrt_template_service.import_template(db_session, other,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await db_session.commit()
     assert imported.name == "Clash (2)"
 
 
-async def test_hrt_page_renders_in_english(auth_client, db_session, redis):
+async def test_hrt_page_renders_in_english(auth_client, db_session, redis, owner_write):
     """The ru-only fixture hid EN regressions — render the page in English."""
     from vitals.services import language_service
 
-    cycle = await _build_staggered_cycle(db_session)
-    await hrt_template_service.save_cycle_as_template(db_session, cycle.id, name="EN tpl")
+    cycle = await _build_staggered_cycle(db_session, owner_write)
+    await hrt_template_service.save_cycle_as_template(db_session, cycle.id, name="EN tpl",
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     await language_service.set_language(db_session, "en", redis)
     await db_session.commit()
     page = await auth_client.get("/hrt")
@@ -424,37 +536,46 @@ async def test_hrt_page_renders_in_english(auth_client, db_session, redis):
 
 
 # ── Item editing (no delete + re-add) ─────────────────────────────────────────
-async def test_update_cycle_item_dose_and_offset(db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_update_cycle_item_dose_and_offset(db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     await db_session.refresh(cycle)
     item = cycle.items[0]  # flat test-e segment
     updated = await hrt_cycle_service.update_cycle_item(
         db_session, item.id,
         schedule=[{"dose": 300, "interval_days": 7, "duration_days": 70}],
         start_offset_days=7,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
     )
     await db_session.commit()
     assert updated.schedule[0]["dose"] == 300.0
     assert updated.start_offset_days == 7
 
 
-async def test_update_cycle_item_validates(db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_update_cycle_item_validates(db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     await db_session.refresh(cycle)
     item = cycle.items[0]
     with pytest.raises(ValueError):
         await hrt_cycle_service.update_cycle_item(
             db_session, item.id, start_offset_days=-1,
-        )
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
     with pytest.raises(ValueError):
         await hrt_cycle_service.update_cycle_item(
             db_session, item.id, schedule=[{"dose": -5, "interval_days": 1}],
-        )
-    assert await hrt_cycle_service.update_cycle_item(db_session, 99999) is None
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
+    assert await hrt_cycle_service.update_cycle_item(db_session, 99999,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    ) is None
 
 
-async def test_route_edit_item_flat(auth_client, db_session):
-    cycle = await _build_staggered_cycle(db_session)
+async def test_route_edit_item_flat(auth_client, db_session, owner_write):
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     await db_session.refresh(cycle)
     flat = next(i for i in cycle.items if i.compound_key == "testosterone_enanthate")
     r = await auth_client.post(
@@ -468,9 +589,9 @@ async def test_route_edit_item_flat(auth_client, db_session):
     assert flat.start_offset_days == 7
 
 
-async def test_route_edit_item_week_only_keeps_schedule(auth_client, db_session):
+async def test_route_edit_item_week_only_keeps_schedule(auth_client, db_session, owner_write):
     """The complex-schedule form posts only start_week — schedule must survive."""
-    cycle = await _build_staggered_cycle(db_session)
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     await db_session.refresh(cycle)
     winny = next(i for i in cycle.items if i.compound_key == "stanozolol_oral")
     before = winny.schedule
@@ -483,10 +604,10 @@ async def test_route_edit_item_week_only_keeps_schedule(auth_client, db_session)
     assert winny.start_offset_days == 35  # (6-1)*7
 
 
-async def test_route_edit_item_missing_404_and_bad_week_422(auth_client, db_session):
+async def test_route_edit_item_missing_404_and_bad_week_422(auth_client, db_session, owner_write):
     r = await auth_client.post("/hrt/cycle/item/99999/edit", data={"start_week": "2"})
     assert r.status_code == 404
-    cycle = await _build_staggered_cycle(db_session)
+    cycle = await _build_staggered_cycle(db_session, owner_write)
     await db_session.refresh(cycle)
     r = await auth_client.post(
         f"/hrt/cycle/item/{cycle.items[0].id}/edit", data={"start_week": "1.5"},
