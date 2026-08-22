@@ -329,7 +329,7 @@ tbody tr:hover td { background: var(--surface-2); }
   <p class="standfirst">A self-hosted personal health record — fifteen domains, four external integrations, one data lake — being rebuilt so that every row belongs to a named person instead of to the installation. This is what the service is now, mid-conversion, and what changed underneath it.</p>
   <div class="meta">
     <span><b>62</b> tables</span>
-    <span><b>50</b> migrations</span>
+    <span><b>51</b> migrations</span>
     <span><b>15</b> domains</span>
     <span><b>88</b> services</span>
     <span><b>4,443</b> tests</span>
@@ -674,7 +674,7 @@ flowchart TB
   ctx["<b>1 · AccessContext</b><br/><span style='font-size:11px'>principal · subject · owner<br/>roles · live grants</span>"]
   pol{"<b>2 · Policy</b><br/><span style='font-size:11px'>is_allowed(context, request)</span>"}
   svc["<b>3 · Scoped service</b><br/><span style='font-size:11px'>subject_id is mandatory<br/>in every signature</span>"]
-  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 41 tables<br/>subject_id = session setting</span>"]
+  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 51 tables<br/>every one with a subject</span>"]
   rows[("rows")]
   deny["403<br/><span style='font-size:11px'>says nothing about<br/>whose record, or whether<br/>it exists</span>"]
 
@@ -785,7 +785,7 @@ flowchart LR
       <div class="n">PR-04</div>
       <div>
         <h4>Scoped services, the contract, and RLS<span class="state done">merged</span></h4>
-        <p>266 functions that would read across the whole installation when the caller omitted a scope, reduced to zero. The unscoped conflict path deleted. Every ownerless writer retired. Then <code>NOT NULL</code> on 39 columns, and <code>FORCE</code> row-level security on 41 tables.</p>
+        <p>266 functions that would read across the whole installation when the caller omitted a scope, reduced to zero. The unscoped conflict path deleted. Every ownerless writer retired. Then <code>NOT NULL</code> on 39 columns, and <code>FORCE</code> row-level security on every table that names a subject.</p>
       </div>
     </div>
     <div class="stage">

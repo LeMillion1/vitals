@@ -41,6 +41,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- **Revision 0051 finishes row security.** The ten tables with a nullable
+  subject get a policy too, in two groups: the catalogs and the platform's own
+  rows share (*mine or the installation's*), the inherited children hide (*mine*
+  only, so a row the backfill has not reached stays invisible). Every table with
+  a `subject_id` column is now covered by one revision or the other, and a test
+  asserts there is no third state.
+- Which group a table joins follows from the ownership registry — and for an
+  inherited child, from its parent's classification.
+  `hrt_compound_components` shares rather than hides because its parent is a
+  mixed catalog, so a component of a curated compound belongs to nobody.
+
 - **The policy engine has a caller.** `vitals/access.py` had been complete and
   unused since PR-02; `access_resolution.resolve_access_context` now builds a
   real `AccessContext` and `require_access` decides one exact resource and

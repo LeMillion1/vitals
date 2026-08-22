@@ -1448,13 +1448,32 @@ and `users` are the roots the boundary is defined *from* and carry no policy;
 `integration_connections` does, and the resolver's own lookup would come back
 empty against an unbound session.
 
-Two groups are deliberately not covered by this blanket policy. `system_alerts`
-(subject `OPTIONAL`) and `conflict_rules` (`MIXED`) need "mine or the
-installation's" rather than "mine" — a platform alert and a curated rule belong
-to nobody and must stay visible. And the inherited children carry a nullable
-subject whose NULL means something different per table: unmigrated for
-`hevy_sets`, curated-and-global for `hrt_compound_components`. Each needs its own
-reviewed predicate rather than a shared one.
+Revision 0051 covers the ten tables 0050 left out, with two predicates rather
+than one, because their nullable subject does not mean the same thing.
+
+`conflict_rules`, `hrt_compounds`, `hrt_compound_components`, `system_alerts`
+and `audit_events` share: a NULL subject is a real state — the checked-in
+catalogs, the platform's own alerts, its audit journal — so the predicate is
+*mine or the installation's*. A curated safety rule nobody can see is a rule
+that stops firing.
+
+The five inherited children hide: `body_scan_metrics`, `hevy_exercises`,
+`hevy_sets`, `hrt_cycle_items` and `hrt_cycle_template_items` take their subject
+from a parent whose own subject is mandatory, so a NULL there is a row the
+backfill has not reached. It stays invisible, exactly as an unstamped row is
+everywhere else. `hrt_compound_components` looks like one of them and is not:
+its parent is a *mixed* catalog, so a component of a curated compound
+legitimately belongs to nobody. Which group a table joins therefore follows from
+the registry — for a child, from its parent's classification — and a test pins
+that rather than trusting the choice to have been made deliberately.
+
+What the shared predicate does not claim: it keeps one patient's custom rule
+away from another patient, which is what row security is for. It does not keep
+operational detail out of patient-facing surfaces — a platform alert is visible
+to a bound session, and excluding it from a report stays the application's job
+through `alerts_service.is_platform_alert_key`. That is a question about content
+rather than ownership, and answering it in a policy would have made the
+installation's own alerts invisible to the code that manages them.
 
 Neither the fast suite nor the ordinary integration tests are affected, because
 both build their schema with `create_all`, which knows about columns and

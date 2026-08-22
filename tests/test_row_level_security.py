@@ -404,3 +404,194 @@ async def test_real_postgres_binding_survives_a_commit_and_refuses_a_switch(
     finally:
         await restricted.dispose()
         await admin.dispose()
+
+
+# ── The tables revision 0050 deliberately left out ───────────────────────────
+
+def _extension_module():
+    spec = importlib.util.spec_from_file_location(
+        "_rev0051",
+        REPOSITORY_ROOT
+        / "migrations"
+        / "versions"
+        / "0051_row_security_for_catalogs_and_children.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_every_table_with_a_subject_is_now_covered_by_one_policy_or_the_other():
+    """No table with a subject column may sit outside both revisions.
+
+    A table that has the column and no policy is the failure this pair of
+    migrations exists to prevent, and it would be invisible: the queries work,
+    the tests pass, and the boundary simply is not there.
+    """
+
+    from vitals.models.base import Base
+
+    with_subject = {
+        name
+        for name, table in Base.metadata.tables.items()
+        if "subject_id" in table.columns
+    }
+    covered = (
+        set(_revision_module().SUBJECT_ISOLATED_TABLES)
+        | set(_extension_module().SHARED_WITH_INSTALLATION)
+        | set(_extension_module().INHERITED_CHILDREN)
+    )
+    assert with_subject - covered == set()
+    assert covered - with_subject == set()
+
+
+#: Each inherited child and the table it takes its subject from. A child can
+#: only legitimately have none when its parent can — which is why
+#: ``hrt_compound_components`` shares rather than hides: a component of a
+#: curated compound belongs to the installation, exactly like the compound.
+_CHILD_PARENT = {
+    "body_scan_metrics": "body_scans",
+    "hevy_exercises": "hevy_workouts",
+    "hevy_sets": "hevy_workouts",
+    "hrt_cycle_items": "hrt_cycles",
+    "hrt_cycle_template_items": "hrt_cycle_templates",
+    "hrt_compound_components": "hrt_compounds",
+}
+
+
+def test_the_two_predicates_match_what_a_null_subject_means():
+    """Which group a table joins follows from the registry, not from taste.
+
+    The question each predicate answers is the same one: is a NULL subject a
+    real state, or a row the backfill has not reached? Sharing a row that is
+    merely unmigrated would show one person's half-copied data to the next;
+    hiding a row that genuinely belongs to the installation would make the
+    safety catalog invisible, and a conflict rule nobody can see stops firing.
+    """
+
+    extension = _extension_module()
+
+    for table_name in extension.SHARED_WITH_INSTALLATION:
+        spec = OWNERSHIP_REGISTRY[table_name]
+        if spec.subject is TargetColumn.INHERITED:
+            parent = _CHILD_PARENT[table_name]
+            assert OWNERSHIP_REGISTRY[parent].subject is TargetColumn.MIXED, (
+                f"{table_name} shares its NULL rows, which is only right while "
+                f"its parent {parent} may legitimately have none"
+            )
+        else:
+            assert spec.subject in (TargetColumn.MIXED, TargetColumn.OPTIONAL), (
+                f"{table_name} shares rows with the installation, so a NULL "
+                "subject has to be a real state, not an unfinished backfill"
+            )
+
+    for table_name in extension.INHERITED_CHILDREN:
+        assert OWNERSHIP_REGISTRY[table_name].subject is TargetColumn.INHERITED
+        parent = _CHILD_PARENT[table_name]
+        assert OWNERSHIP_REGISTRY[parent].subject is TargetColumn.REQUIRED, (
+            f"{table_name} hides its NULL rows, which is only right while its "
+            f"parent {parent} must always name a subject"
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_postgres_catalogs_are_shared_and_children_are_not(
+    db_session,
+    monkeypatch,
+):
+    """A curated rule is everybody's; an unstamped child is nobody's.
+
+    Both are NULL-subject rows, and the difference between them is the whole
+    reason these tables needed their own revision. Getting it backwards would
+    either hide the safety catalog — a conflict rule nobody can see stops firing
+    — or show one person's half-migrated workout to the next.
+    """
+
+    from alembic.config import Config as AlembicConfig
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    try:
+        mine, theirs = await _seed_two_subjects(admin)
+
+        async with admin.begin() as connection:
+            # A curated rule belongs to the installation; a custom one to a person.
+            for subject_id, message in (
+                (None, "curated"),
+                (mine, "mine"),
+                (theirs, "theirs"),
+            ):
+                await connection.execute(
+                    sa.text(
+                        "INSERT INTO conflict_rules (subject_id, rule_type, "
+                        "domain_a, condition_a, domain_b, condition_b, severity, "
+                        "message, active, created_at, updated_at) VALUES "
+                        "(:subject, 'hard_block', 'genetics', '{}'::jsonb, "
+                        "'supplements', '{}'::jsonb, 'block', :message, true, "
+                        "now(), now())"
+                    ),
+                    {"subject": subject_id, "message": message},
+                )
+            # A workout whose children the backfill has not reached.
+            workout_id = await connection.scalar(
+                sa.text(
+                    "INSERT INTO hevy_workouts (subject_id, "
+                    "integration_connection_id, external_id, domain, source, "
+                    "date, created_at, updated_at) SELECT :subject, id, "
+                    "'w-rls', 'workouts', 'hevy_api', current_date, now(), now() "
+                    "FROM integration_connections WHERE subject_id = :subject "
+                    "LIMIT 1 RETURNING id"
+                ),
+                {"subject": mine},
+            )
+            if workout_id is not None:
+                await connection.execute(
+                    sa.text(
+                        "INSERT INTO hevy_exercises (subject_id, workout_id, "
+                        "exercise_index, title, created_at, updated_at) VALUES "
+                        "(NULL, :workout, 0, 'Bench', now(), now())"
+                    ),
+                    {"workout": workout_id},
+                )
+
+        async with restricted.connect() as connection:
+            await connection.execute(
+                sa.text("SELECT set_config(:name, :value, false)"),
+                {"name": SUBJECT_SETTING, "value": str(mine)},
+            )
+            visible = {
+                row.message
+                for row in (
+                    await connection.execute(
+                        sa.text("SELECT message FROM conflict_rules")
+                    )
+                ).all()
+            }
+            # The checked-in catalog is seeded by the migrations, so the table
+            # holds more than these three; what matters is which of them landed.
+            assert {"curated", "mine"} <= visible
+            assert "theirs" not in visible, (
+                "the installation's catalog is shared; another person's rule is not"
+            )
+            # And the real curated catalog came through with it — a safety rule
+            # nobody can see is a safety rule that stops firing.
+            assert len(visible) > 2
+
+            if workout_id is not None:
+                unstamped = await connection.scalar(
+                    sa.text("SELECT count(*) FROM hevy_exercises")
+                )
+                assert unstamped == 0, (
+                    "a child the backfill has not reached belongs to nobody yet"
+                )
+    finally:
+        await restricted.dispose()
+        await admin.dispose()
