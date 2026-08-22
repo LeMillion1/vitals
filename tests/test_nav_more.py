@@ -58,7 +58,7 @@ async def test_status_card_reports_todays_weight_and_the_weeks_direction(db_sess
     first version reported "labs · 99 days ago" every single day."""
     for days_ago, kg in ((9, 87.0), (0, 86.1)):
         db_session.add(
-            WeightLog(subject_id=owner_write.subject_id, 
+            WeightLog(subject_id=owner_write.subject_id,
                 date=today_local() - timedelta(days=days_ago),
                 domain=WEIGHT_DOMAIN,
                 source=Source.MANUAL.value,
@@ -77,7 +77,7 @@ async def test_status_card_reports_todays_weight_and_the_weeks_direction(db_sess
 
 async def test_a_source_that_went_quiet_says_so_instead_of_a_number(db_session, owner_write, owned_by_legacy_subject, *, garmin_connection_id):
     db_session.add(
-        GarminDaily(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id,
             date=today_local() - timedelta(days=6),
             domain=GARMIN_DOMAIN,
             source=Source.GARMIN_API.value,
@@ -95,7 +95,7 @@ async def test_a_source_that_went_quiet_says_so_instead_of_a_number(db_session, 
 
 async def test_last_nights_sleep_reads_as_hours_and_minutes(db_session, owner_write, owned_by_legacy_subject, *, garmin_connection_id):
     db_session.add(
-        GarminDaily(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id,
             date=today_local(),
             domain=GARMIN_DOMAIN,
             source=Source.GARMIN_API.value,
@@ -120,7 +120,7 @@ async def test_a_domain_with_nothing_logged_yet_gets_no_row(db_session, owner_wr
 
 async def test_a_disabled_module_gets_no_row(db_session, owner_write, owned_by_legacy_subject, *, garmin_connection_id):
     db_session.add(
-        GarminDaily(integration_connection_id=garmin_connection_id, 
+        GarminDaily(integration_connection_id=garmin_connection_id,
             subject_id=owner_write.subject_id,
             date=today_local(),
             domain=GARMIN_DOMAIN,
@@ -160,7 +160,7 @@ async def test_status_card_survives_a_boosted_navigation(
     re-render the whole rail — the card vanished on every click and came back on
     every reload."""
     db_session.add(
-        GarminDaily(integration_connection_id=garmin_connection_id, 
+        GarminDaily(integration_connection_id=garmin_connection_id,
             subject_id=legacy_owner_roots.subject_id,
             date=today_local(),
             domain=GARMIN_DOMAIN,

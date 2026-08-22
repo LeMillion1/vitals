@@ -35,7 +35,7 @@ def _now_is_the_morning_after(monkeypatch):
 
 
 def _workout(external_id: str, on_date: date, title: str, *, hevy_connection_id, legacy_owner_roots) -> HevyWorkout:
-    return HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
+    return HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id,
         external_id=external_id,
         domain="hevy",
         date=on_date,
@@ -73,7 +73,7 @@ async def test_recovery_covers_the_period_not_just_the_latest_day(db_session, le
     """A "weekly" report used to be handed one night of recovery data."""
     for i in range(9):
         db_session.add(
-            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
                 domain="garmin",
                 source=Source.GARMIN_API.value,
                 date=DAY - timedelta(days=i),
@@ -103,7 +103,7 @@ async def test_period_is_handed_the_period_before_it_to_compare_against(hevy_con
     is the dashboard's job. Both windows come back in the same shape."""
     for i in range(14):
         db_session.add(
-            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
                 domain="garmin",
                 source=Source.GARMIN_API.value,
                 date=DAY - timedelta(days=i),
@@ -150,7 +150,7 @@ async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch,
     )
     for i in range(1, 8):
         db_session.add(
-            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
                 domain="garmin",
                 source=Source.GARMIN_API.value,
                 date=DAY - timedelta(days=i),
@@ -197,7 +197,7 @@ async def test_the_day_table_joins_the_domains_by_date(hevy_connection_id, db_se
     db_session.add_all(
         [
             _workout("w_joined", session_day, "Full body", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),
-            GarminDaily(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id, 
+            GarminDaily(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id,
                 domain="garmin",
                 source=Source.GARMIN_API.value,
                 date=session_day + timedelta(days=1),
@@ -313,7 +313,7 @@ async def test_a_long_window_carries_all_of_its_signals(db_session, legacy_owner
     days, per_day = 30, 10
     db_session.add_all(
         [
-            Signal(subject_id=legacy_owner_roots.subject_id, 
+            Signal(subject_id=legacy_owner_roots.subject_id,
                 date=DAY - timedelta(days=i),
                 domain="signals",
                 source=Source.TELEGRAM.value,
@@ -343,7 +343,7 @@ async def test_a_long_window_carries_all_of_its_signals(db_session, legacy_owner
 async def test_brief_context_stays_a_single_day(db_session, legacy_owner_roots, *, garmin_connection_id):
     """The explicit brief mode stays compact even though a 1-day report does not."""
     db_session.add(
-        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             domain="garmin",
             source=Source.GARMIN_API.value,
             date=DAY,

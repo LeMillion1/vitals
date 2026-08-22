@@ -25,7 +25,7 @@ def _use_test_factory(session_factory, monkeypatch, legacy_owner_roots):
 
 
 def test_serialize_row_keeps_the_data_and_drops_the_bookkeeping(*, legacy_owner_roots):
-    row = WeightLog(subject_id=legacy_owner_roots.subject_id, 
+    row = WeightLog(subject_id=legacy_owner_roots.subject_id,
         id=7, date=date(2026, 7, 1), weight_kg=88.4, note=None,
         domain="weight", source="manual", superseded=False,
     )
@@ -47,7 +47,7 @@ async def _one_night(db_session, *, garmin_connection_id, legacy_owner_roots):
     stages = [
         {"start": "2026-06-30T23:10:00", "end": "2026-07-01T00:05:00", "stage": "light"}
     ] * 28
-    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
         date=date(2026, 7, 1), domain="garmin", source="garmin",
         sleep_score=82, sleep_seconds=25200, sleep_start=datetime(2026, 6, 30, 23, 10),
         sleep_stages=stages,
@@ -86,7 +86,7 @@ async def test_sleep_detail_is_independent_of_intraday(garmin_connection_id, leg
 
 async def test_a_night_without_stages_says_nothing_at_all(db_session, *, garmin_connection_id, legacy_owner_roots):
     """No breadcrumb where there is no data — an empty column stays absent."""
-    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
         date=date(2026, 7, 2), domain="garmin", source="garmin", sleep_score=70
     ))
     await db_session.commit()

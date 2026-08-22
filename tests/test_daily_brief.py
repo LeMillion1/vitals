@@ -666,8 +666,9 @@ async def test_job_stays_quiet_on_an_empty_day_and_says_so_in_the_web(
     assert alert.resolved_by_user_id is None
 
 
-async def test_job_sends_once_a_day_and_clears_the_empty_alert(garmin_owned_scope, 
-    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
+async def test_job_sends_once_a_day_and_clears_the_empty_alert(
+    garmin_owned_scope,
+    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write,
 ):
     """A re-run of the 11:00 job is a no-op, not a second ping: Telegram retries
     and APScheduler misfires both replay a job."""
@@ -724,8 +725,9 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(garmin_owned_scop
     assert alert.resolved_by_user_id is None
 
 
-async def test_brief_network_awaits_have_no_open_database_transaction(garmin_owned_scope, 
-    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
+async def test_brief_network_awaits_have_no_open_database_transaction(
+    garmin_owned_scope,
+    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write,
 ):
     """Neither OpenRouter nor Telegram may inherit ownership/read transactions."""
 
@@ -919,8 +921,9 @@ async def test_empty_alert_reconciliation_rejects_actor_attribution(
         )
 
 
-async def test_the_brief_says_what_its_buttons_are_for(garmin_owned_scope, 
-    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
+async def test_the_brief_says_what_its_buttons_are_for(
+    garmin_owned_scope,
+    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write,
 ):
     """Telegram renders the keyboard under the *whole* message, so four unlabelled
     taps ("зал", "лёгкий/обычный/тяжёлый день") arrive attached to nothing — and
@@ -943,8 +946,9 @@ async def test_the_brief_says_what_its_buttons_are_for(garmin_owned_scope,
     assert day_plan.HINT_FIX not in stored.content
 
 
-async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(garmin_owned_scope, 
-    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
+async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(
+    garmin_owned_scope,
+    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write,
 ):
     """The hint leaves with the last button — a line pointing at a keyboard that
     isn't there is worse than no line."""
@@ -973,8 +977,9 @@ async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(garmin_owned_sco
     assert day_plan.HINT_FIX not in notifier.sent[0]["text"]
 
 
-async def test_job_sends_the_brief_even_when_garmin_sync_explodes(garmin_owned_scope, 
-    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
+async def test_job_sends_the_brief_even_when_garmin_sync_explodes(
+    garmin_owned_scope,
+    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write,
 ):
     """B6 pulls Garmin first, but a failed pull is not a reason to go quiet — the
     brief goes out on whatever is already in the lake."""
@@ -1009,8 +1014,9 @@ def _patch_job(monkeypatch, notifier, llm):
 
 
 # ── The two buttons ───────────────────────────────────────────────────────────
-async def test_build_button_shows_the_brief_and_sends_nothing(garmin_owned_scope, 
-    auth_client, db_session, monkeypatch, owner_write
+async def test_build_button_shows_the_brief_and_sends_nothing(
+    garmin_owned_scope,
+    auth_client, db_session, monkeypatch, owner_write,
 ):
     from web.routers import reports as reports_router
 
@@ -1047,7 +1053,8 @@ async def test_build_button_shows_the_brief_and_sends_nothing(garmin_owned_scope
     assert "Сон 80" in page.text
 
 
-async def test_build_button_does_not_require_a_delivery_channel(garmin_owned_scope, 
+async def test_build_button_does_not_require_a_delivery_channel(
+    garmin_owned_scope,
     auth_client,
     db_session,
     monkeypatch, owner_write,

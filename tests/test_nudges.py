@@ -252,7 +252,8 @@ async def test_cooldown_holds_the_second_run(garmin_owned_scope, db_session, sco
     assert len(await scoped_nudges.run(now=later)) == 1
 
 
-async def test_owned_nudge_uses_opaque_durable_claim_and_transaction_free_send(garmin_owned_scope, 
+async def test_owned_nudge_uses_opaque_durable_claim_and_transaction_free_send(
+    garmin_owned_scope,
     db_session,
     legacy_owner_roots,
     monkeypatch,
@@ -299,7 +300,8 @@ async def test_owned_nudge_uses_opaque_durable_claim_and_transaction_free_send(g
     assert sent[0].dedupe_key == intent.idempotency_key
 
 
-async def test_ambiguous_owned_nudge_claim_holds_cooldown_without_retry(garmin_owned_scope, 
+async def test_ambiguous_owned_nudge_claim_holds_cooldown_without_retry(
+    garmin_owned_scope,
     db_session,
     legacy_owner_roots,
     monkeypatch,
@@ -336,7 +338,8 @@ async def test_ambiguous_owned_nudge_claim_holds_cooldown_without_retry(garmin_o
     assert intent.status == NotificationDeliveryStatus.AMBIGUOUS.value
 
 
-async def test_ambiguous_garmin_silence_claim_blocks_the_whole_episode(garmin_owned_scope, 
+async def test_ambiguous_garmin_silence_claim_blocks_the_whole_episode(
+    garmin_owned_scope,
     db_session,
     legacy_owner_roots,
     monkeypatch,

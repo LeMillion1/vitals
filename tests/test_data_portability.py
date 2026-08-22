@@ -179,23 +179,23 @@ async def _seed(session, *, garmin_connection_id, hevy_connection_id, legacy_own
     session.add_all(
         [
             # Two weights on one date: a superseded Garmin row + the active manual one.
-            WeightLog(subject_id=legacy_owner_roots.subject_id, 
+            WeightLog(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 4, 29), domain="weight", source="garmin_api",
                 weight_kg=119.1, raw_payload_id=rp.id, superseded=True,
             ),
-            WeightLog(subject_id=legacy_owner_roots.subject_id, 
+            WeightLog(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 4, 29), domain="weight", source="manual",
                 weight_kg=118.5, superseded=False, note="утро",
             ),
-            BodyMeasurement(subject_id=legacy_owner_roots.subject_id, 
+            BodyMeasurement(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 4, 29), domain="weight", source="manual",
                 waist_cm=100.0, neck_cm=42.0,
             ),
-            Injection(subject_id=legacy_owner_roots.subject_id, 
+            Injection(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 4, 28), domain="glp1", source="manual",
                 drug="tirzepatide", dose_mg=5.0, site="abdomen_left",
             ),
-            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
                 date=date(2026, 4, 29), domain="garmin", source="garmin_api",
                 raw_payload_id=rp.id, steps=8000, sleep_seconds=27000,
                 sleep_score=80, resting_hr=55,
@@ -209,7 +209,7 @@ async def _seed(session, *, garmin_connection_id, hevy_connection_id, legacy_own
                 ],
             ),
             # Per-activity detail — exercises JSONB round-trip stability.
-            GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+            GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
                 date=date(2026, 4, 29), domain="garmin", source="garmin_api",
                 external_id="act1", activity_type="running", name="Run",
                 elevation_gain_m=42.0, training_effect_aerobic=3.4,
@@ -217,29 +217,29 @@ async def _seed(session, *, garmin_connection_id, hevy_connection_id, legacy_own
                 splits=[{"index": 1, "distance_m": 1000.0, "avg_hr": 150}],
             ),
             # Intraday samples — the tall series table backing the daily scalars.
-            GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+            GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
                 date=date(2026, 4, 29), domain="garmin", source="garmin_api",
                 raw_payload_id=rp.id, series_type="stress",
                 ts=datetime(2026, 4, 29, 8, 0), value=43.0,
             ),
-            GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+            GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
                 date=date(2026, 4, 29), domain="garmin", source="garmin_api",
                 raw_payload_id=rp.id, series_type="body_battery",
                 ts=datetime(2026, 4, 29, 8, 0), value=72.0,
             ),
             # A nightly series, timestamped the evening before the date it's filed
             # under — the backup must not "helpfully" re-date it.
-            GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+            GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
                 date=date(2026, 4, 29), domain="garmin", source="garmin_api",
                 raw_payload_id=rp.id, series_type="sleep_hr",
                 ts=datetime(2026, 4, 28, 23, 10), value=58.0,
             ),
-            LabResult(subject_id=legacy_owner_roots.subject_id, 
+            LabResult(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 4, 1), domain="labs", source="lab_parser",
                 marker="glucose", value=5.1, unit="mmol/L", ref_low=3.9, ref_high=5.5,
                 flag="normal",
             ),
-            Supplement(subject_id=legacy_owner_roots.subject_id, 
+            Supplement(subject_id=legacy_owner_roots.subject_id,
                 domain="supplements", source="manual", name="Omega-3", key="omega3",
                 dose="2g", evidence="A", active=True,
             ),
@@ -249,7 +249,7 @@ async def _seed(session, *, garmin_connection_id, hevy_connection_id, legacy_own
     )
     await session.flush()
 
-    w = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
+    w = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id,
         date=date(2026, 4, 27), domain="workouts", source="hevy_api",
         external_id="w1", title="Push", program="A", duration_seconds=3600,
     )
@@ -557,7 +557,7 @@ async def test_full_import_blocks_raw_backfill_atomically_and_preserves_other_ph
         "block_raw_ownership_backfill_for_portability_v1_restore",
         tracked_block,
     )
-    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id, 
+    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id,
         domain=Domain.GENETICS.value,
         source="vcf_import",
         external_id="old-portability-raw",
@@ -707,7 +707,7 @@ async def test_full_import_completes_an_empty_raw_snapshot(
     db_session,
     legacy_owner_roots,
 ):
-    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id, 
+    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id,
         domain=Domain.GENETICS.value,
         source=Source.VCF_IMPORT.value,
         external_id="empty-restore-removes-old-raw",
@@ -2045,7 +2045,7 @@ async def test_day_context_post_load_rejection_rolls_back_whole_replacement(
     legacy_owner_roots,
     monkeypatch,
 ):
-    old = DayContext(subject_id=legacy_owner_roots.subject_id, 
+    old = DayContext(subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 8, 20),
         domain=Domain.SIGNALS.value,
         source=Source.MANUAL.value,
@@ -2295,7 +2295,7 @@ async def test_signal_post_load_rejection_rolls_back_whole_replacement(
     legacy_owner_roots,
     monkeypatch,
 ):
-    old = Signal(subject_id=legacy_owner_roots.subject_id, 
+    old = Signal(subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 8, 20),
         domain=Domain.SIGNALS.value,
         source=Source.MCP.value,
@@ -2338,7 +2338,7 @@ async def test_signal_post_load_rejection_rolls_back_whole_replacement(
 
 
 def _retained_shared_report(*, token: str = "retained-stage3k", legacy_owner_roots) -> SharedReport:
-    return SharedReport(subject_id=legacy_owner_roots.subject_id, 
+    return SharedReport(subject_id=legacy_owner_roots.subject_id,
         token=token,
         password_hash="$2b$04$synthetic-stage3k-hash",
         title="Synthetic retained report",
@@ -2522,7 +2522,7 @@ async def test_shared_report_post_load_rejection_rolls_back_whole_replacement(
     legacy_owner_roots,
     monkeypatch,
 ):
-    old = Signal(subject_id=legacy_owner_roots.subject_id, 
+    old = Signal(subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 8, 20),
         domain=Domain.SIGNALS.value,
         source=Source.MCP.value,
@@ -3432,7 +3432,7 @@ async def test_genetic_variant_post_load_rejection_rolls_back_whole_replacement(
     db_session,
     legacy_owner_roots,
 ):
-    old = GeneticVariant(subject_id=legacy_owner_roots.subject_id, 
+    old = GeneticVariant(subject_id=legacy_owner_roots.subject_id,
         domain=Domain.GENETICS.value,
         source=Source.MANUAL.value,
         gene="OLDGENE",
@@ -3553,7 +3553,7 @@ async def test_lab_result_post_load_rejection_rolls_back_whole_replacement(
     db_session,
     legacy_owner_roots,
 ):
-    old = LabResult(subject_id=legacy_owner_roots.subject_id, 
+    old = LabResult(subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 8, 20),
         domain=Domain.LABS.value,
         source=Source.MANUAL.value,
@@ -3676,7 +3676,7 @@ async def test_weight_log_post_load_rejection_rolls_back_whole_replacement(
     db_session,
     legacy_owner_roots,
 ):
-    old = WeightLog(subject_id=legacy_owner_roots.subject_id, 
+    old = WeightLog(subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 8, 20),
         domain=Domain.WEIGHT.value,
         source=Source.MANUAL.value,
@@ -3766,7 +3766,7 @@ async def test_raw_replacement_rejects_nonpositive_ids_before_mutation(
     monkeypatch,
     bad_id,
 ):
-    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id, 
+    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id,
         domain=Domain.GENETICS.value,
         source="vcf_import",
         external_id="positive-id-guard",
@@ -3815,7 +3815,7 @@ async def test_raw_restore_block_failure_is_bounded_and_does_not_start_replaceme
     monkeypatch,
     block_error,
 ):
-    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id, 
+    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id,
         domain=Domain.GENETICS.value,
         source="vcf_import",
         external_id="restore-block-failure-guard",
@@ -3851,7 +3851,7 @@ async def test_database_failure_is_bounded_and_caller_rollback_is_atomic(
     legacy_owner_roots,
     monkeypatch,
 ):
-    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id, 
+    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id,
         domain=Domain.GENETICS.value,
         source=Source.VCF_IMPORT.value,
         external_id="database-error-rollback-guard",
@@ -4058,7 +4058,7 @@ async def test_llm_export_includes_body_scans(db_session, *, legacy_owner_roots)
     appear in the curated LLM export — previously it was dropped entirely."""
     from vitals.models.body_scan import BodyScan, BodyScanMetric
 
-    scan = BodyScan(subject_id=legacy_owner_roots.subject_id, 
+    scan = BodyScan(subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 4, 20), domain="body_comp", source="body_scan", device="InBody 770"
     )
     db_session.add(scan)
@@ -4188,39 +4188,39 @@ async def _seed_every_domain(
                 scan_id=scan.id, metric_key="body_fat_pct", label="Percent Body Fat",
                 value=18.5, unit="%", category="composition",
             ),
-            NoiseMarker(subject_id=owner_write.subject_id, 
+            NoiseMarker(subject_id=owner_write.subject_id,
                 domain="weight", source="manual", start_date=d, reason="креатин",
             ),
-            DosePhase(subject_id=owner_write.subject_id, 
+            DosePhase(subject_id=owner_write.subject_id,
                 domain="glp1", source="manual", start_date=d, drug="tirzepatide", dose_mg=5.0,
             ),
-            SideEffect(subject_id=owner_write.subject_id, 
+            SideEffect(subject_id=owner_write.subject_id,
                 date=d, domain="glp1", source="manual", effect_type="nausea", severity=1,
             ),
-            GeneticVariant(subject_id=owner_write.subject_id, 
+            GeneticVariant(subject_id=owner_write.subject_id,
                 domain="genetics", source="vcf_import", gene="MTHFR", rsid="rs1801133",
                 genotype="CT", impact="Фолатный цикл", impact_domain="supplements",
             ),
             SkincareLog(subject_id=owner_write.subject_id, date=d, domain="skincare", source="manual", retinoid=True),
-            SkincareObservation(subject_id=owner_write.subject_id, 
+            SkincareObservation(subject_id=owner_write.subject_id,
                 date=d, domain="skincare", source="manual", inflammation=2, zone="лоб",
             ),
-            MealLog(subject_id=owner_write.subject_id, 
+            MealLog(subject_id=owner_write.subject_id,
                 date=d, domain="nutrition", source="manual", name="Курица с рисом",
                 calories=520, protein_g=45,
             ),
             Milestone(subject_id=owner_write.subject_id, domain="weight", name="100 кг", target_value=100.0, target_unit="кг"),
-            WeeklyDigest(subject_id=owner_write.subject_id, 
+            WeeklyDigest(subject_id=owner_write.subject_id,
                 date=d, domain="milestones", source="manual", content="Неделя прошла ровно.",
             ),
-            Annotation(subject_id=owner_write.subject_id, 
+            Annotation(subject_id=owner_write.subject_id,
                 date=d, domain="timeline", source="manual", kind="travel", title="Поездка",
             ),
-            Signal(subject_id=owner_write.subject_id, 
+            Signal(subject_id=owner_write.subject_id,
                 date=d, domain="signals", source="telegram", kind="symptom",
                 key="head_ache", value_num=4, batch_id="b1", note="голова раскалывается",
             ),
-            DayContext(subject_id=owner_write.subject_id, 
+            DayContext(subject_id=owner_write.subject_id,
                 date=d, domain="signals", source="manual", answers={"remote": True},
             ),
         ]
@@ -4436,7 +4436,7 @@ async def test_backup_neither_carries_nor_resurrects_shared_reports(db_session, 
     from vitals.utils.timeutils import now_local
 
     db_session.add(
-        SharedReport(subject_id=legacy_owner_roots.subject_id, 
+        SharedReport(subject_id=legacy_owner_roots.subject_id,
             token="tok-abc", password_hash="$2b$04$hash", title="Endocrinologist",
             domains=["labs"], period_start=date(2026, 3, 1), period_end=date(2026, 3, 30),
             snapshot={"blocks": {"labs": {"markers": [{"marker": "Ферритин"}]}}},

@@ -21,7 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
     IntegrationConnectionStatus,
-    IntegrationConnectionType,
     IntegrationProvider,
     UserStatus,
 )

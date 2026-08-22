@@ -142,7 +142,7 @@ async def test_unowned_legacy_rows_are_outside_every_scope(db_session, *, legacy
     """
     identity = await _identity(db_session, "nutrition-legacy-owner")
     on_date = date(2026, 8, 19)
-    legacy = MealLog(subject_id=legacy_owner_roots.subject_id, 
+    legacy = MealLog(subject_id=legacy_owner_roots.subject_id,
         domain=Domain.NUTRITION.value,
         source=Source.MANUAL.value,
         date=on_date,

@@ -106,7 +106,7 @@ def _stored_brief(
         blocks.append(day)
     if prose:
         blocks.append(compose.Block(compose.KIND_NARRATIVE, prose, 90))
-    return WeeklyDigest(subject_id=legacy_owner_roots.subject_id, 
+    return WeeklyDigest(subject_id=legacy_owner_roots.subject_id,
         date=today_local(),
         actor_user_id=actor_user_id,
         integration_connection_id=integration_connection_id,
@@ -177,7 +177,7 @@ async def test_a_header_only_brief_falls_back_to_the_computed_sentence(db_sessio
 async def test_yesterdays_brief_does_not_stand_in_for_today(db_session, legacy_owner_roots):
     """A narrative is about a day. Yesterday's read as today's is worse than none."""
     db_session.add(
-        WeeklyDigest(subject_id=legacy_owner_roots.subject_id, 
+        WeeklyDigest(subject_id=legacy_owner_roots.subject_id,
             date=today_local() - timedelta(days=1),
             actor_user_id=legacy_owner_roots.user_id,
             domain=INSIGHTS_DOMAIN,
@@ -352,7 +352,7 @@ async def test_recovery_advice_arrives_as_an_observation(db_session, legacy_owne
     from vitals.models.garmin import GarminDaily
 
     db_session.add(
-        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=today_local(),
             domain=Domain.GARMIN.value,
             source=Source.GARMIN_API.value,

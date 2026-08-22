@@ -25,9 +25,11 @@ from vitals.utils.timeutils import now_local, today_local
 KEY = "weight.noisy_period_active"
 
 
-async def _raise(session, *, key: str = KEY, entity: str = "", severity: str = Severity.INFO.value,
-                 message: str = "шумный период", domain: str = Domain.WEIGHT.value,
-                 overridden: bool = False):
+async def _raise(
+    session, *, key: str = KEY, entity: str = "", severity: str = Severity.INFO.value,
+    message: str = "шумный период", domain: str = Domain.WEIGHT.value,
+    overridden: bool = False,
+):
     return await alerts_service.raise_alert(
         session, domain=domain, severity=severity, message=message,
         alert_key=key, entity_ref=entity, overridden=overridden,

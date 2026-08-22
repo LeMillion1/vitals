@@ -108,7 +108,7 @@ async def test_snapshot_is_frozen_against_later_edits(db_session, *, legacy_owne
 async def test_unticked_domain_is_absent(db_session, *, legacy_owner_roots):
     await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     db_session.add(
-        Supplement(subject_id=legacy_owner_roots.subject_id, 
+        Supplement(subject_id=legacy_owner_roots.subject_id,
             domain="supplements", source="manual",
             name="Creatine", key="creatine", dose="5 g", active=True,
         )
@@ -130,7 +130,7 @@ async def test_unticked_domain_is_absent(db_session, *, legacy_owner_roots):
 @pytest.mark.asyncio
 async def test_disabled_module_cannot_be_published(db_session, *, legacy_owner_roots):
     db_session.add(
-        Supplement(subject_id=legacy_owner_roots.subject_id, 
+        Supplement(subject_id=legacy_owner_roots.subject_id,
             domain="supplements", source="manual",
             name="Creatine", key="creatine", dose="5 g", active=True,
         )
@@ -157,7 +157,7 @@ async def test_progress_photos_never_reach_a_snapshot(db_session, *, legacy_file
     including under the preset that asks for everything."""
     await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     db_session.add(
-        ProgressPhoto(subject_id=legacy_owner_roots.subject_id, file_asset_id=legacy_file_asset_id, 
+        ProgressPhoto(subject_id=legacy_owner_roots.subject_id, file_asset_id=legacy_file_asset_id,
             date=date(2026, 3, 10), domain="weight", source="manual",
             file_key="secret-progress-photo.jpg",
         )
@@ -179,17 +179,17 @@ async def test_progress_photos_never_reach_a_snapshot(db_session, *, legacy_file
 async def test_labs_carry_range_and_history_and_honour_flagged_only(db_session, *, legacy_owner_roots):
     db_session.add_all(
         [
-            LabResult(subject_id=legacy_owner_roots.subject_id, 
+            LabResult(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 1, 5), domain="labs", source="manual",
                 marker="Ферритин", value=31.0, unit="нг/мл", ref_low=30, ref_high=400,
                 flag="normal",
             ),
-            LabResult(subject_id=legacy_owner_roots.subject_id, 
+            LabResult(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 3, 10), domain="labs", source="manual",
                 marker="Ферритин", value=18.0, unit="нг/мл", ref_low=30, ref_high=400,
                 flag="low",
             ),
-            LabResult(subject_id=legacy_owner_roots.subject_id, 
+            LabResult(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 3, 10), domain="labs", source="manual",
                 marker="Глюкоза", value=5.0, unit="ммоль/л", ref_low=3.9, ref_high=6.1,
                 flag="normal",
@@ -224,12 +224,12 @@ async def test_labs_of_the_window_survive_a_bigger_history_after_it(db_session, 
     says "every marker measured in the window" and carries none of them."""
     db_session.add_all(
         [
-            LabResult(subject_id=legacy_owner_roots.subject_id, 
+            LabResult(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 1, 5), domain="labs", source="manual",
                 marker="Ферритин", value=31.0, unit="нг/мл", ref_low=30, ref_high=400,
                 flag="normal",
             ),
-            LabResult(subject_id=legacy_owner_roots.subject_id, 
+            LabResult(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 3, 10), domain="labs", source="manual",
                 marker="Ферритин", value=18.0, unit="нг/мл", ref_low=30, ref_high=400,
                 flag="low",
@@ -238,7 +238,7 @@ async def test_labs_of_the_window_survive_a_bigger_history_after_it(db_session, 
     )
     db_session.add_all(
         [
-            LabResult(subject_id=legacy_owner_roots.subject_id, 
+            LabResult(subject_id=legacy_owner_roots.subject_id,
                 date=END + timedelta(days=1 + i // 40), domain="labs", source="manual",
                 marker=f"Маркер {i:04d}", value=1.0, flag="normal",
             )
@@ -293,7 +293,7 @@ async def test_body_metrics_carry_the_catalogue_unit_not_the_sheets(db_session, 
     """An InBody printout is in English; the document is not."""
     from vitals.models.body_scan import BodyScan, BodyScanMetric
 
-    scan = BodyScan(subject_id=legacy_owner_roots.subject_id, 
+    scan = BodyScan(subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 3, 10), domain=Domain.BODY_COMPOSITION.value,
         source="manual", device="InBody",
     )
@@ -453,18 +453,18 @@ async def test_symptoms_carry_the_patients_words_not_the_apps(db_session, *, leg
 
     db_session.add_all(
         [
-            Signal(subject_id=legacy_owner_roots.subject_id, 
+            Signal(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 3, 12), domain="signals", source="telegram",
                 kind=SignalKind.SYMPTOM.value, key="headache", batch_id="b1",
                 note="голова раскалывается", value_num=4.0,
             ),
             # No wording of his own — nothing but the slug, so nothing to print.
-            Signal(subject_id=legacy_owner_roots.subject_id, 
+            Signal(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 3, 13), domain="signals", source="telegram",
                 kind=SignalKind.SYMPTOM.value, key="low_heart_rate", batch_id="b2", value_num=40.0,
             ),
             # A measurement the parser filed under a symptom: not a severity.
-            Signal(subject_id=legacy_owner_roots.subject_id, 
+            Signal(subject_id=legacy_owner_roots.subject_id,
                 date=date(2026, 3, 14), domain="signals", source="telegram",
                 kind=SignalKind.SYMPTOM.value, key="pulse", batch_id="b3", note="пульс низкий",
                 value_num=40.0,

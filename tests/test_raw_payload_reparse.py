@@ -84,7 +84,7 @@ async def test_sweep_domain_skips_a_row_that_already_has_a_normalized_child(db_s
         db_session, domain=hevy_service.DOMAIN, source=Source.HEVY_API.value,
         external_id="w-done", payload={"ok": True},
     )
-    db_session.add(HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
+    db_session.add(HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id,
         external_id="w-done", domain=hevy_service.DOMAIN, date=date(2026, 6, 10), raw_payload_id=raw.id,
     ))
     await db_session.flush()

@@ -262,7 +262,7 @@ async def test_get_garmin_metrics_exposes_sleep_series_and_stages(
 
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     db_session.add_all([
-        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             sleep_score=78,
             sleep_stages=[
@@ -270,11 +270,11 @@ async def test_get_garmin_metrics_exposes_sleep_series_and_stages(
             ],
         ),
         # Recorded the evening before, filed under the night's date.
-        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             series_type="sleep_hr", ts=datetime(2026, 6, 9, 23, 10), value=58.0,
         ),
-        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             series_type="sleep_spo2", ts=datetime(2026, 6, 10, 1, 0), value=91.0,
         ),
@@ -289,8 +289,9 @@ async def test_get_garmin_metrics_exposes_sleep_series_and_stages(
     assert result["daily_recovery"][0]["sleep_stages"][0]["stage"] == "deep"
 
 
-async def test_get_garmin_metrics_intraday_caps_and_flags_truncation(garmin_connection_id, legacy_owner_roots, 
-    db_session, session_factory, monkeypatch
+async def test_get_garmin_metrics_intraday_caps_and_flags_truncation(
+    garmin_connection_id, legacy_owner_roots,
+    db_session, session_factory, monkeypatch,
 ):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     monkeypatch.setattr(mcp_router, "INTRADAY_POINT_CAP", 2)
@@ -308,15 +309,15 @@ async def _seed_intraday(db_session, *, garmin_connection_id, legacy_owner_roots
     from vitals.models.garmin import GarminIntraday
 
     db_session.add_all([
-        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             series_type="stress", ts=datetime(2026, 6, 10, 8, 0), value=43.0,
         ),
-        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             series_type="stress", ts=datetime(2026, 6, 10, 8, 3), value=37.0,
         ),
-        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             series_type="body_battery", ts=datetime(2026, 6, 10, 8, 0), value=72.0,
         ),

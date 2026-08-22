@@ -137,8 +137,10 @@ async def _gateway(session, roots):
     return row
 
 
-def _raw(*, roots, connection=None, file_asset=None, actor=False,
-         source=Source.BODY_SCAN.value, external_id=None, unowned=False):
+def _raw(
+    *, roots, connection=None, file_asset=None, actor=False,
+    source=Source.BODY_SCAN.value, external_id=None, unowned=False,
+):
     return RawPayload(
         subject_id=None if unowned else roots.subject_id,
         actor_user_id=roots.user_id if actor else None,

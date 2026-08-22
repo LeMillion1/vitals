@@ -307,13 +307,13 @@ async def test_csp_headers_and_no_cdn_references(client):
     """Test that Content-Security-Policy headers are sent and no external CDNs are referenced in base template."""
     response = await client.get("/login", headers={"Accept": "text/html"})
     assert response.status_code == 200
-    
+
     # Check CSP headers
     assert "Content-Security-Policy" in response.headers
     csp = response.headers["Content-Security-Policy"]
     assert "script-src 'self' 'unsafe-inline' 'unsafe-eval'" in csp
     assert "cdn.jsdelivr.net" not in csp
-    
+
     # Check that external JS CDNs are not referenced in the HTML body
     html = response.text
     assert "cdn.jsdelivr.net" not in html
@@ -580,7 +580,7 @@ async def test_skincare_product_save_and_delete_via_web(auth_client, db_session)
         },
     )
     assert r.status_code == 303
-    
+
     result = await db_session.execute(select(SkincareProduct))
     products = result.scalars().all()
     assert len(products) == 1  # 1 new product added in test
@@ -592,7 +592,7 @@ async def test_skincare_product_save_and_delete_via_web(auth_client, db_session)
     # Test Delete Product
     r = await auth_client.post(f"/skincare/product/{new_product.id}/delete")
     assert r.status_code == 303
-    
+
     result = await db_session.execute(select(SkincareProduct).where(SkincareProduct.id == new_product.id))
     assert result.scalar_one_or_none() is None
 
@@ -682,7 +682,7 @@ async def test_garmin_sleep_night_page_renders(auth_client, db_session, *, garmi
     from vitals.models.garmin import GarminDaily, GarminIntraday
 
     db_session.add_all([
-        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             sleep_seconds=27000, sleep_score=78, avg_sleep_hr=54, spo2_lowest=91,
             sleep_start=datetime(2026, 6, 9, 23, 0), sleep_end=datetime(2026, 6, 10, 6, 30),
@@ -690,7 +690,7 @@ async def test_garmin_sleep_night_page_renders(auth_client, db_session, *, garmi
                 {"start": "2026-06-09T23:00:00", "end": "2026-06-10T01:00:00", "stage": "deep"},
             ],
         ),
-        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             series_type="sleep_hr", ts=datetime(2026, 6, 9, 23, 10), value=58.0,
         ),
@@ -739,12 +739,12 @@ async def test_garmin_sleep_list_hero_card_and_rows(auth_client, db_session, *, 
     from vitals.models.garmin import GarminDaily
 
     db_session.add_all([
-        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 9), domain="garmin", source="garmin_api",
             sleep_seconds=25200, sleep_score=70, awake_count=3,
             body_battery_change=-12,
         ),
-        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             sleep_seconds=27000, sleep_score=78, awake_count=1,
             body_battery_change=18,
@@ -776,7 +776,7 @@ async def test_garmin_sleep_night_page_body_battery_sign(auth_client, db_session
 
     from vitals.models.garmin import GarminDaily
 
-    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
         date=date(2026, 6, 10), domain="garmin", source="garmin_api",
         sleep_seconds=27000, body_battery_change=-12,
         awake_count=2, restless_moments=15,
@@ -801,7 +801,7 @@ async def test_garmin_sleep_night_page_masthead_and_nav(auth_client, db_session,
 
     db_session.add_all([
         GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 9), domain="garmin", source="garmin_api", sleep_seconds=25200, sleep_score=70),
-        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             sleep_seconds=27000, sleep_score=78, avg_sleep_hr=54, spo2_lowest=91, body_battery_change=18,
         ),
@@ -830,7 +830,7 @@ async def test_garmin_activities_list_renders(auth_client, db_session, *, garmin
 
     from vitals.models.garmin import GarminActivity
 
-    db_session.add(GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+    db_session.add(GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
         date=date(2026, 6, 10), domain="garmin", source="garmin_api",
         external_id="act-1", activity_type="running", name="Вечерняя пробежка",
         start_time=datetime(2026, 6, 10, 18, 0), duration_seconds=1800,
@@ -898,7 +898,7 @@ async def test_garmin_dashboard_day_strip_renders_in_masthead(
 
     from vitals.models.garmin import GarminDaily
 
-    db_session.add(GarminDaily(integration_connection_id=garmin_connection_id, 
+    db_session.add(GarminDaily(integration_connection_id=garmin_connection_id,
         subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 6, 15), domain="garmin", source="garmin_api",
         steps=12345, avg_stress=33, sleep_score=86, active_calories=612,
@@ -923,7 +923,7 @@ async def test_garmin_dashboard_no_longer_lists_activities(auth_client, db_sessi
 
     from vitals.models.garmin import GarminActivity
 
-    db_session.add(GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+    db_session.add(GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
         date=date(2026, 6, 10), domain="garmin", source="garmin_api",
         external_id="act-overview-check", activity_type="running",
         name="Контрольная пробежка", start_time=datetime(2026, 6, 10, 18, 0),
@@ -945,14 +945,14 @@ async def test_garmin_history_table_drops_sleep_column(auth_client, db_session, 
     from vitals.models.garmin import GarminDaily
 
     db_session.add_all([
-        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 9), domain="garmin", source="garmin_api",
             sleep_seconds=9000, resting_hr=47,
         ),
         # The newest *reported* day, so it is the one the masthead reads — a row
         # with nothing on it at all is a placeholder and latest_daily skips it,
         # which would put the older row's sleep back in the header.
-        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=date(2026, 6, 16), domain="garmin", source="garmin_api",
             sleep_seconds=None, resting_hr=50,
         ),
@@ -971,7 +971,7 @@ async def test_garmin_activities_card_shows_distance_calories_hr(auth_client, db
 
     from vitals.models.garmin import GarminActivity
 
-    db_session.add(GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+    db_session.add(GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
         date=date(2026, 6, 10), domain="garmin", source="garmin_api",
         external_id="act-detail-check", activity_type="running", name="Темповый бег",
         start_time=datetime(2026, 6, 10, 18, 0), duration_seconds=1800,
@@ -1646,12 +1646,12 @@ async def test_progress_photo_multiple_upload_success(auth_client, db_session):
             assert photo.note == "Multiple progress photos note"
             assert photo.date.isoformat() == "2026-06-16"
             assert photo.file_key.startswith("uploads/")
-            
+
             # Confirm saved on disk
             path = os.path.join(STATIC_DIR, photo.file_key)
             file_paths.append(path)
             assert os.path.exists(path)
-            
+
             expected_data = [photo_data_1, photo_data_2, photo_data_3][idx]
             with open(path, "rb") as f:
                 assert f.read() == expected_data

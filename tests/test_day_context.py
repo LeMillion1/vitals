@@ -510,7 +510,8 @@ async def _seed_brief_day(db_session, *, garmin_owned_scope):
     await db_session.commit()
 
 
-async def test_brief_prefers_his_answer_to_the_template(garmin_owned_scope, 
+async def test_brief_prefers_his_answer_to_the_template(
+    garmin_owned_scope,
     db_session,
     legacy_owner_roots,
 ):
@@ -550,8 +551,9 @@ async def test_brief_prefers_his_answer_to_the_template(garmin_owned_scope,
 
 
 @pytest.mark.usefixtures("owned_by_legacy_subject")
-async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(garmin_owned_scope, 
-    db_session, session_factory, monkeypatch, legacy_owner_roots
+async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
+    garmin_owned_scope,
+    db_session, session_factory, monkeypatch, legacy_owner_roots,
 ):
     notifier = FakeNotifier()
     from vitals.integrations import llm_client

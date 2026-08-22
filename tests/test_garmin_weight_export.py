@@ -684,7 +684,7 @@ async def test_delete_pending_without_verified_ownership_never_deletes_by_weight
     db_session, garmin_export, *, garmin_connection_id, legacy_owner_roots,
 ):
     db_session.add(
-        GarminWeightExport(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminWeightExport(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
             date=DAY,
             weight_kg=84.5,
             measured_at=NOW,
@@ -2039,7 +2039,7 @@ async def test_watermark_bootstraps_from_newer_historical_outbox(db_session, own
         on_date=DAY - timedelta(days=1),
     )
     db_session.add(
-        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id,
             date=DAY,
             weight_kg=84.5,
             measured_at=NOW,
@@ -2088,7 +2088,7 @@ async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(db_
     client = FakeWeightClient()
     await garmin_export.export_latest(client, now=NOW)
     db_session.add(
-        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id,
             date=DAY - timedelta(days=1),
             weight_kg=85.0,
             measured_at=NOW - timedelta(days=1),
@@ -2108,7 +2108,7 @@ async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(db_
 async def test_alert_keeps_the_highest_priority_outstanding_issue(db_session, owner_write, garmin_export, *, garmin_connection_id):
     older = DAY - timedelta(days=1)
     db_session.add(
-        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id, 
+        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id,
             date=older,
             weight_kg=85.0,
             measured_at=NOW - timedelta(days=1),

@@ -330,7 +330,7 @@ async def test_fully_null_legacy_outbox_adopts_without_inventing_requester(
 ):
     context = await _context(db_session, legacy_owner_roots, bridge=True)
     weight = await _weight(db_session, identity=context.identity)
-    legacy = GarminWeightExport(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+    legacy = GarminWeightExport(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
         date=DAY,
         weight_log_id=weight.id,
         weight_kg=weight.weight_kg,

@@ -280,7 +280,7 @@ async def test_template_graph_rejects_foreign_child_and_partial_legacy_parent(db
         name="Corrupt child",
         kind="course",
     )
-    partial = HrtCycleTemplate(subject_id=legacy_owner_roots.subject_id, 
+    partial = HrtCycleTemplate(subject_id=legacy_owner_roots.subject_id,
         actor_user_id=first.actor_user_id,
         domain=DOMAIN,
         source=Source.MANUAL.value,

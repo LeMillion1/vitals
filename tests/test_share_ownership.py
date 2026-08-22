@@ -50,7 +50,7 @@ async def _create(
 ) -> tuple[SharedReport, str]:
     if await session.scalar(select(WeightLog.id).limit(1)) is None:
         session.add(
-            WeightLog(subject_id=legacy_owner_roots.subject_id, 
+            WeightLog(subject_id=legacy_owner_roots.subject_id,
                 date=START,
                 domain=Domain.WEIGHT.value,
                 source="manual",
@@ -686,7 +686,7 @@ async def test_postgres_snapshot_scope_blocks_subject_creation(
     holder = factory()
     prepared = await _prepared(holder)
     holder.add(
-        WeightLog(subject_id=legacy_owner_roots.subject_id, 
+        WeightLog(subject_id=legacy_owner_roots.subject_id,
             date=START,
             domain=Domain.WEIGHT.value,
             source="manual",

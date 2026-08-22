@@ -927,8 +927,9 @@ async def test_healthy_token_store_resolves_the_alert(db_session, *, garmin_owne
 
 
 @pytest.mark.integration
-async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(garmin_owned_scope, 
-    db_session, legacy_owner_roots
+async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(
+    garmin_owned_scope,
+    db_session, legacy_owner_roots,
 ):
     """A second Garmin fetch must not block a concurrent local weight save."""
     factory = async_sessionmaker(

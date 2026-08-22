@@ -143,7 +143,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY),
     )
-    
+
     m = await milestones_service.create_milestone(
         db_session, name="Снизить жир до 12%", domain="body_comp", target_value=12.0,
         target_unit="%", deadline=DAY + timedelta(days=60),
@@ -170,10 +170,10 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
         enabled=True,
         subject_id=owner_write.subject_id,
     )
-    
+
     from vitals.models.body_scan import BodyScan, BodyScanMetric
 
-    scan = BodyScan(subject_id=owner_write.subject_id, 
+    scan = BodyScan(subject_id=owner_write.subject_id,
         date=DAY + timedelta(days=1),
         actor_user_id=owner_write.identity.actor_user_id,
         domain=Domain.BODY_COMPOSITION.value,
@@ -406,7 +406,7 @@ async def test_assemble_context_includes_body_comp(db_session, legacy_owner_root
     + derived LBM) — previously body composition was absent from the analysis."""
     from vitals.models.body_scan import BodyScan, BodyScanMetric
 
-    scan = BodyScan(subject_id=legacy_owner_roots.subject_id, 
+    scan = BodyScan(subject_id=legacy_owner_roots.subject_id,
         date=DAY - timedelta(days=2), domain="body_comp", source="body_scan", device="InBody 770"
     )
     db_session.add(scan)
@@ -449,14 +449,14 @@ async def test_assemble_context_with_custom_period_days(db_session, legacy_owner
     from vitals.models.hevy import HevyWorkout
     from vitals.enums import Source
 
-    workout1 = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
+    workout1 = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id,
         external_id="w_old",
         domain="hevy",
         date=DAY - timedelta(days=5),
         source=Source.HEVY_API.value,
         title="Push Day",
     )
-    workout2 = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
+    workout2 = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id,
         external_id="w_new",
         domain="hevy",
         date=DAY - timedelta(days=2),
@@ -701,7 +701,7 @@ async def test_complete_text_warns_when_the_answer_is_cut_by_the_token_limit(cap
 async def test_assemble_context_includes_intersecting_noise_markers(db_session, legacy_owner_roots, owner_write):
     # Add noise markers: some overlapping, some not.
     # DAY is 2026-06-10. Current is [06-04, 06-10], previous [05-28, 06-03].
-    
+
     # 1. Overlapping noise marker (ends during the period)
     await weight_service.add_noise_marker(
         db_session,
@@ -744,7 +744,7 @@ async def test_assemble_context_includes_intersecting_noise_markers(db_session, 
         db_session,
         subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=7)
     markers = ctx["weight"]["noise_markers"]
-    
+
     # Both sides of the comparison must carry their overlapping noise context.
     reasons = [m["reason"] for m in markers]
     assert "sodium spike" in reasons

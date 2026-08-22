@@ -36,7 +36,7 @@ async def _seed(db_session, *, garmin_connection_id, legacy_owner_roots):
         db_session.add(WeightLog(subject_id=legacy_owner_roots.subject_id, date=day, domain=Domain.WEIGHT.value, weight_kg=90.0 - i * 0.3, superseded=False))
     # An active weight goal below current weight → chart_series returns a projection.
     db_session.add(
-        Milestone(subject_id=legacy_owner_roots.subject_id, 
+        Milestone(subject_id=legacy_owner_roots.subject_id,
             domain=Domain.WEIGHT.value,
             name="Reach 85",
             target_value=85.0,
@@ -71,7 +71,8 @@ async def test_summary_rejects_bad_token(client, _token):
 
 
 @pytest.mark.asyncio
-async def test_summary_returns_all_cards(garmin_connection_id, 
+async def test_summary_returns_all_cards(
+    garmin_connection_id,
     client,
     db_session,
     legacy_owner_roots,

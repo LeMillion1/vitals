@@ -500,14 +500,14 @@ async def test_mcp_read_only_tools_execution(
 ):
     """Test that the read-only MCP tools execute and return valid serializable schemas."""
     # Pre-seed some test data
-    w_log = WeightLog(subject_id=legacy_owner_roots.subject_id, 
+    w_log = WeightLog(subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 6, 15),
         weight_kg=84.5,
         domain="weight",
         source=Source.MANUAL.value,
         superseded=False,
     )
-    garmin_log = GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+    garmin_log = GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
         date=date(2026, 6, 15),
         sleep_score=85,
         resting_hr=58,
@@ -517,7 +517,7 @@ async def test_mcp_read_only_tools_execution(
         domain="garmin",
         source=Source.GARMIN_API.value,
     )
-    garmin_activity = GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
+    garmin_activity = GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id,
         date=date(2026, 6, 15),
         external_id="garmin-act-1",
         activity_type="running",
@@ -529,14 +529,14 @@ async def test_mcp_read_only_tools_execution(
         domain="garmin",
         source=Source.GARMIN_API.value,
     )
-    workout_log = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
+    workout_log = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id,
         date=date(2026, 6, 15),
         external_id="hevy-workout-1",
         title="Upper Body",
         domain="workouts",
         source=Source.HEVY_API.value,
     )
-    lab_log = LabResult(subject_id=legacy_owner_roots.subject_id, 
+    lab_log = LabResult(subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 6, 15),
         marker="Glucose",
         value=5.2,

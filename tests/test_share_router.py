@@ -28,7 +28,7 @@ async def _seed(db_session, *, legacy_owner_roots) -> None:
         [
             WeightLog(subject_id=legacy_owner_roots.subject_id, date=TODAY - timedelta(days=40), domain="weight", source="manual", weight_kg=89.0),
             WeightLog(subject_id=legacy_owner_roots.subject_id, date=TODAY - timedelta(days=5), domain="weight", source="manual", weight_kg=86.4),
-            LabResult(subject_id=legacy_owner_roots.subject_id, 
+            LabResult(subject_id=legacy_owner_roots.subject_id,
                 date=TODAY - timedelta(days=10), domain="labs", source="manual",
                 marker="Ферритин", value=18.0, unit="нг/мл", ref_low=30, ref_high=400,
                 flag="low",
@@ -141,8 +141,9 @@ async def test_backwards_range_is_refused(legacy_owner_roots, auth_client, db_se
 
 
 @pytest.mark.asyncio
-async def test_a_window_with_no_data_is_refused_rather_than_published_empty(legacy_owner_roots, 
-    auth_client, db_session
+async def test_a_window_with_no_data_is_refused_rather_than_published_empty(
+    legacy_owner_roots,
+    auth_client, db_session,
 ):
     """An empty document reads as a patient with no history, which is a different
     claim from "this window happens to be empty"."""
