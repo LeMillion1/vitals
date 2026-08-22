@@ -21,7 +21,6 @@ from alembic.config import Config as AlembicConfig
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from tests.conftest import alembic_head_revision
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.enums import Source
@@ -79,6 +78,7 @@ from vitals.services.genetic_variant_ownership_backfill_service import (
 from vitals.services.lab_result_ownership_backfill_service import (
     LAB_RESULT_OWNERSHIP_BACKFILL_PHASE,
 )
+from vitals.ownership import PRE_OWNERSHIP_CONTRACT_REVISION
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -431,7 +431,7 @@ async def test_real_postgres_0034_genetic_variant_stop_resume_volatility_and_res
         await asyncio.to_thread(command.upgrade, alembic_config, "0034")
         await _run_sync(engine, _seed_revision_0034)
 
-        await asyncio.to_thread(command.upgrade, alembic_config, "head")
+        await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
         # ``raw_payload_id`` only exists from revision 0037, so the durable VCF
         # link is attached on the upgraded schema rather than in the 0034 seed.
         await _run_sync(engine, _link_vcf_batch)
@@ -700,9 +700,9 @@ async def test_real_postgres_0034_genetic_variant_stop_resume_volatility_and_res
             await asyncio.to_thread(command.downgrade, alembic_config, "0044")
         # The refusal rolls the whole downgrade back, so the schema is left at
         # head with every later revision's objects still installed.
-        assert await _alembic_version(engine) == alembic_head_revision()
+        assert await _alembic_version(engine) == PRE_OWNERSHIP_CONTRACT_REVISION
         assert await _checkpoint_states(engine) == final_checkpoint
     finally:
         if migration_control_ready:
-            await asyncio.to_thread(command.upgrade, alembic_config, "head")
+            await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
         await engine.dispose()

@@ -23,6 +23,25 @@ import vitals.models  # noqa: F401 -- register the complete model graph
 from vitals.models.base import Base
 from vitals.scoped_keys import SCOPED_KEY_REGISTRY
 from vitals.models.weight import WeightLog
+from vitals.ownership import required_ownership_columns
+
+
+def _expected_nullable(table_name: str, column_name: str) -> bool:
+    """Whether this reference may be absent, straight from the registry.
+
+    PR-03's expansion added all of them nullable and this test said so
+    literally; the ownership contract made the registered-required ones
+    mandatory. Reading the registry keeps the contract in one place.
+    """
+
+    return (table_name, column_name) not in set(required_ownership_columns())
+
+
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader or writer does when the ownership backfill has not reached a row yet,
+# which is a state the application itself can no longer create. The schema
+# says so, so this module asks for the one that stood before the contract.
+pytestmark = pytest.mark.pre_ownership_contract
 
 
 SUBJECT = "subject_id"
@@ -430,7 +449,7 @@ def test_all_36_models_have_exact_nullable_uuid_fk_and_simple_index_contract():
             column = table.c[column_name]
             assert isinstance(column.type, Uuid), f"{table_name}.{column_name}"
             assert column.type.as_uuid is True
-            assert column.nullable is True
+            assert column.nullable is _expected_nullable(table_name, column_name)
 
             expected_targets = MULTI_FOREIGN_KEY_TARGETS.get(
                 (table_name, column_name),

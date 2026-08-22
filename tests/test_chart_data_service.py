@@ -19,11 +19,11 @@ DAY2 = date(2026, 6, 2)
 
 
 # ── simple (generic aggregation) metrics ───────────────────────────────────────
-async def test_series_for_weight_filters_superseded(db_session, owned_by_legacy_subject):
+async def test_series_for_weight_filters_superseded(db_session, owned_by_legacy_subject, *, legacy_owner_roots):
     db_session.add_all([
-        WeightLog(date=DAY1, domain="weight", source="garmin_api", weight_kg=90.0, superseded=True),
-        WeightLog(date=DAY1, domain="weight", source="manual", weight_kg=88.5, superseded=False),
-        WeightLog(date=DAY2, domain="weight", source="manual", weight_kg=88.0, superseded=False),
+        WeightLog(subject_id=legacy_owner_roots.subject_id, date=DAY1, domain="weight", source="garmin_api", weight_kg=90.0, superseded=True),
+        WeightLog(subject_id=legacy_owner_roots.subject_id, date=DAY1, domain="weight", source="manual", weight_kg=88.5, superseded=False),
+        WeightLog(subject_id=legacy_owner_roots.subject_id, date=DAY2, domain="weight", source="manual", weight_kg=88.0, superseded=False),
     ])
     await db_session.commit()
 
@@ -34,11 +34,11 @@ async def test_series_for_weight_filters_superseded(db_session, owned_by_legacy_
     ]
 
 
-async def test_series_for_nutrition_calories_sums_multiple_meals_per_day(db_session, owned_by_legacy_subject):
+async def test_series_for_nutrition_calories_sums_multiple_meals_per_day(db_session, owned_by_legacy_subject, *, legacy_owner_roots):
     db_session.add_all([
-        MealLog(date=DAY1, domain="nutrition", source="manual", name="Breakfast", calories=400),
-        MealLog(date=DAY1, domain="nutrition", source="manual", name="Lunch", calories=600),
-        MealLog(date=DAY2, domain="nutrition", source="manual", name="Dinner", calories=500),
+        MealLog(subject_id=legacy_owner_roots.subject_id, date=DAY1, domain="nutrition", source="manual", name="Breakfast", calories=400),
+        MealLog(subject_id=legacy_owner_roots.subject_id, date=DAY1, domain="nutrition", source="manual", name="Lunch", calories=600),
+        MealLog(subject_id=legacy_owner_roots.subject_id, date=DAY2, domain="nutrition", source="manual", name="Dinner", calories=500),
     ])
     await db_session.commit()
 
@@ -49,10 +49,10 @@ async def test_series_for_nutrition_calories_sums_multiple_meals_per_day(db_sess
     ]
 
 
-async def test_series_for_side_effect_severity_takes_max_per_day(db_session, owned_by_legacy_subject):
+async def test_series_for_side_effect_severity_takes_max_per_day(db_session, owned_by_legacy_subject, *, legacy_owner_roots):
     db_session.add_all([
-        SideEffect(date=DAY1, domain="glp1", source="manual", effect_type="nausea", severity=2),
-        SideEffect(date=DAY1, domain="glp1", source="manual", effect_type="fatigue", severity=4),
+        SideEffect(subject_id=legacy_owner_roots.subject_id, date=DAY1, domain="glp1", source="manual", effect_type="nausea", severity=2),
+        SideEffect(subject_id=legacy_owner_roots.subject_id, date=DAY1, domain="glp1", source="manual", effect_type="fatigue", severity=4),
     ])
     await db_session.commit()
 
@@ -60,10 +60,10 @@ async def test_series_for_side_effect_severity_takes_max_per_day(db_session, own
     assert points == [{"date": DAY1.isoformat(), "value": 4.0}]
 
 
-async def test_series_for_glp1_dose_sums_per_day(db_session, owned_by_legacy_subject):
+async def test_series_for_glp1_dose_sums_per_day(db_session, owned_by_legacy_subject, *, legacy_owner_roots):
     db_session.add_all([
-        Injection(date=DAY1, domain="glp1", source="manual", drug="semaglutide", dose_mg=0.25),
-        Injection(date=DAY1, domain="glp1", source="manual", drug="semaglutide", dose_mg=0.25),
+        Injection(subject_id=legacy_owner_roots.subject_id, date=DAY1, domain="glp1", source="manual", drug="semaglutide", dose_mg=0.25),
+        Injection(subject_id=legacy_owner_roots.subject_id, date=DAY1, domain="glp1", source="manual", drug="semaglutide", dose_mg=0.25),
     ])
     await db_session.commit()
 
@@ -71,8 +71,8 @@ async def test_series_for_glp1_dose_sums_per_day(db_session, owned_by_legacy_sub
     assert points == [{"date": DAY1.isoformat(), "value": 0.5}]
 
 
-async def test_series_for_garmin_sleep_hours_transform(db_session, owned_by_legacy_subject):
-    db_session.add(GarminDaily(date=DAY1, domain="garmin", source="garmin_api", sleep_seconds=7 * 3600))
+async def test_series_for_garmin_sleep_hours_transform(db_session, owned_by_legacy_subject, *, garmin_connection_id, legacy_owner_roots):
+    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=DAY1, domain="garmin", source="garmin_api", sleep_seconds=7 * 3600))
     await db_session.commit()
 
     points = await chart_data_service.series_for(db_session, subject_id=owned_by_legacy_subject.subject_id, metric_key="garmin.sleep_hours")
@@ -124,7 +124,7 @@ async def test_series_for_labs_marker_matches_marker_history(db_session, owned_b
     assert points == [{"date": r["date"], "value": r["value"]} for r in expected]
 
 
-async def test_series_for_hevy_exercise_matches_working_weight_series(db_session, owned_by_legacy_subject):
+async def test_series_for_hevy_exercise_matches_working_weight_series(db_session, owned_by_legacy_subject, *, hevy_owned_scope):
     class FakeHevyClient:
         is_configured = True
 
@@ -143,7 +143,7 @@ async def test_series_for_hevy_exercise_matches_working_weight_series(db_session
                 }],
             }]
 
-    await hevy_service.sync(db_session, FakeHevyClient())
+    await hevy_service.sync_owned(db_session, FakeHevyClient(), identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
 
     points = await chart_data_service.series_for(db_session, subject_id=owned_by_legacy_subject.subject_id, metric_key="hevy.working_weight", param="BENCH")
@@ -226,9 +226,9 @@ async def test_build_catalog_lang_selects_label(db_session, owned_by_legacy_subj
 
 
 # ── resolve_chart_series ────────────────────────────────────────────────────────
-async def test_resolve_chart_series_auto_labels_and_units(db_session, owned_by_legacy_subject):
-    db_session.add(WeightLog(date=DAY1, domain="weight", source="manual", weight_kg=88.0, superseded=False))
-    db_session.add(GarminDaily(date=DAY1, domain="garmin", source="garmin_api", avg_stress=35))
+async def test_resolve_chart_series_auto_labels_and_units(db_session, owned_by_legacy_subject, *, garmin_connection_id, legacy_owner_roots):
+    db_session.add(WeightLog(subject_id=legacy_owner_roots.subject_id, date=DAY1, domain="weight", source="manual", weight_kg=88.0, superseded=False))
+    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=DAY1, domain="garmin", source="garmin_api", avg_stress=35))
     await db_session.commit()
 
     config = {

@@ -26,6 +26,13 @@ from vitals.services import conflict_engine, garmin_weight_service
 from vitals.services.scoped_settings_service import ScopedSettingKey
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader does when the ownership backfill has not reached a row yet, which is
+# a state the application itself can no longer create. The schema says so, so
+# this module asks for the one that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 DAY = date(2026, 8, 20)
 NOW = datetime(2026, 8, 20, 9, 30)
 
@@ -319,11 +326,11 @@ async def test_partial_outbox_roots_fail_closed(
 
 async def test_fully_null_legacy_outbox_adopts_without_inventing_requester(
     db_session,
-    legacy_owner_roots,
+    legacy_owner_roots, *, garmin_connection_id,
 ):
     context = await _context(db_session, legacy_owner_roots, bridge=True)
     weight = await _weight(db_session, identity=context.identity)
-    legacy = GarminWeightExport(
+    legacy = GarminWeightExport(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
         date=DAY,
         weight_log_id=weight.id,
         weight_kg=weight.weight_kg,

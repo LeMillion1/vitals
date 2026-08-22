@@ -95,7 +95,7 @@ def _stored_brief(
     *,
     model: str | None = "test-model",
     actor_user_id=None,
-    integration_connection_id=None,
+    integration_connection_id=None, legacy_owner_roots,
 ):
     """A brief row shaped the way the morning job writes one."""
     from vitals.services.proactive import compose, day_plan
@@ -106,7 +106,7 @@ def _stored_brief(
         blocks.append(day)
     if prose:
         blocks.append(compose.Block(compose.KIND_NARRATIVE, prose, 90))
-    return WeeklyDigest(
+    return WeeklyDigest(subject_id=legacy_owner_roots.subject_id, 
         date=today_local(),
         actor_user_id=actor_user_id,
         integration_connection_id=integration_connection_id,
@@ -128,7 +128,7 @@ async def test_hero_takes_only_the_prose_out_of_todays_brief(db_session, legacy_
         _stored_brief(
             actor_user_id=legacy_owner_roots.user_id,
             integration_connection_id=connection.id,
-        )
+        legacy_owner_roots=legacy_owner_roots)
     )
     await db_session.commit()
 
@@ -155,7 +155,7 @@ async def test_hero_takes_only_the_prose_out_of_todays_brief(db_session, legacy_
 async def test_a_header_only_brief_falls_back_to_the_computed_sentence(db_session, legacy_owner_roots):
     """The model stayed silent that morning, so the row is numbers only — promoting
     a number line into the headline is worse than composing one."""
-    db_session.add(_stored_brief(prose="", model=None, actor_user_id=legacy_owner_roots.user_id))
+    db_session.add(_stored_brief(prose="", model=None, actor_user_id=legacy_owner_roots.user_id, legacy_owner_roots=legacy_owner_roots))
     await db_session.commit()
 
     ctx = await today_service.build(
@@ -177,7 +177,7 @@ async def test_a_header_only_brief_falls_back_to_the_computed_sentence(db_sessio
 async def test_yesterdays_brief_does_not_stand_in_for_today(db_session, legacy_owner_roots):
     """A narrative is about a day. Yesterday's read as today's is worse than none."""
     db_session.add(
-        WeeklyDigest(
+        WeeklyDigest(subject_id=legacy_owner_roots.subject_id, 
             date=today_local() - timedelta(days=1),
             actor_user_id=legacy_owner_roots.user_id,
             domain=INSIGHTS_DOMAIN,
@@ -346,13 +346,13 @@ async def test_goal_reads_as_distance_covered(db_session, legacy_owner_roots, ow
     assert goal["pct"] == 40
 
 
-async def test_recovery_advice_arrives_as_an_observation(db_session, legacy_owner_roots):
+async def test_recovery_advice_arrives_as_an_observation(db_session, legacy_owner_roots, *, garmin_connection_id):
     """An interpretation of the numbers is not a failure: it joins the attention
     card on the quietest rung, never as a warning."""
     from vitals.models.garmin import GarminDaily
 
     db_session.add(
-        GarminDaily(
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             date=today_local(),
             domain=Domain.GARMIN.value,
             source=Source.GARMIN_API.value,

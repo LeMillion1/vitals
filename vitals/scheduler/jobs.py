@@ -86,7 +86,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
 
     # Raw-payload sweep (garmin/hevy/labs/body_comp) — nightly at 03:30 local, a
     # quiet hour clear of every other registered job. Re-derives normalized rows
-    # for anything upsert_raw_payload left at processed_at IS NULL: a refreshed
+    # for anything upsert_owned_raw_payload left at processed_at IS NULL: a refreshed
     # Garmin/Hevy row, or a labs/body-comp upload the owner extracted but never
     # confirmed. See raw_payload_service.sweep_pending_job for why this is one
     # shared job rather than four.

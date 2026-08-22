@@ -20,7 +20,6 @@ from alembic.config import Config as AlembicConfig
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from tests.conftest import alembic_head_revision
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
@@ -48,6 +47,7 @@ from vitals.services.raw_ownership_backfill_service import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+from vitals.ownership import PRE_OWNERSHIP_CONTRACT_REVISION
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -380,7 +380,7 @@ async def test_real_postgres_0034_conflict_rules_stop_resume_catalog_and_restore
         await asyncio.to_thread(command.upgrade, alembic_config, "0034")
         await _run_sync(engine, _seed_revision_0034)
 
-        await asyncio.to_thread(command.upgrade, alembic_config, "head")
+        await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
         identity = await _bootstrap_roots(engine)
         await _sync_catalog(engine)
         custom_hash_before = await _run_sync(engine, _custom_non_ownership_hash)
@@ -566,9 +566,9 @@ async def test_real_postgres_0034_conflict_rules_stop_resume_catalog_and_restore
             await asyncio.to_thread(command.downgrade, alembic_config, "0044")
         # The refusal rolls the whole downgrade back, so the schema is left at
         # head with every later revision's objects still installed.
-        assert await _alembic_version(engine) == alembic_head_revision()
+        assert await _alembic_version(engine) == PRE_OWNERSHIP_CONTRACT_REVISION
         assert await _checkpoint_states(engine) == restored_checkpoint
     finally:
         if migration_control_ready:
-            await asyncio.to_thread(command.upgrade, alembic_config, "head")
+            await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
         await engine.dispose()

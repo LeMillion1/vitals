@@ -19,14 +19,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
-from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
+from vitals.models.ownership_mixins import (
+    OriginActorMixin,
+    RequiredSubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.SKINCARE.value
 
 
 class SkincareLog(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     InsightsMixin,
     TimestampMixin,
@@ -66,7 +69,7 @@ class SkincareLog(
 
 class SkincareObservation(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     InsightsMixin,
     TimestampMixin,
@@ -92,7 +95,7 @@ class SkincareObservation(
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class SkincareProduct(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
+class SkincareProduct(Base, RequiredSubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """Reference catalog of active skincare products and their schedules."""
 
     __tablename__ = "skincare_products"

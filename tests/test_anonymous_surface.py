@@ -165,7 +165,7 @@ async def test_the_owner_still_gets_the_file(
 
 async def test_unregistered_file_fallback_closes_when_a_second_subject_exists(
     auth_client, db_session, an_uploaded_file
-):
+, *, legacy_file_asset_id, legacy_owner_roots):
     """A legacy photo fact is authorized only by the exact-one-subject bridge."""
     from datetime import date
 
@@ -174,7 +174,7 @@ async def test_unregistered_file_fallback_closes_when_a_second_subject_exists(
     from vitals.models.weight import ProgressPhoto
 
     db_session.add(
-        ProgressPhoto(
+        ProgressPhoto(subject_id=legacy_owner_roots.subject_id, file_asset_id=legacy_file_asset_id, 
             date=date(2026, 8, 20),
             domain=Domain.WEIGHT.value,
             source=Source.MANUAL.value,

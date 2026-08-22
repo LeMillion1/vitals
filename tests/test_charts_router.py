@@ -25,7 +25,7 @@ async def test_charts_page_renders(auth_client, legacy_owner_roots):
 
 
 async def test_create_chart_valid_series(auth_client, db_session, legacy_owner_roots):
-    db_session.add(WeightLog(date=DAY, domain="weight", source="manual", weight_kg=88.0, superseded=False))
+    db_session.add(WeightLog(subject_id=legacy_owner_roots.subject_id, date=DAY, domain="weight", source="manual", weight_kg=88.0, superseded=False))
     await db_session.commit()
 
     r = await auth_client.post("/charts", data={
@@ -90,7 +90,7 @@ async def test_delete_chart(auth_client, db_session, legacy_owner_roots):
 async def test_charts_page_lists_and_renders_saved_chart_data(
     auth_client, db_session, owned_by_legacy_subject
 , legacy_owner_roots):
-    db_session.add(WeightLog(date=DAY, domain="weight", source="manual", weight_kg=88.0, superseded=False))
+    db_session.add(WeightLog(subject_id=legacy_owner_roots.subject_id, date=DAY, domain="weight", source="manual", weight_kg=88.0, superseded=False))
     await custom_charts_service.create_chart(
         db_session, name="Weight only", series=[{"domain": "weight", "metric_key": "weight.weight_kg"}],
         subject_id=legacy_owner_roots.subject_id,

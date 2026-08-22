@@ -50,7 +50,6 @@ from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services.raw_payload_service import (
     upsert_owned_raw_payload,
-    upsert_raw_payload,
 )
 from vitals.utils.timeutils import now_local, today_local
 

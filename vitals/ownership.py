@@ -355,60 +355,36 @@ OWNERSHIP_REGISTRY: Mapping[str, OwnershipSpec] = MappingProxyType(
 )
 
 
-#: ``REQUIRED`` references whose column is still nullable, and why that is not
-#: yet fixable. Every one of these is waiting on the same thing: a legacy write
-#: path that still creates the row without the reference. ``garmin_service``'s
-#: unscoped ``ingest_daily`` / ``ingest_intraday`` / ``ingest_activities`` and
-#: ``raw_payload_service.upsert_raw_payload`` are the remaining writers, and a
-#: ``NOT NULL`` installed before they are retired would break the Garmin and
-#: Hevy syncs on their next run rather than protect anything.
+#: ``REQUIRED`` references whose column is still nullable — now none.
 #:
-#: This is a ratchet, like ``vitals/legacy_scope.py``: the paired test recomputes
-#: the set from the models and fails in either direction, so it can only shrink.
-#: When it is empty the contract migration is safe to write.
-PENDING_OWNERSHIP_CONTRACT_COLUMNS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("annotations", "subject_id"),
-        ("body_measurements", "subject_id"),
-        ("body_scans", "subject_id"),
-        ("day_context", "subject_id"),
-        ("garmin_activities", "integration_connection_id"),
-        ("garmin_activities", "subject_id"),
-        ("garmin_daily", "integration_connection_id"),
-        ("garmin_daily", "subject_id"),
-        ("garmin_intraday", "integration_connection_id"),
-        ("garmin_intraday", "subject_id"),
-        ("garmin_weight_exports", "integration_connection_id"),
-        ("garmin_weight_exports", "subject_id"),
-        ("genetic_variants", "subject_id"),
-        ("glp1_dose_phases", "subject_id"),
-        ("glp1_injections", "subject_id"),
-        ("glp1_side_effects", "subject_id"),
-        ("hevy_workouts", "integration_connection_id"),
-        ("hevy_workouts", "subject_id"),
-        ("hrt_cycle_templates", "subject_id"),
-        ("hrt_cycles", "subject_id"),
-        ("hrt_doses", "subject_id"),
-        ("hrt_side_effects", "subject_id"),
-        ("lab_markers", "subject_id"),
-        ("lab_results", "subject_id"),
-        ("meal_logs", "subject_id"),
-        ("milestones", "subject_id"),
-        ("noise_markers", "subject_id"),
-        ("notifications", "subject_id"),
-        ("progress_photos", "file_asset_id"),
-        ("progress_photos", "subject_id"),
-        ("raw_payloads", "subject_id"),
-        ("shared_reports", "subject_id"),
-        ("signals", "subject_id"),
-        ("skincare_logs", "subject_id"),
-        ("skincare_observations", "subject_id"),
-        ("skincare_products", "subject_id"),
-        ("supplements", "subject_id"),
-        ("weekly_digests", "subject_id"),
-        ("weight_logs", "subject_id"),
-    }
-)
+#: This was a ratchet, and it reached zero: the provider writers that created
+#: ownerless rows are gone, the models declare every registered-required
+#: reference ``NOT NULL``, and revision 0049 installs the same contract in the
+#: database. The paired test recomputes the set from the models and fails in
+#: either direction, so a column cannot quietly lose its constraint and an entry
+#: cannot be removed without the constraint actually being there.
+PENDING_OWNERSHIP_CONTRACT_COLUMNS: frozenset[tuple[str, str]] = frozenset()
+
+
+#: The revision that turns every ``REQUIRED`` reference above into ``NOT NULL``,
+#: and the last one before it. The distinction is operational, not cosmetic: a
+#: lake whose ownership backfill has not finished can be migrated as far as
+#: :data:`PRE_OWNERSHIP_CONTRACT_REVISION` and no further, because the contract
+#: revision refuses to run while any target column still holds unstamped rows.
+#: The deploy order is therefore: migrate to the pre-contract revision, run the
+#: backfill phases to completion, then migrate to head.
+OWNERSHIP_CONTRACT_REVISION = "0049"
+PRE_OWNERSHIP_CONTRACT_REVISION = "0048"
+
+
+class OwnershipBackfillIncompleteError(RuntimeError):
+    """A ``REQUIRED`` ownership column still holds rows nobody owns.
+
+    Raised by the contract migration before it alters anything. It names every
+    table that is behind and by how much, so an operator can finish the backfill
+    rather than read a bare ``NOT NULL`` violation on whichever column happened
+    to come first alphabetically.
+    """
 
 
 def required_ownership_columns() -> tuple[tuple[str, str], ...]:
@@ -420,18 +396,33 @@ def required_ownership_columns() -> tuple[tuple[str, str], ...]:
     frozen copy cannot silently fall behind a reclassified table.
     """
 
-    return tuple(
-        (table_name, column_name)
-        for table_name, spec in sorted(_OWNERSHIP_REGISTRY.items())
-        for field, column_name in (
-            ("subject", "subject_id"),
-            ("actor", "actor_user_id"),
-            ("connection", "integration_connection_id"),
-            ("platform_connection", "platform_connection_id"),
-            ("file_asset", "file_asset_id"),
-        )
-        if getattr(spec, field) is TargetColumn.REQUIRED
+    from vitals.models.base import Base
+
+    fields = (
+        ("subject", ("subject_id",)),
+        ("actor", ("actor_user_id",)),
+        # Two tables spell the connection with a qualifier: the AI ledger and
+        # the OpenRouter bridge both hold a *platform* connection, and the
+        # bridge holds a legacy one beside it. The registry names the boundary;
+        # this resolves it against the column the table actually has.
+        ("connection", ("integration_connection_id", "legacy_integration_connection_id")),
+        ("platform_connection", ("platform_connection_id", "platform_integration_connection_id")),
+        ("file_asset", ("file_asset_id",)),
     )
+    resolved: list[tuple[str, str]] = []
+    for table_name, spec in sorted(_OWNERSHIP_REGISTRY.items()):
+        columns = Base.metadata.tables[table_name].columns
+        for field, candidates in fields:
+            if getattr(spec, field) is not TargetColumn.REQUIRED:
+                continue
+            match = next((name for name in candidates if name in columns), None)
+            if match is None:
+                raise LookupError(
+                    f"{table_name} is registered {field}=REQUIRED but has none "
+                    f"of {candidates}"
+                )
+            resolved.append((table_name, match))
+    return tuple(resolved)
 
 
 def ownership_for(table_name: str) -> OwnershipSpec:

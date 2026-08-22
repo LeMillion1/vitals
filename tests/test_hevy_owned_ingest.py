@@ -29,6 +29,13 @@ from vitals.services.legacy_ownership import LegacyActorMismatchError
 from tests.conftest import legacy_unenforced_write
 
 
+# The adoption tests here seed a legacy row with no owner and prove the owned
+# ingest takes it over — the one operation whose whole purpose is to turn an
+# unstamped row into an owned one. Nothing else can create that state now, so
+# this module asks for the schema that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 _PASSWORD_HASH = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
 
 

@@ -18,12 +18,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
-from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
+from vitals.models.ownership_mixins import (
+    OriginActorMixin,
+    RequiredSubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.GENETICS.value
 
 
-class GeneticVariant(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
+class GeneticVariant(Base, RequiredSubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     # No ``InsightsMixin`` on purpose: a variant is a lifelong fact, not something
     # that happened on a date — there is nothing to put in ``date``, and a fake one
     # would pollute every ``(domain, date)`` timeline query. That is why genetics is

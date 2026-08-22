@@ -504,12 +504,17 @@ async def test_reparse_batch_any_failure_wins_over_success(db_session, signals_o
 
 
 async def test_reparse_ignores_taps_and_anything_older_than_the_window(db_session, signals_owner):
-    from vitals.services.raw_payload_service import upsert_raw_payload
+    from vitals.services.raw_payload_service import upsert_owned_raw_payload
     from vitals.utils.timeutils import now_local
 
-    # A button tap: stored like everything else, but nobody said it.
-    await upsert_raw_payload(
-        db_session, domain=svc.DOMAIN, source=Source.TELEGRAM.value,
+    # A button tap: stored like everything else, but nobody said it. It still
+    # arrived on this person's channel, which is what the raw root records —
+    # "nobody said it" is about the message content, not about who it belongs to.
+    await upsert_owned_raw_payload(
+        db_session,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
+        domain=svc.DOMAIN, source=Source.TELEGRAM.value,
         external_id="tg:tap", payload={"data": "mis:abc"},
     )
     stale = await svc.store_raw_text(

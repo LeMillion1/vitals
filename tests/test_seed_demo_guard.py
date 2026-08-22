@@ -17,9 +17,17 @@ from sqlalchemy.pool import NullPool
 
 from scripts import seed_demo as seed_module
 from vitals.enums import Domain, Source, UserStatus
+from tests.schema_modes import pre_ownership_contract_metadata
 from vitals.models.base import Base
 from vitals.models.identity import HealthSubject, User
 from vitals.models.supplements import Supplement
+
+
+# ``seed_demo`` refuses to run once any health subject exists, so every row
+# it writes belongs to nobody — that is the state it is a utility *for*, and
+# the one the ownership contract removed. These tests therefore run on the
+# schema that stood before it.
+pytestmark = pytest.mark.pre_ownership_contract
 
 
 DESTRUCTIVE_WRITERS = (
@@ -218,8 +226,11 @@ async def test_sqlite_seed_lock_serializes_concurrent_identity_creation(
         connect_args={"timeout": 5},
     )
     factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    # This race builds its own engine, so it asks for the pre-contract schema
+    # directly rather than through the module marker.
     async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+        with pre_ownership_contract_metadata():
+            await connection.run_sync(Base.metadata.create_all)
 
     seed_authorized = asyncio.Event()
     identity_attempted = asyncio.Event()

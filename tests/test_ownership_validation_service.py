@@ -17,6 +17,13 @@ from vitals.models.weight import WeightLog
 from vitals.services import ownership_validation_service as service
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader does when the ownership backfill has not reached a row yet, which is
+# a state the application itself can no longer create. The schema says so, so
+# this module asks for the one that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 _EMPTY = hashlib.sha256(b"").hexdigest()
 _STAMP = datetime(2020, 1, 1, tzinfo=UTC)
 

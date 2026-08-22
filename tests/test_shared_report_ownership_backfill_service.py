@@ -47,6 +47,13 @@ from vitals.services.signal_ownership_backfill_service import (
 from vitals.utils.timeutils import now_local
 
 
+# Every test here writes or inspects a row with no owner, which is the whole
+# subject of the ownership backfill: these services exist to give such rows an
+# owner. The application can no longer produce that state, so this module asks
+# for the schema as it stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 _EMPTY = hashlib.sha256(b"").hexdigest()
 _STAMP = datetime(2020, 1, 1, tzinfo=UTC)
 _PRIOR_PHASES = (

@@ -24,6 +24,13 @@ from vitals.ownership import OwnershipClass, OwnershipSpec, TargetColumn
 from vitals.services import data_portability_service
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader or writer does when the ownership backfill has not reached a row yet,
+# which is a state the application itself can no longer create. The schema
+# says so, so this module asks for the one that stood before the contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 _SUPPRESSED_COLUMNS = {
     "subject_id",
     "actor_user_id",

@@ -29,9 +29,15 @@ from vitals.services.raw_payload_service import (
     RawPayloadReferenceOwnershipError,
     RawPayloadValidationError,
     upsert_owned_raw_payload,
-    upsert_raw_payload,
 )
 from vitals.utils.timeutils import now_local
+
+
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader or writer does when the ownership backfill has not reached a row yet,
+# which is a state the application itself can no longer create. The schema
+# says so, so this module asks for the one that stood before the contract.
+pytestmark = pytest.mark.pre_ownership_contract
 
 
 async def _identity(
@@ -777,31 +783,3 @@ async def test_owned_upsert_flushes_but_rollback_removes_the_row(db_session):
     assert await _raw_count(db_session) == 0
 
 
-@pytest.mark.asyncio
-async def test_legacy_upsert_remains_global_and_ownership_neutral(db_session):
-    legacy = RawPayload(
-        domain="signals",
-        source="telegram",
-        external_id="legacy-helper-1",
-        payload={"revision": 1},
-        fetched_at=now_local(),
-        processed_at=now_local(),
-    )
-    db_session.add(legacy)
-    await db_session.flush()
-
-    refreshed = await upsert_raw_payload(
-        db_session,
-        domain="signals",
-        source="telegram",
-        external_id="legacy-helper-1",
-        payload={"revision": 2},
-    )
-
-    assert refreshed.id == legacy.id
-    assert refreshed.subject_id is None
-    assert refreshed.actor_user_id is None
-    assert refreshed.integration_connection_id is None
-    assert refreshed.file_asset_id is None
-    assert refreshed.payload == {"revision": 2}
-    assert refreshed.processed_at is None

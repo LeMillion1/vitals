@@ -33,10 +33,10 @@ from vitals.enums import Domain, NoiseDirection
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
 from vitals.models.ownership_mixins import (
-    FileAssetOwnershipMixin,
     IntegrationConnectionOwnershipMixin,
     OriginActorMixin,
-    SubjectOwnershipMixin,
+    RequiredFileAssetOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
 )
 
 DOMAIN = Domain.WEIGHT.value
@@ -44,7 +44,7 @@ DOMAIN = Domain.WEIGHT.value
 
 class WeightLog(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     IntegrationConnectionOwnershipMixin,
     InsightsMixin,
@@ -93,7 +93,7 @@ class WeightLog(
 
 class BodyMeasurement(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     InsightsMixin,
     TimestampMixin,
@@ -134,9 +134,9 @@ class BodyMeasurement(
 
 class ProgressPhoto(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
-    FileAssetOwnershipMixin,
+    RequiredFileAssetOwnershipMixin,
     InsightsMixin,
     TimestampMixin,
 ):
@@ -159,7 +159,7 @@ class ProgressPhoto(
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class NoiseMarker(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
+class NoiseMarker(Base, RequiredSubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """A date range to **exclude** from trend & regression (creatine loading,
     sodium spike, training start → water-weight noise). Not a point metric, so it
     carries ``start_date``/``end_date`` instead of ``InsightsMixin.date`` — but it

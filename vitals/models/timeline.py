@@ -19,14 +19,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import AnnotationKind, Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
-from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
+from vitals.models.ownership_mixins import (
+    OriginActorMixin,
+    RequiredSubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.TIMELINE.value
 
 
 class Annotation(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     InsightsMixin,
     TimestampMixin,

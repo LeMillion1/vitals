@@ -18,6 +18,13 @@ from vitals.services import conflict_engine, milestones_service
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader or writer does when the ownership backfill has not reached a row yet,
+# which is a state the application itself can no longer create. The schema
+# says so, so this module asks for the one that stood before the contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 TODAY = date(2026, 8, 20)
 
 

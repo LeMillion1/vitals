@@ -24,12 +24,12 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from tests.conftest import alembic_head_revision
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+from vitals.ownership import PRE_OWNERSHIP_CONTRACT_REVISION
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -351,7 +351,7 @@ async def test_real_postgres_0034_upgrade_stage3a_then_stage3b_stop_resume(
         await _run_sync(engine, _seed_revision_0034)
         before_hashes = await _run_sync(engine, _non_ownership_hashes)
 
-        await asyncio.to_thread(command.upgrade, alembic_config, "head")
+        await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
         identity = await _bootstrap_roots(engine)
         assert await _checkpoint_states(engine) == []
 
@@ -456,10 +456,10 @@ async def test_real_postgres_0034_upgrade_stage3a_then_stage3b_stop_resume(
             await asyncio.to_thread(command.downgrade, alembic_config, "0044")
         # The refusal rolls the whole downgrade back, so the schema is left at
         # head with every later revision's objects still installed.
-        assert await _alembic_version(engine) == alembic_head_revision()
+        assert await _alembic_version(engine) == PRE_OWNERSHIP_CONTRACT_REVISION
         assert await _checkpoint_states(engine) == completed_checkpoints
         assert await _run_sync(engine, _non_ownership_hashes) == before_hashes
     finally:
         if migration_control_ready:
-            await asyncio.to_thread(command.upgrade, alembic_config, "head")
+            await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
         await engine.dispose()

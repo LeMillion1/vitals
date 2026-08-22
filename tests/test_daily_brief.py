@@ -163,8 +163,8 @@ async def _durably_send(
     return journal
 
 
-async def _seed_day(db_session, owner_write, *, on_date=DAY, weight_kg=88.0):
-    await garmin_service.ingest_daily(db_session, on_date, GARMIN_RAW)
+async def _seed_day(db_session, owner_write, *, on_date=DAY, weight_kg=88.0, garmin_owned_scope):
+    await garmin_service.ingest_owned_daily(db_session, on_date, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     if weight_kg is not None:
         await weight_service.log_weight(
             db_session,
@@ -213,13 +213,13 @@ async def test_brief_rejects_inactive_llm_connection_before_network(
 
 
 # ── The header ────────────────────────────────────────────────────────────────
-async def test_header_numbers_match_the_database(db_session, legacy_owner_roots, owner_write):
+async def test_header_numbers_match_the_database(garmin_owned_scope, db_session, legacy_owner_roots, owner_write):
     """Every number in the header is printed by code from the stored row — the
     model is never in a position to get one wrong."""
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     ctx = await brief.build_context(
         db_session,
@@ -240,7 +240,7 @@ async def test_header_numbers_match_the_database(db_session, legacy_owner_roots,
     assert ctx["garmin"]["advice"] is None
 
 
-async def test_noisy_weight_never_prints_a_bare_trend(db_session, legacy_owner_roots, owner_write):
+async def test_noisy_weight_never_prints_a_bare_trend(db_session, legacy_owner_roots, owner_write, *, garmin_owned_scope):
     """A noise marker means the scale is lying in a known direction. The trend is
     the one header number that can mislead while being technically correct."""
     for i in range(8):
@@ -260,7 +260,7 @@ async def test_noisy_weight_never_prints_a_bare_trend(db_session, legacy_owner_r
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(DAY - timedelta(days=3)),
     )
-    await garmin_service.ingest_daily(db_session, DAY, GARMIN_RAW)
+    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     ctx = await brief.build_context(
@@ -273,21 +273,21 @@ async def test_noisy_weight_never_prints_a_bare_trend(db_session, legacy_owner_r
         assert "креатином" in text
 
 
-async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_session, legacy_owner_roots, owner_write):
+async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_session, legacy_owner_roots, owner_write, *, garmin_owned_scope):
     """A single day of absolutes is the same line every morning, and whether 78 is
     good is a comparison. Printed by code from his own fortnight — and printed
     only when it says something, so the parenthesis stays worth reading."""
     for i in range(1, 11):  # ten days of a steady sleep score of 85, RHR 52
         day = DAY - timedelta(days=i)
-        await garmin_service.ingest_daily(db_session, day, {
+        await garmin_service.ingest_owned_daily(db_session, day, {
             "summary": {"restingHeartRate": 52, "bodyBatteryHighestValue": 84},
             "sleep": {"dailySleepDTO": {"sleepScores": {"overall": {"value": 85}}}},
             "hrv": {"hrvSummary": {"lastNightAvg": 61}},
-        })
+        }, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await _seed_day(
         db_session,
         owner_write,
-    )  # today: sleep 80, RHR 52 — same as every other day
+    garmin_owned_scope=garmin_owned_scope)  # today: sleep 80, RHR 52 — same as every other day
 
     ctx = await brief.build_context(
         db_session,
@@ -303,15 +303,15 @@ async def test_the_header_carries_his_own_norm_only_when_today_is_off_it(db_sess
     assert "Пульс покоя 52 (" not in text       # on the norm — say nothing
 
 
-async def test_no_norm_until_there_is_enough_history(db_session, legacy_owner_roots, owner_write):
+async def test_no_norm_until_there_is_enough_history(db_session, legacy_owner_roots, owner_write, *, garmin_owned_scope):
     """Two nights is not a baseline. Left unguarded the model gets a "norm" made
     of noise and calls a просадка against it — the invented comparison this whole
     block exists to stop."""
-    await garmin_service.ingest_daily(db_session, DAY - timedelta(days=1), GARMIN_RAW)
+    await garmin_service.ingest_owned_daily(db_session, DAY - timedelta(days=1), GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     ctx = await brief.build_context(
         db_session,
@@ -357,12 +357,12 @@ async def test_the_brief_sees_yesterdays_signals(db_session, legacy_owner_roots)
 
 
 # ── The fallback ──────────────────────────────────────────────────────────────
-async def test_brief_survives_a_dead_model(db_session, legacy_owner_roots, owner_write):
+async def test_brief_survives_a_dead_model(garmin_owned_scope, db_session, legacy_owner_roots, owner_write):
     """No narrative is a missing block, not a missing brief."""
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     ctx = await brief.build_context(
         db_session,
@@ -378,7 +378,7 @@ async def test_brief_survives_a_dead_model(db_session, legacy_owner_roots, owner
 # ── Storage ───────────────────────────────────────────────────────────────────
 
 
-async def test_protocol_never_reaches_the_brief(db_session, legacy_owner_roots, owner_write):
+async def test_protocol_never_reaches_the_brief(garmin_owned_scope, db_session, legacy_owner_roots, owner_write):
     """No doses, no compounds, no injection schedule, no supplements — not in
     the stored context and not in the prompt. The weekly digest still sees it all."""
     from vitals.services import glp1_service, supplements_service
@@ -399,7 +399,7 @@ async def test_protocol_never_reaches_the_brief(db_session, legacy_owner_roots, 
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     ctx = await brief.build_context(
         db_session,
@@ -461,12 +461,12 @@ GARMIN_MID_NIGHT = {
 }
 
 
-async def test_a_running_night_never_reaches_the_brief(db_session, legacy_owner_roots, owner_write):
+async def test_a_running_night_never_reaches_the_brief(db_session, legacy_owner_roots, owner_write, *, garmin_owned_scope):
     """The prod bug: the 11:00 brief caught him asleep, read Body Battery 24 and
     resting HR 68 off a night still in progress, called recovery wrecked and told
     him to skip the gym — then stored all of it, where the weekly digest reads it
     back as what that morning actually was."""
-    await garmin_service.ingest_daily(db_session, DAY, GARMIN_MID_NIGHT)
+    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_MID_NIGHT, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await weight_service.log_weight(
         db_session,
         on_date=DAY,
@@ -493,12 +493,12 @@ async def test_a_running_night_never_reaches_the_brief(db_session, legacy_owner_
     assert guarded["garmin"]["advice"] is None
 
 
-async def test_a_scored_night_is_untouched(db_session, legacy_owner_roots, owner_write):
+async def test_a_scored_night_is_untouched(garmin_owned_scope, db_session, legacy_owner_roots, owner_write):
     """The guard must not fire on a normal morning — that would delete the header."""
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     ctx = await brief.build_context(
         db_session,
@@ -510,7 +510,7 @@ async def test_a_scored_night_is_untouched(db_session, legacy_owner_roots, owner
 
 async def test_job_waits_for_the_night_instead_of_briefing_over_it(
     db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
-):
+, *, garmin_owned_scope):
     """Inside the wait window an un-scored night costs nothing: no message, no
     stored brief, no model call, no empty-day alert — the next hourly fire looks
     again. Once the night lands, the brief goes out normally."""
@@ -519,7 +519,7 @@ async def test_job_waits_for_the_night_instead_of_briefing_over_it(
     _patch_job(monkeypatch, notifier, llm)
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
     monkeypatch.setattr(brief, "now_local", lambda: datetime(2026, 7, 26, 11, 0))
-    await garmin_service.ingest_daily(db_session, DAY, GARMIN_MID_NIGHT)
+    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_MID_NIGHT, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await weight_service.log_weight(
         db_session,
         on_date=DAY,
@@ -537,7 +537,7 @@ async def test_job_waits_for_the_night_instead_of_briefing_over_it(
     assert llm.calls == []
 
     # He wakes up, the watch closes the night, the next fire an hour later sends.
-    await garmin_service.ingest_daily(db_session, DAY, GARMIN_RAW)
+    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     await brief.brief_job(session_factory)
@@ -548,7 +548,7 @@ async def test_job_waits_for_the_night_instead_of_briefing_over_it(
 
 async def test_job_stops_waiting_at_the_end_of_the_window(
     db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
-):
+, *, garmin_owned_scope):
     """Waiting forever is its own failure: the last fire sends what there is,
     minus the numbers the night never produced."""
     notifier = FakeNotifier()
@@ -557,7 +557,7 @@ async def test_job_stops_waiting_at_the_end_of_the_window(
     monkeypatch.setattr(
         brief, "now_local", lambda: datetime(2026, 7, 26, brief.last_attempt_hour(11), 0)
     )
-    await garmin_service.ingest_daily(db_session, DAY, GARMIN_MID_NIGHT)
+    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_MID_NIGHT, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await weight_service.log_weight(
         db_session,
         on_date=DAY,
@@ -582,8 +582,8 @@ async def test_job_stops_waiting_at_the_end_of_the_window(
         ({"summary": {"totalSteps": 200}}, DAY),  # today's row carries no recovery
     ],
 )
-async def test_empty_day_builds_nothing(db_session, raw, when, legacy_owner_roots):
-    await garmin_service.ingest_daily(db_session, DAY, raw)
+async def test_empty_day_builds_nothing(db_session, raw, when, legacy_owner_roots, *, garmin_owned_scope):
+    await garmin_service.ingest_owned_daily(db_session, DAY, raw, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     ctx = await brief.build_context(
@@ -666,7 +666,7 @@ async def test_job_stays_quiet_on_an_empty_day_and_says_so_in_the_web(
     assert alert.resolved_by_user_id is None
 
 
-async def test_job_sends_once_a_day_and_clears_the_empty_alert(
+async def test_job_sends_once_a_day_and_clears_the_empty_alert(garmin_owned_scope, 
     db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
 ):
     """A re-run of the 11:00 job is a no-op, not a second ping: Telegram retries
@@ -683,7 +683,7 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     await brief.brief_job(session_factory)
     await brief.brief_job(session_factory)
@@ -724,7 +724,7 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
     assert alert.resolved_by_user_id is None
 
 
-async def test_brief_network_awaits_have_no_open_database_transaction(
+async def test_brief_network_awaits_have_no_open_database_transaction(garmin_owned_scope, 
     db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
 ):
     """Neither OpenRouter nor Telegram may inherit ownership/read transactions."""
@@ -750,7 +750,7 @@ async def test_brief_network_awaits_have_no_open_database_transaction(
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     await brief.brief_job(session_factory)
 
@@ -919,7 +919,7 @@ async def test_empty_alert_reconciliation_rejects_actor_attribution(
         )
 
 
-async def test_the_brief_says_what_its_buttons_are_for(
+async def test_the_brief_says_what_its_buttons_are_for(garmin_owned_scope, 
     db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
 ):
     """Telegram renders the keyboard under the *whole* message, so four unlabelled
@@ -932,7 +932,7 @@ async def test_the_brief_says_what_its_buttons_are_for(
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     await brief.brief_job(session_factory)
 
@@ -943,7 +943,7 @@ async def test_the_brief_says_what_its_buttons_are_for(
     assert day_plan.HINT_FIX not in stored.content
 
 
-async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(
+async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(garmin_owned_scope, 
     db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
 ):
     """The hint leaves with the last button — a line pointing at a keyboard that
@@ -954,7 +954,7 @@ async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
     ownership = await _telegram_ownership(db_session)
     for question in day_plan.QUESTIONS:
         await day_plan.record_answer(
@@ -973,7 +973,7 @@ async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(
     assert day_plan.HINT_FIX not in notifier.sent[0]["text"]
 
 
-async def test_job_sends_the_brief_even_when_garmin_sync_explodes(
+async def test_job_sends_the_brief_even_when_garmin_sync_explodes(garmin_owned_scope, 
     db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write
 ):
     """B6 pulls Garmin first, but a failed pull is not a reason to go quiet — the
@@ -989,7 +989,7 @@ async def test_job_sends_the_brief_even_when_garmin_sync_explodes(
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     await brief.brief_job(session_factory)
     assert len(notifier.sent) == 1
@@ -1009,7 +1009,7 @@ def _patch_job(monkeypatch, notifier, llm):
 
 
 # ── The two buttons ───────────────────────────────────────────────────────────
-async def test_build_button_shows_the_brief_and_sends_nothing(
+async def test_build_button_shows_the_brief_and_sends_nothing(garmin_owned_scope, 
     auth_client, db_session, monkeypatch, owner_write
 ):
     from web.routers import reports as reports_router
@@ -1019,7 +1019,7 @@ async def test_build_button_shows_the_brief_and_sends_nothing(
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     r = await auth_client.post(
         "/reports/brief",
@@ -1047,7 +1047,7 @@ async def test_build_button_shows_the_brief_and_sends_nothing(
     assert "Сон 80" in page.text
 
 
-async def test_build_button_does_not_require_a_delivery_channel(
+async def test_build_button_does_not_require_a_delivery_channel(garmin_owned_scope, 
     auth_client,
     db_session,
     monkeypatch, owner_write,
@@ -1069,7 +1069,7 @@ async def test_build_button_does_not_require_a_delivery_channel(
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     response = await auth_client.post(
         "/reports/brief",
@@ -1083,7 +1083,10 @@ async def test_build_button_does_not_require_a_delivery_channel(
     assert stored.integration_connection_id is None
 
 
-async def test_test_send_goes_out_off_budget(auth_client, db_session, monkeypatch, owner_write):
+async def test_test_send_goes_out_off_budget(
+    garmin_owned_scope, auth_client, db_session, monkeypatch, owner_write,
+    legacy_owner_roots, telegram_connection_id,
+):
     """The point of this button is catching broken formatting, so it must send even
     after the day's budget is spent — and it isn't the bot talking first."""
     from vitals.utils.timeutils import now_local
@@ -1096,12 +1099,16 @@ async def test_test_send_goes_out_off_budget(auth_client, db_session, monkeypatc
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     # Today's budget, fully spent (dated *now*, which is what the budget counts).
     for i in range(delivery.DAILY_BUDGET):
         db_session.add(
             Notification(
+                # A dedupe_key demands the whole root: subject, recipient, channel.
+                subject_id=owner_write.subject_id,
+                recipient_user_id=legacy_owner_roots.user_id,
+                integration_connection_id=telegram_connection_id,
                 sent_at=now_local(), category=delivery.CATEGORY_BRIEF,
                 channel="telegram", dedupe_key=f"spent:{i}",
             )
@@ -1123,7 +1130,7 @@ async def test_test_send_goes_out_off_budget(auth_client, db_session, monkeypatc
     assert notifier.sent[0]["text"].startswith("Сон 80")
 
 
-async def test_test_send_is_not_duplicated_by_a_second_tap(auth_client, db_session, monkeypatch, owner_write):
+async def test_test_send_is_not_duplicated_by_a_second_tap(garmin_owned_scope, auth_client, db_session, monkeypatch, owner_write):
     """B2a: the test-send endpoint had no dedupe_key at all — the only delivery
     category with no dupe protection. A repeat call within the same day (a
     double-tap, or a retried request) must not fire a second Telegram message
@@ -1137,7 +1144,7 @@ async def test_test_send_is_not_duplicated_by_a_second_tap(auth_client, db_sessi
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
 
     form = {"request_token": "test_token_12345678901234568"}
     r1 = await auth_client.post("/reports/brief/test", data=form)
@@ -1202,7 +1209,7 @@ async def test_test_send_reports_an_existing_pending_claim_without_network(
     assert list(await db_session.scalars(select(WeeklyDigest))) == []
 
 
-async def test_test_send_without_a_channel_says_so(auth_client, db_session, monkeypatch, owner_write):
+async def test_test_send_without_a_channel_says_so(garmin_owned_scope, auth_client, db_session, monkeypatch, owner_write):
     from vitals.services.proactive import channels
     from web.routers import reports as reports_router
 
@@ -1220,7 +1227,7 @@ async def test_test_send_without_a_channel_says_so(auth_client, db_session, monk
     await _seed_day(
         db_session,
         owner_write,
-    )
+    garmin_owned_scope=garmin_owned_scope)
     r = await auth_client.post(
         "/reports/brief/test",
         data={"request_token": "test_token_12345678901234569"},

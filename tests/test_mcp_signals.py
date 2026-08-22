@@ -12,6 +12,13 @@ from vitals.models.signals import DayContext, Signal
 from vitals.ownership import WriteIdentity
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 
+
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader does when the ownership backfill has not reached a row yet, which is
+# a state the application itself can no longer create. The schema says so, so
+# this module asks for the one that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
 mcp_router = pytest.importorskip("web.routers.mcp")
 
 
@@ -199,7 +206,10 @@ async def test_log_day_context_rejects_an_unknown_answer(
     assert await mcp_router.get_day_context() == []
 
 
-async def test_get_proactive_state(db_session, session_factory, signals_module_on, monkeypatch):
+async def test_get_proactive_state(
+    db_session, session_factory, signals_module_on, monkeypatch,
+    *, legacy_owner_roots, telegram_connection_id,
+):
     """What the bot is set to do, and what it actually said — the half of the
     proactive layer Claude could only guess at."""
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
@@ -210,6 +220,10 @@ async def test_get_proactive_state(db_session, session_factory, signals_module_o
 
     db_session.add(
         Notification(
+            # A dedupe_key demands the whole root: subject, recipient, channel.
+            subject_id=legacy_owner_roots.subject_id,
+            recipient_user_id=legacy_owner_roots.user_id,
+            integration_connection_id=telegram_connection_id,
             sent_at=now_local(),
             category="brief",
             dedupe_key="brief:2026-07-20",

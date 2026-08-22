@@ -37,6 +37,13 @@ from vitals.services import ai_gateway_service as ai_gateway
 from vitals.services import transaction_outcome
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader or writer does when the ownership backfill has not reached a row yet,
+# which is a state the application itself can no longer create. The schema
+# says so, so this module asks for the one that stood before the contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 class _BoundFakeNotifier:
     channel = "telegram"
 

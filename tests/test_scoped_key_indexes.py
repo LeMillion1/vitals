@@ -17,6 +17,7 @@ from vitals.models.base import Base
 from vitals.models.labs import LabMarker
 from vitals.models.weight import BodyMeasurement, WeightLog
 from vitals.scoped_keys import SCOPED_KEYS
+from vitals.ownership import PRE_OWNERSHIP_CONTRACT_REVISION
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -289,7 +290,7 @@ async def test_real_postgres_0047_installs_valid_scoped_keys_concurrently(
         assert all((await _index_state(engine, replacements)).values())
     finally:
         if migration_control_ready:
-            await asyncio.to_thread(command.upgrade, alembic_config, "head")
+            await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
         await engine.dispose()
 
 

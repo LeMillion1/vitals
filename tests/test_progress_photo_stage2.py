@@ -34,6 +34,13 @@ from vitals.services import (
 from vitals.utils.timeutils import now_local
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader or writer does when the ownership backfill has not reached a row yet,
+# which is a state the application itself can no longer create. The schema
+# says so, so this module asks for the one that stood before the contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 PHOTO_DATE = date(2026, 8, 20)
 OTHER_DATE = date(2026, 8, 21)
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()

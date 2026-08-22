@@ -125,9 +125,9 @@ async def test_platform_scheduler_diagnostics_never_reach_report_context(
     assert sentinel not in messages
 
 
-async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session, legacy_owner_roots):
+async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session, legacy_owner_roots, *, garmin_connection_id, hevy_connection_id):
     db_session.add(
-        GarminDaily(
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             date=DAY,
             domain=Domain.GARMIN.value,
             source=Source.GARMIN_API.value,
@@ -145,7 +145,7 @@ async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session, 
     )
     db_session.add_all(
         [
-            GarminActivity(
+            GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 external_id="run-1",
                 date=DAY,
                 domain=Domain.GARMIN.value,
@@ -159,7 +159,7 @@ async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session, 
                 training_effect_aerobic=3.7,
                 hr_zone_seconds=[{"zone": 4, "secs": 900}],
             ),
-            GarminActivity(
+            GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 external_id="walk-1",
                 date=DAY,
                 domain=Domain.GARMIN.value,
@@ -170,7 +170,7 @@ async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session, 
                 duration_seconds=1800,
                 distance_m=2500,
             ),
-            GarminActivity(
+            GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 external_id="future-run",
                 date=DAY + timedelta(days=1),
                 domain=Domain.GARMIN.value,
@@ -178,7 +178,7 @@ async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session, 
                 activity_type="running",
                 name="Future",
             ),
-            HevyWorkout(
+            HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
                 external_id="hevy-am",
                 date=DAY,
                 domain=Domain.WORKOUTS.value,
@@ -187,7 +187,7 @@ async def test_garmin_activities_and_same_day_hevy_sessions_survive(db_session, 
                 start_time=datetime(2026, 8, 4, 9, 0),
                 duration_seconds=3600,
             ),
-            HevyWorkout(
+            HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
                 external_id="hevy-pm",
                 date=DAY,
                 domain=Domain.WORKOUTS.value,
@@ -231,7 +231,7 @@ async def test_historical_context_excludes_future_rows_from_every_fixed_block(
     db_session,
     legacy_owner_roots,
 ):
-    current_scan = BodyScan(
+    current_scan = BodyScan(subject_id=legacy_owner_roots.subject_id, 
         date=DAY,
         domain=Domain.BODY_COMPOSITION.value,
         source=Source.BODY_SCAN.value,
@@ -246,7 +246,7 @@ async def test_historical_context_excludes_future_rows_from_every_fixed_block(
             category="composition",
         )
     )
-    future_scan = BodyScan(
+    future_scan = BodyScan(subject_id=legacy_owner_roots.subject_id, 
         date=DAY + timedelta(days=6),
         domain=Domain.BODY_COMPOSITION.value,
         source=Source.BODY_SCAN.value,
@@ -263,13 +263,13 @@ async def test_historical_context_excludes_future_rows_from_every_fixed_block(
     )
     db_session.add_all(
         [
-            WeightLog(
+            WeightLog(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY,
                 domain=Domain.WEIGHT.value,
                 source=Source.MANUAL.value,
                 weight_kg=88.0,
             ),
-            WeightLog(
+            WeightLog(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY + timedelta(days=6),
                 domain=Domain.WEIGHT.value,
                 source=Source.MANUAL.value,
@@ -277,7 +277,7 @@ async def test_historical_context_excludes_future_rows_from_every_fixed_block(
             ),
             current_scan,
             future_scan,
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY,
                 domain=Domain.LABS.value,
                 source=Source.MANUAL.value,
@@ -286,7 +286,7 @@ async def test_historical_context_excludes_future_rows_from_every_fixed_block(
                 unit="U/L",
                 flag="normal",
             ),
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY + timedelta(days=6),
                 domain=Domain.LABS.value,
                 source=Source.MANUAL.value,
@@ -295,20 +295,20 @@ async def test_historical_context_excludes_future_rows_from_every_fixed_block(
                 unit="U/L",
                 flag="high",
             ),
-            SkincareObservation(
+            SkincareObservation(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY + timedelta(days=6),
                 domain=Domain.SKINCARE.value,
                 source=Source.MANUAL.value,
                 inflammation=5,
             ),
-            HrtSideEffect(
+            HrtSideEffect(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY + timedelta(days=6),
                 domain=Domain.HRT.value,
                 source=Source.MANUAL.value,
                 effect_type="future-effect",
                 severity=5,
             ),
-            Injection(
+            Injection(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY + timedelta(days=6),
                 domain=Domain.GLP1.value,
                 source=Source.MANUAL.value,
@@ -337,35 +337,35 @@ async def test_disabled_module_is_absent_and_explicit_in_coverage(db_session, le
     stamp = datetime.combine(DAY, time.min)
     db_session.add_all(
         [
-            HrtSideEffect(
+            HrtSideEffect(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY,
                 domain=Domain.HRT.value,
                 source=Source.MANUAL.value,
                 effect_type="private-effect",
                 severity=3,
             ),
-            Annotation(
+            Annotation(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY,
                 domain=Domain.HRT.value,
                 source=Source.MANUAL.value,
                 kind="note",
                 title="private-timeline",
             ),
-            Annotation(
+            Annotation(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY,
                 domain=Domain.TIMELINE.value,
                 source=Source.MANUAL.value,
                 kind="note",
                 title="visible-timeline",
             ),
-            Milestone(
+            Milestone(subject_id=legacy_owner_roots.subject_id, 
                 domain=Domain.HRT.value,
                 name="private-milestone",
                 status="active",
                 created_at=stamp,
                 updated_at=stamp,
             ),
-            Milestone(
+            Milestone(subject_id=legacy_owner_roots.subject_id, 
                 domain=Domain.WEIGHT.value,
                 name="visible-milestone",
                 status="active",
@@ -425,7 +425,7 @@ async def test_disabled_module_is_absent_and_explicit_in_coverage(db_session, le
 async def test_lab_history_is_bounded_per_marker_and_reports_truncation(db_session, legacy_owner_roots):
     db_session.add_all(
         [
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY - timedelta(days=offset),
                 domain=Domain.LABS.value,
                 source=Source.MANUAL.value,
@@ -464,7 +464,7 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_
         )
     )
     db_session.add(
-        DosePhase(
+        DosePhase(subject_id=owner_write.subject_id, 
             domain=Domain.GLP1.value,
             source=Source.MANUAL.value,
             start_date=DAY - timedelta(days=30),
@@ -474,21 +474,21 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_
     )
     db_session.add_all(
         [
-            Injection(
+            Injection(subject_id=owner_write.subject_id, 
                 date=DAY - timedelta(days=8),
                 domain=Domain.GLP1.value,
                 source=Source.MANUAL.value,
                 drug="tirzepatide",
                 dose_mg=5.0,
             ),
-            Injection(
+            Injection(subject_id=owner_write.subject_id, 
                 date=DAY - timedelta(days=1),
                 domain=Domain.GLP1.value,
                 source=Source.MANUAL.value,
                 drug="tirzepatide",
                 dose_mg=7.5,
             ),
-            SideEffect(
+            SideEffect(subject_id=owner_write.subject_id, 
                 date=DAY,
                 domain=Domain.GLP1.value,
                 source=Source.MANUAL.value,
@@ -516,7 +516,7 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_
     )
     db_session.add_all(
         [
-            HrtDose(
+            HrtDose(subject_id=owner_write.subject_id, 
                 date=DAY - timedelta(days=8),
                 domain=Domain.HRT.value,
                 source=Source.MANUAL.value,
@@ -524,7 +524,7 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_
                 dose=90,
                 unit="mg",
             ),
-            HrtDose(
+            HrtDose(subject_id=owner_write.subject_id, 
                 date=DAY - timedelta(days=1),
                 domain=Domain.HRT.value,
                 source=Source.MANUAL.value,
@@ -532,7 +532,7 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_
                 dose=100,
                 unit="mg",
             ),
-            HrtSideEffect(
+            HrtSideEffect(subject_id=owner_write.subject_id, 
                 date=DAY,
                 domain=Domain.HRT.value,
                 source=Source.MANUAL.value,
@@ -564,7 +564,7 @@ async def test_glp1_and_hrt_include_plan_fact_and_comparison(db_session, legacy_
 
 
 async def test_supporting_domains_are_complete_but_compact(db_session, legacy_owner_roots):
-    old_scan = BodyScan(
+    old_scan = BodyScan(subject_id=legacy_owner_roots.subject_id, 
         date=DAY - timedelta(days=20),
         domain=Domain.BODY_COMPOSITION.value,
         source=Source.BODY_SCAN.value,
@@ -589,7 +589,7 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
             ),
         ]
     )
-    new_scan = BodyScan(
+    new_scan = BodyScan(subject_id=legacy_owner_roots.subject_id, 
         date=DAY,
         domain=Domain.BODY_COMPOSITION.value,
         source=Source.BODY_SCAN.value,
@@ -616,7 +616,7 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
     )
     db_session.add_all(
         [
-            BodyMeasurement(
+            BodyMeasurement(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY - timedelta(days=20),
                 domain=Domain.WEIGHT.value,
                 source=Source.MANUAL.value,
@@ -624,7 +624,7 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
                 waist_cm=94,
                 body_fat_pct=21,
             ),
-            BodyMeasurement(
+            BodyMeasurement(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY,
                 domain=Domain.WEIGHT.value,
                 source=Source.MANUAL.value,
@@ -634,14 +634,14 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
             ),
             old_scan,
             new_scan,
-            LabMarker(
+            LabMarker(subject_id=legacy_owner_roots.subject_id, 
                 domain=Domain.LABS.value,
                 name="Ferritin",
                 tier=1,
                 retest_interval_days=7,
                 note="Protocol cadence",
             ),
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY - timedelta(days=10),
                 domain=Domain.LABS.value,
                 source=Source.MANUAL.value,
@@ -650,7 +650,7 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
                 unit="ng/mL",
                 flag="normal",
             ),
-            MealLog(
+            MealLog(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY,
                 domain=Domain.NUTRITION.value,
                 source=Source.MANUAL.value,
@@ -661,21 +661,21 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
                 fat_g=30,
                 carbs_g=70,
             ),
-            MealLog(
+            MealLog(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY - timedelta(days=1),
                 domain=Domain.NUTRITION.value,
                 source=Source.MANUAL.value,
                 name="Calories only",
                 calories=500,
             ),
-            SkincareLog(
+            SkincareLog(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY,
                 domain=Domain.SKINCARE.value,
                 source=Source.MANUAL.value,
                 retinoid=True,
                 moisturizer=True,
             ),
-            SkincareProduct(
+            SkincareProduct(subject_id=legacy_owner_roots.subject_id, 
                 name="Retinal",
                 type="Retinoid",
                 active_ingredient="retinaldehyde",
@@ -683,7 +683,7 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
                 schedule_days=[1, 3, 5],
                 active=True,
             ),
-            GeneticVariant(
+            GeneticVariant(subject_id=legacy_owner_roots.subject_id, 
                 domain=Domain.GENETICS.value,
                 source=Source.VCF_IMPORT.value,
                 gene="HFE",
@@ -744,7 +744,7 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
 
 async def test_day_context_aliases_and_truncation_are_explicit(db_session, legacy_owner_roots):
     db_session.add(
-        DayContext(
+        DayContext(subject_id=legacy_owner_roots.subject_id, 
             date=DAY,
             domain=Domain.SIGNALS.value,
             source=Source.MANUAL.value,
@@ -754,7 +754,7 @@ async def test_day_context_aliases_and_truncation_are_explicit(db_session, legac
     )
     db_session.add_all(
         [
-            Signal(
+            Signal(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY,
                 domain=Domain.SIGNALS.value,
                 source=Source.TELEGRAM.value,

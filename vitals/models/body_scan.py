@@ -44,6 +44,7 @@ from vitals.models.mixins import InsightsMixin, insights_index
 from vitals.models.ownership_mixins import (
     FileAssetOwnershipMixin,
     OriginActorMixin,
+    RequiredSubjectOwnershipMixin,
     SubjectOwnershipMixin,
 )
 
@@ -52,7 +53,7 @@ DOMAIN = Domain.BODY_COMPOSITION.value
 
 class BodyScan(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     FileAssetOwnershipMixin,
     InsightsMixin,

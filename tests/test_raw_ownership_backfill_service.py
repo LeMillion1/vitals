@@ -37,6 +37,13 @@ from vitals.services.raw_ownership_backfill_service import (
 from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
 from vitals.services import raw_ownership_backfill_service as backfill_service
 
+
+# Every test here writes or inspects a row with no owner, which is the whole
+# subject of the ownership backfill: these services exist to give such rows an
+# owner. The application can no longer produce that state, so this module asks
+# for the schema as it stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 _FETCHED_AT = datetime(2026, 8, 20, 12, 34, 56, 123456)
 

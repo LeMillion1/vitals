@@ -64,7 +64,9 @@ async def hevy_dashboard(
         verdict = await hevy_service.progression_for_exercise(
             db, selected, subject_id=ownership.subject_id
         )
-        notes = await hevy_service.latest_notes(db, selected)
+        notes = await hevy_service.latest_notes(
+            db, selected, subject_id=ownership.subject_id
+        )
         selected_title = next(
             (c["title"] for c in catalog if c["exercise_template_id"] == selected), selected
         )

@@ -72,7 +72,7 @@ class PulseClient:
         return self._summary
 
 
-async def _seed_steps(db_session, steps: int, *, on_date=TODAY):
+async def _seed_steps(db_session, steps: int, *, on_date=TODAY, garmin_owned_scope):
     """A day of watch data belonging to this installation's sole owner.
 
     The legacy ingest still writes an unstamped row, so the seeder attaches the
@@ -83,9 +83,9 @@ async def _seed_steps(db_session, steps: int, *, on_date=TODAY):
 
     from vitals.models.identity import HealthSubject
 
-    row = await garmin_service.ingest_daily(
+    row = await garmin_service.ingest_owned_daily(
         db_session, on_date, {"summary": {"totalSteps": steps}}
-    )
+    , identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     row.subject_id = await db_session.scalar(select(HealthSubject.id).limit(2))
     await db_session.commit()
 
@@ -136,17 +136,17 @@ async def scoped_nudges(db_session, monkeypatch):
     return SimpleNamespace(run=run, notifier=notifier, ownership=ownership)
 
 
-async def test_nothing_holds_nothing_is_sent(db_session, scoped_nudges):
+async def test_nothing_holds_nothing_is_sent(garmin_owned_scope, db_session, scoped_nudges):
     """The common case: an ordinary evening with the day on track."""
-    await _seed_steps(db_session, nudges.STEPS_TARGET + 500)
+    await _seed_steps(db_session, nudges.STEPS_TARGET + 500, garmin_owned_scope=garmin_owned_scope)
 
     assert await scoped_nudges.run(now=EVENING) == []
     assert scoped_nudges.notifier.sent == []
 
 
-async def test_steps_nudge_waits_for_the_evening(db_session, scoped_nudges):
+async def test_steps_nudge_waits_for_the_evening(garmin_owned_scope, db_session, scoped_nudges):
     """Same data, wrong hour: at 17:00 a low step count is not yet news."""
-    await _seed_steps(db_session, 3000)
+    await _seed_steps(db_session, 3000, garmin_owned_scope=garmin_owned_scope)
 
     assert await scoped_nudges.run(now=AFTERNOON) == []
 
@@ -156,12 +156,12 @@ async def test_steps_nudge_waits_for_the_evening(db_session, scoped_nudges):
     assert sent[0].category == delivery.CATEGORY_NUDGE
 
 
-async def test_missing_data_is_not_a_nudge(db_session, scoped_nudges):
+async def test_missing_data_is_not_a_nudge(garmin_owned_scope, db_session, scoped_nudges):
     """No Garmin row means the watch hasn't synced, not that he sat still — and
     no meals logged means an untracked day, not a missed protein target."""
     assert await scoped_nudges.run(now=EVENING) == []
 
-    await _seed_steps(db_session, 0)
+    await _seed_steps(db_session, 0, garmin_owned_scope=garmin_owned_scope)
     assert await scoped_nudges.run(now=EVENING) == []
 
 
@@ -199,27 +199,27 @@ async def test_protein_nudge_fires_while_the_day_is_still_open(
     ) == []
 
 
-async def test_garmin_silence_needs_two_days_and_some_history(db_session, scoped_nudges):
+async def test_garmin_silence_needs_two_days_and_some_history(garmin_owned_scope, db_session, scoped_nudges):
     """Never fires on an empty lake: that's an integration nobody set up."""
     assert await scoped_nudges.run(now=AFTERNOON) == []
 
     # One day behind is an ordinary gap between polls, not a broken watch.
-    await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=1))
+    await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=1), garmin_owned_scope=garmin_owned_scope)
     assert await scoped_nudges.run(now=AFTERNOON) == []
 
 
-async def test_garmin_silence_fires_after_two_days(db_session, scoped_nudges):
-    await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2))
+async def test_garmin_silence_fires_after_two_days(garmin_owned_scope, db_session, scoped_nudges):
+    await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2), garmin_owned_scope=garmin_owned_scope)
 
     sent = await scoped_nudges.run(now=AFTERNOON)
     assert len(sent) == 1
     assert "Garmin" in scoped_nudges.notifier.sent[0]
 
 
-async def test_garmin_silence_is_announced_once_per_episode(db_session, scoped_nudges):
+async def test_garmin_silence_is_announced_once_per_episode(garmin_owned_scope, db_session, scoped_nudges):
     """The 24-hour cooldown alone re-sends the same sentence every morning for
     as long as the watch stays unworn. It is only news once."""
-    await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2))
+    await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2), garmin_owned_scope=garmin_owned_scope)
 
     assert len(await scoped_nudges.run(now=AFTERNOON)) == 1
     await db_session.commit()
@@ -230,15 +230,15 @@ async def test_garmin_silence_is_announced_once_per_episode(db_session, scoped_n
     assert len(scoped_nudges.notifier.sent) == 1
 
     # The watch syncs, then goes quiet again: a new episode, worth saying once.
-    await _seed_steps(db_session, 5000, on_date=tomorrow.date())
+    await _seed_steps(db_session, 5000, on_date=tomorrow.date(), garmin_owned_scope=garmin_owned_scope)
     assert len(await scoped_nudges.run(now=tomorrow + timedelta(days=2))) == 1
 
 
 # ── The cooldown ──────────────────────────────────────────────────────────────
-async def test_cooldown_holds_the_second_run(db_session, scoped_nudges):
+async def test_cooldown_holds_the_second_run(garmin_owned_scope, db_session, scoped_nudges):
     """The job runs hourly; without the cooldown the same sentence arrives at
     19:05, 20:05 and 21:05."""
-    await _seed_steps(db_session, 3000)
+    await _seed_steps(db_session, 3000, garmin_owned_scope=garmin_owned_scope)
 
     assert len(await scoped_nudges.run(now=EVENING)) == 1
     await db_session.commit()
@@ -248,11 +248,11 @@ async def test_cooldown_holds_the_second_run(db_session, scoped_nudges):
 
     # A day later — same story, new day — the nudge is allowed again.
     later = EVENING + timedelta(hours=25)
-    await _seed_steps(db_session, 3000, on_date=later.date())
+    await _seed_steps(db_session, 3000, on_date=later.date(), garmin_owned_scope=garmin_owned_scope)
     assert len(await scoped_nudges.run(now=later)) == 1
 
 
-async def test_owned_nudge_uses_opaque_durable_claim_and_transaction_free_send(
+async def test_owned_nudge_uses_opaque_durable_claim_and_transaction_free_send(garmin_owned_scope, 
     db_session,
     legacy_owner_roots,
     monkeypatch,
@@ -273,7 +273,7 @@ async def test_owned_nudge_uses_opaque_durable_claim_and_transaction_free_send(
         actor_username=None,
     )
     await db_session.commit()
-    await _seed_steps(db_session, 3000)
+    await _seed_steps(db_session, 3000, garmin_owned_scope=garmin_owned_scope)
 
     sent = await nudges.run(
         db_session,
@@ -299,7 +299,7 @@ async def test_owned_nudge_uses_opaque_durable_claim_and_transaction_free_send(
     assert sent[0].dedupe_key == intent.idempotency_key
 
 
-async def test_ambiguous_owned_nudge_claim_holds_cooldown_without_retry(
+async def test_ambiguous_owned_nudge_claim_holds_cooldown_without_retry(garmin_owned_scope, 
     db_session,
     legacy_owner_roots,
     monkeypatch,
@@ -316,7 +316,7 @@ async def test_ambiguous_owned_nudge_claim_holds_cooldown_without_retry(
         actor_username=None,
     )
     await db_session.commit()
-    await _seed_steps(db_session, 3000)
+    await _seed_steps(db_session, 3000, garmin_owned_scope=garmin_owned_scope)
 
     assert await nudges.run(
         db_session,
@@ -336,7 +336,7 @@ async def test_ambiguous_owned_nudge_claim_holds_cooldown_without_retry(
     assert intent.status == NotificationDeliveryStatus.AMBIGUOUS.value
 
 
-async def test_ambiguous_garmin_silence_claim_blocks_the_whole_episode(
+async def test_ambiguous_garmin_silence_claim_blocks_the_whole_episode(garmin_owned_scope, 
     db_session,
     legacy_owner_roots,
     monkeypatch,
@@ -353,7 +353,7 @@ async def test_ambiguous_garmin_silence_claim_blocks_the_whole_episode(
         actor_username=None,
     )
     await db_session.commit()
-    await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2))
+    await _seed_steps(db_session, 5000, on_date=TODAY - timedelta(days=2), garmin_owned_scope=garmin_owned_scope)
 
     assert await nudges.run(
         db_session,
@@ -375,12 +375,13 @@ async def test_ambiguous_garmin_silence_claim_blocks_the_whole_episode(
 
 # ── The budget ────────────────────────────────────────────────────────────────
 async def test_budget_cuts_the_nudge_that_does_not_fit(
-    db_session, owner_write, monkeypatch
+    garmin_owned_scope, db_session, owner_write, monkeypatch,
+    legacy_owner_roots, telegram_connection_id,
 ):
     """Two conditions hold, one slot is left — so exactly one goes out. The brief
     and the evening block spend two of the four every day, which is why a nudge
     is never the message that matters most."""
-    await _seed_steps(db_session, 3000)  # steps: short
+    await _seed_steps(db_session, 3000, garmin_owned_scope=garmin_owned_scope)  # steps: short
     await nutrition_service.log_meal(
         db_session,
         on_date=TODAY,
@@ -392,6 +393,10 @@ async def test_budget_cuts_the_nudge_that_does_not_fit(
     for i in range(delivery.DAILY_BUDGET - 1):  # brief, evening, one earlier nudge
         db_session.add(
             Notification(
+                # A dedupe_key demands the whole root: subject, recipient, channel.
+                subject_id=owner_write.subject_id,
+                recipient_user_id=legacy_owner_roots.user_id,
+                integration_connection_id=telegram_connection_id,
                 sent_at=EVENING,
                 category=delivery.CATEGORY_BRIEF,
                 channel="telegram",
@@ -413,27 +418,27 @@ async def test_budget_cuts_the_nudge_that_does_not_fit(
     assert len(notifier.sent) == 1
 
 
-async def test_a_broken_condition_does_not_take_the_others_down(db_session, monkeypatch, scoped_nudges):
+async def test_a_broken_condition_does_not_take_the_others_down(garmin_owned_scope, db_session, monkeypatch, scoped_nudges):
     """A registry is only safe to extend if one bad entry can't silence the rest."""
 
     async def _boom(session, ctx):
         raise RuntimeError("bad rule")
 
-    await _seed_steps(db_session, 3000)
+    await _seed_steps(db_session, 3000, garmin_owned_scope=garmin_owned_scope)
     broken = nudges.NudgeSpec("broken", "test", _boom, lambda ctx: "never")
     monkeypatch.setattr(nudges, "NUDGES", (broken,) + nudges.NUDGES)
     assert len(await scoped_nudges.run(now=EVENING)) == 1
 
 
 # ── The light pulse (N3) ──────────────────────────────────────────────────────
-async def test_pulse_refreshes_steps_without_losing_the_night(db_session):
+async def test_pulse_refreshes_steps_without_losing_the_night(db_session, *, garmin_owned_scope):
     """The merge is the whole point: a bare {"summary": …} normalised over the
     day would blank sleep and HRV, and the morning brief would go out empty."""
-    await garmin_service.ingest_daily(db_session, TODAY, FULL_DAY)
+    await garmin_service.ingest_owned_daily(db_session, TODAY, FULL_DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     client = PulseClient({"totalSteps": 9100, "restingHeartRate": 52})
-    out = await garmin_service.pulse(db_session, client, on_date=TODAY)
+    out = await garmin_service.pulse_owned(db_session, client, on_date=TODAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     row = await garmin_service.get_daily(db_session, TODAY)
@@ -443,12 +448,12 @@ async def test_pulse_refreshes_steps_without_losing_the_night(db_session):
     assert client.calls == [TODAY]  # exactly one upstream call
 
 
-async def test_pulse_ignores_an_empty_response(db_session):
+async def test_pulse_ignores_an_empty_response(db_session, *, garmin_owned_scope):
     """An empty summary is a failed call, not a day without steps."""
-    await garmin_service.ingest_daily(db_session, TODAY, FULL_DAY)
+    await garmin_service.ingest_owned_daily(db_session, TODAY, FULL_DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
-    out = await garmin_service.pulse(db_session, PulseClient({}), on_date=TODAY)
+    out = await garmin_service.pulse_owned(db_session, PulseClient({}), on_date=TODAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     assert out["error"] == "empty"
@@ -456,7 +461,7 @@ async def test_pulse_ignores_an_empty_response(db_session):
     assert row.steps == 3000 and row.sleep_score == 80
 
 
-async def test_pulse_swallows_a_throttled_login(db_session):
+async def test_pulse_swallows_a_throttled_login(db_session, *, garmin_owned_scope):
     """The breaker refusing a login is the system working. Every 15 minutes it
     must not raise, and it must not raise an alert either — the 4×/day sync owns
     that one and would otherwise flap it."""
@@ -465,7 +470,7 @@ async def test_pulse_swallows_a_throttled_login(db_session):
     from sqlalchemy import select
 
     client = PulseClient(raise_exc=GarminLoginThrottled("daily allowance spent"))
-    out = await garmin_service.pulse(db_session, client, on_date=TODAY)
+    out = await garmin_service.pulse_owned(db_session, client, on_date=TODAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     assert out["error"] == "throttled"

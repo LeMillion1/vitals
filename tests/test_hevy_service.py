@@ -55,11 +55,11 @@ def _workout(wid, *, start, updated, title="Day A — Push", sets=None, template
     }
 
 
-async def test_sync_creates_workout_tree(db_session):
+async def test_sync_creates_workout_tree(db_session, *, hevy_owned_scope):
     client = FakeHevyClient(
         [_workout("w1", start="2026-06-10T10:00:00Z", updated="2026-06-10T11:00:00Z")]
     )
-    summary = await hevy_service.sync(db_session, client)
+    summary = await hevy_service.sync_owned(db_session, client, identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
 
     assert summary == {"fetched": 1, "created": 1, "updated": 0, "skipped": 0}
@@ -82,13 +82,13 @@ async def test_sync_creates_workout_tree(db_session):
     assert w.raw_payload_id == raw[0].id
 
 
-async def test_sync_idempotent_skips_unchanged(db_session):
+async def test_sync_idempotent_skips_unchanged(db_session, *, hevy_owned_scope):
     wk = _workout("w1", start="2026-06-10T10:00:00Z", updated="2026-06-10T11:00:00Z")
     client = FakeHevyClient([wk])
 
-    await hevy_service.sync(db_session, client)
+    await hevy_service.sync_owned(db_session, client, identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
-    summary2 = await hevy_service.sync(db_session, client)
+    summary2 = await hevy_service.sync_owned(db_session, client, identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
 
     assert summary2["skipped"] == 1
@@ -96,12 +96,12 @@ async def test_sync_idempotent_skips_unchanged(db_session):
     assert await hevy_service.workout_count(db_session) == 1
 
 
-async def test_sync_renormalises_changed_workout_without_orphans(db_session):
+async def test_sync_renormalises_changed_workout_without_orphans(db_session, *, hevy_owned_scope):
     wk = _workout(
         "w1", start="2026-06-10T10:00:00Z", updated="2026-06-10T11:00:00Z",
         sets=[_set(0, 80.0, 10), _set(1, 80.0, 10)],
     )
-    await hevy_service.sync(db_session, FakeHevyClient([wk]), )
+    await hevy_service.sync_owned(db_session, FakeHevyClient([wk]), identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
 
     # Same id, newer updated_at, different sets → re-normalised in place.
@@ -109,7 +109,7 @@ async def test_sync_renormalises_changed_workout_without_orphans(db_session):
         "w1", start="2026-06-10T10:00:00Z", updated="2026-06-10T12:30:00Z",
         sets=[_set(0, 82.5, 8)],
     )
-    summary = await hevy_service.sync(db_session, FakeHevyClient([wk2]))
+    summary = await hevy_service.sync_owned(db_session, FakeHevyClient([wk2]), identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
 
     assert summary["updated"] == 1
@@ -126,7 +126,7 @@ async def test_sync_renormalises_changed_workout_without_orphans(db_session):
 
 async def test_working_weight_series_and_catalog(
     db_session, owned_by_legacy_subject
-):
+, *, hevy_owned_scope):
     client = FakeHevyClient(
         [
             _workout("w1", start="2026-06-01T10:00:00Z", updated="2026-06-01T11:00:00Z",
@@ -135,7 +135,7 @@ async def test_working_weight_series_and_catalog(
                      sets=[_set(0, 82.5, 8)]),
         ]
     )
-    await hevy_service.sync(db_session, client)
+    await hevy_service.sync_owned(db_session, client, identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
 
     series = await hevy_service.working_weight_series(
@@ -154,7 +154,7 @@ async def test_working_weight_series_and_catalog(
 
 async def test_progression_advance_when_top_of_range_hit(
     db_session, owned_by_legacy_subject
-):
+, *, hevy_owned_scope):
     from vitals.services.analytics.progression import ProgressionConfig
 
     client = FakeHevyClient(
@@ -163,7 +163,7 @@ async def test_progression_advance_when_top_of_range_hit(
                      sets=[_set(0, 80.0, 12), _set(1, 80.0, 12), _set(2, 80.0, 12)]),
         ]
     )
-    await hevy_service.sync(db_session, client)
+    await hevy_service.sync_owned(db_session, client, identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
 
     verdict = await hevy_service.progression_for_exercise(
@@ -177,9 +177,9 @@ async def test_progression_advance_when_top_of_range_hit(
     assert verdict.suggested_weight_kg == 82.5
 
 
-async def test_workout_without_id_is_skipped(db_session):
+async def test_workout_without_id_is_skipped(db_session, *, hevy_owned_scope):
     client = FakeHevyClient([{"id": "", "exercises": []}])
-    summary = await hevy_service.sync(db_session, client)
+    summary = await hevy_service.sync_owned(db_session, client, identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
     assert summary["skipped"] == 1
     assert await hevy_service.workout_count(db_session) == 0

@@ -32,12 +32,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.models.base import Base, TimestampMixin
-from vitals.models.ownership_mixins import SubjectOwnershipMixin
+from vitals.models.ownership_mixins import RequiredSubjectOwnershipMixin
 
 _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 
 
-class SharedReport(Base, SubjectOwnershipMixin, TimestampMixin):
+class SharedReport(Base, RequiredSubjectOwnershipMixin, TimestampMixin):
     """One password-protected document published at ``/r/<token>``."""
 
     __tablename__ = "shared_reports"

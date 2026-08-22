@@ -52,9 +52,9 @@ from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
 from vitals.models.ownership_mixins import (
-    IntegrationConnectionOwnershipMixin,
     OriginActorMixin,
-    SubjectOwnershipMixin,
+    RequiredIntegrationConnectionOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
 )
 
 DOMAIN = Domain.GARMIN.value
@@ -112,9 +112,9 @@ WEIGHT_EXPORT_DELETED = "deleted"
 
 class GarminDaily(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
-    IntegrationConnectionOwnershipMixin,
+    RequiredIntegrationConnectionOwnershipMixin,
     InsightsMixin,
     TimestampMixin,
 ):
@@ -215,9 +215,9 @@ class GarminDaily(
 
 class GarminActivity(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
-    IntegrationConnectionOwnershipMixin,
+    RequiredIntegrationConnectionOwnershipMixin,
     InsightsMixin,
     TimestampMixin,
 ):
@@ -278,8 +278,8 @@ class GarminActivity(
 
 class GarminIntraday(
     Base,
-    SubjectOwnershipMixin,
-    IntegrationConnectionOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
+    RequiredIntegrationConnectionOwnershipMixin,
     InsightsMixin,
     TimestampMixin,
 ):
@@ -345,8 +345,8 @@ class GarminIntraday(
 
 class GarminWeightExport(
     Base,
-    SubjectOwnershipMixin,
-    IntegrationConnectionOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
+    RequiredIntegrationConnectionOwnershipMixin,
     TimestampMixin,
 ):
     """Transactional outbox for local weight writes to Garmin Connect.

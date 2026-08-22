@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import UniqueConstraint, Uuid
 
+from vitals.ownership import required_ownership_columns
 from vitals.models.body_scan import BodyScanMetric
 from vitals.models.hevy import HevyExercise, HevySet
 from vitals.models.hrt import (
@@ -11,6 +12,19 @@ from vitals.models.hrt import (
     HrtCycleItem,
     HrtCycleTemplateItem,
 )
+
+
+def _expected_nullable(table_name: str, column_name: str) -> bool:
+    """Whether this reference may be absent, straight from the registry.
+
+    PR-03 added every one of these columns nullable and this module asserted so
+    literally. The ownership contract made the registered-required ones
+    mandatory, and hard-coding either answer here just moves the contract into a
+    second place that can disagree with the first. The registry is the contract;
+    this reads it.
+    """
+
+    return (table_name, column_name) not in set(required_ownership_columns())
 
 _OWNERSHIP_TARGETS = {
     "subject_id": "health_subjects.id",
@@ -89,7 +103,9 @@ def test_child_models_have_exact_nullable_ownership_foreign_keys(
         column = table.columns[column_name]
         assert isinstance(column.type, Uuid)
         assert column.type.as_uuid is True
-        assert column.nullable is True
+        assert column.nullable is _expected_nullable(
+            table.name, column_name
+        )
         assert column.default is None
         assert column.server_default is None
         # ``subject_id`` additionally carries the Stage-4 subject-equality

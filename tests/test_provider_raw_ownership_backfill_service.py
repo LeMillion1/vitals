@@ -49,6 +49,13 @@ from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
 from vitals.utils.timeutils import now_utc
 
 
+# Every test here writes or inspects a row with no owner, which is the whole
+# subject of the ownership backfill: these services exist to give such rows an
+# owner. The application can no longer produce that state, so this module asks
+# for the schema as it stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 PASSWORD_HASH = (
     "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
 )

@@ -269,7 +269,7 @@ async def test_scoped_template_import_is_parse_only_and_subject_isolated(db_sess
     assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
 
 
-async def test_template_graph_rejects_foreign_child_and_partial_legacy_parent(db_session):
+async def test_template_graph_rejects_foreign_child_and_partial_legacy_parent(db_session, *, legacy_owner_roots):
     first = await _identity(db_session, "hrt-template-graph-first")
     second = await _identity(db_session, "hrt-template-graph-second")
     template = HrtCycleTemplate(
@@ -280,7 +280,7 @@ async def test_template_graph_rejects_foreign_child_and_partial_legacy_parent(db
         name="Corrupt child",
         kind="course",
     )
-    partial = HrtCycleTemplate(
+    partial = HrtCycleTemplate(subject_id=legacy_owner_roots.subject_id, 
         actor_user_id=first.actor_user_id,
         domain=DOMAIN,
         source=Source.MANUAL.value,

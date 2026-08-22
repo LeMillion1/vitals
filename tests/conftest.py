@@ -7,7 +7,7 @@ where this schema actually lives. ``@pytest.mark.integration`` tests are skipped
 on SQLite.
 """
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 import os
 import uuid
 from pathlib import Path
@@ -44,6 +44,7 @@ from sqlalchemy.pool import NullPool, StaticPool
 
 import vitals.models  # noqa: F401 — register all tables on Base.metadata
 from vitals.models.base import Base
+from tests.schema_modes import pre_ownership_contract_metadata
 
 TEST_USERNAME = "tester"
 TEST_PASSWORD = "password"
@@ -140,6 +141,8 @@ def _reset_engine_registries():
 
 
 _SQLITE_SCHEMA_READY = False
+# Which of the two schemas the shared SQLite database currently holds.
+_SQLITE_SCHEMA_MODE: str | None = None
 
 
 def _empty_every_table(conn) -> None:
@@ -155,19 +158,36 @@ def _empty_every_table(conn) -> None:
 
 
 @pytest_asyncio.fixture
-async def db_session():
-    global _SQLITE_SCHEMA_READY
+async def db_session(request):
+    global _SQLITE_SCHEMA_READY, _SQLITE_SCHEMA_MODE
+    mode = (
+        "pre_ownership_contract"
+        if request.node.get_closest_marker("pre_ownership_contract")
+        else "ownership_contract"
+    )
+    relax = (
+        pre_ownership_contract_metadata
+        if mode == "pre_ownership_contract"
+        else nullcontext
+    )
     async with TEST_ENGINE.begin() as conn:
         if "sqlite" not in TEST_DATABASE_URL:
             # Postgres runs one connection per test (NullPool), so the schema does
             # not survive between them — keep recreating it there.
             await conn.run_sync(Base.metadata.drop_all)
-            await conn.run_sync(Base.metadata.create_all)
-        elif _SQLITE_SCHEMA_READY:
+            with relax():
+                await conn.run_sync(Base.metadata.create_all)
+        elif _SQLITE_SCHEMA_READY and _SQLITE_SCHEMA_MODE == mode:
             await conn.run_sync(_empty_every_table)
         else:
-            await conn.run_sync(Base.metadata.create_all)
+            # Switching between the two schemas costs a rebuild, so the marked
+            # modules are worth keeping few and keeping together.
+            if _SQLITE_SCHEMA_READY:
+                await conn.run_sync(Base.metadata.drop_all)
+            with relax():
+                await conn.run_sync(Base.metadata.create_all)
             _SQLITE_SCHEMA_READY = True
+        _SQLITE_SCHEMA_MODE = mode
     if "sqlite" in TEST_DATABASE_URL:
         # ``PRAGMA foreign_keys`` is per-connection and this in-memory engine
         # keeps one, so a test that switches enforcement on would otherwise
@@ -465,8 +485,12 @@ async def platform_ai_ready(db_session, legacy_owner_roots, monkeypatch):
 def alembic_head_revision() -> str:
     """Return the current migration head.
 
-    A rehearsal that asserts where a refused downgrade leaves the schema must
-    not have to be edited every time a revision is added.
+    Its callers moved to :data:`PRE_OWNERSHIP_CONTRACT_REVISION` when the
+    ownership contract landed: a rehearsal seeds a revision-0034 lake and cannot
+    migrate past the contract until its backfill has finished, so the ceiling it
+    asserts against is that revision rather than head. This stays for a test
+    that genuinely reaches head and should not have to be edited whenever a
+    revision is added.
     """
 
     from alembic.config import Config as _AlembicConfig
@@ -626,6 +650,74 @@ async def hevy_connection_id(legacy_connection_ids):
     from vitals.enums import IntegrationProvider
 
     return legacy_connection_ids(IntegrationProvider.HEVY)
+
+
+@pytest_asyncio.fixture
+async def garmin_owned_scope(legacy_owner_roots, garmin_connection_id):
+    """Identity plus Garmin account for the owned provider entry points.
+
+    ``sync_owned``, ``pulse_owned`` and the owned ingests all take the pair
+    together, because a vendor row is meaningless without both: whose data it is
+    and which account it arrived through. The bootstrapped root connection is
+    ``legacy`` rather than ``active``, which those paths accept — that is the
+    state a single-user installation upgrades into.
+    """
+
+    from types import SimpleNamespace
+
+    from vitals.ownership import WriteIdentity
+
+    return SimpleNamespace(
+        subject_id=legacy_owner_roots.subject_id,
+        connection_id=garmin_connection_id,
+        identity=WriteIdentity(
+            legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+        ),
+        # A scheduled pull has no human behind it; the provider paths take this
+        # form when they attribute a row to the account rather than to a person.
+        system_identity=WriteIdentity(legacy_owner_roots.subject_id, None),
+    )
+
+
+@pytest_asyncio.fixture
+async def hevy_owned_scope(legacy_owner_roots, hevy_connection_id):
+    """Identity plus Hevy account, the pair the owned Hevy entry points take."""
+
+    from types import SimpleNamespace
+
+    from vitals.ownership import WriteIdentity
+
+    return SimpleNamespace(
+        subject_id=legacy_owner_roots.subject_id,
+        connection_id=hevy_connection_id,
+        identity=WriteIdentity(
+            legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+        ),
+        system_identity=WriteIdentity(legacy_owner_roots.subject_id, None),
+    )
+
+
+@pytest_asyncio.fixture
+async def openrouter_connection_id(legacy_connection_ids):
+    """The owner's OpenRouter account — a generated narrative's provenance."""
+
+    from vitals.enums import IntegrationProvider
+
+    return legacy_connection_ids(IntegrationProvider.OPENROUTER)
+
+
+@pytest_asyncio.fixture
+async def telegram_connection_id(legacy_connection_ids):
+    """The owner's Telegram recipient connection.
+
+    A notification that carries a ``dedupe_key`` has to name its whole root —
+    subject, recipient and connection — or none of it; there is no half-owned
+    notification. Seeding one therefore needs the channel it was sent on.
+    """
+
+    from vitals.enums import IntegrationProvider
+
+    return legacy_connection_ids(IntegrationProvider.TELEGRAM)
 
 
 @pytest_asyncio.fixture

@@ -21,6 +21,13 @@ from vitals.services.genetics_vcf import ParsedVariant
 from vitals.utils.timeutils import now_local
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader or writer does when the ownership backfill has not reached a row yet,
+# which is a state the application itself can no longer create. The schema
+# says so, so this module asks for the one that stood before the contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 RISK = ParsedVariant("rs1800562", "G", "A", "G/A")
 REFERENCE = ParsedVariant("rs1800562", "G", "A", "G/G")
 MTHFR = ParsedVariant("rs1801133", "C", "T", "C/T")

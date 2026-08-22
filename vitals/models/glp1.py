@@ -23,14 +23,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
-from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
+from vitals.models.ownership_mixins import (
+    OriginActorMixin,
+    RequiredSubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.GLP1.value
 
 
 class Injection(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     InsightsMixin,
     TimestampMixin,
@@ -59,7 +62,7 @@ class Injection(
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class DosePhase(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
+class DosePhase(Base, RequiredSubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """A date range the user spent on a given drug/dose. Like ``NoiseMarker`` it
     spans ``start_date``/``end_date`` (open-ended when ``end_date`` is null) rather
     than the single ``InsightsMixin.date``, but keeps ``domain``/``source`` for
@@ -93,7 +96,7 @@ class DosePhase(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
 
 class SideEffect(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     InsightsMixin,
     TimestampMixin,

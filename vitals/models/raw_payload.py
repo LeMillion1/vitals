@@ -25,7 +25,7 @@ from vitals.models.ownership_mixins import (
     FileAssetOwnershipMixin,
     IntegrationConnectionOwnershipMixin,
     OriginActorMixin,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
 )
 
 # JSONB on Postgres, JSON on SQLite (fast tests). The GIN index below is a no-op
@@ -35,7 +35,7 @@ _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 
 class RawPayload(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     IntegrationConnectionOwnershipMixin,
     FileAssetOwnershipMixin,

@@ -6,6 +6,13 @@ from datetime import date
 
 import pytest
 
+
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader does when the ownership backfill has not reached a row yet, which is
+# a state the application itself can no longer create. The schema says so, so
+# this module asks for the one that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
 mcp_router = pytest.importorskip("web.routers.mcp")
 
 
@@ -23,8 +30,8 @@ async def test_profile_resource_returns_profile():
 async def test_latest_digest_resource_empty_then_populated(
     db_session,
     legacy_owner_roots,
+    openrouter_connection_id,
 ):
-    del legacy_owner_roots
     assert await mcp_router.latest_digest_resource() == {"error": "No digests yet"}
 
     from vitals.models import WeeklyDigest
@@ -32,6 +39,13 @@ async def test_latest_digest_resource_empty_then_populated(
 
     db_session.add(
         WeeklyDigest(
+            subject_id=legacy_owner_roots.subject_id,
+            # A manual digest is something a person wrote, so the row has to
+            # name which one — and it has to be the owner. A weekly narrative
+            # also has to name the OpenRouter account it was generated through,
+            # even when a human wrote this one by hand.
+            actor_user_id=legacy_owner_roots.user_id,
+            integration_connection_id=openrouter_connection_id,
             date=date(2026, 7, 5),
             domain=Domain.MILESTONES.value,
             source=Source.MANUAL.value,

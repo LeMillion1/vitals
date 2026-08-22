@@ -24,6 +24,13 @@ from vitals.utils.timeutils import now_local
 from web.config import get_web_config
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader does when the ownership backfill has not reached a row yet, which is
+# a state the application itself can no longer create. The schema says so, so
+# this module asks for the one that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 START = date(2026, 3, 1)
 END = date(2026, 3, 30)
 
@@ -39,11 +46,11 @@ async def _create(
     session: AsyncSession,
     prepared: share_service.PreparedShareOwner,
     *,
-    title: str = "Scoped report",
+    title: str = "Scoped report", legacy_owner_roots,
 ) -> tuple[SharedReport, str]:
     if await session.scalar(select(WeightLog.id).limit(1)) is None:
         session.add(
-            WeightLog(
+            WeightLog(subject_id=legacy_owner_roots.subject_id, 
                 date=START,
                 domain=Domain.WEIGHT.value,
                 source="manual",
@@ -105,7 +112,7 @@ async def test_create_stamps_subject_creator_and_keeps_ids_out_of_snapshot(
     legacy_owner_roots,
 ):
     prepared = await _prepared(db_session)
-    row, _ = await _create(db_session, prepared)
+    row, _ = await _create(db_session, prepared, legacy_owner_roots=legacy_owner_roots)
 
     assert (row.subject_id, row.created_by_user_id, row.revoked_by_user_id) == (
         legacy_owner_roots.subject_id,
@@ -123,7 +130,7 @@ async def test_owner_reads_include_only_exact_and_fully_null_history(
     legacy_owner_roots,
 ):
     prepared = await _prepared(db_session)
-    exact, _ = await _create(db_session, prepared, title="Exact")
+    exact, _ = await _create(db_session, prepared, title="Exact", legacy_owner_roots=legacy_owner_roots)
     legacy = _bare_report("fully-null-legacy")
     historical_revoked = _bare_report(
         "historical-revoked-without-actor",
@@ -584,7 +591,7 @@ async def test_purge_changes_snapshot_only_and_rejects_partial_roots(
     legacy_owner_roots,
 ):
     prepared = await _prepared(db_session)
-    exact, _ = await _create(db_session, prepared)
+    exact, _ = await _create(db_session, prepared, legacy_owner_roots=legacy_owner_roots)
     exact.expires_at = now_local() - timedelta(minutes=1)
     await db_session.commit()
     creator = exact.created_by_user_id
@@ -613,7 +620,7 @@ async def test_purge_expired_snapshot_for_suspended_owner(
     legacy_owner_roots,
 ):
     prepared = await _prepared(db_session)
-    report, _ = await _create(db_session, prepared)
+    report, _ = await _create(db_session, prepared, legacy_owner_roots=legacy_owner_roots)
     report.expires_at = now_local() - timedelta(minutes=1)
     owner = await db_session.get(User, legacy_owner_roots.user_id)
     assert owner is not None
@@ -679,7 +686,7 @@ async def test_postgres_snapshot_scope_blocks_subject_creation(
     holder = factory()
     prepared = await _prepared(holder)
     holder.add(
-        WeightLog(
+        WeightLog(subject_id=legacy_owner_roots.subject_id, 
             date=START,
             domain=Domain.WEIGHT.value,
             source="manual",
@@ -734,7 +741,7 @@ async def test_postgres_concurrent_public_opens_do_not_lose_counts(
         class_=AsyncSession,
     )
     prepared = await _prepared(db_session)
-    row, _ = await _create(db_session, prepared)
+    row, _ = await _create(db_session, prepared, legacy_owner_roots=legacy_owner_roots)
     await db_session.commit()
     token, report_id = row.token, row.id
 
@@ -762,7 +769,7 @@ async def test_postgres_revoke_wins_against_waiting_public_open(
         class_=AsyncSession,
     )
     prepared = await _prepared(db_session)
-    row, _ = await _create(db_session, prepared)
+    row, _ = await _create(db_session, prepared, legacy_owner_roots=legacy_owner_roots)
     await db_session.commit()
     token, report_id = row.token, row.id
 
@@ -807,7 +814,7 @@ async def test_postgres_public_resolution_refreshes_preloaded_revocation(
         class_=AsyncSession,
     )
     prepared = await _prepared(db_session)
-    row, _ = await _create(db_session, prepared)
+    row, _ = await _create(db_session, prepared, legacy_owner_roots=legacy_owner_roots)
     await db_session.commit()
     token, report_id = row.token, row.id
 
@@ -845,7 +852,7 @@ async def test_postgres_public_resolution_refreshes_preloaded_identity(
         class_=AsyncSession,
     )
     prepared = await _prepared(db_session)
-    row, _ = await _create(db_session, prepared)
+    row, _ = await _create(db_session, prepared, legacy_owner_roots=legacy_owner_roots)
     replacement = None
     if mutation == "rotate_owner":
         replacement = User(

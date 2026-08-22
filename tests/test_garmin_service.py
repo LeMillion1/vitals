@@ -5,7 +5,7 @@ Health Auto Export backup channel, and the client's credential-login breaker."""
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import func, select
@@ -520,8 +520,8 @@ def test_normalize_sleep_interval_fields_absent_are_none():
 
 
 # ── Nightly sleep series persistence ──────────────────────────────────────────
-async def test_sync_persists_sleep_series(db_session):
-    await garmin_service.sync(db_session, FakeGarminClient(), days=1, on_date=DAY)
+async def test_sync_persists_sleep_series(db_session, *, garmin_owned_scope):
+    await garmin_service.sync_owned(db_session, FakeGarminClient(), days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     rows = (await db_session.execute(
@@ -537,11 +537,11 @@ async def test_sync_persists_sleep_series(db_session):
     assert len(spo2) == 2
 
 
-async def test_sleep_samples_are_filed_under_the_nights_daily_date(db_session):
+async def test_sleep_samples_are_filed_under_the_nights_daily_date(db_session, *, garmin_owned_scope):
     """A sample recorded before midnight still belongs to the night it was part
     of — the date is the daily row's, not the sample's own calendar day. That's
     what makes "the night of the 10th" one queryable unit instead of two halves."""
-    await garmin_service.sync(db_session, FakeGarminClient(), days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, FakeGarminClient(), days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     rows = (await db_session.execute(
@@ -552,8 +552,8 @@ async def test_sleep_samples_are_filed_under_the_nights_daily_date(db_session):
     assert all(r.date == DAY for r in rows)       # …filed under the night of the 10th
 
 
-async def test_sync_persists_sleep_stages_and_breathing_events(db_session):
-    await garmin_service.sync(db_session, FakeGarminClient(), days=1, on_date=DAY)
+async def test_sync_persists_sleep_stages_and_breathing_events(db_session, *, garmin_owned_scope):
+    await garmin_service.sync_owned(db_session, FakeGarminClient(), days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     row = await garmin_service.get_daily(db_session, DAY)
@@ -561,11 +561,11 @@ async def test_sync_persists_sleep_stages_and_breathing_events(db_session):
     assert [e["value"] for e in row.breathing_events] == [0, 1]
 
 
-async def test_sleep_series_reimport_replaces_without_duplicating(db_session):
+async def test_sleep_series_reimport_replaces_without_duplicating(db_session, *, garmin_owned_scope):
     client = FakeGarminClient()
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     n = (await db_session.execute(
@@ -576,9 +576,9 @@ async def test_sleep_series_reimport_replaces_without_duplicating(db_session):
 
 
 # ── Intraday persistence ──────────────────────────────────────────────────────
-async def test_sync_persists_intraday_series(db_session):
+async def test_sync_persists_intraday_series(db_session, *, garmin_owned_scope):
     client = FakeGarminClient()
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     rows = (await db_session.execute(
@@ -598,11 +598,11 @@ async def test_sync_persists_intraday_series(db_session):
     assert len(bb) == 4
 
 
-async def test_intraday_reimport_replaces_without_duplicating(db_session):
+async def test_intraday_reimport_replaces_without_duplicating(db_session, *, garmin_owned_scope):
     client = FakeGarminClient()
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     n = (await db_session.execute(
@@ -612,14 +612,14 @@ async def test_intraday_reimport_replaces_without_duplicating(db_session):
     assert n == 2
 
 
-async def test_intraday_empty_series_keeps_existing_rows(db_session):
+async def test_intraday_empty_series_keeps_existing_rows(db_session, *, garmin_owned_scope):
     """A day whose fetch came back without the array (a Garmin hiccup) must not
     wipe the samples already captured — the lake never loses data to a bad poll."""
-    await garmin_service.sync(db_session, FakeGarminClient(), days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, FakeGarminClient(), days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     empty_day = dict(RAW_DAY, stress={"stressValuesArray": []}, body_battery=None)
-    await garmin_service.ingest_daily(db_session, DAY, empty_day)
+    await garmin_service.ingest_owned_daily(db_session, DAY, empty_day, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     n = (await db_session.execute(
@@ -630,8 +630,8 @@ async def test_intraday_empty_series_keeps_existing_rows(db_session):
     assert n == 6  # 2 stress + 4 body battery, still there
 
 
-async def test_intraday_series_map_groups_by_type(db_session):
-    await garmin_service.sync(db_session, FakeGarminClient(), days=1, on_date=DAY)
+async def test_intraday_series_map_groups_by_type(db_session, *, garmin_owned_scope):
+    await garmin_service.sync_owned(db_session, FakeGarminClient(), days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     series = await garmin_service.intraday_series_map(db_session, DAY)
@@ -645,10 +645,10 @@ async def test_intraday_series_map_groups_by_type(db_session):
     assert await garmin_service.intraday_series_map(db_session, date(2020, 1, 1)) == {}
 
 
-async def test_intraday_series_map_filters_to_requested_series(db_session):
+async def test_intraday_series_map_filters_to_requested_series(db_session, *, garmin_owned_scope):
     """The day chart asks for the whole-day curves only; without the filter the
     night's ~2k samples would ride along into the page for nothing."""
-    await garmin_service.sync(db_session, FakeGarminClient(), days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, FakeGarminClient(), days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     series = await garmin_service.intraday_series_map(
@@ -684,9 +684,9 @@ def test_parse_sleep_boundary_missing_is_none():
 
 
 # ── Daily upsert + raw payload ────────────────────────────────────────────────
-async def test_sync_creates_daily_row_and_raw(db_session):
+async def test_sync_creates_daily_row_and_raw(db_session, *, garmin_owned_scope):
     client = FakeGarminClient()
-    summary = await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    summary = await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     assert summary["days"] == 1
@@ -706,11 +706,11 @@ async def test_sync_creates_daily_row_and_raw(db_session):
     assert row.raw_payload_id == raw.id
 
 
-async def test_sync_is_idempotent_per_date(db_session):
+async def test_sync_is_idempotent_per_date(db_session, *, garmin_owned_scope):
     client = FakeGarminClient()
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     n = (await db_session.execute(select(func.count()).select_from(GarminDaily))).scalar()
@@ -723,9 +723,9 @@ async def test_sync_is_idempotent_per_date(db_session):
     assert n_raw == 1
 
 
-async def test_sync_persists_sleep_detail_columns(db_session):
+async def test_sync_persists_sleep_detail_columns(db_session, *, garmin_owned_scope):
     client = FakeGarminClient()
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     row = await garmin_service.get_daily(db_session, DAY)
@@ -743,9 +743,9 @@ async def test_sync_persists_sleep_detail_columns(db_session):
     assert row.sleep_need_actual == 480
 
 
-async def test_sync_persists_training_status_columns(db_session):
+async def test_sync_persists_training_status_columns(db_session, *, garmin_owned_scope):
     client = FakeGarminClient()
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     row = await garmin_service.get_daily(db_session, DAY)
@@ -819,7 +819,7 @@ async def test_owned_daily_bridges_weigh_in_and_manual_supersedes(
 
 
 # ── Activities ────────────────────────────────────────────────────────────────
-async def test_ingest_activities_upserts_by_id(db_session):
+async def test_ingest_activities_upserts_by_id(db_session, *, garmin_owned_scope):
     activity = {
         "activityId": 12345,
         "activityName": "Утренняя пробежка",
@@ -832,7 +832,7 @@ async def test_ingest_activities_upserts_by_id(db_session):
         "maxHR": 165,
     }
     client = FakeGarminClient(daily={}, activities=[activity])
-    summary = await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    summary = await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
     assert summary["activities"] == 1
 
@@ -843,13 +843,13 @@ async def test_ingest_activities_upserts_by_id(db_session):
     assert rows[0].avg_hr == 140
 
     # Re-sync → upsert, not duplicate.
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
     n = (await db_session.execute(select(func.count()).select_from(GarminActivity))).scalar()
     assert n == 1
 
 
-async def test_sync_persists_activity_detail_columns(db_session):
+async def test_sync_persists_activity_detail_columns(db_session, *, garmin_owned_scope):
     activity = {
         "activityId": 12345,
         "activityName": "Утренняя пробежка",
@@ -868,7 +868,7 @@ async def test_sync_persists_activity_detail_columns(db_session):
     client = FakeGarminClient(
         daily={}, activities=[activity], details={12345: ACTIVITY_DETAILS}
     )
-    await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     row = (await db_session.execute(select(GarminActivity))).scalars().first()
@@ -891,39 +891,43 @@ async def test_sync_persists_activity_detail_columns(db_session):
 
 
 # ── Token store: silence is the failure mode ──────────────────────────────────
-async def test_sync_raises_warn_alert_when_the_token_store_fails(db_session):
+async def test_sync_raises_warn_alert_when_the_token_store_fails(db_session, *, garmin_owned_scope):
     """A token that can't be stored is invisible until the next restart, and then
     every single poll logs into Garmin again — which is how the account gets
     blocked. The sync itself succeeds, so only an alert can surface it."""
     from vitals.services import alerts_service
 
     client = FakeGarminClient(token_warnings=["could not write the session: boom"])
-    summary = await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    summary = await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     assert summary["error"] is None  # the data still arrived
-    active = await alerts_service.list_active(db_session, domain="garmin", subject_id=None)
+    active = await alerts_service.list_active(
+        db_session, domain="garmin", subject_id=garmin_owned_scope.subject_id
+    )
     token_alerts = [a for a in active if a.alert_key == garmin_service.TOKEN_ALERT_KEY]
     assert len(token_alerts) == 1
     assert token_alerts[0].severity == "warn"
 
 
-async def test_healthy_token_store_resolves_the_alert(db_session):
+async def test_healthy_token_store_resolves_the_alert(db_session, *, garmin_owned_scope):
     from vitals.services import alerts_service
 
-    await garmin_service.sync(
+    await garmin_service.sync_owned(
         db_session, FakeGarminClient(token_warnings=["boom"]), days=1, on_date=DAY
-    )
+    , identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
-    await garmin_service.sync(db_session, FakeGarminClient(), days=1, on_date=DAY)
+    await garmin_service.sync_owned(db_session, FakeGarminClient(), days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
-    active = await alerts_service.list_active(db_session, domain="garmin", subject_id=None)
+    active = await alerts_service.list_active(
+        db_session, domain="garmin", subject_id=garmin_owned_scope.subject_id
+    )
     assert not [a for a in active if a.alert_key == garmin_service.TOKEN_ALERT_KEY]
 
 
 @pytest.mark.integration
-async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(
+async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(garmin_owned_scope, 
     db_session, legacy_owner_roots
 ):
     """A second Garmin fetch must not block a concurrent local weight save."""
@@ -950,18 +954,18 @@ async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(
 
     client = PausingSecondDayClient()
 
-    async def syncing():
+    async def syncing(*, garmin_owned_scope):
         async with factory() as session:
-            result = await garmin_service.sync(
+            result = await garmin_service.sync_owned(
                 session, client, days=2, on_date=DAY
-            )
+            , identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
             await session.commit()
             return result
 
     # The fixture session must hold no identity-governance advisory while the
     # concurrent writers below take their own.
     await db_session.commit()
-    sync_task = asyncio.create_task(syncing())
+    sync_task = asyncio.create_task(syncing(garmin_owned_scope=garmin_owned_scope))
     await asyncio.wait_for(second_fetch_started.wait(), timeout=2)
 
     async with factory() as session:
@@ -998,46 +1002,83 @@ async def test_sync_finishes_vendor_reads_before_weight_ingest_lock(
 
 
 @pytest.mark.integration
-async def test_concurrent_daily_ingests_take_advisory_before_raw_rows(
-    db_session, monkeypatch
+async def test_concurrent_owned_daily_ingests_take_the_scope_lock_before_raw_rows(
+    db_session, monkeypatch, *, garmin_owned_scope
 ):
-    """Regression for the former raw/day→advisory versus advisory→raw deadlock."""
-    from vitals.services import garmin_weight_service
+    """Regression for the former raw/day-then-lock versus lock-then-raw deadlock.
+
+    The legacy ingest took the weight advisory first and the raw/day rows after,
+    which is where the cycle used to form. The owned ingest establishes the whole
+    order up front — governance advisory, then the active-weight advisory, then
+    the subject and connection rows — before it touches anything the other writer
+    wants, so a second writer for the same account waits at the door rather than
+    half inside holding a row the first one needs.
+    """
+
+    # The concurrent sessions must see the owner and the account, and this one
+    # must not sit inside an open transaction while they contend for the same
+    # row locks — that would reproduce a different deadlock than the one tested.
+    await db_session.commit()
 
     factory = async_sessionmaker(
         db_session.bind, expire_on_commit=False, class_=AsyncSession
     )
     async with factory() as first_session, factory() as second_session:
-        # Hold the transaction-scoped advisory in A before B begins.
-        await garmin_service.ingest_daily(
-            first_session, DAY.replace(day=DAY.day - 1), RAW_DAY
+        yesterday = DAY - timedelta(days=1)
+        # A holds the scope locks for the account, transaction-scoped.
+        await garmin_service.ingest_owned_daily(
+            first_session,
+            yesterday,
+            RAW_DAY,
+            identity=garmin_owned_scope.identity,
+            integration_connection_id=garmin_owned_scope.connection_id,
         )
-        second_reached_lock = asyncio.Event()
-        original_lock = garmin_weight_service.lock_active_weight_change
 
-        async def signaling_lock(session):
+        # The governance advisory is the *first* lock the owned ingest takes, so
+        # a second writer waits there — before it has touched a raw or day row.
+        second_reached_lock = asyncio.Event()
+        original_lock = garmin_service.acquire_identity_governance_lock
+
+        async def signaling_lock(session, **kwargs):
             if session is second_session:
                 second_reached_lock.set()
-            await original_lock(session)
+            return await original_lock(session, **kwargs)
 
         monkeypatch.setattr(
-            garmin_weight_service,
-            "lock_active_weight_change",
-            signaling_lock,
+            garmin_service, "acquire_identity_governance_lock", signaling_lock
         )
         second_task = asyncio.create_task(
-            garmin_service.ingest_daily(second_session, DAY, RAW_DAY)
+            garmin_service.ingest_owned_daily(
+                second_session,
+                DAY,
+                RAW_DAY,
+                identity=garmin_owned_scope.identity,
+                integration_connection_id=garmin_owned_scope.connection_id,
+            )
         )
-        await asyncio.wait_for(second_reached_lock.wait(), timeout=2)
+        try:
+            await asyncio.wait_for(second_reached_lock.wait(), timeout=5)
 
-        # B must still be waiting before it owns any raw/day row, so A can ingest
-        # the same date and commit without forming the old lock-order cycle.
-        await asyncio.wait_for(
-            garmin_service.ingest_daily(first_session, DAY, RAW_DAY), timeout=2
-        )
-        await first_session.commit()
-        await asyncio.wait_for(second_task, timeout=2)
-        await second_session.commit()
+            # B is still waiting and owns no raw/day row, so A can ingest the
+            # same date and commit without forming the old lock-order cycle.
+            await asyncio.wait_for(
+                garmin_service.ingest_owned_daily(
+                    first_session,
+                    DAY,
+                    RAW_DAY,
+                    identity=garmin_owned_scope.identity,
+                    integration_connection_id=garmin_owned_scope.connection_id,
+                ),
+                timeout=5,
+            )
+            await first_session.commit()
+            await asyncio.wait_for(second_task, timeout=5)
+            await second_session.commit()
+        finally:
+            # A task still mid-statement would otherwise make closing the
+            # session raise over whatever actually went wrong.
+            second_task.cancel()
+            await asyncio.gather(second_task, return_exceptions=True)
 
 
 # ── Credential-login breaker (the account-block guard) ────────────────────────
@@ -1158,67 +1199,71 @@ async def test_token_serialisation_failure_is_recorded_not_swallowed(redis):
 
 
 # ── MFA / auth alert path ─────────────────────────────────────────────────────
-async def test_sync_mfa_raises_warn_alert(db_session):
+async def test_sync_mfa_raises_warn_alert(db_session, *, garmin_owned_scope):
     from vitals.services import alerts_service
 
     client = FakeGarminClient(raise_exc=GarminMFARequired("mfa needed"))
-    summary = await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    summary = await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     assert summary["error"] == "mfa"
-    active = await alerts_service.list_active(db_session, domain="garmin", subject_id=None)
+    active = await alerts_service.list_active(
+        db_session, domain="garmin", subject_id=garmin_owned_scope.subject_id
+    )
     assert any(a.alert_key == garmin_service.AUTH_ALERT_KEY for a in active)
     assert all(a.severity == "warn" for a in active)
 
 
-async def test_sync_reports_a_throttled_login_separately_from_bad_credentials(db_session):
+async def test_sync_reports_a_throttled_login_separately_from_bad_credentials(db_session, *, garmin_owned_scope):
     """"Paused on purpose" and "your password is wrong" call for opposite
     reactions — the page must not tell you to go re-check credentials that are
     fine, because re-logging in is exactly what extends a Garmin block."""
     from vitals.services import alerts_service
 
     client = FakeGarminClient(raise_exc=GarminLoginThrottled("daily cap spent"))
-    summary = await garmin_service.sync(db_session, client, days=1, on_date=DAY)
+    summary = await garmin_service.sync_owned(db_session, client, days=1, on_date=DAY, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     assert summary["error"] == "throttled"
-    active = await alerts_service.list_active(db_session, domain="garmin", subject_id=None)
+    active = await alerts_service.list_active(
+        db_session, domain="garmin", subject_id=garmin_owned_scope.subject_id
+    )
     assert any(a.alert_key == garmin_service.AUTH_ALERT_KEY for a in active)
 
 
 # ── Recovery advice ───────────────────────────────────────────────────────────
-async def test_recovery_advice_flags_low_sleep_and_battery(db_session):
+async def test_recovery_advice_flags_low_sleep_and_battery(db_session, *, garmin_connection_id, legacy_owner_roots):
     from vitals.i18n import current_lang
     current_lang.set("ru")
-    low = GarminDaily(date=DAY, domain="garmin", sleep_score=50, body_battery_high=30)
+    low = GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=DAY, domain="garmin", sleep_score=50, body_battery_high=30)
     advice = garmin_service.recovery_advice(low)
     assert advice is not None
     assert "низкий сон" in advice
 
-    fine = GarminDaily(date=DAY, domain="garmin", sleep_score=85, body_battery_high=90)
+    fine = GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=DAY, domain="garmin", sleep_score=85, body_battery_high=90)
     assert garmin_service.recovery_advice(fine) is None
     assert garmin_service.recovery_advice(None) is None
 
 
-async def test_recovery_advice_flags_low_spo2_and_breathing_disruption(db_session):
+async def test_recovery_advice_flags_low_spo2_and_breathing_disruption(db_session, *, garmin_connection_id, legacy_owner_roots):
     from vitals.i18n import current_lang
     current_lang.set("ru")
-    low_spo2 = GarminDaily(date=DAY, domain="garmin", spo2_lowest=85)
+    low_spo2 = GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=DAY, domain="garmin", spo2_lowest=85)
     advice = garmin_service.recovery_advice(low_spo2)
     assert advice is not None
     assert "SpO2" in advice
 
-    disrupted = GarminDaily(date=DAY, domain="garmin", breathing_disruption="MILD")
+    disrupted = GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=DAY, domain="garmin", breathing_disruption="MILD")
     advice = garmin_service.recovery_advice(disrupted)
     assert advice is not None
     assert "дыхания" in advice
 
-    fine = GarminDaily(date=DAY, domain="garmin", spo2_lowest=95, breathing_disruption="NONE")
+    fine = GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=DAY, domain="garmin", spo2_lowest=95, breathing_disruption="NONE")
     assert garmin_service.recovery_advice(fine) is None
 
 
 # ── Health Auto Export backup channel ─────────────────────────────────────────
-async def test_health_auto_export_ingest(db_session):
+async def test_health_auto_export_ingest(db_session, *, garmin_owned_scope):
     payload = {
         "data": {
             "metrics": [
@@ -1233,7 +1278,7 @@ async def test_health_auto_export_ingest(db_session):
             ]
         }
     }
-    result = await garmin_service.ingest_health_auto_export(db_session, payload)
+    result = await garmin_service.ingest_owned_health_auto_export(db_session, payload, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
     assert result["dates"] == 1
 
@@ -1246,7 +1291,7 @@ async def test_health_auto_export_ingest(db_session):
 
 
 # ── Historical reparse (recover new fields with zero new Garmin calls) ────────
-async def test_reparse_daily_from_raw_recovers_new_fields_and_preserves_fetched_at(db_session):
+async def test_reparse_daily_from_raw_recovers_new_fields_and_preserves_fetched_at(db_session, *, garmin_owned_scope):
     """A day synced before the sleep-detail/training-status columns existed: the
     raw response already had everything (get_sleep_data/get_stress_data always
     return the full payload), the old parser just discarded most of it.
@@ -1254,6 +1299,8 @@ async def test_reparse_daily_from_raw_recovers_new_fields_and_preserves_fetched_
     and must not overwrite the original upstream fetch time with "now"."""
     old_fetched_at = to_local_naive(datetime(2026, 1, 1, 3, 0, tzinfo=timezone.utc))
     raw_row = RawPayload(
+        subject_id=garmin_owned_scope.subject_id,
+        integration_connection_id=garmin_owned_scope.connection_id,
         domain="garmin", source="garmin_api",
         external_id=f"daily:{DAY.isoformat()}", payload=RAW_DAY,
         fetched_at=old_fetched_at,
@@ -1261,7 +1308,7 @@ async def test_reparse_daily_from_raw_recovers_new_fields_and_preserves_fetched_
     db_session.add(raw_row)
     await db_session.flush()
 
-    row = await garmin_service.reparse_daily_from_raw(db_session, raw_row)
+    row = await garmin_service.reparse_owned_daily_from_raw(db_session, raw_row)
     await db_session.commit()
 
     assert row.date == DAY
@@ -1271,7 +1318,7 @@ async def test_reparse_daily_from_raw_recovers_new_fields_and_preserves_fetched_
     assert raw_row.fetched_at == old_fetched_at
 
 
-async def test_reparse_activity_from_raw_recovers_summary_fields_only(db_session):
+async def test_reparse_activity_from_raw_recovers_summary_fields_only(db_session, *, garmin_owned_scope):
     """An activity synced before the per-activity detail call existed has
     elevation/power/training-effect on its summary already (free to recover),
     but never made the hr-zones/splits detail call — those must stay null
@@ -1294,6 +1341,8 @@ async def test_reparse_activity_from_raw_recovers_summary_fields_only(db_session
     }
     old_fetched_at = to_local_naive(datetime(2026, 1, 1, 3, 0, tzinfo=timezone.utc))
     raw_row = RawPayload(
+        subject_id=garmin_owned_scope.subject_id,
+        integration_connection_id=garmin_owned_scope.connection_id,
         domain="garmin", source="garmin_api",
         external_id="activity:99001", payload=activity,
         fetched_at=old_fetched_at,
@@ -1301,7 +1350,7 @@ async def test_reparse_activity_from_raw_recovers_summary_fields_only(db_session
     db_session.add(raw_row)
     await db_session.flush()
 
-    await garmin_service.reparse_activity_from_raw(db_session, raw_row)
+    await garmin_service.reparse_owned_activity_from_raw(db_session, raw_row)
     await db_session.commit()
 
     row = (await db_session.execute(
@@ -1316,13 +1365,13 @@ async def test_reparse_activity_from_raw_recovers_summary_fields_only(db_session
 
 
 # ── Reads: night list / adjacent-night navigation (Sleep tab) ─────────────────
-async def test_list_nights_excludes_days_without_sleep(db_session):
+async def test_list_nights_excludes_days_without_sleep(db_session, *, garmin_connection_id, legacy_owner_roots):
     """A day synced for steps/HR only (no sleep_seconds) is noise in a night
     list — list_nights must drop it, unlike list_daily."""
     db_session.add_all([
-        GarminDaily(date=date(2026, 6, 8), domain="garmin", source="garmin_api", sleep_seconds=25200),
-        GarminDaily(date=date(2026, 6, 9), domain="garmin", source="garmin_api", steps=8000),
-        GarminDaily(date=date(2026, 6, 10), domain="garmin", source="garmin_api", sleep_seconds=27000),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 8), domain="garmin", source="garmin_api", sleep_seconds=25200),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 9), domain="garmin", source="garmin_api", steps=8000),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 10), domain="garmin", source="garmin_api", sleep_seconds=27000),
     ])
     await db_session.commit()
 
@@ -1330,11 +1379,11 @@ async def test_list_nights_excludes_days_without_sleep(db_session):
     assert [n.date for n in nights] == [date(2026, 6, 10), date(2026, 6, 8)]
 
 
-async def test_list_nights_respects_limit(db_session):
+async def test_list_nights_respects_limit(db_session, *, garmin_connection_id, legacy_owner_roots):
     db_session.add_all([
-        GarminDaily(date=date(2026, 6, 8), domain="garmin", source="garmin_api", sleep_seconds=25200),
-        GarminDaily(date=date(2026, 6, 9), domain="garmin", source="garmin_api", sleep_seconds=26400),
-        GarminDaily(date=date(2026, 6, 10), domain="garmin", source="garmin_api", sleep_seconds=27000),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 8), domain="garmin", source="garmin_api", sleep_seconds=25200),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 9), domain="garmin", source="garmin_api", sleep_seconds=26400),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 10), domain="garmin", source="garmin_api", sleep_seconds=27000),
     ])
     await db_session.commit()
 
@@ -1342,14 +1391,14 @@ async def test_list_nights_respects_limit(db_session):
     assert [n.date for n in nights] == [date(2026, 6, 10), date(2026, 6, 9)]
 
 
-async def test_adjacent_night_dates_finds_nearest_neighbours_with_sleep(db_session):
+async def test_adjacent_night_dates_finds_nearest_neighbours_with_sleep(db_session, *, garmin_connection_id, legacy_owner_roots):
     """The nearest earlier/later dates that also have sleep data — a day in
     between with no sleep_seconds must be skipped, not treated as a neighbour."""
     db_session.add_all([
-        GarminDaily(date=date(2026, 6, 7), domain="garmin", source="garmin_api", sleep_seconds=24000),
-        GarminDaily(date=date(2026, 6, 8), domain="garmin", source="garmin_api", steps=5000),  # no sleep
-        GarminDaily(date=date(2026, 6, 10), domain="garmin", source="garmin_api", sleep_seconds=27000),
-        GarminDaily(date=date(2026, 6, 12), domain="garmin", source="garmin_api", sleep_seconds=25000),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 7), domain="garmin", source="garmin_api", sleep_seconds=24000),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 8), domain="garmin", source="garmin_api", steps=5000),  # no sleep
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 10), domain="garmin", source="garmin_api", sleep_seconds=27000),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 12), domain="garmin", source="garmin_api", sleep_seconds=25000),
     ])
     await db_session.commit()
 
@@ -1358,9 +1407,9 @@ async def test_adjacent_night_dates_finds_nearest_neighbours_with_sleep(db_sessi
     assert next_date == date(2026, 6, 12)
 
 
-async def test_adjacent_night_dates_missing_neighbour_is_none(db_session):
+async def test_adjacent_night_dates_missing_neighbour_is_none(db_session, *, garmin_connection_id, legacy_owner_roots):
     db_session.add_all([
-        GarminDaily(date=date(2026, 6, 10), domain="garmin", source="garmin_api", sleep_seconds=27000),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 10), domain="garmin", source="garmin_api", sleep_seconds=27000),
     ])
     await db_session.commit()
 

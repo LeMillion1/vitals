@@ -681,10 +681,10 @@ async def test_unverified_never_claims_one_match_from_a_multi_entry_day(db_sessi
 
 
 async def test_delete_pending_without_verified_ownership_never_deletes_by_weight(
-    db_session, garmin_export,
+    db_session, garmin_export, *, garmin_connection_id, legacy_owner_roots,
 ):
     db_session.add(
-        GarminWeightExport(
+        GarminWeightExport(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             date=DAY,
             weight_kg=84.5,
             measured_at=NOW,
@@ -2031,7 +2031,7 @@ async def test_cursor_survives_disable_and_blocks_exposed_older_manual_weight(db
     assert [(row.date, row.status) for row in rows] == [(DAY, WEIGHT_EXPORT_DELETED)]
 
 
-async def test_watermark_bootstraps_from_newer_historical_outbox(db_session, owner_write, garmin_export):
+async def test_watermark_bootstraps_from_newer_historical_outbox(db_session, owner_write, garmin_export, *, garmin_connection_id):
     await _manual_weight(
         db_session,
         owner_write,
@@ -2039,7 +2039,7 @@ async def test_watermark_bootstraps_from_newer_historical_outbox(db_session, own
         on_date=DAY - timedelta(days=1),
     )
     db_session.add(
-        GarminWeightExport(
+        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id, 
             date=DAY,
             weight_kg=84.5,
             measured_at=NOW,
@@ -2079,7 +2079,7 @@ async def test_reactivating_skipped_intent_resets_the_entire_retry_state(db_sess
     assert row.last_error is None
 
 
-async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(db_session, owner_write, garmin_export):
+async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(db_session, owner_write, garmin_export, *, garmin_connection_id):
     await _manual_weight(
         db_session,
         owner_write,
@@ -2088,7 +2088,7 @@ async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(db_
     client = FakeWeightClient()
     await garmin_export.export_latest(client, now=NOW)
     db_session.add(
-        GarminWeightExport(
+        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id, 
             date=DAY - timedelta(days=1),
             weight_kg=85.0,
             measured_at=NOW - timedelta(days=1),
@@ -2105,10 +2105,10 @@ async def test_status_card_prioritizes_unresolved_cleanup_over_newer_success(db_
     assert status["last_error"] == "cleanup failed"
 
 
-async def test_alert_keeps_the_highest_priority_outstanding_issue(db_session, owner_write, garmin_export):
+async def test_alert_keeps_the_highest_priority_outstanding_issue(db_session, owner_write, garmin_export, *, garmin_connection_id):
     older = DAY - timedelta(days=1)
     db_session.add(
-        GarminWeightExport(
+        GarminWeightExport(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id, 
             date=older,
             weight_kg=85.0,
             measured_at=NOW - timedelta(days=1),

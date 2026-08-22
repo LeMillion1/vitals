@@ -27,16 +27,16 @@ def _token(monkeypatch):
 pytestmark = pytest.mark.usefixtures("owned_by_legacy_subject")
 
 
-async def _seed(db_session):
+async def _seed(db_session, *, garmin_connection_id, legacy_owner_roots):
     today = today_local()
     # 10 consecutive daily weights, gently trending down (so the MA7 sparkline has
     # points and the slope is a real number).
     for i in range(10):
         day = today - timedelta(days=9 - i)
-        db_session.add(WeightLog(date=day, domain=Domain.WEIGHT.value, weight_kg=90.0 - i * 0.3, superseded=False))
+        db_session.add(WeightLog(subject_id=legacy_owner_roots.subject_id, date=day, domain=Domain.WEIGHT.value, weight_kg=90.0 - i * 0.3, superseded=False))
     # An active weight goal below current weight → chart_series returns a projection.
     db_session.add(
-        Milestone(
+        Milestone(subject_id=legacy_owner_roots.subject_id, 
             domain=Domain.WEIGHT.value,
             name="Reach 85",
             target_value=85.0,
@@ -46,11 +46,11 @@ async def _seed(db_session):
         )
     )
     # Today's meals (macros card).
-    db_session.add(MealLog(date=today, domain=Domain.NUTRITION.value, name="Oats", calories=400, protein_g=20))
-    db_session.add(MealLog(date=today, domain=Domain.NUTRITION.value, name="Chicken", calories=600, protein_g=50))
+    db_session.add(MealLog(subject_id=legacy_owner_roots.subject_id, date=today, domain=Domain.NUTRITION.value, name="Oats", calories=400, protein_g=20))
+    db_session.add(MealLog(subject_id=legacy_owner_roots.subject_id, date=today, domain=Domain.NUTRITION.value, name="Chicken", calories=600, protein_g=50))
     # A Garmin daily with recovery signals.
     db_session.add(
-        GarminDaily(date=today, domain=Domain.GARMIN.value, sleep_score=82, body_battery_high=78, training_readiness=65, resting_hr=52, hrv_avg=68.0)
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=today, domain=Domain.GARMIN.value, sleep_score=82, body_battery_high=78, training_readiness=65, resting_hr=52, hrv_avg=68.0)
     )
     await db_session.commit()
 
@@ -71,13 +71,13 @@ async def test_summary_rejects_bad_token(client, _token):
 
 
 @pytest.mark.asyncio
-async def test_summary_returns_all_cards(
+async def test_summary_returns_all_cards(garmin_connection_id, 
     client,
     db_session,
     legacy_owner_roots,
     _token,
 ):
-    await _seed(db_session)
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, legacy_owner_roots=legacy_owner_roots)
     r = await client.get("/external/summary", headers=AUTH)
     assert r.status_code == 200
     body = r.json()

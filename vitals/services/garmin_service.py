@@ -747,47 +747,6 @@ def _normalize_breathing_events(raw: dict) -> Optional[list]:
     )
 
 
-async def ingest_intraday(
-    session: AsyncSession,
-    on_date: date_type,
-    series_type: str,
-    points: Sequence[tuple[datetime, float]],
-    *,
-    raw_payload_id: Optional[int] = None,
-    source: str = Source.GARMIN_API.value,
-) -> int:
-    """Replace the day's samples for one ``series_type``. Returns rows written.
-
-    Rebuild-on-reimport (delete + insert, like ``hevy_service._upsert_workout``
-    does with its children) rather than a per-sample upsert: Garmin re-models the
-    whole curve as later readings arrive, so the array is the unit of truth, not
-    the point. An **empty** ``points`` is a no-op — a poll that came back without
-    the array is a hiccup, and must not delete samples already captured. Does not
-    commit."""
-    if not points:
-        return 0
-    await session.execute(
-        GarminIntraday.__table__.delete().where(
-            GarminIntraday.date == on_date,
-            GarminIntraday.series_type == series_type,
-        )
-    )
-    session.add_all([
-        GarminIntraday(
-            date=on_date,
-            domain=DOMAIN,
-            source=source,
-            raw_payload_id=raw_payload_id,
-            series_type=series_type,
-            ts=ts,
-            value=value,
-        )
-        for ts, value in points
-    ])
-    await session.flush()
-    return len(points)
-
-
 async def ingest_owned_intraday(
     session: AsyncSession,
     on_date: date_type,
@@ -1053,56 +1012,6 @@ async def get_owned_daily(
             f"multiple owned Garmin daily rows exist for {on_date.isoformat()}"
         )
     return rows[0] if rows else None
-
-
-async def ingest_daily(
-    session: AsyncSession,
-    on_date: date_type,
-    raw: dict,
-    *,
-    source: str = Source.GARMIN_API.value,
-) -> GarminDaily:
-    """Store the raw bundle, upsert the normalized daily row, rebuild the day's
-    intraday series, and bridge any weigh-in into the weight domain. Does not
-    commit."""
-    # A daily bundle may contain a weight. Take the shared operation lock before
-    # touching raw/daily rows so every overlapping sync follows one lock order:
-    # advisory → raw/day → weight/outbox. Acquiring it later inside log_weight
-    # allows the inverse order and a real PostgreSQL deadlock.
-    from vitals.services import garmin_weight_service
-
-    await garmin_weight_service.lock_active_weight_change(session)
-    raw_row = await raw_payload_service.upsert_raw_payload(
-        session,
-        domain=DOMAIN,
-        source=source,
-        external_id=f"daily:{on_date.isoformat()}",
-        payload=raw,
-    )
-    fields = _normalize_daily(raw)
-
-    row = await get_daily(session, on_date)
-    if row is None:
-        row = GarminDaily(date=on_date, domain=DOMAIN)
-        session.add(row)
-    row.source = source
-    row.raw_payload_id = raw_row.id
-    for key, value in fields.items():
-        setattr(row, key, value)
-    await session.flush()
-    raw_row.processed_at = now_local()
-
-    for series_type, points in _intraday_series(raw).items():
-        await ingest_intraday(
-            session, on_date, series_type, points,
-            raw_payload_id=raw_row.id, source=source,
-        )
-
-    # The weigh-in inside a daily bundle is projected only on the owned ingest
-    # path (``_apply_owned_daily_raw``). Weight is a closed domain: without a
-    # subject and the capability that authorises the write there is nobody for
-    # this reading to belong to, and the Garmin row itself is kept regardless.
-    return row
 
 
 async def _apply_owned_daily_raw(
@@ -1375,20 +1284,6 @@ async def ingest_owned_daily(
     )
 
 
-async def reparse_daily_from_raw(session: AsyncSession, raw_row: RawPayload) -> GarminDaily:
-    """Re-run the current parser against a daily payload already on disk — no
-    Garmin call. Recovers columns/series the parser gained after this row was
-    fetched (get_sleep_data/get_stress_data always returned the full response;
-    early versions of this parser just discarded most of it). Preserves
-    ``fetched_at``: this is a reparse, not a real fetch, so the original
-    upstream timestamp stays more accurate than "now". Does not commit."""
-    on_date = date_type.fromisoformat(raw_row.external_id.split(":", 1)[1])
-    original_fetched_at = raw_row.fetched_at
-    row = await ingest_daily(session, on_date, raw=raw_row.payload)
-    raw_row.fetched_at = original_fetched_at
-    return row
-
-
 def _owned_daily_date(raw_row: RawPayload) -> date_type:
     external_id = raw_row.external_id or ""
     if not external_id.startswith("daily:"):
@@ -1557,53 +1452,6 @@ async def reparse_owned_health_auto_export_from_raw(
 
 
 # ── Activities ────────────────────────────────────────────────────────────────
-async def ingest_activities(session: AsyncSession, activities: Sequence[dict]) -> int:
-    """Upsert recorded activities by Garmin activity id. Returns rows written."""
-    written = 0
-    for raw in activities:
-        external_id = str(raw.get("activityId") or raw.get("activityid") or "").strip()
-        if not external_id:
-            continue
-        raw_row = await raw_payload_service.upsert_raw_payload(
-            session,
-            domain=DOMAIN,
-            source=Source.GARMIN_API.value,
-            external_id=f"activity:{external_id}",
-            payload=raw,
-        )
-        start = _parse_activity_start(raw)
-        result = await session.execute(
-            select(GarminActivity).where(GarminActivity.external_id == external_id)
-        )
-        row = result.scalars().first()
-        if row is None:
-            row = GarminActivity(external_id=external_id, domain=DOMAIN)
-            session.add(row)
-        row.source = Source.GARMIN_API.value
-        row.raw_payload_id = raw_row.id
-        row.date = (start or now_local()).date()
-        row.activity_type = _dig(raw, "activityType", "typeKey") or raw.get("activityType")
-        row.name = raw.get("activityName")
-        row.start_time = start
-        row.duration_seconds = _intish(raw.get("duration"))
-        row.distance_m = _num(raw.get("distance"))
-        row.calories = _intish(raw.get("calories"))
-        row.avg_hr = _intish(raw.get("averageHR"))
-        row.max_hr = _intish(raw.get("maxHR"))
-        # Per-activity detail. Scalars are already on the summary; the two
-        # arrays come from the best-effort detail bundle merged under ``_details``.
-        row.elevation_gain_m = _num(raw.get("elevationGain"))
-        row.avg_power = _intish(raw.get("avgPower"))
-        row.training_effect_aerobic = _num(raw.get("aerobicTrainingEffect"))
-        row.training_effect_anaerobic = _num(raw.get("anaerobicTrainingEffect"))
-        row.hr_zone_seconds = _normalize_hr_zones(raw)
-        row.splits = _normalize_splits(raw)
-        await session.flush()
-        raw_row.processed_at = now_local()
-        written += 1
-    return written
-
-
 def _activity_external_id(raw: dict) -> str:
     return str(raw.get("activityId") or raw.get("activityid") or "").strip()
 
@@ -1737,18 +1585,6 @@ async def ingest_owned_activities(
     return written
 
 
-async def reparse_activity_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
-    """Re-run the current parser against an activity payload already on disk —
-    no Garmin call. Recovers the summary-level fields (elevation, power,
-    training effect) the parser gained after this row was fetched; the
-    per-activity detail fields (hr_zone_seconds, splits) stay null here since
-    they come from a separate call (``fetch_activity_details``) this row never
-    made. Preserves ``fetched_at``. Does not commit."""
-    original_fetched_at = raw_row.fetched_at
-    await ingest_activities(session, [raw_row.payload])
-    raw_row.fetched_at = original_fetched_at
-
-
 def _owned_activity_id(raw_row: RawPayload) -> str:
     external_id = raw_row.external_id or ""
     if not external_id.startswith("activity:"):
@@ -1808,20 +1644,6 @@ async def reparse_owned_activity_from_raw(
     )
 
 
-async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
-    """Dispatch a pending garmin raw payload back through its normal ingest path
-    by the ``daily:``/``activity:`` prefix ``ingest_daily``/``ingest_activities``
-    already stamp onto ``external_id``. Used by :func:`reparse_pending` (the
-    nightly sweep — raw_payload_service.sweep_pending_job)."""
-    external_id = raw_row.external_id or ""
-    if external_id.startswith("daily:"):
-        await reparse_daily_from_raw(session, raw_row)
-    elif external_id.startswith("activity:"):
-        await reparse_activity_from_raw(session, raw_row)
-    else:
-        raise ValueError(f"unrecognized garmin raw_payload external_id: {external_id!r}")
-
-
 async def reparse_owned_from_raw(
     session: AsyncSession,
     raw_row: RawPayload,
@@ -1839,28 +1661,6 @@ async def reparse_owned_from_raw(
         raise GarminRawPayloadInvariantError(
             f"unrecognized owned Garmin raw external_id: {external_id!r}"
         )
-
-
-async def reparse_pending(
-    session: AsyncSession,
-    *,
-    limit: int = raw_payload_service.REPARSE_BATCH,
-    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
-) -> int:
-    """Sweep garmin raw payloads (daily metrics + activities both live under
-    this one domain) still pending a normalized row. Does not commit."""
-    has_normalized = or_(
-        select(GarminDaily.id).where(GarminDaily.raw_payload_id == RawPayload.id).exists(),
-        select(GarminActivity.id).where(GarminActivity.raw_payload_id == RawPayload.id).exists(),
-    )
-    return await raw_payload_service.sweep_domain(
-        session,
-        domain=DOMAIN,
-        reparse=reparse_from_raw,
-        has_normalized=has_normalized,
-        limit=limit,
-        since_days=since_days,
-    )
 
 
 async def reparse_owned_pending(
@@ -2116,74 +1916,6 @@ async def _refresh_owned_token_cache_alert(
         )
 
 
-async def sync(
-    session: AsyncSession,
-    client: Any,
-    *,
-    days: int = 2,
-    on_date: Optional[date_type] = None,
-) -> dict:
-    """Sync the last ``days`` days of daily metrics + that window's activities.
-    Default is 2 (yesterday + today) for routine polling; pass a larger value
-    for backfill. Catches auth/MFA/throttle failures and raises a critical
-    ``warn`` alert instead of bubbling them. Does not commit."""
-    today = on_date or now_local().date()
-    start = today - timedelta(days=days - 1)
-    summary = {"days": 0, "activities": 0, "error": None}
-    daily_payloads: list[tuple[date_type, dict]] = []
-    activities: Optional[Sequence[dict]] = None
-    auth_error: Optional[GarminAuthError] = None
-
-    # Finish the complete vendor-I/O phase before ingesting anything. Weight
-    # ingestion participates in the outbound outbox advisory lock; interleaving
-    # it with later Garmin calls would hold that DB lock across network latency
-    # and could make an otherwise-local save/delete time out.
-    try:
-        for offset in range(days):
-            day = start + timedelta(days=offset)
-            raw = await client.fetch_daily(day)
-            daily_payloads.append((day, raw))
-
-        activities = await client.fetch_activities(start, today)
-        await _enrich_activity_details(client, activities)
-    except GarminAuthError as e:  # MFA and throttling are subclasses
-        auth_error = e
-
-    # Preserve the previous partial-progress contract for handled auth failures:
-    # days fetched before MFA/throttling are still ingested and committed by the
-    # caller, but there are no remaining vendor awaits after this point.
-    for day, raw in daily_payloads:
-        await ingest_daily(session, day, raw)
-        summary["days"] += 1
-    if activities is not None:
-        summary["activities"] = await ingest_activities(session, activities)
-
-    if auth_error is None:
-        await alerts_service.resolve_by_key(session, alert_key=AUTH_ALERT_KEY)
-    else:
-        e = auth_error
-        if isinstance(e, GarminMFARequired):
-            summary["error"], message = "mfa", t("alert.garmin_mfa")
-        elif isinstance(e, GarminLoginThrottled):
-            summary["error"], message = "throttled", t("alert.garmin_login_throttled")
-        else:
-            summary["error"] = "auth"
-            message = t("alert.garmin_auth_fail", error=str(e))
-        await alerts_service.raise_alert(
-            session,
-            domain=DOMAIN,
-            severity=Severity.WARN.value,
-            message=message,
-            alert_key=AUTH_ALERT_KEY,
-        )
-
-    # A token store that can't be written is silent until the day it isn't: the
-    # session keeps working in memory, then every poll after the next restart
-    # logs in again. Surface it while it's still only a warning.
-    await refresh_token_cache_alert(session, client)
-    return summary
-
-
 async def sync_owned(
     session: AsyncSession,
     client: Any,
@@ -2293,46 +2025,6 @@ async def sync_owned(
 # Outside the active hours on the settings card the pulse doesn't run: nothing it
 # reads (steps, active calories, intensity minutes) moves while he's asleep, and
 # every skipped poll is one fewer chance to spend a login on a night nobody reads.
-
-
-async def pulse(
-    session: AsyncSession, client: Any, *, on_date: Optional[date_type] = None
-) -> dict:
-    """Today's summary only — one upstream call, merged into the day's bundle.
-
-    The merge is the whole trick: the fresh summary replaces exactly that key of
-    the stored raw payload and the *whole* bundle is re-ingested, so last night's
-    sleep and HRV survive a mid-day poll. Normalising a bare ``{"summary": …}``
-    over an existing day would blank every column the summary doesn't carry.
-
-    An empty response is treated as no data rather than as "the day has no
-    summary" — same reason. Auth failures are caught and logged, never alerted:
-    the 4×/day sync owns that alert, and a job running every quarter hour would
-    flap it. Does not commit.
-    """
-    day = on_date or now_local().date()
-    out: dict = {"steps": None, "error": None}
-    try:
-        fresh = await client.fetch_summary(day)
-    except GarminAuthError as e:
-        logger.warning("Garmin pulse skipped: %s", e)
-        out["error"] = "throttled" if isinstance(e, GarminLoginThrottled) else "auth"
-        return out
-    if not fresh:
-        out["error"] = "empty"
-        return out
-
-    raw: dict = {}
-    existing = await get_daily(session, day)
-    if existing is not None and existing.raw_payload_id is not None:
-        stored = await session.get(RawPayload, existing.raw_payload_id)
-        if stored is not None and isinstance(stored.payload, dict):
-            raw = dict(stored.payload)
-    raw["summary"] = fresh
-
-    row = await ingest_daily(session, day, raw)
-    out["steps"] = row.steps
-    return out
 
 
 async def _pulse_base_payload(
@@ -2524,7 +2216,6 @@ async def pulse_job(
     from vitals.services.proactive import prefs
 
     async with session_factory() as session:
-        ownership = None
         try:
             ownership = await resolve_legacy_ownership_context(
                 session,
@@ -2532,56 +2223,41 @@ async def pulse_job(
                 required_connections=(IntegrationProvider.GARMIN,),
             )
         except LegacySubjectResolutionError:
-            # The read-only exact-one resolver autobegins an unguarded
-            # transaction. Close it before entering the explicit zero-subject
-            # compatibility guard (BEGIN IMMEDIATE on SQLite / advisory on PG).
-            await session.rollback()
-            try:
-                settings = await prefs.get_pre_identity_legacy_prefs(session)
-            except prefs.ProactivePreferencesError:
-                logger.warning(
-                    "Garmin pulse skipped: pre-identity preferences are unavailable",
-                    exc_info=True,
-                )
-                return
-            pulse_seconds = settings["pulse_seconds"]
-            pulse_start_hour = settings["pulse_start_hour"]
-            pulse_end_hour = settings["pulse_end_hour"]
+            # A pulse writes a day of somebody's watch data. Without a subject
+            # there is nobody to write it for, and the pre-identity arm that
+            # used to run here wrote rows belonging to no one.
+            logger.warning(
+                "Garmin pulse skipped: no single health subject to sync for",
+                exc_info=True,
+            )
+            return
         except LegacyOwnershipError:
             logger.warning(
                 "Garmin pulse skipped: legacy ownership is unavailable",
                 exc_info=True,
             )
             return
-        if ownership is not None:
-            try:
-                policy = await prefs.get_garmin_policy(
-                    session,
-                    subject_id=ownership.subject_id,
-                    integration_connection_id=ownership.connection_id(
-                        IntegrationProvider.GARMIN
-                    ),
-                )
-            except prefs.ProactivePreferencesError:
-                logger.warning(
-                    "Garmin pulse skipped: scoped preferences are unavailable",
-                    exc_info=True,
-                )
-                return
-            pulse_seconds = policy.pulse_seconds
-            pulse_start_hour = policy.pulse_start_hour
-            pulse_end_hour = policy.pulse_end_hour
-        if not pulse_seconds:
+        try:
+            policy = await prefs.get_garmin_policy(
+                session,
+                subject_id=ownership.subject_id,
+                integration_connection_id=ownership.connection_id(
+                    IntegrationProvider.GARMIN
+                ),
+            )
+        except prefs.ProactivePreferencesError:
+            logger.warning(
+                "Garmin pulse skipped: scoped preferences are unavailable",
+                exc_info=True,
+            )
             return
-        if not pulse_start_hour <= now_local().hour < pulse_end_hour:
+        if not policy.pulse_seconds:
+            return
+        if not policy.pulse_start_hour <= now_local().hour < policy.pulse_end_hour:
             return
 
         client = GarminClient.from_config(redis=redis)
         if not client.is_configured:
-            return
-        if ownership is None:
-            await pulse(session, client)
-            await session.commit()
             return
         try:
             await pulse_owned(
@@ -2612,54 +2288,6 @@ _HAE_METRIC_MAP = {
     "blood_oxygen_saturation": ("spo2_avg", lambda q: _num(q)),
     "sleep_analysis": ("sleep_seconds", lambda q: _intish((q or 0) * 3600)),  # hours → s
 }
-
-
-async def ingest_health_auto_export(session: AsyncSession, payload: dict) -> dict:
-    """Ingest a Health Auto Export JSON dump into ``garmin_daily`` rows
-    (``source='health_auto_export'``). The full payload is kept raw. Tolerant of
-    the documented shape ``{"data": {"metrics": [{name, data: [{date, qty}]}]}}``."""
-    metrics = _dig(payload, "data", "metrics") or payload.get("metrics") or []
-    # Accumulate per-date field values from the flat metric list.
-    by_date: dict[date_type, dict] = {}
-    for metric in metrics:
-        name = (metric or {}).get("name")
-        mapping = _HAE_METRIC_MAP.get(name)
-        if not mapping:
-            continue
-        column, convert = mapping
-        for point in metric.get("data") or []:
-            day = _parse_hae_date(point.get("date"))
-            if day is None:
-                continue
-            value = convert(point.get("qty"))
-            if value is not None:
-                by_date.setdefault(day, {})[column] = value
-
-    written = 0
-    for day, fields in sorted(by_date.items()):
-        raw_row = await raw_payload_service.upsert_raw_payload(
-            session,
-            domain=DOMAIN,
-            source=Source.HEALTH_AUTO_EXPORT.value,
-            external_id=f"hae:{day.isoformat()}",
-            payload={"metrics": fields, "source_payload": True},
-        )
-        row = await get_daily(session, day)
-        if row is None:
-            row = GarminDaily(date=day, domain=DOMAIN)
-            session.add(row)
-        # Only fill columns HAE provides; don't clobber existing Garmin-API values
-        # with nulls (HAE is a supplementary backup, not the source of truth).
-        row.source = Source.HEALTH_AUTO_EXPORT.value
-        if row.raw_payload_id is None:
-            row.raw_payload_id = raw_row.id
-        for key, value in fields.items():
-            setattr(row, key, value)
-        await session.flush()
-        raw_row.processed_at = now_local()
-        written += 1
-
-    return {"dates": written}
 
 
 async def ingest_owned_health_auto_export(

@@ -133,7 +133,7 @@ async def test_owned_update_and_delete_reject_cross_subject_ids(db_session):
     assert await db_session.get(MealLog, row.id) is None
 
 
-async def test_unowned_legacy_rows_are_outside_every_scope(db_session):
+async def test_unowned_legacy_rows_are_outside_every_scope(db_session, *, legacy_owner_roots):
     """The compatibility read is gone, so a meal belonging to nobody is nobody's.
 
     While nutrition still had a bridge, the sole owner could ask for unowned
@@ -142,7 +142,7 @@ async def test_unowned_legacy_rows_are_outside_every_scope(db_session):
     """
     identity = await _identity(db_session, "nutrition-legacy-owner")
     on_date = date(2026, 8, 19)
-    legacy = MealLog(
+    legacy = MealLog(subject_id=legacy_owner_roots.subject_id, 
         domain=Domain.NUTRITION.value,
         source=Source.MANUAL.value,
         date=on_date,

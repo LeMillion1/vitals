@@ -1272,23 +1272,19 @@ async def store_raw_vcf(
     identity: WriteIdentity,
     prepared_conflict_write: conflict_engine.PreparedConflictWrite,
 ) -> RawPayload:
-    """Legacy raw-only adapter; scoped callers use ``ingest_vcf_batch``."""
+    """Retired raw-only adapter. Use ``ingest_vcf_batch``.
 
-    if identity is not None or prepared_conflict_write is not None:
-        raise GeneticsValidationError(
-            "scoped VCF callers must use ingest_vcf_batch for atomic ingestion"
-        )
-    payload = {
-        "filename": filename,
-        "truncated": truncated,
-        "variants": list(variants),
-    }
-    return await raw_payload_service.upsert_raw_payload(
-        session,
-        domain=DOMAIN,
-        source=Source.VCF_IMPORT.value,
-        external_id=_vcf_external_id(payload),
-        payload=payload,
+    This already refused every scoped caller; what remained underneath was the
+    zero-subject arm, which stored the uploaded VCF as a payload belonging to
+    nobody. A genome is the most identifying record the application holds, so
+    that arm goes rather than gets scoped — ``ingest_vcf_batch`` takes the
+    subject and the conflict decision together and is the only way in.
+    """
+
+    del session, filename, variants, truncated, identity, prepared_conflict_write
+    raise GeneticsValidationError(
+        "VCF ingestion requires ingest_vcf_batch with a subject and a "
+        "prepared conflict write"
     )
 
 

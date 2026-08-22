@@ -7,7 +7,7 @@ reconcile against existing rows by ``(domain, source, external_id)`` — the
 natural lookup key the table is indexed for — so re-syncing refreshes one raw row
 per upstream object instead of piling up duplicates.
 
-:func:`upsert_raw_payload` resets ``processed_at`` to ``None`` whenever it
+:func:`upsert_owned_raw_payload` resets ``processed_at`` to ``None`` whenever it
 refreshes an existing row ("re-parse pending") — the promise being that
 something later sweeps rows still sitting at ``processed_at IS NULL`` and
 re-derives their normalized rows from the raw copy. :func:`sweep_domain` is
@@ -77,44 +77,6 @@ class RawPayloadConflictError(RawPayloadServiceError):
 
 class RawPayloadAmbiguityError(RawPayloadConflictError):
     """More than one row matches a scoped lookup or legacy adoption path."""
-
-
-async def upsert_raw_payload(
-    session: AsyncSession,
-    *,
-    domain: str,
-    source: str,
-    external_id: str,
-    payload: Any,
-) -> RawPayload:
-    """Insert or refresh the raw payload for ``(domain, source, external_id)``.
-
-    Flushes so the returned row has an ``id`` the normalized row can link to.
-    Does not commit — the caller owns the transaction.
-    """
-    result = await session.execute(
-        select(RawPayload).where(
-            RawPayload.domain == domain,
-            RawPayload.source == source,
-            RawPayload.external_id == external_id,
-        )
-    )
-    row: Optional[RawPayload] = result.scalars().first()
-    if row is None:
-        row = RawPayload(
-            domain=domain,
-            source=source,
-            external_id=external_id,
-            payload=payload,
-            fetched_at=now_local(),
-        )
-        session.add(row)
-    else:
-        row.payload = payload
-        row.fetched_at = now_local()
-        row.processed_at = None  # re-parse pending
-    await session.flush()
-    return row
 
 
 def _validate_owned_inputs(
@@ -547,7 +509,7 @@ async def sweep_domain(
     re-implementing it.
 
     Picks up to ``limit`` rows for ``domain`` still at ``processed_at IS NULL``
-    (what :func:`upsert_raw_payload` leaves behind whenever it refreshes a row)
+    (what :func:`upsert_owned_raw_payload` leaves behind whenever it refreshes a row)
     within ``since_days`` of ``fetched_at``, excluding rows that already have a
     normalized child. ``has_normalized`` is a caller-built ``EXISTS`` clause
     correlated to ``RawPayload.id`` (e.g. ``select(Model.id).where(Model.

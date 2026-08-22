@@ -50,6 +50,13 @@ from vitals.services.raw_ownership_backfill_service import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
 )
 
+
+# Every test here writes or inspects a row with no owner, which is the whole
+# subject of the ownership backfill: these services exist to give such rows an
+# owner. The application can no longer produce that state, so this module asks
+# for the schema as it stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 

@@ -34,8 +34,8 @@ def _now_is_the_morning_after(monkeypatch):
     monkeypatch.setattr(digest_service, "today_local", lambda: DAY + timedelta(days=1))
 
 
-def _workout(external_id: str, on_date: date, title: str) -> HevyWorkout:
-    return HevyWorkout(
+def _workout(external_id: str, on_date: date, title: str, *, hevy_connection_id, legacy_owner_roots) -> HevyWorkout:
+    return HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
         external_id=external_id,
         domain="hevy",
         date=on_date,
@@ -44,12 +44,12 @@ def _workout(external_id: str, on_date: date, title: str) -> HevyWorkout:
     )
 
 
-async def test_sessions_before_the_window_are_visible_but_not_counted(db_session, legacy_owner_roots):
+async def test_sessions_before_the_window_are_visible_but_not_counted(hevy_connection_id, db_session, legacy_owner_roots):
     db_session.add_all(
         [
-            _workout("w_sat", DAY - timedelta(days=3), "Push"),   # Saturday, in period
-            _workout("w_tue", DAY - timedelta(days=7), "Pull"),   # a week ago, outside
-            _workout("w_old", DAY - timedelta(days=40), "Legs"),  # far outside, gone
+            _workout("w_sat", DAY - timedelta(days=3), "Push", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),   # Saturday, in period
+            _workout("w_tue", DAY - timedelta(days=7), "Pull", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),   # a week ago, outside
+            _workout("w_old", DAY - timedelta(days=40), "Legs", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),  # far outside, gone
         ]
     )
     await db_session.commit()
@@ -69,11 +69,11 @@ async def test_sessions_before_the_window_are_visible_but_not_counted(db_session
     assert hevy["sessions"][1]["title"] == "Push"
 
 
-async def test_recovery_covers_the_period_not_just_the_latest_day(db_session, legacy_owner_roots):
+async def test_recovery_covers_the_period_not_just_the_latest_day(db_session, legacy_owner_roots, *, garmin_connection_id):
     """A "weekly" report used to be handed one night of recovery data."""
     for i in range(9):
         db_session.add(
-            GarminDaily(
+            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 domain="garmin",
                 source=Source.GARMIN_API.value,
                 date=DAY - timedelta(days=i),
@@ -98,12 +98,12 @@ async def test_recovery_covers_the_period_not_just_the_latest_day(db_session, le
     assert ctx["garmin"]["total_days_logged"] == 9
 
 
-async def test_period_is_handed_the_period_before_it_to_compare_against(db_session, legacy_owner_roots):
+async def test_period_is_handed_the_period_before_it_to_compare_against(hevy_connection_id, db_session, legacy_owner_roots, *, garmin_connection_id):
     """Without a yardstick the narrative can only read current values back, which
     is the dashboard's job. Both windows come back in the same shape."""
     for i in range(14):
         db_session.add(
-            GarminDaily(
+            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 domain="garmin",
                 source=Source.GARMIN_API.value,
                 date=DAY - timedelta(days=i),
@@ -114,9 +114,9 @@ async def test_period_is_handed_the_period_before_it_to_compare_against(db_sessi
         )
     db_session.add_all(
         [
-            _workout("w_now", DAY - timedelta(days=1), "Push"),
-            _workout("w_prev_a", DAY - timedelta(days=8), "Pull"),
-            _workout("w_prev_b", DAY - timedelta(days=11), "Legs"),
+            _workout("w_now", DAY - timedelta(days=1), "Push", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),
+            _workout("w_prev_a", DAY - timedelta(days=8), "Pull", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),
+            _workout("w_prev_b", DAY - timedelta(days=11), "Legs", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),
         ]
     )
     await db_session.commit()
@@ -137,7 +137,7 @@ async def test_period_is_handed_the_period_before_it_to_compare_against(db_sessi
     assert stats["previous"]["workouts"] == 2
 
 
-async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch, legacy_owner_roots):
+async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch, legacy_owner_roots, *, garmin_connection_id):
     """Generated just after midnight, the report treated the current date as a
     seventh day of the window and read its missing log as a day its owner had
     skipped — while he was still awake on it. The window ends yesterday and holds
@@ -146,11 +146,11 @@ async def test_the_window_holds_only_days_that_are_over(db_session, monkeypatch,
 
     # Garmin has written today's row, but the watch has scored nothing on it yet.
     db_session.add(
-        GarminDaily(domain="garmin", source=Source.GARMIN_API.value, date=DAY)
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, domain="garmin", source=Source.GARMIN_API.value, date=DAY)
     )
     for i in range(1, 8):
         db_session.add(
-            GarminDaily(
+            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 domain="garmin",
                 source=Source.GARMIN_API.value,
                 date=DAY - timedelta(days=i),
@@ -187,7 +187,7 @@ async def test_a_past_period_ends_on_its_own_date(db_session, monkeypatch, legac
     assert meta["period_start"] == (DAY - timedelta(days=6)).isoformat()
 
 
-async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch, legacy_owner_roots, owner_write):
+async def test_the_day_table_joins_the_domains_by_date(hevy_connection_id, db_session, monkeypatch, legacy_owner_roots, owner_write, *, garmin_connection_id):
     """The links the report kept failing to find need the domains on one row."""
     from vitals.services import nutrition_service, signals_service
 
@@ -196,8 +196,8 @@ async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch, 
 
     db_session.add_all(
         [
-            _workout("w_joined", session_day, "Full body"),
-            GarminDaily(
+            _workout("w_joined", session_day, "Full body", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),
+            GarminDaily(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id, 
                 domain="garmin",
                 source=Source.GARMIN_API.value,
                 date=session_day + timedelta(days=1),
@@ -239,14 +239,14 @@ async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch, 
     assert days[(session_day + timedelta(days=1)).isoformat()]["hrv_avg"] == 41.0
 
 
-async def test_training_cadence_survives_the_window_edge(db_session, legacy_owner_roots):
+async def test_training_cadence_survives_the_window_edge(hevy_connection_id, db_session, legacy_owner_roots):
     """The gap between sessions is the number a window boundary cannot move — and
     the one the narrative can quote without explaining the boundary first."""
     db_session.add_all(
         [
-            _workout("w1", DAY - timedelta(days=10), "Full body"),
-            _workout("w2", DAY - timedelta(days=7), "Full body"),
-            _workout("w3", DAY - timedelta(days=3), "Full body"),
+            _workout("w1", DAY - timedelta(days=10), "Full body", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),
+            _workout("w2", DAY - timedelta(days=7), "Full body", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),
+            _workout("w3", DAY - timedelta(days=3), "Full body", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),
         ]
     )
     await db_session.commit()
@@ -313,7 +313,7 @@ async def test_a_long_window_carries_all_of_its_signals(db_session, legacy_owner
     days, per_day = 30, 10
     db_session.add_all(
         [
-            Signal(
+            Signal(subject_id=legacy_owner_roots.subject_id, 
                 date=DAY - timedelta(days=i),
                 domain="signals",
                 source=Source.TELEGRAM.value,
@@ -340,10 +340,10 @@ async def test_a_long_window_carries_all_of_its_signals(db_session, legacy_owner
     )
 
 
-async def test_brief_context_stays_a_single_day(db_session, legacy_owner_roots):
+async def test_brief_context_stays_a_single_day(db_session, legacy_owner_roots, *, garmin_connection_id):
     """The explicit brief mode stays compact even though a 1-day report does not."""
     db_session.add(
-        GarminDaily(
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             domain="garmin",
             source=Source.GARMIN_API.value,
             date=DAY,

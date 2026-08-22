@@ -30,16 +30,16 @@ START = date(2026, 3, 1)
 END = date(2026, 3, 30)
 
 
-async def _seed_weights(session) -> None:
+async def _seed_weights(session, *, legacy_owner_roots) -> None:
     session.add_all(
         [
             # One day before the window opens and one after it closes: neither
             # may show up in the snapshot.
-            WeightLog(date=START - timedelta(days=1), domain="weight", source="manual", weight_kg=90.0),
-            WeightLog(date=START, domain="weight", source="manual", weight_kg=89.0),
-            WeightLog(date=date(2026, 3, 15), domain="weight", source="manual", weight_kg=87.5),
-            WeightLog(date=END, domain="weight", source="manual", weight_kg=86.0),
-            WeightLog(date=END + timedelta(days=1), domain="weight", source="manual", weight_kg=85.0),
+            WeightLog(subject_id=legacy_owner_roots.subject_id, date=START - timedelta(days=1), domain="weight", source="manual", weight_kg=90.0),
+            WeightLog(subject_id=legacy_owner_roots.subject_id, date=START, domain="weight", source="manual", weight_kg=89.0),
+            WeightLog(subject_id=legacy_owner_roots.subject_id, date=date(2026, 3, 15), domain="weight", source="manual", weight_kg=87.5),
+            WeightLog(subject_id=legacy_owner_roots.subject_id, date=END, domain="weight", source="manual", weight_kg=86.0),
+            WeightLog(subject_id=legacy_owner_roots.subject_id, date=END + timedelta(days=1), domain="weight", source="manual", weight_kg=85.0),
         ]
     )
     await session.flush()
@@ -73,8 +73,8 @@ pytestmark = pytest.mark.usefixtures("owned_by_legacy_subject")
 
 
 @pytest.mark.asyncio
-async def test_period_cuts_exactly_at_its_edges(db_session):
-    await _seed_weights(db_session)
+async def test_period_cuts_exactly_at_its_edges(legacy_owner_roots, db_session):
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     snap = await share_service.build_snapshot(
         db_session,
         prepared_owner=await _prepared_owner(db_session),
@@ -89,14 +89,14 @@ async def test_period_cuts_exactly_at_its_edges(db_session):
 
 
 @pytest.mark.asyncio
-async def test_snapshot_is_frozen_against_later_edits(db_session):
-    await _seed_weights(db_session)
+async def test_snapshot_is_frozen_against_later_edits(db_session, *, legacy_owner_roots):
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     row, _ = await _create(db_session)
     await db_session.commit()
     before = json.dumps(row.snapshot, sort_keys=True)
 
     db_session.add(
-        WeightLog(date=date(2026, 3, 20), domain="weight", source="manual", weight_kg=70.0)
+        WeightLog(subject_id=legacy_owner_roots.subject_id, date=date(2026, 3, 20), domain="weight", source="manual", weight_kg=70.0)
     )
     await db_session.commit()
     await db_session.refresh(row)
@@ -105,10 +105,10 @@ async def test_snapshot_is_frozen_against_later_edits(db_session):
 
 
 @pytest.mark.asyncio
-async def test_unticked_domain_is_absent(db_session):
-    await _seed_weights(db_session)
+async def test_unticked_domain_is_absent(db_session, *, legacy_owner_roots):
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     db_session.add(
-        Supplement(
+        Supplement(subject_id=legacy_owner_roots.subject_id, 
             domain="supplements", source="manual",
             name="Creatine", key="creatine", dose="5 g", active=True,
         )
@@ -128,9 +128,9 @@ async def test_unticked_domain_is_absent(db_session):
 
 
 @pytest.mark.asyncio
-async def test_disabled_module_cannot_be_published(db_session):
+async def test_disabled_module_cannot_be_published(db_session, *, legacy_owner_roots):
     db_session.add(
-        Supplement(
+        Supplement(subject_id=legacy_owner_roots.subject_id, 
             domain="supplements", source="manual",
             name="Creatine", key="creatine", dose="5 g", active=True,
         )
@@ -152,12 +152,12 @@ async def test_disabled_module_cannot_be_published(db_session):
 
 
 @pytest.mark.asyncio
-async def test_progress_photos_never_reach_a_snapshot(db_session):
+async def test_progress_photos_never_reach_a_snapshot(db_session, *, legacy_file_asset_id, legacy_owner_roots):
     """Not a checkbox anywhere, so this is about the builder never reading them —
     including under the preset that asks for everything."""
-    await _seed_weights(db_session)
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     db_session.add(
-        ProgressPhoto(
+        ProgressPhoto(subject_id=legacy_owner_roots.subject_id, file_asset_id=legacy_file_asset_id, 
             date=date(2026, 3, 10), domain="weight", source="manual",
             file_key="secret-progress-photo.jpg",
         )
@@ -176,20 +176,20 @@ async def test_progress_photos_never_reach_a_snapshot(db_session):
 
 
 @pytest.mark.asyncio
-async def test_labs_carry_range_and_history_and_honour_flagged_only(db_session):
+async def test_labs_carry_range_and_history_and_honour_flagged_only(db_session, *, legacy_owner_roots):
     db_session.add_all(
         [
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 1, 5), domain="labs", source="manual",
                 marker="Ферритин", value=31.0, unit="нг/мл", ref_low=30, ref_high=400,
                 flag="normal",
             ),
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 3, 10), domain="labs", source="manual",
                 marker="Ферритин", value=18.0, unit="нг/мл", ref_low=30, ref_high=400,
                 flag="low",
             ),
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 3, 10), domain="labs", source="manual",
                 marker="Глюкоза", value=5.0, unit="ммоль/л", ref_low=3.9, ref_high=6.1,
                 flag="normal",
@@ -217,19 +217,19 @@ async def test_labs_carry_range_and_history_and_honour_flagged_only(db_session):
 
 
 @pytest.mark.asyncio
-async def test_labs_of_the_window_survive_a_bigger_history_after_it(db_session):
+async def test_labs_of_the_window_survive_a_bigger_history_after_it(db_session, *, legacy_owner_roots):
     """The block read the newest results in the table and filtered by date after the
     fact, so a report about a past window competed with everything drawn since. Past
     a couple of thousand later results the section came back empty — a document that
     says "every marker measured in the window" and carries none of them."""
     db_session.add_all(
         [
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 1, 5), domain="labs", source="manual",
                 marker="Ферритин", value=31.0, unit="нг/мл", ref_low=30, ref_high=400,
                 flag="normal",
             ),
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 3, 10), domain="labs", source="manual",
                 marker="Ферритин", value=18.0, unit="нг/мл", ref_low=30, ref_high=400,
                 flag="low",
@@ -238,7 +238,7 @@ async def test_labs_of_the_window_survive_a_bigger_history_after_it(db_session):
     )
     db_session.add_all(
         [
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=END + timedelta(days=1 + i // 40), domain="labs", source="manual",
                 marker=f"Маркер {i:04d}", value=1.0, flag="normal",
             )
@@ -272,13 +272,13 @@ async def test_empty_domain_draws_no_section(db_session):
 
 
 @pytest.mark.asyncio
-async def test_contents_line_names_only_the_sections_that_exist(db_session):
+async def test_contents_line_names_only_the_sections_that_exist(legacy_owner_roots, db_session):
     """The header lists what the document holds, not what was ticked.
 
     A doctor who reads "Labs" in the contents and finds no such section
     concludes none were taken — when they were, just outside this window.
     """
-    await _seed_weights(db_session)
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     snap = await share_service.build_snapshot(
         db_session,
         prepared_owner=await _prepared_owner(db_session), domains=[Domain.WEIGHT.value, Domain.LABS.value],
@@ -289,11 +289,11 @@ async def test_contents_line_names_only_the_sections_that_exist(db_session):
 
 
 @pytest.mark.asyncio
-async def test_body_metrics_carry_the_catalogue_unit_not_the_sheets(db_session):
+async def test_body_metrics_carry_the_catalogue_unit_not_the_sheets(db_session, *, legacy_owner_roots):
     """An InBody printout is in English; the document is not."""
     from vitals.models.body_scan import BodyScan, BodyScanMetric
 
-    scan = BodyScan(
+    scan = BodyScan(subject_id=legacy_owner_roots.subject_id, 
         date=date(2026, 3, 10), domain=Domain.BODY_COMPOSITION.value,
         source="manual", device="InBody",
     )
@@ -332,8 +332,8 @@ async def test_body_metrics_carry_the_catalogue_unit_not_the_sheets(db_session):
 
 
 @pytest.mark.asyncio
-async def test_password_is_returned_once_and_stored_only_hashed(db_session):
-    await _seed_weights(db_session)
+async def test_password_is_returned_once_and_stored_only_hashed(legacy_owner_roots, db_session):
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     row, password = await _create(db_session)
     await db_session.commit()
 
@@ -344,8 +344,8 @@ async def test_password_is_returned_once_and_stored_only_hashed(db_session):
 
 
 @pytest.mark.asyncio
-async def test_tokens_are_unique(db_session):
-    await _seed_weights(db_session)
+async def test_tokens_are_unique(legacy_owner_roots, db_session):
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     first, _ = await _create(db_session)
     second, _ = await _create(db_session)
     await db_session.commit()
@@ -354,8 +354,8 @@ async def test_tokens_are_unique(db_session):
 
 
 @pytest.mark.asyncio
-async def test_link_lifetime_is_independent_of_the_report_period(db_session):
-    await _seed_weights(db_session)
+async def test_link_lifetime_is_independent_of_the_report_period(legacy_owner_roots, db_session):
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     row, _ = await _create(
         db_session,
         period_start=END - timedelta(days=179),
@@ -373,7 +373,7 @@ async def test_resolve_public_hides_missing_revoked_and_expired_alike(
     db_session,
     legacy_owner_roots,
 ):
-    await _seed_weights(db_session)
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     owner = await _prepared_owner(db_session)
     live, _ = await _create(db_session, prepared_owner=owner)
     revoked, _ = await _create(db_session, prepared_owner=owner)
@@ -391,7 +391,7 @@ async def test_resolve_public_hides_missing_revoked_and_expired_alike(
 
 @pytest.mark.asyncio
 async def test_register_open_counts_and_timestamps(db_session, legacy_owner_roots):
-    await _seed_weights(db_session)
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     owner = await _prepared_owner(db_session)
     row, _ = await _create(db_session, prepared_owner=owner)
     await db_session.commit()
@@ -410,7 +410,7 @@ async def test_purge_expired_clears_the_snapshot_and_keeps_the_metadata(
     db_session,
     legacy_owner_roots,
 ):
-    await _seed_weights(db_session)
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     owner = await _prepared_owner(db_session)
     live, _ = await _create(db_session, prepared_owner=owner)
     dead, _ = await _create(db_session, prepared_owner=owner)
@@ -427,8 +427,8 @@ async def test_purge_expired_clears_the_snapshot_and_keeps_the_metadata(
 
 
 @pytest.mark.asyncio
-async def test_delete_removes_the_row(db_session):
-    await _seed_weights(db_session)
+async def test_delete_removes_the_row(legacy_owner_roots, db_session):
+    await _seed_weights(db_session, legacy_owner_roots=legacy_owner_roots)
     row, _ = await _create(db_session)
     await db_session.commit()
 
@@ -444,7 +444,7 @@ async def test_delete_removes_the_row(db_session):
 
 
 @pytest.mark.asyncio
-async def test_symptoms_carry_the_patients_words_not_the_apps(db_session):
+async def test_symptoms_carry_the_patients_words_not_the_apps(db_session, *, legacy_owner_roots):
     """Two things a doctor must never be handed: this app's normalized key for a
     symptom ("low_heart_rate"), and a raw measurement dressed up as a 1-5
     severity ("40 of 5")."""
@@ -453,18 +453,18 @@ async def test_symptoms_carry_the_patients_words_not_the_apps(db_session):
 
     db_session.add_all(
         [
-            Signal(
+            Signal(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 3, 12), domain="signals", source="telegram",
                 kind=SignalKind.SYMPTOM.value, key="headache", batch_id="b1",
                 note="голова раскалывается", value_num=4.0,
             ),
             # No wording of his own — nothing but the slug, so nothing to print.
-            Signal(
+            Signal(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 3, 13), domain="signals", source="telegram",
                 kind=SignalKind.SYMPTOM.value, key="low_heart_rate", batch_id="b2", value_num=40.0,
             ),
             # A measurement the parser filed under a symptom: not a severity.
-            Signal(
+            Signal(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 3, 14), domain="signals", source="telegram",
                 kind=SignalKind.SYMPTOM.value, key="pulse", batch_id="b3", note="пульс низкий",
                 value_num=40.0,

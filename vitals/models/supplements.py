@@ -18,12 +18,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
-from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
+from vitals.models.ownership_mixins import (
+    OriginActorMixin,
+    RequiredSubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.SUPPLEMENTS.value
 
 
-class Supplement(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
+class Supplement(Base, RequiredSubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     __tablename__ = "supplements"
     __table_args__ = (
         Index("ix_supplements_key", "key"),

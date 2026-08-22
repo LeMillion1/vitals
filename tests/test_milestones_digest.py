@@ -173,7 +173,7 @@ async def test_create_and_progress_body_fat_goal(db_session, monkeypatch, owner_
     
     from vitals.models.body_scan import BodyScan, BodyScanMetric
 
-    scan = BodyScan(
+    scan = BodyScan(subject_id=owner_write.subject_id, 
         date=DAY + timedelta(days=1),
         actor_user_id=owner_write.identity.actor_user_id,
         domain=Domain.BODY_COMPOSITION.value,
@@ -310,7 +310,7 @@ async def test_signals_reach_the_digest_context(db_session, legacy_owner_roots):
 
 
 @composed
-async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots, owner_write):
+async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots, owner_write, *, garmin_owned_scope):
     from vitals.services import labs_service
 
     await weight_service.log_weight(
@@ -320,10 +320,10 @@ async def test_assemble_context_pulls_each_domain(db_session, legacy_owner_roots
         identity=owner_write.identity,
         prepared_weight_write=await owner_write.weight_write(DAY),
     )
-    await garmin_service.ingest_daily(
+    await garmin_service.ingest_owned_daily(
         db_session, DAY, {"summary": {"restingHeartRate": 52},
                           "sleep": {"dailySleepDTO": {"sleepScores": {"overall": {"value": 80}}}}}
-    )
+    , identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await labs_service.add_result(
         db_session,
         on_date=DAY - timedelta(days=10),
@@ -406,7 +406,7 @@ async def test_assemble_context_includes_body_comp(db_session, legacy_owner_root
     + derived LBM) — previously body composition was absent from the analysis."""
     from vitals.models.body_scan import BodyScan, BodyScanMetric
 
-    scan = BodyScan(
+    scan = BodyScan(subject_id=legacy_owner_roots.subject_id, 
         date=DAY - timedelta(days=2), domain="body_comp", source="body_scan", device="InBody 770"
     )
     db_session.add(scan)
@@ -445,18 +445,18 @@ async def test_assemble_context_includes_body_comp(db_session, legacy_owner_root
 
 
 @composed
-async def test_assemble_context_with_custom_period_days(db_session, legacy_owner_roots):
+async def test_assemble_context_with_custom_period_days(db_session, legacy_owner_roots, *, hevy_connection_id):
     from vitals.models.hevy import HevyWorkout
     from vitals.enums import Source
 
-    workout1 = HevyWorkout(
+    workout1 = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
         external_id="w_old",
         domain="hevy",
         date=DAY - timedelta(days=5),
         source=Source.HEVY_API.value,
         title="Push Day",
     )
-    workout2 = HevyWorkout(
+    workout2 = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
         external_id="w_new",
         domain="hevy",
         date=DAY - timedelta(days=2),

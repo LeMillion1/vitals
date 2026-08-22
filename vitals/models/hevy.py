@@ -40,6 +40,8 @@ from vitals.models.mixins import InsightsMixin, insights_index
 from vitals.models.ownership_mixins import (
     IntegrationConnectionOwnershipMixin,
     OriginActorMixin,
+    RequiredIntegrationConnectionOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     SubjectOwnershipMixin,
 )
 
@@ -48,9 +50,9 @@ DOMAIN = Domain.WORKOUTS.value
 
 class HevyWorkout(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
-    IntegrationConnectionOwnershipMixin,
+    RequiredIntegrationConnectionOwnershipMixin,
     InsightsMixin,
     TimestampMixin,
 ):

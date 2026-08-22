@@ -27,6 +27,13 @@ from vitals.services.raw_ownership_backfill_service import (
 )
 
 
+# Every test here writes or inspects a row with no owner, which is the whole
+# subject of the ownership backfill: these services exist to give such rows an
+# owner. The application can no longer produce that state, so this module asks
+# for the schema as it stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 async def test_hrt_child_backfill_closes_the_strict_child_scope_bridge(
     db_session,
     legacy_owner_roots,

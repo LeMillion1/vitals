@@ -1294,28 +1294,13 @@ async def _ensure_outbox_row(
             adopt_legacy=False,
         )
         return row
-    # The scoped branch above owns the destination account. This legacy bridge
-    # has none, so it cannot name a conflict target either: the date key is
-    # scoped by connection now. Every caller reaches here holding the outbox
-    # operation lock, which is what serializes this read-then-insert.
-    existing = await session.scalar(
-        select(GarminWeightExport)
-        .where(GarminWeightExport.date == on_date)
-        .with_for_update()
-        .execution_options(populate_existing=True)
+    # No export context means no usable Garmin account, and an outbox row is an
+    # intent to send a weight *to* one. The bridge that used to run here wrote a
+    # row addressed to nowhere, owned by nobody, keyed on a bare date that the
+    # scoped key no longer treats as unique.
+    raise GarminWeightExportOwnershipError(
+        "a Garmin weight export needs the destination account it is bound for"
     )
-    if existing is not None:
-        return existing
-    row = GarminWeightExport(
-        date=on_date,
-        weight_log_id=weight_log_id,
-        weight_kg=weight_kg,
-        measured_at=measured_at,
-        status=status,
-    )
-    session.add(row)
-    await session.flush()
-    return row
 
 
 def _reset_retry(row: GarminWeightExport) -> None:

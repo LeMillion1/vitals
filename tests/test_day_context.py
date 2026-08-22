@@ -109,13 +109,13 @@ async def _telegram_ownership(session) -> ProactiveOwnershipContext:
 # ── The 23:45 job ─────────────────────────────────────────────────────────────
 async def test_evening_block_asks_about_calendar_tomorrow(
     db_session, session_factory, monkeypatch
-):
+, *, garmin_owned_scope):
     """Every plan button carries tomorrow's date, so a tap after midnight still
     lands on the day that was asked about — and the recap buttons carry today's,
     because they answer the day that just ended."""
     notifier = FakeNotifier()
     _patch_evening(monkeypatch, notifier)
-    await garmin_service.ingest_daily(db_session, DAY, GARMIN_RAW)
+    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
     await day_plan.evening_job(session_factory)
@@ -505,18 +505,18 @@ async def test_an_out_of_registry_value_falls_back_instead_of_reaching_the_messa
 
 
 # ── The brief ─────────────────────────────────────────────────────────────────
-async def _seed_brief_day(db_session):
-    await garmin_service.ingest_daily(db_session, DAY, GARMIN_RAW)
+async def _seed_brief_day(db_session, *, garmin_owned_scope):
+    await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
 
-async def test_brief_prefers_his_answer_to_the_template(
+async def test_brief_prefers_his_answer_to_the_template(garmin_owned_scope, 
     db_session,
     legacy_owner_roots,
 ):
     """And only for the question he actually answered: one tap must not silently
     cancel the rest of the guess he was correcting."""
-    await _seed_brief_day(db_session)
+    await _seed_brief_day(db_session, garmin_owned_scope=garmin_owned_scope)
     await day_plan.set_week_template(
         db_session, {"sun": {"where": "remote", "gym": False}}, subject_id=legacy_owner_roots.subject_id
     )
@@ -550,7 +550,7 @@ async def test_brief_prefers_his_answer_to_the_template(
 
 
 @pytest.mark.usefixtures("owned_by_legacy_subject")
-async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
+async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(garmin_owned_scope, 
     db_session, session_factory, monkeypatch, legacy_owner_roots
 ):
     notifier = FakeNotifier()
@@ -569,7 +569,7 @@ async def test_brief_falls_back_to_the_template_and_offers_the_exceptions(
     await day_plan.set_week_template(
         db_session, {"sun": {"where": "remote"}}, subject_id=legacy_owner_roots.subject_id
     )
-    await _seed_brief_day(db_session)
+    await _seed_brief_day(db_session, garmin_owned_scope=garmin_owned_scope)
 
     await brief.brief_job(session_factory)
 

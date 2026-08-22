@@ -148,6 +148,13 @@ from vitals.services.weight_log_ownership_backfill_service import (
     WeightLogOwnershipBackfillStateError,
 )
 
+
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader does when the ownership backfill has not reached a row yet, which is
+# a state the application itself can no longer create. The schema says so, so
+# this module asks for the one that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
 _IDENTITY_CONTROL_PLANE_TABLES = {
     "users",
     "user_roles",
@@ -162,33 +169,33 @@ _EMPTY_SHA256 = (
 )
 
 
-async def _seed(session) -> None:
+async def _seed(session, *, garmin_connection_id, hevy_connection_id, legacy_owner_roots) -> None:
     """Populate a few rows across domains, including a raw payload + FK link, a
     superseded weight, the Hevy tree, and a secret-looking app setting."""
-    rp = RawPayload(domain="garmin", source="garmin_api", external_id="g1", payload={"steps": 8000})
+    rp = RawPayload(subject_id=legacy_owner_roots.subject_id, domain="garmin", source="garmin_api", external_id="g1", payload={"steps": 8000})
     session.add(rp)
     await session.flush()  # need rp.id for the FK link below
 
     session.add_all(
         [
             # Two weights on one date: a superseded Garmin row + the active manual one.
-            WeightLog(
+            WeightLog(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 4, 29), domain="weight", source="garmin_api",
                 weight_kg=119.1, raw_payload_id=rp.id, superseded=True,
             ),
-            WeightLog(
+            WeightLog(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 4, 29), domain="weight", source="manual",
                 weight_kg=118.5, superseded=False, note="утро",
             ),
-            BodyMeasurement(
+            BodyMeasurement(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 4, 29), domain="weight", source="manual",
                 waist_cm=100.0, neck_cm=42.0,
             ),
-            Injection(
+            Injection(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 4, 28), domain="glp1", source="manual",
                 drug="tirzepatide", dose_mg=5.0, site="abdomen_left",
             ),
-            GarminDaily(
+            GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 date=date(2026, 4, 29), domain="garmin", source="garmin_api",
                 raw_payload_id=rp.id, steps=8000, sleep_seconds=27000,
                 sleep_score=80, resting_hr=55,
@@ -202,7 +209,7 @@ async def _seed(session) -> None:
                 ],
             ),
             # Per-activity detail — exercises JSONB round-trip stability.
-            GarminActivity(
+            GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 date=date(2026, 4, 29), domain="garmin", source="garmin_api",
                 external_id="act1", activity_type="running", name="Run",
                 elevation_gain_m=42.0, training_effect_aerobic=3.4,
@@ -210,29 +217,29 @@ async def _seed(session) -> None:
                 splits=[{"index": 1, "distance_m": 1000.0, "avg_hr": 150}],
             ),
             # Intraday samples — the tall series table backing the daily scalars.
-            GarminIntraday(
+            GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 date=date(2026, 4, 29), domain="garmin", source="garmin_api",
                 raw_payload_id=rp.id, series_type="stress",
                 ts=datetime(2026, 4, 29, 8, 0), value=43.0,
             ),
-            GarminIntraday(
+            GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 date=date(2026, 4, 29), domain="garmin", source="garmin_api",
                 raw_payload_id=rp.id, series_type="body_battery",
                 ts=datetime(2026, 4, 29, 8, 0), value=72.0,
             ),
             # A nightly series, timestamped the evening before the date it's filed
             # under — the backup must not "helpfully" re-date it.
-            GarminIntraday(
+            GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
                 date=date(2026, 4, 29), domain="garmin", source="garmin_api",
                 raw_payload_id=rp.id, series_type="sleep_hr",
                 ts=datetime(2026, 4, 28, 23, 10), value=58.0,
             ),
-            LabResult(
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=date(2026, 4, 1), domain="labs", source="lab_parser",
                 marker="glucose", value=5.1, unit="mmol/L", ref_low=3.9, ref_high=5.5,
                 flag="normal",
             ),
-            Supplement(
+            Supplement(subject_id=legacy_owner_roots.subject_id, 
                 domain="supplements", source="manual", name="Omega-3", key="omega3",
                 dose="2g", evidence="A", active=True,
             ),
@@ -242,19 +249,35 @@ async def _seed(session) -> None:
     )
     await session.flush()
 
-    w = HevyWorkout(
+    w = HevyWorkout(subject_id=legacy_owner_roots.subject_id, integration_connection_id=hevy_connection_id, 
         date=date(2026, 4, 27), domain="workouts", source="hevy_api",
         external_id="w1", title="Push", program="A", duration_seconds=3600,
     )
     session.add(w)
     await session.flush()
-    ex = HevyExercise(workout_id=w.id, exercise_index=0, title="Bench Press", exercise_template_id="bp")
+    # The children inherit the workout's roots; the composite parent FK requires
+    # them to match, and the restore copies them down the same way.
+    ex = HevyExercise(
+        subject_id=w.subject_id,
+        integration_connection_id=w.integration_connection_id,
+        workout_id=w.id, exercise_index=0, title="Bench Press", exercise_template_id="bp",
+    )
     session.add(ex)
     await session.flush()
     session.add_all(
         [
-            HevySet(exercise_id=ex.id, set_index=0, set_type="normal", weight_kg=80.0, reps=8, rpe=8.0),
-            HevySet(exercise_id=ex.id, set_index=1, set_type="normal", weight_kg=80.0, reps=7),
+            HevySet(
+                subject_id=ex.subject_id,
+                integration_connection_id=ex.integration_connection_id,
+                exercise_id=ex.id, set_index=0, set_type="normal",
+                weight_kg=80.0, reps=8, rpe=8.0,
+            ),
+            HevySet(
+                subject_id=ex.subject_id,
+                integration_connection_id=ex.integration_connection_id,
+                exercise_id=ex.id, set_index=1, set_type="normal",
+                weight_kg=80.0, reps=7,
+            ),
         ]
     )
     await conflict_catalog.sync_catalog(session)
@@ -275,8 +298,8 @@ def _normalize(snapshot: dict) -> dict:
 # ── Full backup round-trip ─────────────────────────────────────────────────────
 
 
-async def test_full_roundtrip_replace_is_stable(db_session):
-    await _seed(db_session)
+async def test_full_roundtrip_replace_is_stable(garmin_connection_id, hevy_connection_id, legacy_owner_roots, db_session):
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     snap1 = await export_full(db_session)
 
     # Replace the whole DB from the snapshot, then re-export.
@@ -303,8 +326,8 @@ async def test_full_roundtrip_replace_is_stable(db_session):
     assert daily["breathing_events"][0]["value"] == 0
 
 
-async def test_import_is_idempotent(db_session):
-    await _seed(db_session)
+async def test_import_is_idempotent(garmin_connection_id, hevy_connection_id, legacy_owner_roots, db_session):
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     snap = await export_full(db_session)
 
     await import_full(db_session, snap)
@@ -316,8 +339,8 @@ async def test_import_is_idempotent(db_session):
     assert _normalize(snap) == _normalize(after)
 
 
-async def test_import_preserves_fk_links(db_session):
-    await _seed(db_session)
+async def test_import_preserves_fk_links(garmin_connection_id, hevy_connection_id, legacy_owner_roots, db_session):
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     snap = await export_full(db_session)
     await import_full(db_session, snap)
     await db_session.flush()
@@ -369,8 +392,8 @@ async def test_import_rejects_non_list_section(db_session):
 # ── Secret exclusion ───────────────────────────────────────────────────────────
 
 
-async def test_export_excludes_secret_settings(db_session):
-    await _seed(db_session)
+async def test_export_excludes_secret_settings(garmin_connection_id, hevy_connection_id, legacy_owner_roots, db_session):
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     snap = await export_full(db_session)
     keys = {row["key"] for row in snap["app_settings"]}
     assert "ui_pref" in keys
@@ -534,7 +557,7 @@ async def test_full_import_blocks_raw_backfill_atomically_and_preserves_other_ph
         "block_raw_ownership_backfill_for_portability_v1_restore",
         tracked_block,
     )
-    old_raw = RawPayload(
+    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id, 
         domain=Domain.GENETICS.value,
         source="vcf_import",
         external_id="old-portability-raw",
@@ -684,7 +707,7 @@ async def test_full_import_completes_an_empty_raw_snapshot(
     db_session,
     legacy_owner_roots,
 ):
-    old_raw = RawPayload(
+    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id, 
         domain=Domain.GENETICS.value,
         source=Source.VCF_IMPORT.value,
         external_id="empty-restore-removes-old-raw",
@@ -2022,7 +2045,7 @@ async def test_day_context_post_load_rejection_rolls_back_whole_replacement(
     legacy_owner_roots,
     monkeypatch,
 ):
-    old = DayContext(
+    old = DayContext(subject_id=legacy_owner_roots.subject_id, 
         date=date(2026, 8, 20),
         domain=Domain.SIGNALS.value,
         source=Source.MANUAL.value,
@@ -2272,7 +2295,7 @@ async def test_signal_post_load_rejection_rolls_back_whole_replacement(
     legacy_owner_roots,
     monkeypatch,
 ):
-    old = Signal(
+    old = Signal(subject_id=legacy_owner_roots.subject_id, 
         date=date(2026, 8, 20),
         domain=Domain.SIGNALS.value,
         source=Source.MCP.value,
@@ -2314,8 +2337,8 @@ async def test_signal_post_load_rejection_rolls_back_whole_replacement(
     assert await db_session.get(Signal, 62) is None
 
 
-def _retained_shared_report(*, token: str = "retained-stage3k") -> SharedReport:
-    return SharedReport(
+def _retained_shared_report(*, token: str = "retained-stage3k", legacy_owner_roots) -> SharedReport:
+    return SharedReport(subject_id=legacy_owner_roots.subject_id, 
         token=token,
         password_hash="$2b$04$synthetic-stage3k-hash",
         title="Synthetic retained report",
@@ -2331,7 +2354,7 @@ async def test_full_import_prepares_nonempty_retained_shared_report_stage3k(
     db_session,
     legacy_owner_roots,
 ):
-    report = _retained_shared_report()
+    report = _retained_shared_report(legacy_owner_roots=legacy_owner_roots)
     db_session.add(report)
     await db_session.commit()
     before = (
@@ -2499,7 +2522,7 @@ async def test_shared_report_post_load_rejection_rolls_back_whole_replacement(
     legacy_owner_roots,
     monkeypatch,
 ):
-    old = Signal(
+    old = Signal(subject_id=legacy_owner_roots.subject_id, 
         date=date(2026, 8, 20),
         domain=Domain.SIGNALS.value,
         source=Source.MCP.value,
@@ -2509,7 +2532,7 @@ async def test_shared_report_post_load_rejection_rolls_back_whole_replacement(
         batch_id="old-batch",
         misparse=False,
     )
-    report = _retained_shared_report(token="retained-stage3k-rollback")
+    report = _retained_shared_report(token="retained-stage3k-rollback", legacy_owner_roots=legacy_owner_roots)
     db_session.add_all([old, report])
     await db_session.commit()
     old_id = old.id
@@ -3409,7 +3432,7 @@ async def test_genetic_variant_post_load_rejection_rolls_back_whole_replacement(
     db_session,
     legacy_owner_roots,
 ):
-    old = GeneticVariant(
+    old = GeneticVariant(subject_id=legacy_owner_roots.subject_id, 
         domain=Domain.GENETICS.value,
         source=Source.MANUAL.value,
         gene="OLDGENE",
@@ -3530,7 +3553,7 @@ async def test_lab_result_post_load_rejection_rolls_back_whole_replacement(
     db_session,
     legacy_owner_roots,
 ):
-    old = LabResult(
+    old = LabResult(subject_id=legacy_owner_roots.subject_id, 
         date=date(2026, 8, 20),
         domain=Domain.LABS.value,
         source=Source.MANUAL.value,
@@ -3653,7 +3676,7 @@ async def test_weight_log_post_load_rejection_rolls_back_whole_replacement(
     db_session,
     legacy_owner_roots,
 ):
-    old = WeightLog(
+    old = WeightLog(subject_id=legacy_owner_roots.subject_id, 
         date=date(2026, 8, 20),
         domain=Domain.WEIGHT.value,
         source=Source.MANUAL.value,
@@ -3743,7 +3766,7 @@ async def test_raw_replacement_rejects_nonpositive_ids_before_mutation(
     monkeypatch,
     bad_id,
 ):
-    old_raw = RawPayload(
+    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id, 
         domain=Domain.GENETICS.value,
         source="vcf_import",
         external_id="positive-id-guard",
@@ -3792,7 +3815,7 @@ async def test_raw_restore_block_failure_is_bounded_and_does_not_start_replaceme
     monkeypatch,
     block_error,
 ):
-    old_raw = RawPayload(
+    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id, 
         domain=Domain.GENETICS.value,
         source="vcf_import",
         external_id="restore-block-failure-guard",
@@ -3828,7 +3851,7 @@ async def test_database_failure_is_bounded_and_caller_rollback_is_atomic(
     legacy_owner_roots,
     monkeypatch,
 ):
-    old_raw = RawPayload(
+    old_raw = RawPayload(subject_id=legacy_owner_roots.subject_id, 
         domain=Domain.GENETICS.value,
         source=Source.VCF_IMPORT.value,
         external_id="database-error-rollback-guard",
@@ -3985,8 +4008,8 @@ async def test_full_import_refuses_retained_raw_control_provenance_before_mutati
 # ── LLM export shape ───────────────────────────────────────────────────────────
 
 
-async def test_llm_export_is_clean(db_session):
-    await _seed(db_session)
+async def test_llm_export_is_clean(garmin_connection_id, hevy_connection_id, legacy_owner_roots, db_session):
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     out = await export_llm(db_session)
 
     # No raw dumps, no service tables.
@@ -4006,11 +4029,11 @@ async def test_llm_export_is_clean(db_session):
     assert out["body_scans"] == []
 
 
-async def test_llm_export_includes_full_garmin_rows(db_session):
+async def test_llm_export_includes_full_garmin_rows(garmin_connection_id, hevy_connection_id, legacy_owner_roots, db_session):
     """The Garmin blocks used to be a hand-picked dozen fields out of ~45, so sleep
     phases, HR zones and splits never reached the AI export. Both rows now go out
     whole — minus ids/plumbing."""
-    await _seed(db_session)
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     out = await export_llm(db_session)
 
     daily = out["garmin_daily"][0]
@@ -4030,12 +4053,12 @@ async def test_llm_export_includes_full_garmin_rows(db_session):
     assert not {"id", "external_id", "raw_payload_id"} & set(act)
 
 
-async def test_llm_export_includes_body_scans(db_session):
+async def test_llm_export_includes_body_scans(db_session, *, legacy_owner_roots):
     """D3: the body_comp domain (BIA/InBody scans + every captured metric) must
     appear in the curated LLM export — previously it was dropped entirely."""
     from vitals.models.body_scan import BodyScan, BodyScanMetric
 
-    scan = BodyScan(
+    scan = BodyScan(subject_id=legacy_owner_roots.subject_id, 
         date=date(2026, 4, 20), domain="body_comp", source="body_scan", device="InBody 770"
     )
     db_session.add(scan)
@@ -4133,7 +4156,10 @@ def test_every_domain_is_mapped_to_export_keys():
     assert set(DOMAIN_EXPORT_KEYS) == set(Domain)
 
 
-async def _seed_every_domain(session, owner_write) -> None:
+async def _seed_every_domain(
+    session, owner_write, *,
+    garmin_connection_id, hevy_connection_id, legacy_owner_roots,
+) -> None:
     from vitals.services import conflict_registrations
 
     # A scoped write consults every registered domain resolver.
@@ -4149,11 +4175,11 @@ async def _seed_every_domain(session, owner_write) -> None:
     from vitals.models.timeline import Annotation
     from vitals.models.weight import NoiseMarker
 
-    await _seed(session)
+    await _seed(session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     await _seed_hrt(session, owner_write)
 
     d = date(2026, 4, 25)
-    scan = BodyScan(date=d, domain="body_comp", source="body_scan", device="InBody 770")
+    scan = BodyScan(subject_id=owner_write.subject_id, date=d, domain="body_comp", source="body_scan", device="InBody 770")
     session.add(scan)
     await session.flush()
     session.add_all(
@@ -4162,39 +4188,39 @@ async def _seed_every_domain(session, owner_write) -> None:
                 scan_id=scan.id, metric_key="body_fat_pct", label="Percent Body Fat",
                 value=18.5, unit="%", category="composition",
             ),
-            NoiseMarker(
+            NoiseMarker(subject_id=owner_write.subject_id, 
                 domain="weight", source="manual", start_date=d, reason="креатин",
             ),
-            DosePhase(
+            DosePhase(subject_id=owner_write.subject_id, 
                 domain="glp1", source="manual", start_date=d, drug="tirzepatide", dose_mg=5.0,
             ),
-            SideEffect(
+            SideEffect(subject_id=owner_write.subject_id, 
                 date=d, domain="glp1", source="manual", effect_type="nausea", severity=1,
             ),
-            GeneticVariant(
+            GeneticVariant(subject_id=owner_write.subject_id, 
                 domain="genetics", source="vcf_import", gene="MTHFR", rsid="rs1801133",
                 genotype="CT", impact="Фолатный цикл", impact_domain="supplements",
             ),
-            SkincareLog(date=d, domain="skincare", source="manual", retinoid=True),
-            SkincareObservation(
+            SkincareLog(subject_id=owner_write.subject_id, date=d, domain="skincare", source="manual", retinoid=True),
+            SkincareObservation(subject_id=owner_write.subject_id, 
                 date=d, domain="skincare", source="manual", inflammation=2, zone="лоб",
             ),
-            MealLog(
+            MealLog(subject_id=owner_write.subject_id, 
                 date=d, domain="nutrition", source="manual", name="Курица с рисом",
                 calories=520, protein_g=45,
             ),
-            Milestone(domain="weight", name="100 кг", target_value=100.0, target_unit="кг"),
-            WeeklyDigest(
+            Milestone(subject_id=owner_write.subject_id, domain="weight", name="100 кг", target_value=100.0, target_unit="кг"),
+            WeeklyDigest(subject_id=owner_write.subject_id, 
                 date=d, domain="milestones", source="manual", content="Неделя прошла ровно.",
             ),
-            Annotation(
+            Annotation(subject_id=owner_write.subject_id, 
                 date=d, domain="timeline", source="manual", kind="travel", title="Поездка",
             ),
-            Signal(
+            Signal(subject_id=owner_write.subject_id, 
                 date=d, domain="signals", source="telegram", kind="symptom",
                 key="head_ache", value_num=4, batch_id="b1", note="голова раскалывается",
             ),
-            DayContext(
+            DayContext(subject_id=owner_write.subject_id, 
                 date=d, domain="signals", source="manual", answers={"remote": True},
             ),
         ]
@@ -4202,10 +4228,18 @@ async def _seed_every_domain(session, owner_write) -> None:
     await session.commit()
 
 
-async def test_llm_export_covers_every_domain(db_session, owner_write):
+async def test_llm_export_covers_every_domain(
+    legacy_owner_roots, db_session, owner_write,
+    garmin_connection_id, hevy_connection_id,
+):
     """With one row seeded per domain, every mapped export key must be non-empty —
     the test that fails when a domain is added but never wired into export_llm."""
-    await _seed_every_domain(db_session, owner_write)
+    await _seed_every_domain(
+        db_session, owner_write,
+        garmin_connection_id=garmin_connection_id,
+        hevy_connection_id=hevy_connection_id,
+        legacy_owner_roots=legacy_owner_roots,
+    )
     out = await export_llm(db_session)
 
     empty = [
@@ -4217,19 +4251,19 @@ async def test_llm_export_covers_every_domain(db_session, owner_write):
     assert not empty, f"domains missing from the LLM export: {empty}"
 
 
-async def test_llm_export_folds_signal_key_aliases(db_session):
+async def test_llm_export_folds_signal_key_aliases(db_session, *, legacy_owner_roots):
     """The export ships canonical keys — otherwise the model sees 'head_ache' and
     'headache' as two unrelated things and the correlation is split in half."""
     from vitals.models.signals import Signal
 
     d = date(2026, 4, 25)
     db_session.add_all([
-        Signal(date=d, domain="signals", source="telegram", kind="symptom",
+        Signal(subject_id=legacy_owner_roots.subject_id, date=d, domain="signals", source="telegram", kind="symptom",
                key="head_ache", batch_id="b1"),
-        Signal(date=d, domain="signals", source="telegram", kind="symptom",
+        Signal(subject_id=legacy_owner_roots.subject_id, date=d, domain="signals", source="telegram", kind="symptom",
                key="headache", batch_id="b2"),
         # A cancelled batch stays out of the export entirely.
-        Signal(date=d, domain="signals", source="telegram", kind="state",
+        Signal(subject_id=legacy_owner_roots.subject_id, date=d, domain="signals", source="telegram", kind="state",
                key="sleepiness", batch_id="b3", misparse=True),
     ])
     await db_session.commit()
@@ -4242,8 +4276,8 @@ async def test_llm_export_folds_signal_key_aliases(db_session):
 
 
 @pytest.mark.integration
-async def test_import_resets_postgres_sequences(db_session):
-    await _seed(db_session)
+async def test_import_resets_postgres_sequences(garmin_connection_id, hevy_connection_id, db_session, *, legacy_owner_roots):
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     snap = await export_full(db_session)
     await import_full(db_session, snap)
     await db_session.flush()
@@ -4251,7 +4285,7 @@ async def test_import_resets_postgres_sequences(db_session):
     # After restoring rows with explicit ids, a normal insert (no id) must get a
     # fresh id past the restored max — i.e. the identity sequence was advanced.
     db_session.add(
-        WeightLog(date=date(2099, 1, 1), domain="weight", source="manual", weight_kg=100.0)
+        WeightLog(subject_id=legacy_owner_roots.subject_id, date=date(2099, 1, 1), domain="weight", source="manual", weight_kg=100.0)
     )
     await db_session.flush()  # would raise duplicate-PK without the sequence reset
 
@@ -4259,8 +4293,8 @@ async def test_import_resets_postgres_sequences(db_session):
 # ── Web routes ─────────────────────────────────────────────────────────────────
 
 
-async def test_export_endpoint_downloads_backup(auth_client, db_session):
-    await _seed(db_session)
+async def test_export_endpoint_downloads_backup(garmin_connection_id, hevy_connection_id, legacy_owner_roots, auth_client, db_session):
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     r = await auth_client.get("/settings/export")
     assert r.status_code == 200
     assert "attachment" in r.headers["content-disposition"]
@@ -4270,8 +4304,8 @@ async def test_export_endpoint_downloads_backup(auth_client, db_session):
     assert "weight_logs" in data
 
 
-async def test_export_llm_endpoint_downloads_digest(auth_client, db_session):
-    await _seed(db_session)
+async def test_export_llm_endpoint_downloads_digest(garmin_connection_id, hevy_connection_id, legacy_owner_roots, auth_client, db_session):
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     r = await auth_client.get("/settings/export-llm")
     assert r.status_code == 200
     assert "vitals_llm_" in r.headers["content-disposition"]
@@ -4280,8 +4314,8 @@ async def test_export_llm_endpoint_downloads_digest(auth_client, db_session):
     assert "raw_payloads" not in data
 
 
-async def test_import_endpoint_restores_and_reports(auth_client, db_session):
-    await _seed(db_session)
+async def test_import_endpoint_restores_and_reports(garmin_connection_id, hevy_connection_id, legacy_owner_roots, auth_client, db_session):
+    await _seed(db_session, garmin_connection_id=garmin_connection_id, hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots)
     snap = await export_full(db_session)
     files = {"backup_file": ("backup.json", json.dumps(snap).encode(), "application/json")}
     r = await auth_client.post("/settings/import", files=files)
@@ -4390,7 +4424,7 @@ def test_import_summary_labels_signals_and_friends():
 
 
 @pytest.mark.asyncio
-async def test_backup_neither_carries_nor_resurrects_shared_reports(db_session):
+async def test_backup_neither_carries_nor_resurrects_shared_reports(db_session, *, legacy_owner_roots):
     """A published doctor report is an outward-facing artifact, not data to
     round-trip. The export must not carry its password hash and its full copy of
     the record, and — the half that is easy to forget — the import must not wipe
@@ -4402,7 +4436,7 @@ async def test_backup_neither_carries_nor_resurrects_shared_reports(db_session):
     from vitals.utils.timeutils import now_local
 
     db_session.add(
-        SharedReport(
+        SharedReport(subject_id=legacy_owner_roots.subject_id, 
             token="tok-abc", password_hash="$2b$04$hash", title="Endocrinologist",
             domains=["labs"], period_start=date(2026, 3, 1), period_end=date(2026, 3, 30),
             snapshot={"blocks": {"labs": {"markers": [{"marker": "Ферритин"}]}}},

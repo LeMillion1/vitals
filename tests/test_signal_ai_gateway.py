@@ -36,6 +36,13 @@ from vitals.services import ai_gateway_service
 from vitals.services.proactive import inbound, signal_ai_service
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
+
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader does when the ownership backfill has not reached a row yet, which is
+# a state the application itself can no longer create. The schema says so, so
+# this module asks for the one that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
 NOW = datetime(2026, 8, 20, 12, tzinfo=UTC)
 DAY = date(2026, 8, 20)
 PERIOD_START = date(2026, 8, 1)

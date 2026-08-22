@@ -27,7 +27,6 @@ from alembic.config import Config as AlembicConfig
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from tests.conftest import alembic_head_revision
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
@@ -39,6 +38,7 @@ from vitals.services.ownership_validation_service import (
 )
 from vitals.services.scoped_key_audit_service import SCOPED_KEY_AUDIT_PHASE
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+from vitals.ownership import PRE_OWNERSHIP_CONTRACT_REVISION
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -358,7 +358,7 @@ async def test_real_postgres_stage5a_scoped_key_audit_proves_the_cutover(
         await _reset_to_migration_base(engine)
         await asyncio.to_thread(command.upgrade, alembic_config, "0034")
         await _run_sync(engine, _seed_revision_0034)
-        await asyncio.to_thread(command.upgrade, alembic_config, "head")
+        await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
         subject_id = (await _bootstrap_roots(engine)).subject_id
 
         # By head the scoped keys are installed and the legacy global keys they
@@ -480,9 +480,9 @@ async def test_real_postgres_stage5a_scoped_key_audit_proves_the_cutover(
         final_checkpoints = await _checkpoints(engine, SCOPED_KEY_AUDIT_PHASE)
         with pytest.raises(RuntimeError, match=re.escape(DOWNGRADE_REFUSAL)):
             await asyncio.to_thread(command.downgrade, alembic_config, "0044")
-        assert await _alembic_version(engine) == alembic_head_revision()
+        assert await _alembic_version(engine) == PRE_OWNERSHIP_CONTRACT_REVISION
         assert await _checkpoints(engine, SCOPED_KEY_AUDIT_PHASE) == final_checkpoints
     finally:
         if migration_control_ready:
-            await asyncio.to_thread(command.upgrade, alembic_config, "head")
+            await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
         await engine.dispose()

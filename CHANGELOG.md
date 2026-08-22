@@ -10,6 +10,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- **Revision 0049 makes ownership mandatory.** Thirty-nine `REQUIRED`
+  references become `NOT NULL` in the database and in the models together, so
+  the schema the fast suite builds and the one a real installation runs finally
+  agree about who owns a row. This is the precondition for FORCE RLS: a policy
+  comparing `subject_id` to the session's subject excludes a null instead of
+  protecting it.
+- The migration refuses before it alters anything, raising
+  `OwnershipBackfillIncompleteError` with each table that is behind and by how
+  much. `PRE_OWNERSHIP_CONTRACT_REVISION` records the deploy order in code:
+  migrate to 0048, finish the backfill, then migrate to head.
+- On PostgreSQL each column is proven with a `NOT VALID` check that is validated
+  before `SET NOT NULL`, so the constraint lands without an ACCESS EXCLUSIVE
+  table scan.
+- `@pytest.mark.pre_ownership_contract` builds the older schema for the two
+  kinds of test that must still write an ownerless row: the backfill services,
+  whose input is an unstamped row, and the legacy-bridge readers that pin what a
+  scoped reader does mid-backfill.
+
+- **No production path writes an ownerless row any more.** Garmin's unscoped
+  `sync`, `pulse`, `ingest_daily`, `ingest_intraday`, `ingest_activities`,
+  `ingest_health_auto_export` and both reparse paths are deleted, along with
+  Hevy's `sync` / `reparse_from_raw` / `reparse_pending` / `_upsert_workout` and
+  `raw_payload_service.upsert_raw_payload` itself. Every one had an owned twin
+  the live callers were already using.
+- `pulse_job` loses its zero-subject arm: a pulse writes a day of somebody's
+  watch data, and without a subject there is nobody to write it for.
+- `genetics_service.store_raw_vcf` becomes a refusal. It already declined every
+  scoped caller; underneath was the zero-subject arm storing an uploaded VCF as
+  a payload belonging to nobody.
+- The Garmin weight outbox refuses to write without a destination account. An
+  outbox row is an intent to send a weight *to* one; the old bridge wrote a row
+  addressed to nowhere and keyed on a bare date.
+
+### Fixed
+
+- `hevy_service.latest_notes` took no subject while both its siblings on the
+  Hevy page did, so it called `_exercise_sessions` without the argument that had
+  become mandatory — selecting any exercise raised `TypeError`.
+
 - `PENDING_OWNERSHIP_CONTRACT_COLUMNS` starts the Stage-6 ratchet: the
   thirty-nine `REQUIRED` ownership columns still nullable, recomputed from the
   models by a contract test that fails in either direction. Reaching empty is

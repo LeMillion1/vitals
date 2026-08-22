@@ -24,8 +24,8 @@ def _use_test_factory(session_factory, monkeypatch, legacy_owner_roots):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
 
-def test_serialize_row_keeps_the_data_and_drops_the_bookkeeping():
-    row = WeightLog(
+def test_serialize_row_keeps_the_data_and_drops_the_bookkeeping(*, legacy_owner_roots):
+    row = WeightLog(subject_id=legacy_owner_roots.subject_id, 
         id=7, date=date(2026, 7, 1), weight_kg=88.4, note=None,
         domain="weight", source="manual", superseded=False,
     )
@@ -43,11 +43,11 @@ def test_serialize_row_keeps_the_data_and_drops_the_bookkeeping():
         assert key not in d
 
 
-async def _one_night(db_session):
+async def _one_night(db_session, *, garmin_connection_id, legacy_owner_roots):
     stages = [
         {"start": "2026-06-30T23:10:00", "end": "2026-07-01T00:05:00", "stage": "light"}
     ] * 28
-    db_session.add(GarminDaily(
+    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
         date=date(2026, 7, 1), domain="garmin", source="garmin",
         sleep_score=82, sleep_seconds=25200, sleep_start=datetime(2026, 6, 30, 23, 10),
         sleep_stages=stages,
@@ -57,8 +57,8 @@ async def _one_night(db_session):
     return stages
 
 
-async def test_sleep_detail_is_folded_by_default_but_announced(db_session):
-    stages = await _one_night(db_session)
+async def test_sleep_detail_is_folded_by_default_but_announced(garmin_connection_id, legacy_owner_roots, db_session):
+    stages = await _one_night(db_session, garmin_connection_id=garmin_connection_id, legacy_owner_roots=legacy_owner_roots)
 
     folded = await mcp_router.get_garmin_metrics()
     row = folded["daily_recovery"][0]
@@ -77,16 +77,16 @@ async def test_sleep_detail_is_folded_by_default_but_announced(db_session):
     assert len(json.dumps(folded)) * 3 < len(json.dumps(full))
 
 
-async def test_sleep_detail_is_independent_of_intraday(db_session):
+async def test_sleep_detail_is_independent_of_intraday(garmin_connection_id, legacy_owner_roots, db_session):
     """Asking for one night's shape must not drag every curve along with it."""
-    await _one_night(db_session)
+    await _one_night(db_session, garmin_connection_id=garmin_connection_id, legacy_owner_roots=legacy_owner_roots)
     result = await mcp_router.get_garmin_metrics(sleep_detail=True)
     assert "intraday" not in result
 
 
-async def test_a_night_without_stages_says_nothing_at_all(db_session):
+async def test_a_night_without_stages_says_nothing_at_all(db_session, *, garmin_connection_id, legacy_owner_roots):
     """No breadcrumb where there is no data — an empty column stays absent."""
-    db_session.add(GarminDaily(
+    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
         date=date(2026, 7, 2), domain="garmin", source="garmin", sleep_score=70
     ))
     await db_session.commit()

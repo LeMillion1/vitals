@@ -632,7 +632,7 @@ async def test_hevy_sync_not_configured_redirects(auth_client):
     assert response.headers["location"] == "/hevy?sync=not_configured"
 
 
-async def test_hevy_dashboard_shows_synced_workout(auth_client, db_session):
+async def test_hevy_dashboard_shows_synced_workout(auth_client, db_session, *, hevy_owned_scope):
     """A synced workout appears on the dashboard and its exercise in the catalog."""
     from vitals.services import hevy_service
 
@@ -658,7 +658,7 @@ async def test_hevy_dashboard_shows_synced_workout(auth_client, db_session):
                 }
             ]
 
-    await hevy_service.sync(db_session, _FakeClient())
+    await hevy_service.sync_owned(db_session, _FakeClient(), identity=hevy_owned_scope.identity, integration_connection_id=hevy_owned_scope.connection_id)
     await db_session.commit()
 
     response = await auth_client.get("/hevy", headers={"Accept": "text/html"})
@@ -675,14 +675,14 @@ async def test_garmin_dashboard_renders(auth_client):
     assert "Импорт JSON" in response.text
 
 
-async def test_garmin_sleep_night_page_renders(auth_client, db_session):
+async def test_garmin_sleep_night_page_renders(auth_client, db_session, *, garmin_connection_id, legacy_owner_roots):
     """GET /garmin/sleep/<date> renders the night's hypnogram + curve data."""
     from datetime import date, datetime
 
     from vitals.models.garmin import GarminDaily, GarminIntraday
 
     db_session.add_all([
-        GarminDaily(
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             sleep_seconds=27000, sleep_score=78, avg_sleep_hr=54, spo2_lowest=91,
             sleep_start=datetime(2026, 6, 9, 23, 0), sleep_end=datetime(2026, 6, 10, 6, 30),
@@ -690,7 +690,7 @@ async def test_garmin_sleep_night_page_renders(auth_client, db_session):
                 {"start": "2026-06-09T23:00:00", "end": "2026-06-10T01:00:00", "stage": "deep"},
             ],
         ),
-        GarminIntraday(
+        GarminIntraday(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             series_type="sleep_hr", ts=datetime(2026, 6, 9, 23, 10), value=58.0,
         ),
@@ -711,7 +711,7 @@ async def test_garmin_sleep_night_page_unknown_date_is_404(auth_client):
     assert response.status_code == 404
 
 
-async def test_garmin_sleep_list_renders(auth_client, db_session):
+async def test_garmin_sleep_list_renders(auth_client, db_session, *, garmin_connection_id, legacy_owner_roots):
     """GET /garmin/sleep lists nights (days with sleep data), newest first, each
     row linking to its own detail page."""
     from datetime import date
@@ -719,8 +719,8 @@ async def test_garmin_sleep_list_renders(auth_client, db_session):
     from vitals.models.garmin import GarminDaily
 
     db_session.add_all([
-        GarminDaily(date=date(2026, 6, 9), domain="garmin", source="garmin_api", sleep_seconds=25200, sleep_score=70),
-        GarminDaily(date=date(2026, 6, 10), domain="garmin", source="garmin_api", sleep_seconds=27000, sleep_score=78),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 9), domain="garmin", source="garmin_api", sleep_seconds=25200, sleep_score=70),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 10), domain="garmin", source="garmin_api", sleep_seconds=27000, sleep_score=78),
     ])
     await db_session.commit()
 
@@ -730,7 +730,7 @@ async def test_garmin_sleep_list_renders(auth_client, db_session):
     assert "/garmin/sleep/2026-06-09" in response.text
 
 
-async def test_garmin_sleep_list_hero_card_and_rows(auth_client, db_session):
+async def test_garmin_sleep_list_hero_card_and_rows(auth_client, db_session, *, garmin_connection_id, legacy_owner_roots):
     """The latest night gets a hero card (date, duration, score, phase bar);
     every night below it is a full-row link with its own mini phase bar and a
     correctly signed Body Battery delta (never the old force-prefixed "+-12")."""
@@ -739,12 +739,12 @@ async def test_garmin_sleep_list_hero_card_and_rows(auth_client, db_session):
     from vitals.models.garmin import GarminDaily
 
     db_session.add_all([
-        GarminDaily(
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             date=date(2026, 6, 9), domain="garmin", source="garmin_api",
             sleep_seconds=25200, sleep_score=70, awake_count=3,
             body_battery_change=-12,
         ),
-        GarminDaily(
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             sleep_seconds=27000, sleep_score=78, awake_count=1,
             body_battery_change=18,
@@ -767,7 +767,7 @@ async def test_garmin_sleep_list_hero_card_and_rows(auth_client, db_session):
     assert "+-12" not in response.text
 
 
-async def test_garmin_sleep_night_page_body_battery_sign(auth_client, db_session):
+async def test_garmin_sleep_night_page_body_battery_sign(auth_client, db_session, *, garmin_connection_id, legacy_owner_roots):
     """Regression: a negative overnight Body Battery change renders as "-12",
     never "+-12" (the sign used to be force-prefixed regardless). The
     awakenings/restless caption moved off the BB tile's footer onto its own
@@ -776,7 +776,7 @@ async def test_garmin_sleep_night_page_body_battery_sign(auth_client, db_session
 
     from vitals.models.garmin import GarminDaily
 
-    db_session.add(GarminDaily(
+    db_session.add(GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
         date=date(2026, 6, 10), domain="garmin", source="garmin_api",
         sleep_seconds=27000, body_battery_change=-12,
         awake_count=2, restless_moments=15,
@@ -791,7 +791,7 @@ async def test_garmin_sleep_night_page_body_battery_sign(auth_client, db_session
     assert "ворочания: 15" in response.text
 
 
-async def test_garmin_sleep_night_page_masthead_and_nav(auth_client, db_session):
+async def test_garmin_sleep_night_page_masthead_and_nav(auth_client, db_session, *, garmin_connection_id, legacy_owner_roots):
     """Masthead mode gets the shared editorial header (title = the night's own
     date, metrics = score/HR/SpO2/BB) instead of the classic card, and the
     prev/next night arrows link to the correct adjacent dates in both shells."""
@@ -800,12 +800,12 @@ async def test_garmin_sleep_night_page_masthead_and_nav(auth_client, db_session)
     from vitals.models.garmin import GarminDaily
 
     db_session.add_all([
-        GarminDaily(date=date(2026, 6, 9), domain="garmin", source="garmin_api", sleep_seconds=25200, sleep_score=70),
-        GarminDaily(
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 9), domain="garmin", source="garmin_api", sleep_seconds=25200, sleep_score=70),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             date=date(2026, 6, 10), domain="garmin", source="garmin_api",
             sleep_seconds=27000, sleep_score=78, avg_sleep_hr=54, spo2_lowest=91, body_battery_change=18,
         ),
-        GarminDaily(date=date(2026, 6, 11), domain="garmin", source="garmin_api", sleep_seconds=26000, sleep_score=80),
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, date=date(2026, 6, 11), domain="garmin", source="garmin_api", sleep_seconds=26000, sleep_score=80),
     ])
     await db_session.commit()
 
@@ -823,14 +823,14 @@ async def test_garmin_sleep_night_page_masthead_and_nav(auth_client, db_session)
     assert "is-disabled" in r.text
 
 
-async def test_garmin_activities_list_renders(auth_client, db_session):
+async def test_garmin_activities_list_renders(auth_client, db_session, *, garmin_connection_id, legacy_owner_roots):
     """GET /garmin/activities renders the full activity list (moved off the
     overview page onto its own full-width tab)."""
     from datetime import date, datetime
 
     from vitals.models.garmin import GarminActivity
 
-    db_session.add(GarminActivity(
+    db_session.add(GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
         date=date(2026, 6, 10), domain="garmin", source="garmin_api",
         external_id="act-1", activity_type="running", name="Вечерняя пробежка",
         start_time=datetime(2026, 6, 10, 18, 0), duration_seconds=1800,
@@ -885,7 +885,7 @@ async def test_garmin_health_auto_export_upload(auth_client, db_session):
 
 async def test_garmin_dashboard_day_strip_renders_in_masthead(
     auth_client, db_session, legacy_owner_roots
-):
+, *, garmin_connection_id):
     """The day-strip (steps/stress/sleep score/intensity minutes/active calories)
     used to live only in a classic-only grid, so masthead lost 5 of 9 daily
     metrics. It's now a shared card — regression-check it actually shows up
@@ -898,7 +898,7 @@ async def test_garmin_dashboard_day_strip_renders_in_masthead(
 
     from vitals.models.garmin import GarminDaily
 
-    db_session.add(GarminDaily(
+    db_session.add(GarminDaily(integration_connection_id=garmin_connection_id, 
         subject_id=legacy_owner_roots.subject_id,
         date=date(2026, 6, 15), domain="garmin", source="garmin_api",
         steps=12345, avg_stress=33, sleep_score=86, active_calories=612,
@@ -916,14 +916,14 @@ async def test_garmin_dashboard_day_strip_renders_in_masthead(
     assert "Тренировочный статус" not in response.text
 
 
-async def test_garmin_dashboard_no_longer_lists_activities(auth_client, db_session):
+async def test_garmin_dashboard_no_longer_lists_activities(auth_client, db_session, *, garmin_connection_id, legacy_owner_roots):
     """Activities moved to their own tab — the overview page must not
     render them a second time."""
     from datetime import date, datetime
 
     from vitals.models.garmin import GarminActivity
 
-    db_session.add(GarminActivity(
+    db_session.add(GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
         date=date(2026, 6, 10), domain="garmin", source="garmin_api",
         external_id="act-overview-check", activity_type="running",
         name="Контрольная пробежка", start_time=datetime(2026, 6, 10, 18, 0),
@@ -936,7 +936,7 @@ async def test_garmin_dashboard_no_longer_lists_activities(auth_client, db_sessi
     assert "Контрольная пробежка" not in response.text
 
 
-async def test_garmin_history_table_drops_sleep_column(auth_client, db_session):
+async def test_garmin_history_table_drops_sleep_column(auth_client, db_session, *, garmin_connection_id, legacy_owner_roots):
     """The metrics-history table used to duplicate sleep duration (with its own
     link into the night page); sleep now lives only on its own tab. Regression:
     a history-only row's sleep duration must not render anywhere on /garmin."""
@@ -945,14 +945,14 @@ async def test_garmin_history_table_drops_sleep_column(auth_client, db_session):
     from vitals.models.garmin import GarminDaily
 
     db_session.add_all([
-        GarminDaily(
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             date=date(2026, 6, 9), domain="garmin", source="garmin_api",
             sleep_seconds=9000, resting_hr=47,
         ),
         # The newest *reported* day, so it is the one the masthead reads — a row
         # with nothing on it at all is a placeholder and latest_daily skips it,
         # which would put the older row's sleep back in the header.
-        GarminDaily(
+        GarminDaily(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
             date=date(2026, 6, 16), domain="garmin", source="garmin_api",
             sleep_seconds=None, resting_hr=50,
         ),
@@ -964,14 +964,14 @@ async def test_garmin_history_table_drops_sleep_column(auth_client, db_session):
     assert "2h 30m" not in response.text
 
 
-async def test_garmin_activities_card_shows_distance_calories_hr(auth_client, db_session):
+async def test_garmin_activities_card_shows_distance_calories_hr(auth_client, db_session, *, garmin_connection_id, legacy_owner_roots):
     """The activity card's collapsed view must surface distance/calories/HR —
     fields that were captured in the DB but had no home in the UI before."""
     from datetime import date, datetime
 
     from vitals.models.garmin import GarminActivity
 
-    db_session.add(GarminActivity(
+    db_session.add(GarminActivity(subject_id=legacy_owner_roots.subject_id, integration_connection_id=garmin_connection_id, 
         date=date(2026, 6, 10), domain="garmin", source="garmin_api",
         external_id="act-detail-check", activity_type="running", name="Темповый бег",
         start_time=datetime(2026, 6, 10, 18, 0), duration_seconds=1800,

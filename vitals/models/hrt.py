@@ -45,7 +45,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
-from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
+from vitals.models.ownership_mixins import (
+    OriginActorMixin,
+    RequiredSubjectOwnershipMixin,
+    SubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.HRT.value
 
@@ -157,7 +161,7 @@ class HrtCompoundComponent(Base, SubjectOwnershipMixin, TimestampMixin):
 
 class HrtDose(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     InsightsMixin,
     TimestampMixin,
@@ -210,7 +214,7 @@ class HrtDose(
 
 class HrtSideEffect(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     InsightsMixin,
     TimestampMixin,
@@ -239,7 +243,7 @@ class HrtSideEffect(
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class HrtCycle(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
+class HrtCycle(Base, RequiredSubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """A protocol spanning a date range (``end_date`` null = ongoing), like the
     GLP-1 ``DosePhase`` — carries ``domain``/``source`` for uniform export but no
     single ``InsightsMixin.date``. Owns one plan item per compound; those items'
@@ -323,7 +327,7 @@ class HrtCycleItem(Base, SubjectOwnershipMixin, TimestampMixin):
 
 class HrtCycleTemplate(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     TimestampMixin,
 ):

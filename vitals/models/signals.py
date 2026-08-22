@@ -45,7 +45,7 @@ from vitals.models.mixins import InsightsMixin, insights_index
 from vitals.models.ownership_mixins import (
     IntegrationConnectionOwnershipMixin,
     OriginActorMixin,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
 )
 
 DOMAIN = Domain.SIGNALS.value
@@ -56,7 +56,7 @@ _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 
 class Signal(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     IntegrationConnectionOwnershipMixin,
     InsightsMixin,
@@ -114,7 +114,7 @@ class Signal(
 
 class DayContext(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     IntegrationConnectionOwnershipMixin,
     InsightsMixin,

@@ -52,7 +52,6 @@ LEGACY_BARE_ID_READS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
         "vitals.services.alerts_service": frozenset({"SystemAlert"}),
         "vitals.services.body_scan_service": frozenset({"RawPayload"}),
-        "vitals.services.garmin_service": frozenset({"RawPayload"}),
         "vitals.services.garmin_weight_service": frozenset({"AppSetting"}),
         "vitals.services.hrt_service": frozenset({"HrtCompound"}),
         "vitals.services.labs_service": frozenset({"RawPayload"}),

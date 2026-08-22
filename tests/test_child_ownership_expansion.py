@@ -29,6 +29,13 @@ from vitals.models.hrt import (
 )
 
 
+# This pins the revision-0038 ownership foreign keys, which only fire on a
+# row that names one root and not another — a shape the ownership contract
+# now rejects outright. The keys still have to hold for the rows a rolling
+# backfill leaves behind, so the checks run on the pre-contract schema.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 SUBJECT = "subject_id"
 CONNECTION = "integration_connection_id"
 

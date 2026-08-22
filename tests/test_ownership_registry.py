@@ -15,6 +15,13 @@ from vitals.ownership import (
 )
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader does when the ownership backfill has not reached a row yet, which is
+# a state the application itself can no longer create. The schema says so, so
+# this module asks for the one that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 def test_every_registered_table_has_exactly_one_ownership_contract():
     assert set(OWNERSHIP_REGISTRY) == set(Base.metadata.tables)
     assert len(OWNERSHIP_REGISTRY) == 62

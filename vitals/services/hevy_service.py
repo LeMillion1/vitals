@@ -621,45 +621,6 @@ async def _delete_owned_workout_children(
     await session.flush()
 
 
-async def sync(
-    session: AsyncSession,
-    client: Any,
-    *,
-    max_pages: int = 50,
-    force: bool = False,
-) -> dict:
-    """Fetch workouts and normalise them. Returns a summary dict
-    (``fetched`` / ``created`` / ``updated`` / ``skipped``). Does not commit."""
-    raw_workouts = await client.fetch_workouts(max_pages=max_pages)
-    summary = {"fetched": len(raw_workouts), "created": 0, "updated": 0, "skipped": 0}
-
-    for raw in raw_workouts:
-        external_id = str(raw.get("id") or "").strip()
-        if not external_id:
-            summary["skipped"] += 1
-            continue
-
-        existing = await _get_workout_by_external(session, external_id)
-        hevy_updated = _parse_dt(raw.get("updated_at"))
-        if existing is not None and not force and existing.hevy_updated_at == hevy_updated:
-            summary["skipped"] += 1
-            continue
-
-        raw_row = await raw_payload_service.upsert_raw_payload(
-            session,
-            domain=DOMAIN,
-            source=Source.HEVY_API.value,
-            external_id=external_id,
-            payload=raw,
-        )
-        created = await _upsert_workout(session, raw, raw_payload_id=raw_row.id)
-        raw_row.processed_at = now_local()
-        summary["created" if created else "updated"] += 1
-
-    await session.flush()
-    return summary
-
-
 async def sync_owned(
     session: AsyncSession,
     client: Any,
@@ -798,80 +759,6 @@ async def _get_workout_by_external(
     return result.scalars().first()
 
 
-async def _upsert_workout(
-    session: AsyncSession, raw: dict, *, raw_payload_id: int
-) -> bool:
-    """Create or refresh a workout + its exercise/set children. Returns True when a
-    new workout row was created (False = updated in place)."""
-    external_id = str(raw["id"])
-    start = _parse_dt(raw.get("start_time"))
-    end = _parse_dt(raw.get("end_time"))
-    duration = None
-    if start and end:
-        duration = int((end - start).total_seconds())
-    on_date = (start or end or now_local()).date()
-
-    workout = await _get_workout_by_external(session, external_id)
-    created = workout is None
-    if workout is None:
-        workout = HevyWorkout(external_id=external_id, domain=DOMAIN)
-        session.add(workout)
-
-    workout.date = on_date
-    workout.source = Source.HEVY_API.value
-    workout.raw_payload_id = raw_payload_id
-    workout.title = raw.get("title")
-    workout.description = raw.get("description")
-    workout.start_time = start
-    workout.end_time = end
-    workout.duration_seconds = duration
-    workout.hevy_updated_at = _parse_dt(raw.get("updated_at"))
-    workout.program = _map_program(raw)
-    await session.flush()
-
-    # Rebuild children so a changed workout never leaves orphaned rows. Delete
-    # sets then exercises explicitly (not relying on FK ON DELETE CASCADE, which
-    # SQLite doesn't enforce by default) so the rebuild is DB-agnostic.
-    if not created:
-        ex_ids = (
-            select(HevyExercise.id)
-            .where(HevyExercise.workout_id == workout.id)
-            .scalar_subquery()
-        )
-        await session.execute(HevySet.__table__.delete().where(HevySet.exercise_id.in_(ex_ids)))
-        await session.execute(
-            HevyExercise.__table__.delete().where(HevyExercise.workout_id == workout.id)
-        )
-        await session.flush()
-
-    for ex_raw in raw.get("exercises") or []:
-        exercise = HevyExercise(
-            workout_id=workout.id,
-            exercise_index=_int_or_none(ex_raw.get("index")) or 0,
-            title=ex_raw.get("title") or "—",
-            exercise_template_id=ex_raw.get("exercise_template_id"),
-            notes=ex_raw.get("notes"),
-            superset_id=_int_or_none(ex_raw.get("superset_id")),
-        )
-        session.add(exercise)
-        await session.flush()
-        for set_raw in ex_raw.get("sets") or []:
-            session.add(
-                HevySet(
-                    exercise_id=exercise.id,
-                    set_index=_int_or_none(set_raw.get("index")) or 0,
-                    set_type=(set_raw.get("type") or "normal"),
-                    weight_kg=_float_or_none(set_raw.get("weight_kg")),
-                    reps=_int_or_none(set_raw.get("reps")),
-                    rpe=_float_or_none(set_raw.get("rpe")),
-                    distance_m=_float_or_none(set_raw.get("distance_meters")),
-                    duration_seconds=_int_or_none(set_raw.get("duration_seconds")),
-                )
-            )
-    await session.flush()
-    return created
-
-
 async def _upsert_owned_workout(
     session: AsyncSession,
     *,
@@ -1003,16 +890,6 @@ async def _upsert_owned_workout(
             )
     await session.flush()
     return created
-
-
-async def reparse_from_raw(session: AsyncSession, raw_row: RawPayload) -> None:
-    """Re-derive a Hevy workout straight from its stored raw payload. Unlike a
-    normal sync this skips re-upserting the raw row itself, so ``fetched_at``
-    stays put — this is a re-derive, not a fresh pull. Used by
-    :func:`reparse_pending` (the nightly sweep — raw_payload_service.
-    sweep_pending_job)."""
-    raw = raw_row.payload if isinstance(raw_row.payload, dict) else {}
-    await _upsert_workout(session, raw, raw_payload_id=raw_row.id)
 
 
 async def reparse_owned_from_raw(
@@ -1198,27 +1075,6 @@ async def reparse_owned_pending(
             continue
         done += 1
     return done
-
-
-async def reparse_pending(
-    session: AsyncSession,
-    *,
-    limit: int = raw_payload_service.REPARSE_BATCH,
-    since_days: int = raw_payload_service.REPARSE_WINDOW_DAYS,
-) -> int:
-    """Sweep Hevy raw payloads still pending a normalized workout row. Does not
-    commit."""
-    has_normalized = (
-        select(HevyWorkout.id).where(HevyWorkout.raw_payload_id == RawPayload.id).exists()
-    )
-    return await raw_payload_service.sweep_domain(
-        session,
-        domain=DOMAIN,
-        reparse=reparse_from_raw,
-        has_normalized=has_normalized,
-        limit=limit,
-        since_days=since_days,
-    )
 
 
 # ── Reads ─────────────────────────────────────────────────────────────────────
@@ -1414,9 +1270,21 @@ async def progression_for_exercise(
     return evaluate_progression(results, config or ProgressionConfig())
 
 
-async def latest_notes(session: AsyncSession, exercise_template_id: str) -> Optional[str]:
-    """Most recent technique note recorded for an exercise (from Hevy)."""
-    sessions = await _exercise_sessions(session, exercise_template_id)
+async def latest_notes(
+    session: AsyncSession, exercise_template_id: str, *, subject_id: uuid.UUID
+) -> Optional[str]:
+    """Most recent technique note recorded for an exercise (from Hevy).
+
+    Its two siblings on this page took their subject when the domain closed and
+    this one was missed, which left it calling ``_exercise_sessions`` without the
+    argument that had become mandatory — a ``TypeError`` on the Hevy page for
+    any selected exercise. A note is something one person wrote about their own
+    training, so the scope is the same one the series and the verdict use.
+    """
+
+    sessions = await _exercise_sessions(
+        session, exercise_template_id, subject_id=subject_id
+    )
     for _date, _sets, notes in reversed(sessions):
         if notes:
             return notes

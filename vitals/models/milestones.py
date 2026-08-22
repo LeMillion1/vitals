@@ -36,7 +36,7 @@ from vitals.models.mixins import InsightsMixin, insights_index
 from vitals.models.ownership_mixins import (
     IntegrationConnectionOwnershipMixin,
     OriginActorMixin,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
 )
 
 DOMAIN = Domain.MILESTONES.value
@@ -44,7 +44,7 @@ DOMAIN = Domain.MILESTONES.value
 _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
 
 
-class Milestone(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
+class Milestone(Base, RequiredSubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """A goal card: name, related domain, optional numeric target + deadline."""
 
     __tablename__ = "milestones"
@@ -69,7 +69,7 @@ class Milestone(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
 
 class WeeklyDigest(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     IntegrationConnectionOwnershipMixin,
     InsightsMixin,

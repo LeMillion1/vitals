@@ -23,12 +23,12 @@ from vitals.utils.timeutils import today_local
 TODAY = today_local()
 
 
-async def _seed(db_session) -> None:
+async def _seed(db_session, *, legacy_owner_roots) -> None:
     db_session.add_all(
         [
-            WeightLog(date=TODAY - timedelta(days=40), domain="weight", source="manual", weight_kg=89.0),
-            WeightLog(date=TODAY - timedelta(days=5), domain="weight", source="manual", weight_kg=86.4),
-            LabResult(
+            WeightLog(subject_id=legacy_owner_roots.subject_id, date=TODAY - timedelta(days=40), domain="weight", source="manual", weight_kg=89.0),
+            WeightLog(subject_id=legacy_owner_roots.subject_id, date=TODAY - timedelta(days=5), domain="weight", source="manual", weight_kg=86.4),
+            LabResult(subject_id=legacy_owner_roots.subject_id, 
                 date=TODAY - timedelta(days=10), domain="labs", source="manual",
                 marker="Ферритин", value=18.0, unit="нг/мл", ref_low=30, ref_high=400,
                 flag="low",
@@ -66,8 +66,8 @@ async def _created(auth_client, db_session, **overrides):
 
 
 @pytest.mark.asyncio
-async def test_page_renders_the_form(auth_client, db_session, owned_by_legacy_subject):
-    await _seed(db_session)
+async def test_page_renders_the_form(legacy_owner_roots, auth_client, db_session, owned_by_legacy_subject):
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     r = await auth_client.get("/share")
     assert r.status_code == 200
     assert 'name="domains"' in r.text
@@ -76,8 +76,8 @@ async def test_page_renders_the_form(auth_client, db_session, owned_by_legacy_su
 
 
 @pytest.mark.asyncio
-async def test_create_then_open_the_link_end_to_end(auth_client, db_session, owned_by_legacy_subject):
-    await _seed(db_session)
+async def test_create_then_open_the_link_end_to_end(legacy_owner_roots, auth_client, db_session, owned_by_legacy_subject):
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     page, row = await _created(auth_client, db_session)
 
     # The link and the password are on the page exactly once, and nowhere else
@@ -95,8 +95,8 @@ async def test_create_then_open_the_link_end_to_end(auth_client, db_session, own
 
 
 @pytest.mark.asyncio
-async def test_custom_range_is_stored_as_asked(auth_client, db_session, owned_by_legacy_subject):
-    await _seed(db_session)
+async def test_custom_range_is_stored_as_asked(legacy_owner_roots, auth_client, db_session, owned_by_legacy_subject):
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     start, end = TODAY - timedelta(days=20), TODAY - timedelta(days=2)
     _, row = await _created(
         auth_client, db_session,
@@ -106,31 +106,31 @@ async def test_custom_range_is_stored_as_asked(auth_client, db_session, owned_by
 
 
 @pytest.mark.asyncio
-async def test_all_time_starts_at_the_oldest_record(auth_client, db_session, owned_by_legacy_subject):
-    await _seed(db_session)
+async def test_all_time_starts_at_the_oldest_record(legacy_owner_roots, auth_client, db_session, owned_by_legacy_subject):
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     _, row = await _created(auth_client, db_session, period="all")
     assert row.period_start == TODAY - timedelta(days=40)
 
 
 @pytest.mark.asyncio
-async def test_expiry_is_not_the_period(auth_client, db_session, owned_by_legacy_subject):
-    await _seed(db_session)
+async def test_expiry_is_not_the_period(legacy_owner_roots, auth_client, db_session, owned_by_legacy_subject):
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     _, row = await _created(auth_client, db_session, period="180", expires_days="7")
     assert (row.period_end - row.period_start).days == 179
     assert 6 <= (row.expires_at - row.created_at).days <= 7
 
 
 @pytest.mark.asyncio
-async def test_no_sections_is_refused(auth_client, db_session, owned_by_legacy_subject):
-    await _seed(db_session)
+async def test_no_sections_is_refused(legacy_owner_roots, auth_client, db_session, owned_by_legacy_subject):
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     r = await auth_client.post("/share", data=_form(domains=[]))
     assert r.status_code == 400
     assert (await db_session.execute(select(SharedReport))).scalars().first() is None
 
 
 @pytest.mark.asyncio
-async def test_backwards_range_is_refused(auth_client, db_session, owned_by_legacy_subject):
-    await _seed(db_session)
+async def test_backwards_range_is_refused(legacy_owner_roots, auth_client, db_session, owned_by_legacy_subject):
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     r = await auth_client.post(
         "/share",
         data=_form(period="custom", period_start=TODAY.isoformat(),
@@ -141,12 +141,12 @@ async def test_backwards_range_is_refused(auth_client, db_session, owned_by_lega
 
 
 @pytest.mark.asyncio
-async def test_a_window_with_no_data_is_refused_rather_than_published_empty(
+async def test_a_window_with_no_data_is_refused_rather_than_published_empty(legacy_owner_roots, 
     auth_client, db_session
 ):
     """An empty document reads as a patient with no history, which is a different
     claim from "this window happens to be empty"."""
-    await _seed(db_session)
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     r = await auth_client.post(
         "/share",
         data=_form(period="custom",
@@ -158,8 +158,8 @@ async def test_a_window_with_no_data_is_refused_rather_than_published_empty(
 
 
 @pytest.mark.asyncio
-async def test_revoke_kills_the_link(auth_client, db_session, owned_by_legacy_subject):
-    await _seed(db_session)
+async def test_revoke_kills_the_link(legacy_owner_roots, auth_client, db_session, owned_by_legacy_subject):
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     page, row = await _created(auth_client, db_session)
     password = _password_from(page.text)
 
@@ -171,8 +171,8 @@ async def test_revoke_kills_the_link(auth_client, db_session, owned_by_legacy_su
 
 
 @pytest.mark.asyncio
-async def test_delete_removes_the_row(auth_client, db_session, owned_by_legacy_subject):
-    await _seed(db_session)
+async def test_delete_removes_the_row(legacy_owner_roots, auth_client, db_session, owned_by_legacy_subject):
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     _, row = await _created(auth_client, db_session)
     r = await auth_client.post(f"/share/{row.id}/delete")
     assert r.status_code == 303
@@ -180,8 +180,8 @@ async def test_delete_removes_the_row(auth_client, db_session, owned_by_legacy_s
 
 
 @pytest.mark.asyncio
-async def test_download_is_the_same_document_as_the_link(auth_client, db_session, owned_by_legacy_subject):
-    await _seed(db_session)
+async def test_download_is_the_same_document_as_the_link(legacy_owner_roots, auth_client, db_session, owned_by_legacy_subject):
+    await _seed(db_session, legacy_owner_roots=legacy_owner_roots)
     page, row = await _created(auth_client, db_session)
     password = _password_from(page.text)
     await auth_client.post(f"/r/{row.token}", data={"password": password})

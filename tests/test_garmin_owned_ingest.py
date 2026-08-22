@@ -29,6 +29,13 @@ from vitals.services.garmin_service import (
 from vitals.utils.timeutils import now_local
 
 
+# The adoption tests here seed a legacy row with no owner and prove the owned
+# ingest takes it over — the one operation whose whole purpose is to turn an
+# unstamped row into an owned one. Nothing else can create that state now, so
+# this module asks for the schema that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 DAY = date(2026, 8, 19)
 
 

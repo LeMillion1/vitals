@@ -25,14 +25,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 from vitals.enums import Domain
 from vitals.models.base import Base, TimestampMixin
 from vitals.models.mixins import InsightsMixin, insights_index
-from vitals.models.ownership_mixins import OriginActorMixin, SubjectOwnershipMixin
+from vitals.models.ownership_mixins import (
+    OriginActorMixin,
+    RequiredSubjectOwnershipMixin,
+)
 
 DOMAIN = Domain.LABS.value
 
 
 class LabResult(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     InsightsMixin,
     TimestampMixin,
@@ -70,7 +73,7 @@ class LabResult(
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
-class LabMarker(Base, SubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
+class LabMarker(Base, RequiredSubjectOwnershipMixin, OriginActorMixin, TimestampMixin):
     """Per-marker reference/config (catalog). No per-day date → no InsightsMixin,
     just ``domain``/``source`` for uniform export (like the supplements catalog)."""
 

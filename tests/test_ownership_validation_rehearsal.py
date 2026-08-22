@@ -26,7 +26,6 @@ from alembic.config import Config as AlembicConfig
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from tests.conftest import alembic_head_revision
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
@@ -38,6 +37,7 @@ from vitals.services.ownership_validation_service import (
     SUBJECT_EQUALITY_CONSTRAINTS,
 )
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+from vitals.ownership import PRE_OWNERSHIP_CONTRACT_REVISION
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -358,7 +358,7 @@ async def test_real_postgres_stage4_whole_lake_validation_and_constraint_promoti
         await _reset_to_migration_base(engine)
         await asyncio.to_thread(command.upgrade, alembic_config, "0034")
         await _run_sync(engine, _seed_revision_0034)
-        await asyncio.to_thread(command.upgrade, alembic_config, "head")
+        await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
 
         # Revision 0046 installs the subject-equality references unvalidated, so
         # the migration never scans a lake whose ownership is not proved yet.
@@ -496,10 +496,10 @@ async def test_real_postgres_stage4_whole_lake_validation_and_constraint_promoti
             await asyncio.to_thread(command.downgrade, alembic_config, "0044")
         # The refusal rolls the whole downgrade back, so the Stage-4 references
         # stay installed and valid alongside the evidence they were proved with.
-        assert await _alembic_version(engine) == alembic_head_revision()
+        assert await _alembic_version(engine) == PRE_OWNERSHIP_CONTRACT_REVISION
         assert all((await _constraint_states(engine)).values())
         assert await _validation_checkpoints(engine) == final_checkpoints
     finally:
         if migration_control_ready:
-            await asyncio.to_thread(command.upgrade, alembic_config, "head")
+            await asyncio.to_thread(command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION)
         await engine.dispose()

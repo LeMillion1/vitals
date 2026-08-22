@@ -39,6 +39,13 @@ from vitals.services.legacy_ownership import (
 )
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader does when the ownership backfill has not reached a row yet, which is
+# a state the application itself can no longer create. The schema says so, so
+# this module asks for the one that stood before the ownership contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 EVALUATION_DATE = date(2020, 1, 15)
 PROBE_DOMAIN = Domain.WEIGHT.value
 

@@ -37,6 +37,13 @@ from vitals.services import (
 from vitals.services.scoped_settings_service import ScopedSettingKey
 
 
+# These tests seed rows with no owner on purpose: they pin what a scoped
+# reader or writer does when the ownership backfill has not reached a row yet,
+# which is a state the application itself can no longer create. The schema
+# says so, so this module asks for the one that stood before the contract.
+pytestmark = pytest.mark.pre_ownership_contract
+
+
 DAY = date(2026, 8, 20)
 NOW = datetime(2026, 8, 20, 9, 30)
 ROOT = Path(__file__).resolve().parents[1]

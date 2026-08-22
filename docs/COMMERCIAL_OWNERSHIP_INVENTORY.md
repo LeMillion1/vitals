@@ -1297,23 +1297,81 @@ scope is null, and an RLS policy comparing `subject_id` to the session's subject
 silently excludes such a row rather than protecting it. Closing that is what
 makes the two worth having.
 
-Writing the migration surfaced what still blocks it. Four legacy write paths
-create these rows without the reference:
+Writing the migration surfaced what blocked it: four legacy write paths created
+these rows without the reference. Those are now gone.
 
-| writer | what it omits |
-| --- | --- |
-| `garmin_service.ingest_daily` | `garmin_daily.integration_connection_id` and `subject_id` |
-| `garmin_service.ingest_intraday` | the same, on `garmin_intraday` |
-| `garmin_service.ingest_activities` | the same, on `garmin_activities` |
-| `raw_payload_service.upsert_raw_payload` | `raw_payloads.subject_id` |
+The Garmin side went as one piece, because it was one chain: `ingest_daily`,
+`ingest_intraday` and `ingest_activities` were only reachable through the legacy
+`sync`, the legacy `pulse`, and the two reparse paths — every one of which
+already had an owned twin the web router and the raw sweeper were using.
+`pulse_job` lost its zero-subject arm with them: a pulse writes a day of
+somebody's watch data, and without a subject there is nobody to write it for.
+Hevy's `sync` / `reparse_from_raw` / `reparse_pending` had no callers left at
+all, and `_upsert_workout` went with them.
 
-Each has an owned counterpart already in place — `ingest_owned_daily`,
-`ingest_owned_intraday`, `ingest_owned_activities`,
-`upsert_owned_raw_payload` — but the legacy Garmin and Hevy sync entry points,
-the light pulse, and the two reparse paths still call the unowned ones. A
-`NOT NULL` installed before those callers move would not protect anything; it
-would break the next sync. The writers come first, the migration second, and the
-model mixins last.
+`raw_payload_service.upsert_raw_payload` itself is deleted. Its last two callers
+were the Hevy sync and `genetics_service.store_raw_vcf`, which already refused
+every scoped caller — what remained underneath was the zero-subject arm storing
+an uploaded VCF as a payload belonging to nobody. A genome is the most
+identifying record the application holds, so that arm was removed rather than
+scoped; `ingest_vcf_batch` takes the subject and the conflict decision together
+and is the only way in.
+
+The Garmin weight outbox lost its ownerless arm too. No export context means no
+usable Garmin account, and an outbox row is an intent to send a weight *to* one
+— the bridge wrote a row addressed to nowhere, owned by nobody, keyed on a bare
+date the scoped key no longer treats as unique.
+
+Retiring them exposed a live defect on the way past: `hevy_service.latest_notes`
+was missed when the domain closed and still called `_exercise_sessions` without
+the subject that had become mandatory, so selecting any exercise on the Hevy
+page raised `TypeError`. Its two siblings on the same page take the subject; now
+it does too.
+
+With the writers gone the contract itself lands. Revision 0049 makes all
+thirty-nine columns `NOT NULL`, and the models declare the same thing, so the
+create-all schema the fast suite builds and the migrated schema a real
+installation runs now say the same thing about who owns a row.
+
+The migration refuses before it alters anything. `upgrade` counts the remaining
+nulls in every target column first and raises `OwnershipBackfillIncompleteError`
+naming each table and how far behind it is. `SET NOT NULL` would fail on its own,
+but with PostgreSQL's message — one column, no count, no hint that a backfill is
+what is missing. The deploy order is therefore explicit and is recorded in code
+as `PRE_OWNERSHIP_CONTRACT_REVISION`: migrate to 0048, run the backfill phases to
+completion, migrate to head. The backfill rehearsals migrate to the same
+constant, because a lake seeded at revision 0034 is exactly the lake that cannot
+reach head yet.
+
+On PostgreSQL each column is proven with a `NOT VALID` check that is then
+validated before `SET NOT NULL` takes over from it. `VALIDATE CONSTRAINT` takes
+SHARE UPDATE EXCLUSIVE rather than ACCESS EXCLUSIVE, and PostgreSQL 12+ accepts
+the validated check as proof, so `SET NOT NULL` skips the scan it would otherwise
+perform under a full lock — the difference between a pause and an outage on a
+`garmin_intraday` holding a couple of thousand samples for every day ever synced.
+
+Two kinds of test still need to write a row with no owner, and they say so. The
+ownership backfill services take an unstamped row as *input*; the legacy-bridge
+readers pin what a scoped reader does while a rolling backfill is half done.
+Both ask for the older schema through `@pytest.mark.pre_ownership_contract`, or
+through `tests/schema_modes.pre_ownership_contract_metadata` when they build
+their own engine. Fifty-one modules carry the marker, which is a large share of the
+ownership test surface and should be read as a description rather than as debt:
+the backfill machinery and the bridge readers are precisely the code whose
+subject *is* the half-migrated lake. `seed_demo` is there too, for a different
+reason — it refuses to run once any subject exists, so every row it writes
+belongs to nobody by construction; it is a single-user utility and does not
+survive the contract. Everything else runs against the contract,
+which is what makes the fast suite able to catch a service that forgets a
+subject.
+
+One thing the contract work surfaced in passing: three registry entries name a
+qualified column — `ai_invocations.platform_integration_connection_id` and the
+two on `legacy_openrouter_connection_bridges` — rather than the bare
+`platform_connection_id` the registry's vocabulary suggests. Resolving the
+boundary against the column each table actually has removes a silent gap:
+before, those three were quietly skipped by anything that looked the name up
+directly.
 
 `PENDING_OWNERSHIP_CONTRACT_COLUMNS` in `vitals/ownership.py` names the thirty-nine
 columns, and its paired contract test recomputes the set from the models and
@@ -1321,6 +1379,29 @@ fails in either direction — a column that gains its `NOT NULL` fails until the
 entry is removed, one that quietly loses it fails at once, and an entry removed
 without the column actually becoming `NOT NULL` fails too. Same ratchet as
 `legacy_scope.py`, and reaching empty is the condition for writing the migration.
+
+#### Stage 6E — FORCE RLS, the second boundary
+
+Row-level security is the next step and the last one in Stage 6. It was never
+safe before now for a reason worth stating plainly: a policy that compares
+`subject_id` to the session's subject does not reject a row whose `subject_id`
+is null, it silently omits it. Applied to a lake with nullable ownership,
+RLS would have looked like a boundary while quietly hiding exactly the rows
+the backfill had not reached — and it would have hidden them from their owner
+too. With the contract migration in place every row names a subject, so the
+policy's comparison is total: each row is either this session's or refused.
+
+`FORCE` is the operative word. PostgreSQL exempts a table's owner from its own
+policies unless the table is `FORCE ROW LEVEL SECURITY`, and the application
+connects as the owner. Without `FORCE` the policies would be inert for the one
+role that matters.
+
+Two things have to land with it and neither is schema: the session variable the
+policies read has to be set on every checkout of a pooled connection, and reset
+on return, or one request's subject leaks into the next request that reuses the
+connection. And the backfill services, the migration runner, and the platform
+control plane need a role that is exempt by design — a backfill that could not
+see an unstamped row could not stamp it.
 
 ## Rollback boundary
 

@@ -47,7 +47,7 @@ from vitals.models.base import Base
 from vitals.models.ownership_mixins import (
     IntegrationConnectionOwnershipMixin,
     OriginActorMixin,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
 )
 
 _JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
@@ -292,7 +292,7 @@ class NotificationDeliveryIntent(Base):
 
 class Notification(
     Base,
-    SubjectOwnershipMixin,
+    RequiredSubjectOwnershipMixin,
     OriginActorMixin,
     IntegrationConnectionOwnershipMixin,
 ):
