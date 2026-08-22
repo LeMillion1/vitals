@@ -990,7 +990,12 @@ async def _signals_block(
     from vitals.services import signals_service
 
     rows = await signals_service.list_signals(
-        session, kind=SignalKind.SYMPTOM.value, start=start, end=end, limit=1000
+        session,
+        kind=SignalKind.SYMPTOM.value,
+        start=start,
+        end=end,
+        limit=1000,
+        subject_id=subject_id,
     )
     items = [
         {

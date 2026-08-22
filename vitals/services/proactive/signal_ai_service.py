@@ -635,12 +635,10 @@ async def _known_keys(
     session: AsyncSession,
     *,
     subject_id: uuid.UUID,
-    include_legacy_unowned: bool,
 ) -> tuple[str, ...]:
     stats = await signals_service.key_frequency(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     keys: list[str] = []
     for stat in stats[:_SIGNAL_MAX_KNOWN_KEYS]:
@@ -799,11 +797,7 @@ async def _prepare_signal_parse(
     if not isinstance(frozen_date, date_type):
         raise SignalAIValidationError("signal parse date is invalid")
     prompt = _raw_text(locked.raw)
-    keys = await _known_keys(
-        session,
-        subject_id=ownership.subject_id,
-        include_legacy_unowned=ownership.include_legacy_unowned,
-    )
+    keys = await _known_keys(session, subject_id=ownership.subject_id)
     system_prompt = _system_prompt(keys)
     total_input_bytes = len((system_prompt + "\n" + prompt).encode("utf-8"))
     config = load_config()
@@ -1421,6 +1415,7 @@ async def persist_signal_parse(
         on_date=snapshot._on_date,
         source=locked.raw.source,
         raw_id=locked.raw.id,
+        identity=_identity_from_prepared(snapshot),
         allow_historical_connection=True,
         allow_subject_adopted_unowned=True,
         allow_historical_null_actor_connection=(

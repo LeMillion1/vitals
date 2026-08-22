@@ -9,6 +9,8 @@ from datetime import date, timedelta
 
 import pytest
 
+from vitals.ownership import WriteIdentity
+
 from vitals.enums import Source
 from vitals.services import digest_service, signals_service
 
@@ -30,12 +32,14 @@ class FakeLLM:
 
 async def test_day_context_reaches_the_digest_context(db_session, legacy_owner_roots):
     await signals_service.set_day_context(
-        db_session, DAY - timedelta(days=1), answers={"where": "remote", "gym": True}
+        db_session, DAY - timedelta(days=1), answers={"where": "remote", "gym": True},
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     await signals_service.set_day_context(
         db_session,
         DAY,
         answers={"where": "office", "gym": False, "load": "heavy"},
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     # The template's guess for a day he never corrected — present, but flagged as
     # a guess rather than an answer.
@@ -44,10 +48,12 @@ async def test_day_context_reaches_the_digest_context(db_session, legacy_owner_r
         DAY - timedelta(days=2),
         answers={"where": "office", "gym": False},
         source=Source.TEMPLATE.value,
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     # Outside the 7-day window — must not leak in.
     await signals_service.set_day_context(
-        db_session, DAY - timedelta(days=30), answers={"where": "off", "gym": False}
+        db_session, DAY - timedelta(days=30), answers={"where": "off", "gym": False},
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     await db_session.commit()
 

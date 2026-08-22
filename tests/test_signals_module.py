@@ -104,8 +104,12 @@ async def test_feed_shows_captured_rows_and_deletes_one(auth_client, db_session)
 
     r = await auth_client.post(f"/signals/{rows[0].id}/delete")
     assert r.status_code == 303
-    assert await signals_service.list_signals(db_session) != []
-    assert all(s.id != rows[0].id for s in await signals_service.list_signals(db_session))
+    assert await signals_service.list_signals(
+        db_session, subject_id=ownership.subject_id
+    ) != []
+    assert all(s.id != rows[0].id for s in await signals_service.list_signals(
+        db_session, subject_id=ownership.subject_id
+    ))
 
 
 # ── The settings ──────────────────────────────────────────────────────────────

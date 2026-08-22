@@ -910,7 +910,6 @@ async def _mark_subject_batch_misparse(
         batch_id,
         subject_id=ownership.subject_id,
         integration_connection_id=None,
-        include_legacy_unowned=ownership.include_legacy_unowned,
     )
 
 
@@ -1014,7 +1013,7 @@ async def _redraw(
     answers, answered = await day_plan.resolve(
         session,
         on_date,
-        ownership=ownership,
+        subject_id=ownership.subject_id,
     )
     buttons = day_plan.exception_buttons(
         answers, on_date, answered, day_plan.questions_for(key)
@@ -1076,7 +1075,8 @@ async def _apply_context(
         on_date,
         key,
         answer,
-        ownership=ownership,
+        identity=ownership.owner_action(),
+        integration_connection_id=ownership.connection_id,
         source=Source.TELEGRAM.value,
         allow_historical_connection=historical_connection,
     )
@@ -2047,7 +2047,11 @@ async def handle_text(
         ownership, ProactiveOwnershipContext
     ):
         raise TypeError("ownership must be a ProactiveOwnershipContext or None")
-    owner_identity = ownership.owner_action() if ownership is not None else None
+    if ownership is None:
+        raise InboundOwnershipError(
+            "an incoming message belongs to somebody; name the subject"
+        )
+    owner_identity = ownership.owner_action()
     connection_id = (
         ownership.connection_id if ownership is not None else None
     )
@@ -2347,16 +2351,12 @@ async def handle_text(
 
     parser = parse
     if parser is None:
-        parser = make_signal_parser(
-            await known_keys(
-                session,
-                subject_id=(ownership.subject_id if ownership is not None else None),
-                include_legacy_unowned=(
-                    ownership.include_legacy_unowned
-                    if ownership is not None
-                    else False
-                ),
+        if ownership is None:
+            raise InboundOwnershipError(
+                "the parser's vocabulary is one person's; name the subject"
             )
+        parser = make_signal_parser(
+            await known_keys(session, subject_id=ownership.subject_id)
         )
     if parser_alert_context is not None and ownership is None:
         raise InboundOwnershipError(
@@ -4099,14 +4099,12 @@ def render_echo(rows) -> str:
 async def known_keys(
     session: AsyncSession,
     *,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> list[str]:
     """The vocabulary the parser is reminded of, most-used first."""
     stats = await signals_service.key_frequency(
         session,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     return [stat.key for stat in stats][:_KNOWN_KEYS_LIMIT]
 
@@ -4402,16 +4400,12 @@ async def reparse_pending(
         raise InboundOwnershipError(
             "parser alert context requires proactive ownership"
         )
-    parser = parse or make_signal_parser(
-        await known_keys(
-            session,
-            subject_id=(ownership.subject_id if ownership is not None else None),
-            include_legacy_unowned=(
-                ownership.include_legacy_unowned
-                if ownership is not None
-                else False
-            ),
+    if ownership is None:
+        raise InboundOwnershipError(
+            "signal recovery reads one person's messages; name the subject"
         )
+    parser = parse or make_signal_parser(
+        await known_keys(session, subject_id=ownership.subject_id)
     )
     if parser_alert_context is not None:
         assert ownership is not None
@@ -4490,13 +4484,10 @@ async def reparse_pending(
     rows = await signals_service.reparse_unparsed(
         session,
         parse=parser,
-        subject_id=ownership.subject_id if ownership is not None else None,
+        subject_id=ownership.subject_id,
         # Historical Telegram raws remain part of their subject after recipient
         # connection rotation; each row validates and copies its own provenance.
         integration_connection_id=None,
-        include_legacy_unowned=(
-            ownership.include_legacy_unowned if ownership is not None else False
-        ),
         text_from_raw=_text_from_raw if ownership is not None else None,
         date_from_raw=_day_from_raw if ownership is not None else None,
         before_parse=_before_reparse,

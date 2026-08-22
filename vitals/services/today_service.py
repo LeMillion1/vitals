@@ -240,7 +240,9 @@ async def build(
                 "detail": t("today.src_meal", value=_num(m.calories)) if m.calories else t("nav.nutrition"),
             })
     if em.get("signals"):
-        for s in await signals_service.list_signals(session, start=today, end=today):
+        for s in await signals_service.list_signals(
+            session, start=today, end=today, subject_id=subject_id
+        ):
             feed.append({
                 "time": s.at_time.strftime("%H:%M") if s.at_time else "",
                 "dot": "violet",

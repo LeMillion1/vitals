@@ -700,7 +700,8 @@ async def test_day_context_plan_answer_plan_preserves_human_provenance(db_sessio
         DAY,
         "gym",
         True,
-        ownership=graph.ownership,
+        identity=graph.ownership.owner_action(),
+        integration_connection_id=graph.ownership.connection_id,
     )
     assert (answered.actor_user_id, answered.integration_connection_id) == (
         graph.user.id,
@@ -727,7 +728,8 @@ async def test_day_context_rejects_foreign_actor_and_allows_channel_rotation(db_
         DAY,
         "gym",
         True,
-        ownership=graph.ownership,
+        identity=graph.ownership.owner_action(),
+        integration_connection_id=graph.ownership.connection_id,
     )
 
     other_user = User(
@@ -757,7 +759,8 @@ async def test_day_context_rejects_foreign_actor_and_allows_channel_rotation(db_
             DAY,
             "gym",
             False,
-            ownership=wrong_actor,
+            identity=wrong_actor.owner_action(),
+            integration_connection_id=wrong_actor.connection_id,
         )
 
     wrong_connection = ProactiveOwnershipContext(
@@ -772,7 +775,8 @@ async def test_day_context_rejects_foreign_actor_and_allows_channel_rotation(db_
         DAY,
         "load",
         "heavy",
-        ownership=wrong_connection,
+        identity=wrong_connection.owner_action(),
+        integration_connection_id=wrong_connection.connection_id,
     )
     assert rotated.answers == {"gym": True, "load": "heavy"}
     assert rotated.integration_connection_id == graph.connection.id
@@ -787,7 +791,8 @@ async def test_day_context_preserves_channel_provenance_across_mcp_updates(
         DAY,
         "gym",
         True,
-        ownership=graph.ownership,
+        identity=graph.ownership.owner_action(),
+        integration_connection_id=graph.ownership.connection_id,
     )
     mcp_after = await day_plan.record_answer(
         db_session,
@@ -817,7 +822,8 @@ async def test_day_context_preserves_channel_provenance_across_mcp_updates(
         next_day,
         "gym",
         False,
-        ownership=graph.ownership,
+        identity=graph.ownership.owner_action(),
+        integration_connection_id=graph.ownership.connection_id,
     )
     assert telegram_after is mcp_first
     assert telegram_after.integration_connection_id == graph.connection.id
@@ -831,7 +837,8 @@ async def test_late_plan_never_downgrades_answer_source_or_first_guess(db_sessio
         DAY,
         "gym",
         True,
-        ownership=graph.ownership,
+        identity=graph.ownership.owner_action(),
+        integration_connection_id=graph.ownership.connection_id,
         source=Source.TELEGRAM.value,
     )
     first_guess = dict(answered.planned)
@@ -913,23 +920,13 @@ async def test_legacy_null_rows_are_visible_only_through_verified_bridge(
         db_session,
         subject_id=graph.subject.id,
     ) == []
-    bridged_signals = await signals_service.list_signals(
-        db_session,
-        subject_id=graph.subject.id,
-        include_legacy_unowned=True,
-    )
-    assert bridged_signals == [legacy_signal]
+    # The signals bridge is gone: a row that belongs to nobody is invisible to
+    # everybody, with or without a compatibility flag to ask for it.
     assert await signals_service.get_day_context(
         db_session,
         DAY,
         subject_id=graph.subject.id,
     ) is None
-    assert await signals_service.get_day_context(
-        db_session,
-        DAY,
-        subject_id=graph.subject.id,
-        include_legacy_unowned=True,
-    ) is legacy_day
     assert await delivery.sent_today(
         db_session,
         on_date=DAY,
@@ -979,6 +976,13 @@ async def test_context_callback_records_telegram_provenance(db_session):
 
 
 async def test_partial_root_day_context_is_never_adopted(db_session):
+    """Adoption is gone, so the partial row is not refused — it is unreachable.
+
+    While day contexts still had a compatibility arm, a row with an actor and no
+    subject was the one shape adoption had to refuse explicitly. Closing the
+    domain removes the arm: the lookup is the subject, the partial row is never
+    found, and this subject's own day is written beside it untouched.
+    """
     graph = await _graph(db_session, "partial-day")
     partial = DayContext(
         actor_user_id=graph.user.id,
@@ -996,15 +1000,17 @@ async def test_partial_root_day_context_is_never_adopted(db_session):
         connection_id=graph.connection.id,
         include_legacy_unowned=True,
     )
-    with pytest.raises(signals_service.SignalOwnershipError, match="partial-root"):
-        await day_plan.record_plan(
-            db_session,
-            DAY,
-            {"where": "remote"},
-            ownership=bridge,
-        )
+    written = await day_plan.record_plan(
+        db_session,
+        DAY,
+        {"where": "remote"},
+        ownership=bridge,
+    )
+    assert written.id != partial.id
+    assert written.subject_id == graph.subject.id
     assert partial.subject_id is None
     assert partial.actor_user_id == graph.user.id
+    assert partial.answers == {"where": "office"}
 
 
 async def test_file_only_raw_is_not_eligible_for_the_legacy_null_bridge(db_session):
@@ -1291,7 +1297,9 @@ async def test_callback_capture_survives_failure_and_replays(
         }
     }
     assert "memory-only generated answer" not in str(raw.payload)
-    assert await signals_service.get_day_context(db_session, DAY) is None
+    assert await signals_service.get_day_context(
+        db_session, DAY, subject_id=graph.subject.id
+    ) is None
 
     monkeypatch.setattr(day_plan, "record_answer", original_record_answer)
     assert await inbound._replay_pending_callbacks(

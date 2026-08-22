@@ -532,6 +532,47 @@ async def owned_by_legacy_subject(db_session, legacy_owner_roots):
 
 
 @pytest_asyncio.fixture
+async def signals_owner(db_session, legacy_owner_roots):
+    """The sole owner plus the Telegram channel their messages arrive on.
+
+    A signal is something a person said to the bot, so the closed domain wants
+    both the identity it belongs to and the recipient connection it came in
+    through. Building the pair once keeps a capture test about capture.
+    """
+
+    from types import SimpleNamespace
+
+    from vitals.enums import (
+        IntegrationConnectionStatus,
+        IntegrationConnectionType,
+        IntegrationProvider,
+    )
+    from vitals.models.tenancy import IntegrationConnection
+    from vitals.ownership import WriteIdentity
+    from vitals.services.proactive import channels
+
+    connection = IntegrationConnection(
+        subject_id=legacy_owner_roots.subject_id,
+        provider=IntegrationProvider.TELEGRAM.value,
+        connection_type=IntegrationConnectionType.RECIPIENT.value,
+        external_account_discriminator="synthetic:signals-owner",
+        credential_ref=channels.LEGACY_TELEGRAM_CREDENTIAL_REF,
+        status=IntegrationConnectionStatus.ACTIVE.value,
+    )
+    db_session.add(connection)
+    await db_session.flush()
+    return SimpleNamespace(
+        subject_id=legacy_owner_roots.subject_id,
+        identity=WriteIdentity(
+            legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+        ),
+        system_identity=WriteIdentity(legacy_owner_roots.subject_id, None),
+        connection=connection,
+        connection_id=connection.id,
+    )
+
+
+@pytest_asyncio.fixture
 async def owner_write(db_session, legacy_owner_roots):
     """One scoped write capability for the sole owner.
 

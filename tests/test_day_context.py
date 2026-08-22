@@ -151,7 +151,9 @@ async def test_evening_block_parks_the_guess_even_if_nothing_is_tapped(
 
     await day_plan.evening_job(session_factory)
 
-    row = await signals_service.get_day_context(db_session, TOMORROW)
+    row = await signals_service.get_day_context(
+        db_session, TOMORROW, subject_id=(await _telegram_ownership(db_session)).subject_id
+    )
     assert row.planned == day_plan.DEFAULT_DAY
     assert not row.answers          # a parked guess is not an answer
     assert row.source == Source.TEMPLATE.value
@@ -242,7 +244,7 @@ async def test_evening_block_keeps_asking_what_is_still_unanswered(
         TOMORROW,
         "gym",
         True,
-        ownership=await _telegram_ownership(db_session),
+        identity=(await _telegram_ownership(db_session)).owner_action(),
     )
     await db_session.commit()
 
@@ -294,13 +296,28 @@ async def test_evening_block_drops_the_summary_when_garmin_has_nothing(
 
 # ── Taps ──────────────────────────────────────────────────────────────────────
 async def test_tap_overwrites_the_answer_and_keeps_the_guess(db_session):
-    await day_plan.record_plan(db_session, TOMORROW, {"where": "office", "gym": False})
+    await day_plan.record_plan(
+        db_session,
+        TOMORROW,
+        {"where": "office", "gym": False},
+        ownership=await _telegram_ownership(db_session),
+    )
 
-    await day_plan.record_answer(db_session, TOMORROW, "gym", True)
-    await day_plan.record_answer(db_session, TOMORROW, "load", "heavy")
+    await day_plan.record_answer(
+        db_session,
+        TOMORROW, "gym", True,
+        identity=(await _telegram_ownership(db_session)).owner_action(),
+    )
+    await day_plan.record_answer(
+        db_session,
+        TOMORROW, "load", "heavy",
+        identity=(await _telegram_ownership(db_session)).owner_action(),
+    )
     await db_session.commit()
 
-    row = await signals_service.get_day_context(db_session, TOMORROW)
+    row = await signals_service.get_day_context(
+        db_session, TOMORROW, subject_id=(await _telegram_ownership(db_session)).subject_id
+    )
     assert row.answers == {"gym": True, "load": "heavy"}
     assert row.planned == {"where": "office", "gym": False}
     assert row.source == Source.MANUAL.value
@@ -326,7 +343,8 @@ async def test_concurrent_owned_taps_merge_without_losing_answers(db_session):
         TOMORROW,
         "gym",
         True,
-        ownership=ownership,
+        identity=ownership.owner_action(),
+        integration_connection_id=ownership.connection_id,
         source=Source.TELEGRAM.value,
     )
 
@@ -337,7 +355,8 @@ async def test_concurrent_owned_taps_merge_without_losing_answers(db_session):
                 TOMORROW,
                 "load",
                 "heavy",
-                ownership=ownership,
+                identity=ownership.owner_action(),
+                integration_connection_id=ownership.connection_id,
                 source=Source.TELEGRAM.value,
             )
             await session_b.commit()
@@ -364,10 +383,16 @@ async def test_a_tap_on_an_unasked_day_still_records_what_the_template_thought(
     db_session,
 ):
     """The brief's exception buttons can be the first thing ever tapped for a day."""
-    await day_plan.record_answer(db_session, DAY, "where", "remote")
+    await day_plan.record_answer(
+        db_session,
+        DAY, "where", "remote",
+        identity=(await _telegram_ownership(db_session)).owner_action(),
+    )
     await db_session.commit()
 
-    row = await signals_service.get_day_context(db_session, DAY)
+    row = await signals_service.get_day_context(
+        db_session, DAY, subject_id=(await _telegram_ownership(db_session)).subject_id
+    )
     assert row.answers == {"where": "remote"}
     assert row.planned == day_plan.DEFAULT_TEMPLATE["sun"]
 
@@ -476,7 +501,11 @@ async def test_brief_prefers_his_answer_to_the_template(
     cancel the rest of the guess he was correcting."""
     await _seed_brief_day(db_session)
     await day_plan.set_week_template(db_session, {"sun": {"where": "remote", "gym": False}})
-    await day_plan.record_answer(db_session, DAY, "gym", True)
+    await day_plan.record_answer(
+        db_session,
+        DAY, "gym", True,
+        identity=(await _telegram_ownership(db_session)).owner_action(),
+    )
     await db_session.commit()
 
     context = await brief.build_context(

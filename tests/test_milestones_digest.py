@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 import pytest
+
+from vitals.ownership import WriteIdentity
 from sqlalchemy import select
 
 from vitals.enums import Domain, Source
@@ -244,11 +246,13 @@ async def test_signals_reach_the_digest_context(db_session, legacy_owner_roots):
         items=[{"kind": "exposure", "key": "caffeine_late", "at_time": "22:00",
                 "note": "кофе в 22"}],
         on_date=DAY - timedelta(days=1),
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     rows = await signals_service.create_signals(
         db_session,
         items=[{"kind": "symptom", "key": "headache", "value_num": 4}],
         on_date=DAY,
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     await db_session.commit()
 
@@ -261,7 +265,9 @@ async def test_signals_reach_the_digest_context(db_session, legacy_owner_roots):
     assert ctx["signals"][0]["note"] == "кофе в 22"
 
     # A row he tapped "не то" on is not evidence and must not reach the model.
-    await signals_service.mark_misparse(db_session, rows[0].batch_id)
+    await signals_service.mark_misparse(
+        db_session, rows[0].batch_id, subject_id=legacy_owner_roots.subject_id
+    )
     await db_session.commit()
 
     ctx = await digest_service.assemble_context(

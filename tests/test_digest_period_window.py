@@ -11,6 +11,8 @@ from datetime import date, timedelta
 
 import pytest
 
+from vitals.ownership import WriteIdentity
+
 from vitals.enums import Source
 from vitals.models.garmin import GarminDaily
 from vitals.models.hevy import HevyWorkout
@@ -208,7 +210,8 @@ async def test_the_day_table_joins_the_domains_by_date(db_session, monkeypatch, 
         db_session, on_date=session_day, name="ужин", calories=800, protein_g=60.0
     )
     await signals_service.set_day_context(
-        db_session, session_day, answers={"where": "office", "gym": True, "load": "heavy"}
+        db_session, session_day, answers={"where": "office", "gym": True, "load": "heavy"},
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     await db_session.commit()
 

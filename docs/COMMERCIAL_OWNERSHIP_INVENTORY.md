@@ -1230,11 +1230,12 @@ asserted now runs against the context and the header directly.
 | genetics | closed — including the bare-key read; raw provenance proved on both the owned path and the resolver's bridge |
 | HRT (doses, cycles, templates) | closed as one — a cycle read is a graph read; the catalog's `active` flag stays frozen, not scoped |
 | body composition | closed — scan, metric sheet, raw payload, file and the weigh-in it bridges; the generic replay path is gone and the owned sweep decides adoption per raw |
+| signals | closed — captured text, its day context, and the two `day_plan` wrappers over them; an incoming message now refuses to be handled without ownership |
 | everything else | still bridged; see `vitals/legacy_scope.py` |
 
 The counter moves only in the registry, and the contract test refuses to let it
 move the wrong way. It started at 266 functions across 25 modules; it is now
-153 across 21. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
+135 across 18. A leaf is "closed" when its `include_legacy_unowned` parameters are gone,
 its subject is mandatory, and the branch that adopted an unowned row on the way
 past has been removed — an unowned row then stays unowned and stays invisible,
 which is the whole point.

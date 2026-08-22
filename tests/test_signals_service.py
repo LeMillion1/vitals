@@ -25,7 +25,7 @@ def _parse_fixed(items):
 
 
 # ── The three shapes ──────────────────────────────────────────────────────────
-async def test_three_kinds_persist_with_their_own_fields(db_session):
+async def test_three_kinds_persist_with_their_own_fields(db_session, signals_owner):
     rows = await svc.create_signals(
         db_session,
         items=[
@@ -35,6 +35,7 @@ async def test_three_kinds_persist_with_their_own_fields(db_session):
              "unit": "mg", "at_time": "22:00"},
         ],
         on_date=D1,
+        identity=signals_owner.identity,
     )
     await db_session.commit()
 
@@ -49,7 +50,7 @@ async def test_three_kinds_persist_with_their_own_fields(db_session):
     assert all(r.domain == Domain.SIGNALS.value and r.date == D1 for r in rows)
 
 
-async def test_one_phrase_becomes_several_rows_sharing_a_batch(db_session):
+async def test_one_phrase_becomes_several_rows_sharing_a_batch(db_session, signals_owner):
     rows = await svc.ingest_text(
         db_session,
         text="Голова раскалывается, спал 4 часа, кофе в 22",
@@ -59,6 +60,8 @@ async def test_one_phrase_becomes_several_rows_sharing_a_batch(db_session):
             {"kind": "exposure", "key": "caffeine_late", "at_time": "22:00"},
         ]),
         on_date=D1,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     await db_session.commit()
 
@@ -66,7 +69,7 @@ async def test_one_phrase_becomes_several_rows_sharing_a_batch(db_session):
     assert len({r.batch_id for r in rows}) == 1
 
 
-async def test_bad_kind_or_missing_key_is_dropped_not_guessed(db_session):
+async def test_bad_kind_or_missing_key_is_dropped_not_guessed(db_session, signals_owner):
     rows = await svc.create_signals(
         db_session,
         items=[
@@ -75,6 +78,7 @@ async def test_bad_kind_or_missing_key_is_dropped_not_guessed(db_session):
             {"kind": "state", "key": "Energy Level", "value_num": "nonsense"},
         ],
         on_date=D1,
+        identity=signals_owner.identity,
     )
     await db_session.commit()
 
@@ -84,12 +88,14 @@ async def test_bad_kind_or_missing_key_is_dropped_not_guessed(db_session):
 
 
 # ── Raw survives a broken parse ───────────────────────────────────────────────
-async def test_raw_is_stored_even_when_the_parser_blows_up(db_session):
+async def test_raw_is_stored_even_when_the_parser_blows_up(db_session, signals_owner):
     def _explode(_text):
         raise RuntimeError("model timed out")
 
     rows = await svc.ingest_text(
-        db_session, text="спать пиздец хочу", parse=_explode, on_date=D1
+        db_session, text="спать пиздец хочу", parse=_explode, on_date=D1,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     await db_session.commit()
 
@@ -104,6 +110,7 @@ async def test_raw_is_stored_even_when_the_parser_blows_up(db_session):
 
 async def test_nonempty_junk_parser_output_stays_pending_and_reports_failure(
     db_session,
+    signals_owner,
 ):
     outcome = svc.ParserOutcome()
     rows = await svc.ingest_text(
@@ -113,6 +120,8 @@ async def test_nonempty_junk_parser_output_stays_pending_and_reports_failure(
         external_id="tg:junk",
         on_date=D1,
         parser_outcome=outcome,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     await db_session.commit()
 
@@ -127,12 +136,14 @@ async def test_nonempty_junk_parser_output_stays_pending_and_reports_failure(
     ) == []
 
 
-async def test_signals_link_back_to_their_raw_row(db_session):
+async def test_signals_link_back_to_their_raw_row(db_session, signals_owner):
     rows = await svc.ingest_text(
         db_session,
         text="голова болит",
         parse=_parse_fixed([{"kind": "symptom", "key": "headache", "value_num": 3}]),
         on_date=D1,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     await db_session.commit()
 
@@ -140,10 +151,16 @@ async def test_signals_link_back_to_their_raw_row(db_session):
     assert rows[0].raw_id == raw.id
 
 
-async def test_same_external_id_refreshes_one_raw_row(db_session):
+async def test_same_external_id_refreshes_one_raw_row(db_session, signals_owner):
     """A webhook retry must not pile up duplicate raw rows for one message."""
     for _ in range(2):
-        await svc.store_raw_text(db_session, text="кофе в 22", external_id="tg:991")
+        await svc.store_raw_text(
+            db_session,
+            text="кофе в 22",
+            external_id="tg:991",
+            identity=signals_owner.identity,
+            integration_connection_id=signals_owner.connection_id,
+        )
     await db_session.commit()
 
     raws = (await db_session.execute(select(RawPayload))).scalars().all()
@@ -151,11 +168,12 @@ async def test_same_external_id_refreshes_one_raw_row(db_session):
 
 
 # ── Aliases fold on read ──────────────────────────────────────────────────────
-async def test_alias_folds_on_read_without_touching_stored_rows(db_session):
+async def test_alias_folds_on_read_without_touching_stored_rows(db_session, signals_owner):
     await svc.create_signals(
         db_session,
         items=[{"kind": "state", "key": "sleepy"}, {"kind": "state", "key": "sleepiness"}],
         on_date=D1,
+        identity=signals_owner.identity,
     )
     await db_session.commit()
 
@@ -164,10 +182,10 @@ async def test_alias_folds_on_read_without_touching_stored_rows(db_session):
     assert stored == {"sleepy", "sleepiness"}
 
     # But both spellings answer to the canonical key, from either direction.
-    assert len(await svc.list_signals(db_session, key="sleepiness")) == 2
-    assert len(await svc.list_signals(db_session, key="sleepy")) == 2
+    assert len(await svc.list_signals(db_session, key="sleepiness", subject_id=signals_owner.subject_id)) == 2
+    assert len(await svc.list_signals(db_session, key="sleepy", subject_id=signals_owner.subject_id)) == 2
 
-    stats = await svc.key_frequency(db_session)
+    stats = await svc.key_frequency(db_session, subject_id=signals_owner.subject_id)
     assert [(s.key, s.count) for s in stats] == [("sleepiness", 2)]
     # …and the drifted spelling is named on the screen, not hidden by the folding.
     assert stats[0].variants == ("sleepy",)
@@ -190,7 +208,7 @@ def test_how_the_day_went_folds_onto_one_key_each():
 
 
 # ── misparse: out of the charts, still in the table ───────────────────────────
-async def test_misparse_leaves_charts_but_not_the_table(db_session):
+async def test_misparse_leaves_charts_but_not_the_table(db_session, signals_owner):
     rows = await svc.ingest_text(
         db_session,
         text="кофе в 22",
@@ -199,59 +217,73 @@ async def test_misparse_leaves_charts_but_not_the_table(db_session):
             {"kind": "state", "key": "sleepiness", "value_num": 2},
         ]),
         on_date=D1,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     await db_session.commit()
     batch = rows[0].batch_id
 
-    assert await svc.mark_misparse(db_session, batch) == 2
+    assert await svc.mark_misparse(
+        db_session, batch, subject_id=signals_owner.subject_id
+    ) == 2
     await db_session.commit()
 
     # Gone from the analysis reads…
-    assert await svc.list_signals(db_session) == []
-    assert await svc.key_frequency(db_session, include_misparse=False) == []
+    assert await svc.list_signals(db_session, subject_id=signals_owner.subject_id) == []
+    assert await svc.key_frequency(
+        db_session, include_misparse=False, subject_id=signals_owner.subject_id
+    ) == []
     # …still on disk, with the raw text, as material for consolidation.
     assert len((await db_session.execute(select(Signal))).scalars().all()) == 2
-    assert len(await svc.key_frequency(db_session)) == 2
-    assert len(await svc.list_signals(db_session, include_misparse=True)) == 2
+    assert len(await svc.key_frequency(db_session, subject_id=signals_owner.subject_id)) == 2
+    assert len(await svc.list_signals(db_session, include_misparse=True, subject_id=signals_owner.subject_id)) == 2
 
 
-async def test_misparse_cancels_the_whole_batch_only(db_session):
+async def test_misparse_cancels_the_whole_batch_only(db_session, signals_owner):
     keep = await svc.ingest_text(
         db_session, text="a",
         parse=_parse_fixed([{"kind": "state", "key": "energy_level"}]), on_date=D1,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     drop = await svc.ingest_text(
         db_session, text="b",
         parse=_parse_fixed([{"kind": "state", "key": "sleepiness"}]), on_date=D1,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     await db_session.commit()
 
-    await svc.mark_misparse(db_session, drop[0].batch_id)
+    await svc.mark_misparse(
+        db_session, drop[0].batch_id, subject_id=signals_owner.subject_id
+    )
     await db_session.commit()
 
-    left = await svc.list_signals(db_session)
+    left = await svc.list_signals(db_session, subject_id=signals_owner.subject_id)
     assert [r.id for r in left] == [keep[0].id]
 
 
 # ── list_signals filters ──────────────────────────────────────────────────────
-async def test_list_signals_filters_by_kind_and_date(db_session):
+async def test_list_signals_filters_by_kind_and_date(db_session, signals_owner):
     await svc.create_signals(
-        db_session, items=[{"kind": "symptom", "key": "headache"}], on_date=D1
+        db_session, items=[{"kind": "symptom", "key": "headache"}], on_date=D1,
+        identity=signals_owner.identity,
     )
     await svc.create_signals(
-        db_session, items=[{"kind": "state", "key": "sleepiness"}], on_date=D2
+        db_session, items=[{"kind": "state", "key": "sleepiness"}], on_date=D2,
+        identity=signals_owner.identity,
     )
     await db_session.commit()
 
-    assert len(await svc.list_signals(db_session, kind="symptom")) == 1
-    assert len(await svc.list_signals(db_session, start=D2)) == 1
-    assert len(await svc.list_signals(db_session, end=D1)) == 1
+    assert len(await svc.list_signals(db_session, kind="symptom", subject_id=signals_owner.subject_id)) == 1
+    assert len(await svc.list_signals(db_session, start=D2, subject_id=signals_owner.subject_id)) == 1
+    assert len(await svc.list_signals(db_session, end=D1, subject_id=signals_owner.subject_id)) == 1
     # Newest first.
-    assert [r.date for r in await svc.list_signals(db_session)] == [D2, D1]
+    assert [r.date for r in await svc.list_signals(db_session, subject_id=signals_owner.subject_id)] == [D2, D1]
 
 
 # ── R1: the revision screen's raw material ────────────────────────────────────
-async def test_key_stats_carry_the_phrasings_they_came_from(db_session):
+async def test_key_stats_carry_the_phrasings_they_came_from(db_session, signals_owner):
     """Counting keys can't answer "is this the same thing?" — the wording can."""
     await svc.create_signals(
         db_session,
@@ -262,18 +294,19 @@ async def test_key_stats_carry_the_phrasings_they_came_from(db_session):
             {"kind": "symptom", "key": "headache", "note": "голова раскалывается"},
         ],
         on_date=D1,
+        identity=signals_owner.identity,
     )
     await db_session.commit()
 
-    stats = {s.key: s for s in await svc.key_frequency(db_session)}
+    stats = {s.key: s for s in await svc.key_frequency(db_session, subject_id=signals_owner.subject_id)}
     # Most-used first, so the consolidation candidates surface on their own.
-    assert [s.key for s in await svc.key_frequency(db_session)] == ["sleepiness", "headache"]
+    assert [s.key for s in await svc.key_frequency(db_session, subject_id=signals_owner.subject_id)] == ["sleepiness", "headache"]
     assert set(stats["sleepiness"].examples) == {"спать пиздец хочу", "вырубает"}
     assert stats["headache"].examples == ("голова раскалывается",)
     assert stats["headache"].variants == ()
 
 
-async def test_key_stats_cap_the_examples_per_key(db_session):
+async def test_key_stats_cap_the_examples_per_key(db_session, signals_owner):
     await svc.create_signals(
         db_session,
         items=[
@@ -281,10 +314,11 @@ async def test_key_stats_cap_the_examples_per_key(db_session):
             for n in range(svc.EXAMPLES_PER_KEY + 3)
         ],
         on_date=D1,
+        identity=signals_owner.identity,
     )
     await db_session.commit()
 
-    stat = (await svc.key_frequency(db_session))[0]
+    stat = (await svc.key_frequency(db_session, subject_id=signals_owner.subject_id))[0]
     assert stat.count == svc.EXAMPLES_PER_KEY + 3      # every row counted…
     assert len(stat.examples) == svc.EXAMPLES_PER_KEY  # …a readable few shown
 
@@ -294,17 +328,21 @@ def _explode(_text):
     raise RuntimeError("model timed out")
 
 
-async def _unparsed_message(db_session, text="спать хочу", external_id="tg:1"):
+async def _unparsed_message(
+    db_session, signals_owner, text="спать хочу", external_id="tg:1"
+):
     """Ingest a message with a broken parser → raw stored, no rows, still pending."""
     assert await svc.ingest_text(
-        db_session, text=text, parse=_explode, external_id=external_id, on_date=D1
+        db_session, text=text, parse=_explode, external_id=external_id, on_date=D1,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     ) == []
     await db_session.commit()
     return (await db_session.execute(select(RawPayload))).scalars().one()
 
 
-async def test_a_parsed_message_is_marked_done_a_failed_one_stays_pending(db_session):
-    raw = await _unparsed_message(db_session)
+async def test_a_parsed_message_is_marked_done_a_failed_one_stays_pending(db_session, signals_owner):
+    raw = await _unparsed_message(db_session, signals_owner)
     assert raw.processed_at is None
 
     await svc.ingest_text(
@@ -313,6 +351,8 @@ async def test_a_parsed_message_is_marked_done_a_failed_one_stays_pending(db_ses
         parse=_parse_fixed([{"kind": "symptom", "key": "headache"}]),
         external_id="tg:2",
         on_date=D1,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     await db_session.commit()
 
@@ -326,6 +366,7 @@ async def test_a_parsed_message_is_marked_done_a_failed_one_stays_pending(db_ses
 # service never manufactures an unscoped/global alert. ─────────────────────────
 async def test_parser_failure_and_success_are_reported_without_global_alerts(
     db_session,
+    signals_owner,
 ):
     outcome = svc.ParserOutcome()
     await svc.ingest_text(
@@ -334,6 +375,8 @@ async def test_parser_failure_and_success_are_reported_without_global_alerts(
         parse=_explode,
         on_date=D1,
         parser_outcome=outcome,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     await db_session.commit()
 
@@ -343,6 +386,8 @@ async def test_parser_failure_and_success_are_reported_without_global_alerts(
         parse=_parse_fixed([{"kind": "symptom", "key": "headache"}]),
         on_date=D1,
         parser_outcome=outcome,
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     await db_session.commit()
     assert (outcome.successes, outcome.failures) == (1, 1)
@@ -351,9 +396,15 @@ async def test_parser_failure_and_success_are_reported_without_global_alerts(
     ) == []
 
 
-async def test_reparse_success_and_explicit_empty_report_success(db_session):
-    await _unparsed_message(db_session)
-    await svc.store_raw_text(db_session, text="не факт", external_id="tg:empty")
+async def test_reparse_success_and_explicit_empty_report_success(db_session, signals_owner):
+    await _unparsed_message(db_session, signals_owner)
+    await svc.store_raw_text(
+        db_session,
+        text="не факт",
+        external_id="tg:empty",
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
+    )
     outcome = svc.ParserOutcome()
 
     def _parse(text):
@@ -365,6 +416,7 @@ async def test_reparse_success_and_explicit_empty_report_success(db_session):
         db_session,
         parse=_parse,
         parser_outcome=outcome,
+        subject_id=signals_owner.subject_id,
     )
     await db_session.commit()
     assert (outcome.successes, outcome.failures) == (2, 0)
@@ -373,12 +425,13 @@ async def test_reparse_success_and_explicit_empty_report_success(db_session):
     ) == []
 
 
-async def test_reparse_recovers_a_message_the_model_choked_on(db_session):
-    raw = await _unparsed_message(db_session)
+async def test_reparse_recovers_a_message_the_model_choked_on(db_session, signals_owner):
+    raw = await _unparsed_message(db_session, signals_owner)
 
     rows = await svc.reparse_unparsed(
         db_session,
         parse=_parse_fixed([{"kind": "state", "key": "sleepiness", "value_num": 4}]),
+        subject_id=signals_owner.subject_id,
     )
     await db_session.commit()
 
@@ -390,39 +443,49 @@ async def test_reparse_recovers_a_message_the_model_choked_on(db_session):
     assert raw.processed_at is not None
 
 
-async def test_reparse_is_safe_to_run_twice(db_session):
-    await _unparsed_message(db_session)
+async def test_reparse_is_safe_to_run_twice(db_session, signals_owner):
+    await _unparsed_message(db_session, signals_owner)
     parse = _parse_fixed([{"kind": "state", "key": "sleepiness"}])
 
-    assert len(await svc.reparse_unparsed(db_session, parse=parse)) == 1
+    assert len(await svc.reparse_unparsed(
+        db_session, parse=parse, subject_id=signals_owner.subject_id
+    )) == 1
     await db_session.commit()
-    assert await svc.reparse_unparsed(db_session, parse=parse) == []
+    assert await svc.reparse_unparsed(
+        db_session, parse=parse, subject_id=signals_owner.subject_id
+    ) == []
     await db_session.commit()
 
     assert len((await db_session.execute(select(Signal))).scalars().all()) == 1
 
 
-async def test_reparse_leaves_the_row_pending_when_the_model_is_still_down(db_session):
+async def test_reparse_leaves_the_row_pending_when_the_model_is_still_down(db_session, signals_owner):
     """A second outage must not burn the message's last chance."""
-    raw = await _unparsed_message(db_session)
+    raw = await _unparsed_message(db_session, signals_owner)
 
-    assert await svc.reparse_unparsed(db_session, parse=_explode) == []
+    assert await svc.reparse_unparsed(
+        db_session, parse=_explode, subject_id=signals_owner.subject_id
+    ) == []
     await db_session.commit()
 
     await db_session.refresh(raw)
     assert raw.processed_at is None
 
 
-async def test_reparse_batch_any_failure_wins_over_success(db_session):
+async def test_reparse_batch_any_failure_wins_over_success(db_session, signals_owner):
     raw = await svc.store_raw_text(
         db_session,
         text="голова болит",
         external_id="tg:reparse-junk",
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     await svc.store_raw_text(
         db_session,
         text="устал",
         external_id="tg:reparse-good",
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
     )
     outcome = svc.ParserOutcome()
 
@@ -435,6 +498,7 @@ async def test_reparse_batch_any_failure_wins_over_success(db_session):
         db_session,
         parse=_mixed,
         parser_outcome=outcome,
+        subject_id=signals_owner.subject_id,
     )
     await db_session.commit()
 
@@ -447,7 +511,7 @@ async def test_reparse_batch_any_failure_wins_over_success(db_session):
     ) == []
 
 
-async def test_reparse_ignores_taps_and_anything_older_than_the_window(db_session):
+async def test_reparse_ignores_taps_and_anything_older_than_the_window(db_session, signals_owner):
     from vitals.services.raw_payload_service import upsert_raw_payload
     from vitals.utils.timeutils import now_local
 
@@ -456,27 +520,36 @@ async def test_reparse_ignores_taps_and_anything_older_than_the_window(db_sessio
         db_session, domain=svc.DOMAIN, source=Source.TELEGRAM.value,
         external_id="tg:tap", payload={"data": "mis:abc"},
     )
-    stale = await svc.store_raw_text(db_session, text="кофе в 22", external_id="tg:old")
+    stale = await svc.store_raw_text(
+        db_session,
+        text="кофе в 22",
+        external_id="tg:old",
+        identity=signals_owner.identity,
+        integration_connection_id=signals_owner.connection_id,
+    )
     stale.fetched_at = now_local() - timedelta(days=svc.REPARSE_WINDOW_DAYS + 3)
     await db_session.commit()
 
     assert await svc.reparse_unparsed(
-        db_session, parse=_parse_fixed([{"kind": "state", "key": "sleepiness"}])
+        db_session, parse=_parse_fixed([{"kind": "state", "key": "sleepiness"}]),
+        subject_id=signals_owner.subject_id,
     ) == []
 
 
 # ── day_context ───────────────────────────────────────────────────────────────
-async def test_day_context_is_idempotent_and_last_answer_wins(db_session):
+async def test_day_context_is_idempotent_and_last_answer_wins(db_session, signals_owner):
     first = await svc.set_day_context(
         db_session, D1,
         answers={"remote": False, "gym": True},
         planned={"remote": True},
         source=Source.TEMPLATE.value,
+        identity=signals_owner.identity,
     )
     await db_session.commit()
 
     second = await svc.set_day_context(
-        db_session, D1, answers={"remote": True, "gym": False}
+        db_session, D1, answers={"remote": True, "gym": False},
+        identity=signals_owner.identity,
     )
     await db_session.commit()
 
@@ -489,8 +562,10 @@ async def test_day_context_is_idempotent_and_last_answer_wins(db_session):
     assert second.planned == {"remote": True}
 
 
-async def test_get_day_context_missing_day_is_none(db_session):
-    assert await svc.get_day_context(db_session, D1) is None
+async def test_get_day_context_missing_day_is_none(db_session, signals_owner):
+    assert await svc.get_day_context(
+        db_session, D1, subject_id=signals_owner.subject_id
+    ) is None
 
 
 @pytest.mark.integration

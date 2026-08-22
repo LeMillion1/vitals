@@ -1214,7 +1214,9 @@ async def test_a_tap_while_the_module_is_off_is_ignored(bot_client, db_session):
     )
 
     assert response.status_code == 200
-    assert await signals_service.get_day_context(db_session, tomorrow) is None
+    assert await signals_service.get_day_context(
+        db_session, tomorrow, subject_id=(await _telegram_ownership(db_session)).subject_id
+    ) is None
     assert fake.acks == []
     raw = await db_session.scalar(
         select(RawPayload).where(RawPayload.external_id == "tg:1")
@@ -1370,7 +1372,9 @@ async def test_edited_message_supersedes_prior_facts_but_keeps_history(
         ("headache", True),
         ("sleepiness", False),
     ]
-    assert [row.key for row in await signals_service.list_signals(db_session)] == [
+    assert [row.key for row in await signals_service.list_signals(
+        db_session, subject_id=(await _telegram_ownership(db_session)).subject_id
+    )] == [
         "sleepiness"
     ]
     raws = list(
@@ -1406,7 +1410,9 @@ async def test_edit_into_command_or_question_still_supersedes_prior_fact(
 
     rows = list(await db_session.scalars(select(Signal)))
     assert len(rows) == 1 and rows[0].misparse is True
-    assert await signals_service.list_signals(db_session) == []
+    assert await signals_service.list_signals(
+        db_session, subject_id=(await _telegram_ownership(db_session)).subject_id
+    ) == []
 
 
 async def test_edit_keeps_original_message_health_day_across_rollover(
@@ -1524,7 +1530,9 @@ async def test_superseded_stale_command_or_question_never_replies(
     assert original.raw.processed_at is not None
 
 
-async def test_the_message_is_committed_before_the_model_is_called(db_session, monkeypatch):
+async def test_the_message_is_committed_before_the_model_is_called(
+    bot_client, db_session, monkeypatch
+):
     """Telegram re-sends an update it got no 200 for, and the model call in the
     middle takes 5-20 seconds. The retry arrives on its own connection and can
     only see what is *committed* — so a raw row still sitting in the request's
@@ -1532,7 +1540,7 @@ async def test_the_message_is_committed_before_the_model_is_called(db_session, m
     for a second parse and a second reply to the same message."""
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    fake = FakeNotifier()
+    _client, fake = bot_client
     commits: list[int] = []
     real_commit = AsyncSession.commit
 
@@ -1553,7 +1561,13 @@ async def test_the_message_is_committed_before_the_model_is_called(db_session, m
         return []
 
     await inbound.handle_text(
-        db_session, "спать хочу", notifier=fake, external_id="tg:1", parse=_parse
+        db_session,
+        "спать хочу",
+        notifier=fake,
+        external_id="tg:1",
+        parse=_parse,
+        ownership=await _telegram_ownership(db_session),
+        notifier_resolver=_notifier_resolver(fake),
     )
 
     assert durable == [True]
@@ -1608,23 +1622,40 @@ async def test_a_failure_after_durable_capture_is_acknowledged_and_recoverable(
     assert all(record.exc_info is None for record in caplog.records)
 
 
-async def test_a_message_after_midnight_lands_on_the_day_that_just_ended(db_session):
+async def test_a_message_after_midnight_lands_on_the_day_that_just_ended(
+    bot_client, db_session
+):
     """«кофе поздно» written at 00:30 is about the evening just spent. Filed under
     the fresh calendar date it lands in tomorrow's brief, and tonight's — the one
     that would have explained the sleep it ruined — never sees it."""
     from freezegun import freeze_time
 
-    fake = FakeNotifier()
+    _client, fake = bot_client
 
     async def _parse(_text):
         return [{"kind": "exposure", "key": "caffeine_late", "note": "кофе поздно"}]
 
+    ownership = await _telegram_ownership(db_session)
     # 21:30 UTC = 00:30 local (Europe/Chisinau is UTC+3 in July).
     with freeze_time("2026-07-26 21:30:00"):
-        await inbound.handle_text(db_session, "кофе поздно", notifier=fake, parse=_parse)
+        await inbound.handle_text(
+            db_session,
+            "кофе поздно",
+            notifier=fake,
+            parse=_parse,
+            ownership=ownership,
+            notifier_resolver=_notifier_resolver(fake),
+        )
     # …and the normal case is untouched: an afternoon message is today's.
     with freeze_time("2026-07-27 12:00:00"):
-        await inbound.handle_text(db_session, "кофе поздно", notifier=fake, parse=_parse)
+        await inbound.handle_text(
+            db_session,
+            "кофе поздно",
+            notifier=fake,
+            parse=_parse,
+            ownership=ownership,
+            notifier_resolver=_notifier_resolver(fake),
+        )
 
     assert sorted(row.date for row in await _signals(db_session)) == [
         date(2026, 7, 26), date(2026, 7, 27),
@@ -1648,7 +1679,9 @@ async def test_undo_tap_flags_the_whole_batch_but_keeps_it(bot_client, parses_to
     rows = await _signals(db_session)
     assert len(rows) == 2 and all(row.misparse for row in rows)
     # Gone from the charts, still on the table.
-    assert await signals_service.list_signals(db_session) == []
+    assert await signals_service.list_signals(
+        db_session, subject_id=(await _telegram_ownership(db_session)).subject_id
+    ) == []
     assert fake.acks == [("cb-1", "Убрал из графиков")]
 
 
@@ -1666,7 +1699,9 @@ async def test_context_tap_answers_the_day_it_was_asked_about(bot_client, db_ses
                                   callback_id="cb-2"),
                  headers=HEADERS)
 
-    ctx = await signals_service.get_day_context(db_session, tomorrow)
+    ctx = await signals_service.get_day_context(
+        db_session, tomorrow, subject_id=(await _telegram_ownership(db_session)).subject_id
+    )
     assert ctx is not None
     # Second tap merges into the first answer rather than replacing it.
     assert ctx.answers == {"where": "remote", "gym": False}
@@ -2085,7 +2120,9 @@ async def test_a_tap_outside_the_question_registry_is_dropped(bot_client, db_ses
                                   callback_id="cb-2"),
                  headers=HEADERS)
 
-    assert await signals_service.get_day_context(db_session, tomorrow) is None
+    assert await signals_service.get_day_context(
+        db_session, tomorrow, subject_id=(await _telegram_ownership(db_session)).subject_id
+    ) is None
 
 
 # 2026-07-27 is a Monday: the default template calls it "в офисе · без зала".
@@ -2188,7 +2225,9 @@ async def test_a_redraw_the_channel_refuses_does_not_lose_the_answer(bot_client,
                      headers=HEADERS)
 
     assert r.status_code == 200
-    ctx = await signals_service.get_day_context(db_session, MONDAY)
+    ctx = await signals_service.get_day_context(
+        db_session, MONDAY, subject_id=(await _telegram_ownership(db_session)).subject_id
+    )
     assert ctx is not None and ctx.answers == {"where": "remote"}
 
 

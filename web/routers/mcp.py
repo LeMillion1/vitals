@@ -3846,7 +3846,6 @@ async def get_signals(
             end=end,
             limit=limit,
             subject_id=ownership.subject_id,
-            include_legacy_unowned=True,
         )
         return [serialize_row(r) for r in rows]
 
@@ -3911,7 +3910,6 @@ async def mark_signal_misparse(batch_id: str) -> dict:
             session,
             batch_id,
             subject_id=ownership.subject_id,
-            include_legacy_unowned=True,
         )
         await session.commit()
         return {"marked": marked, "batch_id": batch_id}
@@ -3940,7 +3938,6 @@ async def get_day_context(
             end=end,
             limit=limit,
             subject_id=ownership.subject_id,
-            include_legacy_unowned=True,
         )
         return [serialize_row(r) for r in rows]
 
@@ -3980,7 +3977,6 @@ async def log_day_context(answers: dict, on_date: Optional[str] = None) -> dict:
                 value,
                 source=Source.MCP.value,
                 identity=ownership.owner_action(),
-                include_legacy_unowned=True,
             )
         await session.commit()
         return await serialize_written(session, row)

@@ -399,7 +399,6 @@ async def build_context(
         session,
         today,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     # Yesterday's answers, and only the ones he actually gave. How heavy a day was
     # is answered in the evening about the day just spent, so at 11:00 the newest
@@ -410,7 +409,6 @@ async def build_context(
         session,
         today - timedelta(days=1),
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     ctx["day"] = {
         "answers": answers,
@@ -465,7 +463,6 @@ async def _signals_since_yesterday(
         start=on_date - timedelta(days=1),
         end=on_date,
         subject_id=subject_id,
-        include_legacy_unowned=include_legacy_unowned,
     )
     return [digest_service.signal_row(s) for s in reversed(rows)] or None
 

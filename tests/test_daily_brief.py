@@ -10,6 +10,8 @@ import uuid
 from datetime import date, datetime, timedelta
 
 import pytest
+
+from vitals.ownership import WriteIdentity
 from sqlalchemy import select
 
 from vitals.enums import (
@@ -304,17 +306,20 @@ async def test_the_brief_sees_yesterdays_signals(db_session, legacy_owner_roots)
         db_session,
         items=[{"kind": "exposure", "key": "caffeine_late", "at_time": "22:00"}],
         on_date=DAY - timedelta(days=1),
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     await signals_service.create_signals(
         db_session,
         items=[{"kind": "state", "key": "sleepiness", "value_num": 5}],
         on_date=DAY,
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     # Two days back is outside the window: the brief is about this morning.
     await signals_service.create_signals(
         db_session,
         items=[{"kind": "symptom", "key": "headache", "value_num": 3}],
         on_date=DAY - timedelta(days=2),
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     await db_session.commit()
 
@@ -543,6 +548,7 @@ async def test_a_day_without_garmin_is_not_an_empty_day(db_session, legacy_owner
         db_session,
         items=[{"kind": "state", "key": "fatigue", "value_num": 4}],
         on_date=DAY,
+        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
     )
     await db_session.commit()
 
@@ -876,7 +882,8 @@ async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(
             DAY,
             question.key,
             next(iter(question.labels)),
-            ownership=ownership,
+            identity=ownership.owner_action(),
+            integration_connection_id=ownership.connection_id,
         )
     await db_session.commit()
 

@@ -243,9 +243,7 @@ async def resolve(
     session: AsyncSession,
     on_date: date_type,
     *,
-    ownership: ProactiveOwnershipContext | None = None,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> tuple[dict[str, Any], set[str]]:
     """``(answers, answered)`` — his answer if there is one, else the guess, plus
     the set of questions he *actually* answered.
@@ -266,30 +264,16 @@ async def resolve(
     Falling back to the bare defaults here would let a single "иду в зал" quietly
     cancel the template's "удалёнка".
     """
-    if ownership is not None and subject_id is not None:
-        raise ValueError("pass either proactive ownership or subject_id")
-    effective_subject_id = (
-        ownership.subject_id if ownership is not None else subject_id
-    )
-    include_unowned = (
-        ownership.include_legacy_unowned
-        if ownership is not None
-        else include_legacy_unowned
-    )
     row = await signals_service.get_day_context(
         session,
         on_date,
-        subject_id=effective_subject_id,
-        include_legacy_unowned=include_unowned,
+        subject_id=subject_id,
     )
     guess = (
         dict(row.planned)
         if row is not None and row.planned
         else guess_for(
-            await get_week_template(
-                session,
-                subject_id=effective_subject_id,
-            ),
+            await get_week_template(session, subject_id=subject_id),
             on_date,
         )
     )
@@ -303,38 +287,17 @@ async def record_answer(
     key: str,
     value: Any,
     *,
-    ownership: ProactiveOwnershipContext | None = None,
     source: str = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
-    include_legacy_unowned: bool = False,
+    identity: WriteIdentity,
+    integration_connection_id: uuid.UUID | None = None,
     allow_historical_connection: bool = False,
 ) -> DayContext:
     """One tap → one answer merged into that day, the guess preserved beside it."""
-    if ownership is not None and identity is not None:
-        raise ValueError("pass either proactive ownership or a write identity")
-    effective_identity = (
-        ownership.owner_action() if ownership is not None else identity
-    )
-    effective_subject_id = (
-        ownership.subject_id
-        if ownership is not None
-        else (identity.subject_id if identity is not None else None)
-    )
-    include_unowned = (
-        ownership.include_legacy_unowned
-        if ownership is not None
-        else include_legacy_unowned
-    )
     # The service applies this guess only if no plan exists after it has acquired
     # the subject lock. Computing it eagerly is harmless; deciding whether to
     # write it here would race a concurrent evening plan.
     planned = guess_for(
-        await get_week_template(
-            session,
-            subject_id=(
-                effective_subject_id if effective_subject_id is not None else None
-            ),
-        ),
+        await get_week_template(session, subject_id=identity.subject_id),
         on_date,
     )
     return await signals_service.set_day_context(
@@ -343,13 +306,10 @@ async def record_answer(
         answers={key: value},
         planned=planned,
         source=source,
-        identity=effective_identity,
-        integration_connection_id=(
-            ownership.connection_id if ownership is not None else None
-        ),
+        identity=identity,
+        integration_connection_id=integration_connection_id,
         merge_answers=True,
         planned_if_missing=True,
-        include_legacy_unowned=include_unowned,
         allow_historical_connection=allow_historical_connection,
     )
 
@@ -359,7 +319,7 @@ async def record_plan(
     on_date: date_type,
     planned: dict,
     *,
-    ownership: ProactiveOwnershipContext | None = None,
+    ownership: ProactiveOwnershipContext,
 ) -> DayContext:
     """Park the template's guess for a day, without touching any answer."""
     return await signals_service.set_day_context(
@@ -368,14 +328,11 @@ async def record_plan(
         answers={},
         planned=planned,
         source=Source.TEMPLATE.value,
-        identity=ownership.system_action() if ownership is not None else None,
+        identity=ownership.system_action(),
         integration_connection_id=None,
         merge_answers=True,
         preserve_source=True,
         planned_if_missing=True,
-        include_legacy_unowned=(
-            ownership.include_legacy_unowned if ownership is not None else False
-        ),
     )
 
 
@@ -627,7 +584,7 @@ async def evening_job(session_factory, redis=None) -> None:
         recap_answers, recap_answered = await resolve(
             session,
             today,
-            ownership=ownership,
+            subject_id=ownership.subject_id,
         )
         recap_blocks = [
             compose.Block(
@@ -715,7 +672,7 @@ async def evening_job(session_factory, redis=None) -> None:
         answers, answered = await resolve(
             session,
             tomorrow,
-            ownership=ownership,
+            subject_id=ownership.subject_id,
         )
         buttons = exception_buttons(answers, tomorrow, answered) or None
         tomorrow_line = f"{LINE_TOMORROW}{describe(answers)}"

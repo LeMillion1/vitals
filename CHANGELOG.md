@@ -10,6 +10,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added — scoped services (PR-04)
 
+- Closed the signals domain — what a person types to the bot, and the per-day
+  context they answer with a tap. Fourteen bridges. Every read takes the
+  subject; every write takes the identity, and a captured message also names the
+  channel it arrived through, because a signal without a recipient connection is
+  a message from nowhere.
+- The day-context upsert no longer adopts an unowned row. One answered day per
+  person means the subject *is* the lookup: a row that belongs to nobody is
+  nobody's day to answer, so it is not found and not claimed. The case that used
+  to need an explicit refusal — a partial row with an actor and no subject — is
+  now simply unreachable.
+- The signal replay writes on behalf of each raw's own roots rather than a
+  caller-supplied flag, the same shape body composition settled on.
+- Closed `day_plan.resolve` and `day_plan.record_answer` with it, since both are
+  thin wrappers over the day context: `resolve` takes the subject, `record_answer`
+  takes the identity and the connection the tap came in on. `handle_text` and the
+  nightly signal recovery now refuse to run without proactive ownership — an
+  incoming message belongs to somebody.
+
 - Closed the body-composition domain, the deepest graph so far: a scan, its
   metric sheet, the raw payload it was parsed from, the file that payload came
   out of, and the weigh-in it bridges into the weight domain. Fifteen bridges

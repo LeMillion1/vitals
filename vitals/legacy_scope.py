@@ -155,24 +155,12 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
         'vitals.services.proactive.day_plan': frozenset(
             {
                 'get_week_template',
-                'record_answer',
-                'resolve',
                 'set_week_template',
-            }
-        ),
-        'vitals.services.proactive.inbound': frozenset(
-            {
-                'known_keys',
             }
         ),
         'vitals.services.proactive.prefs': frozenset(
             {
                 'bot_enabled',
-            }
-        ),
-        'vitals.services.proactive.signal_ai_service': frozenset(
-            {
-                '_known_keys',
             }
         ),
         'vitals.services.scoped_settings_service': frozenset(
@@ -181,24 +169,6 @@ LEGACY_SCOPE_BRIDGES: Mapping[str, frozenset[str]] = MappingProxyType(
                 'mirror_legacy_setting',
                 'set_scoped_setting',
                 'update_scoped_setting',
-            }
-        ),
-        'vitals.services.signals_service': frozenset(
-            {
-                '_raw_scope',
-                '_signal_scope',
-                'create_signals',
-                'delete_signal',
-                'get_day_context',
-                'ingest_stored_text',
-                'ingest_text',
-                'key_frequency',
-                'list_day_contexts',
-                'list_signals',
-                'mark_misparse',
-                'reparse_unparsed',
-                'set_day_context',
-                'store_raw_text',
             }
         ),
 

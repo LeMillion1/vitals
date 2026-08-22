@@ -123,30 +123,18 @@ def _signal_scope(
     *,
     subject_id: uuid.UUID,
     integration_connection_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
 ):
-    owned = _owned_health_row_scope(
+    return _owned_health_row_scope(
         Signal,
         subject_id=subject_id,
         integration_connection_id=integration_connection_id,
     )
-    if include_legacy_unowned:
-        owned = or_(
-            owned,
-            and_(
-                Signal.subject_id.is_(None),
-                Signal.actor_user_id.is_(None),
-                Signal.integration_connection_id.is_(None),
-            ),
-        )
-    return owned
 
 
 def _raw_scope(
     *,
     subject_id: uuid.UUID,
     integration_connection_id: uuid.UUID | None,
-    include_legacy_unowned: bool,
 ):
     owned = RawPayload.subject_id == subject_id
     if integration_connection_id is not None:
@@ -154,34 +142,20 @@ def _raw_scope(
             owned,
             RawPayload.integration_connection_id == integration_connection_id,
         )
-    if include_legacy_unowned:
-        owned = or_(
-            owned,
-            and_(
-                RawPayload.subject_id.is_(None),
-                RawPayload.actor_user_id.is_(None),
-                RawPayload.integration_connection_id.is_(None),
-                RawPayload.file_asset_id.is_(None),
-            ),
-        )
     return owned
 
 
 def _validate_identity(
-    identity: WriteIdentity | None,
+    identity: WriteIdentity,
     integration_connection_id: uuid.UUID | None,
 ) -> None:
-    if identity is not None and not isinstance(identity, WriteIdentity):
-        raise SignalOwnershipError("identity must be a WriteIdentity or None")
+    if not isinstance(identity, WriteIdentity):
+        raise SignalOwnershipError("identity must be a WriteIdentity")
     if integration_connection_id is not None and not isinstance(
         integration_connection_id, uuid.UUID
     ):
         raise SignalOwnershipError(
             "integration_connection_id must be a UUID or None"
-        )
-    if identity is None and integration_connection_id is not None:
-        raise SignalOwnershipError(
-            "integration_connection_id requires an explicit WriteIdentity"
         )
 
 
@@ -472,7 +446,7 @@ async def store_raw_text(
     external_id: Optional[str] = None,
     source: str = Source.TELEGRAM.value,
     processed: bool = False,
-    identity: WriteIdentity | None = None,
+    identity: WriteIdentity,
     integration_connection_id: uuid.UUID | None = None,
 ) -> RawPayload:
     """Park the incoming message in ``raw_payloads`` before anything can fail.
@@ -493,39 +467,29 @@ async def store_raw_text(
     """
     _validate_identity(identity, integration_connection_id)
     subject: HealthSubject | None = None
-    if identity is not None:
-        if integration_connection_id is None:
-            raise SignalOwnershipError(
-                "owned channel raw payload requires a recipient connection"
-            )
-        await _require_connection_scope(
-            session,
-            identity=identity,
-            integration_connection_id=integration_connection_id,
+    if integration_connection_id is None:
+        raise SignalOwnershipError(
+            "owned channel raw payload requires a recipient connection"
         )
+    await _require_connection_scope(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+    )
     payload = {
         "text": text,
         "received_at": now_local().isoformat(timespec="seconds"),
     }
     raw_external_id = external_id or uuid4().hex
-    if identity is None:
-        raw = await upsert_raw_payload(
-            session,
-            domain=DOMAIN,
-            source=source,
-            external_id=raw_external_id,
-            payload=payload,
-        )
-    else:
-        raw = await upsert_owned_raw_payload(
-            session,
-            identity=identity,
-            integration_connection_id=integration_connection_id,
-            domain=DOMAIN,
-            source=source,
-            external_id=raw_external_id,
-            payload=payload,
-        )
+    raw = await upsert_owned_raw_payload(
+        session,
+        identity=identity,
+        integration_connection_id=integration_connection_id,
+        domain=DOMAIN,
+        source=source,
+        external_id=raw_external_id,
+        payload=payload,
+    )
     if processed:
         raw.processed_at = now_local()
     await session.commit()
@@ -599,7 +563,7 @@ async def create_signals(
     source: str = Source.TELEGRAM.value,
     raw_id: Optional[int] = None,
     batch_id: Optional[str] = None,
-    identity: WriteIdentity | None = None,
+    identity: WriteIdentity,
     integration_connection_id: uuid.UUID | None = None,
     allow_historical_connection: bool = False,
     allow_subject_adopted_unowned: bool = False,
@@ -617,7 +581,7 @@ async def create_signals(
         raise SignalOwnershipError(
             "allow_historical_null_actor_connection must be a bool"
         )
-    if identity is not None and integration_connection_id is not None:
+    if integration_connection_id is not None:
         await _require_connection_scope(
             session,
             identity=identity,
@@ -642,7 +606,7 @@ async def create_signals(
                 allow_historical_null_actor_connection
             ),
         )
-        if identity is not None and raw.subject_id != identity.subject_id:
+        if raw.subject_id != identity.subject_id:
             raise SignalOwnershipError("raw payload belongs to another subject")
         if (
             integration_connection_id is not None
@@ -659,14 +623,12 @@ async def create_signals(
         if fields is None:
             continue
         row = Signal(
-            subject_id=(raw.subject_id if raw is not None else identity.subject_id)
-            if raw is not None or identity is not None
-            else None,
+            subject_id=(
+                raw.subject_id if raw is not None else identity.subject_id
+            ),
             actor_user_id=(
                 raw.actor_user_id if raw is not None else identity.actor_user_id
-            )
-            if raw is not None or identity is not None
-            else None,
+            ),
             integration_connection_id=(
                 raw.integration_connection_id
                 if raw is not None
@@ -694,7 +656,7 @@ async def ingest_text(
     external_id: Optional[str] = None,
     on_date: Optional[date_type] = None,
     source: str = Source.TELEGRAM.value,
-    identity: WriteIdentity | None = None,
+    identity: WriteIdentity,
     integration_connection_id: uuid.UUID | None = None,
     parser_outcome: ParserOutcome | None = None,
 ) -> list[Signal]:
@@ -734,7 +696,7 @@ async def ingest_stored_text(
     parse: Parser,
     on_date: Optional[date_type] = None,
     source: str = Source.TELEGRAM.value,
-    identity: WriteIdentity | None = None,
+    identity: WriteIdentity,
     integration_connection_id: uuid.UUID | None = None,
     before_parse: RawBeforeParse | None = None,
     before_normalize: RawBeforeNormalize | None = None,
@@ -761,7 +723,7 @@ async def ingest_stored_text(
             allow_historical_null_actor_connection
         ),
     )
-    if identity is not None and raw.subject_id != identity.subject_id:
+    if raw.subject_id != identity.subject_id:
         raise SignalOwnershipError("raw payload belongs to another subject")
     if (
         integration_connection_id is not None
@@ -796,7 +758,7 @@ async def ingest_stored_text(
             allow_historical_null_actor_connection
         ),
     )
-    if identity is not None and raw.subject_id != identity.subject_id:
+    if raw.subject_id != identity.subject_id:
         raise SignalOwnershipError("raw payload belongs to another subject")
     if (
         integration_connection_id is not None
@@ -854,9 +816,8 @@ async def reparse_unparsed(
     parse: Parser,
     limit: int = REPARSE_BATCH,
     since_days: int = REPARSE_WINDOW_DAYS,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
     integration_connection_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
     text_from_raw: RawTextExtractor | None = None,
     date_from_raw: RawDateExtractor | None = None,
     before_parse: RawBeforeParse | None = None,
@@ -879,17 +840,13 @@ async def reparse_unparsed(
     """
     _validate_parser_outcome(parser_outcome)
     cutoff = now_local() - timedelta(days=since_days)
-    if subject_id is not None and not isinstance(subject_id, uuid.UUID):
-        raise SignalOwnershipError("subject_id must be a UUID or None")
+    if not isinstance(subject_id, uuid.UUID):
+        raise SignalOwnershipError("subject_id must be a UUID")
     if integration_connection_id is not None and not isinstance(
         integration_connection_id, uuid.UUID
     ):
         raise SignalOwnershipError(
             "integration_connection_id must be a UUID or None"
-        )
-    if integration_connection_id is not None and subject_id is None:
-        raise SignalOwnershipError(
-            "integration_connection_id requires an explicit subject_id"
         )
 
     has_signals = select(Signal.id).where(Signal.raw_id == RawPayload.id).exists()
@@ -899,18 +856,12 @@ async def reparse_unparsed(
         RawPayload.fetched_at >= cutoff,
         ~has_signals,
     )
-    if subject_id is not None:
-        stmt = stmt.where(
-            _raw_scope(
-                subject_id=subject_id,
-                integration_connection_id=integration_connection_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
+    stmt = stmt.where(
+        _raw_scope(
+            subject_id=subject_id,
+            integration_connection_id=integration_connection_id,
         )
-    elif include_legacy_unowned:
-        raise SignalOwnershipError(
-            "legacy raw-payload compatibility requires an explicit subject_id"
-        )
+    )
 
     def _default_text(raw: RawPayload) -> Optional[str]:
         payload = raw.payload if isinstance(raw.payload, dict) else {}
@@ -939,14 +890,13 @@ async def reparse_unparsed(
                 # Another raw shape (for example a callback) must not consume the
                 # text budget. Pagination keeps rows after it reachable.
                 continue
-            if subject_id is not None:
-                await _require_raw_ownership_scope(
-                    session,
-                    raw=raw,
-                    allow_historical_null_actor_connection=(
-                        allow_historical_null_actor_connection
-                    ),
-                )
+            await _require_raw_ownership_scope(
+                session,
+                raw=raw,
+                allow_historical_null_actor_connection=(
+                    allow_historical_null_actor_connection
+                ),
+            )
             text = projected.strip()
             if not text:
                 raw.processed_at = now_local()
@@ -993,6 +943,11 @@ async def reparse_unparsed(
                 or raw.fetched_at.date(),
                 source=raw.source,
                 raw_id=raw.id,
+                # The replay writes on behalf of the raw's own roots, which
+                # _require_raw_ownership_scope has already proved belong here.
+                identity=WriteIdentity(subject_id, raw.actor_user_id),
+                allow_historical_connection=True,
+                allow_subject_adopted_unowned=True,
                 allow_historical_null_actor_connection=(
                     allow_historical_null_actor_connection
                 ),
@@ -1031,9 +986,8 @@ async def delete_signal(
     session: AsyncSession,
     signal_id: int,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
     integration_connection_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
 ) -> bool:
     """Pinpoint removal from the ``/signals`` page — the counterpart of the "не то"
     button, which cancels a whole batch.
@@ -1043,18 +997,12 @@ async def delete_signal(
     ``raw_payloads`` regardless, so nothing said is ever lost.
     """
     stmt = select(Signal).where(Signal.id == signal_id)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _signal_scope(
-                subject_id=subject_id,
-                integration_connection_id=integration_connection_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
+    stmt = stmt.where(
+        _signal_scope(
+            subject_id=subject_id,
+            integration_connection_id=integration_connection_id,
         )
-    elif include_legacy_unowned:
-        raise SignalOwnershipError(
-            "legacy signal compatibility requires an explicit subject_id"
-        )
+    )
     row = await session.scalar(stmt)
     if row is None:
         return False
@@ -1067,24 +1015,17 @@ async def mark_misparse(
     session: AsyncSession,
     batch_id: str,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
     integration_connection_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
 ) -> int:
     """"Не то" — drop the whole batch out of charts, keep the rows and the raw text."""
     stmt = update(Signal).where(Signal.batch_id == batch_id)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _signal_scope(
-                subject_id=subject_id,
-                integration_connection_id=integration_connection_id,
-                include_legacy_unowned=include_legacy_unowned,
-            )
+    stmt = stmt.where(
+        _signal_scope(
+            subject_id=subject_id,
+            integration_connection_id=integration_connection_id,
         )
-    elif include_legacy_unowned:
-        raise SignalOwnershipError(
-            "legacy signal compatibility requires an explicit subject_id"
-        )
+    )
     result = await session.execute(stmt.values(misparse=True))
     await session.flush()
     return result.rowcount or 0
@@ -1100,23 +1041,16 @@ async def list_signals(
     end: Optional[date_type] = None,
     include_misparse: bool = False,
     limit: int = 200,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> list[Signal]:
     """Newest first. ``key`` matches every stored spelling that folds to it."""
     stmt = select(Signal).where(Signal.domain == DOMAIN)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _signal_scope(
-                subject_id=subject_id,
-                integration_connection_id=None,
-                include_legacy_unowned=include_legacy_unowned,
-            )
+    stmt = stmt.where(
+        _signal_scope(
+            subject_id=subject_id,
+            integration_connection_id=None,
         )
-    elif include_legacy_unowned:
-        raise SignalOwnershipError(
-            "legacy signal compatibility requires an explicit subject_id"
-        )
+    )
     if not include_misparse:
         stmt = stmt.where(Signal.misparse.is_(False))
     if key is not None:
@@ -1161,8 +1095,7 @@ async def key_frequency(
     start: Optional[date_type] = None,
     end: Optional[date_type] = None,
     include_misparse: bool = True,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> list[KeyStat]:
     """Canonical keys, most-used first — the raw material for consolidating them.
 
@@ -1170,18 +1103,12 @@ async def key_frequency(
     what the parser actually emits, mistakes included.
     """
     stmt = select(Signal.key, Signal.note).where(Signal.domain == DOMAIN)
-    if subject_id is not None:
-        stmt = stmt.where(
-            _signal_scope(
-                subject_id=subject_id,
-                integration_connection_id=None,
-                include_legacy_unowned=include_legacy_unowned,
-            )
+    stmt = stmt.where(
+        _signal_scope(
+            subject_id=subject_id,
+            integration_connection_id=None,
         )
-    elif include_legacy_unowned:
-        raise SignalOwnershipError(
-            "legacy signal compatibility requires an explicit subject_id"
-        )
+    )
     if not include_misparse:
         stmt = stmt.where(Signal.misparse.is_(False))
     if start is not None:
@@ -1224,12 +1151,11 @@ async def set_day_context(
     answers: dict,
     planned: Optional[dict] = None,
     source: str = Source.MANUAL.value,
-    identity: WriteIdentity | None = None,
+    identity: WriteIdentity,
     integration_connection_id: uuid.UUID | None = None,
     merge_answers: bool = False,
     preserve_source: bool = False,
     planned_if_missing: bool = False,
-    include_legacy_unowned: bool = False,
     allow_historical_connection: bool = False,
 ) -> DayContext:
     """Upsert the day's context — the latest answer wins, nothing is versioned.
@@ -1243,113 +1169,88 @@ async def set_day_context(
         ("merge_answers", merge_answers),
         ("preserve_source", preserve_source),
         ("planned_if_missing", planned_if_missing),
-        ("include_legacy_unowned", include_legacy_unowned),
         ("allow_historical_connection", allow_historical_connection),
     ):
         if not isinstance(flag, bool):
             raise SignalOwnershipError(f"{flag_name} must be a bool")
-    if identity is not None:
-        # Serialize the whole read/merge/write operation on the durable subject
-        # root.  Locking only the DayContext row cannot protect the first two
-        # concurrent answers for a date where the row does not exist yet.
-        subject = await session.scalar(
-            select(HealthSubject)
-            .where(HealthSubject.id == identity.subject_id)
-            .with_for_update()
+    # Serialize the whole read/merge/write operation on the durable subject
+    # root.  Locking only the DayContext row cannot protect the first two
+    # concurrent answers for a date where the row does not exist yet.
+    subject = await session.scalar(
+        select(HealthSubject)
+        .where(HealthSubject.id == identity.subject_id)
+        .with_for_update()
+    )
+    if subject is None:
+        raise SignalOwnershipError("day context subject does not exist")
+    if integration_connection_id is not None:
+        await _require_connection_scope(
+            session,
+            identity=identity,
+            integration_connection_id=integration_connection_id,
+            allow_historical=allow_historical_connection,
         )
-        if subject is None:
-            raise SignalOwnershipError("day context subject does not exist")
-        if integration_connection_id is not None:
-            await _require_connection_scope(
-                session,
-                identity=identity,
-                integration_connection_id=integration_connection_id,
-                allow_historical=allow_historical_connection,
-            )
 
-    # One answered day per person: the lookup is scoped by subject, and a row
-    # that has not been adopted yet carries none and is still this subject's to
-    # claim.  Without an identity there is no scope to apply, which is the
-    # legacy bridge the scoped-read cutover removes.
-    scoped = select(DayContext).where(DayContext.date == on_date)
-    if identity is not None:
-        scoped = scoped.where(
-            or_(
-                DayContext.subject_id == identity.subject_id,
-                DayContext.subject_id.is_(None),
-            )
-        )
+    # One answered day per person, and the subject is the whole lookup: a row
+    # that belongs to nobody is nobody's day to answer, so it is not found and
+    # not claimed.
+    scoped = select(DayContext).where(
+        DayContext.date == on_date,
+        DayContext.subject_id == identity.subject_id,
+    )
     row = await session.scalar(scoped.with_for_update())
-    if identity is not None:
-        if row is not None:
-            if row.subject_id is None:
-                if not include_legacy_unowned:
-                    raise SignalOwnershipError(
-                        "legacy day context adoption was not explicitly enabled"
-                    )
-                if (
-                    row.actor_user_id is not None
-                    or row.integration_connection_id is not None
-                ):
-                    raise SignalOwnershipError(
-                        "partial-root legacy day context cannot be adopted"
-                    )
-                await _require_single_subject_adoption(
-                    session,
-                    subject_id=identity.subject_id,
+    if row is not None:
+        if (
+            row.actor_user_id is not None
+            and row.actor_user_id != subject.owner_user_id
+        ):
+            raise SignalOwnershipError(
+                "day context has invalid origin actor provenance"
+            )
+        historical: IntegrationConnection | None = None
+        if row.integration_connection_id is not None:
+            historical = await session.scalar(
+                select(IntegrationConnection).where(
+                    IntegrationConnection.id
+                    == row.integration_connection_id
                 )
-                row.subject_id = identity.subject_id
+            )
             if (
-                row.actor_user_id is not None
-                and row.actor_user_id != subject.owner_user_id
+                historical is None
+                or historical.subject_id != identity.subject_id
+                or historical.connection_type
+                != IntegrationConnectionType.RECIPIENT.value
+                or historical.status
+                not in _HISTORICAL_RECIPIENT_STATUSES
             ):
                 raise SignalOwnershipError(
-                    "day context has invalid origin actor provenance"
+                    "day context has invalid historical connection provenance"
                 )
-            historical: IntegrationConnection | None = None
-            if row.integration_connection_id is not None:
-                historical = await session.scalar(
-                    select(IntegrationConnection).where(
-                        IntegrationConnection.id
-                        == row.integration_connection_id
-                    )
+        system_plan = (
+            identity.actor_user_id is None
+            and integration_connection_id is None
+        )
+        if not system_plan:
+            if (
+                row.actor_user_id is not None
+                and identity.actor_user_id is not None
+                and row.actor_user_id != identity.actor_user_id
+            ):
+                raise SignalOwnershipError(
+                    "day context belongs to another origin actor"
                 )
-                if (
-                    historical is None
-                    or historical.subject_id != identity.subject_id
-                    or historical.connection_type
-                    != IntegrationConnectionType.RECIPIENT.value
-                    or historical.status
-                    not in _HISTORICAL_RECIPIENT_STATUSES
-                ):
-                    raise SignalOwnershipError(
-                        "day context has invalid historical connection provenance"
-                    )
-            system_plan = (
-                identity.actor_user_id is None
-                and integration_connection_id is None
-            )
-            if not system_plan:
-                if (
-                    row.actor_user_id is not None
-                    and identity.actor_user_id is not None
-                    and row.actor_user_id != identity.actor_user_id
-                ):
-                    raise SignalOwnershipError(
-                        "day context belongs to another origin actor"
-                    )
-                if row.actor_user_id is None:
-                    row.actor_user_id = identity.actor_user_id
-                if (
-                    row.integration_connection_id is None
-                    and integration_connection_id is not None
-                ):
-                    row.integration_connection_id = integration_connection_id
+            if row.actor_user_id is None:
+                row.actor_user_id = identity.actor_user_id
+            if (
+                row.integration_connection_id is None
+                and integration_connection_id is not None
+            ):
+                row.integration_connection_id = integration_connection_id
 
     if row is None:
         row = DayContext(
-            subject_id=identity.subject_id if identity is not None else None,
-            actor_user_id=identity.actor_user_id if identity is not None else None,
+            subject_id=identity.subject_id,
+            actor_user_id=identity.actor_user_id,
             integration_connection_id=integration_connection_id,
             date=on_date,
             domain=DOMAIN,
@@ -1375,31 +1276,16 @@ async def get_day_context(
     session: AsyncSession,
     on_date: date_type,
     *,
-    subject_id: uuid.UUID | None = None,
+    subject_id: uuid.UUID,
     integration_connection_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
 ) -> Optional[DayContext]:
     stmt = select(DayContext).where(DayContext.date == on_date)
-    if subject_id is not None:
-        owned = _owned_health_row_scope(
-            DayContext,
-            subject_id=subject_id,
-            integration_connection_id=integration_connection_id,
-        )
-        if include_legacy_unowned:
-            owned = or_(
-                owned,
-                and_(
-                    DayContext.subject_id.is_(None),
-                    DayContext.actor_user_id.is_(None),
-                    DayContext.integration_connection_id.is_(None),
-                ),
-            )
-        stmt = stmt.where(owned)
-    elif include_legacy_unowned:
-        raise SignalOwnershipError(
-            "legacy day-context compatibility requires an explicit subject_id"
-        )
+    owned = _owned_health_row_scope(
+        DayContext,
+        subject_id=subject_id,
+        integration_connection_id=integration_connection_id,
+    )
+    stmt = stmt.where(owned)
     result = await session.execute(stmt)
     return result.scalars().first()
 
@@ -1410,31 +1296,16 @@ async def list_day_contexts(
     start: date_type | None = None,
     end: date_type | None = None,
     limit: int = 100,
-    subject_id: uuid.UUID | None = None,
-    include_legacy_unowned: bool = False,
+    subject_id: uuid.UUID,
 ) -> list[DayContext]:
     """Newest day contexts within one explicit subject compatibility scope."""
 
     stmt = select(DayContext)
-    if subject_id is not None:
-        owned = _owned_health_row_scope(
-            DayContext,
-            subject_id=subject_id,
-        )
-        if include_legacy_unowned:
-            owned = or_(
-                owned,
-                and_(
-                    DayContext.subject_id.is_(None),
-                    DayContext.actor_user_id.is_(None),
-                    DayContext.integration_connection_id.is_(None),
-                ),
-            )
-        stmt = stmt.where(owned)
-    elif include_legacy_unowned:
-        raise SignalOwnershipError(
-            "legacy day-context compatibility requires an explicit subject_id"
-        )
+    owned = _owned_health_row_scope(
+        DayContext,
+        subject_id=subject_id,
+    )
+    stmt = stmt.where(owned)
     if start is not None:
         stmt = stmt.where(DayContext.date >= start)
     if end is not None:

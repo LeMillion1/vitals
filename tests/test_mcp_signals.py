@@ -9,6 +9,7 @@ from vitals.enums import Source, UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.models.signals import DayContext, Signal
+from vitals.ownership import WriteIdentity
 from vitals.services.legacy_ownership import LegacySubjectResolutionError
 
 mcp_router = pytest.importorskip("web.routers.mcp")
@@ -85,17 +86,25 @@ async def test_log_signal_refuses_when_module_disabled(db_session, session_facto
     assert result == {"error": "module 'signals' is disabled"}
 
 
-async def test_get_day_context(db_session, session_factory, monkeypatch):
+async def test_get_day_context(
+    db_session, session_factory, legacy_owner_roots, monkeypatch
+):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import date
 
     from vitals.services import signals_service
 
     await signals_service.set_day_context(
-        db_session, date(2026, 7, 20), answers={"remote": True, "gym": False}
+        db_session, date(2026, 7, 20), answers={"remote": True, "gym": False},
+        identity=WriteIdentity(
+            legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+        ),
     )
     await signals_service.set_day_context(
-        db_session, date(2026, 7, 21), answers={"remote": False, "gym": True}
+        db_session, date(2026, 7, 21), answers={"remote": False, "gym": True},
+        identity=WriteIdentity(
+            legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+        ),
     )
     await db_session.commit()
 
@@ -137,10 +146,22 @@ async def test_log_day_context_keeps_the_template_guess(
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     from datetime import date
 
-    from vitals.services.proactive import day_plan
+    from vitals.services import signals_service
 
     # The evening block parked its guess for that day before anything was said.
-    await day_plan.record_plan(db_session, date(2026, 7, 20), {"where": "office", "gym": False})
+    await signals_service.set_day_context(
+        db_session,
+        date(2026, 7, 20),
+        answers={},
+        planned={"where": "office", "gym": False},
+        source=Source.TEMPLATE.value,
+        identity=WriteIdentity(
+            legacy_owner_roots.subject_id, legacy_owner_roots.user_id
+        ),
+        merge_answers=True,
+        preserve_source=True,
+        planned_if_missing=True,
+    )
     await db_session.commit()
 
     written = await mcp_router.log_day_context({"where": "remote", "gym": True}, on_date="2026-07-20")

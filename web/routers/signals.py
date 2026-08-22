@@ -42,12 +42,10 @@ async def signals_feed(
         include_misparse=True,
         limit=FEED_LIMIT,
         subject_id=ownership.subject_id,
-        include_legacy_unowned=True,
     )
     frequency = await signals_service.key_frequency(
         db,
         subject_id=ownership.subject_id,
-        include_legacy_unowned=True,
     )
 
     return templates.TemplateResponse(
@@ -81,7 +79,6 @@ async def delete_signal_entry(
         db,
         signal_id,
         subject_id=ownership.subject_id,
-        include_legacy_unowned=True,
     )
     await db.commit()
 
