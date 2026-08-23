@@ -49,7 +49,14 @@ class LiveSession:
 
         if self.authenticated_at is None:
             return False
-        age = datetime.now(timezone.utc) - self.authenticated_at
+        # A value read back from a store with no timezone-aware type comes
+        # back naive, and subtracting it from an aware now() raises rather
+        # than returning a wrong answer. Reading it as UTC is correct — that
+        # is what was written — and turns a crash into a comparison.
+        moment = self.authenticated_at
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - moment
         return age.total_seconds() <= within_seconds
 
 

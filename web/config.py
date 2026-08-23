@@ -50,6 +50,30 @@ class WebConfig:
     # wildcard-open door.
     external_api_token: str = ""
 
+    # ── OpenID Connect ───────────────────────────────────────────────────
+    # Empty issuer means the provider is not configured yet and the
+    # pre-cutover login still works. Setting it is the cutover: from that
+    # point the password path refuses, so the switch happens when there is
+    # somewhere to switch *to* rather than on the deploy that ships this code.
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_url: str = ""
+    # The provider's opaque subject for the person who already owns this
+    # installation, read once from the provider's own console. On their first
+    # federated login it binds them to the existing local user — explicitly,
+    # by an operator, rather than by matching an email address that a provider
+    # may let somebody else claim later.
+    oidc_bootstrap_subject: str = ""
+
+    @property
+    def oidc_enabled(self) -> bool:
+        """Whether this deployment authenticates through a provider."""
+
+        return bool(
+            self.oidc_issuer and self.oidc_client_id and self.oidc_redirect_url
+        )
+
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -97,5 +121,10 @@ def get_web_config() -> WebConfig:
             h.lower() for h in _env_csv("VITALS_MCP_REDIRECT_HOSTS", DEFAULT_MCP_REDIRECT_HOSTS)
         ),
         external_api_token=os.getenv("VITALS_EXTERNAL_API_TOKEN", ""),
+        oidc_issuer=os.getenv("VITALS_OIDC_ISSUER", "").strip(),
+        oidc_client_id=os.getenv("VITALS_OIDC_CLIENT_ID", "").strip(),
+        oidc_client_secret=os.getenv("VITALS_OIDC_CLIENT_SECRET", ""),
+        oidc_redirect_url=os.getenv("VITALS_OIDC_REDIRECT_URL", "").strip(),
+        oidc_bootstrap_subject=os.getenv("VITALS_OIDC_BOOTSTRAP_SUBJECT", "").strip(),
     )
 

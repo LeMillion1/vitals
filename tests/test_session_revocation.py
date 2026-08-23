@@ -207,3 +207,21 @@ async def test_postgres_concurrent_revocations_do_not_lose_one(db_session):
 
     first, second = await asyncio.gather(revoke(), revoke())
     assert {first, second} == {start + 1, start + 2}
+
+
+def test_a_naive_timestamp_is_read_as_utc_rather_than_crashing():
+    """Some stores have no timezone-aware type and hand back a naive value.
+
+    Subtracting one from an aware ``now()`` raises, which would turn a
+    freshness question into a 500 on the step-up path — the one place that
+    least wants to fail in an interesting way.
+    """
+
+    live = LiveSession(
+        user_id=uuid.uuid4(),
+        username="owner",
+        session_version=1,
+        authenticated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+    assert live.is_fresh(within_seconds=300)
+    assert not live.is_fresh(within_seconds=0)
