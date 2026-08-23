@@ -70,7 +70,7 @@ async def test_modules_and_charts_dual_write_scoped_collections(db_session, redi
 
     state = await modules_service.set_module_enabled(
         db_session,
-        key="signals",
+        key="skincare",
         enabled=True,
         subject_id=subject.id,
     )
@@ -95,7 +95,7 @@ async def test_modules_and_charts_dual_write_scoped_collections(db_session, redi
         SubjectSetting,
         (subject.id, ScopedSettingKey.CUSTOM_CHARTS.value),
     )
-    assert modules_row is not None and modules_row.value["signals"] is True
+    assert modules_row is not None and modules_row.value["skincare"] is True
     assert charts_row is not None and charts_row.value[0]["id"] == chart["id"]
     assert (await db_session.get(AppSetting, "enabled_modules")).value == (
         modules_row.value
@@ -105,7 +105,7 @@ async def test_modules_and_charts_dual_write_scoped_collections(db_session, redi
     )
     assert json.loads(
         await redis.get(modules_service.cache_key(subject.id))
-    )["signals"] is True
+    )["skincare"] is True
     assert json.loads(
         await redis.get(custom_charts_service.cache_key(subject.id))
     )[0]["id"] == chart["id"]
@@ -142,12 +142,12 @@ async def test_scoped_reads_do_not_share_global_or_other_subject_cache(
             SubjectSetting(
                 subject_id=first_subject.id,
                 key=ScopedSettingKey.ENABLED_MODULES.value,
-                value={"signals": True},
+                value={"skincare": True},
             ),
             SubjectSetting(
                 subject_id=second_subject.id,
                 key=ScopedSettingKey.ENABLED_MODULES.value,
-                value={"signals": False},
+                value={"skincare": False},
             ),
             SubjectSetting(
                 subject_id=first_subject.id,
@@ -175,7 +175,7 @@ async def test_scoped_reads_do_not_share_global_or_other_subject_cache(
     )
     await db_session.flush()
     await redis.set(language_service.REDIS_KEY, "global-leak")
-    await redis.set(modules_service.REDIS_KEY, json.dumps({"signals": True}))
+    await redis.set(modules_service.REDIS_KEY, json.dumps({"skincare": True}))
     await redis.set(
         custom_charts_service.REDIS_KEY,
         json.dumps(
@@ -199,14 +199,14 @@ async def test_scoped_reads_do_not_share_global_or_other_subject_cache(
             redis,
             subject_id=first_subject.id,
         )
-    )["signals"] is True
+    )["skincare"] is True
     assert (
         await modules_service.get_enabled_modules(
             db_session,
             redis,
             subject_id=second_subject.id,
         )
-    )["signals"] is False
+    )["skincare"] is False
     assert [
         chart["id"]
         for chart in await custom_charts_service.list_charts(
@@ -249,7 +249,7 @@ async def test_a_second_subject_stops_the_mirroring_and_not_the_setting(db_sessi
     await language_service.set_language(db_session, "ru", user_id=first_user.id)
     await modules_service.set_module_enabled(
         db_session,
-        key="signals",
+        key="skincare",
         enabled=True,
         subject_id=first_subject.id,
     )
@@ -267,7 +267,7 @@ async def test_a_second_subject_stops_the_mirroring_and_not_the_setting(db_sessi
     enabled = await modules_service.get_enabled_modules(
         db_session, subject_id=first_subject.id
     )
-    assert enabled["signals"] is True
+    assert enabled["skincare"] is True
 
     # ...and the installation-wide keys were left alone.
     shared = list(await db_session.scalars(select(AppSetting.key)))
@@ -338,7 +338,7 @@ async def test_web_setting_writes_land_in_scoped_rows(auth_client, db_session, r
     )
     module_response = await auth_client.post(
         "/settings/modules",
-        data={"module": "signals", "enabled": "true"},
+        data={"module": "skincare", "enabled": "true"},
     )
     chart_response = await auth_client.post(
         "/charts",
@@ -364,7 +364,7 @@ async def test_web_setting_writes_land_in_scoped_rows(auth_client, db_session, r
             SubjectSetting,
             (subject.id, ScopedSettingKey.ENABLED_MODULES.value),
         )
-    ).value["signals"] is True
+    ).value["skincare"] is True
     charts = await db_session.get(
         SubjectSetting,
         (subject.id, ScopedSettingKey.CUSTOM_CHARTS.value),
@@ -373,4 +373,4 @@ async def test_web_setting_writes_land_in_scoped_rows(auth_client, db_session, r
     assert await redis.get(language_service.cache_key(user.id)) == "en"
     assert json.loads(
         await redis.get(modules_service.cache_key(subject.id))
-    )["signals"] is True
+    )["skincare"] is True

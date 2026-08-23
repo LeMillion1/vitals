@@ -61,7 +61,6 @@ JOB_FAILURE_FAMILY_BY_ID = MappingProxyType(
         "hrt_reminders": JobFailureFamily.SUBJECT,
         "nutrition_day_end": JobFailureFamily.SUBJECT,
         "daily_brief": JobFailureFamily.SUBJECT,
-        "evening_block": JobFailureFamily.SUBJECT,
         "nudges": JobFailureFamily.SUBJECT,
         "weekly_digest": JobFailureFamily.SUBJECT,
         "garmin_sync": JobFailureFamily.GARMIN_ACCOUNT,

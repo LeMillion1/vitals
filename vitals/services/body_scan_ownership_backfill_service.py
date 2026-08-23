@@ -66,9 +66,6 @@ from vitals.services.normalized_ownership_backfill_service import (
 from vitals.services.provider_raw_ownership_backfill_service import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.day_context_ownership_backfill_service import (
-    DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
 from vitals.services.genetic_variant_ownership_backfill_service import (
     GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -81,9 +78,6 @@ from vitals.services.progress_photo_ownership_backfill_service import (
 from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.signal_ownership_backfill_service import (
-    SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.weight_log_ownership_backfill_service import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -170,13 +164,11 @@ _E_PHASES = tuple(HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _F_PHASES = tuple(HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _G_PHASES = tuple(CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _H_PHASES = tuple(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_I_PHASES = tuple(DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_J_PHASES = tuple(SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _K_PHASES = tuple(SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _L_PHASES = tuple(WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _M_PHASES = tuple(LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _N_PHASES = tuple(GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_RESETTABLE_PHASES = _I_PHASES + _J_PHASES + _L_PHASES + _M_PHASES + _N_PHASES
+_RESETTABLE_PHASES = _L_PHASES + _M_PHASES + _N_PHASES
 _PRIOR_PHASES = (
     (RAW_OWNERSHIP_BACKFILL_PHASE,)
     + _B_PHASES
@@ -186,8 +178,6 @@ _PRIOR_PHASES = (
     + _F_PHASES
     + _G_PHASES
     + _H_PHASES
-    + _I_PHASES
-    + _J_PHASES
     + _K_PHASES
     + _L_PHASES
     + _M_PHASES

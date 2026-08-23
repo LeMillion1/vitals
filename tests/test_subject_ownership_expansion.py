@@ -413,6 +413,14 @@ def _column_names(item: Any) -> tuple[str, ...]:
     return tuple(column.name for column in item.columns)
 
 
+#: Tables revision 0037 correctly expanded and revision 0058 later dropped, with
+#: the Telegram chat that was their only writer. The constants above describe the
+#: migration and must keep matching it — a migration is history and does not get
+#: edited. What has to subtract them is every assertion that compares against the
+#: *models*, which are the present.
+_DROPPED_SINCE = frozenset({"signals", "day_context"})
+
+
 def test_revision_registries_match_the_literal_36_table_contract():
     migration = _migration()
     target_tables = {
@@ -440,6 +448,8 @@ def test_all_36_models_have_exact_nullable_uuid_fk_and_simple_index_contract():
     ownership_vocabulary = set(COLUMN_TARGETS)
 
     for table_name, expected_columns in EXPECTED_OWNERSHIP_COLUMNS.items():
+        if table_name in _DROPPED_SINCE:
+            continue
         table = Base.metadata.tables[table_name]
         actual_columns = ownership_vocabulary.intersection(table.columns.keys())
         assert actual_columns == set(expected_columns), table_name
@@ -475,6 +485,8 @@ def test_exact_20_insights_composites_and_43_query_indexes_match_models():
     assert len(EXPECTED_QUERY_INDEXES) == 43
 
     for table_name in EXPECTED_INSIGHTS_TABLES:
+        if table_name in _DROPPED_SINCE:
+            continue
         indexes = _index_map(Base.metadata.tables[table_name])
         expected = {
             f"ix_{table_name}_subject_date": (SUBJECT, "date"),
@@ -490,6 +502,8 @@ def test_exact_20_insights_composites_and_43_query_indexes_match_models():
             assert indexes[index_name].unique is False
 
     for index_name, (table_name, columns) in EXPECTED_QUERY_INDEXES.items():
+        if table_name in _DROPPED_SINCE:
+            continue
         indexes = _index_map(Base.metadata.tables[table_name])
         assert index_name in indexes
         assert _column_names(indexes[index_name]) == columns
@@ -498,6 +512,8 @@ def test_exact_20_insights_composites_and_43_query_indexes_match_models():
 
 def test_exact_parent_composite_uniques_and_genetics_raw_link_match_models():
     for table_name, constraint_name in EXPECTED_PARENT_UNIQUES.items():
+        if table_name in _DROPPED_SINCE:
+            continue
         constraints = {
             constraint.name: constraint
             for constraint in Base.metadata.tables[table_name].constraints
@@ -537,6 +553,8 @@ def test_legacy_global_uniques_are_dropped_or_deliberately_still_global():
     for name, (table_name, columns, pg_where, sqlite_where) in (
         LEGACY_GLOBAL_UNIQUES.items()
     ):
+        if table_name in _DROPPED_SINCE:
+            continue
         table = Base.metadata.tables[table_name]
         objects = {
             item.name: item

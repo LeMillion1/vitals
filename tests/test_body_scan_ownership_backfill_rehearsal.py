@@ -50,9 +50,6 @@ from vitals.services.body_scan_ownership_backfill_service import (
     BODY_SCAN_OWNERSHIP_BACKFILL_PHASE,
     body_scan_historical_processed_bound,
 )
-from vitals.services.day_context_ownership_backfill_service import (
-    DAY_CONTEXT_OWNERSHIP_BACKFILL_PHASE,
-)
 from vitals.services.genetic_variant_ownership_backfill_service import (
     GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE,
 )
@@ -64,9 +61,6 @@ from vitals.services.progress_photo_ownership_backfill_service import (
 )
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.signal_ownership_backfill_service import (
-    SIGNAL_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.services.weight_log_ownership_backfill_service import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_PHASE,
@@ -542,13 +536,11 @@ async def test_real_postgres_0034_body_scan_stop_resume_and_restore(
             (
                 "backfill_day_context_subject_ownership.py",
                 ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                DAY_CONTEXT_OWNERSHIP_BACKFILL_PHASE,
                 AGGREGATE_CLI_KEYS,
             ),
             (
                 "backfill_signal_subject_ownership.py",
                 ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                SIGNAL_OWNERSHIP_BACKFILL_PHASE,
                 AGGREGATE_CLI_KEYS,
             ),
             (

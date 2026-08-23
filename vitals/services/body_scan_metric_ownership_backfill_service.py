@@ -30,9 +30,6 @@ from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.services.conflict_rule_ownership_backfill_service import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.day_context_ownership_backfill_service import (
-    DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
 from vitals.services.hevy_child_ownership_backfill_service import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -52,9 +49,6 @@ from vitals.services.provider_raw_ownership_backfill_service import (
 from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.signal_ownership_backfill_service import (
-    SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.lab_result_ownership_backfill_service import (
     LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
@@ -122,8 +116,6 @@ _E_PHASES = tuple(HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _F_PHASES = tuple(HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _G_PHASES = tuple(CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _H_PHASES = tuple(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_I_PHASES = tuple(DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_J_PHASES = tuple(SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _K_PHASES = tuple(SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _L_PHASES = tuple(WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _M_PHASES = tuple(LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
@@ -138,8 +130,6 @@ _PRIOR_PHASES = (
     + _F_PHASES
     + _G_PHASES
     + _H_PHASES
-    + _I_PHASES
-    + _J_PHASES
     + _K_PHASES
     + _L_PHASES
     + _M_PHASES
@@ -485,7 +475,6 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
     require(_D_PHASES + _E_PHASES, "restore_blocked", "Stage-3D/3E")
     require(_F_PHASES + _G_PHASES, "running", "Stage-3F/3G")
     require(_H_PHASES, "restore_blocked", "Stage-3H")
-    require(_I_PHASES + _J_PHASES, "running", "Stage-3I/3J")
     require(_L_PHASES + _M_PHASES + _N_PHASES, "running", "Stage-3L/3M/3N")
     require(_O_PHASES, "restore_blocked", "Stage-3O")
     # Stage 3K is excluded from backup v1 entirely, so its retained checkpoint is

@@ -327,7 +327,6 @@ class Domain(StrEnum):
     HRT = "hrt"  # hormone/TRT/AAS cycles, estrogen control, GH/IGF-1/peptides
     MILESTONES = "milestones"
     TIMELINE = "timeline"  # global annotations shown across every domain's chart
-    SIGNALS = "signals"  # free-text capture: how the day actually felt (+ day context)
     SYSTEM = "system"
 
 
@@ -454,25 +453,6 @@ class MilestoneStatus(StrEnum):
     PAUSED = "paused"
 
 
-class SignalKind(StrEnum):
-    """Shape of a ``signals`` row — what the entry lets you *do* downstream.
-
-    - ``STATE``    — always present, has an intensity ("энергии ноль") → a line
-      plotted next to HRV/sleep.
-    - ``SYMPTOM``  — happened, has a severity ("голова раскалывается") →
-      frequency + severity over time.
-    - ``EXPOSURE`` — something taken/done ("кофе в 22") → yesterday's exposure
-      vs. today's Garmin metric.
-
-    Day *events* (illness, travel, protocol change) do **not** live here — they
-    are ``timeline`` annotations and the digest already reads them.
-    """
-
-    STATE = "state"
-    SYMPTOM = "symptom"
-    EXPOSURE = "exposure"
-
-
 class DigestKind(StrEnum):
     """Which narrative a ``weekly_digests`` row holds.
 
@@ -501,7 +481,9 @@ class Source(StrEnum):
     LAB_PARSER = "lab_parser"
     BODY_SCAN = "body_scan"  # InBody / МедАсс body-composition scan (vision-parsed or manual)
     VCF_IMPORT = "vcf_import"
-    TELEGRAM = "telegram"  # free-text captured by the bot, parsed into `signals`
+    # The bot is gone. Historical ``raw_payloads`` still carry this source,
+    # so the value stays to keep those rows readable.
+    TELEGRAM = "telegram"  # historical: captured by the Telegram bot
     # The week template *guessed* this day's context (vs. MANUAL — the owner
     # actually answered). Deliberately reusing MANUAL for "user" rather than
     # adding a second word for the same provenance.

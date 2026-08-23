@@ -765,16 +765,3 @@ async def test_settings_save_proactive_no_adjusted_flag_in_range(auth_client):
     assert r.headers["location"] == "/settings?saved=proactive"
 
 
-async def test_settings_modules_toggle_updates_proactive_chip_oob(auth_client):
-    """The proactive card's "module off" chip is populated once at the
-    initial page load; toggling `signals` via /settings/modules (hx-swap="none"
-    + OOB) must carry a fresh copy of the chip, or it goes stale until reload."""
-    r = await auth_client.post("/settings/modules", data={"module": "signals", "enabled": "false"})
-    assert r.status_code == 200
-    assert 'id="proactive-off-chip"' in r.text
-    assert 'hx-swap-oob="true"' in r.text
-    assert "модуль выключен" in r.text  # settings.proactive_off_chip (ru)
-
-    r = await auth_client.post("/settings/modules", data={"module": "signals", "enabled": "true"})
-    assert r.status_code == 200
-    assert '<span id="proactive-off-chip" hx-swap-oob="true"></span>' in r.text

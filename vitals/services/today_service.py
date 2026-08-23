@@ -122,7 +122,6 @@ async def build(
         digest_service,
         garmin_service,
         nutrition_service,
-        signals_service,
         timeline_service,
         weight_service,
     )
@@ -245,16 +244,6 @@ async def build(
                 "text": m.name,
                 "detail": t("today.src_meal", value=_num(m.calories)) if m.calories else t("nav.nutrition"),
             })
-    if em.get("signals"):
-        for s in await signals_service.list_signals(
-            session, start=today, end=today, subject_id=subject_id
-        ):
-            feed.append({
-                "time": s.at_time.strftime("%H:%M") if s.at_time else "",
-                "dot": "violet",
-                "text": s.note or s.key,
-                "detail": t("today.src_bot"),
-            })
 
     # ── The narrative ────────────────────────────────────────────────────────
     digest = await digest_service.latest_digest(
@@ -329,14 +318,12 @@ def _prose_from(row) -> str:
     falls through to the deterministic sentence instead of promoting a number line
     into the headline.
     """
-    from vitals.services.proactive import compose, day_plan
+    from vitals.services.proactive import compose
 
     if not getattr(row, "model", None):
         return ""
     ctx = row.context_json or {}
     lead = len(compose.header_blocks(ctx))
-    if day_plan.day_block(ctx.get("day")) is not None:
-        lead += 1
     parts = (row.content or "").split("\n\n")
     if lead >= len(parts):
         # The stored message doesn't have the shape we just derived (hand-written

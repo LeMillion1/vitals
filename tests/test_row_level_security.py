@@ -87,7 +87,13 @@ def _all_covered_tables() -> set[str]:
             "SHARED_WITH_INSTALLATION",
         ):
             covered.update(getattr(module, attribute, ()))
-    return covered
+    return covered - _DROPPED_SINCE
+
+
+#: Tables a policy revision correctly covered and a later one dropped. A policy
+#: migration is history and does not change; the metadata is the present. 0058
+#: dropped both with the Telegram chat that filled them.
+_DROPPED_SINCE = {"signals", "day_context"}
 
 
 # ── The list is derived, so it has to stay derivable ─────────────────────────

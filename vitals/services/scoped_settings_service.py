@@ -46,7 +46,6 @@ class ScopedSettingKey(StrEnum):
     UI_LANGUAGE = "ui_language"
     ENABLED_MODULES = "enabled_modules"
     CUSTOM_CHARTS = "custom_charts"
-    WEEK_TEMPLATE = "week_template"
     GARMIN_WEIGHT_EXPORT_ENABLED = "garmin_weight_export_enabled"
 
 
@@ -79,12 +78,6 @@ SCOPED_SETTING_REGISTRY: Mapping[ScopedSettingKey, ScopedSettingRoute] = (
             ScopedSettingKey.CUSTOM_CHARTS: ScopedSettingRoute(
                 scope=SettingScope.SUBJECT,
                 legacy_key="custom_charts",
-                model=SubjectSetting,
-                scope_id_field="subject_id",
-            ),
-            ScopedSettingKey.WEEK_TEMPLATE: ScopedSettingRoute(
-                scope=SettingScope.SUBJECT,
-                legacy_key="week_template",
                 model=SubjectSetting,
                 scope_id_field="subject_id",
             ),

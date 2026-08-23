@@ -94,10 +94,6 @@ MODULE_REGISTRY: dict[str, ModuleSpec] = {
         ModuleSpec("supplements", "optional", "/supplements", "lifestyle"),
         ModuleSpec("skincare", "optional", "/skincare", "lifestyle"),
         ModuleSpec("interactions", "optional", "/interactions", "lifestyle"),
-        # Signals — the free-text capture domain *and* the master switch for the
-        # whole proactive layer: off means the Telegram bot says nothing at all
-        # (enforced in proactive/delivery.py). Optional, so it defaults to off.
-        ModuleSpec("signals", "optional", "/signals", "lifestyle"),
         # Body composition (InBody / МедАсс) — a tab inside /weight, not its own
         # nav item; the toggle just shows/hides that tab and its routes. No
         # rubric: it never appears in navigation.

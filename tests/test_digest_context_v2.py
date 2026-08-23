@@ -22,7 +22,6 @@ from vitals.models.hrt import HrtCompound, HrtDose, HrtSideEffect
 from vitals.models.labs import LabMarker, LabResult
 from vitals.models.milestones import Milestone
 from vitals.models.nutrition import MealLog
-from vitals.models.signals import DayContext, Signal
 from vitals.models.skincare import SkincareLog, SkincareObservation, SkincareProduct
 from vitals.models.system_alert import SystemAlert
 from vitals.models.timeline import Annotation
@@ -742,51 +741,6 @@ async def test_supporting_domains_are_complete_but_compact(db_session, legacy_ow
         assert forbidden not in payload
 
 
-async def test_day_context_aliases_and_truncation_are_explicit(db_session, legacy_owner_roots):
-    db_session.add(
-        DayContext(subject_id=legacy_owner_roots.subject_id,
-            date=DAY,
-            domain=Domain.SIGNALS.value,
-            source=Source.MANUAL.value,
-            planned={"where": "office", "gym": False, "load": "normal"},
-            answers={"gym": True, "load": "heavy"},
-        )
-    )
-    db_session.add_all(
-        [
-            Signal(subject_id=legacy_owner_roots.subject_id,
-                date=DAY,
-                domain=Domain.SIGNALS.value,
-                source=Source.TELEGRAM.value,
-                kind="exposure",
-                key="coffee_late",
-                value_num=1,
-                batch_id=f"signal-{index}",
-            )
-            for index in range(51)
-        ]
-    )
-    await db_session.commit()
-
-    ctx = await digest_service.assemble_context(
-        db_session,
-        subject_id=legacy_owner_roots.subject_id, on_date=DAY, period_days=1
-    )
-
-    day_context = ctx["day_context"][0]
-    assert day_context["resolved"] == {
-        "where": "office",
-        "gym": True,
-        "load": "heavy",
-    }
-    assert day_context["answered_keys"] == ["gym", "load"]
-    assert day_context["source_by_field"]["where"] == "template"
-    assert day_context["source_by_field"]["gym"] == "manual"
-    assert ctx["days"][0]["day"] == day_context["resolved"]
-    assert len(ctx["signals"]) == 50
-    assert {row["key"] for row in ctx["signals"]} == {"caffeine_late"}
-    assert ctx["signals"][0]["stored_key"] == "coffee_late"
-    assert ctx["coverage"]["signals"]["truncated"] is True
 
 
 async def test_ru_and_en_prompts_describe_the_same_v2_contract():

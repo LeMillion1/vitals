@@ -67,7 +67,6 @@ from vitals.models.hrt import HrtCycle, HrtCycleTemplate, HrtDose, HrtSideEffect
 from vitals.models.labs import LabResult
 from vitals.models.milestones import Milestone, WeeklyDigest
 from vitals.models.nutrition import MealLog
-from vitals.models.signals import DayContext, Signal
 from vitals.models.skincare import SkincareLog, SkincareObservation
 from vitals.models.supplements import Supplement
 from vitals.models.timeline import Annotation
@@ -83,12 +82,6 @@ from vitals.services.conflict_rule_ownership_backfill_service import (
     ConflictRuleOwnershipBackfillError,
     preflight_conflict_rule_ownership_backfill,
     reset_conflict_rule_backfill_for_portability_v1_restore,
-)
-from vitals.services.day_context_ownership_backfill_service import (
-    DAY_CONTEXT_OWNERSHIP_BACKFILL_TABLES,
-    DayContextOwnershipBackfillError,
-    preflight_day_context_ownership_backfill,
-    reset_day_context_ownership_backfill_for_portability_v1_restore,
 )
 from vitals.services.conflict_catalog import (
     sync_catalog as sync_conflict_catalog,
@@ -128,12 +121,6 @@ from vitals.services.progress_photo_ownership_backfill_service import (
 from vitals.services.raw_ownership_backfill_service import (
     RawOwnershipBackfillError,
     block_raw_ownership_backfill_for_portability_v1_restore,
-)
-from vitals.services.signal_ownership_backfill_service import (
-    SIGNAL_OWNERSHIP_BACKFILL_TABLES,
-    SignalOwnershipBackfillError,
-    preflight_signal_ownership_backfill,
-    reset_signal_ownership_backfill_for_portability_v1_restore,
 )
 from vitals.services.shared_report_ownership_backfill_service import (
     SharedReportOwnershipBackfillError,
@@ -192,7 +179,6 @@ from vitals.services.weight_log_ownership_backfill_service import (
     preflight_weight_log_ownership_backfill,
     reset_weight_log_ownership_backfill_for_portability_v1_restore,
 )
-from vitals.services.signals_service import normalize_key
 from vitals.utils.timeutils import now_local
 
 # Bump when the on-disk shape changes in a backward-incompatible way.
@@ -260,7 +246,7 @@ _LABELED_TABLES = (
     "glp1_side_effects", "meal_logs", "supplements", "genetic_variants",
     "skincare_logs", "weekly_digests", "annotations",
     "hrt_doses", "hrt_cycles", "hrt_side_effects",
-    "signals", "day_context", "body_scans", "milestones", "noise_markers",
+    "body_scans", "milestones", "noise_markers",
 )
 
 
@@ -902,62 +888,6 @@ def _progress_photo_replacement_snapshot_bounds(
     return bounds
 
 
-def _day_context_replacement_snapshot_bounds(
-    payload: dict[str, Any],
-) -> dict[str, tuple[int, int]]:
-    """Return exact Stage-3I DayContext bounds before replacement."""
-
-    bounds: dict[str, tuple[int, int]] = {}
-    for table_name in DAY_CONTEXT_OWNERSHIP_BACKFILL_TABLES:
-        rows = payload.get(table_name) or ()
-        high_watermark = 0
-        for index, row in enumerate(rows):
-            row_id = row.get("id")
-            if (
-                not isinstance(row_id, int)
-                or isinstance(row_id, bool)
-                or not 1 <= row_id <= _POSTGRES_INTEGER_MAX
-            ):
-                raise _contract_error(
-                    "import.error.generic",
-                    exc=(
-                        f"{table_name} record #{index} must carry a positive "
-                        "integer id within the PostgreSQL INTEGER range"
-                    ),
-                )
-            high_watermark = max(high_watermark, row_id)
-        bounds[table_name] = (high_watermark, len(rows))
-    return bounds
-
-
-def _signal_replacement_snapshot_bounds(
-    payload: dict[str, Any],
-) -> dict[str, tuple[int, int]]:
-    """Return exact Stage-3J Signal bounds before replacement."""
-
-    bounds: dict[str, tuple[int, int]] = {}
-    for table_name in SIGNAL_OWNERSHIP_BACKFILL_TABLES:
-        rows = payload.get(table_name) or ()
-        high_watermark = 0
-        for index, row in enumerate(rows):
-            row_id = row.get("id")
-            if (
-                not isinstance(row_id, int)
-                or isinstance(row_id, bool)
-                or not 1 <= row_id <= _POSTGRES_INTEGER_MAX
-            ):
-                raise _contract_error(
-                    "import.error.generic",
-                    exc=(
-                        f"{table_name} record #{index} must carry a positive "
-                        "integer id within the PostgreSQL INTEGER range"
-                    ),
-                )
-            high_watermark = max(high_watermark, row_id)
-        bounds[table_name] = (high_watermark, len(rows))
-    return bounds
-
-
 def _weight_log_replacement_snapshot_bounds(
     payload: dict[str, Any],
 ) -> dict[str, tuple[int, int]]:
@@ -1236,8 +1166,6 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     progress_photo_snapshot_bounds = _progress_photo_replacement_snapshot_bounds(
         payload
     )
-    day_context_snapshot_bounds = _day_context_replacement_snapshot_bounds(payload)
-    signal_snapshot_bounds = _signal_replacement_snapshot_bounds(payload)
     weight_log_snapshot_bounds = _weight_log_replacement_snapshot_bounds(payload)
     lab_result_snapshot_bounds = _lab_result_replacement_snapshot_bounds(payload)
     genetic_variant_snapshot_bounds = _genetic_variant_replacement_snapshot_bounds(
@@ -1352,26 +1280,6 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                 raise _contract_error(
                     "import.error.generic",
                     exc="progress-photo ownership restore block was rejected",
-                ) from exc
-            try:
-                await reset_day_context_ownership_backfill_for_portability_v1_restore(
-                    session,
-                    snapshot_bounds=day_context_snapshot_bounds,
-                )
-            except DayContextOwnershipBackfillError as exc:
-                raise _contract_error(
-                    "import.error.generic",
-                    exc="day-context ownership restore reset was rejected",
-                ) from exc
-            try:
-                await reset_signal_ownership_backfill_for_portability_v1_restore(
-                    session,
-                    snapshot_bounds=signal_snapshot_bounds,
-                )
-            except SignalOwnershipBackfillError as exc:
-                raise _contract_error(
-                    "import.error.generic",
-                    exc="signal ownership restore reset was rejected",
                 ) from exc
             try:
                 await (
@@ -1547,20 +1455,6 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
                 raise _contract_error(
                     "import.error.generic",
                     exc="progress-photo validation rejected the portable restore",
-                ) from exc
-            try:
-                await preflight_day_context_ownership_backfill(session)
-            except DayContextOwnershipBackfillError as exc:
-                raise _contract_error(
-                    "import.error.generic",
-                    exc="day-context validation rejected the portable restore",
-                ) from exc
-            try:
-                await preflight_signal_ownership_backfill(session)
-            except SignalOwnershipBackfillError as exc:
-                raise _contract_error(
-                    "import.error.generic",
-                    exc="signal validation rejected the portable restore",
                 ) from exc
             try:
                 await preflight_shared_report_ownership_backfill(session)
@@ -2324,37 +2218,10 @@ async def export_llm(
         for a in annotations
     ]
 
-    # Signals — the "how it actually felt" layer, and the day's context. This is
-    # the block that lets the model answer *why* a Garmin number moved, so keys go
-    # out canonical (aliases folded on read) rather than in whatever spelling the
-    # parser happened to use. Misparsed batches stay out: they're key-registry
-    # material, not evidence.
-    signals = (
-        await session.execute(
-            select(Signal).where(Signal.misparse.is_(False)).order_by(Signal.date)
-        )
-    ).scalars().all()
-    out["signals"] = [
-        _compact(
-            {
-                "date": s.date.isoformat(),
-                "kind": s.kind,
-                "key": normalize_key(s.key),
-                "value": s.value_num,
-                "unit": s.unit,
-                "at_time": s.at_time.isoformat() if s.at_time else None,
-                "note": s.note,
-            }
-        )
-        for s in signals
-    ]
-    contexts = (
-        await session.execute(select(DayContext).order_by(DayContext.date))
-    ).scalars().all()
-    out["day_context"] = [
-        _compact({"date": c.date.isoformat(), "answers": c.answers, "source": c.source})
-        for c in contexts
-    ]
+    # ``signals`` stood here — the "how it actually felt" layer, parsed out of
+    # chat messages. It is gone, and so is the block: a backup written now
+    # carries no key for it. An older backup that has one is read and ignored,
+    # which is what ``_UNKNOWN_TABLES_ARE_IGNORED`` below is for.
 
     # Narrowing happens on the assembled digest rather than in each of the twenty
     # queries above: the rows are already flat dicts with their dates, so one pass

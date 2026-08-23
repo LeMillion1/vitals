@@ -93,8 +93,6 @@ from vitals.models.milestones import Milestone, WeeklyDigest
 # Timeline — cross-domain event feed + chart annotations.
 from vitals.models.timeline import Annotation
 
-# Signals — free-text capture ("how it actually felt") + per-day context.
-from vitals.models.signals import DayContext, Signal
 
 # Proactive layer — durable outbound claims plus sent-message journal.
 from vitals.models.proactive import Notification, NotificationDeliveryIntent
@@ -182,8 +180,6 @@ __all__ = [
     "Milestone",
     "WeeklyDigest",
     "Annotation",
-    "Signal",
-    "DayContext",
     "Notification",
     "NotificationDeliveryIntent",
     "SharedReport",

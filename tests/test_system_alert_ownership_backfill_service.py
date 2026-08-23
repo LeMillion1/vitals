@@ -26,9 +26,6 @@ from vitals.services.body_scan_ownership_backfill_service import (
 from vitals.services.conflict_rule_ownership_backfill_service import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.day_context_ownership_backfill_service import (
-    DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
 from vitals.services.garmin_weight_export_ownership_backfill_service import (
     GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -63,9 +60,6 @@ from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFIL
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.signal_ownership_backfill_service import (
-    SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
 from vitals.services.weekly_digest_ownership_backfill_service import (
     WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -85,8 +79,6 @@ _PRIOR_PHASES = (
     + tuple(HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-    + tuple(DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-    + tuple(SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())

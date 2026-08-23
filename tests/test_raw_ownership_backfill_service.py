@@ -81,9 +81,12 @@ async def _scope(session, *, slug: str = "owner"):
     return owner, subject, connections
 
 
-def _raw(domain: Domain, source: Source, external_id: str, **roots) -> RawPayload:
+def _raw(domain: Domain | str, source: Source, external_id: str, **roots) -> RawPayload:
+    # ``domain`` may be a plain string: rows the Telegram bot wrote carry
+    # "signals", which is no longer a live domain but is still what is in the
+    # lake, and classifying those is exactly what this backfill does.
     return RawPayload(
-        domain=domain.value,
+        domain=domain.value if isinstance(domain, Domain) else domain,
         source=source.value,
         external_id=external_id,
         fetched_at=_FETCHED_AT,
@@ -107,7 +110,7 @@ async def test_preflight_batches_resume_map_roots_and_complete_idempotently(db_s
     rows = [
         _raw(Domain.GARMIN, Source.GARMIN_API, "g-1"),
         _raw(Domain.WORKOUTS, Source.HEVY_API, "h-1"),
-        _raw(Domain.SIGNALS, Source.TELEGRAM, "t-1"),
+        _raw("signals", Source.TELEGRAM, "t-1"),
         _raw(Domain.LABS, Source.LAB_PARSER, "lab-1"),
         _raw(Domain.GENETICS, Source.VCF_IMPORT, "vcf-1"),
         _raw(Domain.BODY_COMPOSITION, Source.MCP, "mcp-1"),

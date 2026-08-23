@@ -52,7 +52,6 @@ from vitals.enums import (
     AIInvocationPurpose,
     AIInvocationSource,
     AIInvocationStatus,
-    Domain,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
@@ -67,7 +66,6 @@ from vitals.models.proactive import Notification, NotificationDeliveryIntent
 from vitals.models.raw_payload import RawPayload
 from vitals.models.scoped_settings import (
     IntegrationConnectionSetting,
-    SubjectSetting,
 )
 from vitals.models.tenancy import IntegrationConnection
 from vitals.services.identity_service import (
@@ -96,6 +94,12 @@ from vitals.services.transaction_outcome import (
 from vitals.utils.timeutils import now_local, now_utc
 
 logger = logging.getLogger(__name__)
+
+#: The domain the Telegram bot stamped on every message it stored. A literal
+#: rather than an enum member: the bot is gone and so is the domain, but a reply
+#: intent still points at the raw that provoked it, and the check that the two
+#: belong together has to keep working for rows already in the lake.
+_INBOUND_RAW_DOMAIN = "signals"
 
 # Categories. Only the first three are the bot talking first.
 CATEGORY_BRIEF = "brief"
@@ -1065,7 +1069,7 @@ async def _lock_raw_and_ai_provenance(
             or raw.actor_user_id != intent.recipient_user_id
             or raw.integration_connection_id not in telegram_connection_ids
             or raw.file_asset_id is not None
-            or raw.domain != Domain.SIGNALS.value
+            or raw.domain != _INBOUND_RAW_DOMAIN
             or raw.source != Source.TELEGRAM.value
         ):
             raise DeliveryScopeError("delivery raw provenance is invalid")
@@ -1108,20 +1112,13 @@ async def _locked_signals_module_enabled(
 ) -> bool:
     """Read only the already-scoped module row after the subject lock."""
 
-    row = await session.scalar(
-        select(SubjectSetting)
-        .where(
-            SubjectSetting.subject_id == subject_id,
-            SubjectSetting.key == "enabled_modules",
-        )
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if row is None or not isinstance(row.value, dict):
-        raise DeliveryPolicyUnavailableError(
-            "subject-scoped module policy is unavailable"
-        )
-    return row.value.get(prefs.MODULE_KEY) is True
+    del session, subject_id
+    # The proactive layer had a master switch: the ``signals`` module, which was
+    # also the free-text capture domain. Both are gone, and nothing replaced the
+    # switch — the layer's own preferences say what it sends and how often, and a
+    # second switch above them was only ever an emergency stop for a bot that no
+    # longer exists.
+    return True
 
 
 async def _load_locked_delivery_policy(
@@ -1491,7 +1488,7 @@ async def _require_redacted_reply_raw_scope(
         raw_subject_id != ownership.subject_id
         or raw_actor_user_id != ownership.recipient_user_id
         or raw_file_asset_id is not None
-        or raw_domain != Domain.SIGNALS.value
+        or raw_domain != _INBOUND_RAW_DOMAIN
         or raw_source != Source.TELEGRAM.value
         or raw_processed_at is None
         or connection_subject_id != ownership.subject_id
@@ -1676,7 +1673,7 @@ async def _validate_notification_read_graph(
             or raw.actor_user_id != row.recipient_user_id
             or raw.integration_connection_id is None
             or raw.file_asset_id is not None
-            or raw.domain != Domain.SIGNALS.value
+            or raw.domain != _INBOUND_RAW_DOMAIN
             or raw.source != Source.TELEGRAM.value
         ):
             raise DeliveryStateError("notification AI raw graph is inconsistent")
@@ -2369,23 +2366,10 @@ async def _revalidate_delivery_preparation_scope(
     ):
         raise DeliveryScopeError("delivery preparation connection authority changed")
 
-    module_row = await session.scalar(
-        select(SubjectSetting)
-        .where(
-            SubjectSetting.subject_id == scope._ownership_subject_id,
-            SubjectSetting.key == "enabled_modules",
-        )
-        .execution_options(populate_existing=True)
-    )
-    if module_row is None or not isinstance(module_row.value, dict):
-        raise DeliveryPolicyUnavailableError(
-            "subject-scoped module policy changed during delivery preparation"
-        )
-    module_enabled = module_row.value.get(prefs.MODULE_KEY) is True
-    if module_enabled != scope._module_enabled:
-        raise DeliveryPolicyUnavailableError(
-            "subject-scoped module policy changed during delivery preparation"
-        )
+    # The module re-check stood here — the layer's master switch could be turned
+    # off between preparing a send and committing it, and a message already
+    # composed had to stop. There is no switch any more (see
+    # ``_locked_signals_module_enabled``), so there is nothing to have changed.
     policy = await _read_delivery_policy(session, authority=scope._authority)
     if policy != scope._policy:
         raise DeliveryPolicyUnavailableError(

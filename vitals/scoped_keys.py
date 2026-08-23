@@ -112,20 +112,6 @@ _SUBJECT_SCOPED: tuple[ScopedKeySpec, ...] = (
         ),
     ),
     ScopedKeySpec(
-        table="day_context",
-        scope=ScopeKind.SUBJECT,
-        legacy_name="uq_day_context_per_date",
-        legacy_kind=LegacyKeyKind.UNIQUE_CONSTRAINT,
-        legacy_columns=("date",),
-        replacements=(
-            ScopedIndex(
-                name="uq_day_context_subject_date",
-                columns=("subject_id", "date"),
-                required_scope_column="subject_id",
-            ),
-        ),
-    ),
-    ScopedKeySpec(
         table="weight_logs",
         scope=ScopeKind.SUBJECT,
         legacy_name="uq_active_weight_per_date",

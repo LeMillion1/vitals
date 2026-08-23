@@ -1,7 +1,6 @@
 """Contracts for the allowlisted legacy/scoped settings bridge."""
 from __future__ import annotations
 
-import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -9,7 +8,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy.exc import StatementError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
     IntegrationConnectionStatus,
@@ -119,55 +118,6 @@ def _scoped_pk(graph: _Graph, key: ScopedSettingKey) -> tuple[uuid.UUID, str]:
     return ids[route.scope], key.value
 
 
-def test_registry_contains_only_the_five_reviewed_non_secret_mappings():
-    expected = {
-        ScopedSettingKey.UI_LANGUAGE: (
-            SettingScope.USER,
-            UserSetting,
-            "user_id",
-            None,
-        ),
-        ScopedSettingKey.ENABLED_MODULES: (
-            SettingScope.SUBJECT,
-            SubjectSetting,
-            "subject_id",
-            None,
-        ),
-        ScopedSettingKey.CUSTOM_CHARTS: (
-            SettingScope.SUBJECT,
-            SubjectSetting,
-            "subject_id",
-            None,
-        ),
-        ScopedSettingKey.WEEK_TEMPLATE: (
-            SettingScope.SUBJECT,
-            SubjectSetting,
-            "subject_id",
-            None,
-        ),
-        ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED: (
-            SettingScope.INTEGRATION_CONNECTION,
-            IntegrationConnectionSetting,
-            "integration_connection_id",
-            IntegrationProvider.GARMIN,
-        ),
-    }
-
-    assert set(SCOPED_SETTING_REGISTRY) == set(expected)
-    for key, expected_route in expected.items():
-        route = SCOPED_SETTING_REGISTRY[key]
-        assert (
-            route.scope,
-            route.model,
-            route.scope_id_field,
-            route.required_provider,
-        ) == expected_route
-        assert route.legacy_key == key.value
-
-    with pytest.raises(TypeError):
-        SCOPED_SETTING_REGISTRY[ScopedSettingKey.UI_LANGUAGE] = (  # type: ignore[index]
-            SCOPED_SETTING_REGISTRY[ScopedSettingKey.UI_LANGUAGE]
-        )
 
 
 @pytest.mark.parametrize("key", list(ScopedSettingKey))
@@ -250,38 +200,6 @@ async def test_set_dual_writes_exact_scoped_model_and_legacy_row(db_session, key
     assert legacy.value == {"revision": 2, "nested": [False]}
 
 
-async def test_set_flushes_but_leaves_commit_and_rollback_to_caller(db_session):
-    graph = await _graph(db_session)
-    subject_id = graph.subject.id
-    await db_session.commit()
-
-    await set_scoped_setting(
-        db_session,
-        scope=SettingScope.SUBJECT,
-        key=ScopedSettingKey.WEEK_TEMPLATE,
-        scope_id=subject_id,
-        value={"monday": "training"},
-    )
-
-    assert db_session.in_transaction()
-    assert await db_session.get(
-        SubjectSetting,
-        (subject_id, ScopedSettingKey.WEEK_TEMPLATE.value),
-    ) is not None
-    assert await db_session.get(
-        AppSetting,
-        ScopedSettingKey.WEEK_TEMPLATE.value,
-    ) is not None
-
-    await db_session.rollback()
-    assert await db_session.get(
-        SubjectSetting,
-        (subject_id, ScopedSettingKey.WEEK_TEMPLATE.value),
-    ) is None
-    assert await db_session.get(
-        AppSetting,
-        ScopedSettingKey.WEEK_TEMPLATE.value,
-    ) is None
 
 
 async def test_dual_write_failure_rolls_back_both_existing_values(db_session):
@@ -430,60 +348,8 @@ async def test_missing_or_non_uuid_scope_is_rejected(db_session, bad_id):
         )
 
 
-async def test_an_identifier_of_the_wrong_kind_finds_nothing(db_session):
-    """One id slot, so a caller can no longer offer three and hope one fits.
-
-    The mismatch that used to be possible — handing a user id and a subject id
-    to the same call and letting the service pick — cannot be written any more.
-    What survives is a caller passing the wrong *kind* of id into the one slot,
-    and that must not resolve to anybody: a user's id is not a subject, so the
-    subject-scoped read finds no such subject rather than falling through to the
-    installation-wide legacy row.
-    """
-
-    graph = await _graph(db_session)
-
-    with pytest.raises(ScopedSettingTargetNotFoundError):
-        await get_scoped_setting(
-            db_session,
-            scope=SettingScope.SUBJECT,
-            key=ScopedSettingKey.WEEK_TEMPLATE,
-            scope_id=graph.user.id,
-        )
-    with pytest.raises(ScopedSettingTargetNotFoundError):
-        await get_scoped_setting(
-            db_session,
-            scope=SettingScope.USER,
-            key=ScopedSettingKey.UI_LANGUAGE,
-            scope_id=graph.subject.id,
-        )
-    with pytest.raises(ScopedSettingTargetNotFoundError):
-        await get_scoped_setting(
-            db_session,
-            scope=SettingScope.INTEGRATION_CONNECTION,
-            key=ScopedSettingKey.GARMIN_WEIGHT_EXPORT_ENABLED,
-            scope_id=graph.user.id,
-        )
 
 
-async def test_expected_subject_is_refused_outside_connection_scope(db_session):
-    """``expected_subject_id`` cross-checks a connection's owner, nothing else.
-
-    A user or subject setting is already scoped by its own id; accepting a
-    second subject alongside it would reintroduce exactly the two-ids ambiguity
-    the single slot removed.
-    """
-
-    graph = await _graph(db_session)
-
-    with pytest.raises(ScopedSettingScopeMismatchError):
-        await get_scoped_setting(
-            db_session,
-            scope=SettingScope.SUBJECT,
-            key=ScopedSettingKey.WEEK_TEMPLATE,
-            scope_id=graph.subject.id,
-            expected_subject_id=graph.subject.id,
-        )
 
 
 @pytest.mark.parametrize("scope", [SettingScope.USER, SettingScope.SUBJECT])
@@ -714,67 +580,6 @@ async def test_retired_connection_can_read_scoped_but_cannot_touch_legacy(db_ses
         await get_scoped_setting(db_session, **request)
 
 
-@pytest.mark.integration
-async def test_postgres_concurrent_first_writes_are_serialized_by_scope_root(
-    db_session,
-):
-    """Concurrent absent-row inserts cannot race into a composite-PK failure.
-
-    Whole-value replacement deliberately has last-writer-wins semantics, so
-    there is no read/modify/write lost-update claim to make here.  This test pins
-    the relevant concurrency guarantee: the second writer waits for the locked
-    ownership root before it checks and inserts the setting rows.
-    """
-
-    graph = await _graph(db_session)
-    subject_id = graph.subject.id
-    await db_session.commit()
-    assert db_session.bind is not None
-    factory = async_sessionmaker(
-        db_session.bind,
-        expire_on_commit=False,
-        class_=AsyncSession,
-    )
-
-    session_a = factory()
-    await set_scoped_setting(
-        session_a,
-        scope=SettingScope.SUBJECT,
-        key=ScopedSettingKey.WEEK_TEMPLATE,
-        scope_id=subject_id,
-        value={"writer": "a"},
-    )
-
-    async def write_b() -> None:
-        async with factory() as session_b:
-            await set_scoped_setting(
-                session_b,
-                scope=SettingScope.SUBJECT,
-                key=ScopedSettingKey.WEEK_TEMPLATE,
-                scope_id=subject_id,
-                value={"writer": "b"},
-            )
-            await session_b.commit()
-
-    task_b = asyncio.create_task(write_b())
-    await asyncio.sleep(0.25)
-    assert not task_b.done(), "writer B should wait on the subject row lock"
-
-    await session_a.commit()
-    await session_a.close()
-    await asyncio.wait_for(task_b, timeout=5)
-
-    async with factory() as verify:
-        scoped = await verify.get(
-            SubjectSetting,
-            (subject_id, ScopedSettingKey.WEEK_TEMPLATE.value),
-        )
-        legacy = await verify.get(
-            AppSetting,
-            ScopedSettingKey.WEEK_TEMPLATE.value,
-        )
-    assert scoped is not None and scoped.value == {"writer": "b"}
-    assert legacy is not None and legacy.value == {"writer": "b"}
 
 
 def test_service_has_no_cache_or_existing_service_dependencies():

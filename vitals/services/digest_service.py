@@ -63,11 +63,6 @@ _DIGEST_RESERVATION_OVERHEAD_UNITS = 512
 _DIGEST_RESERVED_COST_MICROUNITS = 10_000_000
 _DIGEST_MAX_ATTEMPTS = 3
 
-# Row budget per day of window for the signals block. The service's own default
-# (200) is a screen's worth; a 90-day window quietly lost everything older than
-# the 200th newest row while the block still read as the whole period.
-# ponytail: a budget, not "all rows" — raise it if a day ever produces more.
-_SIGNALS_PER_DAY = 50
 _BODY_MEASUREMENT_LIMIT = 6
 _BODY_SCAN_LIMIT = 3
 _GARMIN_ACTIVITY_LIMIT = 500
@@ -116,7 +111,6 @@ _DOMAIN_MODULE = {
     "nutrition": "nutrition",
     "hrt": "hrt",
     "timeline": "timeline",
-    "signals": "signals",
     "milestones": "reports",
     "system": "reports",
 }
@@ -492,23 +486,6 @@ def _coverage(
     return out
 
 
-def _resolved_day_context(row) -> dict[str, Any]:
-    planned = dict(row.planned or {})
-    answers = dict(row.answers or {})
-    resolved = {**planned, **answers}
-    return {
-        "date": row.date.isoformat(),
-        "answers": answers,
-        "planned": planned,
-        "resolved": resolved,
-        "answered_keys": sorted(answers),
-        "source": row.source,
-        "source_by_field": {
-            key: (row.source if key in answers else "template") for key in resolved
-        },
-    }
-
-
 async def _bounded_scalars(
     session: AsyncSession, stmt, limit: int
 ) -> tuple[list[Any], bool]:
@@ -647,7 +624,7 @@ DIGEST_SYSTEM = """\
 Контекст имеет schema_version=2. Любой домен может быть null, но null сам по себе НЕ означает «пользователь не ведёт данные»: сначала читай coverage.
 - report_meta: report_date, mode, period_start / period_end, previous_start / previous_end и period_days. closed_period состоит из ПОЛНОСТЬЮ ЗАКРЫТЫХ дней и заканчивается вчера, если отчёт сделан сегодня; daily_brief — отдельный текущий день. Период называй по period_start–period_end.
 - coverage: по каждому домену enabled/status, число строк текущего и прошлого окон, first_date/last_date, freshness_days (возраст последней записи относительно period_end) и truncated. Говорить «данных нет» можно только если модуль enabled, status=empty и truncated=false. disabled — сознательно отключено; truncated — данных может быть больше. metric_samples и period_stats.sample_counts — реальные знаменатели отдельных показателей.
-- days: ТАБЛИЦА ПО ДНЯМ — одна строка на каждый день периода, где домены УЖЕ СВЕДЕНЫ: полный компактный Garmin daily, вес и замеры, все макросы, отдельные массивы garmin_activities и hevy_workouts, GLP-1/ГЗТ события, уход, resolved day context и signals. Отсутствующий ключ = данных за день нет. Legacy workout — только одна Hevy-сессия для совместимости; для анализа используй массив hevy_workouts.
+- days: ТАБЛИЦА ПО ДНЯМ — одна строка на каждый день периода, где домены УЖЕ СВЕДЕНЫ: полный компактный Garmin daily, вес и замеры, все макросы, отдельные массивы garmin_activities и hevy_workouts, GLP-1/ГЗТ события, уход и resolved day context. Отсутствующий ключ = данных за день нет. Legacy workout — только одна Hevy-сессия для совместимости; для анализа используй массив hevy_workouts.
   ЭТО ГЛАВНЫЙ ИНСТРУМЕНТ ДЛЯ СВЯЗЕЙ. Читай таблицу по столбцам и ищи совпадения со сдвигом: тренировка → сон и HRV следующей ночи; exposure вечером → метрика наутро; тяжёлый день или офис → восстановление; дни с низкими калориями → шаги, стресс, вес через 2-3 дня. Называй связь С ДАТАМИ («после сессии 28-го HRV просел на две ночи») — без дат это не наблюдение, а общая фраза. Если совпадение однократное — так и скажи, что это одно совпадение, а не закономерность.
 - user_profile: возраст, рост, программа, цели
 - weight: последний замер as-of period_end, MA7 и тренд, noise_markers, последние антропометрические measurements и measurement_delta
@@ -668,7 +645,6 @@ DIGEST_SYSTEM = """\
 - hrt: cycle.items и schedule — назначенный протокол, planned_administrations — план, doses — факт текущего окна, comparison_doses — факт прошлого; side_effects тоже разделены. Связывай вмешательство со сном/HRV, анализами, кожей и настроением, но не давай назначения доз.
 - supplements: текущий справочник, а не дневной adherence-log; skincare: продукты, реальные daily logs и observations; genetics: только курированные impact/interpretation/action_notes; alerts: активные предупреждения as-of среза.
 - timeline: ручные события и только не дублирующие доменные блоки derived lifecycle events. certainty=audit_timestamp означает приблизительную дату изменения справочника.
-- signals: что пользователь сам сказал о своём состоянии, в хронологическом порядке. kind=state (есть всегда, value_num 1-5: «энергии ноль»), symptom (случилось, value_num 1-5: «голова раскалывается»), exposure (сделал/принял, at_time — время суток: «кофе в 22»). note — исходная формулировка. Единственный блок, который объясняет ПОЧЕМУ цифры такие: ищи связи «exposure вечером → метрика Garmin наутро» и «симптом держится N дней подряд → что ещё в эти дни». Это его слова, а не измерение — не считай их точными числами и не строй на одной записи вывод.
 - day_context: planned — догадка шаблона, answers — ручные переопределения, resolved — их итог; source_by_field показывает силу каждого поля. Вывод на одном template-поле не строй.
 - milestones: активные цели с прогрессом и дедлайнами
 
@@ -718,7 +694,7 @@ INPUT DATA (JSON):
 The context has schema_version=2. Any domain may be null, but null alone does NOT mean the user does not track it: read coverage first.
 - report_meta: report_date, mode, period_start / period_end, previous_start / previous_end and period_days. closed_period contains FULLY CLOSED days and ends yesterday when generated today; daily_brief is the explicit current-day mode. Name the period by period_start–period_end.
 - coverage: enabled/status, current/previous row counts, first_date/last_date, freshness_days (age of the latest row relative to period_end), and truncated for every domain. Say "there is no data" only when the module is enabled, status=empty and truncated=false. disabled is an owner choice; truncated means more data may exist. metric_samples and period_stats.sample_counts are the real denominators for individual metrics.
-- days: THE DAY TABLE — one row per day with a compact full Garmin daily row, weight and measurements, every macro, separate garmin_activities and hevy_workouts arrays, GLP-1/HRT events, skincare, resolved day context and signals. A missing key means no value for that day. Legacy workout is only one Hevy session for compatibility; use hevy_workouts for analysis.
+- days: THE DAY TABLE — one row per day with a compact full Garmin daily row, weight and measurements, every macro, separate garmin_activities and hevy_workouts arrays, GLP-1/HRT events, skincare and resolved day context. A missing key means no value for that day. Legacy workout is only one Hevy session for compatibility; use hevy_workouts for analysis.
   THIS IS THE MAIN TOOL FOR FINDING LINKS. Read it column-wise and look for shifted coincidences: a session → next night's sleep and HRV; an evening exposure → the next morning's metric; a heavy or office day → recovery; low-calorie days → steps, stress, weight two or three days later. Name the link WITH DATES ("after the session on the 28th, HRV sat two nights below its usual") — without dates it isn't an observation, it's a generality. If a coincidence happens once, say it happened once rather than calling it a pattern.
 - user_profile: age, height, program, goals
 - weight: latest reading as of period_end, MA7 and trend, noise_markers, recent anthropometric measurements and measurement_delta
@@ -739,7 +715,6 @@ The context has schema_version=2. Any domain may be null, but null alone does NO
 - hrt: cycle.items/schedule are the prescribed plan; planned_administrations are planned; doses are current-window facts and comparison_doses are previous-window facts; side effects are split likewise. Relate the intervention to sleep/HRV, labs, skin and mood, but do not prescribe doses.
 - supplements is a current catalog, not a daily adherence log; skincare has products, actual daily logs and observations; genetics contains curated impact/interpretation/action_notes only; alerts are active warnings as of the slice.
 - timeline: manual events plus only derived lifecycle events not duplicated by first-class blocks. certainty=audit_timestamp means an approximate catalog-change date.
-- signals: what the user said about how he felt, in chronological order. kind=state (always present, value_num 1-5), symptom (happened, value_num 1-5), exposure (did/took it, at_time = time of day). note is his original wording. The only block that explains WHY the numbers look like they do: look for "exposure in the evening → Garmin metric next morning" and "symptom running N days straight → what else those days had". These are his words, not measurements — don't treat them as exact figures and don't build a conclusion on a single row.
 - day_context: planned is the template guess, answers are manual overrides, resolved is the effective result, and source_by_field carries the strength of each field. Do not build a conclusion on one template-only field.
 - milestones: active goals with progress and deadlines
 
@@ -763,7 +738,7 @@ The test that matters: the report is useless if the user could have got the same
    A link without dates doesn't count. "Sleep is related to load" is an empty sentence anyone could write without opening the data. "The session on the 28th ran 11 t, HRV that night was 41 against a usual 53, and it repeated on the 1st" is an observation. If no such coincidence exists in the data — say so in one line rather than substituting generalities about how domains relate.
    At least one date-checked link per report, whenever the data allows one to be found.
 3. DRIFT AND TRAJECTORY. Where this ends up if nothing changes: labs.trends inside the normal range, the weight slope against a goal deadline, tonnage period over period.
-4. CONTRADICTIONS. Where the data argues with itself or with his own words — a signal says one thing and the metric another; the trend accelerated while nutrition didn't move. Naming a contradiction beats inventing an explanation for it.
+4. CONTRADICTIONS. Where the data argues with itself — the trend accelerated while nutrition didn't move, a metric moved against what the protocol predicts. Naming a contradiction beats inventing an explanation for it.
 5. WHAT'S MISSING. Which number you needed and didn't have to answer an important question, and what to log so the answer exists next time.
 
 Don't open the report by restating current values. The first thought should already be a conclusion that isn't on the screen.
@@ -2232,39 +2207,9 @@ async def assemble_context(
                 }
             )
 
-    # Signals — the day in his own words. Every other block is a measurement; this
-    # is the only one that can say *why* a measurement moved: "кофе в 22" the night
-    # before the HRV dip, a headache running through a week of bad sleep. Read
-    # chronologically, because a narrative reads a period forward. Rows tapped
-    # "не то" are excluded by the service — a misparse is not evidence, even
-    # though it stays on the table as material for the key revision.
-    from vitals.services import signals_service
-    signals_enabled = module_on("signals")
-    signal_limit = min(period_days * _SIGNALS_PER_DAY, 1000)
-    raw_signals = (
-        await signals_service.list_signals(
-            session,
-            start=since,
-            end=period_end,
-            limit=signal_limit + 1,
-            subject_id=subject_id,
-        )
-        if signals_enabled
-        else []
-    )
-    signals_truncated = len(raw_signals) > signal_limit
-    # ``list_signals`` is newest first; the model reads the period forward.
-    signals = list(raw_signals[:signal_limit])
-    ctx["signals"] = [signal_row(row) for row in reversed(signals)] or None
-    ctx["coverage"]["signals"] = _coverage(
-        module="signals",
-        enabled=signals_enabled,
-        dates=[row.date for row in signals],
-        window=window,
-        truncated=signals_truncated,
-        extra={"signal_limit": signal_limit},
-    )
-
+    # ``signals`` stood here — what the person said about how they felt, the one
+    # block that could say *why* a measurement moved. It is gone with the chat it
+    # was parsed from, and nothing replaces it: no device produces a sentence.
     from vitals.enums import MilestoneStatus
     from vitals.models.milestones import Milestone
 
@@ -2401,31 +2346,10 @@ async def assemble_context(
     # "HRV fell across three heavy office days in a row". Read straight off the
     # model: the domain's service resolves one day at a time (the bot only ever
     # needs today), and a period read has no other caller.
-    from vitals.models.signals import DayContext
 
-    day_rows = list(
-        (
-            await session.execute(
-                select(DayContext)
-                .where(
-                    DayContext.subject_id == subject_id,
-                    DayContext.date >= since,
-                    DayContext.date <= period_end,
-                )
-                .order_by(DayContext.date)
-            )
-        ).scalars().all()
-    ) if signals_enabled else []
-    ctx["day_context"] = [
-        _resolved_day_context(row) for row in day_rows
-    ] or None
-    ctx["coverage"]["day_context"] = _coverage(
-        module="signals",
-        enabled=signals_enabled,
-        dates=[row.date for row in day_rows],
-        window=window,
-    )
-
+    # ``day_context`` stood here — remote or office, gym, how heavy the day was.
+    # It went with the questions that asked it: the evening block was the only
+    # thing that ever put an answer in, and it went with Telegram.
     # ── The join ──────────────────────────────────────────────────────────────
     # One row per day with every domain on it. The report kept reading as a stack
     # of separate domains because that is exactly what it was handed: recovery in
@@ -2443,7 +2367,6 @@ async def assemble_context(
         for activity in garmin_activities:
             if period_start <= activity.date <= period_end:
                 by_date_activities.setdefault(activity.date, []).append(activity)
-        by_date_day = {r.date: r for r in day_rows}
         by_date_garmin = {r.date: r for r in garmin_rows}  # one row per date
         by_date_weight = {x.date: x for x in weights}
         period_measurements = list(
@@ -2461,9 +2384,6 @@ async def assemble_context(
         )
         by_date_measurement = {row.date: row for row in period_measurements}
         meals_by_date = all_meals_by_date
-        signals_by_date: dict = {}
-        for s in signals:
-            signals_by_date.setdefault(s.date, []).append(s)
         skin_logs_by_date = {row.date: row for row in skin_logs}
         skin_obs_by_date: dict[date_type, list[Any]] = {}
         for row in skin_obs:
@@ -2486,7 +2406,6 @@ async def assemble_context(
             d = period_start + timedelta(days=i)
             g_row = by_date_garmin.get(d)
             meals = meals_by_date.get(d) or []
-            day_row = by_date_day.get(d)
             workouts = by_date_workouts.get(d.isoformat(), [])
             activities = by_date_activities.get(d, [])
             measurement = by_date_measurement.get(d)
@@ -2531,20 +2450,6 @@ async def assemble_context(
                     _garmin_activity_row(row) for row in activities
                 ]
                 or None,
-                "day": (
-                    _resolved_day_context(day_row)["resolved"] if day_row else None
-                ),
-                # Labels only — the full wording, with his own phrasing, stays in
-                # the signals block. Here they exist so a signal is visible on the
-                # same line as the metric it might explain.
-                "signals": [
-                    (
-                        f"{signals_service.normalize_key(s.key)}@{s.at_time.strftime('%H:%M')}"
-                        if s.at_time
-                        else signals_service.normalize_key(s.key)
-                    )
-                    for s in signals_by_date.get(d, [])
-                ] or None,
                 "body_measurement": (
                     {
                         "neck_cm": measurement.neck_cm,
@@ -2859,31 +2764,6 @@ def _window_stats(
     return out
 
 
-def signal_row(signal) -> dict:
-    """One signal as the model sees it.
-
-    Shared with the daily brief, which reads the same rows over a wider window —
-    two shapes for the same block would mean two prompt descriptions to keep in
-    step, and the one that drifted would drift silently.
-    """
-    from vitals.services import signals_service
-
-    return {
-        "date": signal.date.isoformat(),
-        "kind": signal.kind,
-        "key": signals_service.normalize_key(signal.key),
-        "stored_key": (
-            signal.key
-            if signals_service.normalize_key(signal.key) != signal.key
-            else None
-        ),
-        "value_num": signal.value_num,
-        "unit": signal.unit,
-        # The hour is what makes an exposure correlatable at all: "кофе в 22" and
-        # "кофе в 9" are opposite facts wearing the same key.
-        "at_time": signal.at_time.strftime("%H:%M") if signal.at_time else None,
-        "note": signal.note,
-    }
 
 
 def build_prompt(context: dict, lang: str = "ru") -> str:

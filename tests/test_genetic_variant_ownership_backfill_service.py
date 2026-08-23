@@ -16,9 +16,6 @@ from vitals.services import genetic_variant_ownership_backfill_service as servic
 from vitals.services.conflict_rule_ownership_backfill_service import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.day_context_ownership_backfill_service import (
-    DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
 from vitals.services.hevy_child_ownership_backfill_service import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -44,9 +41,6 @@ from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFIL
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.signal_ownership_backfill_service import (
-    SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
 from vitals.services.weight_log_ownership_backfill_service import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -71,8 +65,6 @@ _PRIOR_PHASES = (
     + tuple(HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-    + tuple(DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-    + tuple(SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())

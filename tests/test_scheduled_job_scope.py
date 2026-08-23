@@ -56,7 +56,6 @@ BINDS_A_SUBJECT = {
     # token and one chat id for the whole process, so fanning them out would
     # deliver ten people's messages to one person's chat.
     "daily_brief": "resolve_legacy_channel_ownership",
-    "evening_block": "resolve_legacy_channel_ownership",
     "nudges": "resolve_legacy_channel_ownership",
     "weekly_digest": "prepare_subject_digest_owner",
     # Scans unprocessed payloads and then binds per domain before touching

@@ -8,7 +8,6 @@ from vitals.ownership import required_ownership_columns
 from vitals.models.proactive import Notification
 from vitals.models.raw_payload import RawPayload
 from vitals.models.share import SharedReport
-from vitals.models.signals import DayContext, Signal
 from vitals.models.system_alert import SystemAlert
 
 
@@ -63,8 +62,6 @@ _MODEL_COLUMNS = {
         "integration_connection_id",
         "file_asset_id",
     },
-    Signal: {"subject_id", "actor_user_id", "integration_connection_id"},
-    DayContext: {"subject_id", "actor_user_id", "integration_connection_id"},
     Notification: {
         "subject_id",
         "actor_user_id",
@@ -89,12 +86,6 @@ _RETAINED_SCHEMA_OBJECTS = {
         "ix_raw_payloads_payload_gin",
         "ix_raw_payloads_domain_source_external",
     },
-    Signal: {
-        "ix_signals_domain_date",
-        "ix_signals_batch",
-        "ix_signals_key_date",
-    },
-    DayContext: {"ix_day_context_domain_date", "uq_day_context_subject_date"},
     Notification: {
         "uq_notifications_owned_dedupe_key",
         "uq_notifications_legacy_dedupe_key",
@@ -131,21 +122,6 @@ _STAGE1_INDEXES = {
             "domain",
             "source",
             "external_id",
-        ),
-    },
-    Signal: {
-        "ix_signals_subject_date": ("subject_id", "date"),
-        "ix_signals_subject_domain_date": ("subject_id", "domain", "date"),
-        "ix_signals_subject_batch": ("subject_id", "batch_id"),
-        "ix_signals_subject_key_date": ("subject_id", "key", "date"),
-        "ix_signals_connection_batch": ("integration_connection_id", "batch_id"),
-    },
-    DayContext: {
-        "ix_day_context_subject_date": ("subject_id", "date"),
-        "ix_day_context_subject_domain_date": (
-            "subject_id",
-            "domain",
-            "date",
         ),
     },
     Notification: {
@@ -223,20 +199,6 @@ def test_special_models_have_exact_nullable_ownership_and_lifecycle_fks(
         assert indexes[index_name].unique is False
 
 
-@pytest.mark.parametrize(
-    "model",
-    (Signal, DayContext),
-    ids=lambda model: model.__name__,
-)
-def test_special_insights_indexes_survive_ownership_mixins(model):
-    index_name = f"ix_{model.__tablename__}_domain_date"
-    indexes = {index.name: index for index in model.__table__.indexes}
-
-    assert index_name in indexes
-    assert [column.name for column in indexes[index_name].columns] == [
-        "domain",
-        "date",
-    ]
 
 
 @pytest.mark.parametrize(

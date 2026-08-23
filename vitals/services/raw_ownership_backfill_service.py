@@ -54,7 +54,11 @@ _GARMIN_PAIRS = frozenset(
     }
 )
 _HEVY_PAIRS = frozenset({(Domain.WORKOUTS.value, Source.HEVY_API.value)})
-_TELEGRAM_PAIRS = frozenset({(Domain.SIGNALS.value, Source.TELEGRAM.value)})
+# Literal strings, not enum members: these classify raw payloads the Telegram
+# bot wrote before it was removed. ``Domain.SIGNALS`` is gone because nothing
+# writes it any more, and a stored value that no live domain matches is exactly
+# what this pair is for.
+_TELEGRAM_PAIRS = frozenset({("signals", "telegram")})
 _PARSER_PAIRS = frozenset(
     {
         (Domain.LABS.value, Source.LAB_PARSER.value),
@@ -108,7 +112,12 @@ _KNOWN_CONNECTION_STATUSES = frozenset(
 )
 _KNOWN_PROVIDERS = frozenset(item.value for item in IntegrationProvider)
 _KNOWN_CONNECTION_TYPES = frozenset(item.value for item in IntegrationConnectionType)
-_KNOWN_DOMAINS = frozenset(item.value for item in Domain)
+#: Domains a raw payload may carry. The live enum, plus the ones a removed
+#: feature stamped on rows that are still in the lake — this backfill's whole
+#: job is classifying what is already there, and "the app no longer writes it"
+#: is not the same as "no row has it".
+_RETIRED_DOMAINS = frozenset({"signals"})
+_KNOWN_DOMAINS = frozenset(item.value for item in Domain) | _RETIRED_DOMAINS
 _KNOWN_SOURCES = frozenset(item.value for item in Source)
 
 

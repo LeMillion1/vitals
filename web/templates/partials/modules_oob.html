@@ -11,4 +11,4 @@
 {# The proactive card's "module off" chip (proactive_card.html) — only
    present in the DOM while on /settings, harmless no-op OOB elsewhere since
    htmx drops an OOB fragment with no id match in the current page. #}
-<span id="proactive-off-chip" hx-swap-oob="true">{% if not enabled_modules.get('signals') %}<span class="v-chip v-chip-sm ml-1.5">{{ t("settings.proactive_off_chip") }}</span>{% endif %}</span>
+<span id="proactive-off-chip" hx-swap-oob="true"></span>

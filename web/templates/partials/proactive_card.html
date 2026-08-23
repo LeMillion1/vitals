@@ -12,7 +12,7 @@
        has something to swap into — an OOB target that doesn't already exist in the
        DOM is silently dropped by htmx, so the conditional lives inside the span,
        not around it. #}
-    <span id="proactive-off-chip">{% if not enabled_modules.get('signals') %}<span class="v-chip v-chip-sm">{{ t("settings.proactive_off_chip") }}</span>{% endif %}</span>
+    <span id="proactive-off-chip"></span>
     {% endcall %}
     <p class="v-text-body" style="color: var(--muted)">
         {{ t("settings.proactive_description") }}

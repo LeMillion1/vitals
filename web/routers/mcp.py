@@ -46,7 +46,6 @@ from vitals.models import (
     Annotation,
     BodyMeasurement,
     BodyScan,
-    DayContext,
     DosePhase,
     GarminActivity,
     GarminDaily,
@@ -63,7 +62,6 @@ from vitals.models import (
     Milestone,
     NoiseMarker,
     SideEffect,
-    Signal,
     SkincareLog,
     SkincareObservation,
     Supplement,
@@ -2144,7 +2142,6 @@ _DELETE_TARGETS: dict[str, tuple[Optional[str], str, str]] = {
     "skincare_observation": ("skincare", "skincare_service", "delete_observation"),
     "supplements": ("supplements", "supplements_service", "delete_supplement"),
     "genetics": ("genetics", "genetics_service", "delete_variant"),
-    "signals": ("signals", "signals_service", "delete_signal"),
 }
 
 
@@ -2157,7 +2154,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
     glp1_side_effect, glp1_dose_phase, hrt_dose, hrt_side_effect, hrt_cycle
     (with its compound plans), hrt_cycle_item (one plan, cycle kept), body_comp
     (a scan with its metrics), timeline (a manual event), skincare_observation,
-    supplements (a catalog entry), genetics (a variant), signals (one parsed
+    supplements (a catalog entry), genetics (a variant) (one parsed
     signal — the raw message stays in the lake; for a whole batch parsed wrongly
     out of one message use ``mark_signal_misparse`` instead).
 
@@ -2278,9 +2275,6 @@ async def delete_record(domain: str, record_id: int) -> dict:
                 "identity": conflict_context.identity,
                 "prepared_conflict_write": prepared,
             }
-        elif domain == "signals":
-            ownership = await _mcp_v1_legacy_owner(session)
-            owned_kwargs = {"subject_id": ownership.subject_id}
         ok = await getattr(service, fn_name)(session, record_id, **owned_kwargs)
         if domain == "body_comp" and ok:
             await service.refresh_alerts(
@@ -2861,7 +2855,7 @@ async def get_full_snapshot(
 ) -> dict:
     """Returns context-v2 for a closed period (1..90 days): profile, coverage,
     weight/body composition, GLP-1/HRT plans and facts, every lab result in the
-    period, Garmin recovery and activities, Hevy, nutrition, skincare, signals,
+    period, Garmin recovery and activities, Hevy, nutrition, skincare,
     timeline and active goals. Every dated fact is bounded by the effective
     period end. When ``on_date`` is today the closed period ends yesterday."""
     from vitals.services import digest_service
@@ -2890,7 +2884,7 @@ async def export_everything(
 ) -> dict:
     """Returns the health history as one compact, secret-free, LLM-ready export
     grouped by domain (weight, measurements, body scans, GLP-1, HRT, labs, Garmin,
-    workouts, nutrition, skincare, supplements, genetics, signals, day context,
+    workouts, nutrition, skincare, supplements, genetics, day context,
     milestones, timeline). This is the way to read long-term history in a single
     call rather than paging each domain's newest-100 read tool. Read-only.
 
@@ -2941,8 +2935,6 @@ async def get_data_overview() -> dict:
         ("weekly_digests", WeeklyDigest, WeeklyDigest.date),
         ("timeline", Annotation, Annotation.date),
         ("noise_markers", NoiseMarker, NoiseMarker.start_date),
-        ("signals", Signal, Signal.date),
-        ("day_context", DayContext, DayContext.date),
         ("hrt_doses", HrtDose, HrtDose.date),
         ("hrt_side_effects", HrtSideEffect, HrtSideEffect.date),
         ("hrt_cycles", HrtCycle, HrtCycle.start_date),
@@ -3765,173 +3757,6 @@ async def get_trend(
         return result
 
 
-# ── Signals tools (free-text capture — optional module) ───────────────────────
-@mcp.tool()
-async def get_signals(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    kind: Optional[str] = None,
-    key: Optional[str] = None,
-    limit: int = 200,
-) -> list[dict]:
-    """Retrieves signals — the owner's own words about how a day felt, parsed into
-    rows: states ("энергии ноль"), symptoms ("голова раскалывается"), exposures
-    ("кофе в 22"). This is the domain that *explains* the Garmin numbers. Filter by
-    ``kind`` (state/symptom/exposure) and/or ``key`` (matches every stored spelling
-    that folds to it, e.g. ``sleepiness`` also finds ``sleepy_af``). Rows the owner
-    flagged as misparsed are excluded. Newest first, most recent 200 by default."""
-    from vitals.services import signals_service
-
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        rows = await signals_service.list_signals(
-            session,
-            key=key,
-            kind=kind,
-            start=start,
-            end=end,
-            limit=limit,
-            subject_id=ownership.subject_id,
-        )
-        return [serialize_row(r) for r in rows]
-
-
-@mcp.tool()
-@gated("signals")
-async def log_signal(
-    key: str,
-    kind: str,
-    value_num: Optional[float] = None,
-    unit: Optional[str] = None,
-    note: Optional[str] = None,
-    at_time: Optional[str] = None,
-    on_date: Optional[str] = None,
-) -> dict:
-    """Records one signal — a state, symptom or exposure the owner mentioned in
-    conversation. ``kind`` must be state, symptom or exposure; ``key`` is a short
-    slug (``headache``, ``caffeine_late``); ``value_num`` is intensity 1-5 for
-    state/symptom or an amount for exposure; ``at_time`` is HH:MM (matters for
-    exposures — "кофе в 22" only means something with the hour attached).
-    WRITE tool — saved immediately."""
-    from vitals.services import signals_service
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        rows = await signals_service.create_signals(
-            session,
-            items=[{
-                "kind": kind, "key": key, "value_num": value_num,
-                "unit": unit, "note": note, "at_time": at_time,
-            }],
-            on_date=parsed_date,
-            source=Source.MCP.value,
-            identity=ownership.owner_action(),
-        )
-        # create_signals drops unusable rows silently (it batch-parses LLM output,
-        # where one bad fact must not cost the message). A single-row tool call has
-        # no such batch to protect — an empty result means this call was rejected.
-        if not rows:
-            return {"error": "kind must be state, symptom or exposure, and key must be non-empty"}
-        await session.commit()
-        return await serialize_written(session, rows[0])
-
-
-@mcp.tool()
-@gated("signals")
-async def mark_signal_misparse(batch_id: str) -> dict:
-    """Flags every signal parsed out of one message as misparsed — the "не то"
-    button. The rows and the raw text stay, they just drop out of ``get_signals``
-    and out of the charts. ``batch_id`` is the field shared by all rows from the
-    same message. WRITE tool — immediate."""
-    from vitals.services import signals_service
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        marked = await signals_service.mark_misparse(
-            session,
-            batch_id,
-            subject_id=ownership.subject_id,
-        )
-        await session.commit()
-        return {"marked": marked, "batch_id": batch_id}
-
-
-@mcp.tool()
-async def get_day_context(
-    start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 100
-) -> list[dict]:
-    """Retrieves per-day context — what kind of day it was (remote/office, gym or
-    not, workload), as answered by the owner or guessed by the week template
-    (``planned``). One row per date, newest first. Read this before explaining a
-    day's Garmin numbers: a heavy office day and a rest day at home look the same
-    in the metrics and mean opposite things."""
-    session_factory = get_session_factory()
-    start = _parse_date(start_date, field="start_date")
-    end = _parse_date(end_date, field="end_date")
-
-    async with session_factory() as session:
-        from vitals.services import signals_service
-
-        ownership = await _mcp_v1_legacy_owner(session)
-        rows = await signals_service.list_day_contexts(
-            session,
-            start=start,
-            end=end,
-            limit=limit,
-            subject_id=ownership.subject_id,
-        )
-        return [serialize_row(r) for r in rows]
-
-
-@mcp.tool()
-@gated("signals")
-async def log_day_context(answers: dict, on_date: Optional[str] = None) -> dict:
-    """Records what kind of day it was — the same answers the owner taps in
-    Telegram, when he says them here instead ("сегодня удалёнка, зала не будет").
-    Keys: ``where`` (office/remote/off), ``gym`` (true/false), ``load``
-    (light/normal/heavy — about a day already spent, not a plan). Only the keys
-    you pass are changed, and the week template's own guess is kept beside the
-    answer rather than overwritten. ``on_date`` defaults to today. WRITE tool."""
-    from vitals.services.proactive import day_plan
-    from vitals.utils.timeutils import today_local
-
-    session_factory = get_session_factory()
-    parsed_date = _parse_date(on_date, today_local(), field="on_date")
-
-    legal = "; ".join(f"{q.key}: {list(q.labels)}" for q in day_plan.QUESTIONS)
-    if not answers:
-        return {"error": f"answers must contain at least one of — {legal}"}
-    for key, value in answers.items():
-        question = day_plan.QUESTIONS_BY_KEY.get(key)
-        # Validated before anything is written: half-applied answers would leave
-        # the day in a state neither the owner nor the template ever produced.
-        if question is None or value not in question.labels:
-            return {"error": f"{key}={value!r} is not a day-context answer — {legal}"}
-
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        for key, value in answers.items():
-            row = await day_plan.record_answer(
-                session,
-                parsed_date,
-                key,
-                value,
-                source=Source.MCP.value,
-                identity=ownership.owner_action(),
-            )
-        await session.commit()
-        return await serialize_written(session, row)
-
-
 @mcp.tool()
 async def get_proactive_state(limit: int = 10) -> dict:
     """Retrieves the state of the proactive Telegram layer: whether it is on, its
@@ -3940,7 +3765,7 @@ async def get_proactive_state(limit: int = 10) -> dict:
     otherwise), and the last messages the bot actually sent. Read this before
     explaining why the bot did or didn't say something. READ tool — the settings are
     read-only here; retiming or muting the bot is done in Settings, by the owner."""
-    from vitals.services.proactive import channels, day_plan, delivery, prefs
+    from vitals.services.proactive import channels, delivery, prefs
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -3961,12 +3786,11 @@ async def get_proactive_state(limit: int = 10) -> dict:
                 )
             )
         )
-        enabled_modules = await modules_service.get_enabled_modules(
-            session,
-            subject_id=ownership.subject_id,
-        )
         return {
-            "enabled": bool(enabled_modules.get("signals")),
+            # The proactive layer had a master switch on the signals module.
+            # That module is gone and nothing replaced it as a switch, so the
+            # layer is on and its own preferences decide what it sends.
+            "enabled": True,
             "prefs": (
                 await prefs.get_preferences_bundle(
                     session,
@@ -3974,61 +3798,8 @@ async def get_proactive_state(limit: int = 10) -> dict:
                     actor_username=get_web_config().auth_username,
                 )
             ).as_flat_dict(),
-            "week_template": await day_plan.get_week_template(
-                session,
-                subject_id=ownership.subject_id,
-            ),
             "recent_notifications": [serialize_row(n) for n in sent],
         }
-
-
-@mcp.tool()
-@gated("signals")
-async def set_week_template(template: dict) -> dict:
-    """Stores the week template — what each weekday is assumed to be until the owner
-    answers otherwise ("по вторникам я всегда на удалёнке"). Keys are "mon".."sun",
-    each a dict of ``where`` (office/remote/off) and ``gym`` (true/false). Only the
-    weekdays and keys you pass are changed; the rest keep their stored values. How
-    heavy a day is can't be predicted from a weekday, so it isn't part of the
-    template. WRITE tool — returns the full stored template."""
-    from vitals.services.proactive import day_plan
-
-    legal = "/".join(day_plan.WEEKDAYS)
-    if not isinstance(template, dict) or not template:
-        return {"error": f"template must be a dict of weekday → answers ({legal})"}
-    unknown = sorted(k for k in template if k not in day_plan.WEEKDAYS)
-    if unknown:
-        return {"error": f"unknown weekday(s) {unknown} — use {legal}"}
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        ownership = await _mcp_v1_legacy_owner(session)
-        questions = {question.key: question for question in day_plan.TEMPLATE_QUESTIONS}
-        for day, values in template.items():
-            if not isinstance(values, dict):
-                return {"error": f"{day} must be a dict of answers, got {values!r}"}
-            unknown_answers = sorted(set(values) - set(questions))
-            if unknown_answers:
-                return {
-                    "error": f"{day} has unknown answer key(s) {unknown_answers}"
-                }
-            for key, value in values.items():
-                question = questions[key]
-                if isinstance(question.default, bool):
-                    if type(value) is not bool:
-                        return {"error": f"{day}.{key} must be true or false"}
-                elif value not in question.labels:
-                    legal_values = "/".join(question.labels)
-                    return {
-                        "error": f"{day}.{key} must be one of {legal_values}"
-                    }
-        clean = await day_plan.update_week_template(
-            session,
-            template,
-            subject_id=ownership.subject_id,
-        )
-        await session.commit()
-        return clean
 
 
 # ── Sync tools (pull from Garmin / Hevy on demand) ────────────────────────────
@@ -4173,9 +3944,6 @@ TOOL_MODULES.update({
     "get_body_scan": "body_comp",
     "get_body_metric_history": "body_comp",
     "get_timeline": "timeline",
-    "get_signals": "signals",
-    "get_day_context": "signals",
-    "get_proactive_state": "signals",
 })
 
 

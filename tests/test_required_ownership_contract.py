@@ -61,6 +61,16 @@ _OWNERSHIP_COLUMNS = (
 )
 
 
+#: Tables 0049 correctly listed and a later revision dropped. The migration is
+#: history and does not change; the registry is the present and no longer has
+#: them, so the comparison has to subtract what has since gone. Revision 0058
+#: dropped both when the Telegram chat that filled them was removed.
+_DROPPED_SINCE = {
+    ("signals", "subject_id"),
+    ("day_context", "subject_id"),
+}
+
+
 def test_the_migration_alters_exactly_what_the_registry_requires():
     """The list in the migration is derived, so it must stay derivable.
 
@@ -70,7 +80,7 @@ def test_the_migration_alters_exactly_what_the_registry_requires():
     ignore a null instead of rejecting it.
     """
 
-    listed = set(_revision_module().REQUIRED_OWNERSHIP_COLUMNS)
+    listed = set(_revision_module().REQUIRED_OWNERSHIP_COLUMNS) - _DROPPED_SINCE
     expected = {
         (table_name, column_name)
         for table_name, spec in OWNERSHIP_REGISTRY.items()
@@ -92,6 +102,8 @@ def test_the_migration_alters_exactly_what_the_registry_requires():
 
 def test_every_listed_column_exists_and_is_mandatory_in_the_model():
     for table_name, column_name in _revision_module().REQUIRED_OWNERSHIP_COLUMNS:
+        if (table_name, column_name) in _DROPPED_SINCE:
+            continue
         column = Base.metadata.tables[table_name].columns[column_name]
         assert not column.nullable, f"{table_name}.{column_name}"
 

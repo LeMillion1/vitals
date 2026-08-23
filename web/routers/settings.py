@@ -51,7 +51,7 @@ from vitals.services.installation_operator import (
     NotAnOperator,
     require_installation_operator,
 )
-from vitals.services.proactive import day_plan, prefs
+from vitals.services.proactive import prefs
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
 from web.ratelimit import rate_limit
@@ -420,14 +420,6 @@ async def _page(
         "enabled_modules": getattr(request.state, "enabled_modules", {}) or {},
         # Proactive layer — DB-backed, unlike everything above.
         "proactive": proactive,
-        "week_template": await day_plan.get_week_template(
-            db,
-            subject_id=preference_scope.subject_id,
-        ),
-        "weekdays": day_plan.WEEKDAYS,
-        # Only the questions a weekday can predict: the rest are asked, not set.
-        "day_questions": day_plan.TEMPLATE_QUESTIONS,
-        "encode": day_plan.encode,
         "nudge_categories": prefs.NUDGE_CATEGORIES,
         "budget_range": prefs.BUDGET_RANGE,
         "sync_hours_range": prefs.SYNC_HOURS_RANGE,
@@ -1025,18 +1017,6 @@ async def save_proactive(
     the DB precisely so they don't. ``prefs.sanitize`` clamps whatever arrives —
     the HTML min/max are a courtesy, not the guard.
     """
-    # The week template is 7 days × the template questions; reading it off the raw
-    # form beats declaring a parameter per cell that the question registry would
-    # immediately contradict the moment a question is added or dropped.
-    form = await request.form()
-    template = {
-        day: {
-            q.key: day_plan.decode(str(form.get(f"tpl_{day}_{q.key}", day_plan.encode(q.default))))
-            for q in day_plan.TEMPLATE_QUESTIONS
-        }
-        for day in day_plan.WEEKDAYS
-    }
-
     raw_prefs = {
         "brief_time": brief_time,
         "evening_time": evening_time,
@@ -1064,11 +1044,6 @@ async def save_proactive(
             actor_username=username,
         )
     ).as_flat_dict()
-    await day_plan.set_week_template(
-        db,
-        template,
-        subject_id=preference_scope.subject_id,
-    )
     await db.commit()
 
     apply_schedule(request.app, settings)

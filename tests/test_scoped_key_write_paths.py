@@ -30,7 +30,6 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.garmin import GarminDaily
 from vitals.models.hrt import HrtCompound
 from vitals.models.identity import HealthSubject, User
-from vitals.models.signals import DayContext
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
@@ -39,7 +38,6 @@ from vitals.services import (
     conflict_catalog,
     garmin_service,
     hrt_catalog,
-    signals_service,
 )
 
 
@@ -75,32 +73,6 @@ async def _graph(
     return owner, subject, connection
 
 
-async def test_two_subjects_answer_the_same_day(db_session):
-    _owner_a, subject_a, _connection_a = await _graph(db_session, "context-owner-a")
-    owner_b, subject_b, _connection_b = await _graph(db_session, "context-owner-b")
-    theirs = DayContext(
-        subject_id=subject_a.id,
-        date=DAY,
-        domain=Domain.SIGNALS.value,
-        source=Source.MANUAL.value,
-        answers={"gym": True},
-    )
-    db_session.add(theirs)
-    await db_session.flush()
-
-    mine = await signals_service.set_day_context(
-        db_session,
-        DAY,
-        answers={"gym": False},
-        identity=WriteIdentity(subject_b.id, owner_b.id),
-    )
-
-    assert mine.subject_id == subject_b.id
-    assert mine.answers == {"gym": False}
-    # The other subject's day was never read into this write.
-    assert theirs.subject_id == subject_a.id
-    assert theirs.answers == {"gym": True}
-    assert await db_session.scalar(select(func.count()).select_from(DayContext)) == 2
 
 
 async def test_two_garmin_accounts_report_the_same_day(db_session):

@@ -47,7 +47,6 @@ async def test_write_tools_stamp_mcp_source():
         await mcp_router.log_meal(name="Ужин", calories=700, on_date="2026-07-01"),
         await mcp_router.log_weight(weight_kg=80.0, on_date="2026-07-01"),
         await mcp_router.log_lab_result(marker="ferritin", value=45.0, on_date="2026-07-01"),
-        await mcp_router.log_signal(key="headache", kind="symptom", value_num=3, on_date="2026-07-01"),
         await mcp_router.upsert_genetic_variant(gene="MTHFR", rsid="rs1801133", genotype="TT"),
     ]
     assert [row.get("source") for row in written] == [Source.MCP.value] * len(written)

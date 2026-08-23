@@ -37,45 +37,41 @@ this order — a child cannot inherit an owner its parent does not have yet, and
 normalized fact takes its provenance from a raw payload that must already be
 stamped:
 
- 1. `python scripts/backfill_subject_ownership.py --apply --batch-size 1000`  
+  1. `python scripts/backfill_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.raw_payloads.v1`
- 2. `python scripts/backfill_normalized_subject_ownership.py --apply --batch-size 1000`  
+  2. `python scripts/backfill_normalized_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.normalized_manual.v1`
- 3. `python scripts/backfill_hrt_child_subject_ownership.py --apply --batch-size 1000`  
+  3. `python scripts/backfill_hrt_child_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.inherited_children.hrt.v1`
- 4. `python scripts/backfill_provider_raw_subject_ownership.py --apply --batch-size 1000`  
+  4. `python scripts/backfill_provider_raw_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.provider_raw_linked.v1`
- 5. `python scripts/backfill_hevy_child_subject_ownership.py --apply --batch-size 1000`  
+  5. `python scripts/backfill_hevy_child_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.inherited_children.hevy.v1`
- 6. `python scripts/backfill_hrt_compound_subject_ownership.py --apply --batch-size 1000`  
+  6. `python scripts/backfill_hrt_compound_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.mixed_catalog.hrt.v1`
- 7. `python scripts/backfill_conflict_rule_subject_ownership.py --apply --batch-size 1000`  
+  7. `python scripts/backfill_conflict_rule_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.mixed_catalog.conflict_rules.v1`
- 8. `python scripts/backfill_progress_photo_subject_ownership.py --apply --batch-size 1000`  
+  8. `python scripts/backfill_progress_photo_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.file_backed.progress_photos.v1`
- 9. `python scripts/backfill_day_context_subject_ownership.py --apply --batch-size 1000`  
-    checkpoint phase `stage3.channel_optional.day_context.v1`
-10. `python scripts/backfill_signal_subject_ownership.py --apply --batch-size 1000`  
-    checkpoint phase `stage3.channel_optional.signals.v1`
-11. `python scripts/backfill_shared_report_subject_ownership.py --apply --batch-size 1000`  
+ 9. `python scripts/backfill_shared_report_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.retained_artifact.shared_reports.v1`
-12. `python scripts/backfill_weight_log_subject_ownership.py --apply --batch-size 1000`  
+10. `python scripts/backfill_weight_log_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.channel_optional.weight_logs.v1`
-13. `python scripts/backfill_lab_result_subject_ownership.py --apply --batch-size 1000`  
+11. `python scripts/backfill_lab_result_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.raw_linked_facts.lab_results.v1`
-14. `python scripts/backfill_genetic_variant_subject_ownership.py --apply --batch-size 1000`  
+12. `python scripts/backfill_genetic_variant_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.raw_linked_facts.genetic_variants.v1`
-15. `python scripts/backfill_body_scan_subject_ownership.py --apply --batch-size 1000`  
+13. `python scripts/backfill_body_scan_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.file_backed.body_scans.v1`
-16. `python scripts/backfill_body_scan_metric_subject_ownership.py --apply --batch-size 1000`  
+14. `python scripts/backfill_body_scan_metric_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.inherited_children.body_scan_metrics.v1`
-17. `python scripts/backfill_garmin_weight_export_subject_ownership.py --apply --batch-size 1000`  
+15. `python scripts/backfill_garmin_weight_export_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.provider_outbox.garmin_weight_exports.v1`
-18. `python scripts/backfill_weekly_digest_subject_ownership.py --apply --batch-size 1000`  
+16. `python scripts/backfill_weekly_digest_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.retained_artifact.weekly_digests.v1`
-19. `python scripts/backfill_notification_subject_ownership.py --apply --batch-size 1000`  
+17. `python scripts/backfill_notification_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.delivery_artifact.notifications.v1`
-20. `python scripts/backfill_system_alert_subject_ownership.py --apply --batch-size 1000`  
+18. `python scripts/backfill_system_alert_subject_ownership.py --apply --batch-size 1000`  
     checkpoint phase `stage3.subject_optional.system_alerts.v1`
 
 Between any two, the upgrade can pause indefinitely.

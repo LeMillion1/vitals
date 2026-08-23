@@ -40,13 +40,22 @@ def _index(name: str) -> sa.Index:
     )
 
 
+_DROPPED_SINCE = frozenset({"signals", "day_context"})
+
+
 def test_migration_matches_the_reviewed_catalog_exactly():
     """The migration and the registry cannot drift apart silently."""
 
     module = _migration_module()
     assert module.revision == "0047"
     assert module.down_revision == "0046"
-    assert list(module.SCOPED_UNIQUE_INDEXES) == [
+    # ``day_context`` is filtered out of the migration's side: revision 0047
+    # scoped its key correctly and revision 0058 dropped the table, so the
+    # registry no longer lists it while the migration — being history — still
+    # does.
+    assert [
+        row for row in module.SCOPED_UNIQUE_INDEXES if row[0] not in _DROPPED_SINCE
+    ] == [
         (
             spec.table,
             index.name,

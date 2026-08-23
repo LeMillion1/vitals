@@ -157,12 +157,6 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         OwnershipClass.MIXED_CATALOG,
         subject=TargetColumn.MIXED,
     ),
-    "day_context": OwnershipSpec(
-        OwnershipClass.SUBJECT_DATA,
-        subject=TargetColumn.REQUIRED,
-        actor=TargetColumn.OPTIONAL,
-        connection=TargetColumn.OPTIONAL,
-    ),
     "file_assets": OwnershipSpec(
         OwnershipClass.SUBJECT_DATA,
         subject=TargetColumn.REQUIRED,
@@ -303,12 +297,6 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         actor=TargetColumn.OPTIONAL,
         user_portable=False,
-    ),
-    "signals": OwnershipSpec(
-        OwnershipClass.SUBJECT_DATA,
-        subject=TargetColumn.REQUIRED,
-        actor=TargetColumn.OPTIONAL,
-        connection=TargetColumn.OPTIONAL,
     ),
     "skincare_logs": _SUBJECT,
     "skincare_observations": _SUBJECT,

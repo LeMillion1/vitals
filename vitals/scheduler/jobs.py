@@ -35,7 +35,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     #
     #   hevy_sync, garmin_sync, garmin_pulse, garmin_weight_export
     #       VITALS_GARMIN_EMAIL / VITALS_HEVY_API_KEY — one watch, one account.
-    #   daily_brief, evening_block, nudges
+    #   daily_brief, nudges
     #       one Telegram bot token and one chat id. See
     #       channels.build_legacy_bound_notifier, which says so itself: the env
     #       token/chat pair is safe only while the graph resolves to exactly one
@@ -62,7 +62,6 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.hrt_reminders import reminders_job as hrt_reminders_job
     from vitals.services.garmin_service import pulse_job as garmin_pulse_job
     from vitals.services.proactive.brief import brief_job, last_attempt_hour
-    from vitals.services.proactive.day_plan import evening_job
     from vitals.services.proactive.nudges import nudges_job
     from vitals.services.proactive.delivery import delivery_reconciliation_job
     from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
@@ -209,19 +208,6 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         lock_ttl=900,
     )
 
-    # Evening block — 23:45 local by default, deliberately not midnight: past 00:00
-    # the message would ask about the wrong "tomorrow", which is why the settings
-    # field is a time input (it cannot express anything past 23:59). Sums the day
-    # up, invites a free-text answer, offers one-tap corrections for tomorrow.
-    evening_hour, evening_minute = prefs.hhmm(settings["evening_time"])
-    register_job(
-        "evening_block",
-        evening_job,
-        trigger="cron",
-        failure_family=JobFailureFamily.SUBJECT,
-        hour=evening_hour,
-        minute=evening_minute,
-    )
 
     # Garmin light pulse (N3) — today's step count between the full syncs, so an
     # evening nudge isn't reasoning off a number from hours ago. One request, no

@@ -27,7 +27,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, replace
-from datetime import date as date_type, timedelta, timezone
+from datetime import date as date_type, timezone
 from enum import StrEnum
 from typing import Any, Optional
 
@@ -58,7 +58,7 @@ from vitals.models.tenancy import IntegrationConnection, PlatformIntegrationConn
 from vitals.ownership import WriteIdentity
 from vitals.services import ai_gateway_service, alerts_service, digest_service
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.proactive import compose, day_plan
+from vitals.services.proactive import compose
 from vitals.utils.timeutils import now_local, now_utc, today_local
 
 logger = logging.getLogger(__name__)
@@ -336,12 +336,6 @@ Garmin). Базовые понятия объяснять не надо.
 а не совпадение. Про сегодняшнюю нагрузку данных нет и быть не может — не
 выдумывай её.
 
-Блок `signals` — что пользователь сам писал про себя, за вчера и сегодня. kind:
-state (состояние, 1-5), symptom (симптом, 1-5), exposure (сделал/принял, at_time —
-время). Здесь и лежит объяснение утренних чисел: вчерашний вечерний exposure
-(«кофе в 22») — первое, с чем стоит сверить просевший сон или HRV. Это его слова,
-а не измерение: одна запись — повод связать, а не поставить диагноз.
-
 ОГРАНИЧЕНИЯ (нарушение = баг):
 - Опирайся ТОЛЬКО на JSON. Ничего не выдумывай, новых чисел не вводи.
 - Никаких заголовков, списков и разметки — обычный текст, его читают в мессенджере.
@@ -372,19 +366,6 @@ async def build_context(
         mode=digest_service.REPORT_MODE_BRIEF,
     )
     ctx = compose.strip_protocol(ctx)
-    # One-day window would cut the signals in half: "кофе в 22" is *yesterday's*
-    # row and this morning's HRV is the thing it explains. Widened here rather
-    # than in ``assemble_context`` because nothing else in the brief wants two
-    # days — the header is strictly about today.
-    #
-    # Deliberately after ``strip_protocol``: that keeps the *stored* protocol out of
-    # Telegram, and a signal is not stored protocol — it is a sentence he typed
-    # into this very chat. Stripping it here would hide his own words from him.
-    ctx["signals"] = await _signals_since_yesterday(
-        session,
-        on_date or today_local(),
-        subject_id=subject_id,
-    )
     today = on_date or today_local()
     # The one thing the brief could never do: compare. Handed a single day of
     # absolute numbers and asked what they mean, the model supplied the missing
@@ -393,32 +374,9 @@ async def build_context(
     # against, so it goes in beside the numbers rather than being left implied.
     if ctx.get("garmin"):
         ctx["garmin"]["baseline"] = await _baseline(session, today)
-    answers, answered = await day_plan.resolve(
-        session,
-        today,
-        subject_id=subject_id,
-    )
-    # Yesterday's answers, and only the ones he actually gave. How heavy a day was
-    # is answered in the evening about the day just spent, so at 11:00 the newest
-    # real load in the lake is yesterday's — and it is the first thing this
-    # morning's HRV should be read against. The template's guess is filtered out:
-    # a guess about a day that is already over explains nothing.
-    yesterday_answers, yesterday_answered = await day_plan.resolve(
-        session,
-        today - timedelta(days=1),
-        subject_id=subject_id,
-    )
-    ctx["day"] = {
-        "answers": answers,
-        # Which of them are his words rather than the template's guess. Stored as
-        # a sorted list because this dict is persisted as JSON — and it is what
-        # the brief's buttons read to re-ask only the questions still open.
-        "answered": sorted(answered),
-        # His answer or the template's guess — the model is told which, so it can
-        # hedge on a guess instead of asserting it.
-        "source": Source.MANUAL.value if answered else Source.TEMPLATE.value,
-        "yesterday": {k: yesterday_answers[k] for k in sorted(yesterday_answered)} or None,
-    }
+    # ``ctx["day"]`` stood here — what kind of day it was, his answer or the
+    # template's guess. Both are gone: the evening block asked the question and
+    # the chat carried the answer.
     return ctx
 
 
@@ -445,23 +403,6 @@ async def _baseline(session: AsyncSession, on_date: date_type) -> Optional[dict]
     return baseline or None
 
 
-async def _signals_since_yesterday(
-    session: AsyncSession,
-    on_date: date_type,
-    *,
-    subject_id: uuid.UUID,
-) -> Optional[list]:
-    """Today's signals plus yesterday's — the evening before is where exposures
-    live, and the metric they explain is this morning's."""
-    from vitals.services import signals_service
-
-    rows = await signals_service.list_signals(
-        session,
-        start=on_date - timedelta(days=1),
-        end=on_date,
-        subject_id=subject_id,
-    )
-    return [digest_service.signal_row(s) for s in reversed(rows)] or None
 
 
 def build_prompt(ctx: dict) -> str:
@@ -616,11 +557,7 @@ async def project_ai_availability(
 
 
 def _render_base_content(ctx: dict) -> str:
-    blocks = compose.header_blocks(ctx)
-    day = day_plan.day_block(ctx.get("day"))
-    if day is not None:
-        blocks.append(day)
-    return compose.render(blocks)
+    return compose.render(compose.header_blocks(ctx))
 
 
 def _context_with_provenance(
@@ -1301,9 +1238,6 @@ async def _render_brief(llm: Any, prepared: _PreparedBrief) -> _RenderedBrief:
         raise BriefOwnershipError("prepared brief must be a _PreparedBrief")
 
     blocks = compose.header_blocks(prepared.context)
-    day = day_plan.day_block(prepared.context.get("day"))
-    if day is not None:
-        blocks.append(day)
     tail = await narrative(llm, prepared.context)
     if tail:
         blocks.append(compose.Block(compose.KIND_NARRATIVE, tail, 90))
@@ -1649,18 +1583,10 @@ async def brief_job(session_factory, redis=None) -> None:
     if generation_outcome == "pending" or row is None or prepared is None:
         return
 
-    # Nothing answered for today → the header shows the template's guess and
-    # the buttons are how it gets corrected in one tap.
-    stored_context = row.context_json if isinstance(row.context_json, dict) else {}
-    buttons = day_plan.buttons_from_context(stored_context.get("day"), today)
-    # The hint rides on the *sent* message, not on the stored brief: /reports
-    # shows the same content with no keyboard under it, and a line pointing at
-    # buttons that aren't there is worse than no line at all.
-    text = (
-        f"{row.content}\n\n{day_plan.HINT_FIX}"
-        if buttons
-        else row.content
-    )
+    # No keyboard and no correction hint: both were how a Telegram message got
+    # its day-context answer corrected in one tap, and both went with it.
+    text = row.content
+    buttons = None
 
     async with session_factory() as session:
         ownership = await channels.resolve_legacy_channel_ownership(

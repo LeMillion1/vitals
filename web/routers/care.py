@@ -200,7 +200,6 @@ RECORD_SECTIONS: tuple[tuple[str, Domain, str], ...] = (
     ("genetics", Domain.GENETICS, "genetics"),
     ("garmin", Domain.GARMIN, "garmin"),
     ("hevy", Domain.WORKOUTS, "hevy"),
-    ("signals", Domain.SIGNALS, "signals"),
 )
 
 

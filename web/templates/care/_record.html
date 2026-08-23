@@ -17,7 +17,7 @@
 
 {% set RECORD_KEYS = ("weight", "labs", "body_comp", "nutrition", "hrt", "glp1",
                       "supplements", "skincare", "genetics", "garmin", "hevy",
-                      "signals") %}
+                      ) %}
 
 {% macro section(key, title) %}
   {% if (coverage.get(key) or {}).get("status") == "available" %}
@@ -178,12 +178,6 @@
         {{ t("care.record_workouts_last", date=(h.last_workout | format_date)) }}
       </p>
       {% endif %}
-    {% endcall %}
-
-    {% call section("signals", t("care.record_signals")) %}
-      <p class="v-text-body">
-        {{ t("care.record_signals_count", n=(record.signals or []) | length) }}
-      </p>
     {% endcall %}
 
   </div>

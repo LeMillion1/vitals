@@ -11,7 +11,6 @@ from datetime import date, timedelta
 
 import pytest
 
-from vitals.ownership import WriteIdentity
 
 from vitals.enums import Source
 from vitals.models.garmin import GarminDaily
@@ -187,56 +186,6 @@ async def test_a_past_period_ends_on_its_own_date(db_session, monkeypatch, legac
     assert meta["period_start"] == (DAY - timedelta(days=6)).isoformat()
 
 
-async def test_the_day_table_joins_the_domains_by_date(hevy_connection_id, db_session, monkeypatch, legacy_owner_roots, owner_write, *, garmin_connection_id):
-    """The links the report kept failing to find need the domains on one row."""
-    from vitals.services import nutrition_service, signals_service
-
-    monkeypatch.setattr(digest_service, "today_local", lambda: DAY + timedelta(days=1))
-    session_day = DAY - timedelta(days=3)
-
-    db_session.add_all(
-        [
-            _workout("w_joined", session_day, "Full body", hevy_connection_id=hevy_connection_id, legacy_owner_roots=legacy_owner_roots),
-            GarminDaily(subject_id=owner_write.subject_id, integration_connection_id=garmin_connection_id,
-                domain="garmin",
-                source=Source.GARMIN_API.value,
-                date=session_day + timedelta(days=1),
-                sleep_score=61,
-                hrv_avg=41.0,
-            ),
-        ]
-    )
-    await nutrition_service.log_meal(
-        db_session,
-        on_date=session_day,
-        name="ужин",
-        calories=800,
-        protein_g=60.0,
-        identity=owner_write.identity,
-        prepared_conflict_write=await owner_write.write(session_day),
-    )
-    await signals_service.set_day_context(
-        db_session, session_day, answers={"where": "office", "gym": True, "load": "heavy"},
-        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
-    )
-    await db_session.commit()
-
-    days = {
-        d["date"]: d
-        for d in (await digest_service.assemble_context(
-            db_session,
-            subject_id=legacy_owner_roots.subject_id,
-            on_date=DAY, period_days=7
-        ))["days"]
-    }
-
-    trained = days[session_day.isoformat()]
-    assert trained["workout"]["title"] == "Full body"
-    assert trained["calories"] == 800
-    assert trained["protein_g"] == 60.0
-    assert trained["day"]["load"] == "heavy"
-    # The night after the session, on its own row — the shape a link is read from.
-    assert days[(session_day + timedelta(days=1)).isoformat()]["hrv_avg"] == 41.0
 
 
 async def test_training_cadence_survives_the_window_edge(hevy_connection_id, db_session, legacy_owner_roots):
@@ -303,41 +252,6 @@ async def test_labs_trends_show_drift_that_stays_inside_the_range(db_session, le
     assert trends["Ферритин"]["ref_low"] == 30.0
 
 
-async def test_a_long_window_carries_all_of_its_signals(db_session, legacy_owner_roots):
-    """The signals block is handed to the narrative as "the period, chronologically".
-    Read with the service's screen-sized default, a long window lost everything past
-    the 200th newest row — and the days it lost were the oldest ones, so the period
-    silently started later than its own header said."""
-    from vitals.models.signals import Signal
-
-    days, per_day = 30, 10
-    db_session.add_all(
-        [
-            Signal(subject_id=legacy_owner_roots.subject_id,
-                date=DAY - timedelta(days=i),
-                domain="signals",
-                source=Source.TELEGRAM.value,
-                kind="symptom",
-                key="headache",
-                batch_id=f"b{i}_{n}",
-                note=f"день {i}",
-            )
-            for i in range(days)
-            for n in range(per_day)
-        ]
-    )
-    await db_session.commit()
-
-    ctx = await digest_service.assemble_context(
-        db_session,
-        subject_id=legacy_owner_roots.subject_id,
-        on_date=DAY, period_days=days
-    )
-
-    assert len(ctx["signals"]) == days * per_day
-    assert ctx["signals"][0]["date"] == (DAY - timedelta(days=days - 1)).isoformat(), (
-        "the first day of the window, not the first day that survived the cut"
-    )
 
 
 async def test_brief_context_stays_a_single_day(db_session, legacy_owner_roots, *, garmin_connection_id):

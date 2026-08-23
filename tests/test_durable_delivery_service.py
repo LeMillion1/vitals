@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from vitals.enums import (
     AIInvocationPurpose,
     AIInvocationSource,
-    Domain,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
@@ -229,7 +228,7 @@ async def _stale_raw_pending(
         subject_id=ownership.subject_id,
         actor_user_id=ownership.recipient_user_id,
         integration_connection_id=ownership.connection_id,
-        domain=Domain.SIGNALS.value,
+        domain="signals",
         source=Source.TELEGRAM.value,
         external_id=f"synthetic-rearm-{suffix}",
         payload={"text": "private inbound payload"},
@@ -273,7 +272,7 @@ async def test_preparation_scope_composes_raw_terminal_state_and_intent_atomical
         subject_id=ownership.subject_id,
         actor_user_id=ownership.recipient_user_id,
         integration_connection_id=ownership.connection_id,
-        domain=Domain.SIGNALS.value,
+        domain="signals",
         source=Source.TELEGRAM.value,
         external_id="synthetic-composed-t1",
         payload={"text": "private inbound payload"},
@@ -455,7 +454,7 @@ async def test_preparation_scope_rejects_forgery_and_another_session(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("early_exit", ["dedupe", "module_policy"])
+@pytest.mark.parametrize("early_exit", ["dedupe"])
 async def test_preparation_scope_is_consumed_by_non_dispatchable_continuation(
     db_session,
     legacy_owner_roots,
@@ -521,149 +520,12 @@ async def test_preparation_scope_is_consumed_by_non_dispatchable_continuation(
     await db_session.rollback()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "category,explicit_scope",
-    [
-        (delivery.CATEGORY_REPLY, False),
-        (delivery.CATEGORY_REPLY, True),
-        (delivery.CATEGORY_ECHO, False),
-        (delivery.CATEGORY_ECHO, True),
-    ],
-)
-async def test_disabled_raw_delivery_persists_terminal_policy_claim(
-    db_session,
-    legacy_owner_roots,
-    monkeypatch,
-    category,
-    explicit_scope,
-):
-    ownership, binding = await _ready(
-        db_session, legacy_owner_roots, monkeypatch
-    )
-    module_policy = await db_session.scalar(
-        select(SubjectSetting).where(
-            SubjectSetting.subject_id == ownership.subject_id,
-            SubjectSetting.key == "enabled_modules",
-        )
-    )
-    module_policy.value = {**module_policy.value, prefs.MODULE_KEY: False}
-    raw = RawPayload(
-        subject_id=ownership.subject_id,
-        actor_user_id=ownership.recipient_user_id,
-        integration_connection_id=ownership.connection_id,
-        domain=Domain.SIGNALS.value,
-        source=Source.TELEGRAM.value,
-        external_id=f"synthetic-disabled-{category}-{explicit_scope}",
-        payload={"text": "private inbound payload"},
-        processed_at=datetime(2026, 8, 20, 12),
-    )
-    db_session.add(raw)
-    await db_session.commit()
-
-    notifier = _BoundFakeNotifier(binding)
-    key = delivery.make_delivery_idempotency_key(
-        "test", f"disabled-{category}-{explicit_scope}"
-    )
-    scope = (
-        await delivery.lock_delivery_preparation_scope(
-            db_session,
-            notifier,
-            category=category,
-            ownership=ownership,
-            now=datetime(2026, 8, 20, 12),
-        )
-        if explicit_scope
-        else None
-    )
-    prepared = await delivery.prepare_delivery_intent(
-        db_session,
-        notifier,
-        text="must never cross the network",
-        category=category,
-        idempotency_key=key,
-        ownership=ownership,
-        raw_payload_id=raw.id,
-        now=datetime(2026, 8, 20, 12),
-        preparation_scope=scope,
-    )
-    assert prepared is None
-    await db_session.commit()
-
-    intent = await db_session.scalar(
-        select(NotificationDeliveryIntent).where(
-            NotificationDeliveryIntent.raw_payload_id == raw.id,
-            NotificationDeliveryIntent.category == category,
-        )
-    )
-    assert intent is not None
-    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
-    assert intent.error_code == "cancelled_by_policy"
-    assert intent.lease_token is None
-    assert intent.dispatch_started_at is None
-    assert intent.completed_at is not None
-    assert await db_session.scalar(select(Notification.id).limit(1)) is None
-
-    # Initiative policy rejection keeps its historical no-claim behavior.
-    initiative_scope = await delivery.lock_delivery_preparation_scope(
-        db_session,
-        notifier,
-        category=delivery.CATEGORY_BRIEF,
-        ownership=ownership,
-        now=datetime(2026, 8, 20, 12),
-    )
-    assert await delivery.prepare_delivery_intent(
-        db_session,
-        notifier,
-        text="disabled initiative",
-        category=delivery.CATEGORY_BRIEF,
-        idempotency_key=delivery.make_delivery_idempotency_key(
-            "test", f"disabled-initiative-{category}"
-        ),
-        ownership=ownership,
-        now=datetime(2026, 8, 20, 12),
-        preparation_scope=initiative_scope,
-    ) is None
-    await db_session.commit()
-    assert len(list(await db_session.scalars(select(NotificationDeliveryIntent)))) == 1
-
-    module_policy = await db_session.scalar(
-        select(SubjectSetting).where(
-            SubjectSetting.subject_id == ownership.subject_id,
-            SubjectSetting.key == "enabled_modules",
-        )
-    )
-    module_policy.value = {**module_policy.value, prefs.MODULE_KEY: True}
-    await db_session.commit()
-    retry_scope = (
-        await delivery.lock_delivery_preparation_scope(
-            db_session,
-            notifier,
-            category=category,
-            ownership=ownership,
-            now=datetime(2026, 8, 20, 13),
-        )
-        if explicit_scope
-        else None
-    )
-    retry = await delivery.prepare_delivery_intent(
-        db_session,
-        notifier,
-        text="must still remain local after re-enable",
-        category=category,
-        idempotency_key=key,
-        ownership=ownership,
-        raw_payload_id=raw.id,
-        now=datetime(2026, 8, 20, 13),
-        preparation_scope=retry_scope,
-    )
-    assert retry is None
-    await db_session.commit()
-    assert len(list(await db_session.scalars(select(NotificationDeliveryIntent)))) == 1
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tamper", ["connection", "module", "policy"])
+# "module" was a third case: the layer's master switch could be flipped
+# between preparing a send and committing it. There is no switch any more.
+@pytest.mark.parametrize("tamper", ["connection", "policy"])
 async def test_preparation_scope_rejects_same_session_authority_tamper(
     db_session,
     legacy_owner_roots,
@@ -1062,91 +924,6 @@ async def test_raw_rearm_reopens_only_proven_zero_io_cancellations(
         )
 
 
-@pytest.mark.asyncio
-async def test_raw_rearm_policy_cancels_when_module_is_disabled(
-    db_session,
-    legacy_owner_roots,
-    monkeypatch,
-):
-    ownership, binding = await _ready(
-        db_session, legacy_owner_roots, monkeypatch
-    )
-    raw, key, original = await _stale_raw_pending(
-        db_session,
-        ownership=ownership,
-        binding=binding,
-        suffix="module-disabled",
-    )
-    raw_id = raw.id
-    locked_policy_getter = prefs.get_locked_delivery_policy
-
-    async def policy_must_not_load(*_args, **_kwargs):
-        raise AssertionError("transport policy is not needed without a capability")
-
-    monkeypatch.setattr(
-        prefs,
-        "get_locked_delivery_policy",
-        policy_must_not_load,
-    )
-    assert await delivery.rearm_stale_raw_delivery_intent(
-        db_session,
-        None,
-        text="must wait for a transport",
-        category=delivery.CATEGORY_REPLY,
-        idempotency_key=key,
-        stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
-        now=datetime(2026, 8, 20, 12, tzinfo=UTC),
-        ownership=ownership,
-        raw_payload_id=raw_id,
-    ) is None
-    await db_session.commit()
-    pending = await db_session.get(NotificationDeliveryIntent, original.intent_id)
-    assert pending.status == NotificationDeliveryStatus.PENDING.value
-
-    module_policy = await db_session.scalar(
-        select(SubjectSetting).where(
-            SubjectSetting.subject_id == ownership.subject_id,
-            SubjectSetting.key == "enabled_modules",
-        )
-    )
-    module_policy.value = {**module_policy.value, prefs.MODULE_KEY: False}
-    await db_session.commit()
-
-    assert await delivery.rearm_stale_raw_delivery_intent(
-        db_session,
-        None,
-        text="must stay local",
-        category=delivery.CATEGORY_REPLY,
-        idempotency_key=key,
-        stale_before=datetime(2026, 8, 20, 11, tzinfo=UTC),
-        now=datetime(2026, 8, 20, 12, tzinfo=UTC),
-        ownership=ownership,
-        raw_payload_id=raw_id,
-    ) is None
-    await db_session.commit()
-    intent = await db_session.get(NotificationDeliveryIntent, original.intent_id)
-    assert intent.status == NotificationDeliveryStatus.CANCELLED.value
-    assert intent.error_code == "cancelled_by_policy"
-
-    monkeypatch.setattr(
-        prefs,
-        "get_locked_delivery_policy",
-        locked_policy_getter,
-    )
-    module_policy.value = {**module_policy.value, prefs.MODULE_KEY: True}
-    await db_session.commit()
-    with pytest.raises(delivery.DeliveryStateError):
-        await delivery.rearm_stale_raw_delivery_intent(
-            db_session,
-            _BoundFakeNotifier(binding),
-            text="must not revive after opt-out",
-            category=delivery.CATEGORY_REPLY,
-            idempotency_key=key,
-            stale_before=datetime(2026, 8, 20, 13, tzinfo=UTC),
-            now=datetime(2026, 8, 20, 14, tzinfo=UTC),
-            ownership=ownership,
-            raw_payload_id=raw_id,
-        )
 
 
 @pytest.mark.asyncio
@@ -1976,7 +1753,7 @@ async def test_raw_backed_reply_survives_telegram_connection_rotation(
         subject_id=old_ownership.subject_id,
         actor_user_id=old_ownership.recipient_user_id,
         integration_connection_id=old_connection.id,
-        domain=Domain.SIGNALS.value,
+        domain="signals",
         source=Source.TELEGRAM.value,
         external_id="synthetic-rotated-question",
         payload={"text": "private question"},

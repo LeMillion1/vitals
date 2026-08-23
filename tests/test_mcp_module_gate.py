@@ -45,12 +45,8 @@ GATED_WRITE_TOOLS: dict[str, str] = {
     "log_body_scan": "body_comp",
     "log_event": "timeline",
     "update_event": "timeline",
-    "log_signal": "signals",
-    "mark_signal_misparse": "signals",
     # Day context lives in the signals domain, which is also the master switch for
     # the whole proactive layer — off means the day is not being tracked at all.
-    "log_day_context": "signals",
-    "set_week_template": "signals",
 }
 
 # Write tools that deliberately have no module gate, each with the reason.

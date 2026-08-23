@@ -28,7 +28,6 @@ TABLE_TEMPLATES = [
     "nutrition/index.html",
     "weight/index.html",
     "glp1/index.html",
-    "signals/index.html",
     "garmin/index.html",
     "genetics/index.html",
     "hrt/index.html",

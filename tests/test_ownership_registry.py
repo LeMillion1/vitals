@@ -24,7 +24,8 @@ pytestmark = pytest.mark.pre_ownership_contract
 
 def test_every_registered_table_has_exactly_one_ownership_contract():
     assert set(OWNERSHIP_REGISTRY) == set(Base.metadata.tables)
-    assert len(OWNERSHIP_REGISTRY) == 70
+    # 70 until revision 0058 dropped ``signals`` and ``day_context``.
+    assert len(OWNERSHIP_REGISTRY) == 68
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():

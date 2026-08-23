@@ -287,7 +287,6 @@ DOMAIN_MODULE: dict[str, str] = {
     Domain.NUTRITION.value: "nutrition",
     Domain.SKINCARE.value: "skincare",
     Domain.GENETICS.value: "genetics",
-    Domain.SIGNALS.value: "signals",
 }
 
 # Render order of the document's sections, so a snapshot's key order never
@@ -329,7 +328,6 @@ PRESETS: dict[str, dict[str, Any]] = {
             Domain.HRT.value,
             Domain.SUPPLEMENTS.value,
             Domain.WEIGHT.value,
-            Domain.SIGNALS.value,
         ],
         # A first-contact doctor wants what is wrong, not the whole panel.
         "labs_flagged_only": True,
@@ -341,7 +339,6 @@ PRESETS: dict[str, dict[str, Any]] = {
             Domain.HRT.value,
             Domain.GLP1.value,
             Domain.SUPPLEMENTS.value,
-            Domain.SIGNALS.value,
         ],
         "labs_flagged_only": False,
     },
@@ -1009,47 +1006,11 @@ async def _genetics_block(
     return {"variants": rows} if rows else {}
 
 
-async def _signals_block(
-    session, ctx, stats, start, end, flagged_only, *, subject_id
-) -> dict:
-    """What the patient said about how he felt — symptoms, in his own words.
-
-    ``state`` rows are a daily mood/energy score he keeps for himself; on a
-    clinical document they are noise between the symptoms that matter.
-
-    Two filters that only a real document makes obvious. A row with no note
-    carries nothing but its normalized key — "low_heart_rate" is this app's
-    vocabulary, not a complaint, and a doctor reading it learns nothing. And
-    ``value_num`` is a 1-5 severity for a symptom but a raw measurement for
-    anything the parser tagged loosely, which is how "40 of 5" ends up on a
-    clinical document; outside that range it is not a severity and is dropped.
-    """
-    from vitals.enums import SignalKind
-    from vitals.services import signals_service
-
-    rows = await signals_service.list_signals(
-        session,
-        kind=SignalKind.SYMPTOM.value,
-        start=start,
-        end=end,
-        limit=1000,
-        subject_id=subject_id,
-    )
-    items = [
-        {
-            "date": s.date.isoformat(),
-            "what": (s.note or "").strip(),
-            "severity": (
-                int(s.value_num)
-                if s.value_num is not None and 1 <= s.value_num <= 5
-                else None
-            ),
-        }
-        for s in rows
-        if (s.note or "").strip()
-    ]
-    items.sort(key=lambda x: x["date"])
-    return {"symptoms": items} if items else {}
+# ``_signals_block`` stood here: the symptoms a patient described in their own
+# words, filtered down to the ones a clinician could actually read. It went with
+# the signals domain. Nothing replaces it on the document — a symptom the patient
+# typed is the one thing no device produces, so this is a real gap rather than a
+# tidy-up, and it is the strongest argument for whatever captures free text next.
 
 
 _BUILDERS = {
@@ -1064,7 +1025,6 @@ _BUILDERS = {
     Domain.NUTRITION.value: _nutrition_block,
     Domain.SKINCARE.value: _skincare_block,
     Domain.GENETICS.value: _genetics_block,
-    Domain.SIGNALS.value: _signals_block,
 }
 
 
@@ -1743,12 +1703,11 @@ async def earliest_data_date(
     from vitals.models.hrt import HrtDose
     from vitals.models.labs import LabResult
     from vitals.models.nutrition import MealLog
-    from vitals.models.signals import Signal
     from vitals.models.weight import WeightLog
 
     columns = (
         WeightLog.date, LabResult.date, GarminDaily.date, HevyWorkout.date,
-        MealLog.date, HrtDose.date, Injection.date, BodyScan.date, Signal.date,
+        MealLog.date, HrtDose.date, Injection.date, BodyScan.date,
     )
     found = []
     for column in columns:

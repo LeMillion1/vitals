@@ -27,9 +27,6 @@ from vitals.services.body_scan_ownership_backfill_service import (
 from vitals.services.conflict_rule_ownership_backfill_service import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
 )
-from vitals.services.day_context_ownership_backfill_service import (
-    DAY_CONTEXT_OWNERSHIP_BACKFILL_PHASE,
-)
 from vitals.services.garmin_weight_export_ownership_backfill_service import (
     GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_PHASE,
 )
@@ -65,9 +62,6 @@ from vitals.services.raw_ownership_backfill_service import (
 )
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.signal_ownership_backfill_service import (
-    SIGNAL_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.services.system_alert_ownership_backfill_service import (
     SYSTEM_ALERT_OWNERSHIP_BACKFILL_PHASE,
@@ -121,13 +115,6 @@ OWNERSHIP_BACKFILL_SEQUENCE: tuple[OwnershipBackfillStep, ...] = (
     OwnershipBackfillStep(
         "backfill_progress_photo_subject_ownership.py",
         PROGRESS_PHOTO_OWNERSHIP_BACKFILL_PHASE,
-    ),
-    OwnershipBackfillStep(
-        "backfill_day_context_subject_ownership.py",
-        DAY_CONTEXT_OWNERSHIP_BACKFILL_PHASE,
-    ),
-    OwnershipBackfillStep(
-        "backfill_signal_subject_ownership.py", SIGNAL_OWNERSHIP_BACKFILL_PHASE
     ),
     OwnershipBackfillStep(
         "backfill_shared_report_subject_ownership.py",

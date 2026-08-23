@@ -31,6 +31,8 @@ ALL_ON = {"nutrition": True, "timeline": True, "signals": True, "glp1": True, "h
 pytestmark = pytest.mark.usefixtures("owned_by_legacy_subject")
 
 
+
+
 async def test_build_survives_an_empty_database(db_session, legacy_owner_roots):
     """Nothing logged, no integrations, no digest — still a coherent screen."""
     ctx = await today_service.build(
@@ -74,6 +76,32 @@ BRIEF_CONTEXT = {
 BRIEF_PROSE = "HRV и пульс покоя держатся на твоём базовом уровне — крути день как обычно."
 
 
+def _stored_brief(
+    prose: str = BRIEF_PROSE,
+    *,
+    model: str | None = "test-model",
+    actor_user_id=None,
+    integration_connection_id=None, legacy_owner_roots,
+):
+    """A brief row shaped the way the morning job writes one."""
+    from vitals.services.proactive import compose
+
+    blocks = compose.header_blocks(BRIEF_CONTEXT)
+    if prose:
+        blocks.append(compose.Block(compose.KIND_NARRATIVE, prose, 90))
+    return WeeklyDigest(subject_id=legacy_owner_roots.subject_id,
+        date=today_local(),
+        actor_user_id=actor_user_id,
+        integration_connection_id=integration_connection_id,
+        domain=INSIGHTS_DOMAIN,
+        source=Source.MANUAL.value,
+        kind=DigestKind.DAILY_BRIEF.value,
+        content=compose.render(blocks),
+        context_json=BRIEF_CONTEXT,
+        model=model,
+    )
+
+
 async def _openrouter_connection(session, roots):
     from sqlalchemy import select
 
@@ -90,33 +118,6 @@ async def _openrouter_connection(session, roots):
     )
 
 
-def _stored_brief(
-    prose: str = BRIEF_PROSE,
-    *,
-    model: str | None = "test-model",
-    actor_user_id=None,
-    integration_connection_id=None, legacy_owner_roots,
-):
-    """A brief row shaped the way the morning job writes one."""
-    from vitals.services.proactive import compose, day_plan
-
-    blocks = compose.header_blocks(BRIEF_CONTEXT)
-    day = day_plan.day_block(BRIEF_CONTEXT["day"])
-    if day is not None:
-        blocks.append(day)
-    if prose:
-        blocks.append(compose.Block(compose.KIND_NARRATIVE, prose, 90))
-    return WeeklyDigest(subject_id=legacy_owner_roots.subject_id,
-        date=today_local(),
-        actor_user_id=actor_user_id,
-        integration_connection_id=integration_connection_id,
-        domain=INSIGHTS_DOMAIN,
-        source=Source.MANUAL.value,
-        kind=DigestKind.DAILY_BRIEF.value,
-        content=compose.render(blocks),
-        context_json=BRIEF_CONTEXT,
-        model=model,
-    )
 
 
 async def test_hero_takes_only_the_prose_out_of_todays_brief(db_session, legacy_owner_roots):

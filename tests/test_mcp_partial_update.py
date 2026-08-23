@@ -143,7 +143,6 @@ DOMAIN_OVERVIEW_KEYS: dict[Domain, tuple[str, ...]] = {
     Domain.SKINCARE: ("skincare_logs", "skincare_observations"),
     Domain.MILESTONES: ("milestones", "weekly_digests"),
     Domain.TIMELINE: ("timeline",),
-    Domain.SIGNALS: ("signals", "day_context"),
     # Alerts are infra, not a data domain to orient in — deliberately absent.
     Domain.SYSTEM: (),
 }
@@ -160,14 +159,9 @@ async def test_overview_reports_every_mapped_key():
 
 
 async def test_overview_counts_the_domains_it_used_to_hide():
-    await mcp_router.set_module("signals", True)
-    await mcp_router.log_signal(key="headache", kind="symptom", on_date="2026-07-01")
     await mcp_router.log_hrt_dose(
         compound_key="testosterone_enanthate", dose=100, unit="mg", on_date="2026-07-01"
     )
 
     overview = await mcp_router.get_data_overview()
-
-    assert overview["signals"]["count"] == 1
-    assert overview["signals"]["latest"] == "2026-07-01"
     assert overview["hrt_doses"]["count"] == 1

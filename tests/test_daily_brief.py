@@ -11,7 +11,6 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from vitals.ownership import WriteIdentity
 from sqlalchemy import select
 
 from vitals.enums import (
@@ -35,7 +34,7 @@ from vitals.services import (
     weight_service,
 )
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
-from vitals.services.proactive import brief, channels, compose, day_plan, delivery
+from vitals.services.proactive import brief, channels, compose, delivery
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 
 # The bot only speaks when the ``signals`` module is on — the same switch the
@@ -321,39 +320,6 @@ async def test_no_norm_until_there_is_enough_history(db_session, legacy_owner_ro
     assert "норма" not in compose.render(compose.header_blocks(ctx))
 
 
-async def test_the_brief_sees_yesterdays_signals(db_session, legacy_owner_roots):
-    """"Кофе в 22" is yesterday's row and this morning's HRV is what it explains.
-    A one-day window would cut every exposure away from the number it caused."""
-    from vitals.services import signals_service
-
-    await signals_service.create_signals(
-        db_session,
-        items=[{"kind": "exposure", "key": "caffeine_late", "at_time": "22:00"}],
-        on_date=DAY - timedelta(days=1),
-        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
-    )
-    await signals_service.create_signals(
-        db_session,
-        items=[{"kind": "state", "key": "sleepiness", "value_num": 5}],
-        on_date=DAY,
-        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
-    )
-    # Two days back is outside the window: the brief is about this morning.
-    await signals_service.create_signals(
-        db_session,
-        items=[{"kind": "symptom", "key": "headache", "value_num": 3}],
-        on_date=DAY - timedelta(days=2),
-        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
-    )
-    await db_session.commit()
-
-    ctx = await brief.build_context(
-        db_session,
-        subject_id=legacy_owner_roots.subject_id,
-        on_date=DAY)
-
-    assert [s["key"] for s in ctx["signals"]] == ["caffeine_late", "sleepiness"]
-    assert ctx["signals"][0]["at_time"] == "22:00"
 
 
 # ── The fallback ──────────────────────────────────────────────────────────────
@@ -593,33 +559,6 @@ async def test_empty_day_builds_nothing(db_session, raw, when, legacy_owner_root
     assert compose.is_empty_day(ctx, on_date=when)
 
 
-async def test_a_day_without_garmin_is_not_an_empty_day(db_session, legacy_owner_roots, owner_write):
-    """The watch on the charger used to silence the brief outright, even with
-    the scale, the food log and his own words all filling normally."""
-    from vitals.services import signals_service
-
-    await weight_service.log_weight(
-        db_session,
-        on_date=DAY,
-        weight_kg=88.0,
-        identity=owner_write.identity,
-        prepared_weight_write=await owner_write.weight_write(DAY),
-    )
-    await signals_service.create_signals(
-        db_session,
-        items=[{"kind": "state", "key": "fatigue", "value_num": 4}],
-        on_date=DAY,
-        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
-    )
-    await db_session.commit()
-
-    ctx = await brief.build_context(
-        db_session,
-        on_date=DAY,
-        subject_id=legacy_owner_roots.subject_id,
-    )
-    assert not compose.is_empty_day(ctx, on_date=DAY)
-    assert "Вес 88 кг" in compose.render(compose.header_blocks(ctx))
 
 
 async def test_a_weight_from_months_ago_does_not_keep_the_brief_talking(db_session, legacy_owner_roots, owner_write):
@@ -960,60 +899,8 @@ async def test_empty_alert_reconciliation_rejects_actor_attribution(
         )
 
 
-async def test_the_brief_says_what_its_buttons_are_for(
-    garmin_owned_scope,
-    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write,
-):
-    """Telegram renders the keyboard under the *whole* message, so four unlabelled
-    taps ("зал", "лёгкий/обычный/тяжёлый день") arrive attached to nothing — and
-    «тяжёлый день» is a question asked nowhere in the text at all. The stored
-    brief keeps no hint: /reports shows it with no buttons underneath."""
-    notifier = FakeNotifier()
-    _patch_job(monkeypatch, notifier, FakeLLM())
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
-    await _seed_day(
-        db_session,
-        owner_write,
-    garmin_owned_scope=garmin_owned_scope)
-
-    await brief.brief_job(session_factory)
-
-    sent = notifier.sent[0]
-    assert sent["buttons"]
-    assert sent["text"].endswith(day_plan.HINT_FIX)
-    stored = (await db_session.execute(select(WeeklyDigest))).scalars().one()
-    assert day_plan.HINT_FIX not in stored.content
 
 
-async def test_a_brief_with_nothing_left_to_ask_carries_no_hint(
-    garmin_owned_scope,
-    db_session, session_factory, monkeypatch, legacy_owner_roots, owner_write,
-):
-    """The hint leaves with the last button — a line pointing at a keyboard that
-    isn't there is worse than no line."""
-    notifier = FakeNotifier()
-    _patch_job(monkeypatch, notifier, FakeLLM())
-    monkeypatch.setattr(brief, "today_local", lambda: DAY)
-    await _seed_day(
-        db_session,
-        owner_write,
-    garmin_owned_scope=garmin_owned_scope)
-    ownership = await _telegram_ownership(db_session)
-    for question in day_plan.QUESTIONS:
-        await day_plan.record_answer(
-            db_session,
-            DAY,
-            question.key,
-            next(iter(question.labels)),
-            identity=ownership.owner_action(),
-            integration_connection_id=ownership.connection_id,
-        )
-    await db_session.commit()
-
-    await brief.brief_job(session_factory)
-
-    assert notifier.sent[0]["buttons"] is None
-    assert day_plan.HINT_FIX not in notifier.sent[0]["text"]
 
 
 async def test_job_sends_the_brief_even_when_garmin_sync_explodes(

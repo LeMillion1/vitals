@@ -32,9 +32,6 @@ from vitals.services import (
 from vitals.services.conflict_rule_ownership_backfill_service import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
 )
-from vitals.services.day_context_ownership_backfill_service import (
-    DAY_CONTEXT_OWNERSHIP_BACKFILL_PHASE,
-)
 from vitals.services.hevy_child_ownership_backfill_service import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_PHASE,
 )
@@ -59,9 +56,6 @@ from vitals.services.raw_ownership_backfill_service import (
 )
 from vitals.services.shared_report_ownership_backfill_service import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_PHASE,
-)
-from vitals.services.signal_ownership_backfill_service import (
-    SIGNAL_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
 from vitals.services.weight_log_ownership_backfill_service import (
@@ -470,13 +464,11 @@ async def test_real_postgres_0034_notification_stop_resume_volatility_and_restor
             (
                 "backfill_day_context_subject_ownership.py",
                 ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                DAY_CONTEXT_OWNERSHIP_BACKFILL_PHASE,
                 AGGREGATE_CLI_KEYS,
             ),
             (
                 "backfill_signal_subject_ownership.py",
                 ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                SIGNAL_OWNERSHIP_BACKFILL_PHASE,
                 AGGREGATE_CLI_KEYS,
             ),
             (

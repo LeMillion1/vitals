@@ -440,15 +440,15 @@ HEALTH_ALERT_KEYS = frozenset(
         "hrt.labs_due",
         "hrt.injection_due",
         "brief_empty_day",
-        # New platform-funded parser alerts are health-subject scoped (C=NULL).
-        # The same key intentionally remains in the historical OpenRouter
-        # provider registry below so old subject-C alerts can be resolved.
+        # Nothing raises this any more — the parser it belonged to is gone with
+        # the chat it read. The key stays registered so alerts already in the
+        # lake can still be listed and resolved, and because the
+        # ``ck_system_alerts_ai_invocation_scope`` constraint still names it.
         "signal_parser_failed",
         "scheduler.job_failed:glp1_plateau",
         "scheduler.job_failed:hrt_reminders",
         "scheduler.job_failed:nutrition_day_end",
         "scheduler.job_failed:daily_brief",
-        "scheduler.job_failed:evening_block",
         "scheduler.job_failed:nudges",
         "scheduler.job_failed:weekly_digest",
     }
@@ -516,7 +516,9 @@ ALERT_KEY_DOMAINS: Mapping[str, Domain] = MappingProxyType(
         "garmin.token_cache": Domain.GARMIN,
         "garmin.weight_export": Domain.GARMIN,
         "hevy.sync_failed": Domain.WORKOUTS,
-        "signal_parser_failed": Domain.SIGNALS,
+        # Historical only; see the note beside it in HEALTH_ALERT_KEYS. Domain
+        # SYSTEM because the domain it used to carry went with the parser.
+        "signal_parser_failed": Domain.SYSTEM,
         **{
             key: Domain.SYSTEM
             for key in set().union(

@@ -691,7 +691,6 @@ from web.routers.interactions import router as interactions_router  # noqa: E402
 from web.routers.settings import router as settings_router  # noqa: E402
 from web.routers.charts import router as charts_router  # noqa: E402
 from web.routers.timeline import router as timeline_router  # noqa: E402
-from web.routers.signals import router as signals_router  # noqa: E402
 from web.routers.external_api import router as external_api_router  # noqa: E402
 from web.routers.public_report import router as public_report_router  # noqa: E402
 from web.routers.share import router as share_router  # noqa: E402
@@ -742,7 +741,6 @@ app.include_router(skincare_router, dependencies=[Depends(require_module("skinca
 app.include_router(nutrition_router, dependencies=[Depends(require_module("nutrition"))])
 app.include_router(interactions_router, dependencies=[Depends(require_module("interactions"))])
 app.include_router(timeline_router, dependencies=[Depends(require_module("timeline"))])
-app.include_router(signals_router, dependencies=[Depends(require_module("signals"))])
 
 # ── OAuth & MCP Integration ──────────────────────────────────────────────────
 try:

@@ -265,45 +265,6 @@ async def test_assemble_context_is_robust_when_empty(db_session, monkeypatch, le
     assert ctx["alerts"] is None
 
 
-@composed
-async def test_signals_reach_the_digest_context(db_session, legacy_owner_roots):
-    """The capture domain exists to explain the other domains' numbers. If it
-    never lands in the context, everything written to the bot is write-only."""
-    from vitals.services import signals_service
-
-    await signals_service.create_signals(
-        db_session,
-        items=[{"kind": "exposure", "key": "caffeine_late", "at_time": "22:00",
-                "note": "кофе в 22"}],
-        on_date=DAY - timedelta(days=1),
-        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
-    )
-    rows = await signals_service.create_signals(
-        db_session,
-        items=[{"kind": "symptom", "key": "headache", "value_num": 4}],
-        on_date=DAY,
-        identity=WriteIdentity(legacy_owner_roots.subject_id, legacy_owner_roots.user_id),
-    )
-    await db_session.commit()
-
-    ctx = await digest_service.assemble_context(
-        db_session,
-        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
-
-    assert [s["key"] for s in ctx["signals"]] == ["caffeine_late", "headache"]
-    assert ctx["signals"][0]["at_time"] == "22:00", "the hour is what makes it correlatable"
-    assert ctx["signals"][0]["note"] == "кофе в 22"
-
-    # A row he tapped "не то" on is not evidence and must not reach the model.
-    await signals_service.mark_misparse(
-        db_session, rows[0].batch_id, subject_id=legacy_owner_roots.subject_id
-    )
-    await db_session.commit()
-
-    ctx = await digest_service.assemble_context(
-        db_session,
-        subject_id=legacy_owner_roots.subject_id, on_date=DAY)
-    assert [s["key"] for s in ctx["signals"]] == ["caffeine_late"]
 
 
 @composed
@@ -584,12 +545,6 @@ DIGEST_DOMAIN_PATHS: dict[Domain, tuple[str, ...]] = {
     ),
     Domain.MILESTONES: ("milestones", "coverage.milestones"),
     Domain.TIMELINE: ("timeline", "coverage.timeline"),
-    Domain.SIGNALS: (
-        "signals",
-        "day_context",
-        "coverage.signals",
-        "coverage.day_context",
-    ),
     # Infra rows reach the digest as the active-alert list, not as their own block.
     Domain.SYSTEM: ("alerts",),
 }

@@ -19,9 +19,6 @@ from vitals.services import shared_report_ownership_backfill_service as service
 from vitals.services.conflict_rule_ownership_backfill_service import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.day_context_ownership_backfill_service import (
-    DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
 from vitals.services.hevy_child_ownership_backfill_service import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
@@ -41,9 +38,6 @@ from vitals.services.provider_raw_ownership_backfill_service import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
-from vitals.services.signal_ownership_backfill_service import (
-    SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
 from vitals.utils.timeutils import now_local
 
 
@@ -65,8 +59,6 @@ _PRIOR_PHASES = (
     + tuple(HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
     + tuple(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-    + tuple(DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-    + tuple(SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 )
 
 
@@ -428,56 +420,6 @@ async def test_restore_prepare_empty_is_exact_completed(db_session, legacy_owner
     assert result.completed and result.snapshot_rows == 0
 
 
-@pytest.mark.asyncio
-async def test_restore_witness_survives_valid_prior_phase_progression(
-    db_session, legacy_owner_roots
-):
-    checkpoints = await _ready(db_session, legacy_owner_roots)
-    _set_restore_blocked(checkpoints[RAW_OWNERSHIP_BACKFILL_PHASE])
-    db_session.add(_report("restore-progression"))
-    await db_session.flush()
-    await service.prepare_shared_report_ownership_backfill_for_portability_v1_restore(
-        db_session
-    )
-
-    _set_nonempty_completed(checkpoints[RAW_OWNERSHIP_BACKFILL_PHASE])
-    _set_nonempty_completed(
-        checkpoints[next(iter(NORMALIZED_MANUAL_CHECKPOINT_PHASES.values()))]
-    )
-    _set_nonempty_completed(
-        checkpoints[next(iter(PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()))]
-    )
-    exercises = checkpoints[
-        HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["hevy_exercises"]
-    ]
-    sets = checkpoints[
-        HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["hevy_sets"]
-    ]
-    _set_nonempty_completed(exercises)
-    _set_restore_blocked(sets)
-    compounds = checkpoints[
-        HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["hrt_compounds"]
-    ]
-    components = checkpoints[
-        HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES[
-            "hrt_compound_components"
-        ]
-    ]
-    _set_nonempty_completed(compounds)
-    _set_nonempty_running(components)
-    _set_nonempty_completed(
-        checkpoints[next(iter(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()))]
-    )
-    _set_nonempty_completed(
-        checkpoints[next(iter(DAY_CONTEXT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()))]
-    )
-    _set_nonempty_completed(
-        checkpoints[next(iter(SIGNAL_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()))]
-    )
-    await db_session.flush()
-
-    result = await service.preflight_shared_report_ownership_backfill(db_session)
-    assert result.status is service.SharedReportOwnershipBackfillStatus.RUNNING
 
 
 @pytest.mark.asyncio

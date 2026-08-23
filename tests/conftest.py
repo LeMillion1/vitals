@@ -254,29 +254,17 @@ async def session_factory(db_session):
 
 @pytest_asyncio.fixture
 async def signals_module_on(db_session, legacy_owner_roots):
-    """Switch the ``signals`` module on for a bare ``db_session`` test.
+    """Kept as a no-op so the tests that name it keep running.
 
-    The proactive layer is gated on that module (it is the emergency switch, and
-    it defaults **off**), so a service-level test that doesn't go through the
-    ``client`` fixture has to set the same thing up the owner does in Settings —
-    otherwise ``delivery.send`` correctly refuses to send anything.
-
-    Module state is one person's now, so the sole owner has to exist before
-    there is anybody to switch it on for.
+    It used to switch on the ``signals`` module, which was also the proactive
+    layer's master switch. Both are gone — the module with the signals domain,
+    and the switch with it, because nothing replaced it: the layer is on and its
+    own preferences decide what it sends. The fixture stays rather than being
+    edited out of a few dozen signatures, and it will go with them.
     """
-    from vitals.services import modules_service
-    from sqlalchemy import select
-    from vitals.models.identity import HealthSubject
 
-    subject_ids = list(await db_session.scalars(select(HealthSubject.id)))
-    for subject_id in subject_ids:
-        await modules_service.set_module_enabled(
-            db_session,
-            key="signals",
-            enabled=True,
-            subject_id=subject_id,
-        )
-    await db_session.commit()
+    del db_session, legacy_owner_roots
+    return None
 
 
 @pytest_asyncio.fixture
