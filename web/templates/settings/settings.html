@@ -45,6 +45,9 @@
     {% if saved == 'proactive' and adjusted %}
     <div class="v-alert warn">{{ t("settings.proactive_adjusted") }}</div>
     {% endif %}
+    {% if saved == 'proactive' and deferred %}
+    <div class="v-alert warn">{{ t("settings.proactive_deferred") }}</div>
+    {% endif %}
     </div>
     {% if saved %}
     <script>

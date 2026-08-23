@@ -303,6 +303,7 @@ async def _page(
     saved: Optional[str] = None,
     error: Optional[str] = None,
     adjusted: Optional[str] = None,
+    deferred: Optional[str] = None,
 ) -> HTMLResponse:
     """Build the template context and render settings.html."""
     # Redis is external I/O. Read it before any database preparation can acquire
@@ -360,6 +361,7 @@ async def _page(
         "saved": saved,
         "error": error,
         "adjusted": adjusted,
+        "deferred": deferred,
         # Profile
         "height_cm": read_key("VITALS_HEIGHT_CM") or "190",
         "sex": read_key("VITALS_SEX") or "male",
@@ -445,8 +447,18 @@ async def settings_page(
     saved: Optional[str] = None,
     error: Optional[str] = None,
     adjusted: Optional[str] = None,
+    deferred: Optional[str] = None,
 ):
-    return await _page(request, username, db=db, redis=redis, saved=saved, error=error, adjusted=adjusted)
+    return await _page(
+        request,
+        username,
+        db=db,
+        redis=redis,
+        saved=saved,
+        error=error,
+        adjusted=adjusted,
+        deferred=deferred,
+    )
 
 
 @router.post("/profile")
@@ -1049,16 +1061,32 @@ async def save_proactive(
             actor_username=username,
         )
     ).as_flat_dict()
+    # Asked before the commit closes the transaction, and answered about this
+    # person: the scheduler registry is one per process, so rebuilding it from
+    # a save re-times everybody's jobs. Whose Save that is allowed to be is a
+    # question the row itself cannot answer.
+    governs_schedule = await prefs.governs_the_process_schedule(
+        db, subject_id=preference_scope.subject_id
+    )
     await db.commit()
 
-    apply_schedule(request.app, settings)
+    if governs_schedule:
+        apply_schedule(request.app, settings)
     # prefs.sanitize() (called inside set_preferences_bundle) silently clamps
     # out-of-range
     # input — compare what was submitted to what actually got stored so the
     # user can be told, instead of seeing a plain "saved" while their number
     # was quietly changed underneath them.
     adjusted = raw_prefs != settings
-    return _redirect("?saved=proactive&adjusted=1" if adjusted else "?saved=proactive")
+    query = "?saved=proactive"
+    if adjusted:
+        query += "&adjusted=1"
+    if not governs_schedule:
+        # Saved, and deliberately not applied to the running scheduler. A plain
+        # "saved" here would be true about the row and false about the effect,
+        # which is the worse of the two silences.
+        query += "&deferred=1"
+    return _redirect(query)
 
 
 def apply_schedule(app, settings: dict) -> None:

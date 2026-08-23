@@ -304,3 +304,318 @@ async def test_the_page_shows_the_readers_day_not_the_servers(
         assert server_day.strftime("%d-%m-%Y") not in response.text
     finally:
         set_timezone("Europe/Chisinau")
+
+
+#: Mutating routes the sweep below deliberately does not call, each for a reason
+#: that has nothing to do with this migration.
+#:
+#: An empty body stops most of these at validation, which is an answer and the
+#: whole point. These are the ones it would not stop: they take no body, or the
+#: body is optional, and calling them would restart the process, wipe the
+#: installation, log the sweep out of its own session, or reach a provider.
+NOT_SWEPT = {
+    "/settings/restart",  # restarts the process
+    "/settings/import",  # whole-installation restore: deletes every portable table
+    "/logout",  # would end the session the rest of the sweep runs under
+    "/garmin/sync",  # reaches Garmin
+    "/garmin/import",  # reaches Garmin
+    "/hevy/sync",  # reaches Hevy
+    "/settings/garmin/weight/send-now",  # reaches Garmin
+    "/reports/brief",  # composes through the AI gateway
+    "/reports/brief/test",  # composes through the AI gateway
+    "/reports/digest",  # composes through the AI gateway
+    "/login",  # about authentication, not about whose record this is
+    "/login/2fa",
+    "/oauth/token",
+    "/oauth/authorize/approve",
+    "/alerts/resolve-all",  # takes no body and resolves the sweep's own alerts
+    # These five write ``.env`` — installation configuration, not a record. An
+    # empty body is accepted by every one of them, so sweeping them blanks the
+    # Garmin credentials, the Hevy key, the MCP token and the profile for
+    # whatever runs next. Found exactly that way: the first version of this
+    # sweep left ``test_garmin_sync_not_configured_redirects`` failing several
+    # hundred tests later, and passing on its own.
+    "/settings/garmin",
+    "/settings/hevy",
+    "/settings/mcp",
+    "/settings/profile",
+    "/settings/password",
+    "/settings/2fa/start",
+    "/settings/2fa/enable",
+    "/settings/2fa/disable",
+}
+
+
+def _write_routes(app) -> list[tuple[str, str]]:
+    """Every mutating route that takes no path parameter."""
+
+    found: set[tuple[str, str]] = set()
+
+    def walk(routes) -> None:
+        for route in routes:
+            included = getattr(route, "original_router", None)
+            if included is not None:
+                walk(included.routes)
+                continue
+            nested = getattr(route, "routes", None)
+            if nested:
+                walk(nested)
+                continue
+            methods = (getattr(route, "methods", set()) or set()) & {
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+            }
+            if not methods:
+                continue
+            path = getattr(route, "path", "")
+            if "{" in path or path.startswith("/mcp"):
+                continue
+            for method in methods:
+                found.add((method, path))
+
+    walk(app.routes)
+    return sorted(found)
+
+
+async def test_no_write_route_answers_with_a_stack_trace(
+    auth_client, second_person, legacy_owner_roots
+):
+    """The same property as the page sweep, on the half it could not see.
+
+    Everything above walks ``GET``. A shared installation meets these bridges on
+    ``POST`` too, and one of them was live: clicking Save on the notification
+    settings answered 409, so nobody on a shared installation could store their
+    own brief time. Several thousand tests did not see it, and neither did the
+    page sweep, because neither posts.
+
+    Empty bodies on purpose. Most routes stop at validation, which is an answer
+    and is all this asserts: a refusal, a redirect, a 422 are all fine, and a
+    500 means a bridge declined and nobody caught it.
+    """
+
+    from web.main import app
+
+    crashed: list[str] = []
+    for method, path in _write_routes(app):
+        if path in NOT_SWEPT:
+            continue
+        response = await auth_client.request(
+            method, path, headers={"Accept": "text/html"}
+        )
+        if response.status_code == 500:
+            crashed.append(f"{method} {path}")
+
+    assert not crashed, (
+        "these write routes crashed in a shared installation instead of "
+        "answering: " + ", ".join(crashed)
+    )
+
+
+async def test_the_owner_can_save_their_own_notification_settings(
+    auth_client, second_person, legacy_owner_roots
+):
+    """The defect this sweep was written for, pinned as itself.
+
+    The refusal was about the shared ``app_settings`` mirror, which does stop
+    meaning anything with two people — and it was applied to the whole save,
+    including the subject-scoped row that is unambiguous. What a second person
+    invalidates is the mirror, not this person's own preferences.
+    """
+
+    response = await auth_client.post(
+        "/settings/proactive",
+        data={"brief_time": "09:30"},
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
+    assert "saved=proactive" in response.headers["location"]
+    # Saved, and honest about the half that did not take effect: the process
+    # schedule is one registry and is not rebuilt from one record.
+    assert "deferred=1" in response.headers["location"]
+
+
+#: One minimally valid body per domain write route, so the sweep below reaches
+#: past request validation and into the service that used to refuse.
+#:
+#: The empty-body sweep above is the weaker half and says so: thirty-two of
+#: these routes stop at 422, which is an answer but not the one worth having —
+#: a bridge two layers down is never asked. These bodies are what asks it.
+WRITE_BODIES = {
+    "/weight/log": {"weight_kg": "80.5", "date": "2026-08-20"},
+    "/weight/measurement": {"date": "2026-08-20", "waist_cm": "84"},
+    "/weight/noise": {"start_date": "2026-08-20", "reason": "travel"},
+    "/labs/result": {"date": "2026-08-20", "marker": "ferritin", "value": "70"},
+    "/reports/milestone": {
+        "name": "80 kg",
+        "domain": "weight",
+        "target_value": "80",
+    },
+    "/settings/language": {"language": "ru"},
+    "/settings/modules": {"module": "skincare", "enabled": "true"},
+    "/glp1/injection": {
+        "date": "2026-08-20",
+        "drug": "semaglutide",
+        "dose_mg": "0.5",
+    },
+    "/glp1/phase": {
+        "start_date": "2026-08-20",
+        "drug": "semaglutide",
+        "dose_mg": "0.5",
+    },
+    "/glp1/side-effect": {
+        "date": "2026-08-20",
+        "effect_type": "nausea",
+        "severity": "2",
+    },
+    "/supplements/save": {"name": "Vitamin D"},
+    "/hrt/cycle": {"kind": "course", "start_date": "2026-08-20"},
+    "/hrt/side-effect": {
+        "date": "2026-08-20",
+        "effect_type": "acne",
+        "severity": "1",
+    },
+    "/genetics/save": {"gene": "MTHFR"},
+    "/skincare/log": {"date": "2026-08-20", "retinoid": "true"},
+    "/skincare/observation": {"date": "2026-08-20", "inflammation": "2"},
+    "/skincare/product/save": {"name": "Cream", "type": "moisturizer"},
+    "/nutrition/meal": {
+        "date": "2026-08-20",
+        "name": "Breakfast",
+        "calories": "500",
+    },
+    "/timeline": {"title": "Started TRT", "date": "2026-08-20"},
+    "/charts": {
+        "name": "Weight",
+        "domain": ["weight"],
+        "metric_key": ["weight_kg"],
+    },
+    "/settings/proactive": {"brief_time": "09:30"},
+}
+
+
+async def test_the_owner_can_still_write_their_own_record(
+    auth_client, second_person, legacy_owner_roots, all_modules_on
+):
+    """Somebody else existing does not stop this person logging their weight.
+
+    The stronger half of the write sweep. Each of these carries a body the route
+    accepts, so the request reaches the service rather than stopping at
+    validation, and each is the record's own owner writing their own row.
+
+    A 409 here is the sole-subject refusal and is the thing this asserts is
+    gone. Other refusals are left alone: a route may still answer 400 because
+    the window it was given holds nothing, and that is about the data, not about
+    how many people the installation has.
+    """
+
+    refused: list[str] = []
+    for path, body in sorted(WRITE_BODIES.items()):
+        response = await auth_client.post(
+            path,
+            data=body,
+            headers={"Accept": "text/html"},
+            follow_redirects=False,
+        )
+        if response.status_code in (409, 500):
+            refused.append(f"{path} \u2192 {response.status_code}")
+
+    assert not refused, (
+        "the record's own owner could not write to these in a shared "
+        "installation: " + ", ".join(refused)
+    )
+
+
+@pytest.fixture
+async def patient_client(client, db_session, legacy_owner_roots):
+    """A second account that owns its own record — the third case.
+
+    The two above are the record's own owner and an account with no record at
+    all. Neither is what a shared installation is mostly made of: somebody who
+    is not the ``.env`` owner, keeps their own history, and reaches every page
+    about it. Every sole-subject bridge that survived did so because the only
+    account exercising it was the one the installation was built around.
+    """
+
+    from vitals.models.scoped_settings import SubjectSetting
+    from vitals.services import modules_service, rls_session
+    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+    from web.auth import create_session
+    from web.deps import SESSION_COOKIE
+
+    user = User(
+        username="patient-two",
+        normalized_username="patient-two",
+        password_hash="synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    subject = HealthSubject(
+        owner_user_id=user.id,
+        display_name="Patient Two",
+        timezone="Europe/Chisinau",
+    )
+    db_session.add(subject)
+    await db_session.flush()
+    # The same roots startup gives the ``.env`` owner. Every subject needs them,
+    # and today only the bootstrap and the demo seeder create any — which is why
+    # a patient born by registration is the next thing to get this wrong.
+    await bootstrap_legacy_resource_roots(db_session, subject_id=subject.id)
+    db_session.add(
+        SubjectSetting(
+            subject_id=subject.id,
+            key=modules_service.SETTINGS_KEY,
+            value={key: True for key in modules_service.MODULE_REGISTRY},
+        )
+    )
+    await db_session.commit()
+    # Production hands every request its own session. The suite shares one, and
+    # ``legacy_owner_roots`` has already bound it to the owner — a binding that
+    # deliberately refuses to move to another person. Clearing it is what a new
+    # request does for free.
+    db_session.info.pop(rls_session._SUBJECT_KEY, None)
+
+    client.cookies.set(SESSION_COOKIE, create_session("patient-two"))
+    return client
+
+
+async def test_a_second_patient_reaches_every_page(patient_client):
+    """Not the owner, and not a professional: the case in between."""
+
+    from web.main import app
+
+    wrong: list[str] = []
+    for path in _page_routes(app):
+        if path in NOT_A_MIGRATION_QUESTION or path in STILL_SOLE_SUBJECT:
+            continue
+        response = await patient_client.get(path, headers={"Accept": "text/html"})
+        if response.status_code in (409, 500):
+            wrong.append(f"{path} \u2192 {response.status_code}")
+
+    assert not wrong, (
+        "a patient who is not the installation owner was refused these: "
+        + ", ".join(wrong)
+    )
+
+
+async def test_a_second_patient_can_write_their_own_record(patient_client):
+    """The same twenty-one write paths, for somebody the app was not built for."""
+
+    refused: list[str] = []
+    for path, body in sorted(WRITE_BODIES.items()):
+        response = await patient_client.post(
+            path,
+            data=body,
+            headers={"Accept": "text/html"},
+            follow_redirects=False,
+        )
+        if response.status_code in (409, 500):
+            refused.append(f"{path} \u2192 {response.status_code}")
+
+    assert not refused, (
+        "a patient who is not the installation owner could not write these: "
+        + ", ".join(refused)
+    )

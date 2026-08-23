@@ -8,6 +8,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — a shared installation can save its notification settings
+
+Everything the sole-subject retirement covered so far walks `GET`. `POST` was
+never swept, and one of these was live: clicking **Save** on the notification
+settings card answered 409 on any installation holding two people, so nobody
+could store their own brief time.
+
+The refusal came from `_lock_write_roots`, which demanded exactly one subject
+for every caller. What a second person actually invalidates is the shared
+`app_settings` mirror — the same distinction `scoped_settings_service` already
+draws — and not this person's own subject-scoped row. The cardinality is now
+reported rather than enforced: the mirror is skipped, the scoped rows are
+written, and the two callers that genuinely need a sole subject (the startup
+adoption of the legacy row, and the actorless startup read) refuse on it
+themselves.
+
+The second half is the scheduler. `apply_schedule` rebuilds the process-wide
+registry from whatever was just saved, which on a shared installation means the
+second person's Save re-times the first person's brief. Startup had already
+decided this — it keeps the defaults rather than faking a schedule from one
+person's row — and the save path now agrees, and says so on the page instead of
+reporting a plain "saved" that is true about the row and false about the effect.
+
+`tests/test_shared_installation_pages.py` gained the write half it was missing:
+an empty-body sweep of every mutating route for the same no-stack-trace
+property, and a stronger one that carries a body each route accepts, so the
+request reaches the service rather than stopping at validation. Twenty-one
+domain write paths are asserted to work for the record's own owner with somebody
+else in the database.
+
+It also gained the third account shape. The file walked the record's own owner
+and an account with no record at all; a shared installation is mostly made of
+neither. A patient who is not the `.env` owner, keeps their own history and
+reaches every page about it now walks both sweeps, and the fixture is explicit
+that its integration roots exist only because it created them — today nothing
+but the startup bootstrap and the demo seeder does, which is the next thing a
+registration page will get wrong.
+
+
 ### Removed — Telegram, signals, and the day context
 
 Three things that were one thing: a chat, the free text it carried, and the

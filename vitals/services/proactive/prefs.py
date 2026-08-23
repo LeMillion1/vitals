@@ -782,7 +782,7 @@ async def get_exact_one_preferences_bundle(
         scope,
         actor_lookup_key=None,
     )
-    if not bridge_open:  # pragma: no cover - enforced by _lock_write_roots
+    if not bridge_open:
         raise LegacyProactivePreferencesBridgeClosedError(
             "legacy proactive preference bridge is closed"
         )
@@ -914,13 +914,57 @@ async def get_locked_delivery_policy(
     return _decode_delivery(raw)
 
 
+async def governs_the_process_schedule(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> bool:
+    """Whether this subject's timings are also the installation's.
+
+    ``brief_time`` and the Garmin cadences are stored per subject, but the
+    scheduler registry is one per process: rebuilding it from a settings save
+    re-registers ``daily_brief`` at *that* person's hour for everybody. While an
+    installation is one person those are the same statement. With two they are
+    not, and the second person's Save would quietly move the first person's
+    brief.
+
+    Startup already decided this, in ``web/main.py``: a shared installation
+    keeps the default schedule rather than faking one from somebody's row. This
+    answers the same question for the save path, so the two agree.
+    """
+
+    if not isinstance(subject_id, uuid.UUID) or subject_id.int == 0:
+        raise ProactivePreferencesValidationError(
+            "subject_id must be a non-zero UUID"
+        )
+    subject_ids = list(
+        await session.scalars(
+            select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+        )
+    )
+    return subject_ids == [subject_id]
+
+
 async def _lock_write_roots(
     session: AsyncSession,
     scope: ProactivePreferencesScope,
     *,
     actor_lookup_key: str | None,
 ) -> bool:
-    """Lock canonical roots and return whether exact-one mirroring is allowed."""
+    """Lock canonical roots and report whether the legacy mirror still applies.
+
+    It used to refuse here, for every caller, the moment a second subject
+    existed — and the caller that meets that first is a person clicking Save on
+    their own notification settings, whose scoped rows are unambiguous and whose
+    write has nothing to do with the mirror. What stops meaning anything with
+    two people is the shared ``app_settings`` key, not the subject-scoped row;
+    the same distinction ``scoped_settings_service`` already draws.
+
+    So the cardinality is reported rather than enforced. The two callers that
+    genuinely need a sole subject — the startup adoption of the legacy row and
+    the actorless startup read — refuse on a ``False`` themselves, where the
+    refusal names what it is actually about.
+    """
 
     await acquire_identity_governance_lock(session)
     await _validate_scope_roots(
@@ -935,10 +979,6 @@ async def _lock_write_roots(
         )
     )
     exact_one = subject_ids == [scope.subject_id]
-    if scope.include_legacy and not exact_one:
-        raise LegacyProactivePreferencesBridgeClosedError(
-            "legacy proactive preference mirroring requires exactly one subject"
-        )
     return exact_one and scope.include_legacy
 
 
@@ -998,7 +1038,7 @@ async def initialize_legacy_preferences(
         scope,
         actor_lookup_key=None,
     )
-    if not bridge_open:  # pragma: no cover - guarded by _lock_write_roots
+    if not bridge_open:
         raise LegacyProactivePreferencesBridgeClosedError(
             "legacy proactive preference bridge is closed"
         )
@@ -1203,6 +1243,7 @@ __all__ = [
     "WEIGHT_MAX_AGE_DAYS_RANGE",
     "as_time",
     "get_exact_one_preferences_bundle",
+    "governs_the_process_schedule",
     "get_garmin_policy",
     "get_locked_delivery_policy",
     "get_preferences_bundle",

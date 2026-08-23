@@ -1168,16 +1168,36 @@ pages still refuse — in both directions, so the list cannot go stale in either
 and one asserts that an account without a record is told that, and not something
 else.
 
-**Reads are covered; writes are not.** Everything above, and the test that pins
-it, walks pages with `GET`. A shared installation still meets these gates on
-`POST`, and `POST /settings/proactive` is a known live one: it resolves through
-`prefs.resolve_legacy_preferences_scope` and answers 409
-(`LegacyProactivePreferencesBridgeClosedError`) with two subjects present, so
-nobody can save their proactive settings. Found by clicking Save in a browser
-against the seeded shared installation — the suite could not see it, because it
-never posts. Widening the write paths, and extending
-`tests/test_shared_installation_pages.py` to cover them, is the next piece of
-this section.
+**Writes are covered now too.** Everything above walked pages with `GET`, and
+`POST /settings/proactive` was the live gate underneath: it answered 409
+through `LegacyProactivePreferencesBridgeClosedError`, so nobody on a shared
+installation could save their own notification settings. Found by clicking Save
+in a browser against the seeded installation — the suite could not see it,
+because it never posted.
+
+It was the same shape as the alerts bridge: the proof and the widening had been
+fused. `prefs._lock_write_roots` demanded a sole subject for every caller, when
+what a second person invalidates is only the shared `app_settings` mirror. It
+reports the cardinality now; the mirror is skipped and the scoped row is
+written, and the two callers that genuinely need exactly one subject — the
+startup adoption of the legacy row, and the actorless startup read — refuse on
+that answer themselves.
+
+The scheduler was the second half and is worth naming separately, because it is
+not a gate. `apply_schedule` rebuilds the one process-wide registry from
+whatever was just saved, so on a shared installation the second person's Save
+re-times the first person's brief. Startup had already decided this question —
+it keeps the default schedule rather than faking one from somebody's row — and
+`prefs.governs_the_process_schedule` now gives the save path the same answer.
+The page says which half did not take effect rather than reporting a plain
+"saved" that is true about the row and false about the effect.
+
+`tests/test_shared_installation_pages.py` carries the write half in two sweeps.
+The weak one posts empty bodies to every mutating route for the same
+no-stack-trace property, and is honest that thirty-two of them stop at 422 with
+the bridge two layers down never asked. The strong one carries a body each route
+accepts: twenty-one domain write paths, asserted to work for the record's own
+owner with somebody else in the database.
 
 ### PR 09 — Subject integrations, platform AI gateway, scheduler, and notifications — **partly landed**
 

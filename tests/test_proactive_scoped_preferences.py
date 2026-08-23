@@ -342,13 +342,28 @@ async def test_two_subjects_keep_all_three_policy_partitions_isolated(
             integration_connection_id=second_scope.telegram_connection_id,
         )
 
-    with pytest.raises(prefs.LegacyProactivePreferencesBridgeClosedError):
-        await prefs.set_preferences_bundle(
+    # A legacy-flagged scope no longer refuses the *write*. What the second
+    # subject invalidates is the shared ``app_settings`` mirror, not this
+    # person's own scoped rows, and refusing the whole save over the mirror is
+    # what stopped anybody on a shared installation from saving their
+    # notification settings at all. The mirror is skipped; the row is written.
+    legacy_flagged_value = _custom(brief_time="06:40", daily_budget=4)
+    await prefs.set_preferences_bundle(
+        db_session,
+        legacy_flagged_value,
+        scope=first_legacy_scope,
+        actor_username="tester",
+    )
+    assert (
+        await prefs.get_preferences_bundle(
             db_session,
-            first_value,
-            scope=first_legacy_scope,
+            scope=first_scope,
             actor_username="tester",
         )
+    ).as_flat_dict() == legacy_flagged_value
+    assert (
+        await db_session.get(AppSetting, prefs.LEGACY_SETTINGS_KEY)
+    ).value == legacy_before
 
     with pytest.raises(prefs.ProactivePreferencesScopeError):
         await prefs.get_preferences_bundle(
