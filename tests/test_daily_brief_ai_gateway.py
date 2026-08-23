@@ -1,6 +1,7 @@
 """Platform-funded Daily Brief lifecycle and deterministic fallback contracts."""
 from __future__ import annotations
 
+
 import asyncio
 import inspect
 import pickle

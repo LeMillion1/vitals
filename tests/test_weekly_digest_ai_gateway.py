@@ -1,6 +1,8 @@
 """WeeklyDigest consumer contract for the platform-funded AI gateway."""
 from __future__ import annotations
 
+from tests.job_runner import run_job_for_every_subject
+
 import asyncio
 import pickle
 import uuid
@@ -874,7 +876,7 @@ async def test_web_mcp_and_scheduler_boundaries_use_platform_gateway_phases(
     assert mcp_result["content"] == "Synthetic weekly narrative"
     assert "ai_invocation_id" not in mcp_result
 
-    await digest_service.digest_job(session_factory)
+    await run_job_for_every_subject(digest_service.digest_job, session_factory)
     rows = list(
         await db_session.scalars(
             select(WeeklyDigest).order_by(WeeklyDigest.id)

@@ -1162,6 +1162,38 @@ async def resolve_legacy_conflict_write_context(
     )
 
 
+async def resolve_subject_conflict_write_context(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    evaluation_date: date_type | None = None,
+) -> ConflictWriteContext:
+    """The same write context, for a system boundary that names its subject.
+
+    A scheduled job has no account, so it cannot go through the actor path; and
+    it must not go through the actorless one, which asks for "the sole subject"
+    and therefore refused outright the moment a second person existed. It says
+    which record it is running for instead, once per subject.
+
+    The subject is mandatory. An omittable one is the shape
+    ``vitals/legacy_scope.py`` exists to keep out, and here it would also put the
+    old refusal back within reach of a caller who simply forgot.
+    """
+
+    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+
+    await _acquire_legacy_governance_lock(session)
+    ownership = await resolve_subject_ownership_context(
+        session,
+        subject_id=subject_id,
+    )
+    return ConflictWriteContext(
+        identity=ownership.system_action(),
+        evaluation_date=evaluation_date or today_local(),
+        legacy_bridge=LegacyConflictBridge.FULLY_UNOWNED,
+    )
+
+
 async def resolve_legacy_conflict_scope(
     session: AsyncSession,
     *,

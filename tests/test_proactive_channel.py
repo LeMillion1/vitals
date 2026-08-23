@@ -1133,8 +1133,7 @@ async def test_crash_after_signal_t1_is_rearmed_by_bounded_recovery(
         return fake
 
     monkeypatch.setattr(channels, "build_legacy_bound_notifier", _build_bound)
-    await inbound.question_reply_recovery_job(
-        session_factory,
+    await inbound.question_reply_recovery_job(session_factory,
         None,
         notifier_resolver=_notifier_resolver(fake),
     )

@@ -374,7 +374,6 @@ async def test_brief_survives_a_dead_model(garmin_owned_scope, db_session, legac
 
 
 
-
 # ── Storage ───────────────────────────────────────────────────────────────────
 
 

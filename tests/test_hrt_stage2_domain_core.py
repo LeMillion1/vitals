@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.job_runner import run_job_for_every_subject
+
 from datetime import date
 
 import pytest
@@ -412,7 +414,7 @@ async def test_reminders_job_noops_when_hrt_module_is_disabled(
 
     monkeypatch.setattr(hrt_reminders.modules_service, "get_enabled_modules", disabled)
     monkeypatch.setattr(hrt_reminders, "refresh_all", must_not_refresh)
-    await hrt_reminders.reminders_job(session_factory)
+    await run_job_for_every_subject(hrt_reminders.reminders_job, session_factory)
 
 
 async def test_invalid_prepared_date_fails_before_target_query(

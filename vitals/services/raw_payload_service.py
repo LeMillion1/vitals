@@ -557,7 +557,9 @@ async def sweep_domain(
     return done
 
 
-async def sweep_pending_job(session_factory, redis=None) -> None:
+async def sweep_pending_job(
+    session_factory, redis=None, *, subject_id: uuid.UUID
+) -> None:
     """Nightly sweep for garmin/hevy/labs/body_comp/genetics raw payloads pending a
     normalized row (registered in vitals/scheduler/jobs.py).
 
@@ -579,14 +581,14 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
         hevy_service,
         labs_service,
     )
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.legacy_ownership import resolve_subject_ownership_context
     from vitals.utils.timeutils import today_local
 
     async with session_factory() as session:
         async def _sweep_owned_garmin() -> int:
-            ownership = await resolve_legacy_ownership_context(
+            ownership = await resolve_subject_ownership_context(
                 session,
-                actor_username=None,
+                subject_id=subject_id,
                 required_connections=(IntegrationProvider.GARMIN,),
             )
             return await garmin_service.reparse_owned_pending(
@@ -598,9 +600,9 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
             )
 
         async def _sweep_owned_hevy() -> int:
-            ownership = await resolve_legacy_ownership_context(
+            ownership = await resolve_subject_ownership_context(
                 session,
-                actor_username=None,
+                subject_id=subject_id,
                 required_connections=(IntegrationProvider.HEVY,),
             )
             return await hevy_service.reparse_owned_pending(
@@ -612,9 +614,9 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
             )
 
         async def _sweep_owned_labs() -> int:
-            context = await conflict_engine.resolve_legacy_conflict_write_context(
+            context = await conflict_engine.resolve_subject_conflict_write_context(
                 session,
-                actor_username=None,
+                subject_id=subject_id,
                 evaluation_date=today_local(),
             )
             prepared = await conflict_engine.prepare_scoped_write(
@@ -628,9 +630,9 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
             )
 
         async def _sweep_owned_body_comp() -> int:
-            context = await conflict_engine.resolve_legacy_conflict_write_context(
+            context = await conflict_engine.resolve_subject_conflict_write_context(
                 session,
-                actor_username=None,
+                subject_id=subject_id,
                 evaluation_date=today_local(),
             )
             return await body_scan_service.reparse_owned_pending(
@@ -639,9 +641,9 @@ async def sweep_pending_job(session_factory, redis=None) -> None:
             )
 
         async def _sweep_owned_genetics() -> int:
-            context = await conflict_engine.resolve_legacy_conflict_write_context(
+            context = await conflict_engine.resolve_subject_conflict_write_context(
                 session,
-                actor_username=None,
+                subject_id=subject_id,
                 evaluation_date=today_local(),
             )
             prepared = await conflict_engine.prepare_scoped_write(

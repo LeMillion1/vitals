@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.job_runner import run_job_for_every_subject
+
 import asyncio
 import uuid
 from datetime import date, timedelta
@@ -891,7 +893,7 @@ async def test_plateau_job_is_noop_when_subject_module_is_disabled(
 
     monkeypatch.setattr(glp1_service, "refresh_plateau_alert", refresh_probe)
 
-    await glp1_service.plateau_job(session_factory)
+    await run_job_for_every_subject(glp1_service.plateau_job, session_factory)
 
     assert calls == 0
     assert await db_session.scalar(select(func.count()).select_from(SystemAlert)) == 0

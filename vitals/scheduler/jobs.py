@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from vitals.scheduler.fanout import for_each_subject
 from vitals.scheduler.scheduler import JobFailureFamily, clear_jobs, register_job
 from vitals.services.proactive import prefs
 
@@ -28,6 +29,27 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     settings = prefs.sanitize(settings)
     clear_jobs()
 
+    # Eight jobs below are deliberately *not* fanned out over subjects, and the
+    # reason is the same for all of them: they reach an external account whose
+    # credentials are one set for the whole process.
+    #
+    #   hevy_sync, garmin_sync, garmin_pulse, garmin_weight_export
+    #       VITALS_GARMIN_EMAIL / VITALS_HEVY_API_KEY — one watch, one account.
+    #   daily_brief, evening_block, nudges, question_reply_recovery
+    #       one Telegram bot token and one chat id. See
+    #       channels.build_legacy_bound_notifier, which says so itself: the env
+    #       token/chat pair is safe only while the graph resolves to exactly one
+    #       subject.
+    #
+    # Running any of them once per subject would deliver ten people's data to
+    # one person's watch or one person's chat. That is strictly worse than the
+    # outage they are today: a fail-closed refusal is visible and reversible, a
+    # cross-subject write or send is neither. They stay refused until
+    # connections carry per-subject credentials (PR-09).
+    #
+    # The proactive four are the ones worth naming twice, because they look like
+    # lake work. They read the lake and then *send*, and the send is where the
+    # single credential is.
     from vitals.services.glp1_service import plateau_job
     from vitals.services.hevy_service import sync_job as hevy_sync_job
     from vitals.services.garmin_service import sync_job as garmin_sync_job
@@ -54,7 +76,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # passive warn alert so it's fresh even on days the dashboard isn't opened.
     register_job(
         "glp1_plateau",
-        plateau_job,
+        for_each_subject(plateau_job, job_id="glp1_plateau"),
         trigger="cron",
         failure_family=JobFailureFamily.SUBJECT,
         hour=6,
@@ -65,7 +87,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # (while on cycle) and for missed scheduled injections; both idempotent.
     register_job(
         "hrt_reminders",
-        hrt_reminders_job,
+        for_each_subject(hrt_reminders_job, job_id="hrt_reminders"),
         trigger="cron",
         failure_family=JobFailureFamily.SUBJECT,
         hour=7,
@@ -77,7 +99,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # warnings, which must never fire off a partial mid-day total.
     register_job(
         "nutrition_day_end",
-        nutrition_day_end_job,
+        for_each_subject(nutrition_day_end_job, job_id="nutrition_day_end"),
         trigger="cron",
         failure_family=JobFailureFamily.SUBJECT,
         hour=23,
@@ -92,7 +114,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # shared job rather than four.
     register_job(
         "raw_payload_sweep",
-        raw_payload_sweep_job,
+        for_each_subject(raw_payload_sweep_job, job_id="raw_payload_sweep"),
         trigger="cron",
         failure_family=JobFailureFamily.PLATFORM,
         hour=3,
@@ -241,7 +263,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # is authoritative; an unavailable platform gateway causes a clean no-op.
     register_job(
         "weekly_digest",
-        digest_job,
+        for_each_subject(digest_job, job_id="weekly_digest"),
         trigger="cron",
         failure_family=JobFailureFamily.SUBJECT,
         day_of_week="mon",

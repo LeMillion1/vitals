@@ -1,6 +1,7 @@
 """Platform-AI Telegram question-reply lifecycle and PHI boundary contracts."""
 from __future__ import annotations
 
+
 import asyncio
 import json
 import pickle
@@ -1129,8 +1130,7 @@ async def test_recovery_cursor_scans_past_non_question_head_rows(
         _notifier_builder(notifier, ownership),
     )
 
-    await inbound.question_reply_recovery_job(
-        session_factory,
+    await inbound.question_reply_recovery_job(session_factory,
         redis,
         notifier_resolver=_notifier_resolver(notifier),
     )
@@ -1196,8 +1196,7 @@ async def test_recovery_without_redis_scans_beyond_cached_scan_limit(
         _notifier_builder(notifier, ownership),
     )
 
-    await inbound.question_reply_recovery_job(
-        session_factory,
+    await inbound.question_reply_recovery_job(session_factory,
         None,
         notifier_resolver=_notifier_resolver(notifier),
     )
@@ -1257,8 +1256,7 @@ async def test_malformed_unclaimed_reply_isolated_before_later_question_recovery
         _notifier_builder(notifier, ownership),
     )
 
-    await inbound.question_reply_recovery_job(
-        session_factory,
+    await inbound.question_reply_recovery_job(session_factory,
         redis,
         notifier_resolver=_notifier_resolver(notifier),
     )
@@ -1413,15 +1411,13 @@ async def test_stale_delivery_recovery_scans_past_unclassifiable_intent_pages(
         cursor_store = WriteFailingRedis()
     else:
         cursor_store = redis if cursor_mode == "persistent" else None
-    await inbound.question_reply_recovery_job(
-        session_factory,
+    await inbound.question_reply_recovery_job(session_factory,
         cursor_store,
         notifier_resolver=_notifier_resolver(notifier),
     )
     if cursor_mode == "persistent":
         assert notifier.sent == []
-        await inbound.question_reply_recovery_job(
-            session_factory,
+        await inbound.question_reply_recovery_job(session_factory,
             cursor_store,
             notifier_resolver=_notifier_resolver(notifier),
         )
@@ -1501,8 +1497,7 @@ async def test_disabled_recovery_policy_cancels_stale_claim_and_blocks_reenable(
 
     monkeypatch.setattr(channels, "build_legacy_bound_notifier", builder)
 
-    await inbound.question_reply_recovery_job(
-        session_factory,
+    await inbound.question_reply_recovery_job(session_factory,
         None,
         notifier_resolver=_notifier_resolver(notifier),
     )
@@ -1529,8 +1524,7 @@ async def test_disabled_recovery_policy_cancels_stale_claim_and_blocks_reenable(
         subject_id=ownership.subject_id,
     )
     await db_session.commit()
-    await inbound.question_reply_recovery_job(
-        session_factory,
+    await inbound.question_reply_recovery_job(session_factory,
         None,
         notifier_resolver=_notifier_resolver(notifier),
     )
@@ -1644,8 +1638,7 @@ async def test_malformed_echo_candidate_isolated_before_later_command_recovery(
     command_intent.updated_at = datetime(2000, 1, 1, tzinfo=UTC)
     await db_session.commit()
 
-    await inbound.question_reply_recovery_job(
-        session_factory,
+    await inbound.question_reply_recovery_job(session_factory,
         redis,
         notifier_resolver=_notifier_resolver(notifier),
     )
@@ -1718,8 +1711,7 @@ async def test_recovery_without_redis_does_not_count_journaled_questions_as_work
         _notifier_builder(notifier, ownership),
     )
 
-    await inbound.question_reply_recovery_job(
-        session_factory,
+    await inbound.question_reply_recovery_job(session_factory,
         None,
         notifier_resolver=_notifier_resolver(notifier),
     )
@@ -1770,8 +1762,7 @@ async def test_terminal_unjournaled_invocation_bypasses_raw_scan_cursor(
         _notifier_builder(notifier, ownership),
     )
 
-    await inbound.question_reply_recovery_job(
-        session_factory,
+    await inbound.question_reply_recovery_job(session_factory,
         redis,
         notifier_resolver=_notifier_resolver(notifier),
     )

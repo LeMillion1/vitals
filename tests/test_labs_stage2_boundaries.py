@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.job_runner import run_job_for_every_subject
+
 import asyncio
 from datetime import date
 from io import BytesIO
@@ -455,7 +457,7 @@ async def test_nightly_labs_sweep_receives_system_identity_and_live_capability(
     monkeypatch.setattr(body_scan_service, "reparse_owned_pending", no_op)
     monkeypatch.setattr(labs_service, "reparse_owned_pending", labs_probe)
 
-    await raw_payload_service.sweep_pending_job(session_factory)
+    await run_job_for_every_subject(raw_payload_service.sweep_pending_job, session_factory)
 
     assert calls == [
         (

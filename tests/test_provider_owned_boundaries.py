@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.job_runner import run_job_for_every_subject
+
 import asyncio
 import json
 from datetime import date
@@ -78,7 +80,7 @@ async def test_nightly_raw_sweep_passes_exact_system_owned_roots(
         _body_comp,
     )
 
-    await raw_payload_service.sweep_pending_job(session_factory)
+    await run_job_for_every_subject(raw_payload_service.sweep_pending_job, session_factory)
 
     owned = {name: (identity, connection_id) for name, identity, connection_id in calls[:2]}
     garmin_identity, garmin_connection_id = owned["garmin"]

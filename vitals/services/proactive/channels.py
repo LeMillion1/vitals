@@ -422,6 +422,31 @@ def ownership_from_legacy(
     )
 
 
+async def resolve_subject_channel_ownership(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> ProactiveOwnershipContext:
+    """Channel roots for a system boundary that names its subject.
+
+    The proactive jobs — the brief, the evening block, the nudges, the reply
+    recovery — all arrive here. They used to arrive without naming anybody, which
+    means "the sole subject or refuse", so every one of them stopped on a
+    two-person installation. The subject is mandatory for the reason given in
+    ``resolve_subject_ownership_context``: an omittable scope is the shape this
+    codebase keeps out.
+    """
+
+    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+
+    ownership = await resolve_subject_ownership_context(
+        session,
+        subject_id=subject_id,
+        required_connections=(IntegrationProvider.TELEGRAM,),
+    )
+    return ownership_from_legacy(ownership)
+
+
 async def resolve_legacy_channel_ownership(
     session: AsyncSession,
     *,

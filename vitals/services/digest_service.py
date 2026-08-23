@@ -3295,16 +3295,61 @@ async def legacy_unowned_digest_present(session: AsyncSession) -> bool:
     return found is not None
 
 
+async def prepare_subject_digest_owner(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> PreparedDigestOwner:
+    """The weekly digest's roots, for a system boundary that names its subject.
+
+    The digest job used to ask for "the sole subject", so on a two-person
+    installation nobody got a weekly digest at all — silently, because a report
+    that never arrives looks like a quiet week. The subject is mandatory here for
+    the reason given in ``resolve_subject_ownership_context``.
+    """
+
+    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+
+    # Governance first, as on the other path: the lock has to precede the
+    # owner-lifecycle proof, not follow it, or a rotation committing in between
+    # would be proved against roots that are already gone. Taking it again inside
+    # ``prepare_digest_owner`` is a no-op for the transaction that holds it.
+    await acquire_identity_governance_lock(session)
+    ownership = await resolve_subject_ownership_context(
+        session,
+        subject_id=subject_id,
+    )
+    return await prepare_digest_owner(
+        session,
+        actor_username=None,
+        subject_ownership=ownership,
+    )
+
+
 async def prepare_digest_owner(
     session: AsyncSession,
     *,
     actor_username: str | None,
+    subject_ownership: Any | None = None,
 ) -> PreparedDigestOwner:
-    """Prepare exact-one read/generation roots in canonical lock order."""
+    """Prepare one subject's read/generation roots in canonical lock order.
+
+    ``subject_ownership`` is an already-resolved ``LegacyOwnershipContext`` from
+    :func:`prepare_subject_digest_owner` — a system boundary that named its
+    subject. Typed loosely because importing it here would close an import
+    cycle: legacy_ownership is resolved lazily inside these functions for the
+    same reason. It is threaded rather than re-resolved because the ordered locks
+    below have to be taken once, in this order, by whichever path arrived.
+
+    Note it is not an omittable scope: a caller that does not pass one still has
+    to pass an ``actor_username``, so the record is named either way. That is the
+    distinction ``vitals/legacy_scope.py`` is about — not the number of
+    parameters, but whether any of them can be left out and still act.
+    """
     from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 
     await acquire_identity_governance_lock(session)
-    ownership = await resolve_legacy_ownership_context(
+    ownership = subject_ownership or await resolve_legacy_ownership_context(
         session,
         actor_username=actor_username,
     )
@@ -3439,10 +3484,18 @@ async def prepare_digest(
     *,
     actor_username: str | None,
     invocation_source: AIInvocationSource | str,
+    prepared_owner: PreparedDigestOwner | None = None,
     on_date: Optional[date_type] = None,
     period_days: int = 7,
 ) -> PreparedDigest:
-    """Freeze exact-one PHI and reserve one paid call without external I/O."""
+    """Freeze one subject's PHI and reserve one paid call without external I/O.
+
+    ``prepared_owner`` is the proof a caller has already taken — the scheduled
+    job prepares it to read the language before it gets here. Passing it through
+    is not only an economy: preparing twice would take the governance lock and
+    the ordered subject/owner row locks a second time, in the middle of a
+    transaction that is already holding them.
+    """
     invocation_source_value = _as_invocation_source(invocation_source)
     artifact_source = _ARTIFACT_SOURCE_BY_INVOCATION_SOURCE[
         invocation_source_value
@@ -3457,7 +3510,7 @@ async def prepare_digest(
         and actor_username is not None
     ):
         raise DigestOwnershipError("scheduled digest must not have a human actor")
-    owner = await prepare_digest_owner(
+    owner = prepared_owner or await prepare_digest_owner(
         session,
         actor_username=actor_username,
     )
@@ -3914,7 +3967,9 @@ async def list_digests(
 
 
 # ── Scheduler job ─────────────────────────────────────────────────────────────
-async def digest_job(session_factory, redis=None) -> None:
+async def digest_job(
+    session_factory, redis=None, *, subject_id: uuid.UUID
+) -> None:
     """Generate one idempotent platform-funded weekly digest."""
     del redis
     from vitals.i18n import current_lang
@@ -3922,9 +3977,9 @@ async def digest_job(session_factory, redis=None) -> None:
 
     try:
         async with session_factory() as session:
-            owner = await prepare_digest_owner(
+            owner = await prepare_subject_digest_owner(
                 session,
-                actor_username=None,
+                subject_id=subject_id,
             )
             # DB is authoritative here. Avoid a Redis await while governance and
             # the subject are locked; the weekly job needs no cache acceleration.
@@ -3939,6 +3994,7 @@ async def digest_job(session_factory, redis=None) -> None:
                 session,
                 actor_username=None,
                 invocation_source=AIInvocationSource.SCHEDULER,
+                prepared_owner=owner,
             )
             await session.commit()
     except (

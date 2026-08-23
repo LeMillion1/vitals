@@ -481,7 +481,9 @@ async def resolve_today_scoped(
 
 # ── Scheduler job ────────────────────────────────────────────────────────────
 
-async def day_end_job(session_factory, redis=None) -> None:
+async def day_end_job(
+    session_factory, redis=None, *, subject_id: uuid.UUID
+) -> None:
     """Once-daily check (registered in vitals/scheduler/jobs.py, 23:00 local) for
     nutrition rules that need a *complete* day's totals — e.g. the very-low-
     calorie/protein GLP-1 warnings, which would false-positive off a partial
@@ -494,9 +496,9 @@ async def day_end_job(session_factory, redis=None) -> None:
     automatically — not just raised."""
     async with session_factory() as session:
         on_date = today_local()
-        context = await conflict_engine.resolve_legacy_conflict_write_context(
+        context = await conflict_engine.resolve_subject_conflict_write_context(
             session,
-            actor_username=None,
+            subject_id=subject_id,
             evaluation_date=on_date,
         )
         await conflict_engine.reconcile_day_end_scoped(

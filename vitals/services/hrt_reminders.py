@@ -19,6 +19,8 @@ alert and show up as a coherent group. Called once at startup, idempotent.
 """
 from __future__ import annotations
 
+import uuid
+
 import logging
 from datetime import date as date_type
 from typing import Optional
@@ -487,13 +489,15 @@ async def refresh_all(
     )
 
 
-async def reminders_job(session_factory, redis=None) -> None:
+async def reminders_job(
+    session_factory, redis=None, *, subject_id: uuid.UUID
+) -> None:
     """Daily HRT reminders (registered in vitals/scheduler/jobs.py)."""
     async with session_factory() as session:
         today = today_local()
-        context = await conflict_engine.resolve_legacy_conflict_write_context(
+        context = await conflict_engine.resolve_subject_conflict_write_context(
             session,
-            actor_username=None,
+            subject_id=subject_id,
             evaluation_date=today,
         )
         prepared = await conflict_engine.prepare_scoped_write(

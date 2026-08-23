@@ -215,22 +215,45 @@ def _validated_required_connections(
     return providers
 
 
-async def resolve_legacy_ownership_context(
+async def _resolve_ownership(
     session: AsyncSession,
     *,
     actor_username: str | None,
-    required_connections: Iterable[IntegrationProvider] = (),
+    subject_id: uuid.UUID | None,
+    required_connections: Iterable[IntegrationProvider],
 ) -> LegacyOwnershipContext:
-    """Resolve the sole active-owner context without changing database state.
+    """Resolve one active-owner context without changing database state.
 
-    ``actor_username=None`` represents a trusted system/job boundary and leaves
-    ``actor_user_id`` unset.  A supplied username is normalized with the same
-    NFKC/strip/casefold rule as identity bootstrap and must name the sole
-    subject's owner exactly.  Additive roles are deliberately irrelevant to
-    ownership.
+    Three ways in, and none of them picks a subject on the caller's behalf:
+
+    * ``actor_username`` — the account's own record. Normalized with the same
+      NFKC/strip/casefold rule as identity bootstrap, and it must own the
+      subject. Additive roles are deliberately irrelevant to ownership.
+    * ``subject_id`` with no actor — a trusted system boundary saying whose
+      record it is acting on. ``actor_user_id`` stays unset, exactly as before;
+      what changes is that the job names the subject instead of the installation
+      being required to hold only one.
+    * neither — the sole subject, or a refusal. Startup bootstrap still arrives
+      this way, and so does anything not yet ported.
+
+    That middle case is the whole point. Every scheduled job used to arrive with
+    neither, so the moment a second person existed the digest, the reminders and
+    the sweeps all stopped: nothing named whose record was meant, and picking one
+    would have been inventing the answer. Naming it is the answer.
     """
 
     providers = _validated_required_connections(required_connections)
+    if subject_id is not None and not isinstance(subject_id, uuid.UUID):
+        raise LegacyOwnershipValidationError("subject_id must be a UUID")
+    if actor_username is not None and subject_id is not None:
+        # Unreachable through either public entry point, and checked anyway: the
+        # actor arm would win and the named subject would be silently ignored,
+        # which is the kind of disagreement only ever noticed once it has
+        # written somewhere.
+        raise LegacyOwnershipValidationError(
+            "pass an actor or a subject, not both: an actor already names their "
+            "own record"
+        )
     if actor_username is None:
         actor_lookup_key = None
     else:
@@ -274,11 +297,27 @@ async def resolve_legacy_ownership_context(
                     "legacy ownership requires the actor to own exactly one "
                     f"health subject; found {len(subject_rows)}"
                 )
+        elif subject_id is not None:
+            # A system boundary that knows whose record it is acting on. The
+            # subject is looked up rather than trusted: an id that names nothing
+            # is a caller bug, and continuing from it would bind the session to
+            # a subject that does not exist.
+            subject_rows = list(
+                await session.execute(
+                    select(HealthSubject.id, HealthSubject.owner_user_id)
+                    .where(HealthSubject.id == subject_id)
+                    .limit(2)
+                )
+            )
+            if not subject_rows:
+                raise LegacySubjectResolutionError(
+                    f"health subject {subject_id} does not exist"
+                )
         else:
-            # No actor to select by — a scheduled job or the startup bootstrap.
-            # There the sole-subject requirement is the only honest answer:
-            # nothing names whose record was meant, and picking one would be
-            # inventing the answer.
+            # Neither an actor nor a named subject — startup bootstrap, and
+            # anything still to be ported. Here the sole-subject requirement is
+            # the only honest answer: nothing names whose record was meant, and
+            # picking one would be inventing it.
             subject_rows = list(
                 await session.execute(
                     select(HealthSubject.id, HealthSubject.owner_user_id)
@@ -405,6 +444,62 @@ async def resolve_legacy_ownership_context(
     )
 
 
+async def resolve_legacy_ownership_context(
+    session: AsyncSession,
+    *,
+    actor_username: str | None,
+    required_connections: Iterable[IntegrationProvider] = (),
+) -> LegacyOwnershipContext:
+    """The request path: an account's own record, or the sole subject.
+
+    ``actor_username`` names an account and resolves that account's own record.
+    ``None`` is the startup bootstrap, which has no account and gets the sole
+    subject or a refusal.
+
+    A scheduled job must not arrive here. It has no account either, and asking
+    for "the sole subject" is how the entire background half of the product
+    stopped on a two-person installation. :func:`resolve_subject_ownership_context`
+    is the one to use, and its subject is mandatory so the choice cannot be made
+    by omission.
+    """
+
+    return await _resolve_ownership(
+        session,
+        actor_username=actor_username,
+        subject_id=None,
+        required_connections=required_connections,
+    )
+
+
+async def resolve_subject_ownership_context(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    required_connections: Iterable[IntegrationProvider] = (),
+) -> LegacyOwnershipContext:
+    """The system path: a trusted boundary saying whose record it is acting on.
+
+    ``actor_user_id`` stays unset exactly as it did before, so nothing here is
+    attributed to a person. What changes is that the caller names the subject
+    instead of the installation being required to hold only one.
+
+    The subject is mandatory, and deliberately: an omittable scope is precisely
+    the shape ``vitals/legacy_scope.py`` exists to keep out of this codebase, and
+    the reason is this function's own history — a job that could run without
+    saying whose record it meant read across everybody by accident, and then
+    read nothing at all once row security arrived.
+    """
+
+    if not isinstance(subject_id, uuid.UUID) or subject_id.int == 0:
+        raise LegacyOwnershipValidationError("subject_id must be a non-zero UUID")
+    return await _resolve_ownership(
+        session,
+        actor_username=None,
+        subject_id=subject_id,
+        required_connections=required_connections,
+    )
+
+
 __all__ = [
     "LegacyActorMismatchError",
     "LegacyConnectionAmbiguousError",
@@ -419,4 +514,5 @@ __all__ = [
     "LegacyOwnershipValidationError",
     "LegacySubjectResolutionError",
     "resolve_legacy_ownership_context",
+    "resolve_subject_ownership_context",
 ]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.job_runner import run_job_for_every_subject
+
 import asyncio
 import uuid
 from datetime import date
@@ -490,15 +492,15 @@ async def test_day_end_job_uses_system_actor_and_exact_subject_date(
     )
     await db_session.commit()
     monkeypatch.setattr(nutrition_service, "today_local", lambda: EVALUATION_DATE)
-    original = conflict_engine.resolve_legacy_conflict_write_context
+    original = conflict_engine.resolve_subject_conflict_write_context
     captured = {}
 
-    async def capture_context(session, *, actor_username, evaluation_date=None):
-        captured["actor_username"] = actor_username
+    async def capture_context(session, *, subject_id, evaluation_date=None):
+        captured["subject_id"] = subject_id
         captured["evaluation_date"] = evaluation_date
         context = await original(
             session,
-            actor_username=actor_username,
+            subject_id=subject_id,
             evaluation_date=evaluation_date,
         )
         captured["identity"] = context.identity
@@ -506,17 +508,19 @@ async def test_day_end_job_uses_system_actor_and_exact_subject_date(
 
     monkeypatch.setattr(
         conflict_engine,
-        "resolve_legacy_conflict_write_context",
+        "resolve_subject_conflict_write_context",
         capture_context,
     )
 
-    await nutrition_service.day_end_job(session_factory)
+    await run_job_for_every_subject(nutrition_service.day_end_job, session_factory)
 
     alert = await db_session.scalar(
         select(SystemAlert).where(SystemAlert.alert_key == f"conflict:{rule.id}")
     )
+    # The job names the subject it is running for rather than asking for "the
+    # sole one", and still acts as the system: no human actor is attributed.
     assert captured == {
-        "actor_username": None,
+        "subject_id": legacy_owner_roots.subject_id,
         "evaluation_date": EVALUATION_DATE,
         "identity": WriteIdentity(legacy_owner_roots.subject_id, None),
     }
