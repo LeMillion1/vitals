@@ -189,3 +189,52 @@ async def test_the_route_hands_back_only_the_callers_record(
     assert body["metadata"]["kind"] == portability.KIND_SUBJECT
     assert {row["name"] for row in body["supplements"]} == {"Route probe"}
     assert "app_settings" not in body
+
+
+async def test_the_full_backup_refuses_a_shared_installation_in_words(
+    auth_client, db_session, legacy_owner_roots
+):
+    """A second person turns the operator's backup into a 409, not a crash.
+
+    Format v1 describes an installation holding one person, so in a shared one
+    it has nothing honest to write. That is a fact to state, together with the
+    export that does work — it used to arrive as an unhandled ``PortabilityError``
+    and therefore a 500 with a stack trace, which reads as a bug rather than as
+    a limit of the format.
+    """
+
+    await _subject(db_session, "second-person")
+    await db_session.commit()
+
+    response = await auth_client.get("/settings/export")
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "v1" in detail
+    # Naming the alternative is the point: a refusal that leaves the reader with
+    # nowhere to go is only half an answer.
+    assert "export" in detail.lower()
+
+    # And the export that is about one person still works next to it.
+    assert (await auth_client.get("/settings/export-subject")).status_code == 200
+
+
+async def test_the_multi_subject_refusal_is_its_own_type(
+    db_session, legacy_owner_roots
+):
+    """Told apart from every other portability failure, and by type.
+
+    Everything else this raises is about the file and is answered by fixing the
+    file. This one is about the installation, the file is fine, and the answer
+    is a different export — a distinction a router cannot make from a translated
+    string.
+    """
+
+    await _subject(db_session, "another-person")
+    await db_session.commit()
+
+    with pytest.raises(portability.MultiSubjectBackupError):
+        await portability.export_full(db_session)
+
+    assert issubclass(
+        portability.MultiSubjectBackupError, portability.PortabilityError
+    )

@@ -269,6 +269,18 @@ class PortabilityError(Exception):
     HTTP 400 (never a silent failure or a leaked DB error)."""
 
 
+class MultiSubjectBackupError(PortabilityError):
+    """The installation holds several subjects; format v1 describes one.
+
+    Separated from the rest because it says something different. Every other
+    :class:`PortabilityError` is about the file — malformed, mislabelled, a
+    reference that goes nowhere — and the answer is to fix the file. This one is
+    about the installation, the file is fine, and the answer is a different
+    export. A router cannot tell those apart from a translated string, so the
+    distinction lives in the type rather than in prose.
+    """
+
+
 def _contract_error(message_key: str, **params: Any) -> PortabilityError:
     """Build a localized backup-v1 contract violation."""
 
@@ -301,7 +313,7 @@ async def _single_local_subject_id(session: AsyncSession) -> Any | None:
         await session.scalars(select(subject_table.c.id).limit(2))
     )
     if len(subject_ids) > 1:
-        raise _contract_error("portability.error.v1_multi_subject")
+        raise MultiSubjectBackupError(t("portability.error.v1_multi_subject"))
     return subject_ids[0] if subject_ids else None
 
 

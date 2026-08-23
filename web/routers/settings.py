@@ -1280,9 +1280,29 @@ async def export_backup(
     db: AsyncSession = Depends(get_session),
     _rl: None = Depends(rate_limit("data_export", limit=2, window=60)),
 ):
-    """Download portable health data without identity/control-plane state."""
+    """Download portable health data without identity/control-plane state.
+
+    This is the whole-installation file, and format v1 describes an installation
+    holding one person. In a shared one it therefore has nothing honest to
+    write, which is a thing to say — with the export that *does* work named in
+    the same breath — rather than a stack trace to serve as a 500. The personal
+    export below is not a lesser version of this one: it is the right file for
+    anybody who is not the whole installation.
+    """
     await _authorize_export(db, username)
-    snapshot = await data_portability_service.export_full(db)
+    try:
+        snapshot = await data_portability_service.export_full(db)
+    except data_portability_service.MultiSubjectBackupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=t("portability.error.v1_multi_subject_alternative"),
+        ) from exc
+    except data_portability_service.PortabilityError as exc:
+        # Anything else this raises is about the data being unrepresentable in
+        # the format, which is the caller's answer to have — not a 500.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_backup_{today_local().strftime('%Y%m%d')}.json"
     return Response(
