@@ -23,6 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.services.access_resolution import AccessDeniedError
+from vitals.services.legacy_ownership import LegacyOwnershipError
 from web.auth import router as auth_router
 from web.csrf import add_csrf_origin_check, add_security_headers
 from web.deps import (
@@ -305,32 +306,28 @@ async def _populate_state_for_error_page(request: Request) -> None:
     """
     from vitals.i18n import current_lang
     from vitals.services import language_service, modules_service
-    from web.deps import get_request_legacy_ownership
+    from web.deps import get_request_chrome_scope
 
     lang = "en"
     enabled = dict(modules_service.DEFAULT_STATE)
     try:
         redis = get_redis_client()
         async with get_session_factory()() as db:
-            ownership = None
-            ownership_failed = False
+            scope = None
+            scope_failed = False
             try:
-                ownership = await get_request_legacy_ownership(request, db)
+                scope = await get_request_chrome_scope(request, db)
             except Exception:
-                ownership_failed = True
+                scope_failed = True
                 logger.exception(
-                    "404 page: ownership resolution failed; using safe defaults"
+                    "404 page: chrome scope resolution failed; using safe defaults"
                 )
-            if not ownership_failed:
+            if not scope_failed:
                 try:
                     lang = await language_service.get_language(
                         db,
                         redis,
-                        user_id=(
-                            ownership.owner_user_id
-                            if ownership is not None
-                            else None
-                        ),
+                        user_id=(scope.user_id if scope is not None else None),
                     )
                 except Exception:
                     logger.exception(
@@ -341,8 +338,8 @@ async def _populate_state_for_error_page(request: Request) -> None:
                         db,
                         redis,
                         subject_id=(
-                            ownership.subject_id
-                            if ownership is not None
+                            scope.subject_id
+                            if scope is not None
                             else None
                         ),
                     )
@@ -405,6 +402,42 @@ async def module_disabled_handler(request: Request, exc: ModuleDisabled):
     if request.method == "GET" and "text/html" in accept:
         return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
     return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": exc.detail})
+
+
+@app.exception_handler(LegacyOwnershipError)
+async def legacy_ownership_handler(request: Request, exc: LegacyOwnershipError):
+    """A route still on the sole-owner adapter, in an installation with two people.
+
+    Most write routers resolve their subject through
+    ``resolve_legacy_ownership_context``, which is deliberately fail-closed:
+    it refuses the moment the database holds more than one health subject,
+    because it has no way to tell whose record the request meant.
+
+    That refusal is correct — nothing is written, and no other person's row is
+    reached — but until now it arrived as an unhandled exception and therefore a
+    500. Those routes are the remaining compatibility surface of this migration,
+    and "not available in a shared installation" is a thing to say plainly
+    rather than a crash to read out of a stack trace.
+
+    Deliberately not silent, and deliberately logged at warning: a route ending
+    up here is one that still needs porting to ``resolve_access_context``.
+    """
+
+    del exc
+    logger.warning(
+        "legacy sole-owner route reached in a multi-subject installation: %s %s",
+        request.method,
+        request.url.path,
+    )
+    detail = "Эта страница ещё не поддерживает несколько записей."
+    accept = request.headers.get("accept", "")
+    if request.method == "GET" and "text/html" in accept:
+        return HTMLResponse(
+            content=detail, status_code=status.HTTP_409_CONFLICT
+        )
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT, content={"detail": detail}
+    )
 
 
 @app.exception_handler(AccessDeniedError)

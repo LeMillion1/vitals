@@ -8,6 +8,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the page chrome stops breaking when a second person exists
+
+- The nav rail, the language and the status card resolved their subject through
+  `resolve_legacy_ownership_context`, which is deliberately fail-closed on
+  "exactly one health subject in the database". Correct for a write path, wrong
+  for chrome: every request in a two-person installation logged an exception and
+  rendered the defaults.
+- They now resolve the **signed-in account's own record**, which is what they
+  always meant. A doctor reading a patient's notes still has their own modules
+  switched on and their own language; the patient's settings are the patient's.
+- **This removed protection that was there by accident.** A foreign supplement
+  toggle used to answer 404 because the broken chrome made every module read as
+  off, so the request died at the module gate before the route saw the
+  client-controlled id. With the chrome working, the refusal now comes from
+  where it should — the route's own adapter — and a new handler turns it into a
+  409 saying the page does not yet support more than one record, rather than the
+  500 an unhandled exception produced. Logged at warning: a route reaching that
+  handler is one still to be ported to `resolve_access_context`.
+
 ### Added — the patient's side of the same pair (PR-08)
 
 - `/settings/care` is where a patient sees who holds their record, what each of

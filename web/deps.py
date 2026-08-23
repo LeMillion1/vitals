@@ -9,18 +9,22 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from web.config import SESSION_COOKIE
 
 from vitals.i18n import current_lang
+from vitals.models.identity import HealthSubject, User
 
 if TYPE_CHECKING:
-    from vitals.services.legacy_ownership import LegacyOwnershipContext
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -93,39 +97,75 @@ async def require_auth(request: Request) -> str:
     return username
 
 
-async def get_request_legacy_ownership(
-    request: Request,
-    session: AsyncSession,
-) -> LegacyOwnershipContext | None:
-    """Resolve and memoize the authenticated Stage-2 ownership context.
+@dataclass(frozen=True, slots=True)
+class ChromeScope:
+    """Whose app this is, for the parts of the page that are always there.
 
-    Global page-chrome dependencies also run for anonymous pages, so absence of
-    a valid browser session returns ``None``.  A present session is resolved
-    through the same fail-closed sole-owner adapter as write routers; identity
-    errors are deliberately not converted into a legacy/global read.
+    The nav rail, the language and the status card belong to the *signed-in
+    account*, not to whatever record the page happens to be showing. A doctor
+    reading a patient's notes still has their own modules switched on and their
+    own language; the patient's settings are the patient's.
+
+    Resolved from the principal rather than through
+    ``resolve_legacy_ownership_context``. That resolver is deliberately
+    fail-closed on "exactly one subject in the database", which is the right
+    answer for a write path and the wrong one here: the chrome would start
+    throwing on every request the moment a second person existed, and the page
+    would render with defaults and an exception in the log.
     """
 
-    cache_marker = "_legacy_ownership_resolved"
+    user_id: uuid.UUID
+    subject_id: uuid.UUID
+
+
+async def get_request_chrome_scope(
+    request: Request,
+    session: AsyncSession,
+) -> ChromeScope | None:
+    """Resolve and memoize the signed-in account and the record it owns.
+
+    ``None`` for an anonymous request, and for a signed-in account that owns no
+    record — a professional who has never been a patient here is a real case,
+    and their chrome is the default one rather than an error.
+    """
+
+    cache_marker = "_chrome_scope_resolved"
     if getattr(request.state, cache_marker, False):
-        return getattr(request.state, "legacy_ownership", None)
+        return getattr(request.state, "chrome_scope", None)
 
-    from web.auth import read_session
+    scope: ChromeScope | None = None
+    try:
+        from web.auth import decode_session
 
-    username = read_session(request.cookies.get(SESSION_COOKIE))
-    if username is None:
-        setattr(request.state, cache_marker, True)
-        request.state.legacy_ownership = None
-        return None
+        claims = decode_session(request.cookies.get(SESSION_COOKIE))
+        if claims is not None:
+            user_id = claims.user_id
+            if user_id is None:
+                from vitals.services.identity_service import normalize_username
 
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+                normalized = normalize_username(claims.username)
+                user_id = await session.scalar(
+                    select(User.id).where(
+                        User.normalized_username == normalized.lookup_key
+                    )
+                )
+            if user_id is not None:
+                subject_id = await session.scalar(
+                    select(HealthSubject.id).where(
+                        HealthSubject.owner_user_id == user_id
+                    )
+                )
+                if subject_id is not None:
+                    scope = ChromeScope(user_id=user_id, subject_id=subject_id)
+    except Exception:
+        # The chrome must always render. A failure here means the default nav,
+        # never a 500 on a page whose content resolved perfectly well.
+        logger.exception("chrome scope resolution failed; using safe defaults")
+        scope = None
 
-    ownership = await resolve_legacy_ownership_context(
-        session,
-        actor_username=username,
-    )
-    request.state.legacy_ownership = ownership
+    request.state.chrome_scope = scope
     setattr(request.state, cache_marker, True)
-    return ownership
+    return scope
 
 
 # ── Dashboard modules ──────────────────────────────────────────────────────────
@@ -157,14 +197,14 @@ async def load_enabled_modules(
     try:
         # The module map is one person's; an anonymous request has no subject
         # to read it for and keeps the safe defaults.
-        ownership = await get_request_legacy_ownership(request, db)
-        if ownership is None:
+        scope = await get_request_chrome_scope(request, db)
+        if scope is None:
             request.state.enabled_modules = dict(modules_service.DEFAULT_STATE)
             return
         request.state.enabled_modules = await modules_service.get_enabled_modules(
             db,
             redis,
-            subject_id=ownership.subject_id,
+            subject_id=scope.subject_id,
         )
     except Exception:
         logger.exception("module-state load failed; using safe defaults")
@@ -201,16 +241,16 @@ async def load_nav_status(
     from vitals.services import nav_status_service
 
     try:
-        # The card is one person's day, so it needs a subject. Resolving it is
-        # inside the guard because chrome must never raise: an installation the
-        # sole-owner adapter refuses simply draws no card.
-        ownership = await get_request_legacy_ownership(request, db)
-        if ownership is None:
+        # The card is the signed-in account's own day, so it needs their subject.
+        # Resolving it is inside the guard because chrome must never raise: an
+        # account that owns no record simply draws no card.
+        scope = await get_request_chrome_scope(request, db)
+        if scope is None:
             return
         request.state.nav_status = await nav_status_service.rail_stats(
             db,
             getattr(request.state, "enabled_modules", None),
-            subject_id=ownership.subject_id,
+            subject_id=scope.subject_id,
         )
     except Exception:
         logger.exception("nav status load failed; hiding the status card")
@@ -230,11 +270,11 @@ async def load_language(
     from vitals.services import language_service
 
     try:
-        ownership = await get_request_legacy_ownership(request, db)
+        scope = await get_request_chrome_scope(request, db)
         lang = await language_service.get_language(
             db,
             redis,
-            user_id=(ownership.owner_user_id if ownership is not None else None),
+            user_id=(scope.user_id if scope is not None else None),
         )
     except Exception:
         logger.exception("language load failed; defaulting to 'en'")

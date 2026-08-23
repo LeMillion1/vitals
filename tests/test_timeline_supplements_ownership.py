@@ -1055,10 +1055,16 @@ async def test_web_legacy_owner_bridge_closes_with_second_subject(
     response = await auth_client.post(
         f"/supplements/{foreign.id}/toggle", data={"active": "false"}
     )
-    # Global module-state resolution also uses the sole-subject bridge. With two
-    # subjects it falls back to optional-off, so the request is rejected before
-    # the route can dereference the client-controlled ID.
-    assert response.status_code == 404
+    # The route's own sole-owner adapter refuses: with two subjects it cannot
+    # tell whose record the request meant, so it declines rather than guessing.
+    #
+    # This used to be a 404, and for the wrong reason. The chrome resolved its
+    # module map through the same sole-subject bridge, so a second person made
+    # every module read as off and the request died at the module gate before
+    # the route ever saw the client-controlled id. That was protection by
+    # accident. The chrome now resolves the signed-in account's own record and
+    # keeps working, so the refusal comes from where it should — and says so.
+    assert response.status_code == 409
     await db_session.refresh(foreign)
     assert foreign.active is True
 
