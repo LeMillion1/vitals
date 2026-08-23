@@ -47,7 +47,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import Date, DateTime, Time, func, inspect, select, text
@@ -454,6 +455,51 @@ async def export_full(session: AsyncSession) -> dict[str, Any]:
 KIND_SUBJECT = "subject_export"
 
 
+#: Where one exported row points at another. Derived from the schema rather than
+#: listed, for the same reason the table walk is: a reference added later must
+#: not silently become an id from one installation pasted into another.
+#:
+#: ``subject_id`` legs of composite foreign keys are excluded — the subject is
+#: assigned by the boundary on import, never carried, so it is not a reference
+#: that needs resolving.
+def _portable_references() -> Mapping[str, Mapping[str, str]]:
+    references: dict[str, dict[str, str]] = {}
+    for table in Base.metadata.sorted_tables:
+        if table.name in _EXCLUDED_TABLES or "subject_id" not in table.columns:
+            continue
+        for foreign_key in table.foreign_keys:
+            column = foreign_key.parent.name
+            target = foreign_key.column.table.name
+            if column == "subject_id" or target == table.name:
+                continue
+            if target in _EXCLUDED_TABLES or "subject_id" not in (
+                Base.metadata.tables[target].columns
+            ):
+                continue
+            references.setdefault(table.name, {})[column] = target
+    return MappingProxyType(
+        {name: MappingProxyType(columns) for name, columns in references.items()}
+    )
+
+
+PORTABLE_REFERENCES = _portable_references()
+
+#: A reference can point at a row a personal export does not carry: the
+#: installation's shared catalog, which lives under a NULL subject and is seeded
+#: by the receiver's own migrations. An id would be meaningless there — two
+#: installations number their catalogs independently — so those references
+#: travel as the target's natural key and are resolved on arrival.
+CATALOG_NATURAL_KEYS: Mapping[str, str] = MappingProxyType(
+    {
+        "hrt_compounds": "key",
+    }
+)
+
+#: Reserved row key carrying the natural keys above. Same reservation rule as
+#: the subject marker: accepted only in the shape this module writes.
+_REFERENCE_MARKER = "_vitals_refs"
+
+
 async def export_subject(
     session: AsyncSession, *, subject_id: Any
 ) -> dict[str, Any]:
@@ -491,6 +537,7 @@ async def export_subject(
         }
     }
 
+    carried: dict[str, set[Any]] = {}
     for table in Base.metadata.sorted_tables:
         if table.name in _EXCLUDED_TABLES:
             continue
@@ -505,12 +552,71 @@ async def export_subject(
             for name in table.columns.keys()
             if name not in GENERIC_OUTPUT_SUPPRESSED_COLUMNS
         ]
+        mappings = result.mappings().all()
+        carried[table.name] = {mapping["id"] for mapping in mappings}
         out[table.name] = [
             {col: _serialize_value(mapping[col]) for col in column_names}
-            for mapping in result.mappings().all()
+            for mapping in mappings
         ]
 
+    await _describe_outbound_references(session, out, carried)
     return out
+
+
+async def _describe_outbound_references(
+    session: AsyncSession,
+    snapshot: dict[str, Any],
+    carried: dict[str, set[Any]],
+) -> None:
+    """Give every reference that leaves the file a name it can be found by.
+
+    Inside the file an id is fine: the importer renumbers both ends together.
+    A reference *out* of it is a different thing — it points at the
+    installation's shared catalog, which the receiving installation seeded for
+    itself and numbered its own way. Carrying the integer would either dangle or,
+    worse, land on an unrelated row that happens to hold that number.
+
+    So those travel as the target's natural key. A reference that is neither in
+    the file nor resolvable to a natural key is refused here rather than written
+    out to fail on arrival, where the person holding the file can do nothing
+    about it.
+    """
+
+    for table_name, columns in PORTABLE_REFERENCES.items():
+        rows = snapshot.get(table_name)
+        if not rows:
+            continue
+        for row in rows:
+            descriptors: dict[str, Any] = {}
+            for column, target in columns.items():
+                value = row.get(column)
+                if value is None or value in carried.get(target, ()):
+                    continue
+                natural_key = CATALOG_NATURAL_KEYS.get(target)
+                if natural_key is None:
+                    raise _contract_error(
+                        "portability.error.v1_unportable_reference",
+                        table=table_name,
+                        column=column,
+                    )
+                target_table = Base.metadata.tables[target]
+                key_value = await session.scalar(
+                    select(target_table.c[natural_key]).where(
+                        target_table.c.id == value
+                    )
+                )
+                if key_value is None:
+                    raise _contract_error(
+                        "portability.error.v1_unportable_reference",
+                        table=table_name,
+                        column=column,
+                    )
+                descriptors[column] = {"table": target, "key": key_value}
+                # The id is local to this installation and means nothing
+                # elsewhere; the descriptor replaces it rather than joining it.
+                row[column] = None
+            if descriptors:
+                row[_REFERENCE_MARKER] = descriptors
 
 
 # ── Full backup: import (replace) ──────────────────────────────────────────────
@@ -1550,6 +1656,207 @@ async def _reset_sequences(session: AsyncSession) -> None:
             await session.execute(
                 text("SELECT setval(:seq, :val, true)"), {"seq": seq, "val": int(max_id)}
             )
+
+
+# ── Subject-scoped import ──────────────────────────────────────────────────────
+
+
+def _validate_subject_payload(payload: Any) -> BackupMetadata:
+    """Structural validation for a personal export, and only for one."""
+
+    if not isinstance(payload, dict):
+        raise PortabilityError(t("import.error.not_json_obj"))
+    if "metadata" not in payload:
+        raise PortabilityError(t("import.error.no_metadata"))
+    try:
+        meta = BackupMetadata.model_validate(payload["metadata"])
+    except ValidationError as exc:
+        raise PortabilityError(
+            t("import.error.bad_metadata", msg=exc.errors()[0].get("msg", exc))
+        )
+    if meta.kind != KIND_SUBJECT:
+        # The mirror of the guard in ``_validate_payload``. A whole-database
+        # backup loaded here would be silently truncated to one subject's worth
+        # of itself, which looks like a successful restore and is not one.
+        raise _contract_error("portability.error.v1_not_a_subject_export")
+
+    for key, value in payload.items():
+        if key == "metadata":
+            continue
+        table = Base.metadata.tables.get(key)
+        if (
+            table is None
+            or key in _EXCLUDED_TABLES
+            or "subject_id" not in table.columns
+        ):
+            raise PortabilityError(t("import.error.unknown_table", key=key))
+        if not isinstance(value, list):
+            raise PortabilityError(t("import.error.not_list", key=key))
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                raise PortabilityError(
+                    t("import.error.not_object", i=index, key=key)
+                )
+            descriptors = item.get(_REFERENCE_MARKER)
+            if descriptors is None:
+                continue
+            columns = PORTABLE_REFERENCES.get(key, {})
+            if not isinstance(descriptors, dict) or any(
+                column not in columns
+                or not isinstance(descriptor, dict)
+                or descriptor.get("table") != columns[column]
+                or not isinstance(descriptor.get("key"), str)
+                for column, descriptor in descriptors.items()
+            ):
+                raise _contract_error(
+                    "portability.error.v1_bad_reference", table=key
+                )
+    return meta
+
+
+async def _resolve_catalog_reference(
+    session: AsyncSession,
+    *,
+    target: str,
+    key: str,
+    subject_id: Any,
+) -> Any:
+    """Find the local row a travelling natural key names, or refuse.
+
+    A travelling name always came from the installation's catalog: a reference
+    to the subject's *own* row never leaves the file, because the export carries
+    every row the subject owns and the importer renumbers both ends together. So
+    the NULL-subject catalog is asked first, and answering with a personal row of
+    the same name would silently re-point the reference at a different thing.
+
+    The subject's own rows are the fallback rather than the answer, for the
+    cross-installation case: the receiver organises its catalog its own way, the
+    name is not in it, and the person recreated the entry themselves. That is the
+    only reading left, and refusing it would make the file unimportable for a
+    reason its holder could fix but not diagnose.
+    """
+
+    table = Base.metadata.tables[target]
+    natural_key = CATALOG_NATURAL_KEYS[target]
+    for scope in (table.c.subject_id.is_(None), table.c.subject_id == subject_id):
+        found = await session.scalar(
+            select(table.c.id).where(table.c[natural_key] == key, scope)
+        )
+        if found is not None:
+            return found
+    return None
+
+
+async def import_subject(
+    session: AsyncSession, payload: Any, *, subject_id: Any
+) -> ImportStats:
+    """Replace one subject's portable rows with the file's, and nobody else's.
+
+    Different operation from :func:`import_full` in the one way that matters:
+    the delete is scoped. ``import_full`` empties every portable table and is
+    correct only for a whole-database backup; running it per person would take
+    the installation down to restore one record.
+
+    Primary keys are *not* preserved, and that is forced rather than chosen.
+    Every portable table here numbers its rows with an integer sequence, so one
+    subject's row 5 and another's row 5 both exist; carrying ids across would
+    collide with rows this operation is not allowed to touch. Rows are therefore
+    inserted fresh and the references between them rewritten through a map built
+    as each parent lands — which is why the walk is in foreign-key order.
+
+    References that leave the file were resolved to a natural key on the way out
+    and are looked up again here. One that does not resolve is refused: the
+    alternative is dropping it, and a dose that quietly forgets which compound
+    it was is worse than an import that did not happen.
+
+    Flushes, never commits. The caller owns the transaction, so any refusal
+    below leaves the subject exactly as it was.
+    """
+
+    _validate_subject_payload(payload)
+    if subject_id is None:
+        raise _contract_error("portability.error.v1_missing_subject")
+
+    await acquire_identity_governance_lock(session)
+
+    scoped = [
+        table
+        for table in Base.metadata.sorted_tables
+        if table.name not in _EXCLUDED_TABLES and "subject_id" in table.columns
+    ]
+
+    # Children first, so a row never outlives the parent it points at.
+    for table in reversed(scoped):
+        await session.execute(
+            table.delete().where(table.c.subject_id == subject_id)
+        )
+
+    remapped: dict[str, dict[Any, Any]] = {}
+    counts: dict[str, int] = {}
+
+    # Parents first, so every reference has already been renumbered.
+    for table in scoped:
+        rows = payload.get(table.name)
+        if not rows:
+            continue
+        references = PORTABLE_REFERENCES.get(table.name, {})
+        columns = table.columns
+        for row in rows:
+            record = {
+                key: _deserialize_value(columns[key].type, value)
+                for key, value in row.items()
+                if key in columns
+                if key not in GENERIC_OUTPUT_SUPPRESSED_COLUMNS
+                if key != "id"
+            }
+            for column, target in references.items():
+                original = row.get(column)
+                if original is not None:
+                    resolved = remapped.get(target, {}).get(original)
+                    if resolved is None:
+                        raise _contract_error(
+                            "portability.error.v1_unresolved_reference",
+                            table=table.name,
+                            column=column,
+                            key=original,
+                        )
+                    record[column] = resolved
+                    continue
+                descriptor = (row.get(_REFERENCE_MARKER) or {}).get(column)
+                if descriptor is None:
+                    record[column] = None
+                    continue
+                found = await _resolve_catalog_reference(
+                    session,
+                    target=target,
+                    key=descriptor["key"],
+                    subject_id=subject_id,
+                )
+                if found is None:
+                    raise _contract_error(
+                        "portability.error.v1_unresolved_reference",
+                        table=table.name,
+                        column=column,
+                        key=descriptor["key"],
+                    )
+                record[column] = found
+
+            # Ownership is assigned here and nowhere else. A file cannot name
+            # the subject it lands in, which is what stops one from landing in
+            # somebody else's.
+            record["subject_id"] = subject_id
+            inserted = await session.execute(
+                table.insert().values(**record).returning(table.c.id)
+            )
+            new_id = inserted.scalar_one()
+            original_id = row.get("id")
+            if original_id is not None:
+                remapped.setdefault(table.name, {})[original_id] = new_id
+            counts[table.name] = counts.get(table.name, 0) + 1
+
+    await session.flush()
+    await _reset_sequences(session)
+    return ImportStats(counts)
 
 
 # ── LLM export ─────────────────────────────────────────────────────────────────

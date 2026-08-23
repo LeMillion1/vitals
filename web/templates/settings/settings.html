@@ -375,6 +375,18 @@
             <div class="v-alert warn">
                 {{ t("settings.import_warning") }}
             </div>
+            <form hx-post="/settings/import-subject" hx-encoding="multipart/form-data"
+                  hx-confirm="{{ t('settings.import_subject_confirm') }}"
+                  hx-target="#import-result" hx-swap="innerHTML" class="space-y-3">
+                <label class="v-input flex items-center gap-3 cursor-pointer">
+                    <input type="file" name="backup_file" accept=".json" required
+                           class="text-xs" style="color: var(--muted)">
+                </label>
+                <button type="submit" class="v-btn text-xs">{{ t("settings.import_subject_submit") }}</button>
+            </form>
+            <div id="import-result-subject"></div>
+
+            <span class="v-label pt-2">{{ t("settings.import_full_label") }}</span>
             <form hx-post="/settings/import" hx-encoding="multipart/form-data"
                   hx-confirm="{{ t('settings.import_confirm') }}"
                   hx-target="#import-result" hx-swap="innerHTML" class="space-y-3">

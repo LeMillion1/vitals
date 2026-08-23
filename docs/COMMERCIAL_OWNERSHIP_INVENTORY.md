@@ -259,13 +259,39 @@ routed through `is_allowed`: these operations have no subject, and passing the
 caller's own subject in would read as a check while being unconditionally true,
 since self-ownership authorizes everything on one's own subject.
 
-Remaining work: the matching subject-scoped *import*. `import_full` deletes each
-portable table unqualified, which is safe today only because the compatibility
-resolver refuses a second subject. Scoping the delete is the easy half; every one
-of the 39 portable tables has an integer primary key, so a per-subject restore
-cannot preserve ids the way the full one does, and needs an id remap across the
-16 references between those tables. References into the installation's shared
-catalog are harder still and want a natural key rather than an id.
+`import_subject` is the matching half, and two things about it are forced rather
+than chosen.
+
+Primary keys cannot survive. All 39 portable tables number their rows with an
+integer sequence, so one subject's row 5 and another's row 5 both exist; carrying
+ids across would collide with rows the operation is not allowed to touch. Rows
+are inserted fresh and the 17 references between them are rewritten through a map
+built as each parent lands, which is why the walk is in foreign-key order.
+
+And a reference can point out of the file. The shared catalog lives under a NULL
+subject and a personal export does not carry it — the receiving installation
+seeded its own and numbered it its own way, so the integer would either dangle or
+land on an unrelated row holding that number. Those travel as the target's
+natural key, listed in `CATALOG_NATURAL_KEYS`, and one that does not resolve is
+refused: a dose that quietly forgot which compound it recorded is worse than an
+import that did not happen. A travelling name always came from the catalog, so
+the catalog is asked first; a personal row of the same name is the fallback, for
+the cross-installation case where the receiver has no such entry and the person
+recreated it themselves.
+
+The reference map itself is derived from the schema rather than listed, so a
+reference added later cannot silently become one installation's id pasted into
+another, and a contract test pins that every table a reference can point *out*
+to has a portable name.
+
+Each import refuses the other's file. A full backup loaded per-subject would be
+silently truncated to one subject's worth of itself, which looks like a
+successful restore and is not one.
+
+Remaining work: `import_full` still deletes each portable table unqualified. That
+is correct for what it is — a whole-database restore, now reserved for an
+operator — but it means the operator's path stays all-or-nothing while the
+personal one is scoped.
 
 ### Reports, alerts, notifications, and outbox
 

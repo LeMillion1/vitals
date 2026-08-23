@@ -1378,6 +1378,49 @@ async def import_backup(
     )
 
 
+@router.post("/import-subject")
+async def import_subject_record(
+    request: Request,
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    backup_file: UploadFile = File(...),
+    _rl: None = Depends(rate_limit("data_import", limit=2, window=60)),
+):
+    """Restore this subject's own record, and nobody else's.
+
+    Not the operator's restore: that one empties every portable table and is
+    correct only for a whole-database backup. This deletes and reloads exactly
+    the caller's subject, so it needs the same authorization as an export rather
+    than an operator's, and it refuses a full backup outright.
+    """
+
+    ownership = await _authorize_export(db, username)
+    validate_extension(backup_file.filename, JSON_EXTS)
+    raw = await read_capped(backup_file, max_bytes=VCF_MAX_BYTES)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=t("import.error.bad_json", msg=exc.msg, line=exc.lineno),
+        )
+
+    try:
+        stats = await data_portability_service.import_subject(
+            db, payload, subject_id=ownership.subject_id
+        )
+    except data_portability_service.PortabilityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    await db.commit()
+    return templates.TemplateResponse(
+        request,
+        "settings/import_result.html",
+        {"summary": stats.summary()},
+    )
+
+
 @router.post("/restart")
 async def restart_container(
     request: Request,

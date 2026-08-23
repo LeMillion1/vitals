@@ -37,6 +37,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `web/static/uploads`; moving them to a private root would make the guarantee
   structural rather than a matter of route ordering, and is follow-up work.
 
+### Added — restoring one record without touching anybody else's (PR-06)
+
+- `POST /settings/import-subject` deletes and reloads exactly the caller's
+  subject. `/settings/import` empties every portable table and is correct only
+  for a whole-database backup; running it per person would take the installation
+  down to restore one record.
+- **Primary keys are not preserved, and that is forced rather than chosen.** All
+  39 portable tables number their rows with an integer sequence, so one
+  subject's row 5 and another's row 5 both exist. Carrying ids across would
+  collide with rows the operation is not allowed to touch. Rows are inserted
+  fresh and the 17 references between them are rewritten through a map built as
+  each parent lands — which is why the walk is in foreign-key order.
+- **A reference can point out of the file.** The installation's shared catalog
+  lives under a NULL subject and a personal export does not carry it: the
+  receiving installation seeded its own and numbered it its own way, so the
+  integer would either dangle or land on an unrelated row holding that number.
+  Those references travel as the target's natural key instead. One that does not
+  resolve is refused — a dose that quietly forgot which compound it recorded is
+  worse than an import that did not happen.
+- A travelling name always came from the catalog, so the catalog is asked first;
+  a personal row of the same name is the fallback, for the cross-installation
+  case where the receiver does not have that entry and the person recreated it.
+- The reference map is derived from the schema rather than listed, so a
+  reference added later cannot silently become one installation's id pasted into
+  another. A contract test pins that every table a reference can point *out* to
+  has a portable name.
+- Ownership is assigned by the boundary and never read from the file — a file
+  that names a subject outright still lands in the caller's own record.
+- Each import refuses the other's file: a full backup loaded per-subject would be
+  silently truncated to one subject's worth of itself and look like a successful
+  restore.
+
 ### Fixed — the settings page stops offering a sign-in it no longer owns
 
 - After the OIDC cutover every route behind the sign-in card answers 404, but
