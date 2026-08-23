@@ -40,10 +40,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   rather than trusting the paragraph saying so.
 - Reading is shared; editing is not. A second professional joining a case sees
   what the first concluded, and the patient sees everything written about them.
-- Consent defaults now separate the two kinds of resource. Patient facts stay
-  read-only for both kinds; the professional's own artifacts carry create and
-  update, because that is where the read-only rule sends them. Delete is absent
-  from both.
+- Consent defaults separate the two kinds of *resource*, which is the line that
+  does the work: patient facts stay read-only for both kinds of professional,
+  while the professional's own artifacts carry create and update, because that
+  is where the read-only rule sends them. Delete is absent from both.
 - Revision `0057` adds the two tables with row security. Each row carries three
   references: `subject_id` (whose record it sits in, which row security reads),
   `actor_user_id` (who wrote it, which is what stops a second professional
@@ -68,12 +68,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   that, and it is the question any later dispute is about. Exactly one version
   per relationship may be live, enforced by a partial unique index rather than a
   convention, because two live versions would mean the wider silently wins.
-- **Doctors and trainers differ by domain**, and the split is about what the
-  work needs rather than seniority: a trainer planning sessions needs load,
-  bodyweight and recovery, not a genome, a hormone schedule or a lab panel.
-  Defaulting them in would make the narrower choice the one a patient has to
-  know to ask for. The kind lives on the relationship, not on the profile, so an
-  account that is both cannot take the wider of the two.
+- **Both kinds are offered the whole record.** The separation between a doctor
+  and a trainer is not what each may look at — it is that they are two different
+  people, with two relationships and two sets of their own notes. Splitting the
+  domains by kind would make the narrower choice the one a patient has to know
+  to ask for, and the patient already chose whom to invite. The offered set is
+  derived from `Domain` rather than written out, so a module added later is not
+  silently invisible; `SYSTEM` is excluded because it is the installation's own
+  operational state rather than anything about the patient.
+- **And the kind is a fact rather than a label.** A professional whose profile
+  says doctor cannot be taken on as somebody's trainer. Without that check the
+  kind on a relationship is only what the patient happened to type into the
+  invitation. It applies where there is something to check against: a
+  professional who has filled in no profile has claimed no kind. Requiring a
+  profile — or a verified one — before care can start is the natural next step
+  and a decision about onboarding order rather than a technical one, since it
+  would hold every new professional at the door until an operator reached them.
 - **Every default is read-only.** A patient's record is theirs; a professional's
   contribution belongs in their own note rather than inside somebody else's
   measurement. A test pins that no default carries create, update, delete, share

@@ -896,8 +896,11 @@ Delivered, as five tables and four services:
   policy engine has been able to evaluate since PR-04 and had never been given.
   Consent is versioned rather than edited, so what applied last month survives
   this month's change.
-- Doctors and trainers differ by domain, the kind lives on the relationship
-  rather than the profile, and every default on patient facts is read-only.
+- A doctor and a trainer are offered the same whole record. What separates them
+  is that they are two different people — two relationships, two sets of their
+  own notes — and the kind is a fact rather than a label: a professional whose
+  profile says doctor cannot be taken on as somebody's trainer. Every default on
+  patient facts is read-only for both.
 - `professional_notes` and `care_plans` are where a professional's contribution
   goes instead. Only the author may change one, and neither has a delete path.
 
@@ -917,7 +920,9 @@ Original scope:
 Tests:
 
 - role without relationship denies; relationship without consent denies;
-- doctor/trainer defaults differ by domain and action;
+- doctor/trainer defaults differ by action but not by domain — the original
+  plan split them by domain too, and that was decided against: the separation
+  between the two is that they are different people, not that one may see less;
 - a professional cannot alter patient-origin facts or another professional's
   notes;
 - revocation takes effect on the next service, web, file, job, and token action.

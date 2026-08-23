@@ -149,8 +149,13 @@ async def test_both_together_open_exactly_what_was_agreed(db_session):
 
     assert await _may(db_session, professional, subject, key="weight")
     assert await _may(db_session, professional, subject, key="labs")
-    # Not in the doctor default set, so not agreed to.
-    assert not await _may(db_session, professional, subject, key="skincare")
+    assert await _may(db_session, professional, subject, key="skincare")
+    # Reading is what was agreed to. Writing the patient's own facts is not, and
+    # the installation's operational alerts are not the patient's record at all.
+    assert not await _may(
+        db_session, professional, subject, key="weight", action=PolicyAction.UPDATE
+    )
+    assert not await _may(db_session, professional, subject, key="system")
 
 
 async def test_the_role_alone_is_still_nothing(db_session):
@@ -166,26 +171,36 @@ async def test_the_role_alone_is_still_nothing(db_session):
 # ── What each kind gets by default ───────────────────────────────────────────
 
 
-async def test_a_doctor_and_a_trainer_do_not_see_the_same_things(db_session):
-    """The split is about what the work needs, not about seniority.
+async def test_a_doctor_and_a_trainer_are_offered_the_same_record(db_session):
+    """The separation between them is not what each may look at.
 
-    A trainer planning sessions needs load, bodyweight and recovery. They do not
-    need a genome, a hormone schedule or a lab panel to do it, and defaulting
-    them in would make the narrower choice the one a patient has to know to ask
-    for.
+    It is that they are two different people, with two relationships and two
+    sets of their own notes. Splitting the domains by kind would make the
+    narrower choice the one a patient has to know to ask for — and the patient
+    already chose whom to invite.
     """
 
     doctor_scopes = care_service.default_scopes(ProfessionalKind.DOCTOR)
     trainer_scopes = care_service.default_scopes(ProfessionalKind.TRAINER)
+    assert doctor_scopes == trainer_scopes
 
-    doctor_domains = {scope.resource_key for scope in doctor_scopes}
-    trainer_domains = {scope.resource_key for scope in trainer_scopes}
+    offered = {scope.resource_key for scope in doctor_scopes}
+    for domain in Domain:
+        if domain is Domain.SYSTEM:
+            # The installation's own operational state, not the patient's.
+            assert domain.value not in offered
+        else:
+            assert domain.value in offered, domain
 
-    for clinical in (Domain.LABS, Domain.GENETICS, Domain.HRT, Domain.GLP1):
-        assert clinical.value in doctor_domains
-        assert clinical.value not in trainer_domains, clinical
-    assert Domain.WORKOUTS.value in trainer_domains
-    assert trainer_domains < doctor_domains | trainer_domains
+
+def test_a_domain_added_later_is_offered_without_anybody_remembering():
+    """Derived from the enum, so a new module is not silently invisible.
+
+    Consents already granted are untouched: each stores concrete scope rows
+    rather than a reference to this list.
+    """
+
+    assert set(care_service.DEFAULT_DOMAINS) == set(Domain) - {Domain.SYSTEM}
 
 
 async def test_no_default_lets_a_professional_write_a_patients_facts(db_session):
@@ -225,24 +240,77 @@ async def test_no_default_lets_a_professional_write_a_patients_facts(db_session)
         assert not any(action is PolicyAction.DELETE for _key, action in authored)
 
 
-async def test_a_trainer_relationship_gets_a_trainers_defaults(db_session):
-    """Even when the same account could also be a doctor elsewhere.
-
-    The kind is on the relationship, not read from the profile, precisely so
-    one account holding both cannot take the wider of the two.
-    """
-
+async def test_a_trainer_sees_the_whole_record_too(db_session):
     owner, subject, professional, relationship = await _in_care(
         db_session, "care-kind", kind=ProfessionalKind.TRAINER
     )
-    db_session.add(UserRole(user_id=professional.id, role=UserRoleName.DOCTOR.value))
-    await db_session.flush()
     await care_service.grant_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
 
-    assert await _may(db_session, professional, subject, key="workouts")
-    assert not await _may(db_session, professional, subject, key="labs")
+    for key in ("workouts", "labs", "genetics", "hrt"):
+        assert await _may(db_session, professional, subject, key=key), key
+    # Still read-only, and still not the installation's own alerts.
+    assert not await _may(
+        db_session, professional, subject, key="labs", action=PolicyAction.UPDATE
+    )
+    assert not await _may(db_session, professional, subject, key="system")
+
+
+async def test_a_doctor_cannot_be_taken_on_as_a_trainer(db_session):
+    """The physical separation, as a fact rather than a label.
+
+    Without this the kind on a relationship is only what the patient happened to
+    type into the invitation, and "my trainer" and "my doctor" stop being
+    statements about who these people are.
+    """
+
+    from vitals.services import professional_service
+
+    owner, subject = await _patient(db_session, "care-mismatch")
+    doctor = await _user(
+        db_session, "care-mismatch-doc", roles=(UserRoleName.DOCTOR,)
+    )
+    await professional_service.submit_profile(
+        db_session,
+        user_id=doctor.id,
+        kind=ProfessionalKind.DOCTOR,
+        display_name="Dr Synthetic",
+    )
+
+    issued = await invitation_service.invite(
+        db_session,
+        subject_id=subject.id,
+        actor_user_id=owner.id,
+        kind=ProfessionalKind.TRAINER,
+        email="care-mismatch-doc@example.test",
+    )
+    await invitation_service.accept(
+        db_session,
+        token=issued.token,
+        accepting_user_id=doctor.id,
+        verified_email="care-mismatch-doc@example.test",
+    )
+
+    with pytest.raises(care_service.KindMismatch):
+        await care_service.establish_from_invitation(
+            db_session, invitation=issued.invitation
+        )
+
+
+async def test_a_professional_with_no_profile_enters_as_invited(db_session):
+    """Nothing to contradict, so nothing is contradicted.
+
+    Requiring a profile — or a verified one — before care can start is the
+    natural next step and a decision about onboarding order rather than a
+    technical one: it would hold every new professional at the door until an
+    operator reached them.
+    """
+
+    _owner, _subject, _pro, relationship = await _in_care(
+        db_session, "care-noprofile", kind=ProfessionalKind.TRAINER
+    )
+    assert relationship.kind == ProfessionalKind.TRAINER.value
 
 
 async def test_the_patient_can_narrow_what_was_offered(db_session):

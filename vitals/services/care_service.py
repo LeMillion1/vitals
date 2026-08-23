@@ -42,6 +42,7 @@ from vitals.models.professional import (
     ConsentGrant,
     ConsentScope,
     ProfessionalInvitation,
+    ProfessionalProfile,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
 
@@ -77,32 +78,25 @@ AUTHORED_ACTIONS: tuple[PolicyAction, ...] = (
     PolicyAction.UPDATE,
 )
 
-#: Which domains each kind sees unless the patient says otherwise. The split is
-#: about what the work needs rather than about seniority: a trainer planning
-#: sessions needs load, bodyweight and recovery; they do not need a genome, a
-#: hormone schedule or a lab panel to do it, and defaulting them in would make
-#: the narrower choice the one a patient has to know to ask for.
-DEFAULT_DOMAINS: dict[ProfessionalKind, tuple[Domain, ...]] = {
-    ProfessionalKind.DOCTOR: (
-        Domain.WEIGHT,
-        Domain.BODY_COMPOSITION,
-        Domain.LABS,
-        Domain.GLP1,
-        Domain.HRT,
-        Domain.SUPPLEMENTS,
-        Domain.GENETICS,
-        Domain.NUTRITION,
-        Domain.SIGNALS,
-        Domain.TIMELINE,
-    ),
-    ProfessionalKind.TRAINER: (
-        Domain.WEIGHT,
-        Domain.BODY_COMPOSITION,
-        Domain.WORKOUTS,
-        Domain.GARMIN,
-        Domain.NUTRITION,
-    ),
-}
+#: Every domain that describes the patient, and the same set whichever kind of
+#: professional it is. The separation between a doctor and a trainer is not what
+#: each may look at — it is that they are two different people with two
+#: relationships and two sets of their own notes.
+#:
+#: Deriving the list rather than writing it out is deliberate. A domain added
+#: later is one the patient has, so it belongs in what a new consent offers; a
+#: hand-written list would leave it invisible until somebody remembered. Consents
+#: already granted are untouched either way, because each one stores concrete
+#: scope rows rather than a reference to this.
+#:
+#: ``SYSTEM`` is the exception, and not because it is sensitive. It is the
+#: installation's own operational state — scheduler alerts, ingestion failures —
+#: which is not something about the patient at all, and the application already
+#: keeps it off patient-facing surfaces through
+#: ``alerts_service.is_platform_alert_key``.
+DEFAULT_DOMAINS: tuple[Domain, ...] = tuple(
+    domain for domain in Domain if domain is not Domain.SYSTEM
+)
 
 
 class CareError(RuntimeError):
@@ -115,6 +109,10 @@ class CareValidationError(ValueError):
 
 class NotTheSubjectOwner(CareError):
     """Only the patient decides who is in care for them and what they may see."""
+
+
+class KindMismatch(CareError):
+    """This professional is not the kind of professional they were invited as."""
 
 
 class RelationshipNotFound(CareError):
@@ -135,23 +133,33 @@ async def _now(session: AsyncSession) -> datetime:
 
 
 def default_scopes(kind: ProfessionalKind | str) -> frozenset[AccessScope]:
-    """The read-only domain set this kind starts with.
+    """What a consent offers before the patient narrows it.
 
-    A starting point the patient can narrow, never a floor. Everything here is
-    written into ``consent_scopes`` as concrete rows, so a consent granted today
-    keeps meaning what it meant even if this table changes tomorrow.
+    A starting point, never a floor: the patient can pass their own set, and
+    everything here is written into ``consent_scopes`` as concrete rows, so a
+    consent granted today keeps meaning what it meant even if this function
+    changes tomorrow.
+
+    ``kind`` does not change the answer, and it is still a parameter rather than
+    being dropped. The kind is a real distinction — it decides which
+    professional this is, and a doctor and a trainer are two different people
+    with two relationships and two sets of their own notes — it just is not a
+    distinction about what may be *looked at*. Splitting the domains by kind
+    would make the narrower choice the one a patient has to know to ask for,
+    and the patient chose whom to invite.
     """
 
-    resolved = (
-        kind if isinstance(kind, ProfessionalKind) else ProfessionalKind(str(kind))
-    )
+    if not isinstance(kind, ProfessionalKind):
+        # Validated rather than ignored: an unknown kind reaching here means a
+        # relationship was written with one, and that is worth failing on.
+        ProfessionalKind(str(kind))
     facts = {
         AccessScope(
             resource_type=PolicyResourceType.DOMAIN,
             resource_key=domain.value,
             action=action,
         )
-        for domain in DEFAULT_DOMAINS[resolved]
+        for domain in DEFAULT_DOMAINS
         for action in READ_ONLY_ACTIONS
     }
     authored = {
@@ -221,6 +229,27 @@ async def establish_from_invitation(
     )
     if owner_user_id is None:
         raise CareValidationError("the invited record no longer exists")
+
+    # A doctor and a trainer are two different professionals, not two labels on
+    # one. Without this the kind on the relationship is only what the patient
+    # happened to type into the invitation, and "my trainer" and "my doctor"
+    # stop being facts about who these people are.
+    #
+    # Only checked where there is something to check against. A professional who
+    # has never filled in a profile has claimed no kind, so there is nothing for
+    # the invitation to contradict. Requiring a profile — or a *verified* one —
+    # before care can start is the natural next step, and it is a decision about
+    # onboarding order rather than a technical one: it would hold every new
+    # professional at the door until an operator reached them.
+    claimed_kind = await session.scalar(
+        select(ProfessionalProfile.kind).where(
+            ProfessionalProfile.user_id == invitation.accepted_by_user_id
+        )
+    )
+    if claimed_kind is not None and claimed_kind != invitation.kind:
+        raise KindMismatch(
+            "this professional is not the kind of professional they were invited as"
+        )
 
     relationship = CareRelationship(
         subject_id=invitation.subject_id,
@@ -536,6 +565,7 @@ __all__ = [
     "CareError",
     "CareValidationError",
     "ConsentNotFound",
+    "KindMismatch",
     "NotTheSubjectOwner",
     "RelationshipNotFound",
     "default_scopes",
