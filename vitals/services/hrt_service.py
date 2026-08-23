@@ -739,6 +739,55 @@ def _scoped_compound_join(
     return permitted, curated_global
 
 
+async def legacy_unowned_present(session: AsyncSession) -> bool:
+    """Mirror of every HRT widening, which is four tables rather than one.
+
+    Doses and cycles are the resolver's. Cycle items are ``hrt_reminders``':
+    with the bridge open an unstamped item is tolerated, and with it closed the
+    same item makes its cycle invalid, so an unstamped item has to keep the
+    bridge open or a working page would start refusing.
+
+    Compounds are the subtle one. A compound with no subject is normally the
+    checked-in catalog, which every subject may read without any bridge — so
+    the probe asks only for the ones the bridge *adds*: unowned, and not one of
+    the curated definitions.
+    """
+
+    from vitals.services.hrt_catalog import load_compound_catalog
+
+    for model in (HrtDose, HrtCycle):
+        found = await session.scalar(
+            select(model.id)
+            .where(model.subject_id.is_(None), model.actor_user_id.is_(None))
+            .limit(1)
+        )
+        if found is not None:
+            return True
+
+    unstamped_item = await session.scalar(
+        select(HrtCycleItem.id).where(HrtCycleItem.subject_id.is_(None)).limit(1)
+    )
+    if unstamped_item is not None:
+        return True
+
+    curated_keys = tuple(dict(load_compound_catalog()))
+    curated_global = and_(
+        HrtCompound.domain == DOMAIN,
+        HrtCompound.source == Source.SYSTEM.value,
+        HrtCompound.key.in_(curated_keys),
+    )
+    uncurated = await session.scalar(
+        select(HrtCompound.id)
+        .where(
+            HrtCompound.subject_id.is_(None),
+            HrtCompound.actor_user_id.is_(None),
+            ~curated_global,
+        )
+        .limit(1)
+    )
+    return uncurated is not None
+
+
 async def resolve_active_scoped(
     session: AsyncSession,
     *,

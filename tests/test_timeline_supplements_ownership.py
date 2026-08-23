@@ -1040,9 +1040,26 @@ async def test_web_pages_show_no_unowned_history_from_either_domain(
     assert await db_session.get(Annotation, annotation.id) is not None
 
 
-async def test_web_legacy_owner_bridge_closes_with_second_subject(
+async def test_another_persons_supplement_is_untouched_and_indistinguishable(
     auth_client, db_session
 ):
+    """Somebody else's id does nothing, and looks exactly like a missing one.
+
+    Three answers have been correct here at different times, and only the last
+    line has been the point throughout. It was a 404 by accident: the chrome
+    read its module map through a sole-subject bridge, so a second person turned
+    every module off and the request died at the module gate before the route
+    saw the id at all. Then it was a 409, from the route's own sole-owner
+    adapter refusing to guess whose record was meant. Now the scoped lookup
+    simply does not find the row, and the route redirects as it would for any id
+    that is not there.
+
+    So the assertion is not on the status. It is that the row does not change,
+    and that a foreign id and an invented one are answered identically — if they
+    were not, the difference would be a way to ask whether somebody else's
+    record exists.
+    """
+
     second = await _identity(db_session, "web-second-subject")
     foreign = await _add_owned_supplement(
         db_session,
@@ -1051,21 +1068,19 @@ async def test_web_legacy_owner_bridge_closes_with_second_subject(
     )
     await db_session.commit()
 
-    response = await auth_client.post(
+    foreign_response = await auth_client.post(
         f"/supplements/{foreign.id}/toggle", data={"active": "false"}
     )
-    # The route's own sole-owner adapter refuses: with two subjects it cannot
-    # tell whose record the request meant, so it declines rather than guessing.
-    #
-    # This used to be a 404, and for the wrong reason. The chrome resolved its
-    # module map through the same sole-subject bridge, so a second person made
-    # every module read as off and the request died at the module gate before
-    # the route ever saw the client-controlled id. That was protection by
-    # accident. The chrome now resolves the signed-in account's own record and
-    # keeps working, so the refusal comes from where it should — and says so.
-    assert response.status_code == 409
+    invented_response = await auth_client.post(
+        f"/supplements/{foreign.id + 10_000}/toggle", data={"active": "false"}
+    )
+
     await db_session.refresh(foreign)
     assert foreign.active is True
+    assert foreign_response.status_code == invented_response.status_code
+    assert foreign_response.headers.get("location") == invented_response.headers.get(
+        "location"
+    )
 
 
 async def test_mcp_v1_stamps_owner_and_mcp_source(
@@ -1114,9 +1129,22 @@ async def test_mcp_v1_stamps_owner_and_mcp_source(
     assert supplement.source == Source.MCP.value
 
 
-async def test_mcp_v1_fails_closed_before_cross_subject_id_use(
+async def test_mcp_v1_reports_another_persons_supplement_as_missing(
     db_session, session_factory, legacy_owner_roots, monkeypatch
 ):
+    """From the caller's side, somebody else's row does not exist.
+
+    This asserted a ConflictLegacyBridgeError, because the fully-unowned bridge
+    used to refuse the moment a second subject appeared and that refusal
+    happened to land before the client-controlled id was used. It was real
+    protection but not the protection that matters, and it cost every page that
+    asked nothing of the bridge.
+
+    The scoped lookup is what protects this, and it always was: the id is not in
+    the caller's scope, so it is not found. Nothing is written, and the answer
+    says nothing about whether the row exists for somebody else.
+    """
+
     from vitals.services import modules_service
 
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
@@ -1135,10 +1163,8 @@ async def test_mcp_v1_fails_closed_before_cross_subject_id_use(
     )
     await db_session.commit()
 
-    # The refusal moved down a layer and did not go away — see the note on
-    # test_web_legacy_owner_bridge_closes_with_second_subject.
-    with pytest.raises(conflict_engine.ConflictLegacyBridgeError):
-        await mcp_router.set_supplement_active(foreign.id, active=False)
+    result = await mcp_router.set_supplement_active(foreign.id, active=False)
+    assert "not found" in str(result.get("error", ""))
     await db_session.refresh(foreign)
     assert foreign.active is True
 

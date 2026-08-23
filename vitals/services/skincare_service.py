@@ -349,6 +349,23 @@ async def delete_observation(
 
 
 # ── Conflict-engine resolver ──────────────────────────────────────────────────
+async def legacy_unowned_present(session: AsyncSession) -> bool:
+    """Mirror of this module's widening in :func:`resolve_today_scoped`.
+
+    Kept beside it so the two change together: the engine skips its
+    sole-subject proof when every probe says no, so a probe that missed a row
+    its resolver would still adopt is the one way this goes wrong.
+    """
+
+    found = await session.scalar(
+        select(SkincareLog.id)
+        .where(SkincareLog.subject_id.is_(None),
+            SkincareLog.actor_user_id.is_(None),)
+        .limit(1)
+    )
+    return found is not None
+
+
 async def resolve_today_scoped(
     session: AsyncSession,
     *,

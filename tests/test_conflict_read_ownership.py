@@ -1166,30 +1166,60 @@ async def test_hrt_legacy_custom_compound_needs_exact_one_bridge(
     assert [violation.message for violation in bridged] == ["HRT scope probe"]
 
 
-async def test_mcp_v1_conflict_read_closes_when_second_subject_exists(
+async def test_mcp_v1_conflict_read_closes_only_when_a_row_is_unowned(
     db_session,
     session_factory,
     monkeypatch,
     legacy_owner_roots,
 ):
+    """The refusal is about an unowned rule, not about a second person.
+
+    Two versions of this have now been wrong in opposite directions. The legacy
+    resolver used to reject any installation holding a second subject, which
+    took every page down once professional features made a second subject the
+    point. The conflict bridge then kept refusing a layer lower — and this test
+    read that as correct, because an unowned rule genuinely does not say whose
+    state it was evaluated against.
+
+    Both are true and they are not the same claim. An unowned rule is what
+    cannot be attributed; a second subject is what makes attributing it wrong.
+    With no unowned rule anywhere, the bridge widens to nothing and the read is
+    an ordinary scoped one.
+    """
+
     mcp_router = pytest.importorskip("web.routers.mcp")
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
     await _add_subject(db_session, label="subject-b")
     await db_session.commit()
 
-    # The refusal moved a layer down and did not go away. The legacy resolver
-    # used to reject any installation holding a second subject, which took every
-    # page down with it once the professional features made a second subject the
-    # point; it now selects the actor's own record. The conflict engine's own
-    # bridge still refuses, because an unowned rule genuinely does not say whose
-    # state it was evaluated against.
-    for call in (
+    calls = (
         lambda: mcp_router.check_conflicts(
             Domain.SUPPLEMENTS.value, {"key": "iron", "active": True}
         ),
         lambda: mcp_router.check_supplement_conflicts("iron"),
         lambda: mcp_router.list_conflict_rules(),
-    ):
+    )
+    for call in calls:
+        await call()
+
+    # Now give it something nobody owns, and the refusal comes back.
+    db_session.add(
+        ConflictRule(
+            subject_id=None,
+            code=None,
+            rule_type="soft_warn",
+            severity="warn",
+            domain_a=Domain.SUPPLEMENTS.value,
+            condition_a={"key": "iron", "active": True},
+            domain_b=Domain.SUPPLEMENTS.value,
+            condition_b={"key": "iron", "active": True},
+            message="legacy custom rule",
+            active=True,
+        )
+    )
+    await db_session.commit()
+
+    for call in calls:
         with pytest.raises(conflict_engine.ConflictLegacyBridgeError):
             await call()
 

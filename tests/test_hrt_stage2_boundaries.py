@@ -127,16 +127,21 @@ async def test_mcp_delete_covers_hrt_side_effect(db_session):
     assert await db_session.get(HrtSideEffect, payload["id"]) is None
 
 
-async def test_a_second_subject_still_closes_the_hrt_mutation(db_session):
-    """Refused one layer lower than it used to be, and still refused.
+async def test_a_second_subject_writes_for_the_actor_and_not_across(
+    db_session, legacy_owner_roots
+):
+    """The write goes through, and it goes to the right person.
 
-    The legacy resolver no longer rejects an installation for holding a second
-    subject — it selects the actor's own record — but the conflict engine's
-    fully-unowned bridge is its own sole-subject gate, and it is the one that
-    stops this write. That gate is about unowned conflict *rules* rather than
-    about the actor, so it needs its own reasoning to retire and has not had it
-    yet. Until then a domain write that evaluates against the unowned catalog
-    remains unavailable in a shared installation.
+    Two refusals used to stack here. The legacy resolver rejected any
+    installation holding a second subject; that went first, and it selects the
+    actor's own record now. The conflict engine's fully-unowned bridge then kept
+    refusing a layer lower, and the reasoning it was waiting for is done: the
+    bridge widens to rows nobody owns, and with none of those in the database it
+    widens to nothing. Demanding a sole subject for a write that asks nothing of
+    it is what took this page down.
+
+    What has to hold instead is the assertion below — the dose lands on the
+    actor's own subject, and nowhere near the second person's.
     """
 
     before = await db_session.scalar(select(func.count()).select_from(HrtDose))
@@ -148,7 +153,63 @@ async def test_a_second_subject_still_closes_the_hrt_mutation(db_session):
     )
     db_session.add(user)
     await db_session.flush()
+    other_subject = HealthSubject(owner_user_id=user.id, timezone="Asia/Almaty")
+    db_session.add(other_subject)
+    await db_session.commit()
+    other_subject_id = other_subject.id
+
+    payload = await mcp_router.log_hrt_dose(
+        compound_key="testosterone_enanthate",
+        dose=125,
+        unit="mg",
+        on_date="2026-08-20",
+    )
+
+    after = await db_session.scalar(select(func.count()).select_from(HrtDose))
+    assert after == before + 1
+    dose = await db_session.get(HrtDose, payload["id"])
+    assert dose is not None
+    assert dose.subject_id == legacy_owner_roots.subject_id
+    assert dose.subject_id != other_subject_id
+
+
+async def test_an_unowned_rule_still_closes_the_hrt_mutation(
+    db_session, legacy_owner_roots
+):
+    """The refusal is kept for what it was written for.
+
+    A rule that belongs to nobody and names nothing is legacy custom state, and
+    with two people nothing can say whose state it was evaluated against. The
+    write stops, and the way out is the conflict-rule ownership backfill, run
+    while the installation is still one person.
+    """
+
+    from vitals.models.conflict_rule import ConflictRule
+
+    before = await db_session.scalar(select(func.count()).select_from(HrtDose))
+    user = User(
+        username="second-hrt-owner",
+        normalized_username="second-hrt-owner",
+        password_hash="$synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(user)
+    await db_session.flush()
     db_session.add(HealthSubject(owner_user_id=user.id, timezone="Asia/Almaty"))
+    db_session.add(
+        ConflictRule(
+            subject_id=None,
+            code=None,
+            rule_type="soft_warn",
+            severity="warn",
+            domain_a="hrt",
+            condition_a={"compound_key": "testosterone_enanthate"},
+            domain_b="hrt",
+            condition_b={"compound_key": "testosterone_enanthate"},
+            message="legacy custom rule",
+            active=True,
+        )
+    )
     await db_session.commit()
 
     with pytest.raises(

@@ -392,6 +392,28 @@ async def _setting(
     return await session.scalar(query)
 
 
+async def unclassified_global_rule_exists(session: AsyncSession) -> bool:
+    """Whether a rule definition belongs to nobody and names nothing.
+
+    The one thing the fully-unowned activation bridge is for. A ``conflict_rules``
+    row with no subject is normally the checked-in catalog, which every subject
+    reads without any bridge; ``code IS NULL`` is what makes one legacy *custom*
+    state instead — see :func:`_rule_kind`, which is where that meaning is
+    decided and which this mirrors.
+
+    Also the conflict engine's own half of the same question, imported there
+    rather than restated.
+    """
+
+    with session.no_autoflush:
+        found = await session.scalar(
+            select(ConflictRule.id)
+            .where(ConflictRule.subject_id.is_(None), ConflictRule.code.is_(None))
+            .limit(1)
+        )
+    return found is not None
+
+
 async def _require_exact_one_subject(
     session: AsyncSession,
     subject_id: uuid.UUID,
@@ -500,7 +522,12 @@ async def read_activation_state(
     await _acquire_governance_lock(session)
     with session.no_autoflush:
         await _subject(session, parsed_subject_id, for_update=True)
-        await _require_exact_one_subject(session, parsed_subject_id)
+        # The count only has to be proved if the bridge has something to widen
+        # to. With no unclassified global rule anywhere, this read returns the
+        # same state either way, and demanding a sole subject for it stopped
+        # pages that were asking nothing of the bridge.
+        if await unclassified_global_rule_exists(session):
+            await _require_exact_one_subject(session, parsed_subject_id)
         setting = await _setting(session, parsed_subject_id, for_update=True)
         if setting is not None:
             return _state(
@@ -546,7 +573,10 @@ async def set_rule_activation(
     await _acquire_governance_lock(session)
     with session.no_autoflush:
         await _subject(session, parsed_subject_id, for_update=True)
-        if parsed_bridge is LegacyConflictActivationBridge.FULLY_UNOWNED:
+        if (
+            parsed_bridge is LegacyConflictActivationBridge.FULLY_UNOWNED
+            and await unclassified_global_rule_exists(session)
+        ):
             await _require_exact_one_subject(session, parsed_subject_id)
         setting = await _setting(session, parsed_subject_id, for_update=True)
 

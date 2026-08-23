@@ -158,7 +158,30 @@ async def test_legacy_write_context_proves_owner_or_system_under_exact_one(
     assert system.identity == WriteIdentity(legacy_owner_roots.subject_id, None)
     assert human.legacy_bridge is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
 
+    # A second person alone does not close it. The bridge widens to rows nobody
+    # owns, and with none of those in the database it widens to nothing — the
+    # write is an ordinary scoped one, and demanding a sole subject for it was
+    # stopping seven pages that were asking nothing of the bridge.
     await _add_subject(db_session, "second")
+    await conflict_engine.prepare_scoped_write(db_session, context=human)
+
+    # Give it a rule that belongs to nobody and names nothing, and the refusal
+    # comes back — that row genuinely cannot say whose state it is about.
+    db_session.add(
+        ConflictRule(
+            subject_id=None,
+            code=None,
+            rule_type="soft_warn",
+            severity="warn",
+            domain_a=Domain.WEIGHT.value,
+            condition_a={"candidate": True},
+            domain_b=Domain.WEIGHT.value,
+            condition_b={"candidate": True},
+            message="legacy custom rule",
+            active=True,
+        )
+    )
+    await db_session.flush()
     with pytest.raises(conflict_engine.ConflictLegacyBridgeError):
         await conflict_engine.prepare_scoped_write(db_session, context=human)
 

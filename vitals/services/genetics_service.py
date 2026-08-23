@@ -1237,6 +1237,23 @@ async def delete_variant(
     return True
 
 
+async def legacy_unowned_present(session: AsyncSession) -> bool:
+    """Mirror of this module's widening in :func:`resolve_variants_scoped`.
+
+    Kept beside it so the two change together: the engine skips its
+    sole-subject proof when every probe says no, so a probe that missed a row
+    its resolver would still adopt is the one way this goes wrong.
+    """
+
+    found = await session.scalar(
+        select(GeneticVariant.id)
+        .where(GeneticVariant.subject_id.is_(None),
+            GeneticVariant.actor_user_id.is_(None),)
+        .limit(1)
+    )
+    return found is not None
+
+
 async def resolve_variants_scoped(
     session: AsyncSession,
     *,

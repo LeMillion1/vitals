@@ -1272,6 +1272,27 @@ async def latest_per_marker(
     return list(seen.values())
 
 
+async def legacy_unowned_present(session: AsyncSession) -> bool:
+    """Mirror of this module's widening, on both halves of it.
+
+    The resolver widens to unowned lab rows; the upload path widens separately
+    to unowned raw provenance, and a raw-first backfill can leave one without
+    the other. Either alone is something the bridge would adopt.
+    """
+
+    found = await session.scalar(
+        select(LabResult.id)
+        .where(
+            LabResult.subject_id.is_(None),
+            LabResult.actor_user_id.is_(None),
+        )
+        .limit(1)
+    )
+    if found is not None:
+        return True
+    return await conflict_engine.legacy_unowned_raw_present(session)
+
+
 async def resolve_latest_scoped(
     session: AsyncSession,
     *,

@@ -214,9 +214,27 @@ class DomainResolver(Protocol):
 
 
 
+class LegacyUnownedProbe(Protocol):
+    """Answer whether one domain still holds a row the bridge would adopt.
+
+    Deliberately not "does this domain have unowned rows". A probe has to mirror
+    its resolver's widening exactly, because the two are read together: the
+    engine skips the sole-subject proof when every probe says no, and if a probe
+    is looser than the widening it guards, a row would be adopted with nobody
+    having decided whose it is. Looser the other way is merely a missed
+    opportunity, so when in doubt a probe says yes.
+
+    That is why probes live beside the predicates they mirror rather than in one
+    table here — a widening that changes has its probe in the same diff.
+    """
+
+    async def __call__(self, session: AsyncSession) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _ResolverRegistration:
     scoped: DomainResolver
+    legacy_probe: LegacyUnownedProbe | None = None
 
 
 _resolvers: dict[str, _ResolverRegistration] = {}
@@ -226,13 +244,22 @@ class ConflictResolverUnavailable(RuntimeError):
     """An active scoped rule references a domain without a scoped resolver."""
 
 
-def register_domain_resolver(domain: str, resolver: DomainResolver) -> None:
+def register_domain_resolver(
+    domain: str,
+    resolver: DomainResolver,
+    *,
+    legacy_probe: LegacyUnownedProbe | None = None,
+) -> None:
     """Register one domain's subject-scoped reader.
 
     Every resolver is scoped; there is no second, unscoped arm any more. A
     resolver proves it is scoped by taking a keyword-only ``scope`` with no
     default, so a function that would happily answer without one cannot be
     registered at all.
+
+    ``legacy_probe`` is required of exactly those resolvers that widen on
+    ``scope.include_legacy_unowned``; see :class:`LegacyUnownedProbe`. A resolver
+    that never widens has nothing to probe for and passes ``None``.
     """
 
     scope_parameter = inspect.signature(resolver).parameters.get("scope")
@@ -245,7 +272,9 @@ def register_domain_resolver(domain: str, resolver: DomainResolver) -> None:
         or scope_parameter.default is not inspect.Parameter.empty
     ):
         raise TypeError("a scoped conflict resolver requires keyword-only scope")
-    _resolvers[domain] = _ResolverRegistration(scoped=resolver)
+    _resolvers[domain] = _ResolverRegistration(
+        scoped=resolver, legacy_probe=legacy_probe
+    )
 
 
 def clear_domain_resolvers() -> None:
@@ -528,6 +557,38 @@ async def _acquire_legacy_governance_lock(session: AsyncSession) -> None:
         raise ConflictUnsupportedDatabaseError(str(exc)) from exc
 
 
+async def _bridge_can_adopt_anything(session: AsyncSession) -> bool:
+    """Whether the fully-unowned bridge would widen anything in this database.
+
+    Asked before demanding a sole health subject, because those are two
+    different questions and only one of them is about people. "Is there a row
+    nobody owns" is what the bridge exists for; "is this installation one
+    person" is what has to hold before adopting such a row, and it only has to
+    hold if the first answer is yes.
+
+    Caller holds the identity governance lock, so nothing can become a second
+    subject between this and the proof. The rows themselves cannot appear
+    underneath it either: the columns every fact-side widening tests were made
+    ``NOT NULL`` by revision 0049, and the two catalogs where a null subject is
+    still legal are written only by the checked-in seeders, which always stamp
+    the ``code`` or ``key`` that classifies the row as global. What is left is
+    exactly what a pre-0049 installation carried in, which is what
+    ``scripts/backfill_*_subject_ownership.py`` is for.
+    """
+
+    from vitals.services.conflict_activation_service import (
+        unclassified_global_rule_exists,
+    )
+
+    if await unclassified_global_rule_exists(session):
+        return True
+    for registration in _resolvers.values():
+        probe = registration.legacy_probe
+        if probe is not None and await probe(session):
+            return True
+    return False
+
+
 async def _validate_scope(session: AsyncSession, scope: ConflictScope) -> None:
     if not isinstance(scope, ConflictScope):
         raise TypeError("scope must be a ConflictScope")
@@ -537,6 +598,12 @@ async def _validate_scope(session: AsyncSession, scope: ConflictScope) -> None:
         # later resolver query, causing fully-unowned facts to be adopted after
         # the installation has already become multi-subject.
         await _acquire_legacy_governance_lock(session)
+        if not await _bridge_can_adopt_anything(session):
+            # Nothing to adopt, so the widening selects nothing and there is
+            # nobody's row to decide the owner of. The bridge stays recorded on
+            # the scope — callers such as the Garmin ingest read it as "this is
+            # the legacy path" — but it has no effect to prove safe.
+            return
         subject_ids = list(
             await session.scalars(
                 select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
@@ -592,8 +659,16 @@ async def prepare_scoped_write(
 
     _require_write_context(context)
     await _acquire_legacy_governance_lock(session)
+    # Only the subject *count* turns on whether the bridge has anything to
+    # adopt. The owner-lifecycle and actor-ownership checks below stay on the
+    # requested bridge: they ask who may use the legacy path at all, which is a
+    # permission and does not stop being one because there is nothing to widen.
+    count_must_be_proved = (
+        context.legacy_bridge is LegacyConflictBridge.FULLY_UNOWNED
+        and await _bridge_can_adopt_anything(session)
+    )
     with session.no_autoflush:
-        if context.legacy_bridge is LegacyConflictBridge.FULLY_UNOWNED:
+        if count_must_be_proved:
             subject_ids = list(
                 await session.scalars(
                     select(HealthSubject.id)
@@ -735,6 +810,28 @@ def require_prepared_identity(
             "write identity does not match prepared conflict write"
         )
     return context
+
+
+async def legacy_unowned_raw_present(session: AsyncSession) -> bool:
+    """Whether any raw payload belongs to nobody.
+
+    Mirror of the ``fully_unowned`` half of :func:`raw_payload_scope_conditions`.
+    Several domains widen to it on a write without their resolver widening on a
+    read, so this probe is registered for them rather than being folded into one
+    of the fact probes.
+    """
+
+    from vitals.models.raw_payload import RawPayload
+
+    found = await session.scalar(
+        select(RawPayload.id)
+        .where(
+            RawPayload.subject_id.is_(None),
+            RawPayload.actor_user_id.is_(None),
+        )
+        .limit(1)
+    )
+    return found is not None
 
 
 def raw_payload_scope_conditions(scope: ConflictScope):
