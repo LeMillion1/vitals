@@ -2,7 +2,7 @@
 
 Status: PR-03 Stage-2 / Stage-3A / Stage-3B / Stage-3C / Stage-3D / Stage-3E / Stage-3F / Stage-3G / Stage-3H / Stage-3I / Stage-3J / Stage-3K / Stage-3L / Stage-3M / Stage-3N / Stage-3O / Stage-3P / Stage-3Q / Stage-3R / Stage-3S / Stage-3T implementation source of truth
 
-Last reviewed: 2026-08-22
+Last reviewed: 2026-08-24
 
 This document records every compatibility write boundary that must populate the
 nullable ownership columns introduced by revisions `0037` and `0038`. It is the
@@ -17,6 +17,12 @@ that state rather than a description of what a new write may still omit — a
 write that omits one is refused by the schema. The file is kept because a
 deployment that has not finished its backfill is still migrating through exactly
 these boundaries, in this order.
+
+> **Two boundaries below are retired.** Revision `0058` dropped `signals` and
+> `day_context`, and their Stage-3 phases left
+> `OWNERSHIP_BACKFILL_SEQUENCE`, which now holds eighteen. Those rows and
+> sections are kept, marked, because a deployment still migrating through the
+> earlier revisions passed through them — but no writer reaches them today.
 
 ## Boundary contract
 
@@ -33,7 +39,7 @@ these boundaries, in this order.
 - `Source` remains ingestion provenance and never substitutes for subject, actor,
   connection, file, relationship, or consent identity.
 - MCP v1 remains a legacy installation-wide capability. Its direct Timeline,
-  Supplements, Signals, DayContext, and provider-sync tools resolve the
+  Supplements and provider-sync tools resolve the
   configured owner at the database boundary so writes are attributed and a
   second subject fails closed. Whole-lake MCP composition/export stays blocked
   for the later AccessContext cutover. This mapping is not subject authorization
@@ -56,7 +62,7 @@ these boundaries, in this order.
 | `noise_markers` | web/MCP | New rows get S+A; delete is S-scoped. |
 | `body_scans`, `body_scan_metrics` | upload confirm, structured MCP, raw reparse | Scan ownership comes from the trusted upload/raw boundary; metrics copy S from the scan. |
 | `conflict_rules` | curated catalog sync and subject toggle | Curated rows stay global. Subject activation moves to `SubjectSetting` with temporary legacy dual-write. |
-| `signals`, `day_context` | Telegram, MCP, evening plan, raw reparse | Telegram facts copy S+A+Telegram C from exact raws; platform-AI recovery copies preserved raw roots, including the exact-one S-only adopted bridge. MCP gets S+A; planned/system rows have A/C null. |
+| ~~`signals`, `day_context`~~ | *both tables dropped by revision `0058`* | Was: Telegram facts copied S+A+Telegram C from exact raws, MCP got S+A, planned/system rows had A/C null. No writer remains; the boundary is history, not a path a new write can take. |
 | `garmin_daily`, `garmin_activities`, `garmin_intraday` | scheduler, on-demand sync, HAE import, raw reparse | S+Garmin C required. Human-triggered runs get A; scheduler runs do not. Intraday replacement deletes only inside S+C. |
 | `garmin_weight_exports` | Core upsert and outbox lifecycle | S matches the validated Weight subject; C is the distinct Garmin destination. Q records the human requester and stays NULL for scheduler work. Linked Weight provenance keeps its own origin C/raw roots, and lifecycle updates never erase Q. |
 | `genetic_variants` | VCF/manual/MCP | Raw-first versioned VCF evidence retains the bounded sample plus curated tail, then S+A facts link to that exact revision. Manual/MCP roots stay immutable; upsert keys are S-scoped. |
@@ -92,7 +98,7 @@ pending and the scoped service refuses to mutate the global `active` flag.
 | --- | --- | --- |
 | Garmin API / Health Auto Export | S; optional triggering A; Garmin C; no F | Daily/activity/intraday copy S+A+C. |
 | Hevy | S; optional triggering A; Hevy C; no F | Workout copies S+A+C; exercises/sets copy S+C. |
-| Telegram | S+A+Telegram C; no F | Signals/day context copy the raw ownership. |
+| ~~Telegram~~ | *transport removed* | Was: S+A+Telegram C, no F, with signals/day context copying the raw ownership. Raws stamped `source='telegram'` remain in the lake and keep the roots the backfill gave them; nothing writes new ones. |
 | Lab document | S+A+lab F; C null; exact LAB_DOCUMENT_PARSE AIInvocation | Results/markers use raw S/A; F remains on raw. AIInvocation links the subject to the platform OpenRouter gateway and paid-call metadata. Historical subject-C uploads remain dual-read provenance only. |
 | Body-scan document | S+A+body F; C null; exact BODY_SCAN_PARSE AIInvocation | Scan uses raw S/A/F; metrics copy S. Derived Weight follows the raw/invocation chain with C null rather than pretending the platform gateway is a subject provider. Historical subject-C uploads remain dual-read provenance only. |
 | Structured MCP lab/body input | S+A; C/F null | Normalized rows use the supplied write identity. |
@@ -724,7 +730,8 @@ recovery must provide file provenance.
 
 ## Stage-3I day-context channel-optional ownership operation
 
-The fixed `stage3.channel_optional.day_context.v1` phase covers only
+**Retired — revision `0058` dropped the table and the phase went with it.**
+The fixed `stage3.channel_optional.day_context.v1` phase covered only
 `day_context`. A frozen row is eligible for adoption only when S/A/C are all
 null; it gains the sole S without changing answers, planned context, source,
 domain, dates, or timestamps. Existing owned rows must already have exact S,
@@ -753,7 +760,8 @@ text, or database configuration. This phase does not replace the global
 
 ## Stage-3J signal channel-optional ownership operation
 
-The fixed `stage3.channel_optional.signals.v1` phase covers only `signals`.
+**Retired — revision `0058` dropped the table and the phase went with it.**
+The fixed `stage3.channel_optional.signals.v1` phase covered only `signals`.
 A frozen row is eligible for adoption only when S/A/C are all null; it gains the
 sole S without changing the signal fact, batch, raw link, provenance, or
 timestamps. Existing owned rows retain nullable-or-owner A and nullable-or-exact

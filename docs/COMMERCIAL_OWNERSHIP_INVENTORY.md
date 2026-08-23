@@ -2,7 +2,7 @@
 
 Status: PR-03 Stage-3 through Stage-5 and PR-04 Stage-6 implementation source of truth
 
-Last reviewed: 2026-08-22
+Last reviewed: 2026-08-24
 
 This document classifies every SQLAlchemy table currently registered in
 `Base.metadata` and records the ownership, provenance, key, backfill, and
@@ -14,8 +14,19 @@ owns the exact registry membership and target-column categories. Both forms
 must change together.
 
 The original table-by-table inventory contains the 55 tables present at the
-Stage-0 expansion. The post-foundation control-plane tables below bring the
-current exhaustive `Base.metadata` and machine registry to 62 tables.
+Stage-0 expansion. The post-foundation control-plane tables below brought that
+exhaustive `Base.metadata` and machine registry to 62 tables.
+
+**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 68 tables today.** Later
+revisions added the care, consent, professional-note and HRT-template tables, and
+revision `0058` dropped two: `signals` and `day_context`. Their rows below are
+kept, struck through, at their original numbers — the numbering is referenced
+from the Stage-3 narrative further down, and renumbering would silently
+invalidate every one of those references. A row marked *dropped* is history: the
+contract it describes was implemented and then retired, and no table answers to
+it now. Recompute the live count with the snippet in
+[`ARCHITECTURE.md`](ARCHITECTURE.md); this file is reviewed by hand and the
+registry in `vitals/ownership.py` is the authority.
 Revision `0036` adds the six Stage-0 roots/scoped-setting tables without moving
 data, reading credentials, or touching file bytes. Revisions `0037` and `0038`
 implement the Stage-1 nullable expansion for all 36 top-level and six inherited
@@ -101,7 +112,7 @@ remain PR-06 work.
 | 5 | `body_scan_metrics` / `BodyScanMetric` | S inherited from scan | Add `(scan_id, S) -> body_scans(id, S) ON DELETE CASCADE`; backfill S by joining the parent. |
 | 6 | `body_scans` / `BodyScan` | S, A, F | Add `UNIQUE(id, S)`, a subject-safe raw link, and F. Retain `file_key` and the legacy raw FK during dual-write. |
 | 7 | `conflict_rules` / `ConflictRule` | Mixed global definitions and subject custom state | Curated catalog definitions stay `S IS NULL`; manual/ad-hoc rules receive S. Replace global key semantics with partial global and `(S, code)` indexes at cutover. Move the user's `active` choice to a subject preference. |
-| 8 | `day_context` / `DayContext` | S, A, optional C for channel input | Current global `UNIQUE(date)` becomes `(S, date)`. Telegram-origin rows retain the channel connection. |
+| 8 | ~~`day_context` / `DayContext`~~ | *dropped by revision `0058`* | Was: S, A, optional C for channel input; global `UNIQUE(date)` became `(S, date)`. The evening block was its only writer and went with the chat. |
 | 9 | `garmin_activities` / `GarminActivity` | S, C, optional A | Current global `UNIQUE(external_id)` becomes `(C, external_id)`. Add a subject-safe raw link and backfill the legacy Garmin C. |
 | 10 | `garmin_daily` / `GarminDaily` | S, C, optional A | Current global `UNIQUE(date)` becomes `(C, date)`. API and backup sources for the same account use one logical legacy C. |
 | 11 | `garmin_intraday` / `GarminIntraday` | S, C | Keep wholesale delete/reinsert semantics, but scope deletion and indexes by C/S: `(C, series_type, date)` and `(C, date, ts)`. Add no uniqueness until upstream duplicate semantics are proven. |
@@ -131,7 +142,7 @@ remain PR-06 work.
 | 35 | `progress_photos` / `ProgressPhoto` | S, A, F | Register a FileAsset for every referenced DB key without reading or moving the file. Retain `file_key` during dual-write. |
 | 36 | `raw_payloads` / `RawPayload` | S, optional C, optional A, optional F | Add `UNIQUE(id, S)`. Add partial unique `(C, domain, source, external_id)` when C/external ID are present and `(S, domain, source, external_id)` when C is null. Add S/C-aware pending-sweep indexes. |
 | 37 | `shared_reports` / `SharedReport` | S, creator A, revoker A | Keep the public token globally unique. Add `(S, created_at)` for owner management. Preserve the frozen snapshot byte-for-byte/checksum through backfill. |
-| 38 | `signals` / `Signal` | S, A, optional Telegram C | Add `(S, batch_id)`, `(S, key, date)`, and a subject-safe raw link. |
+| 38 | ~~`signals` / `Signal`~~ | *dropped by revision `0058`* | Was: S, A, optional Telegram C, with `(S, batch_id)`, `(S, key, date)` and a subject-safe raw link. Raw payloads stamped `domain='signals'` remain and are still classified by the raw ownership backfill. |
 | 39 | `skincare_logs` / `SkincareLog` | S, A | The service treats this as one row per day but the DB has no unique constraint. Audit duplicates, then add `(S, date)` at cutover. |
 | 40 | `skincare_observations` / `SkincareObservation` | S, A | Add subject/date indexes. Multiple observations remain allowed. |
 | 41 | `skincare_products` / `SkincareProduct` | S, A | Despite the current “reference” label, schedule and active state are personal. Add subject/name/type indexes. |
@@ -152,9 +163,14 @@ remain PR-06 work.
 
 ### Post-foundation control-plane additions
 
-The centrally funded OpenRouter, durable Telegram-delivery, and bounded-backfill
-slices add reviewed control state above the original 55-table inventory rather
-than weakening subject-bound data roots:
+The centrally funded OpenRouter, durable delivery, and bounded-backfill slices
+add reviewed control state above the original 55-table inventory rather than
+weakening subject-bound data roots. The delivery slice was built for Telegram and
+outlived it on purpose: `notification_delivery_intents` is transport-agnostic —
+its own docstring says a second channel adds rows there rather than a second
+table — so it is what web push will use, and the phase that backfills historical
+`notifications` still resolves the Telegram recipient those rows were delivered
+to. The transport is gone; its journal is not.
 
 | Table | Ownership | Contract |
 | --- | --- | --- |
@@ -180,8 +196,9 @@ silently reassigned or deleted.
 `(domain, source, external_id)` as an upsert key, but `raw_payloads` currently has
 only a non-unique index. Pending sweeps are global by domain. PR-03 must establish
 S/C before normalization, use the scoped key, and prevent normalized/raw subject
-mismatch. Garmin, Hevy, labs, body scans, genetics, Telegram inbound, MCP raw
-writes, and reparse/backfill scripts all use this boundary.
+mismatch. Garmin, Hevy, labs, body scans, genetics, MCP raw
+writes, and reparse/backfill scripts all use this boundary. Telegram inbound did
+too, until it was removed.
 
 ### MCP and external APIs
 
@@ -307,7 +324,10 @@ before a second writable subject exists.
 
 ### Integrations, scheduler, and Redis
 
-Garmin, Hevy, Telegram, and OpenRouter configuration is currently process-wide.
+Garmin, Hevy and OpenRouter configuration is currently process-wide. (Telegram's
+was too, and that is precisely why the transport could not survive a shared
+installation — one bot token and one chat id cannot belong to two people. It was
+removed rather than made per-subject; web push replaces it.)
 Scheduled jobs run once for the installation, and locks/caches use global names
 such as `scheduler:lock:{job_id}`, `settings:enabled_modules`, and
 `settings:custom_charts`. PR-03 records ownership and connection identity. PR-09
@@ -414,8 +434,9 @@ This stage is schema-reversible while the new columns are empty.
 ### Stage 2 — Legacy dual-write
 
 - derive the current explicit S/A/C from the PR-02 AccessContext/bootstrap;
-- cover web, MCP, scheduler, upload, Telegram, Garmin, Hevy, manual import, and
-  raw-reparse writes;
+- cover web, MCP, scheduler, upload, Garmin, Hevy, manual import, and
+  raw-reparse writes (Telegram was in this list until its transport was
+  removed);
 - write raw ownership before normalized rows;
 - dual-write scoped settings/FileAsset metadata and their legacy representation;
 - keep registration disabled and readers on the verified legacy path.
@@ -691,6 +712,17 @@ the backup. An empty snapshot is exact `COMPLETED`. Replacement retires only
 outgoing photo assets, preserves the physical files, validates the blocked or
 empty incoming shape in the same transaction, and requires backup v2 or an
 explicit reviewed recovery before nonempty restored history can be activated.
+
+> **Stages 3I and 3J are retired.** Revision `0058` dropped both tables, and the
+> two phases went with them: `OWNERSHIP_BACKFILL_SEQUENCE` holds eighteen, and
+> neither `stage3.channel_optional.day_context.v1` nor
+> `stage3.channel_optional.signals.v1` is among them. Their scripts and services
+> are deleted. The two sections below are kept as the record of a contract that
+> was implemented and then retired — do not run them, and do not take them as a
+> description of a phase a cutover still has to perform. The ordered list a
+> cutover actually follows is in
+> [`OWNERSHIP_CUTOVER_RUNBOOK.md`](OWNERSHIP_CUTOVER_RUNBOOK.md), which names
+> only phases that exist.
 
 Stage 3I continues with `stage3.channel_optional.day_context.v1` over exactly
 `day_context`. Under a complete plan/answer/import writer pause, a reviewed
@@ -1129,7 +1161,7 @@ scoped indexes that replace them.
 | scope | legacy key | replacement |
 | --- | --- | --- |
 | subject | `uq_body_measurement_per_date` | `(subject_id, date)` |
-| subject | `uq_day_context_per_date` | `(subject_id, date)` |
+| subject | ~~`uq_day_context_per_date`~~ | *table dropped by `0058`* |
 | subject | `uq_active_weight_per_date` | `(subject_id, date) WHERE superseded` is false |
 | subject | `uq_genetic_variant_rsid` | `(subject_id, rsid) WHERE rsid IS NOT NULL` |
 | subject | `ix_lab_markers_name` | `(subject_id, name)` |
@@ -1620,7 +1652,7 @@ never to declare itself the installation.
 
 #### The cutover as one operation
 
-The twenty phases, the contract revision and the policies are three parts of one
+The eighteen phases, the contract revision and the policies are three parts of one
 upgrade, and until now each part was proven separately: twenty rehearsals for the
 phases, `test_required_ownership_contract` for the migration, and
 `test_row_level_security` for the policies — the last two against a lake that was

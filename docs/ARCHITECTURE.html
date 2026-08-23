@@ -326,7 +326,7 @@ tbody tr:hover td { background: var(--surface-2); }
 
 <header class="masthead">
   <h1>Vitals Architecture</h1>
-  <p class="standfirst">A self-hosted personal health record — fifteen domains, four external integrations, one data lake — being rebuilt so that every row belongs to a named person instead of to the installation. This is what the service is now, mid-conversion, and what changed underneath it.</p>
+  <p class="standfirst">A self-hosted personal health record — fourteen domains, three external integrations, one data lake — being rebuilt so that every row belongs to a named person instead of to the installation. This is what the service is now, mid-conversion, and what changed underneath it.</p>
   <div class="meta">
     <span><b>62</b> tables</span>
     <span><b>53</b> migrations</span>
@@ -407,7 +407,7 @@ flowchart TB
 <section id="containers">
   <p class="eyebrow">C4 · Level 2</p>
   <h2>Containers</h2>
-  <p>One FastAPI process serves the web UI, the MCP endpoint and the external read API. An APScheduler loop inside it runs fifteen jobs. Everything durable is in PostgreSQL; Redis holds only what can be lost without consequence.</p>
+  <p>One FastAPI process serves the web UI, the MCP endpoint and the external read API. An APScheduler loop inside it runs fourteen jobs. Everything durable is in PostgreSQL; Redis holds only what can be lost without consequence.</p>
 
   <figure>
     <div class="diagram">
@@ -420,10 +420,10 @@ flowchart LR
     mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
     api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
     svc["<b>Domain services</b><br/><span style='font-size:11px'>88 modules — the only writers</span>"]
-    sched["<b>Scheduler</b><br/><span style='font-size:11px'>15 jobs: sync, digest, nudge,<br/>reconcile, sweep</span>"]
+    sched["<b>Scheduler</b><br/><span style='font-size:11px'>14 jobs: sync, digest, nudge,<br/>reconcile, sweep</span>"]
   end
 
-  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>62 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
+  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>68 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
   redis[("<b>Redis</b><br/><span style='font-size:11px'>cache, rate limits,<br/>Garmin token, breaker</span>")]
   files[/"<b>Private files</b><br/><span style='font-size:11px'>photos, scans, PDFs<br/>opaque keys</span>"/]
 
@@ -458,7 +458,7 @@ flowchart LR
     <table>
       <thead><tr><th>Root</th><th>Question it answers</th><th>Absent means</th></tr></thead>
       <tbody>
-        <tr><td><code>subject_id</code></td><td>Whose health is this about?</td><td>Nothing — now mandatory on 41 tables</td></tr>
+        <tr><td><code>subject_id</code></td><td>Whose health is this about?</td><td>Nothing — now mandatory on 45 tables</td></tr>
         <tr><td><code>actor_user_id</code></td><td>Which human entered it?</td><td>A system or scheduled job did</td></tr>
         <tr><td><code>integration_connection_id</code></td><td>Which account did it arrive through?</td><td>Nobody's device — typed in by hand</td></tr>
         <tr><td><code>file_asset_id</code></td><td>Which private file is it a pointer to?</td><td>Not backed by a file</td></tr>
@@ -481,7 +481,7 @@ erDiagram
   HEALTH_SUBJECTS ||--o{ INTEGRATION_CONNECTIONS : "garmin, hevy, openrouter"
   HEALTH_SUBJECTS ||--o{ FILE_ASSETS : "opaque private keys"
   HEALTH_SUBJECTS ||--o{ RAW_PAYLOADS : "the lake"
-  HEALTH_SUBJECTS ||--o{ SUBJECT_DATA : "34 domain tables"
+  HEALTH_SUBJECTS ||--o{ SUBJECT_DATA : "32 domain tables"
   HEALTH_SUBJECTS ||--o{ SUPPORT_ACCESS_GRANTS : "time-boxed, scoped"
   INTEGRATION_CONNECTIONS ||--o{ RAW_PAYLOADS : "arrived through"
   RAW_PAYLOADS ||--o{ SUBJECT_DATA : "parsed into"
@@ -520,7 +520,7 @@ erDiagram
   }
 </pre>
     </div>
-    <figcaption><b>Ownership roots.</b> <code>SUBJECT_DATA</code> stands for the 34 domain tables, which share this shape exactly. One user owns at most one health subject — the unique constraint is what makes "their own record" unambiguous rather than a guess.</figcaption>
+    <figcaption><b>Ownership roots.</b> <code>SUBJECT_DATA</code> stands for the 32 domain tables, which share this shape exactly. One user owns at most one health subject — the unique constraint is what makes "their own record" unambiguous rather than a guess.</figcaption>
   </figure>
 
   <h3>Classification, not convention</h3>
@@ -670,7 +670,7 @@ flowchart TB
   ctx["<b>1 · AccessContext</b><br/><span style='font-size:11px'>principal · subject · owner<br/>roles · live grants</span>"]
   pol{"<b>2 · Policy</b><br/><span style='font-size:11px'>is_allowed(context, request)</span>"}
   svc["<b>3 · Scoped service</b><br/><span style='font-size:11px'>subject_id is mandatory<br/>in every signature</span>"]
-  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 51 tables<br/>every one with a subject</span>"]
+  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 55 tables<br/>every one with a subject</span>"]
   rows[("rows")]
   deny["403<br/><span style='font-size:11px'>says nothing about<br/>whose record, or whether<br/>it exists</span>"]
 
@@ -785,7 +785,7 @@ flowchart LR
       <div class="n">PR-03</div>
       <div>
         <h4>Ownership expansion and backfill<span class="state done">merged</span></h4>
-        <p>Nullable ownership columns on every table, dual-write from every path, twenty resumable backfill phases, then scoped unique keys installed beside the global ones and the global ones dropped. Two people can now share a weigh-in date.</p>
+        <p>Nullable ownership columns on every table, dual-write from every path, eighteen resumable backfill phases, then scoped unique keys installed beside the global ones and the global ones dropped. Two people can now share a weigh-in date.</p>
       </div>
     </div>
     <div class="stage">
@@ -837,7 +837,7 @@ flowchart LR
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"12.5px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
 flowchart TB
   a["<b>1 · alembic upgrade 0048</b><br/><span style='font-size:11px'>every ownership column exists,<br/>all still nullable · safe to stop here</span>"]
-  b["<b>2 · bootstrap, then twenty phases</b><br/><span style='font-size:11px'>owner, resource roots, catalogs<br/>raw → facts → children → artifacts<br/>each resumable, each checkpointed</span>"]
+  b["<b>2 · bootstrap, then eighteen phases</b><br/><span style='font-size:11px'>owner, resource roots, catalogs<br/>raw → facts → children → artifacts<br/>each resumable, each checkpointed</span>"]
   c{"every target column<br/>stamped?"}
   d["<b>3 · alembic upgrade head</b><br/><span style='font-size:11px'>0049 NOT NULL · 0050 FORCE RLS</span>"]
   e["<b>refused</b><br/><span style='font-size:11px'>names each table and how far behind<br/>nothing altered — run the phase, retry</span>"]

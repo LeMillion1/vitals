@@ -15,14 +15,29 @@ Its figures come from the code it describes, and a drift there is silent — the
 page renders just as happily with a wrong number. When any of these change, the
 page needs the same edit:
 
-| The page says | Comes from |
-| --- | --- |
-| table counts, ownership classes | `vitals/ownership.py` |
-| the twenty backfill phases | `vitals/ownership_deploy.py` |
-| the fifteen domains | `vitals.enums.Domain` |
-| migration count | `migrations/versions/` |
-| RLS table count | revisions `0050` + `0051` |
-| platform-scope call sites | `tests/test_row_level_security.py` |
+| The page says | Comes from | Today |
+| --- | --- | --- |
+| table count, ownership classes | `vitals/ownership.py` | 68 tables, 32 of them `subject_data` |
+| mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 45 |
+| the backfill phases | `OWNERSHIP_BACKFILL_SEQUENCE` in `vitals/ownership_deploy.py` | 18 |
+| the domains | `vitals.enums.Domain` | 14 |
+| the scheduled jobs | `vitals/scheduler/jobs.py` | 14 |
+| migration count | `migrations/versions/` | 59, head `0059` |
+| RLS table count | revisions `0050` + `0051`, asserted in `tests/test_row_level_security.py` | 55 |
+| platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 6 |
+
+The **39 columns** the timeline attributes to revision `0049` is deliberately
+*not* in that table: it is the length of that revision's own
+`REQUIRED_OWNERSHIP_COLUMNS`, fixed at the moment it ran. A migration's list is
+history and does not move when a later revision drops a table, so a reader who
+recomputes it from today's schema and finds a smaller number has found a
+different fact, not a drift.
+
+Recompute the live column with:
+
+```bash
+.venv/bin/python -c "import vitals.models; from vitals.models.base import Base; from vitals.ownership import OWNERSHIP_REGISTRY; from vitals.ownership_deploy import OWNERSHIP_BACKFILL_SEQUENCE as S; from vitals.enums import Domain; t=Base.metadata.tables; print('tables', len(t)); print('mandatory', sum(1 for x in t.values() if 'subject_id' in x.columns and not x.columns['subject_id'].nullable)); print('rls', sum(1 for x in t.values() if 'subject_id' in x.columns)); print('phases', len(S)); print('domains', len(list(Domain)))"
+```
 
 The eight diagrams are validated by parsing them with mermaid itself; a syntax
 error renders as an error box rather than failing loudly, so it is worth

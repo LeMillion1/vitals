@@ -2,7 +2,7 @@
 
 Status: active design and implementation plan
 
-Last reviewed: 2026-08-22
+Last reviewed: 2026-08-24
 
 Current implementation branch: `commercial/main`
 
@@ -18,6 +18,53 @@ The existing fork's six divergent commits are patch-equivalent to changes that
 already exist upstream. New commercial work therefore starts from the current
 upstream head. The fork's `master` branch is not force-updated or otherwise
 rewritten.
+
+## Where this stands today (2026-08-24)
+
+The numbers and states below are measured, not remembered. Re-derive them rather
+than trusting them if this date has gone stale.
+
+| | |
+| --- | --- |
+| Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
+| Alembic head | `0059` — 59 revisions |
+| Schema | 68 tables; 55 carry `subject_id` and are covered by an RLS policy; 45 have it `NOT NULL` |
+| Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
+| Suites | 4334 fast passed / 167 skipped; 166 integration passed |
+| Domains / scheduled jobs | 14 and 14 |
+
+**Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
+expansion and backfill, PR-04 scoped services + policy engine + FORCE RLS, PR-06
+files/portability/settings, PR-07 professionals/relationships/consent, PR-08
+professional UX (minus the inbox).
+
+**The next gate is PR-05.** Registration is closed and `identity_bootstrap` is
+still the only place a `HealthSubject` is born, so `scripts/seed_care_demo.py` is
+the only way to get a second one. Everything below it in the sequence is unstarted.
+
+**Two things are deliberately unfinished and will look like bugs if you don't
+know:**
+
+1. **There is no notification transport.** Telegram was removed outright (see the
+   decision log); web push has not landed. The proactive layer composes a brief
+   on schedule and stores it in `/reports`, and every send resolves to "no
+   endpoint", which every caller already handles as an ordinary answer.
+   `channels.resolve_legacy_bound_notifier` returns `None` and is the seam a
+   per-subject push subscription plugs into.
+2. **The profile is omitted from reports, not attributed.** `VITALS_USER_AGE`,
+   `VITALS_SEX`, `VITALS_HEIGHT_CM`, `VITALS_USER_PROGRAM`, `VITALS_USER_GOALS`
+   and the nutrition targets are still installation-wide, so one person's profile
+   was being written into every patient's report. The placeholder in
+   `digest_service._config_profile_if_it_describes` leaves them out instead.
+   Moving them to subject-scoped state is item 3 of the `.env` plan below and the
+   thing that gives them back.
+
+**The `.env` plan** — `.env` should hold only what belongs to the installation
+(database, Redis, session secret, identity provider, AI gateway, endpoints); all
+of a person's settings belong in the database. Done: the timezone (was already a
+column, now read), and the proactive schedule. Remaining: (3) the profile and
+goals above, and (4) per-subject Garmin/Hevy credentials, which is what blocks
+fanning out the four provider-sync jobs.
 
 ## Outcome
 
@@ -228,7 +275,7 @@ Tests:
 Rollback: retain new rows but return the compatibility adapter to legacy-only
 mode. Never delete the copied password hash until the auth cutover is verified.
 
-### PR 03 — Subject ownership expansion and backfill
+### PR 03 — Subject ownership expansion and backfill — **merged**
 
 The canonical table-by-table contract is
 `docs/COMMERCIAL_OWNERSHIP_INVENTORY.md`. It classifies the original 55-table
@@ -676,7 +723,7 @@ proving the data still satisfies it. Once a second subject has written data,
 especially a duplicate of a legacy global key, downgrade to the single-subject
 schema is forbidden; recovery requires a verified backup and forward fix.
 
-### PR 04 — Scoped services, policy engine, and PostgreSQL RLS
+### PR 04 — Scoped services, policy engine, and PostgreSQL RLS — **merged**
 
 Scope:
 
@@ -1121,6 +1168,17 @@ pages still refuse — in both directions, so the list cannot go stale in either
 and one asserts that an account without a record is told that, and not something
 else.
 
+**Reads are covered; writes are not.** Everything above, and the test that pins
+it, walks pages with `GET`. A shared installation still meets these gates on
+`POST`, and `POST /settings/proactive` is a known live one: it resolves through
+`prefs.resolve_legacy_preferences_scope` and answers 409
+(`LegacyProactivePreferencesBridgeClosedError`) with two subjects present, so
+nobody can save their proactive settings. Found by clicking Save in a browser
+against the seeded shared installation — the suite could not see it, because it
+never posts. Widening the write paths, and extending
+`tests/test_shared_installation_pages.py` to cover them, is the next piece of
+this section.
+
 ### PR 09 — Subject integrations, platform AI gateway, scheduler, and notifications — **partly landed**
 
 Landed already, because the scheduler could not wait:
@@ -1428,8 +1486,17 @@ Additional gates:
 - [x] Backfill subject ownership across the lake.
 - [x] Pass cross-subject service isolation and PostgreSQL RLS gates.
 - [ ] Cut over OIDC authentication and per-user Vitals sessions/step-up state.
-- [ ] Isolate files, settings, portability, connectors, scheduler, and messaging.
-- [ ] Add verified professionals, relationships, and consent.
+  **PR-05, and the next gate.** Registration is still closed and
+  `identity_bootstrap` is still the only place a `HealthSubject` is born, so
+  `scripts/seed_care_demo.py` is the only way to make a second one.
+- [x] Isolate files, settings, portability — PR-06.
+- [~] Isolate connectors, scheduler, and messaging — PR-09, partly. The scheduler
+  is fanned out per subject and runs on each subject's own clock; four
+  provider-sync jobs are not, because their credentials are one set for the whole
+  process. Messaging has no transport: Telegram was removed and web push has not
+  landed.
+- [x] Add verified professionals, relationships, and consent — PR-07, with the
+  professional UX in PR-08 (minus the inbox).
 - [ ] Replace MCP/external auth with subject-scoped revocable grants.
 - [ ] Add the patient-visible care-team thread.
 - [ ] Ship the controlled support console and audit UX.
@@ -1454,6 +1521,10 @@ Additional gates:
 | 2026-08-19 | Treat password rotation as an explicit environment/DB dual-write until database auth cuts over. | Strict startup hash reconciliation would otherwise turn a legitimate settings change into a startup outage; compensation narrows the unavoidable file/database crash window. |
 | 2026-08-19 | Separate nullable ownership expansion/backfill from the scoped-key cutover, and complete both before a second subject is writable. | Keeping a global unique constraint cannot permit the same date or upstream ID in two subjects. After scoped duplicate data exists, a downgrade to the global-key schema would be lossy and is forbidden. |
 | 2026-08-21 | Keep Alembic schema-only and run each data-backfill phase through a fixed, bounded, resumable operator command. | A production lake rewrite must commit in reviewable batches, preserve deterministic evidence across restart, expose no PHI in operator output, and block schema downgrade once its durable checkpoint exists. |
+| 2026-08-24 | Remove the Telegram transport, the `signals` domain and `day_context` outright rather than making them per-subject. | One bot token and one chat id in the environment is a single-user shape; a shared installation cannot have it. They were also why four scheduled jobs could not be fanned out. The delivery journal (`notification_delivery_intents`) is transport-agnostic by design and is kept as the seam web push plugs into. The cost is real and is recorded rather than hidden: nothing captures free text now, so the symptoms section of the doctor's report — the one thing no device produces — is empty. |
+| 2026-08-24 | A feature removal includes its settings, in the same release. | Deleting a feature and deleting its knobs are two jobs and the suites only notice the first. What survived the removal above for two days: four `VITALS_TELEGRAM_*` variables nothing read; a week-template block whose inputs had stopped being passed, so `/settings` rendered a heading over an empty box and still answered 200; a module gate that could only return `False`; an AI prompt describing a context key that no longer exists. |
+| 2026-08-24 | Retiring a field from a stored preference policy requires a data migration in the same revision. | `prefs._strict_object` compares a stored row's key set against the code's with `!=`, deliberately, because a preference that has drifted from the code is worth failing on. Removing `evening_time` from the code alone would have made every read raise on any installation that had ever saved its proactive settings. Revision `0059` rewrites the rows. |
+| 2026-08-24 | A settings control whose effect is currently zero comes off the card; its stored value stays. | Quiet hours, the daily message budget and the nudge switches all gate a send, and there is nothing to send with. The delivery engine still reads the stored policy and a first web push has to be governed by something, so the handler now overlays only the fields the form still posts — `Form(default)` would otherwise silently reset what the owner last chose. |
 
 ## Continuation protocol
 
