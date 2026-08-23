@@ -496,14 +496,19 @@ async def legacy_ownership_handler(request: Request, exc: Exception):
     rather than a crash to read out of a stack trace.
 
     Deliberately not silent, and deliberately logged at warning: a route ending
-    up here is one that still needs porting to ``resolve_access_context``.
+    up here is one that still needs porting to ``resolve_access_context``. The
+    log names the refusing type as well as the route, because "which bridge" is
+    the question the porting work starts from and the route alone rarely answers
+    it — several of these pages refuse two layers below the handler they look
+    like they belong to.
     """
 
-    del exc
     logger.warning(
-        "legacy sole-owner route reached in a multi-subject installation: %s %s",
+        "legacy sole-owner route reached in a multi-subject installation: "
+        "%s %s refused by %s",
         request.method,
         request.url.path,
+        type(exc).__name__,
     )
     detail = "Эта страница ещё не поддерживает несколько записей."
     accept = request.headers.get("accept", "")

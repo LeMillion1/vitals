@@ -521,9 +521,23 @@ async def test_ambiguous_nonretired_provider_roots_fail_before_alert_mutation(
     assert row.resolved_by_user_id is None
 
 
-async def test_second_subject_makes_legacy_bridge_fail_closed_without_leak(
+async def test_a_second_subject_does_not_leak_and_does_not_stop_the_first(
     db_session: AsyncSession,
 ):
+    """Two people, every alert owned: each sees exactly their own.
+
+    This used to assert that all three operations raised, because the bridge
+    demanded a sole subject whenever it was requested — even here, where it has
+    nothing to do: both rows carry an owner, so widening the query to unowned
+    rows would add nothing. Refusing was safe but wrong, and it was not free:
+    four screens answered 409 in a shared installation over a bridge that would
+    have returned the same rows either way.
+
+    What actually has to hold is below, and it held before and after: A's
+    listing is A's, and A cannot resolve B's alert. The exception type was only
+    ever a proxy for that.
+    """
+
     owner_a, subject_a = await _subject(db_session, "owner-a")
     roots_a = await _roots(db_session, subject_a)
     _, subject_b = await _subject(db_session, "owner-b")
@@ -543,19 +557,47 @@ async def test_second_subject_makes_legacy_bridge_fail_closed_without_leak(
     )
     ownership_a = _ownership(owner_a, subject_a, roots_a)
 
+    visible = await subject_alerts.list_active(db_session, ownership=ownership_a)
+    assert [row.id for row in visible] == [row_a.id]
+
+    assert (
+        await subject_alerts.resolve(db_session, row_b.id, ownership=ownership_a)
+    ) is None
+    await subject_alerts.resolve_all(db_session, ownership=ownership_a)
+
+    # A resolved A's own, and B's is untouched — the point of the whole test.
+    assert row_b.resolved_at is None
+
+
+async def test_an_unowned_alert_still_closes_the_bridge_for_two_subjects(
+    db_session: AsyncSession,
+):
+    """The refusal is kept for the case it was written for.
+
+    One alert with no owner and two people to give it to: nothing here can say
+    whose it is, so every operation that would reach for it stops. This is what
+    ``scripts/backfill_system_alert_subject_ownership.py`` is for, and it is
+    meant to run while the installation is still one person.
+    """
+
+    owner_a, subject_a = await _subject(db_session, "owner-a")
+    roots_a = await _roots(db_session, subject_a)
+    await _subject(db_session, "owner-b")
+    orphan = await _alert(
+        db_session,
+        key="weight.noisy_period_active",
+        domain=Domain.WEIGHT,
+        entity="orphan",
+    )
+    assert orphan.subject_id is None
+    ownership_a = _ownership(owner_a, subject_a, roots_a)
+
     with pytest.raises(alerts.AlertLegacyBridgeError):
         await subject_alerts.list_active(db_session, ownership=ownership_a)
     with pytest.raises(alerts.AlertLegacyBridgeError):
-        await subject_alerts.resolve(
-            db_session,
-            row_b.id,
-            ownership=ownership_a,
-        )
-    with pytest.raises(alerts.AlertLegacyBridgeError):
         await subject_alerts.resolve_all(db_session, ownership=ownership_a)
 
-    assert row_a.resolved_at is None
-    assert row_b.resolved_at is None
+    assert orphan.resolved_at is None
 
 
 @pytest.mark.integration

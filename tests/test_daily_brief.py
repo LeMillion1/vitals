@@ -878,10 +878,7 @@ async def test_empty_alert_bridge_rejects_partial_ownership(
     assert partial.subject_id is None
 
 
-async def test_empty_alert_bridge_rejects_a_second_subject(
-    db_session, legacy_owner_roots
-):
-    ownership = await _telegram_ownership(db_session)
+async def _second_person(db_session) -> None:
     suffix = uuid.uuid4().hex
     owner = User(
         username=f"second-{suffix}",
@@ -899,6 +896,49 @@ async def test_empty_alert_bridge_rejects_a_second_subject(
         )
     )
     await db_session.commit()
+
+
+async def test_the_empty_day_alert_is_written_for_its_own_subject(
+    db_session, legacy_owner_roots
+):
+    """A second person does not stop the brief from marking an empty day.
+
+    It used to: the reconciliation asks for the fully-unowned bridge, and the
+    bridge demanded a sole subject whenever it was asked for. With no unowned
+    alert in the installation there is nothing for it to adopt, so the write is
+    an ordinary scoped one — and it lands on the identity's own subject, which
+    is the property worth pinning here.
+    """
+
+    ownership = await _telegram_ownership(db_session)
+    await _second_person(db_session)
+
+    row = await brief._reconcile_empty_day_alert(
+        db_session,
+        identity=ownership.system_action(),
+        empty=True,
+    )
+    assert row is not None
+    assert row.subject_id == ownership.subject_id
+
+
+async def test_an_unowned_alert_still_stops_the_empty_day_write(
+    db_session, legacy_owner_roots
+):
+    """When there *is* something to adopt, two people close the bridge again."""
+
+    ownership = await _telegram_ownership(db_session)
+    db_session.add(
+        SystemAlert(
+            domain=Domain.SYSTEM.value,
+            severity=Severity.INFO.value,
+            message="orphaned",
+            alert_key=brief.EMPTY_DAY_ALERT_KEY,
+            entity_ref="",
+        )
+    )
+    await db_session.commit()
+    await _second_person(db_session)
 
     with pytest.raises(alerts_service.AlertLegacyBridgeError):
         await brief._reconcile_empty_day_alert(

@@ -783,6 +783,33 @@ async def _validate_active_actor(
         raise AlertActorInactiveError("actor user is not active")
 
 
+async def _installation_has_unowned_alerts(session: AsyncSession) -> bool:
+    """Whether any alert is still waiting for the ownership backfill.
+
+    This is the question the fully-unowned bridge exists to answer, and it is
+    not the same question as "how many people are in this installation". The
+    bridge widens exactly one predicate — ``subject_id IS NULL AND
+    integration_connection_id IS NULL`` — so with no such row it widens nothing,
+    and there is nobody's alert to decide the owner of.
+
+    ``scripts/backfill_system_alert_subject_ownership.py`` is what empties this
+    set, and it is meant to run while the installation is still one person,
+    which is exactly when adopting an unowned row into that person is right.
+    Afterwards this returns False and the bridge is inert.
+    """
+
+    with session.no_autoflush:
+        found = await session.scalar(
+            select(SystemAlert.id)
+            .where(
+                SystemAlert.subject_id.is_(None),
+                SystemAlert.integration_connection_id.is_(None),
+            )
+            .limit(1)
+        )
+    return found is not None
+
+
 async def _require_single_subject_bridge(
     session: AsyncSession,
     subject: HealthSubject,
@@ -848,7 +875,18 @@ async def _prepare_context(
     legacy_bridge: LegacyAlertBridge,
     fresh_provider_write: bool,
     lock_roots: bool,
-) -> None:
+) -> LegacyAlertBridge:
+    """Validate the roots, and report the bridge that actually applies.
+
+    Returns the requested bridge, except that a requested ``FULLY_UNOWNED``
+    comes back as ``REJECT`` when the installation holds no unowned alert. That
+    is a downgrade rather than a permission: with nothing to adopt, widening and
+    not widening return the same rows, and the caller must use the value
+    returned rather than the one it asked for — otherwise the sole-subject proof
+    would be skipped while the query still reached for nobody's rows, which is
+    the one combination that could show one person another's alert.
+    """
+
     _require_context(context)
     _require_bridge(legacy_bridge)
     if isinstance(context, PlatformAlertContext):
@@ -857,13 +895,17 @@ async def _prepare_context(
                 "platform alert contexts cannot use the legacy ownership bridge"
             )
         await _validate_active_actor(session, context.actor_user_id)
-        return
+        return legacy_bridge
 
     if legacy_bridge is LegacyAlertBridge.FULLY_UNOWNED:
         try:
             await acquire_identity_governance_lock(session)
         except UnsupportedIdentityDatabaseError as exc:
             raise AlertUnsupportedDatabaseError(str(exc)) from exc
+        # Under the governance lock, so the answer cannot change underneath the
+        # proof that follows it.
+        if not await _installation_has_unowned_alerts(session):
+            legacy_bridge = LegacyAlertBridge.REJECT
 
     subject_stmt = (
         select(HealthSubject)
@@ -886,7 +928,7 @@ async def _prepare_context(
     await _validate_active_actor(session, context.identity.actor_user_id)
 
     if not isinstance(context, ProviderAlertContext):
-        return
+        return legacy_bridge
     connection_stmt = (
         select(IntegrationConnection)
         .where(IntegrationConnection.id == context.integration_connection_id)
@@ -923,6 +965,7 @@ async def _prepare_context(
         raise AlertConnectionStateError(
             "integration connection cannot authorize this alert operation"
         )
+    return legacy_bridge
 
 
 def _alert_lock_key(alert_key: str) -> int:
@@ -1280,7 +1323,7 @@ async def raise_scoped_alert(
     actor_user_id = _actor_user_id(context)
     if overridden and actor_user_id is None:
         raise AlertActorRequiredError("override requires an active human actor")
-    await _prepare_context(
+    legacy_bridge = await _prepare_context(
         session,
         context=context,
         legacy_bridge=legacy_bridge,
@@ -1366,7 +1409,7 @@ async def resolve_scoped_alert(
     """Resolve one visible scoped alert; foreign IDs are non-enumerating misses."""
 
     _require_alert_id(alert_id)
-    await _prepare_context(
+    legacy_bridge = await _prepare_context(
         session,
         context=context,
         legacy_bridge=legacy_bridge,
@@ -1413,7 +1456,7 @@ async def resolve_scoped_by_key(
 
     _require_key(alert_key)
     _require_entity_ref(entity_ref)
-    await _prepare_context(
+    legacy_bridge = await _prepare_context(
         session,
         context=context,
         legacy_bridge=legacy_bridge,
@@ -1464,6 +1507,10 @@ async def resolve_fully_unowned_by_key_preserving_roots(
         raise AlertValidationError("legacy root preservation requires health context")
     _require_key(alert_key)
     _require_entity_ref(entity_ref)
+    # The effective bridge is deliberately not read here. Every other caller
+    # needs it because its query is widened by ``_candidate_scope_predicate``;
+    # this one names ``subject_id IS NULL`` itself, so a downgrade would change
+    # nothing — with no unowned rows the select simply finds none.
     await _prepare_context(
         session,
         context=context,
@@ -1514,7 +1561,7 @@ async def override_scoped_alert(
     actor_user_id = _actor_user_id(context)
     if actor_user_id is None:
         raise AlertActorRequiredError("override requires an active human actor")
-    await _prepare_context(
+    legacy_bridge = await _prepare_context(
         session,
         context=context,
         legacy_bridge=legacy_bridge,
@@ -1563,7 +1610,7 @@ async def resolve_scoped_superseded(
     _require_key(alert_key)
     _require_optional_entity(keep_entity, "keep_entity")
     _require_optional_entity(marker, "marker")
-    await _prepare_context(
+    legacy_bridge = await _prepare_context(
         session,
         context=context,
         legacy_bridge=legacy_bridge,
@@ -1617,7 +1664,7 @@ async def was_scoped_dismissed_today(
     _require_entity_ref(entity_ref)
     if on_date is not None and not isinstance(on_date, date_type):
         raise AlertValidationError("on_date must be a date or None")
-    await _prepare_context(
+    legacy_bridge = await _prepare_context(
         session,
         context=context,
         legacy_bridge=legacy_bridge,
@@ -1651,7 +1698,7 @@ async def was_scoped_ever_dismissed(
 
     _require_key(alert_key)
     _require_entity_ref(entity_ref)
-    await _prepare_context(
+    legacy_bridge = await _prepare_context(
         session,
         context=context,
         legacy_bridge=legacy_bridge,
@@ -1681,7 +1728,7 @@ async def list_active_scoped(
     """List active alerts visible in exactly one typed ownership context."""
 
     _require_domain(domain, optional=True)
-    await _prepare_context(
+    legacy_bridge = await _prepare_context(
         session,
         context=context,
         legacy_bridge=legacy_bridge,
@@ -1712,7 +1759,7 @@ async def resolve_all_scoped(
     """Resolve all currently active alerts in one exact ownership scope."""
 
     _require_domain(domain, optional=True)
-    await _prepare_context(
+    legacy_bridge = await _prepare_context(
         session,
         context=context,
         legacy_bridge=legacy_bridge,
