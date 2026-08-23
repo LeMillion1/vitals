@@ -398,6 +398,16 @@
     <div class="v-card v-setting-row p-6 space-y-5">
         {{ card_header(t("settings.signin_title")) }}
 
+        {% if federated_signin %}
+        {# The provider owns sign-in after the cutover. Every route behind this
+           card answers 404, so rendering the forms would offer a password change
+           and a second-factor enrolment that cannot happen — and would put a
+           stale enrolment secret on screen next to buttons that cannot act. #}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("settings.signin_federated") }}
+        </p>
+        {% else %}
+
         <div class="space-y-2.5">
         <span class="s-signin-label">{{ t("settings.password_label") }}</span>
         <form action="/settings/password" method="POST" class="space-y-4">
@@ -520,6 +530,7 @@
         <p class="v-text-body" style="color: var(--muted)">{{ t("settings.twofa_description") }}</p>
         {% endif %}
         </div>
+        {% endif %}
     </div>
     </div>
 

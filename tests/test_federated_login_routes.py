@@ -376,6 +376,54 @@ async def test_after_the_cutover_enrolling_a_second_factor_here_is_gone(
     assert response.status_code == 404, path
 
 
+async def test_after_the_cutover_the_settings_page_stops_offering_sign_in(
+    auth_client, federated, db_session, legacy_owner_roots
+):
+    """Every route behind that card is 404; the card should not still be there.
+
+    Rendering it offered a password change and a second-factor enrolment that
+    could not happen. Worse, the page read the 2FA state unconditionally — so a
+    half-finished enrolment from before the cutover still reads as ``pending``,
+    and its live secret and QR were painted onto a page whose buttons could no
+    longer act on them.
+    """
+
+    from vitals.models.app_settings import AppSetting
+    from vitals.services import twofa_service
+
+    # A pre-cutover enrolment nobody ever finished.
+    db_session.add(
+        AppSetting(
+            key=twofa_service.SETTINGS_KEY,
+            value='{"secret": "SYNTHETICSECRET234567", "confirmed": false}',
+        )
+    )
+    await db_session.commit()
+
+    response = await auth_client.get("/settings", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    body = response.text
+
+    assert "SYNTHETICSECRET234567" not in body
+    for control in (
+        '/settings/password"',
+        "/settings/2fa/start",
+        "/settings/2fa/enable",
+        "/settings/2fa/disable",
+    ):
+        assert control not in body, control
+
+
+async def test_before_the_cutover_the_sign_in_card_is_still_there(
+    auth_client, db_session, legacy_owner_roots
+):
+    """The gate is new; what it hides has to keep working without it."""
+
+    response = await auth_client.get("/settings", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    assert '/settings/password"' in response.text
+
+
 async def test_after_the_cutover_a_stored_password_hash_is_not_a_way_in(
     client, federated
 ):

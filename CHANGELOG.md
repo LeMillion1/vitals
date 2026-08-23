@@ -37,6 +37,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `web/static/uploads`; moving them to a private root would make the guarantee
   structural rather than a matter of route ordering, and is follow-up work.
 
+### Fixed — the settings page stops offering a sign-in it no longer owns
+
+- After the OIDC cutover every route behind the sign-in card answers 404, but
+  the card itself still rendered: a password form and a second-factor enrolment
+  that could not happen.
+- Worse, the page read the 2FA state unconditionally. A half-finished enrolment
+  from before the cutover still reads as `pending`, so its live TOTP secret and
+  QR code were painted onto a page whose buttons could no longer act on them.
+  The state is not read at all now when the provider owns sign-in.
+- The card is replaced by one line saying where to change these things.
+
 ### Added — a personal export, separate from the installation's backup (PR-06)
 
 - `GET /settings/export-subject` answers "what is mine". The existing

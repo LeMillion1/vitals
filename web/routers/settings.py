@@ -332,7 +332,17 @@ async def _page(
         context=export_context,
         historical=True,
     )
-    twofa = await twofa_service.get_state(db)
+    # Under the OIDC cutover the provider owns sign-in entirely, and every
+    # route behind this card already answers 404. Reading the state anyway would
+    # put a live enrolment secret on screen — a half-finished enrolment from
+    # before the cutover still reads as ``pending`` — beside buttons that cannot
+    # act on it.
+    federated_signin = get_web_config().oidc_enabled
+    twofa = (
+        twofa_service.TwoFAState()
+        if federated_signin
+        else await twofa_service.get_state(db)
+    )
     _twofa_uri = (
         twofa_service.provisioning_uri(twofa.secret, account=username) if twofa.pending else ""
     )
@@ -340,6 +350,7 @@ async def _page(
         "username": username,
         # Two-factor auth. The card renders one of three states off this: off,
         # mid-enrolment (secret minted, not yet proven), on.
+        "federated_signin": federated_signin,
         "twofa": twofa,
         # Only ever shown while enrolment is unconfirmed — once 2FA is on, the
         # secret has no reason to appear on screen again.
