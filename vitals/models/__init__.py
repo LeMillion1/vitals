@@ -104,10 +104,12 @@ from vitals.models.share import SharedReport
 
 # Who a professional claims to be, and who checked. Not a grant of anything.
 from vitals.models.professional import (
+    CarePlan,
     CareRelationship,
     ConsentGrant,
     ConsentScope,
     ProfessionalInvitation,
+    ProfessionalNote,
     ProfessionalProfile,
 )
 
@@ -128,7 +130,9 @@ __all__ = [
     "SupportAccessScope",
     "ProfessionalProfile",
     "ProfessionalInvitation",
+    "CarePlan",
     "CareRelationship",
+    "ProfessionalNote",
     "ConsentGrant",
     "ConsentScope",
     "AuditEvent",

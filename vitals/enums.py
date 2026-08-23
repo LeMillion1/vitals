@@ -123,6 +123,19 @@ class ConsentStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class CarePlanStatus(StrEnum):
+    """Whether a plan is being written, being followed, or is over.
+
+    A plan is never deleted. What somebody was told to do last spring is part of
+    the record of their care, and a plan that can vanish is one the patient
+    cannot hold anybody to.
+    """
+
+    DRAFT = "draft"
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
 class SupportScopeResourceType(StrEnum):
     """Kind of resource named by an explicit support-access scope."""
 

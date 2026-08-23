@@ -356,6 +356,21 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         actor=TargetColumn.NONE,
         user_portable=False,
     ),
+    # The professional's own contribution, in the patient's record but not among
+    # the patient's facts. Subject-scoped so row security covers it; authored, so
+    # who may change it is a question about the author rather than the subject.
+    "professional_notes": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
+    "care_plans": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "support_access_grants": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL,
         subject=TargetColumn.REQUIRED,

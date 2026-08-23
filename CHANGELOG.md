@@ -8,6 +8,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — where a professional's contribution goes (PR-07)
+
+- `professional_notes` and `care_plans`, plus
+  `professional_record_service`. A doctor's reading of a lab panel is not the
+  lab panel: keeping them apart is partly about the record — a year later the
+  two would be indistinguishable — and partly about permission, because a
+  professional's thinking living inside the patient's measurements would mean a
+  professional needs to be able to write into them.
+- Three rules run through it. **Only somebody in live care may write**, which
+  means the same pair — relationship and consent, both live — that everything
+  else needs; a patient who narrowed a consent to reading has not agreed to be
+  written about. **Only the author may change what they wrote**, and the author
+  condition is in the query, so another professional's note is not found rather
+  than refused. **Nothing is deleted**: a clinical note that can disappear is a
+  worse record than one that stays and is superseded, and a plan that can vanish
+  is one the patient cannot hold anybody to. A test asserts that structurally
+  rather than trusting the paragraph saying so.
+- Reading is shared; editing is not. A second professional joining a case sees
+  what the first concluded, and the patient sees everything written about them.
+- Consent defaults now separate the two kinds of resource. Patient facts stay
+  read-only for both kinds; the professional's own artifacts carry create and
+  update, because that is where the read-only rule sends them. Delete is absent
+  from both.
+- Revision `0057` adds the two tables with row security. Each row carries three
+  references: `subject_id` (whose record it sits in, which row security reads),
+  `actor_user_id` (who wrote it, which is what stops a second professional
+  editing it), and `relationship_id` (the care it was written under, which makes
+  it reviewable). The relationship is `RESTRICT` and reads are by subject: care
+  ends and the note does not, and a record that became unreadable when care
+  ended is exactly the record a patient needs afterwards.
+
 ### Added — care relationships and versioned consent (PR-07)
 
 - `care_relationships` says a professional is in care for a patient;

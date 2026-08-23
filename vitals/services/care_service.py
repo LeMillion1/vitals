@@ -60,6 +60,23 @@ READ_ONLY_ACTIONS: tuple[PolicyAction, ...] = (
     PolicyAction.SEARCH,
 )
 
+#: The artifacts a professional writes themselves, and what they may do to them.
+#: Writing here is not an exception to the read-only rule — it is where the rule
+#: sends them. A doctor in care has to be able to record what they think, and
+#: the whole point of a separate record is that recording it does not mean
+#: editing the patient's measurements.
+#:
+#: Deleting is absent on purpose. A clinical note somebody can make disappear is
+#: a worse record than one that stays and is superseded, and the patient cannot
+#: consent to a history they will not be able to see.
+AUTHORED_ARTIFACTS: tuple[str, ...] = ("professional_note", "care_plan")
+AUTHORED_ACTIONS: tuple[PolicyAction, ...] = (
+    PolicyAction.READ,
+    PolicyAction.LIST,
+    PolicyAction.CREATE,
+    PolicyAction.UPDATE,
+)
+
 #: Which domains each kind sees unless the patient says otherwise. The split is
 #: about what the work needs rather than about seniority: a trainer planning
 #: sessions needs load, bodyweight and recovery; they do not need a genome, a
@@ -128,7 +145,7 @@ def default_scopes(kind: ProfessionalKind | str) -> frozenset[AccessScope]:
     resolved = (
         kind if isinstance(kind, ProfessionalKind) else ProfessionalKind(str(kind))
     )
-    return frozenset(
+    facts = {
         AccessScope(
             resource_type=PolicyResourceType.DOMAIN,
             resource_key=domain.value,
@@ -136,7 +153,17 @@ def default_scopes(kind: ProfessionalKind | str) -> frozenset[AccessScope]:
         )
         for domain in DEFAULT_DOMAINS[resolved]
         for action in READ_ONLY_ACTIONS
-    )
+    }
+    authored = {
+        AccessScope(
+            resource_type=PolicyResourceType.ARTIFACT,
+            resource_key=artifact,
+            action=action,
+        )
+        for artifact in AUTHORED_ARTIFACTS
+        for action in AUTHORED_ACTIONS
+    }
+    return frozenset(facts | authored)
 
 
 async def _relationship_of_patient(
@@ -503,6 +530,8 @@ async def load_relationship_grant(
 __all__ = [
     "DEFAULT_CONSENT_TTL",
     "DEFAULT_DOMAINS",
+    "AUTHORED_ACTIONS",
+    "AUTHORED_ARTIFACTS",
     "READ_ONLY_ACTIONS",
     "CareError",
     "CareValidationError",

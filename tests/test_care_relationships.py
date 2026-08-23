@@ -189,7 +189,13 @@ async def test_a_doctor_and_a_trainer_do_not_see_the_same_things(db_session):
 
 
 async def test_no_default_lets_a_professional_write_a_patients_facts(db_session):
-    """A patient's record is theirs. A professional's contribution is their own note."""
+    """A patient's record is theirs. A professional's contribution is their own note.
+
+    The distinction is between the two kinds of resource, not between reading
+    and writing as such: a doctor in care has to be able to record what they
+    think, and the point of a separate record is that recording it is not
+    editing somebody's measurement.
+    """
 
     writing = {
         PolicyAction.CREATE,
@@ -199,8 +205,24 @@ async def test_no_default_lets_a_professional_write_a_patients_facts(db_session)
         PolicyAction.EXPORT,
     }
     for kind in ProfessionalKind:
-        actions = {scope.action for scope in care_service.default_scopes(kind)}
-        assert not actions & writing, kind
+        scopes = care_service.default_scopes(kind)
+        fact_actions = {
+            scope.action
+            for scope in scopes
+            if scope.resource_type is PolicyResourceType.DOMAIN
+        }
+        assert not fact_actions & writing, kind
+
+        # And they can write the thing that is theirs to write.
+        authored = {
+            (scope.resource_key, scope.action)
+            for scope in scopes
+            if scope.resource_type is PolicyResourceType.ARTIFACT
+        }
+        assert ("professional_note", PolicyAction.CREATE) in authored, kind
+        # Never delete: a clinical note somebody can make disappear is a worse
+        # record than one that stays and is superseded.
+        assert not any(action is PolicyAction.DELETE for _key, action in authored)
 
 
 async def test_a_trainer_relationship_gets_a_trainers_defaults(db_session):

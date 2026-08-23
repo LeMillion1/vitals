@@ -15,11 +15,12 @@ being admitted everywhere, which is the thing a health record must never do.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import (
     CheckConstraint,
+    Date,
     Integer,
     DateTime,
     ForeignKey,
@@ -33,6 +34,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from vitals.enums import (
+    CarePlanStatus,
     CareRelationshipStatus,
     ConsentStatus,
     ProfessionalInvitationStatus,
@@ -538,10 +540,139 @@ class ConsentScope(Base):
     grant: Mapped[ConsentGrant] = relationship(back_populates="scopes")
 
 
+# Both records below carry three references, and each answers a different
+# question. ``subject_id`` is whose record this sits in, which is what row
+# security reads. ``actor_user_id`` is who wrote it, which is what stops a
+# second professional editing it. ``relationship_id`` is the care it was written
+# under, which is what makes it reviewable later — a note with no relationship
+# behind it is one nobody can say was authorized.
+#
+# The relationship is deliberately not the only reference. It ends; the note
+# does not, and a record that became unreadable when care ended would be exactly
+# the record a patient needs after care ends.
+
+
+class ProfessionalNote(Base):
+    """What one professional wrote about one patient, under one relationship.
+
+    Separate from the patient's own facts on purpose. A doctor's reading of a
+    lab panel is not the lab panel, and putting it there would make the two
+    indistinguishable a year later — as well as giving a professional a reason
+    to be able to write into somebody else's measurements.
+
+    Editable by its author and nobody else. Not deletable at all: a clinical
+    note somebody can make disappear is a worse record than one that stays and
+    is superseded, and the patient cannot review a history they cannot see.
+    """
+
+    __tablename__ = "professional_notes"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(body)) > 0 AND length(body) <= 20000",
+            name="ck_professional_notes_body",
+        ),
+        Index(
+            "ix_professional_notes_subject_created",
+            "subject_id",
+            "created_at",
+        ),
+        Index(
+            "ix_professional_notes_author_created",
+            "actor_user_id",
+            "created_at",
+        ),
+        Index("ix_professional_notes_relationship", "relationship_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("health_subjects.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    relationship_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("care_relationships.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    author: Mapped[User] = relationship(foreign_keys=[actor_user_id])
+
+
+class CarePlan(Base):
+    """What one professional asked one patient to do, and for how long.
+
+    Same ownership rules as a note, plus a lifecycle: a draft is not yet
+    anything, an active plan is what the patient is following, and an archived
+    one is what they were following. Archived rather than deleted — what
+    somebody was told to do last spring is part of the record of their care.
+    """
+
+    __tablename__ = "care_plans"
+    __table_args__ = (
+        CheckConstraint(
+            f"status IN ({_values(CarePlanStatus)})", name="ck_care_plans_status"
+        ),
+        CheckConstraint(
+            "length(trim(title)) > 0 AND length(title) <= 200",
+            name="ck_care_plans_title",
+        ),
+        CheckConstraint(
+            "length(trim(body)) > 0 AND length(body) <= 20000",
+            name="ck_care_plans_body",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="ck_care_plans_effective_range",
+        ),
+        Index("ix_care_plans_subject_status", "subject_id", "status"),
+        Index("ix_care_plans_author_created", "actor_user_id", "created_at"),
+        Index("ix_care_plans_relationship", "relationship_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("health_subjects.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    relationship_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("care_relationships.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=CarePlanStatus.DRAFT.value
+    )
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    author: Mapped[User] = relationship(foreign_keys=[actor_user_id])
+
+
 __all__ = [
+    "CarePlan",
     "CareRelationship",
     "ConsentGrant",
     "ConsentScope",
     "ProfessionalInvitation",
+    "ProfessionalNote",
     "ProfessionalProfile",
 ]
