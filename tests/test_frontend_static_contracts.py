@@ -100,3 +100,56 @@ def test_date_formatter_has_one_definition():
     assert "function formatDateStr" not in APP_JS
     assert "vitalsFormatDateStr" in HEVY_JS
     assert "vitalsFormatDateStr" in APP_JS
+
+
+# ── What the browser is allowed to keep ──────────────────────────────────────
+# htmx stores a snapshot of every boosted page in localStorage under
+# ``htmx-history-cache``. On a shared machine that is somebody's medical record
+# sitting in the browser after the session allowed to see it has ended.
+
+
+def _template(name: str) -> str:
+    from pathlib import Path
+
+    return (
+        Path(__file__).resolve().parent.parent / "web" / "templates" / name
+    ).read_text()
+
+
+def test_pages_showing_somebody_elses_record_are_not_cached():
+    """A page costs one request to re-fetch. A cached copy costs a leak."""
+
+    for name in (
+        "care/patient.html",
+        "care/roster.html",
+        "care/accept.html",
+        "settings/care.html",
+    ):
+        assert 'hx-history="false"' in _template(name), name
+
+
+def test_the_login_page_drops_what_the_last_session_left():
+    """Anybody looking at it is, by definition, not in a session.
+
+    Covers logging out, a session expiring, and somebody else sitting down at
+    the machine — three routes to the same page and one thing to do about them.
+    """
+
+    login = _template("login.html")
+    assert "htmx-history-cache" in login
+    assert "vitals_diag" in login
+    assert "localStorage.removeItem" in login
+
+
+def test_the_diagnostics_buffer_does_not_record_which_patients_were_opened():
+    """It exists to diagnose render stalls, and a subject id does not help it.
+
+    Recording one would put a list of who somebody looked at into localStorage,
+    where it would outlive the session that was allowed to look.
+    """
+
+    base = _template("base.html")
+    assert "vitals_diag" in base
+    # The path is redacted before it is stored, so a UUID never reaches the buffer.
+    assert "location.pathname.replace(" in base
+    assert "':id'" in base

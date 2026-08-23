@@ -350,7 +350,15 @@
                 // root on this page (nothing to check).
                 var xroot = main ? main.querySelector('[x-data]') : null;
                 var rec = {
-                    t: new Date().toISOString(), ev: ev, url: location.pathname,
+                    // Path with any UUID redacted: this buffer exists to diagnose
+                    // render stalls, and it does not need to record which
+                    // patients somebody looked at — least of all in localStorage,
+                    // where it would outlive the session that was allowed to.
+                    t: new Date().toISOString(), ev: ev,
+                    url: location.pathname.replace(
+                        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+                        ':id'
+                    ),
                     mainOpacity: main ? getComputedStyle(main).opacity : null,
                     mainVisible: main ? getComputedStyle(main).visibility : null,
                     alpineInit: xroot ? !!xroot._x_dataStack : null,

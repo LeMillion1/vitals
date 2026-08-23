@@ -3,6 +3,11 @@
 {% block title %}{{ t("care.accept_title") }}{% endblock %}
 
 {% block content %}
+{# hx-history="false": htmx caches a snapshot of every boosted page in
+   localStorage, and a snapshot of this one is somebody's medical record sitting
+   in the browser after the session that was allowed to see it has ended. The
+   page costs one request to re-fetch, which is the right trade. #}
+<div hx-history="false"></div>
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page px-6 py-7 max-w-2xl mx-auto space-y-6">
 

@@ -3,6 +3,20 @@
 {% block title %}{{ t("login.page_title") }}{% endblock %}
 
 {% block content %}
+{# Whatever the browser is holding is not this visitor's to keep.
+   htmx stores a snapshot of every boosted page in localStorage, so a
+   professional's patient list — or a patient's own record — survives logout in
+   the browser of a shared machine. Anybody looking at this page is, by
+   definition, not in a session, so this is the right moment to drop it.
+   Covers logging out, a session expiring, and somebody else sitting down. #}
+<script>
+    (function () {
+        try {
+            localStorage.removeItem('htmx-history-cache');
+            localStorage.removeItem('vitals_diag');
+        } catch (e) { }
+    })();
+</script>
 {% include "partials/login_styles.html" %}
 
 <div class="lg-wrap">

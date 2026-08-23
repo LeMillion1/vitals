@@ -8,6 +8,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security — what the browser was allowed to keep
+
+- **htmx caches a snapshot of every boosted page in `localStorage`**, under
+  `htmx-history-cache`. Nothing configured it, so on a shared machine a
+  professional's patient list — or a patient's own record — sat in the browser
+  after the session allowed to see it had ended. The care and consent pages now
+  carry `hx-history="false"`: one extra request to re-fetch, against a copy that
+  outlives the session.
+- The login page drops `htmx-history-cache` and the diagnostics buffer. Anybody
+  looking at that page is by definition not in a session, which covers logging
+  out, a session expiring, and somebody else sitting down — three routes to the
+  same page and one thing to do about them.
+- The render-diagnostics ring buffer recorded `location.pathname`, which on a
+  care page is a patient's id. It exists to diagnose render stalls and does not
+  need to know who was opened, so the path is redacted before it is stored.
+
 ### Fixed — the page chrome stops breaking when a second person exists
 
 - The nav rail, the language and the status card resolved their subject through
