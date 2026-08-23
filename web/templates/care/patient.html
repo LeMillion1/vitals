@@ -26,6 +26,12 @@
 
     {% call masthead_header('care', care.subject_display_name, []) %}{% endcall %}
 
+    <!-- ─── THE RECORD ─────────────────────────────────────────────────────── -->
+    {# Before the notes, because the notes are about it. A professional opening
+       this screen is here to read the record; what they and their colleagues
+       have written about it comes after. #}
+    {% include "care/_record.html" %}
+
     <!-- ─── NOTES ──────────────────────────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("care.notes_title")) }}

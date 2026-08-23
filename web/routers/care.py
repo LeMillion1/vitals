@@ -15,10 +15,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.access import PolicyAction, PolicyResourceType
-from vitals.enums import CareRelationshipStatus, ConsentStatus
+from vitals.enums import CareRelationshipStatus, ConsentStatus, Domain
 from vitals.models.identity import HealthSubject
 from vitals.models.professional import CareRelationship, ConsentGrant
 from vitals.services import care_service, invitation_service
+from vitals.services import digest_service, modules_service
 from vitals.services import professional_record_service as records
 from web.care_context import CareContext, principal_user_id, require_care_context
 from web.deps import get_session, require_auth
@@ -179,6 +180,97 @@ async def roster(
     )
 
 
+#: The record, section by section, and what each one needs to be shown.
+#:
+#: Three different keys, deliberately not collapsed into one. ``section`` is
+#: where the assembled context keeps it, ``domain`` is what the consent grants,
+#: and ``module`` is what the patient switched on. They coincide for most rows
+#: and disagree for ``hevy``/``workouts``, and pretending otherwise would hide
+#: exactly one row's worth of a real distinction: what a patient consented to
+#: share is not the same question as what they use.
+RECORD_SECTIONS: tuple[tuple[str, Domain, str], ...] = (
+    ("weight", Domain.WEIGHT, "weight"),
+    ("labs", Domain.LABS, "labs"),
+    ("body_comp", Domain.BODY_COMPOSITION, "body_comp"),
+    ("nutrition", Domain.NUTRITION, "nutrition"),
+    ("hrt", Domain.HRT, "hrt"),
+    ("glp1", Domain.GLP1, "glp1"),
+    ("supplements", Domain.SUPPLEMENTS, "supplements"),
+    ("skincare", Domain.SKINCARE, "skincare"),
+    ("genetics", Domain.GENETICS, "genetics"),
+    ("garmin", Domain.GARMIN, "garmin"),
+    ("hevy", Domain.WORKOUTS, "hevy"),
+    ("signals", Domain.SIGNALS, "signals"),
+)
+
+
+async def _visible_record(
+    db: AsyncSession, care: CareContext
+) -> tuple[dict[str, dict], list[str]]:
+    """The patient's record as this professional may see it, and what is missing.
+
+    A doctor and a trainer are granted the same domains — the kind decides who
+    is writing, not what may be read — so by default this is the whole record.
+    The patient can narrow it, and when they have, the withheld sections are
+    named rather than quietly absent: a clinician reasoning from a partial
+    record needs to know it is partial, and a gap they cannot see is worse than
+    one they can.
+
+    Modules the patient has switched off are not withheld and are not named.
+    Those are sections of the product they do not use, which is not about this
+    professional and not theirs to be told about.
+    """
+
+    permitted = {
+        module
+        for _section, domain, module in RECORD_SECTIONS
+        if care.may(resource_key=domain.value)
+    }
+    enabled = await modules_service.get_enabled_modules(
+        db, subject_id=care.subject_id
+    )
+    context = await digest_service.assemble_context(
+        db,
+        subject_id=care.subject_id,
+        enabled_modules={
+            key: bool(value) and key in permitted
+            for key, value in enabled.items()
+        },
+    )
+
+    # The module gate above is a narrowing, not the boundary. ``assemble_context``
+    # forces every *core* module on whatever it is handed — weight, labs and
+    # garmin among them — because a report of an installation that switched off
+    # its own core sections is not a thing. That is right for the report and
+    # wrong as an authorization, so consent is applied here instead, by building
+    # the view out of the permitted sections rather than by removing the others
+    # from a whole context. A whitelist cannot be defeated by a section this
+    # screen has not thought about yet.
+    record = {
+        section: context.get(section)
+        for section, _domain, module in RECORD_SECTIONS
+        if module in permitted
+    }
+    coverage = {
+        section: (context.get("coverage") or {}).get(section)
+        for section, _domain, module in RECORD_SECTIONS
+        if module in permitted and (context.get("coverage") or {}).get(section)
+    }
+    withheld = [
+        domain.value
+        for _section, domain, module in RECORD_SECTIONS
+        if module not in permitted and enabled.get(module, False)
+    ]
+    return (
+        {
+            "record": record,
+            "coverage": coverage,
+            "period": (context.get("report_meta") or {}),
+        },
+        withheld,
+    )
+
+
 @router.get("/{subject_id}", response_class=HTMLResponse)
 async def patient(
     request: Request,
@@ -189,6 +281,7 @@ async def patient(
 
     notes = await records.list_notes(db, context=care.access)
     plans = await records.list_plans(db, context=care.access)
+    visible, withheld = await _visible_record(db, care)
     return templates.TemplateResponse(
         request,
         "care/patient.html",
@@ -196,6 +289,10 @@ async def patient(
             "care": care,
             "notes": notes,
             "plans": plans,
+            "record": visible["record"],
+            "coverage": visible["coverage"],
+            "period": visible["period"],
+            "withheld_domains": withheld,
             "may_write_note": care.may(
                 resource_key=records.NOTE_ARTIFACT,
                 action=PolicyAction.CREATE,

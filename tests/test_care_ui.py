@@ -281,3 +281,111 @@ async def test_the_page_says_why_it_is_open(doctor_client):
     assert response.status_code == 200
     assert "Patient care-ui-a" in response.text
     assert "Открыта вам" in response.text or "Shared with you" in response.text
+
+
+# ── The record itself ────────────────────────────────────────────────────────
+
+
+async def _weight(session, subject_id, *, kg: float, days_ago: int = 2):
+    """A weigh-in inside the record's window.
+
+    ``days_ago`` defaults to two rather than zero on purpose: the record shows
+    the same closed period every report in this product uses — completed days
+    only — so a row written for today is outside it by design.
+    """
+
+    from datetime import timedelta
+
+    from vitals.enums import Domain, Source  # noqa: PLC0415
+    from vitals.models.weight import WeightLog
+    from vitals.utils.timeutils import today_local
+
+    session.add(
+        WeightLog(
+            subject_id=subject_id,
+            domain=Domain.WEIGHT.value,
+            source=Source.MANUAL.value,
+            date=today_local() - timedelta(days=days_ago),
+            weight_kg=kg,
+        )
+    )
+    await session.flush()
+
+
+async def test_the_professional_sees_the_patients_own_record(
+    doctor_client, db_session
+):
+    """Not only the notes about them — the record the notes are about.
+
+    A doctor and a trainer are granted the same domains: the kind decides who is
+    writing, not what may be read. So the default view is the whole record, and
+    this is the assertion that it is actually rendered rather than merely
+    permitted.
+    """
+
+    client, _doctor, (_owner_a, subject_a), (_owner_b, subject_b) = doctor_client
+    id_a, id_b = subject_a.id, subject_b.id
+    await _weight(db_session, id_a, kg=61.5)
+    await _weight(db_session, id_b, kg=93.25)
+    await db_session.commit()
+
+    page_a = await client.get(f"/care/{id_a}", headers={"Accept": "text/html"})
+    assert page_a.status_code == 200
+    # Both separators, because the number is rendered through the locale filter
+    # and the test should not pin which locale the suite runs in.
+    assert "61,5" in page_a.text or "61.5" in page_a.text
+    # And nobody else's. Two patients of the same doctor is the case where a
+    # missing subject filter would not show up as an error, only as the wrong
+    # number on the right screen.
+    assert "93,25" not in page_a.text and "93.25" not in page_a.text
+
+
+async def test_a_domain_the_patient_withheld_is_named_rather_than_missing(
+    doctor_client, db_session
+):
+    """A clinician reading a partial record has to know it is partial.
+
+    The patient can narrow a consent, and when they have, the sections outside
+    it are named rather than quietly absent. A gap a reader cannot see is worse
+    than one they can: it reads as "nothing there" and gets reasoned from.
+    """
+
+    from vitals.access import AccessScope, PolicyAction, PolicyResourceType
+    from vitals.enums import Domain
+    from vitals.models.professional import CareRelationship
+
+    client, doctor, (owner_a, subject_a), _b = doctor_client
+    id_a, owner_a_id, doctor_id = subject_a.id, owner_a.id, doctor.id
+    await _weight(db_session, id_a, kg=61.5)
+    await db_session.commit()
+
+    relationship_id = await db_session.scalar(
+        select(CareRelationship.id).where(
+            CareRelationship.subject_id == id_a,
+            CareRelationship.professional_user_id == doctor_id,
+        )
+    )
+    # Everything the default grants, minus the weight domain.
+    narrowed = frozenset(
+        scope
+        for scope in care_service.default_scopes(ProfessionalKind.DOCTOR)
+        if not (
+            scope.resource_type is PolicyResourceType.DOMAIN
+            and scope.resource_key == Domain.WEIGHT.value
+        )
+    )
+    assert narrowed != care_service.default_scopes(ProfessionalKind.DOCTOR)
+    del AccessScope, PolicyAction
+    await care_service.grant_consent(
+        db_session,
+        relationship_id=relationship_id,
+        actor_user_id=owner_a_id,
+        scopes=narrowed,
+    )
+    await db_session.commit()
+
+    page = await client.get(f"/care/{id_a}", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    # The number is gone, and the fact that it was withheld is not.
+    assert "61,5" not in page.text and "61.5" not in page.text
+    assert "Not shared with you" in page.text or "Не открыто вам" in page.text

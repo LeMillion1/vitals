@@ -58,6 +58,9 @@ from vitals.enums import (  # noqa: E402
 from vitals.models.base import Base  # noqa: E402
 from vitals.models.identity import HealthSubject, User, UserRole  # noqa: E402
 from vitals.models.scoped_settings import SubjectSetting  # noqa: E402
+from vitals.models.labs import LabResult  # noqa: E402
+from vitals.models.nutrition import MealLog  # noqa: E402
+from vitals.models.supplements import Supplement  # noqa: E402
 from vitals.models.weight import WeightLog  # noqa: E402
 from vitals.services import modules_service  # noqa: E402
 from vitals.services.tenancy_bootstrap import (  # noqa: E402
@@ -111,7 +114,7 @@ async def _account(
 
 
 async def _patient(
-    session: AsyncSession, username: str, display_name: str
+    session: AsyncSession, username: str, display_name: str, *, seed: int = 0
 ) -> tuple[User, HealthSubject]:
     user = await _account(session, username, email=f"{username}@example.test")
     subject = HealthSubject(
@@ -139,19 +142,86 @@ async def _patient(
             value={key: True for key in modules_service.MODULE_REGISTRY},
         )
     )
-    # A little real data, so the screens have something to draw.
+    await _seed_record(session, subject.id, seed=seed)
+    return user, subject
+
+
+async def _seed_record(session: AsyncSession, subject_id, *, seed: int) -> None:
+    """Enough of a record for a professional's screen to be worth looking at.
+
+    A subject with only weight logs made the care view look finished when it was
+    not: every other section rendered as "no data" and the empty state hid the
+    fact that nothing was reading them. Varied per patient — ``seed`` shifts the
+    numbers — so a roster of ten does not read as ten copies of one person.
+    """
+
     for days_ago in (0, 3, 7, 14):
         session.add(
             WeightLog(
-                subject_id=subject.id,
+                subject_id=subject_id,
                 domain=Domain.WEIGHT.value,
                 source=Source.MANUAL.value,
                 date=TODAY - timedelta(days=days_ago),
-                weight_kg=round(78.0 + days_ago * 0.15, 1),
+                weight_kg=round(72.0 + seed * 1.5 + days_ago * 0.15, 1),
             )
         )
+
+    # One marker inside its range and one outside, because a report that never
+    # shows a flag never shows whether flagging works.
+    markers = (
+        ("ferritin", 30.0 + seed * 9, "ng/mL", 30.0, 400.0),
+        ("tsh", 0.2 + seed * 0.05, "mIU/L", 0.4, 4.0),
+    )
+    for marker, value, unit, low, high in markers:
+        flag = "normal"
+        if value < low:
+            flag = "low"
+        elif value > high:
+            flag = "high"
+        session.add(
+            LabResult(
+                subject_id=subject_id,
+                domain=Domain.LABS.value,
+                source=Source.MANUAL.value,
+                date=TODAY - timedelta(days=2),
+                marker=marker,
+                value=round(value, 2),
+                unit=unit,
+                ref_low=low,
+                ref_high=high,
+                flag=flag,
+                lab_name="Synevo",
+            )
+        )
+
+    for days_ago in (0, 1, 2):
+        session.add(
+            MealLog(
+                subject_id=subject_id,
+                domain=Domain.NUTRITION.value,
+                source=Source.MANUAL.value,
+                date=TODAY - timedelta(days=days_ago),
+                name="Овсянка с ягодами" if days_ago % 2 else "Курица с рисом",
+                calories=520 + seed * 10,
+                protein_g=38.0 + seed,
+                fat_g=14.0,
+                carbs_g=61.0,
+            )
+        )
+
+    session.add(
+        Supplement(
+            subject_id=subject_id,
+            domain=Domain.SUPPLEMENTS.value,
+            source=Source.MANUAL.value,
+            key="vitamin_d3",
+            name="Витамин D3",
+            dose="4000 IU",
+            timing="morning",
+            active=True,
+        )
+    )
     await session.flush()
-    return user, subject
 
 
 async def _professional(
@@ -265,7 +335,12 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
     patients = [(timur, timur_subject)]
     for index in range(1, 10):
         patients.append(
-            await _patient(session, f"patient{index:02d}", f"Patient {index:02d}")
+            await _patient(
+                session,
+                f"patient{index:02d}",
+                f"Patient {index:02d}",
+                seed=index,
+            )
         )
     who.append(("patient01", "patient — sees a doctor and a trainer at once"))
     who.append(("patient05", "patient — withdrew consent, relationship still live"))

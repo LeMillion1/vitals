@@ -1,0 +1,215 @@
+{# The patient's own record, as far as this consent reaches.
+
+   A doctor and a trainer are granted the same domains — the kind decides who is
+   writing, not what may be read — so by default this is the whole record. What
+   the patient narrowed is named at the bottom rather than quietly missing: a
+   clinician reasoning from a partial record has to know it is partial, and a
+   gap they cannot see is worse than one they can.
+
+   Every section is driven by `coverage[key].status`, which is the assembler's
+   own answer and distinguishes three things this screen must not confuse:
+   `disabled` (a part of the product they do not use), `empty` (they use it and
+   have logged nothing), and `available`. Only the last gets a card. #}
+
+{# An include gets the caller's context but not its imports, so the masthead
+   macros are imported here as well as in patient.html. #}
+{% from "partials/masthead.html" import card_header with context %}
+
+{% set RECORD_KEYS = ("weight", "labs", "body_comp", "nutrition", "hrt", "glp1",
+                      "supplements", "skincare", "genetics", "garmin", "hevy",
+                      "signals") %}
+
+{% macro section(key, title) %}
+  {% if (coverage.get(key) or {}).get("status") == "available" %}
+  <div class="v-card-inset p-4 space-y-2">
+    <div class="mh-eyebrow">{{ title }}</div>
+    {{ caller() }}
+  </div>
+  {% endif %}
+{% endmacro %}
+
+{% set shown = [] %}
+{% for key in RECORD_KEYS %}
+  {% if (coverage.get(key) or {}).get("status") == "available" %}
+    {% set _ = shown.append(key) %}
+  {% endif %}
+{% endfor %}
+
+<div class="v-card p-6 space-y-4{% if not shown %} is-empty{% endif %}">
+  {# Dated, always. This is the same closed period every report in the product
+     uses — completed days only, so a half-logged today cannot drag a weekly
+     average — which means the latest reading here can be a day behind the
+     patient's own dashboard. Undated staleness is a defect; a named period is a
+     report. #}
+  {{ card_header(
+       t("care.record_title"),
+       meta=t("care.record_period",
+              start=(period.period_start | format_date),
+              end=(period.period_end | format_date))) }}
+
+  {% if shown %}
+  <div class="grid gap-3 sm:grid-cols-2">
+
+    {% call section("weight", t("care.record_weight")) %}
+      {% set w = record.weight or {} %}
+      {% if w.latest_kg is not none %}
+      <p class="v-text-body">
+        {{ t("care.record_weight_latest",
+              kg=(w.latest_kg | format_number),
+              date=(w.latest_date | format_date)) }}
+      </p>
+      {% endif %}
+      <p class="v-text-micro" style="color: var(--muted)">
+        {% if w.ma7_kg is not none %}{{ t("care.record_weight_mean", kg=(w.ma7_kg | format_number)) }}{% endif %}
+        {%- if w.trend_kg_per_week is not none %} · {{ t("care.record_weight_trend", kg=(w.trend_kg_per_week | format_number)) }}{% endif %}
+      </p>
+    {% endcall %}
+
+    {% call section("labs", t("care.record_labs")) %}
+      {% set flagged = (record.labs or {}).out_of_range or [] %}
+      {% if flagged %}
+      <ul class="space-y-1">
+        {% for row in flagged %}
+        {% set f = row.flag or 'normal' %}
+        <li class="v-text-body flex items-baseline justify-between gap-2">
+          <span>{{ row.marker }}</span>
+          <span>
+            {{ row.value | format_number }}{% if row.unit %}<span class="v-unit">{{ row.unit | format_unit }}</span>{% endif %}
+            {# Same vocabulary as the labs table: the status is a word, coloured,
+               not a dot. A clinician reading a value out of range should see
+               which way it is out, and critical should not look like high. #}
+            <span class="v-text-label font-semibold"
+                  style="color: {% if 'critical' in f %}var(--bad-strong){% elif f in ['low','high'] %}var(--warn){% else %}var(--good){% endif %}">
+              {{ t("enum.flag." + f) }}</span>
+            {%- if row.ref_low is not none and row.ref_high is not none %}
+            <span class="v-text-micro" style="color: var(--faint)">
+              {{ t("care.record_labs_ref", low=(row.ref_low | format_number), high=(row.ref_high | format_number)) }}</span>
+            {%- endif %}
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="v-text-body" style="color: var(--muted)">{{ t("care.record_labs_in_range") }}</p>
+      {% endif %}
+    {% endcall %}
+
+    {% call section("body_comp", t("care.record_body_comp")) %}
+      {% set b = record.body_comp or {} %}
+      <p class="v-text-body">
+        {{ t("care.record_body_comp_scan",
+              date=(b.date | format_date),
+              device=(" · " ~ b.device if b.device else "")) }}
+      </p>
+    {% endcall %}
+
+    {% call section("nutrition", t("care.record_nutrition")) %}
+      {% set n = record.nutrition or {} %}
+      {% if n.avg_calories_per_day is not none %}
+      <p class="v-text-body">
+        {{ t("care.record_nutrition_avg",
+              kcal=(n.avg_calories_per_day | format_number),
+              protein=(n.avg_protein_per_day_g | format_number)) }}
+      </p>
+      {% endif %}
+      <p class="v-text-micro" style="color: var(--muted)">
+        {{ t("care.record_nutrition_days", n=n.days_with_logs or 0) }}
+      </p>
+    {% endcall %}
+
+    {% call section("hrt", t("care.record_hrt")) %}
+      {% set cycle = (record.hrt or {}).cycle %}
+      {% if cycle %}
+      <p class="v-text-body">{{ cycle.name or "—" }}</p>
+      <p class="v-text-micro" style="color: var(--muted)">
+        {{ cycle.compounds | join(", ") }}
+        {%- if cycle.start_date %} · {{ t("care.record_hrt_since", date=(cycle.start_date | format_date)) }}{% endif %}
+      </p>
+      {% endif %}
+    {% endcall %}
+
+    {% call section("glp1", t("care.record_glp1")) %}
+      {% set g = record.glp1 or {} %}
+      {% if g.drug %}
+      <p class="v-text-body">
+        {{ t("enum.drug." ~ g.drug) }}{% if g.dose_mg %} · {{ g.dose_mg | format_number }} {{ t("common.mg") }}{% endif %}
+      </p>
+      {% endif %}
+    {% endcall %}
+
+    {% call section("supplements", t("care.record_supplements")) %}
+      <ul class="space-y-1">
+        {% for item in record.supplements or [] %}
+        <li class="v-text-body flex items-baseline justify-between gap-2">
+          <span>{{ item.name }}</span>
+          <span class="v-text-micro" style="color: var(--faint)">{{ item.dose or "" }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    {% endcall %}
+
+    {% call section("skincare", t("care.record_skincare")) %}
+      {% set s = record.skincare or {} %}
+      <p class="v-text-body">{{ t("care.record_skincare_products", n=s.active_products or 0) }}</p>
+      <p class="v-text-micro" style="color: var(--muted)">
+        {{ t("care.record_skincare_observations", n=(s.recent_observations or []) | length) }}
+      </p>
+    {% endcall %}
+
+    {% call section("genetics", t("care.record_genetics")) %}
+      <p class="v-text-body">
+        {{ t("care.record_genetics_markers", n=(record.genetics or []) | length) }}
+      </p>
+    {% endcall %}
+
+    {% call section("garmin", t("care.record_garmin")) %}
+      {% set g = record.garmin or {} %}
+      {% if g.advice %}<p class="v-text-body">{{ g.advice }}</p>{% endif %}
+      <p class="v-text-micro" style="color: var(--muted)">
+        {{ t("care.record_garmin_days", n=g.total_days_logged or 0) }}
+      </p>
+    {% endcall %}
+
+    {% call section("hevy", t("care.record_workouts")) %}
+      {% set h = record.hevy or {} %}
+      <p class="v-text-body">{{ t("care.record_workouts_count", n=h.total_workouts or 0) }}</p>
+      {% if h.last_workout %}
+      <p class="v-text-micro" style="color: var(--muted)">
+        {{ t("care.record_workouts_last", date=(h.last_workout | format_date)) }}
+      </p>
+      {% endif %}
+    {% endcall %}
+
+    {% call section("signals", t("care.record_signals")) %}
+      <p class="v-text-body">
+        {{ t("care.record_signals_count", n=(record.signals or []) | length) }}
+      </p>
+    {% endcall %}
+
+  </div>
+  {% else %}
+  <p class="v-text-body" style="color: var(--muted)">{{ t("care.record_empty") }}</p>
+  {% endif %}
+
+  {# Named, not hidden. Two different silences, and only one of them is about
+     this professional: a domain the patient uses and did not share, versus one
+     they simply have not logged. #}
+  {% set no_data = [] %}
+  {% for key in RECORD_KEYS %}
+    {% if (coverage.get(key) or {}).get("status") == "empty" %}
+      {% set _ = no_data.append(t("nav." ~ ((coverage.get(key) or {}).get("module") or key))) %}
+    {% endif %}
+  {% endfor %}
+
+  {% if withheld_domains %}
+  <p class="v-text-micro" style="color: var(--faint)">
+    {{ t("care.record_withheld",
+          domains=(withheld_domains | map("format_domain") | join(", "))) }}
+  </p>
+  {% endif %}
+  {% if no_data %}
+  <p class="v-text-micro" style="color: var(--faint)">
+    {{ t("care.record_no_data", domains=(no_data | sort | join(", "))) }}
+  </p>
+  {% endif %}
+</div>
