@@ -320,6 +320,39 @@ async def load_language(
     request.state.lang = lang
 
 
+async def load_subject_timezone(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    """Global dependency: read the wall clock as the signed-in person sees it.
+
+    ``VITALS_TIMEZONE`` is the installation's zone, which was also the reader's
+    while an installation was one person. It is not any more, and
+    ``health_subjects.timezone`` has held the real answer the whole time with
+    nothing reading it — so a patient abroad saw the server's "today" on their
+    own dashboard, and logged a weigh-in against the wrong date.
+
+    Nothing to restore: the context variable belongs to the task, and the task
+    ends with the response. Fail-safe, like every other chrome dependency — an
+    error leaves the installation's zone in place rather than failing the page.
+    """
+
+    from vitals.utils.timeutils import set_subject_timezone
+
+    try:
+        scope = await get_request_chrome_scope(request, db)
+        if scope is None:
+            return
+        zone = await db.scalar(
+            select(HealthSubject.timezone).where(
+                HealthSubject.id == scope.subject_id
+            )
+        )
+        set_subject_timezone(zone)
+    except Exception:
+        logger.exception("subject timezone load failed; using the installation's")
+
+
 
 
 def require_module(key: str) -> Callable:

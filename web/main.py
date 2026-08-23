@@ -55,6 +55,7 @@ from web.deps import (
     load_enabled_modules,
     load_language,
     load_nav_status,
+    load_subject_timezone,
     require_module,
 )
 from web.templating import STATIC_DIR, templates
@@ -302,6 +303,9 @@ app = FastAPI(
     # base.html nav and the require_module guards below).
     dependencies=[
         Depends(load_language),
+        # Before the module map and the nav: both of them, and every page under
+        # them, ask what day it is.
+        Depends(load_subject_timezone),
         Depends(load_enabled_modules),
         # After load_enabled_modules — it reads the resolved module map.
         Depends(load_nav_status),

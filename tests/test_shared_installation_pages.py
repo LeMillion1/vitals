@@ -268,3 +268,39 @@ async def test_an_account_with_a_record_is_offered_all_of_them(auth_client):
     assert page.status_code == 200
     assert "/today" in page.text
     assert "/share" in page.text
+
+
+async def test_the_page_shows_the_readers_day_not_the_servers(
+    auth_client, db_session, legacy_owner_roots
+):
+    """"Today" is a question about the reader, and the answer moves with them.
+
+    ``health_subjects.timezone`` has always held it and nothing read it: every
+    page took the day from ``VITALS_TIMEZONE``, the installation's zone, which
+    was also the reader's while an installation was one person. A patient abroad
+    saw the server's date on their own dashboard — and logged a weigh-in against
+    it.
+    """
+
+    from vitals.utils.timeutils import set_timezone, subject_timezone, today_local
+
+    # Twenty-five hours apart, which is the whole point: these two zones never
+    # share a date, so the assertion cannot pass by the two happening to agree
+    # at the hour the suite runs.
+    set_timezone("Pacific/Midway")  # UTC-11
+    try:
+        subject = await db_session.get(HealthSubject, legacy_owner_roots.subject_id)
+        subject.timezone = "Pacific/Kiritimati"  # UTC+14
+        await db_session.commit()
+
+        server_day = today_local()
+        with subject_timezone("Pacific/Kiritimati"):
+            reader_day = today_local()
+        assert reader_day != server_day
+
+        response = await auth_client.get("/today", headers={"Accept": "text/html"})
+        assert response.status_code == 200
+        assert reader_day.strftime("%d-%m-%Y") in response.text
+        assert server_day.strftime("%d-%m-%Y") not in response.text
+    finally:
+        set_timezone("Europe/Chisinau")

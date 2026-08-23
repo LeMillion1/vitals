@@ -77,6 +77,15 @@ _DEV_HASH = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
 
 TODAY = date.today()
 
+#: Spread across the day line, so a date that follows the reader is visible.
+_TIMEZONES = (
+    "Europe/Chisinau",
+    "Pacific/Kiritimati",
+    "America/Los_Angeles",
+    "Asia/Almaty",
+    "Pacific/Midway",
+)
+
 
 def _require_local_sqlite() -> str:
     url = os.environ["VITALS_DATABASE_URL"]
@@ -120,7 +129,11 @@ async def _patient(
     subject = HealthSubject(
         owner_user_id=user.id,
         display_name=display_name,
-        timezone="Europe/Chisinau",
+        # Not all in one zone, on purpose. A roster where everybody shares the
+        # server's clock hides an entire class of defect: "today" came from
+        # ``VITALS_TIMEZONE`` for years, and with ten identical patients nothing
+        # on screen would ever disagree with it.
+        timezone=_TIMEZONES[seed % len(_TIMEZONES)],
     )
     session.add(subject)
     await session.flush()

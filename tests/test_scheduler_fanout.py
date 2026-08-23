@@ -171,3 +171,59 @@ def test_the_credential_bound_jobs_are_not_fanned_out():
         "weekly_digest", "hrt_reminders", "glp1_plateau", "nutrition_day_end",
         "raw_payload_sweep",
     } <= fanned
+
+
+async def test_each_subject_is_run_on_their_own_clock(
+    session_factory, db_session, legacy_owner_roots
+):
+    """A day is closed where the person is, not where the server is.
+
+    ``health_subjects.timezone`` has always held the real answer and nothing
+    read it: "today" came from ``VITALS_TIMEZONE``, which was the installation's
+    and, while an installation was one person, also theirs. Fanned out over ten
+    people it stopped being theirs — and ``nutrition_day_end`` exists precisely
+    to run once a day's totals are final, so on the wrong clock it finalises a
+    day still in progress.
+    """
+
+    from vitals.utils.timeutils import now_local
+
+    far_east = await _subject(db_session, "fanout-kiritimati")
+    far_east.timezone = "Pacific/Kiritimati"  # UTC+14, the earliest there is
+    far_west = await _subject(db_session, "fanout-midway")
+    far_west.timezone = "Pacific/Midway"  # UTC-11, the latest
+    await db_session.commit()
+    east_id, west_id = far_east.id, far_west.id
+
+    seen: dict[uuid.UUID, object] = {}
+
+    async def job(session_factory, redis=None, *, subject_id):
+        seen[subject_id] = now_local()
+
+    await for_each_subject(job, job_id="probe")(session_factory, None)
+
+    # Twenty-five hours apart, so the two never share a wall-clock reading and
+    # very often do not share a date either.
+    assert seen[east_id] > seen[west_id]
+    assert (seen[east_id] - seen[west_id]).total_seconds() > 24 * 3600
+
+
+async def test_an_unusable_zone_does_not_take_the_tick_down(
+    session_factory, db_session, legacy_owner_roots
+):
+    """One malformed row is not a reason for nobody to get their digest."""
+
+    from vitals.utils.timeutils import now_local
+
+    broken = await _subject(db_session, "fanout-bad-zone")
+    broken.timezone = "Not/AZone"
+    await db_session.commit()
+    broken_id = broken.id
+
+    seen: dict[uuid.UUID, object] = {}
+
+    async def job(session_factory, redis=None, *, subject_id):
+        seen[subject_id] = now_local()
+
+    await for_each_subject(job, job_id="probe")(session_factory, None)
+    assert broken_id in seen

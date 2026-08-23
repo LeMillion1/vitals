@@ -29,6 +29,8 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from vitals.utils.timeutils import subject_timezone
+
 logger = logging.getLogger(__name__)
 
 #: A job that knows whose record it is working on.
@@ -45,14 +47,23 @@ async def list_subject_ids(
     is the question asked when one of them misbehaves.
     """
 
+    return [subject_id for subject_id, _zone in await _list_subjects(session_factory)]
+
+
+async def _list_subjects(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> Sequence[tuple[uuid.UUID, str | None]]:
+    """Each subject with the zone their days are measured in."""
+
     from vitals.models.identity import HealthSubject
 
     async with session_factory() as session:
-        return list(
-            await session.scalars(
-                select(HealthSubject.id).order_by(HealthSubject.id)
+        rows = await session.execute(
+            select(HealthSubject.id, HealthSubject.timezone).order_by(
+                HealthSubject.id
             )
         )
+        return [(row[0], row[1]) for row in rows]
 
 
 def for_each_subject(job: SubjectJobFunc, *, job_id: str) -> Callable[..., Awaitable[None]]:
@@ -76,15 +87,21 @@ def for_each_subject(job: SubjectJobFunc, *, job_id: str) -> Callable[..., Await
         session_factory: async_sessionmaker[AsyncSession],
         redis: Optional[Redis] = None,
     ) -> None:
-        subject_ids = await list_subject_ids(session_factory)
-        if not subject_ids:
+        subjects = await _list_subjects(session_factory)
+        if not subjects:
             logger.info("%s: no health subjects, nothing to run", job_id)
             return
+        subject_ids = [subject_id for subject_id, _zone in subjects]
 
         failures: list[tuple[uuid.UUID, BaseException]] = []
-        for subject_id in subject_ids:
+        for subject_id, zone in subjects:
             try:
-                await job(session_factory, redis, subject_id=subject_id)
+                # Their clock, not the installation's. A job that closes a day
+                # or reads "today" is answering a question about this person,
+                # and the answer moves with where they are — see
+                # vitals/utils/timeutils.subject_timezone.
+                with subject_timezone(zone):
+                    await job(session_factory, redis, subject_id=subject_id)
             except Exception as exc:  # noqa: BLE001 — see the module docstring
                 logger.exception(
                     "%s failed for subject %s; continuing with the rest",
