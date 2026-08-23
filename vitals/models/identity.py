@@ -112,7 +112,7 @@ class User(Base):
             name="ck_users_normalized_email_not_blank",
         ),
         CheckConstraint(
-            "length(trim(password_hash)) > 0",
+            "password_hash IS NULL OR length(trim(password_hash)) > 0",
             name="ck_users_password_hash_not_blank",
         ),
         CheckConstraint(
@@ -129,9 +129,12 @@ class User(Base):
     normalized_username: Mapped[str] = mapped_column(String(128), nullable=False)
     email: Mapped[Optional[str]] = mapped_column(String(320), nullable=True)
     normalized_email: Mapped[Optional[str]] = mapped_column(String(320), nullable=True)
-    # Contains a one-way password hash, never plaintext. A later migration copies
-    # the existing bcrypt hash verbatim rather than re-hashing it.
-    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL for everyone the identity provider authenticates, which after the
+    # OIDC cutover is everyone. Password material is the provider's to hold —
+    # hashing, reset, breach response and rotation are all things it already
+    # does properly, and a copy here would be a second thing to get right. The
+    # column survives only for the pre-cutover owner's migrated bcrypt hash.
+    password_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=UserStatus.PENDING.value
     )
@@ -156,6 +159,60 @@ class User(Base):
     owned_subject: Mapped[Optional["HealthSubject"]] = relationship(
         back_populates="owner", uselist=False, foreign_keys="HealthSubject.owner_user_id"
     )
+
+
+class UserFederatedIdentity(Base):
+    """One provider-authenticated identity, bound to a local user.
+
+    The pair the provider guarantees is ``(issuer, subject)``: an opaque subject
+    inside the issuer's namespace, immutable for the life of the account. That
+    pair is the identity key and nothing else is. Email and display name arrive
+    in the same token and are deliberately not used for lookup — a provider may
+    let a person change either, and matching on them would hand one account to
+    whoever claimed the address next.
+
+    Its own table rather than columns on ``users`` because the relationship is
+    one-to-many in principle: the same person may later be reachable through a
+    second issuer, and adding one is then a row rather than a migration.
+    """
+
+    __tablename__ = "user_federated_identities"
+    __table_args__ = (
+        UniqueConstraint(
+            "issuer", "subject", name="uq_user_federated_identities_issuer_subject"
+        ),
+        CheckConstraint(
+            "length(trim(issuer)) > 0",
+            name="ck_user_federated_identities_issuer_not_blank",
+        ),
+        CheckConstraint(
+            "length(trim(subject)) > 0",
+            name="ck_user_federated_identities_subject_not_blank",
+        ),
+        Index("ix_user_federated_identities_user_id", "user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: The provider's ``iss`` claim, exactly as issued. Compared verbatim.
+    issuer: Mapped[str] = mapped_column(String(512), nullable=False)
+    #: The provider's ``sub`` claim — opaque, and never a username or address.
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: When this local user was first bound to that pair.
+    linked_at: Mapped[datetime] = _created_at()
+    #: The most recent ``auth_time`` the provider reported, which is what a
+    #: step-up check measures freshness against.
+    last_authenticated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    user: Mapped["User"] = relationship(foreign_keys=[user_id])
 
 
 class UserRole(Base):

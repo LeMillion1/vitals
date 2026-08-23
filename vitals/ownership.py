@@ -335,6 +335,10 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         actor=TargetColumn.OPTIONAL,
         connection=TargetColumn.OPTIONAL,
     ),
+    # An account-plane row: it says which provider identity may become this
+    # user, and nothing about any person's health. No subject, for the same
+    # reason ``users`` has none — a login is not a health record.
+    "user_federated_identities": _ACCOUNT,
     "user_roles": _ACCOUNT,
     "user_settings": _ACCOUNT,
     "users": _ACCOUNT,
