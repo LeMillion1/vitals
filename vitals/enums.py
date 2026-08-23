@@ -77,6 +77,22 @@ class ProfessionalVerificationStatus(StrEnum):
     SUSPENDED = "suspended"
 
 
+class ProfessionalInvitationStatus(StrEnum):
+    """Lifecycle of one offer to enter into care for a patient.
+
+    ``PENDING`` is the only state a token opens. The others exist so that a
+    refused acceptance can say *nothing* while the record still knows which of
+    them it was — a caller must not be able to tell a spent invitation from an
+    expired one from one that never existed, because those three answers
+    together are a map of who is treating whom.
+    """
+
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
 class SupportScopeResourceType(StrEnum):
     """Kind of resource named by an explicit support-access scope."""
 

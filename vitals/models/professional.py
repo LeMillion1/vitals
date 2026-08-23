@@ -30,7 +30,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from vitals.enums import ProfessionalKind, ProfessionalVerificationStatus
+from vitals.enums import (
+    ProfessionalInvitationStatus,
+    ProfessionalKind,
+    ProfessionalVerificationStatus,
+)
 from vitals.models.base import Base
 from vitals.models.identity import User, _created_at, _updated_at, _uuid_pk, _values
 
@@ -139,4 +143,128 @@ class ProfessionalProfile(Base):
     )
 
 
-__all__ = ["ProfessionalProfile"]
+
+
+class ProfessionalInvitation(Base):
+    """One patient's offer to let one professional into their record.
+
+    The offer travels as a token in a link. Only its hash is stored, so a copy
+    of this table is not a set of working invitations — the same reasoning the
+    published-report tokens use, and for a stronger reason here, because
+    accepting one creates a care relationship rather than opening a document.
+
+    It is bound to an address as well as to a token. A link that anybody holding
+    it may accept is a link that whoever it was forwarded to may accept, and the
+    patient chose a person rather than a mailbox. The address is checked against
+    a *verified* claim at acceptance; an unverified address is somebody saying
+    they own a mailbox, which is exactly what the binding is meant to stop.
+
+    ``subject_id`` is here because the invitation is the patient's — it is their
+    record being offered — which also puts it inside row security. Accepting is
+    therefore done in the platform scope: the professional is not bound to this
+    subject yet, and the token is what authorizes reading the row at all.
+    """
+
+    __tablename__ = "professional_invitations"
+    __table_args__ = (
+        UniqueConstraint(
+            "token_hash", name="uq_professional_invitations_token_hash"
+        ),
+        CheckConstraint(
+            f"kind IN ({_values(ProfessionalKind)})",
+            name="ck_professional_invitations_kind",
+        ),
+        CheckConstraint(
+            f"status IN ({_values(ProfessionalInvitationStatus)})",
+            name="ck_professional_invitations_status",
+        ),
+        CheckConstraint(
+            "length(token_hash) = 64 AND lower(token_hash) = token_hash",
+            name="ck_professional_invitations_token_hash_shape",
+        ),
+        CheckConstraint(
+            "length(trim(invited_email)) > 0 AND length(invited_email) <= 320",
+            name="ck_professional_invitations_invited_email",
+        ),
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_professional_invitations_positive_ttl",
+        ),
+        # One-time, and the record says by whom. An accepted invitation with no
+        # acceptor is a state nothing in the service can produce and nothing
+        # downstream could interpret.
+        CheckConstraint(
+            "(status = 'accepted' AND accepted_at IS NOT NULL "
+            "AND accepted_by_user_id IS NOT NULL) OR "
+            "(status <> 'accepted' AND accepted_at IS NULL "
+            "AND accepted_by_user_id IS NULL)",
+            name="ck_professional_invitations_accepted_state",
+        ),
+        CheckConstraint(
+            "(status = 'revoked' AND revoked_at IS NOT NULL) OR "
+            "(status <> 'revoked' AND revoked_at IS NULL)",
+            name="ck_professional_invitations_revoked_state",
+        ),
+        Index(
+            "ix_professional_invitations_subject_status",
+            "subject_id",
+            "status",
+            "expires_at",
+        ),
+        Index(
+            "ix_professional_invitations_email_status",
+            "invited_email",
+            "status",
+        ),
+        Index(
+            "ix_professional_invitations_accepted_by", "accepted_by_user_id"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("health_subjects.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    invited_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: Normalized form of the address the link was sent to. Not a lookup key for
+    #: an account — accounts are found by the token — but the thing the accepting
+    #: identity's verified claim has to match.
+    invited_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    #: SHA-256 of the token. The token itself exists once, in the link.
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=ProfessionalInvitationStatus.PENDING.value,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    accepted_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    invited_by: Mapped[User] = relationship(foreign_keys=[invited_by_user_id])
+    accepted_by: Mapped[Optional[User]] = relationship(
+        foreign_keys=[accepted_by_user_id]
+    )
+
+
+__all__ = ["ProfessionalInvitation", "ProfessionalProfile"]

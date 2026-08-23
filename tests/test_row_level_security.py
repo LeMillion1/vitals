@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -53,6 +54,40 @@ def _revision_module():
     return module
 
 
+#: Every revision that installs a subject policy, newest last. A table added
+#: later belongs to a new revision listed here — which is the point: the
+#: contract below asks the migrations what is covered rather than being told.
+_POLICY_REVISIONS = (
+    "0050_force_subject_row_level_security",
+    "0051_row_security_for_catalogs_and_children",
+    "0055_professional_invitations",
+)
+
+
+def _policy_revision(stem: str):
+    spec = importlib.util.spec_from_file_location(
+        f"_rev{stem[:4]}", REPOSITORY_ROOT / "migrations" / "versions" / f"{stem}.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _all_covered_tables() -> set[str]:
+    """Every table any revision put a subject policy on."""
+
+    covered: set[str] = set()
+    for stem in _POLICY_REVISIONS:
+        module = _policy_revision(stem)
+        for attribute in (
+            "SUBJECT_ISOLATED_TABLES",
+            "INHERITED_CHILDREN",
+            "SHARED_WITH_INSTALLATION",
+        ):
+            covered.update(getattr(module, attribute, ()))
+    return covered
+
+
 # ── The list is derived, so it has to stay derivable ─────────────────────────
 
 def test_the_policy_covers_exactly_the_tables_with_a_mandatory_subject():
@@ -65,7 +100,7 @@ def test_the_policy_covers_exactly_the_tables_with_a_mandatory_subject():
 
     from vitals.models.base import Base
 
-    listed = set(_revision_module().SUBJECT_ISOLATED_TABLES)
+    listed = _all_covered_tables()
     expected = {
         table_name
         for table_name, spec in OWNERSHIP_REGISTRY.items()
@@ -73,7 +108,9 @@ def test_the_policy_covers_exactly_the_tables_with_a_mandatory_subject():
         and "subject_id" in Base.metadata.tables[table_name].columns
         and not Base.metadata.tables[table_name].columns["subject_id"].nullable
     }
-    assert listed == expected
+    # The catalog revision also covers tables whose subject is optional or
+    # inherited; those are checked by their own contract further down.
+    assert expected <= listed
 
 
 def test_the_migration_and_the_application_name_the_same_setting():
@@ -126,8 +163,16 @@ async def _migrated_engine(database_url: str, alembic_config):
             ),
             {"owner": owner_id},
         )
+        # Only the tables that exist at the pre-contract revision. The registry
+        # describes the schema at head, and a table introduced by a later
+        # revision has nothing to stamp yet.
+        present = set(
+            await connection.run_sync(
+                lambda sync_connection: inspect(sync_connection).get_table_names()
+            )
+        )
         for table_name, column_name in required_ownership_columns():
-            if column_name != "subject_id":
+            if column_name != "subject_id" or table_name not in present:
                 continue
             await connection.execute(
                 sa.text(
@@ -294,7 +339,10 @@ async def test_real_postgres_write_check_and_force_hold(db_session, monkeypatch)
     monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
     await db_session.close()
 
-    listed = _revision_module().SUBJECT_ISOLATED_TABLES
+    # Every covered table, not only the first revision's: a policy that was
+    # created but never forced is a policy the table owner walks straight past,
+    # and the application connects as the owner.
+    listed = sorted(_all_covered_tables())
     admin = await _migrated_engine(
         database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
     )
@@ -436,11 +484,7 @@ def test_every_table_with_a_subject_is_now_covered_by_one_policy_or_the_other():
         for name, table in Base.metadata.tables.items()
         if "subject_id" in table.columns
     }
-    covered = (
-        set(_revision_module().SUBJECT_ISOLATED_TABLES)
-        | set(_extension_module().SHARED_WITH_INSTALLATION)
-        | set(_extension_module().INHERITED_CHILDREN)
-    )
+    covered = _all_covered_tables()
     assert with_subject - covered == set()
     assert covered - with_subject == set()
 
@@ -668,6 +712,10 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         # authorization, checked by share_service itself before anything is read.
         ("vitals/services/share_service.py", "resolve_public"),
         ("vitals/services/share_service.py", "register_open"),
+        # The professional accepting an invitation is not bound to this subject
+        # yet — that is what accepting is for — and the token is what authorizes
+        # reading the row at all.
+        ("vitals/services/invitation_service.py", "accept"),
         # Housekeeping across every subject, with no person to act as.
         ("vitals/services/share_service.py", "purge_job"),
         ("vitals/services/ai_gateway_service.py", "reconciliation_job"),

@@ -8,6 +8,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — one link, one professional, one record (PR-07)
+
+- `professional_invitations` plus `invitation_service`: a patient offers one
+  professional a way into their record, as a token in a link. Most of the design
+  is a list of things a link must not be.
+- **Not a bearer capability that outlives its purpose** — it expires (14 days by
+  default) and is one-time.
+- **Not usable by whoever it was forwarded to** — it is bound to an address, and
+  the address must be a *verified* claim presented by the accepting session. An
+  unverified address is somebody asserting they own a mailbox, which is exactly
+  what the binding stops. The verified address is a parameter rather than a
+  column read: after the federated cutover an address is a claim the provider
+  makes at sign-in, and a service reading a stored one would be trusting
+  whichever half of the system wrote it last.
+- **Not reconstructible from a database copy** — only the token's SHA-256 is
+  stored, so a dump of the table is not a set of working invitations.
+- **Not informative when it refuses.** Spent, expired, revoked, addressed to
+  somebody else, and never-existed all raise the same thing with the same
+  message — a test pins that the five produce exactly one string. Told apart,
+  they would answer "is this address being treated here?" one address at a time.
+- Accepting grants nothing. It creates the relationship half of the pair;
+  consent is the other, and a test pins that an acceptor with no consent is
+  still refused every action on the record.
+- Revision `0055` adds the table with row security carrying both clauses.
+  Accepting runs in the platform scope — the professional is not bound to this
+  subject yet, and the token is what authorizes reading the row at all — so
+  `invitation_service.accept` joins the enumerated allowlist.
+
 ### Added — a professional's claim, and an operator deciding about it (PR-07)
 
 - `professional_profiles` holds what somebody claims about themselves: a name, a

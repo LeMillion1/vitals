@@ -324,6 +324,16 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         actor=TargetColumn.NONE,
         user_portable=False,
     ),
+    # The patient's offer, so it is the patient's row — which puts it inside
+    # row security. Accepting reads it in the platform scope, because the
+    # professional is not bound to this subject yet and the token is what
+    # authorizes reading it at all.
+    "professional_invitations": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.NONE,
+        user_portable=False,
+    ),
     "support_access_grants": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL,
         subject=TargetColumn.REQUIRED,

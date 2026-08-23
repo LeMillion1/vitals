@@ -103,7 +103,7 @@ from vitals.models.proactive import Notification, NotificationDeliveryIntent
 from vitals.models.share import SharedReport
 
 # Who a professional claims to be, and who checked. Not a grant of anything.
-from vitals.models.professional import ProfessionalProfile
+from vitals.models.professional import ProfessionalInvitation, ProfessionalProfile
 
 __all__ = [
     "Base",
@@ -121,6 +121,7 @@ __all__ = [
     "SupportAccessGrant",
     "SupportAccessScope",
     "ProfessionalProfile",
+    "ProfessionalInvitation",
     "AuditEvent",
     "IntegrationConnection",
     "PlatformIntegrationConnection",
