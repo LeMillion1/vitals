@@ -976,6 +976,40 @@ Tests:
 
 Rollback: professional UI can be disabled while scoped APIs remain authoritative.
 
+### Retiring the sole-subject gates — **in progress**
+
+Thirty-six live gates across fourteen service modules, each a compatibility
+bridge that fail-closes on "more than one health subject in the database". They
+were correct while a second subject meant a state nothing understood; PR-07 made
+a second subject the point, and they are now what stands between a shared
+installation and a working app.
+
+They are being retired one at a time. Each guards something specific, and the
+pattern that works is not to loosen the count but to find the *half* of the
+operation that genuinely needs a sole subject and stop only that.
+
+Retired so far:
+
+- `legacy_ownership.resolve_legacy_ownership_context` — asked whether the
+  database held one subject when the check below it already required the actor
+  to *own* the subject. Selects the actor's own record now.
+- `scoped_settings_service` — the shared `app_settings` key is what stops
+  meaning anything with two people, not the scoped row. Reads fall through to
+  the default, writes skip the mirror, adoption stops entirely.
+
+Next, and not straightforward: `conflict_engine`'s `FULLY_UNOWNED` bridge. It
+exists so facts with no `subject_id` can join one person's evaluation, and needs
+a sole subject because adopting nobody's rows for somebody is otherwise wrong.
+The tempting reading — that revision 0049 removed unowned rows, so the bridge is
+obsolete — is **false**: ten tables still allow a NULL subject, and among them
+are the inherited children (`hevy_sets`, `hrt_cycle_items`, `body_scan_metrics`
+and others) where NULL still means the backfill has not reached them. Retiring
+this one needs an analysis of which resolvers can actually see those rows, not a
+loosened count.
+
+The working list is the warning log: `web/main.py` turns each of these refusals
+into a 409 and logs the route, so a shared installation names its own backlog.
+
 ### PR 09 — Subject integrations, platform AI gateway, scheduler, and notifications
 
 Scope:
