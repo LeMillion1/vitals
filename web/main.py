@@ -511,6 +511,7 @@ from web.routers.today import router as today_router  # noqa: E402
 from web.routers.more import router as more_router  # noqa: E402
 from web.routers.weight import router as weight_router  # noqa: E402
 from web.routers.files import router as files_router  # noqa: E402
+from web.routers.care import router as care_router  # noqa: E402
 from web.routers.glp1 import router as glp1_router  # noqa: E402
 from web.routers.supplements import router as supplements_router  # noqa: E402
 from web.routers.hrt import router as hrt_router  # noqa: E402
@@ -542,6 +543,11 @@ app.include_router(weight_router)
 # Private medical files, addressed by a rotatable key rather than a path.
 # Not gated on a module: a lab sheet stays downloadable when labs is off.
 app.include_router(files_router)
+# The professional's side. Every route below /care/{subject_id} names its
+# patient in the path — see web/care_context.py for why that is the design
+# rather than a URL style, and not gated on a module: which modules the
+# patient has on is their setting, not a reason to hide their doctor.
+app.include_router(care_router)
 app.include_router(garmin_router)
 app.include_router(labs_router)
 app.include_router(reports_router)

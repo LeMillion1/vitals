@@ -8,6 +8,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — the professional's side, and the patient it is about (PR-08)
+
+- `/care` lists the records a professional currently holds; `/care/{subject_id}`
+  opens one, with their own notes and plans.
+- **The selected patient travels in the URL, never in the session.** That is the
+  design rather than a URL style, and the reason is a failure that cannot be
+  tested away: a professional opens patient A, leaves the tab, selects patient B
+  elsewhere, comes back and submits the form still on screen. With the selection
+  held server-side that write lands on B — silently, with A's data in it,
+  nothing about the request looking wrong, in a record whose owner was never
+  involved. With it in the path the stale tab posts to the patient it was
+  rendered for, and if consent has since been revoked it is refused instead. A
+  test drives exactly that sequence.
+- Nothing is cached across requests. The relationship, the consent and the
+  policy decision are resolved per request, which is what makes a revocation
+  take effect on the next one rather than on the next login.
+- The page says why it is open. Somebody looking at another person's medical
+  record can see on what grounds without asking anybody — a screen that cannot
+  say why it is open is one nobody can audit by looking at it.
+- Uniform refusals: a subject that does not exist, one the caller holds no
+  relationship with, one whose consent is paused and one whose consent lapsed
+  are four different facts and one 404. Told apart, a professional could ask
+  "is this person a patient here?" one id at a time. A caller with no session at
+  all still gets the login redirect — that rule is about telling *authenticated*
+  callers apart, and answering 404 there would only hide the login page.
+- The roster shows a paused relationship as paused rather than omitting it:
+  "gone" and "on hold" are different things to tell a professional. It is listed
+  and named, and it is not a link, because the record is genuinely closed.
+
 ### Fixed — validating a lake against the schema it actually has
 
 - The Stage-4 whole-lake validation and two rehearsals derive their inventory

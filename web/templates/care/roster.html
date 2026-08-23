@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("care.roster_title") }}{% endblock %}
+
+{% block content %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+
+    {% call masthead_header('care', t('care.roster_heading'), []) %}{% endcall %}
+    <p class="v-text-body max-w-2xl" style="color: var(--muted)">
+        {{ t("care.roster_description") }}
+    </p>
+
+    {% if not patients %}
+    <div class="v-card p-6">
+        <p class="v-text-body" style="color: var(--muted)">{{ t("care.roster_empty") }}</p>
+    </div>
+    {% else %}
+    <div class="space-y-3">
+        {# A row that is not open still appears, showing why. A professional
+           whose consent was paused should see that it was paused rather than an
+           empty list — "gone" and "on hold" are different things to tell them. #}
+        {% for p in patients %}
+        <div class="v-card p-5 flex flex-wrap items-center justify-between gap-4">
+            <div class="space-y-1">
+                {% if p.open %}
+                <a href="/care/{{ p.subject_id }}" class="v-text-body font-semibold">{{ p.display_name }}</a>
+                {% else %}
+                <span class="v-text-body font-semibold" style="color: var(--muted)">{{ p.display_name }}</span>
+                {% endif %}
+                <div class="v-text-micro" style="color: var(--faint)">
+                    {{ t("care.kind." ~ p.kind) }}
+                    {% if p.consent_version %}· {{ t("care.consent_version", n=p.consent_version) }}{% endif %}
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                {% if p.open %}
+                <span class="v-chip v-chip-sm good">{{ t("care.state.open") }}</span>
+                {% elif p.relationship_status == 'paused' %}
+                <span class="v-chip v-chip-sm">{{ t("care.state.relationship_paused") }}</span>
+                {% elif p.consent_status == 'paused' %}
+                <span class="v-chip v-chip-sm">{{ t("care.state.consent_paused") }}</span>
+                {% else %}
+                <span class="v-chip v-chip-sm">{{ t("care.state.no_consent") }}</span>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block title %}{{ care.subject_display_name }}{% endblock %}
+
+{% block content %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+
+    {# The banner is not decoration. Somebody looking at another person's medical
+       record should be able to see, without asking anybody, on what grounds it
+       is open to them — and a screen that cannot say why it is open is one
+       nobody can audit by looking at it. #}
+    <div class="v-alert info flex flex-wrap items-center justify-between gap-3">
+        <span>
+            <strong>{{ care.subject_display_name }}</strong>
+            · {{ t("care.basis." ~ care.basis.split(":")[0]) }}
+            {% if not care.is_owner %}({{ t("care.kind." ~ care.kind.value) }}){% endif %}
+        </span>
+        <a href="/care" class="v-btn-ghost text-xs">{{ t("care.back_to_roster") }}</a>
+    </div>
+
+    {% call masthead_header('care', care.subject_display_name, []) %}{% endcall %}
+
+    <!-- ─── NOTES ──────────────────────────────────────────────────────────── -->
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("care.notes_title")) }}
+
+        {% if may_write_note %}
+        {# The action names the patient. A tab left open on somebody else posts
+           to somebody else, which is the point — see web/care_context.py. #}
+        <form action="/care/{{ care.subject_id }}/note" method="POST" class="space-y-3">
+            <label for="care-note" class="v-label">{{ t("care.note_label") }}</label>
+            <textarea id="care-note" name="body" rows="4" class="v-input" required
+                      placeholder="{{ t('care.note_placeholder') }}"></textarea>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn text-xs">{{ t("care.note_submit") }}</button>
+            </div>
+        </form>
+        {% endif %}
+
+        {% if notes %}
+        <div class="space-y-3">
+            {% for note in notes %}
+            <div class="v-card-inset p-4 space-y-1">
+                <div class="v-text-micro" style="color: var(--faint)">
+                    {{ note.created_at | format_date }}
+                </div>
+                <p class="v-text-body" style="white-space: pre-wrap">{{ note.body }}</p>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("care.notes_empty") }}</p>
+        {% endif %}
+    </div>
+
+    <!-- ─── PLANS ──────────────────────────────────────────────────────────── -->
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("care.plans_title")) }}
+
+        {% if plans %}
+        <div class="space-y-3">
+            {% for plan in plans %}
+            <div class="v-card-inset p-4 space-y-1">
+                <div class="flex items-center justify-between gap-3">
+                    <span class="v-text-body font-semibold">{{ plan.title }}</span>
+                    <span class="v-chip v-chip-sm">{{ t("care.plan_status." ~ plan.status) }}</span>
+                </div>
+                <div class="v-text-micro" style="color: var(--faint)">
+                    {{ plan.effective_from }}{% if plan.effective_to %} — {{ plan.effective_to }}{% endif %}
+                </div>
+                <p class="v-text-body" style="white-space: pre-wrap">{{ plan.body }}</p>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("care.plans_empty") }}</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
