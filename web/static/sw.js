@@ -40,9 +40,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // /static/uploads/* is user data (lab sheets, InBody printouts, progress
-  // photos), not app shell — caching it would leave medical images in Cache
-  // Storage forever, outside the session and untouched by logout.
+  // Medical files (lab sheets, InBody printouts, progress photos) are served
+  // from /files/* and are user data, not app shell — caching them would leave
+  // medical images in Cache Storage forever, outside the session and untouched
+  // by logout. They never match the /static/ test below, so nothing here has to
+  // exclude them; /static/uploads/* is kept out too because the private tree
+  // still lives on disk under that prefix even though nothing serves from it.
   if (sameOrigin && url.pathname.startsWith('/static/')
       && !url.pathname.startsWith('/static/uploads/')) {
     // Stale-while-revalidate: serve the cached copy instantly (offline-friendly),

@@ -683,3 +683,157 @@ async def test_postgres_concurrent_same_key_returns_one_authoritative_asset(
         assert persisted.id == first_id
         assert persisted.subject_id == subject_id
         assert persisted.status == FileAssetStatus.LEGACY_PLACEHOLDER.value
+
+
+# ── Resolving a download ─────────────────────────────────────────────────────
+# The lookup is what stands between a URL somebody is holding and somebody
+# else's medical file. Both functions below take the subject as part of the
+# query rather than checking it afterwards, and the difference is not stylistic:
+# a check afterwards has to decide what to say about a row it just read.
+
+
+@pytest.mark.asyncio
+async def test_a_download_key_only_resolves_inside_its_own_subject(db_session):
+    """Another subject's key is not merely refused — it is not found."""
+
+    mine_user, mine = await _identity_graph(db_session, "download-mine")
+    theirs_user, theirs = await _identity_graph(db_session, "download-theirs")
+
+    ours = await register_legacy_local(
+        db_session,
+        subject_id=mine.id,
+        uploaded_by_user_id=mine_user.id,
+        purpose=FileAssetPurpose.LAB_DOCUMENT,
+        storage_ref="labs/mine.pdf",
+        media_type="application/pdf",
+        size_bytes=10,
+        content_sha256=_SHA256,
+    )
+    hers = await register_legacy_local(
+        db_session,
+        subject_id=theirs.id,
+        uploaded_by_user_id=theirs_user.id,
+        purpose=FileAssetPurpose.LAB_DOCUMENT,
+        storage_ref="labs/theirs.pdf",
+        media_type="application/pdf",
+        size_bytes=10,
+        content_sha256=_SHA256,
+    )
+
+    found = await file_asset_service.resolve_for_download(
+        db_session, opaque_key=ours.opaque_key, subject_id=mine.id
+    )
+    assert found.id == ours.id
+
+    # The real key of a real file, asked for by the wrong subject.
+    with pytest.raises(FileAssetNotFoundError):
+        await file_asset_service.resolve_for_download(
+            db_session, opaque_key=hers.opaque_key, subject_id=mine.id
+        )
+    # And a key that never existed, which must be indistinguishable from it.
+    with pytest.raises(FileAssetNotFoundError):
+        await file_asset_service.resolve_for_download(
+            db_session, opaque_key=uuid.uuid4(), subject_id=mine.id
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purged", [False, True])
+async def test_a_retired_asset_resolves_to_nothing(db_session, purged):
+    """Deleted and purged are lifecycle states, not error messages."""
+
+    uploader, subject = await _identity_graph(db_session, f"retired-{int(purged)}")
+    asset = await register_legacy_local(
+        db_session,
+        subject_id=subject.id,
+        uploaded_by_user_id=uploader.id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO,
+        storage_ref="uploads/retired.webp",
+        media_type="image/webp",
+        size_bytes=10,
+        content_sha256=_SHA256,
+    )
+    await mark_legacy_local_deleted(
+        db_session,
+        file_asset_id=asset.id,
+        subject_id=subject.id,
+        purged=purged,
+    )
+
+    with pytest.raises(FileAssetNotFoundError):
+        await file_asset_service.resolve_for_download(
+            db_session, opaque_key=asset.opaque_key, subject_id=subject.id
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_page_lookup_returns_only_this_subjects_live_assets(db_session):
+    """One query for a whole page, and it cannot leak into the next subject.
+
+    A page renders many rows, each carrying an asset id it read from its own
+    scoped table. Passing an id that turns out to belong elsewhere should
+    produce no URL rather than one that works.
+    """
+
+    mine_user, mine = await _identity_graph(db_session, "page-mine")
+    theirs_user, theirs = await _identity_graph(db_session, "page-theirs")
+
+    live = await register_legacy_local(
+        db_session,
+        subject_id=mine.id,
+        uploaded_by_user_id=mine_user.id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO,
+        storage_ref="uploads/live.webp",
+        media_type="image/webp",
+        size_bytes=10,
+        content_sha256=_SHA256,
+    )
+    retired = await register_legacy_local(
+        db_session,
+        subject_id=mine.id,
+        uploaded_by_user_id=mine_user.id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO,
+        storage_ref="uploads/retired-page.webp",
+        media_type="image/webp",
+        size_bytes=10,
+        content_sha256=_SHA256,
+    )
+    await mark_legacy_local_deleted(
+        db_session, file_asset_id=retired.id, subject_id=mine.id, purged=False
+    )
+    hers = await register_legacy_local(
+        db_session,
+        subject_id=theirs.id,
+        uploaded_by_user_id=theirs_user.id,
+        purpose=FileAssetPurpose.PROGRESS_PHOTO,
+        storage_ref="uploads/hers.webp",
+        media_type="image/webp",
+        size_bytes=10,
+        content_sha256=_SHA256,
+    )
+
+    resolved = await file_asset_service.opaque_keys_for(
+        db_session,
+        subject_id=mine.id,
+        file_asset_ids=[live.id, retired.id, hers.id, None, uuid.uuid4()],
+    )
+    assert resolved == {live.id: live.opaque_key}
+
+    assert await file_asset_service.opaque_keys_for(
+        db_session, subject_id=mine.id, file_asset_ids=[]
+    ) == {}
+    assert await file_asset_service.opaque_keys_for(
+        db_session, subject_id=mine.id, file_asset_ids=[None, None]
+    ) == {}
+
+
+@pytest.mark.asyncio
+async def test_the_download_lookup_refuses_a_value_that_is_not_a_uuid(db_session):
+    """A malformed key is a validation failure, not a query with a cast error."""
+
+    _, subject = await _identity_graph(db_session, "download-malformed")
+    for value in ("not-a-uuid", 7, None, ""):
+        with pytest.raises(FileAssetValidationError):
+            await file_asset_service.resolve_for_download(
+                db_session, opaque_key=value, subject_id=subject.id
+            )

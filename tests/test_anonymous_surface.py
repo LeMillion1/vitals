@@ -44,6 +44,11 @@ ANONYMOUS_BY_DESIGN = {
     # a token and the page asks for a password.
     ("GET", "/r/{token}"),
     ("POST", "/r/{token}"),
+    # The seal over the private uploads tree. It answers 404 to everybody and
+    # serves nothing at all — see web/main.py. Deliberately without a session
+    # dependency: requiring one would answer 401 to a stranger and 404 to the
+    # owner, and that difference tells the stranger the path was real.
+    ("GET", "/static/uploads/{key:path}"),
     # The OAuth handshake Claude.ai runs before it holds any credential.
     ("GET", "/.well-known/oauth-authorization-server"),
     ("GET", "/.well-known/oauth-protected-resource"),
@@ -102,6 +107,8 @@ async def test_the_schema_is_not_published(client):
 # ── Uploaded files ────────────────────────────────────────────────────────────
 # Lab sheets, InBody printouts and progress photos live under ``static/uploads``.
 # A random file name is not an access control, and the URL outlives the session.
+# They are addressed by ``FileAsset.opaque_key`` now — a rotatable UUID with no
+# relationship to the bytes — and the path they sit at serves nothing at all.
 
 
 @pytest.fixture
@@ -116,27 +123,9 @@ def an_uploaded_file():
     os.remove(path)
 
 
-async def test_an_uploaded_file_is_not_public(client, an_uploaded_file):
-    """No session, no file — whoever holds the link included."""
-    r = await client.get(f"/static/uploads/{an_uploaded_file}")
-    assert r.status_code == 401
-    assert b"lab sheet bytes" not in r.content
-
-    # Typed into a browser it lands on the login form, like any other page.
-    r = await client.get(
-        f"/static/uploads/{an_uploaded_file}", headers={"Accept": "text/html"}
-    )
-    assert r.status_code == 302
-    assert r.headers["location"].startswith("/login")
-
-
-async def test_the_owner_still_gets_the_file(
-    auth_client,
-    db_session,
-    an_uploaded_file,
-    legacy_owner_roots,
-    owner_write,
-):
+@pytest.fixture
+async def an_owned_asset(db_session, owner_write, an_uploaded_file):
+    """One progress photo with its file, reachable by its opaque key."""
     from datetime import date
 
     from vitals.enums import FileAssetPurpose
@@ -162,65 +151,89 @@ async def test_the_owner_still_gets_the_file(
         prepared_conflict_write=await owner_write.write(date(2026, 8, 20)),
     )
     await db_session.commit()
+    return asset
 
-    r = await auth_client.get(f"/static/uploads/{an_uploaded_file}")
+
+async def test_the_owner_gets_the_file_by_its_opaque_key(auth_client, an_owned_asset):
+    r = await auth_client.get(f"/files/{an_owned_asset.opaque_key}")
     assert r.status_code == 200
     assert r.content == b"lab sheet bytes"
     # Nothing left in the disk cache for the next person holding the device.
     assert "no-store" in r.headers["cache-control"]
 
 
-async def test_unregistered_file_fallback_closes_when_a_second_subject_exists(
-    auth_client, db_session, an_uploaded_file
-, *, legacy_file_asset_id, legacy_owner_roots):
-    """A legacy photo fact is authorized only by the exact-one-subject bridge."""
-    from datetime import date
+async def test_a_download_needs_a_session(client, an_owned_asset):
+    """No session, no file — whoever holds the link included."""
+    r = await client.get(f"/files/{an_owned_asset.opaque_key}")
+    assert r.status_code == 401
+    assert b"lab sheet bytes" not in r.content
 
-    from vitals.enums import Domain, Source, UserStatus
-    from vitals.models.identity import HealthSubject, User
-    from vitals.models.weight import ProgressPhoto
-
-    db_session.add(
-        ProgressPhoto(subject_id=legacy_owner_roots.subject_id, file_asset_id=legacy_file_asset_id,
-            date=date(2026, 8, 20),
-            domain=Domain.WEIGHT.value,
-            source=Source.MANUAL.value,
-            file_key=f"uploads/{an_uploaded_file}",
-        )
+    # Typed into a browser it lands on the login form, like any other page.
+    r = await client.get(
+        f"/files/{an_owned_asset.opaque_key}", headers={"Accept": "text/html"}
     )
-    await db_session.flush()
+    assert r.status_code == 302
+    assert r.headers["location"].startswith("/login")
 
-    other = User(
-        username="other-file-owner",
-        normalized_username="other-file-owner",
-        password_hash="$synthetic-test-hash",
-        status=UserStatus.ACTIVE.value,
-    )
-    db_session.add(other)
-    await db_session.flush()
-    db_session.add(
-        HealthSubject(
-            owner_user_id=other.id,
-            display_name="Other file owner",
-            timezone="Asia/Almaty",
-        )
+
+async def test_a_key_nobody_owns_is_a_miss(auth_client, an_owned_asset):
+    """Unknown, malformed and not-a-UUID all answer the same thing.
+
+    Three different facts about a key, and any difference between the answers is
+    the oracle somebody guessing URLs would use to tell them apart.
+    """
+    import uuid
+
+    for key in (str(uuid.uuid4()), "not-a-uuid", "../../app.js", ""):
+        r = await auth_client.get(f"/files/{key}")
+        assert r.status_code == 404, key
+        assert b"lab sheet bytes" not in r.content
+
+
+async def test_a_deleted_asset_stops_being_downloadable(
+    auth_client, db_session, an_owned_asset
+):
+    """Lifecycle decides, and it decides in the same voice as a missing key."""
+    from vitals.services import file_asset_service
+
+    await file_asset_service.mark_legacy_local_deleted(
+        db_session,
+        file_asset_id=an_owned_asset.id,
+        subject_id=an_owned_asset.subject_id,
+        purged=False,
     )
     await db_session.commit()
 
-    response = await auth_client.get(f"/static/uploads/{an_uploaded_file}")
-    assert response.status_code == 404
-    assert b"lab sheet bytes" not in response.content
+    r = await auth_client.get(f"/files/{an_owned_asset.opaque_key}")
+    assert r.status_code == 404
+    assert b"lab sheet bytes" not in r.content
 
 
-async def test_the_route_is_matched_before_the_static_mount():
-    """Routes match in registration order: below the mount this guard is dead code."""
+async def test_the_uploads_path_serves_nothing_to_anybody(
+    client, auth_client, an_uploaded_file
+):
+    """The prefix is sealed: not for strangers, and not for the owner either.
+
+    While the bytes live inside the static tree, the only thing standing between
+    the mount and a medical record is this route claiming the prefix first. It
+    is easier to be sure of that when the route has no success case at all.
+    """
+    path = f"/static/uploads/{an_uploaded_file}"
+    for c in (client, auth_client):
+        r = await c.get(path)
+        assert r.status_code == 404
+        assert b"lab sheet bytes" not in r.content
+
+
+async def test_the_seal_is_matched_before_the_static_mount():
+    """Routes match in registration order: below the mount this is dead code."""
     paths = [getattr(route, "path", None) for route in app.routes]
     assert paths.index("/static/uploads/{key:path}") < paths.index("/static")
 
 
-async def test_climbing_out_of_the_uploads_tree_is_a_miss():
-    """``..`` in the key must not reach the rest of the filesystem."""
-    for key in ("../app.js", "../../main.py", "body/../../app.js"):
+async def test_the_seal_answers_nothing_whatever_the_key():
+    """Including the shapes that used to need their own containment check."""
+    for key in ("app.js", "../app.js", "../../main.py", "body/../../app.js", ""):
         with pytest.raises(HTTPException) as excinfo:
             await serve_upload(key)
         assert excinfo.value.status_code == 404, key

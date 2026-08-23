@@ -197,11 +197,38 @@ the authenticated user/token is A.
 
 ### Files and uploads
 
-`/static/uploads/{key}` currently checks only for an authenticated session.
-Progress photos and body scans store path-like keys, and lab documents reuse a
-raw external ID rather than a file registry. PR-03 adds ownership metadata and
-dual-write; PR-06 changes serving to opaque FileAsset policy checks. A known key
-or raw ID must never be sufficient to bind or download another subject's file.
+`/static/uploads/{key}` used to check only for an authenticated session, then
+for a reachable validated fact once PR-03 added ownership metadata. Both were
+working around the same thing: the URL was the storage path, so the name was a
+guess away from being known, and the route had to be careful never to answer
+differently for a file that exists and one that does not.
+
+PR-06 stops addressing files by path. `GET /files/{opaque_key}` takes
+`FileAsset.opaque_key` — a UUID with no relationship to the bytes, unique across
+the installation, and rotatable, so replacing it revokes every link that leaked
+without touching the row or the file. The asset is the authority: it names the
+subject and the lifecycle state, the subject is part of the lookup rather than a
+check afterwards, and every failure — malformed key, unknown key, another
+subject's key, deleted, purged, bytes missing from disk — is the same 404.
+
+Two checks the old route needed are gone because what they defended against is
+gone. Purpose no longer gates a download: a `labs/` prefix used to imply one, so
+metadata claiming another was inconsistent with where the bytes sat, and there
+is no prefix now to contradict. And the `uploads/labs/x` / `labs/x` alias, where
+two metadata rows could claim one path and disagree about whether it was
+deleted, cannot arise when the key names a row rather than a path. The alias is
+still refused on *deletion*, where two rows pointing at one file is still real.
+
+The path itself is sealed: `/static/uploads/{key:path}` is a route that answers
+404 to everybody, with no session dependency — requiring one would answer 401 to
+a stranger and 404 to the owner, and that difference tells the stranger the path
+was real. It exists only so the static mount can never reach the private tree,
+and a test pins that it is registered ahead of the mount.
+
+Remaining work: the bytes still live under `web/static/uploads` on the same bind
+mount as the site assets. Nothing serves from there any more, so the seal is
+sufficient, but moving the tree to a private root would make the guarantee
+structural rather than a matter of route ordering.
 
 ### Reports, alerts, notifications, and outbox
 

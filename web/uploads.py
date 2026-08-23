@@ -55,14 +55,6 @@ def legacy_upload_disk_path(static_dir: str, storage_ref: str) -> str:
     return path
 
 
-def storage_refs_for_route_key(key: str) -> tuple[str, ...]:
-    """Map the legacy download route key to its possible metadata locator."""
-
-    if key.startswith(("labs/", "body/")):
-        return (key,)
-    return (f"uploads/{key}",)
-
-
 def file_ext(filename: str | None) -> str:
     """Lower-cased extension (with dot) of *filename*, or ``''`` when absent."""
     return os.path.splitext(filename or "")[1].lower()

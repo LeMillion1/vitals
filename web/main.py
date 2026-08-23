@@ -14,13 +14,12 @@ from urllib.parse import urlencode
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import (
-    FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
 )
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.services.access_resolution import AccessDeniedError
@@ -36,11 +35,9 @@ from web.deps import (
     load_enabled_modules,
     load_language,
     load_nav_status,
-    require_auth,
     require_module,
 )
 from web.templating import STATIC_DIR, templates
-from web.uploads import storage_refs_for_route_key
 
 logger = logging.getLogger(__name__)
 
@@ -234,94 +231,32 @@ add_security_headers(app)
 # Lab sheets, InBody printouts and progress photos are written under
 # ``static/uploads`` so they survive a rebuild on the same bind mount as the rest
 # of the assets — but they are the owner's medical records, not site furniture,
-# and the mount below hands anything in ``static`` to whoever asks. A random file
-# name is not an access control: the URL never expires, logging out does not
-# revoke it, and it outlives the session in history, caches and proxy logs.
+# and the mount below hands anything in ``static`` to whoever asks.
 #
-# So this route claims the subtree ahead of the mount and puts the same session
-# guard on it as every page. It MUST stay above ``app.mount`` — routes match in
-# registration order, and the mount would swallow the prefix first.
+# They are served by ``/files/{opaque_key}`` instead, which addresses an asset
+# rather than a path. Nothing reachable here is servable any more, so this route
+# exists only to make sure the mount can never see the subtree: it claims the
+# prefix ahead of it and answers nothing, for everybody, always.
+#
+# It MUST stay above ``app.mount`` — routes match in registration order, and the
+# mount would otherwise swallow the prefix and hand out medical records to
+# whoever guessed a filename. That ordering is pinned by a test.
 UPLOADS_DIR = os.path.realpath(os.path.join(STATIC_DIR, "uploads"))
 
 
 @app.get("/static/uploads/{key:path}")
-async def serve_upload(
-    key: str,
-    db: AsyncSession = Depends(get_session),
-    username: str = Depends(require_auth),
-):
-    path = os.path.realpath(os.path.join(UPLOADS_DIR, key))
-    # ``..`` (and any symlink out) resolves to somewhere else: a miss, not a read.
-    # Authorize the persisted graph before consulting file existence so a
-    # guessed progress-photo path cannot become a metadata oracle.
-    if not path.startswith(UPLOADS_DIR + os.sep):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+async def serve_upload(key: str):
+    """Seal the private tree off from the static mount. Always a miss.
 
-    # A session proves who the browser user is, not which subject owns this
-    # particular medical file. Resolve the compatibility subject independently
-    # and honor persisted lifecycle before touching the bytes. Progress photos
-    # additionally require a reachable validated fact; arbitrary legacy paths
-    # are not an authorization capability.
-    from vitals.enums import FileAssetStatus, FileStorageBackend
-    from vitals.models.tenancy import FileAsset
-    from vitals.services.legacy_ownership import (
-        LegacyOwnershipError,
-        resolve_legacy_ownership_context,
-    )
+    Deliberately without a session dependency: there is no authenticated way
+    through either, and requiring one would answer 401 to a stranger and 404 to
+    the owner — which is a shape that tells the stranger the path was real.
+    """
 
-    try:
-        ownership = await resolve_legacy_ownership_context(
-            db,
-            actor_username=username,
-        )
-    except LegacyOwnershipError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
-
-    from vitals.services import weight_service
-
-    try:
-        photo = await weight_service.get_progress_photo_by_file_key(
-            db,
-            file_key=f"uploads/{key}",
-            subject_id=ownership.subject_id,
-        )
-    except weight_service.ProgressPhotoOwnershipError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
-
-    document_asset = None
-    if key.startswith(("labs/", "body/")):
-        document_asset = await db.scalar(
-            select(FileAsset).where(
-                FileAsset.subject_id == ownership.subject_id,
-                FileAsset.storage_backend == FileStorageBackend.LEGACY_LOCAL.value,
-                FileAsset.storage_ref.in_(storage_refs_for_route_key(key)),
-            )
-        )
-    if photo is not None and document_asset is not None:
-        # ``uploads/labs/x`` and ``labs/x`` resolve to the same legacy-local
-        # bytes. Two metadata authorities for that path are ambiguous even when
-        # both are individually live, so refuse the alias rather than letting
-        # one lifecycle silently override the other.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    if photo is None and document_asset is not None:
-        if document_asset.status in {
-            FileAssetStatus.DELETED.value,
-            FileAssetStatus.PURGED.value,
-        }:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    elif photo is None and not key.startswith(("labs/", "body/")):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    # Never written to disk cache: the file is readable again on the next request,
-    # and a logged-out browser should keep nothing. Matches the service worker,
-    # which already refuses to cache this prefix.
-    return FileResponse(path, headers={"Cache-Control": "private, no-store"})
+    del key
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
 
-# Mount static files — everything else under /static is public site furniture
-# (CSS, JS, fonts, icons), reachable before login because the login page needs it.
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -575,6 +510,7 @@ from web.routers.alerts import router as alerts_router  # noqa: E402
 from web.routers.today import router as today_router  # noqa: E402
 from web.routers.more import router as more_router  # noqa: E402
 from web.routers.weight import router as weight_router  # noqa: E402
+from web.routers.files import router as files_router  # noqa: E402
 from web.routers.glp1 import router as glp1_router  # noqa: E402
 from web.routers.supplements import router as supplements_router  # noqa: E402
 from web.routers.hrt import router as hrt_router  # noqa: E402
@@ -603,6 +539,9 @@ app.include_router(today_router)
 app.include_router(more_router)
 app.include_router(alerts_router)
 app.include_router(weight_router)
+# Private medical files, addressed by a rotatable key rather than a path.
+# Not gated on a module: a lab sheet stays downloadable when labs is off.
+app.include_router(files_router)
 app.include_router(garmin_router)
 app.include_router(labs_router)
 app.include_router(reports_router)

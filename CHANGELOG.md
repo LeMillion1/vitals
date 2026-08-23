@@ -8,6 +8,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — private files stop being addressed by their path (PR-06)
+
+- **`GET /files/{opaque_key}`** replaces `/static/uploads/{key}`. The key is
+  `FileAsset.opaque_key`: a UUID with no relationship to the bytes, unique
+  across the installation, and rotatable — replacing it revokes every link that
+  ever leaked, without touching the row it belongs to or the file on disk.
+- The asset is the authority. It names the subject and the lifecycle state, and
+  the subject is part of the lookup rather than a check afterwards, so a key
+  belonging to somebody else is *not found* rather than refused. Malformed key,
+  unknown key, another subject's key, deleted, purged, and bytes missing from
+  disk are six different facts and one identical 404 — telling them apart is
+  exactly the oracle somebody holding a guessed URL would use.
+- Two checks the old route needed are gone with what they defended against. A
+  `labs/` prefix used to imply a purpose, so metadata claiming a different one
+  was inconsistent with where the bytes sat; there is no prefix left to
+  contradict. And `uploads/labs/x` and `labs/x` were one file with two
+  spellings, so two metadata rows could claim it and disagree about whether it
+  was deleted; a key names a row, not a path. The alias is still refused on
+  deletion, where two rows pointing at one file is still a real problem.
+- A malicious file name no longer reaches the page at all. `uploads/synthetic-
+  ');window.photo_pwned=1;('-.png` was rendered into an Alpine expression's data
+  attributes, where escaping was the only thing between an uploaded file name
+  and a same-origin script. The name is not in the HTML now.
+- `/static/uploads/{key:path}` remains as a seal: 404 for everybody, with no
+  session dependency, so the static mount can never reach the private tree. A
+  test pins that it is registered ahead of the mount. The bytes still live under
+  `web/static/uploads`; moving them to a private root would make the guarantee
+  structural rather than a matter of route ordering, and is follow-up work.
+
 ### Fixed — work that belongs to nobody in particular
 
 - **Every published doctor link would have answered "not found".** Revision 0050

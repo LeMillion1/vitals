@@ -376,7 +376,89 @@ async def mark_legacy_local_deleted(
     return asset
 
 
+#: Lifecycle states whose bytes may still be handed to somebody. A deleted or
+#: purged asset is not a 403 and not an error — it simply has no download, the
+#: same answer a key that never existed gets.
+SERVABLE_STATUSES = frozenset(
+    {
+        FileAssetStatus.LEGACY_PLACEHOLDER.value,
+        FileAssetStatus.PENDING.value,
+        FileAssetStatus.ACTIVE.value,
+    }
+)
+
+
+async def resolve_for_download(
+    session: AsyncSession,
+    *,
+    opaque_key: uuid.UUID,
+    subject_id: uuid.UUID,
+) -> FileAsset:
+    """Find one servable asset by its rotatable key, inside one subject.
+
+    The subject is part of the lookup rather than a check afterwards, so a key
+    belonging to somebody else is indistinguishable from a key that does not
+    exist. That matters more here than elsewhere: the caller is holding a URL,
+    and "this file exists but is not yours" tells them their guess was right.
+
+    Nothing about the file's own state changes the answer either — deleted,
+    purged, or never-seen all raise the same not-found. The route above turns
+    every one of them into the same 404.
+    """
+
+    _validate_uuid(opaque_key, "opaque_key")
+    _validate_uuid(subject_id, "subject_id")
+
+    asset = await session.scalar(
+        select(FileAsset).where(
+            FileAsset.opaque_key == opaque_key,
+            FileAsset.subject_id == subject_id,
+            FileAsset.status.in_(sorted(SERVABLE_STATUSES)),
+        )
+    )
+    if asset is None:
+        raise FileAssetNotFoundError("no servable asset for that key in this scope")
+    return asset
+
+
+async def opaque_keys_for(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    file_asset_ids,
+) -> dict[uuid.UUID, uuid.UUID]:
+    """Map asset ids to download keys for one page, in one query.
+
+    A page shows many photos and scans, and each carries an asset id rather than
+    a URL. Resolving them one at a time is an N+1 against a table that is
+    already indexed for exactly this, and a lazy relationship would be worse —
+    it loads inside the template render, where an async session has no greenlet
+    to load in.
+
+    An id that is missing from the result is not an error: the asset is deleted,
+    purged, or somebody else's. The caller renders no link, which is the same
+    thing the download route would conclude one round trip later.
+    """
+
+    _validate_uuid(subject_id, "subject_id")
+    wanted = {value for value in file_asset_ids if value is not None}
+    for value in wanted:
+        _validate_uuid(value, "file_asset_id")
+    if not wanted:
+        return {}
+
+    rows = await session.execute(
+        select(FileAsset.id, FileAsset.opaque_key).where(
+            FileAsset.id.in_(sorted(wanted)),
+            FileAsset.subject_id == subject_id,
+            FileAsset.status.in_(sorted(SERVABLE_STATUSES)),
+        )
+    )
+    return {row.id: row.opaque_key for row in rows}
+
+
 __all__ = [
+    "SERVABLE_STATUSES",
     "FileAssetConflictError",
     "FileAssetNotFoundError",
     "FileAssetServiceError",
@@ -384,5 +466,7 @@ __all__ = [
     "FileAssetUploaderNotFoundError",
     "FileAssetValidationError",
     "mark_legacy_local_deleted",
+    "opaque_keys_for",
     "register_legacy_local",
+    "resolve_for_download",
 ]

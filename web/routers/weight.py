@@ -301,11 +301,23 @@ async def _section_context(
     latest_bf = latest_bf_row["body_fat_pct"] if latest_bf_row else None
     latest_bf_source = latest_bf_row["source_label"] if latest_bf_row else None
 
+    # Download URLs for everything on this page, resolved in one query. The
+    # rows carry an asset id; the link needs the rotatable key, and an id with
+    # no entry here is deleted, purged, or not this subject's — in every case
+    # the template renders no link rather than a link that 404s.
+    file_keys = await file_asset_service.opaque_keys_for(
+        db,
+        subject_id=identity.subject_id,
+        file_asset_ids=[p.file_asset_id for p in photos]
+        + [s.file_asset_id for s in bc_scans],
+    )
+
     # Default today's date for forms
     today_str = today.isoformat()
 
     return {
         "username": username,
+        "file_keys": file_keys,
         "weights": sorted_weights,
         "measurements": sorted_measurements,
         "latest_bf": latest_bf,

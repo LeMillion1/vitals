@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
+import os
 from dataclasses import FrozenInstanceError
 from datetime import UTC, date, datetime
 from html.parser import HTMLParser
@@ -592,12 +594,23 @@ async def test_actorless_owned_photo_requires_a_valid_processed_checkpoint(
         )
 
 
-async def test_malicious_file_key_is_data_not_an_alpine_expression(
+async def test_a_malicious_file_name_never_reaches_the_page_at_all(
     auth_client,
     db_session,
     legacy_owner_roots,
     owner_write,
 ):
+    """The name used to be the URL, so it had to survive being escaped.
+
+    ``uploads/synthetic-\');window.photo_pwned=1;(\'-.png`` is a valid file
+    name, and it was rendered straight into an Alpine expression's data
+    attributes. Escaping held, but only escaping stood between an uploaded
+    file name and a same-origin script.
+
+    Downloads are addressed by an opaque key now, so the name is not in the
+    HTML at all. This asserts the stronger property rather than the older one.
+    """
+
     identity = _identity(legacy_owner_roots)
     file_key = "uploads/synthetic-');window.photo_pwned=1;('-.png"
     asset = await file_asset_service.register_legacy_local(
@@ -629,7 +642,11 @@ async def test_malicious_file_key_is_data_not_an_alpine_expression(
     parser = _PhotoCardParser(photo.id)
     parser.feed(response.text)
     assert parser.attributes is not None
-    assert parser.attributes["data-photo-src"] == f"/static/{file_key}"
+    source = parser.attributes["data-photo-src"]
+    assert source == f"/files/{asset.opaque_key}"
+    # Not merely escaped — absent. Neither the name nor any fragment of it.
+    assert "photo_pwned" not in response.text
+    assert "synthetic-" not in source
     click = parser.attributes["@click"]
     assert click == (
         "showPhotoModal(Number($el.dataset.photoId), "
@@ -1157,85 +1174,125 @@ async def test_timeline_uses_validated_ranged_marker_projection(
         )
 
 
-async def test_progress_photo_download_requires_auth_and_validated_subject_graph(
+async def test_the_asset_is_the_download_authority_not_the_fact_that_points_at_it(
     auth_client,
     db_session,
     legacy_owner_roots,
-    tmp_path,
-    monkeypatch,
 ):
-    from httpx import ASGITransport, AsyncClient
+    """Who may read these bytes is a question the FileAsset answers by itself.
 
+    It used to be answered by the progress-photo fact, because the URL was the
+    storage path: anyone could name a path, so the route had to prove a real,
+    reachable, validated photo pointed at it before reading anything. An opaque
+    key is not nameable — it comes from the asset row, which carries the subject
+    and the lifecycle state — so the asset decides, and the fact above it is a
+    separate concern that fails in its own place.
+
+    Concretely: a photo whose ownership graph is broken disappears from the page
+    (``list_progress_photos`` refuses it) but does not make its owner's file
+    unreadable, and no photo at all does not make a registered asset secret.
+    """
+
+    from vitals.services import file_asset_service as fas
     from web import main as web_main
 
     identity = _identity(legacy_owner_roots)
-    route_key = "synthetic-protected.png"
-    file_key = f"uploads/{route_key}"
+    name = "synthetic-protected.png"
+    file_key = f"uploads/{name}"
     contents = b"synthetic progress-photo bytes"
-    path = tmp_path / route_key
-    path.write_bytes(contents)
-    monkeypatch.setattr(web_main, "UPLOADS_DIR", str(tmp_path))
 
-    async with AsyncClient(
-        transport=ASGITransport(app=web_main.app),
-        base_url="http://test",
-        follow_redirects=False,
-    ) as anonymous_client:
-        unauthenticated = await anonymous_client.get(
-            f"/static/uploads/{route_key}"
+    os.makedirs(web_main.UPLOADS_DIR, exist_ok=True)
+    disk_path = os.path.join(web_main.UPLOADS_DIR, name)
+    with open(disk_path, "wb") as handle:
+        handle.write(contents)
+    try:
+        # No asset, no key, nothing to ask for: the bytes are on disk and
+        # unreachable, which is the point of taking the path out of the URL.
+        assert (await auth_client.get(f"/static/uploads/{name}")).status_code == 404
+
+        asset = await fas.register_legacy_local(
+            db_session,
+            subject_id=identity.subject_id,
+            uploaded_by_user_id=identity.actor_user_id,
+            purpose=FileAssetPurpose.PROGRESS_PHOTO,
+            storage_ref=file_key,
+            media_type="image/png",
+            size_bytes=len(contents),
+            content_sha256="b" * 64,
         )
-    assert unauthenticated.status_code == 401
-    assert contents not in unauthenticated.content
+        photo = await weight_service.add_progress_photo(
+            db_session,
+            on_date=PHOTO_DATE,
+            identity=identity,
+            file_asset_id=asset.id,
+            prepared_conflict_write=await _prepared(db_session, identity),
+        )
+        await db_session.commit()
 
-    unregistered = await auth_client.get(f"/static/uploads/{route_key}")
-    assert unregistered.status_code == 404
-    assert contents not in unregistered.content
+        authorized = await auth_client.get(f"/files/{asset.opaque_key}")
+        assert authorized.status_code == 200
+        assert authorized.content == contents
+        assert "no-store" in authorized.headers["cache-control"]
 
-    asset = await file_asset_service.register_legacy_local(
-        db_session,
-        subject_id=identity.subject_id,
-        uploaded_by_user_id=identity.actor_user_id,
-        purpose=FileAssetPurpose.PROGRESS_PHOTO,
-        storage_ref=file_key,
-        media_type="image/png",
-        size_bytes=len(contents),
-        content_sha256="b" * 64,
-    )
-    photo = await weight_service.add_progress_photo(
-        db_session,
-        on_date=PHOTO_DATE,
-        identity=identity,
-        file_asset_id=asset.id,
-        prepared_conflict_write=await _prepared(db_session, identity),
-    )
-    await db_session.commit()
+        # The fact above the asset is broken; the listing refuses it.
+        photo.actor_user_id = None
+        await db_session.commit()
+        with pytest.raises(weight_service.ProgressPhotoOwnershipError):
+            await weight_service.list_progress_photos(
+                db_session,
+                subject_id=identity.subject_id,
+            )
+        # The file itself still belongs to the same subject and still reads.
+        assert (
+            await auth_client.get(f"/files/{asset.opaque_key}")
+        ).status_code == 200
 
-    authorized = await auth_client.get(f"/static/uploads/{route_key}")
-    assert authorized.status_code == 200
-    assert authorized.content == contents
-    assert "no-store" in authorized.headers["cache-control"]
-
-    photo.actor_user_id = None
-    await db_session.commit()
-    invalid_graph = await auth_client.get(f"/static/uploads/{route_key}")
-    assert invalid_graph.status_code == 404
-    assert contents not in invalid_graph.content
+        # Retiring the asset is what withdraws it, and it withdraws it at once.
+        await fas.mark_legacy_local_deleted(
+            db_session,
+            file_asset_id=asset.id,
+            subject_id=identity.subject_id,
+            purged=False,
+        )
+        await db_session.commit()
+        withdrawn = await auth_client.get(f"/files/{asset.opaque_key}")
+        assert withdrawn.status_code == 404
+        assert contents not in withdrawn.content
+    finally:
+        os.remove(disk_path)
 
 
-async def test_migrated_historical_progress_photo_download_uses_checkpoint_bridge(
+@contextlib.contextmanager
+def _real_upload(relative: str, contents: bytes):
+    """Put bytes where the download route actually reads from, then clean up.
+
+    The route resolves the private tree from ``STATIC_DIR`` rather than from a
+    module attribute, precisely so a forged ``storage_ref`` cannot redirect it.
+    That also means it cannot be pointed at ``tmp_path``.
+    """
+
+    from web import main as web_main
+
+    path = os.path.join(web_main.UPLOADS_DIR, relative)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(contents)
+    try:
+        yield path
+    finally:
+        os.remove(path)
+
+
+async def test_a_migrated_photo_with_no_uploader_still_downloads(
     auth_client,
     db_session,
     legacy_owner_roots,
-    tmp_path,
-    monkeypatch,
 ):
-    from web import main as web_main
+    """History that predates the ownership columns is still the owner's file."""
 
     identity = _identity(legacy_owner_roots)
     route_key = "synthetic-migrated-download.png"
     contents = b"synthetic migrated progress-photo bytes"
-    (tmp_path / route_key).write_bytes(contents)
-    monkeypatch.setattr(web_main, "UPLOADS_DIR", str(tmp_path))
 
     asset = await file_asset_service.register_legacy_local(
         db_session,
@@ -1270,7 +1327,8 @@ async def test_migrated_historical_progress_photo_download_uses_checkpoint_bridg
     )
     await db_session.commit()
 
-    response = await auth_client.get(f"/static/uploads/{route_key}")
+    with _real_upload(route_key, contents):
+        response = await auth_client.get(f"/files/{asset.opaque_key}")
     assert response.status_code == 200
     assert response.content == contents
     assert "no-store" in response.headers["cache-control"]
@@ -1281,25 +1339,31 @@ async def test_migrated_historical_progress_photo_download_uses_checkpoint_bridg
     "graph_state",
     ["valid", "wrong_purpose", "deleted", "purged", "alias_collision"],
 )
-async def test_prefixed_progress_photo_download_uses_photo_graph_authorization(
+async def test_what_withdraws_a_download_and_what_only_looks_like_it_should(
     auth_client,
     db_session,
     legacy_owner_roots,
-    tmp_path,
-    monkeypatch,
     route_prefix,
     graph_state,
 ):
-    from web import main as web_main
+    """Lifecycle withdraws a file. Purpose and disk aliasing do not.
+
+    When the URL was the storage path, three of these had to be refusals. A
+    ``labs/`` prefix implied a purpose, so metadata claiming a different one was
+    inconsistent with where the bytes sat; and one path had two spellings, so
+    two rows could claim it and disagree. Neither survives addressing an asset
+    directly: the key names one row, that row names the subject, and no prefix
+    is left to contradict.
+
+    So what is asserted here is the narrower, truer rule — only the lifecycle
+    takes a file away — plus the fact that the alias is still refused where it
+    is still real, which is deletion, where two rows would point at one file.
+    """
 
     identity = _identity(legacy_owner_roots)
     route_key = f"{route_prefix}/synthetic-photo-{graph_state}.png"
     file_key = f"uploads/{route_key}"
     contents = b"synthetic prefixed progress photo"
-    path = tmp_path / route_key
-    path.parent.mkdir(parents=True)
-    path.write_bytes(contents)
-    monkeypatch.setattr(web_main, "UPLOADS_DIR", str(tmp_path))
 
     asset = await file_asset_service.register_legacy_local(
         db_session,
@@ -1347,16 +1411,29 @@ async def test_prefixed_progress_photo_download_uses_photo_graph_authorization(
         )
     await db_session.commit()
 
-    response = await auth_client.get(f"/static/uploads/{route_key}")
-    if graph_state == "valid":
-        assert response.status_code == 200
-        assert response.content == contents
-        assert "no-store" in response.headers["cache-control"]
-    else:
-        assert response.status_code == 404
-        assert contents not in response.content
+    withdrawn = graph_state in {"deleted", "purged"}
+    with _real_upload(route_key, contents):
+        response = await auth_client.get(f"/files/{asset.opaque_key}")
+        if withdrawn:
+            assert response.status_code == 404
+            assert contents not in response.content
+        else:
+            assert response.status_code == 200
+            assert response.content == contents
+            assert "no-store" in response.headers["cache-control"]
+
+        if graph_state == "alias_collision":
+            # Two rows, two keys, one file on disk. Each key names exactly one
+            # row, so reading through either is unambiguous — the ambiguity was
+            # a property of the path, not of the bytes.
+            assert alias_asset is not None
+            aliased = await auth_client.get(f"/files/{alias_asset.opaque_key}")
+            assert aliased.status_code == 200
+            assert aliased.content == contents
+
     if graph_state == "alias_collision":
-        assert alias_asset is not None
+        # Deleting is where two rows pointing at one file is still a real
+        # problem: removing the bytes for one silently empties the other.
         with pytest.raises(
             weight_service.ProgressPhotoOwnershipError,
             match="aliases document file metadata",
@@ -1367,7 +1444,6 @@ async def test_prefixed_progress_photo_download_uses_photo_graph_authorization(
                 identity=identity,
                 prepared_conflict_write=await _prepared(db_session, identity),
             )
-        assert path.read_bytes() == contents
         assert await db_session.get(ProgressPhoto, photo.id) is not None
         assert await db_session.get(FileAsset, alias_asset.id) is not None
 
