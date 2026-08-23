@@ -1121,7 +1121,40 @@ pages still refuse — in both directions, so the list cannot go stale in either
 and one asserts that an account without a record is told that, and not something
 else.
 
-### PR 09 — Subject integrations, platform AI gateway, scheduler, and notifications
+### PR 09 — Subject integrations, platform AI gateway, scheduler, and notifications — **partly landed**
+
+Landed already, because the scheduler could not wait:
+
+- **A scheduled job says whose record it runs for.** Every job arrived at the
+  ownership resolver with neither an actor nor a subject, which means "the sole
+  subject, or refuse" — so on a two-person installation the digest, the
+  reminders and the nightly sweeps all stopped, fail-closed and invisible on
+  screen. The resolver now has a second entry point whose subject is
+  **mandatory**, and `vitals/scheduler/fanout.py` runs a job once per subject.
+  One subject's failure is logged and does not stop the others; the tick still
+  ends failed so the scheduler alerts.
+- **Each run uses that subject's clock.** `health_subjects.timezone` had held the
+  answer since the column existed and nothing read it: "today" came from
+  `VITALS_TIMEZONE`. `nutrition_day_end` exists to run once a day's totals are
+  final, and on the wrong clock it finalised a day still in progress. The same
+  fix covers the request path, so a patient abroad sees their own date.
+- **Telegram is gone**, which retired four of the eight jobs that could not be
+  fanned out. See the CHANGELOG entry; the delivery journal survives for push.
+
+Still not fanned out, and the reason is the whole of what is left here: four jobs
+sign in to one Garmin or Hevy account whose credentials are one set for the whole
+process. Running them per subject would write the operator's own watch data into
+everybody else's record — an outage turned into a disclosure.
+
+**The shape of the rest.** `.env` should hold only what belongs to the
+installation: the database and Redis, the session secret, the identity provider,
+the AI gateway, endpoint addresses. Everything about a person belongs in the
+database — integration credentials, the profile (age, sex, height, programme,
+goals, and the nutrition targets), and the authentication that is still one
+username and one password hash. Two of those are already paid for: the timezone
+was there all along, and the profile is currently *omitted* from every report
+rather than attributed to the wrong person, which is a placeholder and not an
+answer.
 
 Scope:
 

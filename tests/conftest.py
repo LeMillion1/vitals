@@ -174,7 +174,16 @@ async def db_session(request):
         if "sqlite" not in TEST_DATABASE_URL:
             # Postgres runs one connection per test (NullPool), so the schema does
             # not survive between them — keep recreating it there.
-            await conn.run_sync(Base.metadata.drop_all)
+            #
+            # ``drop_all`` only knows the tables the models still declare, so a
+            # table a revision dropped stays behind in a database created before
+            # it — and a leftover with a foreign key into a live table blocks
+            # that table from being dropped at all. Clearing the schema outright
+            # is what a *test* database wants: it is rebuilt on the next line,
+            # and the alternative is every developer hitting a stale-database
+            # failure that says nothing about their change.
+            await conn.exec_driver_sql("DROP SCHEMA public CASCADE")
+            await conn.exec_driver_sql("CREATE SCHEMA public")
             with relax():
                 await conn.run_sync(Base.metadata.create_all)
         elif _SQLITE_SCHEMA_READY and _SQLITE_SCHEMA_MODE == mode:

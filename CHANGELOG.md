@@ -8,6 +8,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Removed — Telegram, signals, and the day context
+
+Three things that were one thing: a chat, the free text it carried, and the
+questions it asked. All of them assumed a single person — one bot token and one
+chat id in the environment, which cannot belong to more than one patient — and
+they were the reason four scheduled jobs could not be run per subject. Web push
+replaces the delivery and is per-subscription by construction.
+
+**What went.** The webhook and the Telegram client; the inbound layer that
+claimed updates, parsed replies and redrew answered questions; the `signals`
+domain and its AI parser; `day_context` and the week template that pre-filled it;
+the evening block that asked the questions. Roughly 22,000 lines, and revision
+0058 drops the two tables. That deletes data, and the migration's downgrade
+recreates the shape only — it says so rather than leaving it to be discovered.
+
+**What stayed, and why.** The delivery journal, the morning brief, the nudges and
+the message composition: `notification_delivery_intents` says in its own
+docstring that *a second delivery channel adds rows here, not a second table*,
+and it was built for exactly this — pending/sent/ambiguous outcomes, idempotency,
+dedupe, reconciliation. `resolve_legacy_bound_notifier` is kept as an empty seam
+where a resolver reading a per-subject push subscription belongs. So the
+proactive jobs compose and stay quiet, which is how the app behaved before the
+bot existed.
+
+The layer's master switch was removed rather than left stranded: it *was* the
+`signals` module, so with the module gone it would have read as permanently off
+and no message could ever be sent again. Its own preferences decide now.
+
+**What could not go.** `Source.TELEGRAM` and the string `"signals"` as a
+raw-payload domain. The domain left the enum — nothing writes it — but rows
+already stored carry it, and classifying what is already there is precisely what
+the raw ownership backfill does.
+
+**What is genuinely lost.** The symptoms section of the doctor's report: what a
+patient said in their own words, which is the one thing no device produces. That
+is a gap rather than a tidy-up, and the strongest argument for whatever captures
+free text next.
+
 ### Added — a professional sees the record, not only the notes about it
 
 The patient screen showed notes and plans and nothing else. The policy already

@@ -124,8 +124,6 @@ STAGE3_COMMANDS: tuple[tuple[str, list[str], set[str]], ...] = (
             "backfill_hrt_compound_subject_ownership.py",
             "backfill_conflict_rule_subject_ownership.py",
             "backfill_progress_photo_subject_ownership.py",
-            "backfill_day_context_subject_ownership.py",
-            "backfill_signal_subject_ownership.py",
             "backfill_shared_report_subject_ownership.py",
             "backfill_weight_log_subject_ownership.py",
             "backfill_lab_result_subject_ownership.py",

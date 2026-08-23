@@ -497,16 +497,7 @@ async def test_real_postgres_0034_garmin_weight_export_stop_resume_volatility_an
                 PROGRESS_PHOTO_OWNERSHIP_BACKFILL_PHASE,
                 AGGREGATE_CLI_KEYS,
             ),
-            (
-                "backfill_day_context_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                AGGREGATE_CLI_KEYS,
-            ),
-            (
-                "backfill_signal_subject_ownership.py",
-                ["--apply", "--batch-size", "1000", "--max-batches", "10"],
-                AGGREGATE_CLI_KEYS,
-            ),
+
             (
                 "backfill_shared_report_subject_ownership.py",
                 ["--apply", "--batch-size", "1000", "--max-batches", "10"],

@@ -259,7 +259,12 @@ async def test_real_postgres_0047_installs_valid_scoped_keys_concurrently(
     try:
         migration_control_ready = True
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.drop_all)
+            # Not ``drop_all``: it only knows the tables the models still
+            # declare, so one a revision dropped stays behind and its foreign
+            # keys block the live tables from going. A rehearsal database is
+            # rebuilt from migrations on the next line anyway.
+            await connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            await connection.exec_driver_sql("CREATE SCHEMA public")
             await connection.execute(sa.text("DROP TABLE IF EXISTS alembic_version"))
         await asyncio.to_thread(command.upgrade, alembic_config, "0034")
 
@@ -403,7 +408,12 @@ async def test_real_postgres_two_subjects_write_the_same_keys_concurrently(
 
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.drop_all)
+            # Not ``drop_all``: it only knows the tables the models still
+            # declare, so one a revision dropped stays behind and its foreign
+            # keys block the live tables from going. A rehearsal database is
+            # rebuilt from migrations on the next line anyway.
+            await connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            await connection.exec_driver_sql("CREATE SCHEMA public")
             await connection.run_sync(Base.metadata.create_all)
 
         first = await _roots("scoped-key-owner-a")
@@ -442,5 +452,10 @@ async def test_real_postgres_two_subjects_write_the_same_keys_concurrently(
                 await session.flush()
     finally:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.drop_all)
+            # Not ``drop_all``: it only knows the tables the models still
+            # declare, so one a revision dropped stays behind and its foreign
+            # keys block the live tables from going. A rehearsal database is
+            # rebuilt from migrations on the next line anyway.
+            await connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            await connection.exec_driver_sql("CREATE SCHEMA public")
         await engine.dispose()

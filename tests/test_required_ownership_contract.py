@@ -140,7 +140,12 @@ async def test_real_postgres_contract_refuses_an_unfinished_backfill(
 
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.drop_all)
+            # Not ``drop_all``: it only knows the tables the models still
+            # declare, so one a revision dropped stays behind and its foreign
+            # keys block the live tables from going. A rehearsal database is
+            # rebuilt from migrations on the next line anyway.
+            await connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            await connection.exec_driver_sql("CREATE SCHEMA public")
             await connection.execute(
                 sa.text("DROP TABLE IF EXISTS alembic_version")
             )
@@ -179,7 +184,12 @@ async def test_real_postgres_contract_refuses_an_unfinished_backfill(
         assert nullable == "YES"
     finally:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.drop_all)
+            # Not ``drop_all``: it only knows the tables the models still
+            # declare, so one a revision dropped stays behind and its foreign
+            # keys block the live tables from going. A rehearsal database is
+            # rebuilt from migrations on the next line anyway.
+            await connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            await connection.exec_driver_sql("CREATE SCHEMA public")
             await connection.execute(
                 sa.text("DROP TABLE IF EXISTS alembic_version")
             )
@@ -203,7 +213,13 @@ async def test_real_postgres_contract_lands_on_an_empty_lake_and_reverses(
     alembic_config = AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
     await db_session.close()
     engine = create_async_engine(database_url, poolclass=NullPool)
-    listed = _revision_module().REQUIRED_OWNERSHIP_COLUMNS
+    # Minus what a later revision dropped: this rehearsal runs the whole chain
+    # to head, so by the time it inspects nullability those tables are gone.
+    listed = [
+        pair
+        for pair in _revision_module().REQUIRED_OWNERSHIP_COLUMNS
+        if pair not in _DROPPED_SINCE
+    ]
 
     async def _nullability() -> dict[tuple[str, str], str]:
         async with engine.connect() as connection:
@@ -220,7 +236,12 @@ async def test_real_postgres_contract_lands_on_an_empty_lake_and_reverses(
 
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.drop_all)
+            # Not ``drop_all``: it only knows the tables the models still
+            # declare, so one a revision dropped stays behind and its foreign
+            # keys block the live tables from going. A rehearsal database is
+            # rebuilt from migrations on the next line anyway.
+            await connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            await connection.exec_driver_sql("CREATE SCHEMA public")
             await connection.execute(
                 sa.text("DROP TABLE IF EXISTS alembic_version")
             )
@@ -281,7 +302,12 @@ async def test_real_postgres_contract_lands_on_an_empty_lake_and_reverses(
         assert all(reversed_nullability[key] == "YES" for key in listed)
     finally:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.drop_all)
+            # Not ``drop_all``: it only knows the tables the models still
+            # declare, so one a revision dropped stays behind and its foreign
+            # keys block the live tables from going. A rehearsal database is
+            # rebuilt from migrations on the next line anyway.
+            await connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            await connection.exec_driver_sql("CREATE SCHEMA public")
             await connection.execute(
                 sa.text("DROP TABLE IF EXISTS alembic_version")
             )
