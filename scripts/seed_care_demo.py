@@ -57,7 +57,9 @@ from vitals.enums import (  # noqa: E402
 )
 from vitals.models.base import Base  # noqa: E402
 from vitals.models.identity import HealthSubject, User, UserRole  # noqa: E402
+from vitals.models.scoped_settings import SubjectSetting  # noqa: E402
 from vitals.models.weight import WeightLog  # noqa: E402
+from vitals.services import modules_service  # noqa: E402
 from vitals.services import care_service, invitation_service  # noqa: E402
 from vitals.services import professional_service  # noqa: E402
 from vitals.utils.timeutils import now_utc  # noqa: E402
@@ -116,6 +118,17 @@ async def _patient(
     )
     session.add(subject)
     await session.flush()
+    # Optional modules default to off, which is the right default for a fresh
+    # installation and the wrong one here: with them off, most of the pages this
+    # script exists to look at answer 404 and the browser check silently covers
+    # a handful of screens instead of the app.
+    session.add(
+        SubjectSetting(
+            subject_id=subject.id,
+            key=modules_service.SETTINGS_KEY,
+            value={key: True for key in modules_service.MODULE_REGISTRY},
+        )
+    )
     # A little real data, so the screens have something to draw.
     for days_ago in (0, 3, 7, 14):
         session.add(
