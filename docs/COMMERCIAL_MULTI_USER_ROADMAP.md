@@ -976,7 +976,7 @@ Tests:
 
 Rollback: professional UI can be disabled while scoped APIs remain authoritative.
 
-### Retiring the sole-subject gates — **in progress**
+### Retiring the sole-subject gates — **the page paths are done**
 
 Thirty-six live gates across fourteen service modules, each a compatibility
 bridge that fail-closes on "more than one health subject in the database". They
@@ -1026,32 +1026,60 @@ Two shapes of defect, and it is worth naming them separately:
    was right; arriving as a crash was not, and it sends whoever meets it looking
    for a bug that is not there.
 
-Next, and still the largest single blocker at seven pages: `conflict_engine`'s
-`FULLY_UNOWNED` bridge. The analysis is now done and the shape is clearer than
-it looked. The bridge widens nine predicates. **Seven of them cannot match a row
-at head** — they test `subject_id IS NULL` on columns revision 0049 made `NOT
-NULL`, and the only schema where they are satisfiable is the pre-0049 one that
-`tests/schema_modes.py` builds on purpose. Two remain live, both mixed catalogs
-where a NULL subject is a real state: an unclassified `conflict_rules` row
-(`code IS NULL`) and a non-curated unowned `hrt_compounds` row.
+- `conflict_engine`'s `FULLY_UNOWNED` bridge — the largest, at seven pages. It
+  widens nine predicates, and **seven of them cannot match a row at head**: they
+  test `subject_id IS NULL` on columns revision 0049 made `NOT NULL`, and the
+  only schema where they are satisfiable is the pre-0049 one that
+  `tests/schema_modes.py` builds on purpose. Two are live, both mixed catalogs
+  where a NULL subject is a real state — an unclassified `conflict_rules` row
+  (`code IS NULL`) and a non-curated unowned `hrt_compounds` row.
+  The engine does not know its domains, so each domain registers its probe
+  beside the widening it mirrors. `conflict_activation_service` had the same
+  gate over the same rows and now shares the same probe. Opened `/labs`, `/hrt`,
+  `/skincare`, `/glp1`, `/interactions`.
+- `garmin_weight_service`'s outbox bridge — one predicate, on a `NOT NULL`
+  column. Opened `/weight`, `/weight/measures`, `/settings`.
+- `digest_service` and `share_service` — the last two. Opened `/today`,
+  `/reports`, `/share`. Share already had a second proof written the right way,
+  in its expired-report purge, which counts subjects only after finding null
+  rows; that is what the other four should have looked like from the start.
 
-So the earlier note here — that ten nullable tables make this hard — was reading
-the wrong ten. Migration 0051 already separates them: five are shared catalogs
-where NULL means *the installation's own row*, and five are inherited children
-where NULL means *not backfilled*, and those the row-security policy already
-makes invisible. What is left is two catalog predicates and a probe for them.
+An earlier note here said ten nullable tables made the conflict bridge hard.
+That was reading the wrong ten. Migration 0051 already separates them: five are
+shared catalogs where NULL means *the installation's own row*, and five are
+inherited children where NULL means *not backfilled* — and those the row-security
+policy already makes invisible to every bound session.
+
+**Where this leaves a shared installation.** Twenty-five of twenty-seven pages
+answer 200. `/settings/export` answers 409 because backup format v1 describes an
+installation holding one person, which is the format speaking rather than a
+gate, and it names the per-subject export that does work. `/external/summary`
+answers 503 because the external API is switched off.
 
 The way off every one of these bridges is the same and already shipped:
 `scripts/backfill_*_subject_ownership.py`, run while the installation is still
 one person, which is exactly when adopting an unowned row into that person is
 the right thing to do. Afterwards the probe answers no and the bridge is inert.
+A new commercial installation never had such rows and never pays the proof.
+
+**Not a gate, and found the same way — signing in as a doctor.** Every personal
+page told them the migration did not support several records yet. They keep no
+health record of their own, so those pages have nothing to be about for them,
+and the message sent them looking for a setting that will never exist. Behind it
+was the real defect: the nav decided whether to offer the patient roster from
+the chrome scope, which is `None` for anybody who owns no record — so the link
+was hidden from precisely the people who have a roster, and a doctor signing in
+had no way to reach their patients at all.
 
 The working list is checked in, in two places. `web/main.py` turns each refusal
 into a 409 and logs *which bridge* refused along with the route, so a running
 shared installation names its own backlog. And
 `tests/test_shared_installation_pages.py` walks every page against a two-subject
-database: one test asserts no page answers 500, the other pins exactly which
-pages still refuse — in both directions, so the list cannot go stale in either.
+database, three times over: as the record's owner, and as an account with no
+record of its own. One test asserts no page answers 500, one pins exactly which
+pages still refuse — in both directions, so the list cannot go stale in either —
+and one asserts that an account without a record is told that, and not something
+else.
 
 ### PR 09 — Subject integrations, platform AI gateway, scheduler, and notifications
 

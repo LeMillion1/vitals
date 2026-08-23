@@ -8,6 +8,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — every page answers in a shared installation
+
+Twenty-five of twenty-seven pages return 200 with ten patients, two doctors, two
+trainers and an operator in the database. At the start of this work eight did.
+The two that do not are not gates: `/settings/export` says that backup format v1
+describes an installation holding one person and names the per-subject export
+that does work, and `/external/summary` says the external API is switched off.
+
+Five compatibility bridges were retired, all with the same correction. Each
+demanded a sole health subject whenever it was *asked for*, when what it exists
+for is adopting rows that belong to nobody — and only if such a row is actually
+there does it matter that there is more than one person it could belong to. Two
+questions had been fused into one, and the fused version stopped pages that were
+asking nothing of the bridge.
+
+- **Alerts** — opened `/nutrition`, `/supplements`, `/genetics`.
+- **The conflict engine**, the largest at seven pages — opened `/labs`, `/hrt`,
+  `/skincare`, `/glp1`, `/interactions`. It widens nine predicates and seven of
+  them cannot match a row on a current schema at all: they test `subject_id IS
+  NULL` on columns revision 0049 made `NOT NULL`. The engine does not know its
+  domains, so each domain registers the probe beside the widening it mirrors —
+  a probe looser than the predicate it guards would let a row be adopted with
+  nobody having decided whose it is.
+- **The Garmin weight outbox** — opened `/weight`, `/weight/measures`,
+  `/settings`.
+- **The weekly digest** and **the share bridge** — opened `/today`, `/reports`,
+  `/share`.
+
+Where the correction is load-bearing: for alerts, the effective bridge is
+*returned* and every caller uses the returned value, because skipping the proof
+while the query still widened is the one combination that could show one person
+another's alert. And only the subject *count* turns on the probe — the
+owner-lifecycle and actor-ownership checks stay where they were, since they ask
+who may use the legacy path at all, which is a permission and does not stop
+being one because there is nothing to widen.
+
+The refusals are kept for what they were written for: an unowned row plus two
+people still closes every one of these. The way out is unchanged and already
+shipped — `scripts/backfill_*_subject_ownership.py`, run while the installation
+is still one person, which is exactly when adopting an unowned row into that
+person is right. A new installation never had such rows and never pays the proof.
+
+### Fixed — a doctor could not reach their own patients
+
+Found by signing in as one. Every personal page told them the app did not
+support several records yet — untrue, and unactionable. A doctor or a trainer
+keeps no health record of their own, so a page about "your weight" has nothing
+to be about for them.
+
+Behind the message was the real defect: the navigation decided whether to offer
+the patient roster from the chrome scope, and that scope is empty for anybody
+who owns no record. The roster link was therefore hidden from exactly the people
+who have a roster, and a doctor signing in had no way to reach their patients at
+all. It is now asked about the signed-in account, which is what the question was
+always about. A professional who holds patients lands on their roster; one who
+holds nobody is told plainly.
+
 ### Fixed — five pages served a stack trace where they meant to say "not yet"
 
 Found by walking the app in a browser against a ten-patient installation, and
