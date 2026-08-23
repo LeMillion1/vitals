@@ -564,7 +564,29 @@ async def test_garmin_subject_check_is_optional_but_connection_must_exist(db_ses
 
 
 @pytest.mark.parametrize("key", list(ScopedSettingKey))
-async def test_multiple_subjects_close_every_legacy_bridge_operation(db_session, key):
+async def test_a_second_subject_retires_the_shared_key_rather_than_the_setting(
+    db_session, key
+):
+    """The singleton stops being anybody's, and that is what stops — not the write.
+
+    Every route here has two representations: a scoped row belonging to one
+    user, subject or connection, and one global ``app_settings`` key belonging
+    to the installation. The second only *means* something while the
+    installation is one person. With two subjects "the module map" is not a
+    thing that exists, and the row is nobody's in particular.
+
+    This used to refuse all three operations, which took the settings — and
+    with them the module gate, and with that half the app — down for everybody
+    the moment a second person existed. What actually had to stop is narrower:
+    reading falls through to the caller's default instead of a shared value that
+    is not theirs, writing lands in the scoped row and stops mirroring, and
+    adopting the shared value into one scope stops entirely.
+
+    The property the old assertion was really protecting — that one person's
+    write cannot overwrite the fallback everybody else is still reading — is
+    asserted directly below.
+    """
+
     first = await _graph(db_session, f"multi-first-{key.value}")
     await _graph(db_session, f"multi-second-{key.value}")
     request = _request(first, key)
@@ -572,19 +594,25 @@ async def test_multiple_subjects_close_every_legacy_bridge_operation(db_session,
     db_session.add(AppSetting(key=key.value, value=legacy_value))
     await db_session.flush()
 
-    with pytest.raises(LegacyScopedSettingBridgeClosedError):
-        await get_scoped_setting(db_session, **request)
-    with pytest.raises(LegacyScopedSettingBridgeClosedError):
-        await set_scoped_setting(
-            db_session,
-            value={"origin": "forbidden write"},
-            **request,
-        )
-    with pytest.raises(LegacyScopedSettingBridgeClosedError):
-        await mirror_legacy_setting(db_session, **request)
+    # No scoped row and no shared value that could be this scope's.
+    assert await get_scoped_setting(
+        db_session, default={"origin": "default"}, **request
+    ) == {"origin": "default"}
+
+    # Nothing to adopt.
+    assert await mirror_legacy_setting(db_session, **request) is False
+
+    written = {"origin": "this scope only"}
+    await set_scoped_setting(db_session, value=written, **request)
 
     route = SCOPED_SETTING_REGISTRY[key]
-    assert await db_session.get(route.model, _scoped_pk(first, key)) is None
+    scoped = await db_session.get(route.model, _scoped_pk(first, key))
+    assert scoped is not None and scoped.value == written
+    assert await get_scoped_setting(db_session, **request) == written
+
+    # And the shared row is exactly as it was. This is the whole point: with two
+    # people in the installation, mirroring one person's value into the global
+    # key would hand it to everybody still reading the fallback.
     legacy = await db_session.get(AppSetting, key.value)
     assert legacy is not None and legacy.value == legacy_value
 

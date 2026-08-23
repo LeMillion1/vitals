@@ -305,6 +305,25 @@ async def _require_scope_target(
     return connection
 
 
+async def _installation_is_still_one_person(session: AsyncSession) -> bool:
+    """Whether the legacy ``app_settings`` singleton still means anything.
+
+    Every route here has two representations: the scoped row, which belongs to
+    one user, subject or connection, and one global ``app_settings`` key, which
+    belongs to the installation. The second only *means* something while the
+    installation is one person — with two subjects, "the module map" is not a
+    thing that exists, and the row is nobody's in particular.
+
+    So this is not a permission check. It is the question of whether the
+    compatibility half of the bridge still has a subject to be about.
+    """
+
+    rows = list(
+        await session.execute(select(HealthSubject.id).order_by(HealthSubject.id).limit(2))
+    )
+    return len(rows) == 1
+
+
 async def _require_legacy_bridge_open(
     session: AsyncSession,
     request: _ValidatedRequest,
@@ -411,13 +430,22 @@ def _replace_rows(
     scoped: UserSetting | SubjectSetting | IntegrationConnectionSetting | None,
     legacy: AppSetting | None,
     value: Any,
+    mirror: bool = True,
 ) -> None:
-    """Replace both compatibility representations without flushing."""
+    """Replace the scoped representation, and the legacy one while it exists.
+
+    ``mirror`` is false once the installation holds more than one subject: the
+    global key stops being anybody's, and writing it would hand one person's
+    value to everyone still reading the fallback.
+    """
 
     if scoped is None:
         session.add(_new_scoped_row(request, value=value))
     else:
         scoped.value = deepcopy(value)
+
+    if not mirror:
+        return
 
     if legacy is None:
         session.add(
@@ -456,6 +484,11 @@ async def get_scoped_setting(
     scoped = await _scoped_row(session, request, for_update=False)
     if scoped is not None:
         return deepcopy(scoped.value)
+    if not await _installation_is_still_one_person(session):
+        # No scoped row, and no installation-wide value that could be this
+        # subject's. That is not a refusal — it is the honest answer that this
+        # scope has no setting, and the caller's default is what it means.
+        return deepcopy(default)
     await acquire_identity_governance_lock(session)
     connection = await _require_scope_target(session, request, for_update=True)
     await _require_legacy_bridge_open(
@@ -494,13 +527,20 @@ async def set_scoped_setting(
     )
     await acquire_identity_governance_lock(session)
     connection = await _require_scope_target(session, request, for_update=True)
-    await _require_legacy_bridge_open(
-        session,
-        request,
-        connection=connection,
-    )
+    # Mirroring into the shared ``app_settings`` key is the half that needs a
+    # sole subject, and needs it for a reason worth keeping: with two people in
+    # the installation, writing one person's value into the global row would
+    # overwrite everybody's fallback with one of them. So the mirror stops
+    # rather than the write — the scoped row is whose the value actually is.
+    mirror = await _installation_is_still_one_person(session)
+    if mirror:
+        await _require_legacy_bridge_open(
+            session,
+            request,
+            connection=connection,
+        )
     scoped = await _scoped_row(session, request, for_update=True)
-    legacy = await _legacy_row(session, request, for_update=True)
+    legacy = await _legacy_row(session, request, for_update=True) if mirror else None
 
     _replace_rows(
         session,
@@ -508,6 +548,7 @@ async def set_scoped_setting(
         scoped=scoped,
         legacy=legacy,
         value=value,
+        mirror=mirror,
     )
 
     await session.flush()
@@ -543,13 +584,17 @@ async def update_scoped_setting(
     )
     await acquire_identity_governance_lock(session)
     connection = await _require_scope_target(session, request, for_update=True)
-    await _require_legacy_bridge_open(
-        session,
-        request,
-        connection=connection,
-    )
+    # Same rule as ``set_scoped_setting``: the shared key is what needs a sole
+    # subject, so the mirror stops rather than the update.
+    mirror = await _installation_is_still_one_person(session)
+    if mirror:
+        await _require_legacy_bridge_open(
+            session,
+            request,
+            connection=connection,
+        )
     scoped = await _scoped_row(session, request, for_update=True)
-    legacy = await _legacy_row(session, request, for_update=True)
+    legacy = await _legacy_row(session, request, for_update=True) if mirror else None
     if scoped is not None:
         current = deepcopy(scoped.value)
     elif legacy is not None:
@@ -563,6 +608,7 @@ async def update_scoped_setting(
         scoped=scoped,
         legacy=legacy,
         value=value,
+        mirror=mirror,
     )
     await session.flush()
     return deepcopy(value)
@@ -592,6 +638,12 @@ async def mirror_legacy_setting(
     )
     await acquire_identity_governance_lock(session)
     connection = await _require_scope_target(session, request, for_update=True)
+    if not await _installation_is_still_one_person(session):
+        # This copies the installation-wide value *into* one scope. Once the
+        # installation is more than one person the shared value is nobody's, so
+        # there is nothing to copy and adopting it for whoever asked first would
+        # be inventing the answer.
+        return False
     await _require_legacy_bridge_open(
         session,
         request,

@@ -18,7 +18,6 @@ from vitals.services import (
     modules_service,
 )
 from vitals.services.scoped_settings_service import (
-    LegacyScopedSettingBridgeClosedError,
     ScopedSettingKey,
 )
 
@@ -226,30 +225,53 @@ async def test_scoped_reads_do_not_share_global_or_other_subject_cache(
     ] == ["second-chart"]
 
 
-async def test_second_subject_closes_all_legacy_mirroring(db_session):
+async def test_a_second_subject_stops_the_mirroring_and_not_the_setting(db_session):
+    """The shared ``app_settings`` key is what a second subject retires.
+
+    These settings each have two representations: a scoped row that belongs to
+    one person, and one global key that belongs to the installation. Only the
+    second stops meaning anything when there are two people — and writing it on
+    one person's behalf would hand their choice to everybody still reading the
+    fallback.
+
+    This used to refuse all three, which closed the settings for everybody and,
+    through the module gate, half the app with them. The scoped write proceeds
+    now; the mirror is what stops.
+    """
+
+    from sqlalchemy import select
+
+    from vitals.models.app_settings import AppSetting
+
     first_user, first_subject = await _owner_graph(db_session, "bridge-first")
     await _owner_graph(db_session, "bridge-second")
 
-    with pytest.raises(LegacyScopedSettingBridgeClosedError):
-        await language_service.set_language(
-            db_session,
-            "ru",
-            user_id=first_user.id,
-        )
-    with pytest.raises(LegacyScopedSettingBridgeClosedError):
-        await modules_service.set_module_enabled(
-            db_session,
-            key="signals",
-            enabled=True,
-            subject_id=first_subject.id,
-        )
-    with pytest.raises(LegacyScopedSettingBridgeClosedError):
-        await custom_charts_service.create_chart(
-            db_session,
-            name="Closed",
-            series=WEIGHT_SERIES,
-            subject_id=first_subject.id,
-        )
+    await language_service.set_language(db_session, "ru", user_id=first_user.id)
+    await modules_service.set_module_enabled(
+        db_session,
+        key="signals",
+        enabled=True,
+        subject_id=first_subject.id,
+    )
+    await custom_charts_service.create_chart(
+        db_session,
+        name="Mine",
+        series=WEIGHT_SERIES,
+        subject_id=first_subject.id,
+    )
+
+    # Each landed in its own scope...
+    assert await language_service.get_language(
+        db_session, None, user_id=first_user.id
+    ) == "ru"
+    enabled = await modules_service.get_enabled_modules(
+        db_session, subject_id=first_subject.id
+    )
+    assert enabled["signals"] is True
+
+    # ...and the installation-wide keys were left alone.
+    shared = list(await db_session.scalars(select(AppSetting.key)))
+    assert shared == [], shared
 
 
 @pytest.mark.integration

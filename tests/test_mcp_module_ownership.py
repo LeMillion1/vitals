@@ -9,7 +9,6 @@ from vitals.models.app_settings import AppSetting
 from vitals.models.identity import HealthSubject, User
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.services import modules_service
-from vitals.services.legacy_ownership import LegacySubjectResolutionError
 
 mcp_router = pytest.importorskip("web.routers.mcp")
 
@@ -86,56 +85,38 @@ async def test_module_tools_stay_closed_with_a_second_subject(
     )
     await db_session.commit()
 
-    # Refused a layer lower than it used to be, and still refused.
-    #
-    # ``resolve_legacy_ownership_context`` no longer rejects an installation for
-    # holding a second subject — it selects the actor's own record, because
-    # otherwise a doctor taking on one patient lost their own dashboard. The
-    # scoped-setting bridge behind the module map is its own sole-subject gate,
-    # and 36 more like it remain across the services. Each guards something
-    # specific, so they are being retired one at a time rather than in a sweep.
-    from vitals.services.scoped_settings_service import (
-        LegacyScopedSettingBridgeClosedError,
-    )
+    # The module map is the owner's, and a second subject does not take it away.
+    # It used to: the scoped-setting bridge refused any installation holding two
+    # subjects, the map read as off, every optional page vanished, and the write
+    # was refused. What the bridge actually needed a sole subject for is the
+    # *shared* ``app_settings`` key — see test_scoped_settings_service — so that
+    # is what stopped instead of the setting itself.
+    from sqlalchemy import select
 
-    closed = (
-        LegacyScopedSettingBridgeClosedError,
-        LegacySubjectResolutionError,
-    )
+    from vitals.models.scoped_settings import SubjectSetting
 
-    # Reading the module map degrades rather than refusing: ``get_enabled_modules``
-    # has always caught a failed read and answered with the safe defaults, so
-    # nothing here can hand back another subject's settings — the worst case is
-    # a map nobody configured.
-    modules = await mcp_router.get_modules()
-    assert modules["enabled"] == modules_service.DEFAULT_STATE
-
-    # Anything that would write still stops, though not all in the same place:
-    # set_module hits the scoped-setting bridge, log_signal the conflict
-    # engine's. Both are sole-subject gates of the same family.
-    from vitals.services import conflict_engine
-
-    closed = closed + (conflict_engine.ConflictLegacyBridgeError,)
-    with pytest.raises(closed):
-        await mcp_router.set_module("body_comp", True)
-
-    # log_signal is gated by the signals module, which now reads as off from
-    # the degraded default map — so it declines rather than raising one of the
-    # bridge errors. A different shape of "no", and still a no.
-    signal_result = await mcp_router.log_signal(key="headache", kind="symptom")
-    assert signal_result.get("ok") is not True, signal_result
-
-    # And nothing reached the other person's record, which is the property that
-    # has to hold whichever gate does the stopping.
-    from sqlalchemy import func, select
-
-    from vitals.models.signals import Signal
-
+    owner_subject_id = legacy_owner_roots.subject_id
     other_subject_id = await db_session.scalar(
-        select(HealthSubject.id).where(HealthSubject.owner_user_id == other.id)
+        select(HealthSubject.id).where(
+            HealthSubject.owner_user_id != legacy_owner_roots.user_id
+        )
     )
-    assert await db_session.scalar(
-        select(func.count())
-        .select_from(Signal)
-        .where(Signal.subject_id == other_subject_id)
-    ) == 0
+    assert other_subject_id is not None
+
+    modules = await mcp_router.get_modules()
+    assert set(modules["enabled"]) == set(modules_service.DEFAULT_STATE)
+
+    await mcp_router.set_module("body_comp", True)
+    db_session.expire_all()
+
+    owner_row = await db_session.get(
+        SubjectSetting, (owner_subject_id, modules_service.SETTINGS_KEY)
+    )
+    assert owner_row is not None and owner_row.value["body_comp"] is True
+
+    # Nothing was written for the other person, and the shared legacy key was
+    # not overwritten with one subject's choice.
+    assert await db_session.get(
+        SubjectSetting, (other_subject_id, modules_service.SETTINGS_KEY)
+    ) is None
+

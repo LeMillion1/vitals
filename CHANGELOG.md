@@ -8,6 +8,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the settings gate stops closing the app, and starts guarding what it meant
+
+First of the 36 sole-subject gates, and the one behind the module map — which
+half the pages read before they render.
+
+- Every setting here has two representations: a scoped row belonging to one
+  user, subject or connection, and one global `app_settings` key belonging to
+  the installation. **Only the second stops meaning anything when there are two
+  people.** With two subjects "the module map" is not a thing that exists, and
+  the shared row is nobody's in particular.
+- The bridge was refusing the whole operation. It now stops the half that
+  actually needs a sole subject: reads fall through to the caller's default
+  rather than to a shared value that is not theirs, writes land in the scoped
+  row and skip the mirror, and adopting the shared value into one scope stops
+  entirely. Mirroring one person's choice into the global key would hand it to
+  everybody still reading the fallback — that is the property the old refusal
+  was really protecting, and it is now asserted directly.
+- `scripts/seed_care_demo.py` builds a populated shared installation to look at:
+  an operator, two doctors, two trainers, ten patients, and care in every state
+  the screens draw — open, awaiting consent, paused, revoked, ended, and an
+  offer nobody has taken up. It prints a signed session cookie per account,
+  because the password login authenticates exactly one username from `.env` and
+  inventing a second way in for testing would be worse than printing a cookie in
+  a dev script. Refuses to run against anything but a local SQLite file.
+
 ### Fixed — the app could not be run at all by the installations PR-07 was for
 
 Found by opening a browser, which no test in this repository does: every web
