@@ -167,6 +167,11 @@ async def get_request_chrome_scope(
         signed_in_user_id = None
 
     request.state.chrome_scope = scope
+    # Whether this account keeps a health record of its own. Most doctors and
+    # every trainer do not, and every personal section of the product is about
+    # one — so the navigation has to know, or it offers a shelf of links that
+    # each bounce straight back.
+    request.state.has_own_record = scope is not None
     # Whether to offer the roster at all. Asked here because the nav is chrome
     # and must not raise; a link that answers an empty page is worse than no
     # link, and a professional who holds nobody has no roster to visit.

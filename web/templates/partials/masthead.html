@@ -108,6 +108,11 @@
         {# "Today" is pinned above the rubrics rather than joining MODULE_REGISTRY:
            it is not a domain, it has no toggle, and a registry entry would give it
            a rubric number in the masthead eyebrow it must not have. #}
+        {# Every section below this point is about the reader's own record, and
+           an account that keeps none — most doctors, every trainer — would be
+           handed a shelf of links that each bounce straight back to the roster.
+           A link that cannot answer is worse than no link. #}
+        {% if request.state.has_own_record %}
         <div class="mh-rail-pinned">
             <a href="/today" class="mh-rail-btn is-lead {% if current_path == '/today' %}is-active{% endif %}"{% if current_path == '/today' %} aria-current="page"{% endif %}>{{ mh_icon('today') }}<span class="mh-rail-label">{{ t('nav.today') }}</span></a>
         </div>
@@ -133,6 +138,7 @@
         </div>
         {% endif %}
         {% endfor %}
+        {% endif %}
     </nav>
     {# Today's readout fills the space the dense list gave back. It reports
        numbers, not plumbing: how fresh a source is is true every day and useful
@@ -148,8 +154,10 @@
             {% if request.state.holds_patients %}
             <a href="/care" class="mh-rail-foot-link {% if current_path.startswith('/care') %}is-active{% endif %}">{{ t('care.roster_heading') }}</a>
             {% endif %}
+            {% if request.state.has_own_record %}
             <a href="/share" class="mh-rail-foot-link {% if current_path.startswith('/share') %}is-active{% endif %}">{{ t('share.heading') }}</a>
             <a href="/settings" class="mh-rail-foot-link {% if current_path.startswith('/settings') %}is-active{% endif %}">{{ t('nav.settings') }}</a>
+            {% endif %}
         </div>
         <form action="/logout" method="POST" hx-boost="false" class="contents">
             <button type="submit" class="mh-rail-foot-out" title="{{ t('nav.logout') }}" aria-label="{{ t('nav.logout') }}">{{ mh_icon('logout') }}</button>

@@ -507,7 +507,10 @@
     </main>
     </div>
 
-    {% if username %}
+    {# Hidden for an account with no record of its own: every slot in it is a
+       personal section, and the roster is reached from the rail on a desktop
+       and from the patient page's own "All patients" button on a phone. #}
+    {% if username and request.state.has_own_record %}
     {{ mobile_bottom_nav() }}
 
     {% endif %}

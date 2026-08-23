@@ -236,3 +236,35 @@ async def test_the_env_profile_is_not_attributed_to_another_patient(
         assert profile["age"] is None
         assert profile["height_cm"] is None
         assert profile["program"] is None
+
+
+async def test_an_account_without_a_record_is_offered_no_personal_section(
+    professional_client
+):
+    """Every one of them is about a record this account does not have.
+
+    Offered anyway, each link bounces straight back to the roster, and a shelf
+    of links that cannot answer is worse than no shelf. The rule is not about
+    roles — it is about whether the thing a link leads to exists for this
+    reader.
+
+    Deliberately not combined with its sibling below into one comparison:
+    ``auth_client`` and ``professional_client`` are the same underlying client,
+    and signing one in overwrites the other's cookie.
+    """
+
+    page = await professional_client.get("/care", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert "/today" not in page.text
+    assert "/share" not in page.text
+    # The way out is still there. A page with no sign-out is a trap.
+    assert "/logout" in page.text
+
+
+async def test_an_account_with_a_record_is_offered_all_of_them(auth_client):
+    """The same rail, for somebody the sections are about."""
+
+    page = await auth_client.get("/care", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert "/today" in page.text
+    assert "/share" in page.text

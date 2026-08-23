@@ -71,15 +71,15 @@ def _redirect(fragment: str = "") -> RedirectResponse:
 async def consent_centre(
     request: Request,
     db: AsyncSession = Depends(get_session),
-    _username: str = Depends(require_auth),
+    username: str = Depends(require_auth),
 ):
     """Who holds this record, what they may see, and how to stop it."""
 
-    return await _render(request, db, issued_link=None)
+    return await _render(request, db, username=username, issued_link=None)
 
 
 async def _render(
-    request: Request, db: AsyncSession, *, issued_link: str | None
+    request: Request, db: AsyncSession, *, username: str, issued_link: str | None
 ) -> HTMLResponse:
     _user_id, subject_id = await _own_subject(request, db)
 
@@ -161,6 +161,9 @@ async def _render(
         request,
         "settings/care.html",
         {
+            # See the note in web/routers/care.py: base.html hides the entire
+            # chrome without it.
+            "username": username,
             "professionals": professionals,
             "pending": pending,
             "kinds": [kind.value for kind in ProfessionalKind],
@@ -177,7 +180,7 @@ async def invite(
     email: str = Form(""),
     kind: str = Form(""),
     db: AsyncSession = Depends(get_session),
-    _username: str = Depends(require_auth),
+    username: str = Depends(require_auth),
 ):
     """Offer somebody a way in. The link is shown once and never again."""
 
@@ -200,7 +203,7 @@ async def invite(
     # in the next page's referrer; an invitation link is a capability, and none
     # of those are places to leave one. The body is the only copy that leaves
     # here, and there is no page that can show it again because it is not stored.
-    return await _render(request, db, issued_link=result.token)
+    return await _render(request, db, username=username, issued_link=result.token)
 
 
 @router.post("/invitation/{invitation_id}/revoke")

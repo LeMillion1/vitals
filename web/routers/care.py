@@ -32,7 +32,7 @@ router = APIRouter(prefix="/care", tags=["care"])
 async def show_invitation(
     request: Request,
     token: str,
-    _username: str = Depends(require_auth),
+    username: str = Depends(require_auth),
 ):
     """Confirm before spending a one-time link.
 
@@ -42,7 +42,7 @@ async def show_invitation(
     """
 
     return templates.TemplateResponse(
-        request, "care/accept.html", {"token": token}
+        request, "care/accept.html", {"token": token, "username": username}
     )
 
 
@@ -118,7 +118,7 @@ async def _verified_email(
 async def roster(
     request: Request,
     db: AsyncSession = Depends(get_session),
-    _username: str = Depends(require_auth),
+    username: str = Depends(require_auth),
 ):
     """Everybody this professional is currently in care for.
 
@@ -176,7 +176,7 @@ async def roster(
         for row in rows
     ]
     return templates.TemplateResponse(
-        request, "care/roster.html", {"patients": patients}
+        request, "care/roster.html", {"patients": patients, "username": username}
     )
 
 
@@ -276,6 +276,7 @@ async def patient(
     request: Request,
     care: CareContext = Depends(require_care_context),
     db: AsyncSession = Depends(get_session),
+    username: str = Depends(require_auth),
 ):
     """One patient's record, as this professional is allowed to see it."""
 
@@ -286,6 +287,11 @@ async def patient(
         request,
         "care/patient.html",
         {
+            # Without this the whole chrome vanishes — the rail, the bottom bar
+            # and the sign-out button are all behind ``{% if username %}`` in
+            # base.html. A doctor is redirected here from their own dashboard,
+            # so these screens losing it left them with no navigation at all.
+            "username": username,
             "care": care,
             "notes": notes,
             "plans": plans,
