@@ -329,7 +329,7 @@ tbody tr:hover td { background: var(--surface-2); }
   <p class="standfirst">A self-hosted personal health record — fifteen domains, four external integrations, one data lake — being rebuilt so that every row belongs to a named person instead of to the installation. This is what the service is now, mid-conversion, and what changed underneath it.</p>
   <div class="meta">
     <span><b>62</b> tables</span>
-    <span><b>51</b> migrations</span>
+    <span><b>53</b> migrations</span>
     <span><b>15</b> domains</span>
     <span><b>88</b> services</span>
     <span><b>4,443</b> tests</span>
@@ -700,6 +700,17 @@ flowchart TB
   </div>
 
   <p><code>FORCE</code> is the operative word: PostgreSQL exempts a table's owner from its own policies, and the application connects as the owner. Roles that must see across subjects — the migration runner, the ownership backfill jobs, the platform control plane — are exempt by role attribute. That is deliberate: a backfill that could not see an unstamped row could not stamp it.</p>
+
+  <h3>Work that belongs to nobody in particular</h3>
+  <p>Not every transaction is somebody's. A doctor opening a shared report has no account here and is not meant to need one — the token in the URL is the authorization, and the application checks it before reading anything. Three scheduled jobs are the same shape: the share purge, the AI invocation reconciler and the delivery reconciler each sweep across every subject with no person to act as.</p>
+  <p>Under the subject comparison alone, all four see nothing and report success. Revision <code>0053</code> therefore admits a second scope, <code>vitals.platform_scope</code>, alongside the subject in every one of the 51 policies.</p>
+
+  <div class="invariant">
+    <span class="tag">Narrow by construction</span>
+    <p>Transaction-local like the subject binding, so a scope that reads across everybody cannot ride a pooled connection into the next request. Asked for by name through <code>enter_platform_scope</code>, never drifted into. Opened only by the exact string <code>on</code>, so a stray or truncated value closes. And all five call sites are enumerated by a contract test — a sixth is something a reviewer reads, not something that accumulates.</p>
+  </div>
+
+  <p>The line that keeps it honest: this is for work that <em>has</em> no subject, not work that failed to find one. A path that merely forgot to resolve its subject should see nothing — that is the boundary working — and its fix is to bind, never to declare itself the installation.</p>
 </section>
 
 <!-- ══════════════════════════════════════════════════════════════ -->

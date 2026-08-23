@@ -40,6 +40,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
+from vitals.services.rls_session import enter_platform_scope
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.platform_admin_service import (
     PreparedPlatformAdmin,
@@ -1688,12 +1689,18 @@ async def reconciliation_job(session_factory, redis=None) -> None:
     del redis
     current = now_utc()
     async with session_factory() as session:
+        # Provider invocations across every subject: this job acts for the
+        # installation, not for a person.
+        await enter_platform_scope(session)
         await reconcile_stale_reservations(
             session,
             stale_before=current - PREPARED_STALE_AFTER,
         )
         await session.commit()
     async with session_factory() as session:
+        # Provider invocations across every subject: this job acts for the
+        # installation, not for a person.
+        await enter_platform_scope(session)
         await reconcile_stale_dispatches(
             session,
             stale_before=current - DISPATCHING_STALE_AFTER,

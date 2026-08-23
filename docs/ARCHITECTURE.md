@@ -21,7 +21,8 @@ page needs the same edit:
 | the twenty backfill phases | `vitals/ownership_deploy.py` |
 | the fifteen domains | `vitals.enums.Domain` |
 | migration count | `migrations/versions/` |
-| RLS table count | revision `0050` |
+| RLS table count | revisions `0050` + `0051` |
+| platform-scope call sites | `tests/test_row_level_security.py` |
 
 The eight diagrams are validated by parsing them with mermaid itself; a syntax
 error renders as an error box rather than failing loudly, so it is worth

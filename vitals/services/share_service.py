@@ -41,6 +41,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.share import SharedReport
 from vitals.ownership import WriteIdentity
 from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.rls_session import enter_platform_scope
 from vitals.utils.passwords import hash_password
 from vitals.utils.timeutils import now_local, today_local
 
@@ -1276,6 +1277,10 @@ async def resolve_public(session: AsyncSession, token: str) -> Optional[SharedRe
     """
     if not token:
         return None
+    # No account, so no subject to bind: the token is what authorizes this
+    # read, and the row is one the policies would otherwise hide from a visitor
+    # who is entitled to see it.
+    await enter_platform_scope(session)
     await acquire_identity_governance_lock(session)
     row = await session.scalar(
         select(SharedReport)
@@ -1310,6 +1315,8 @@ async def register_open(
     """Lock and count one still-live token after password verification."""
     if not token:
         return None
+    # Same visitor, same token, one step later: still no account to bind.
+    await enter_platform_scope(session)
     await acquire_identity_governance_lock(session)
     roots = (
         await session.execute(
@@ -1656,6 +1663,9 @@ async def purge_expired(session: AsyncSession, *, now: Optional[datetime] = None
 async def purge_job(session_factory, redis=None) -> None:
     """Daily sweep — see :func:`purge_expired`."""
     async with session_factory() as session:
+        # Housekeeping across every subject's expired snapshots: there is no
+        # person this job acts as.
+        await enter_platform_scope(session)
         purged = await purge_expired(session)
         await session.commit()
     if purged:

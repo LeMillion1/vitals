@@ -595,3 +595,255 @@ async def test_real_postgres_catalogs_are_shared_and_children_are_not(
     finally:
         await restricted.dispose()
         await admin.dispose()
+
+
+# ── The other thing a transaction can be acting for ──────────────────────────
+# Revision 0053 adds a second way past the subject comparison, which deserves
+# more suspicion than the first. What follows pins that it is narrow: named
+# explicitly, transaction-local like the subject, and reachable only from a
+# list a reviewer can read.
+
+
+def _platform_module():
+    spec = importlib.util.spec_from_file_location(
+        "_rev0053",
+        REPOSITORY_ROOT
+        / "migrations"
+        / "versions"
+        / "0053_platform_scope_in_row_security.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_platform_setting_is_named_the_same_in_both_halves():
+    """Same contract as the subject: the policy reads what the session writes."""
+
+    from vitals.services.rls_session import PLATFORM_SETTING
+
+    assert _platform_module().PLATFORM_SETTING == PLATFORM_SETTING
+
+
+def test_the_rewrite_reaches_every_policy_the_two_revisions_installed():
+    """A policy left on the old predicate is a table the jobs cannot sweep.
+
+    The rewrite derives its list from revisions 0050 and 0051 rather than
+    repeating it, so this asserts the derivation covers all three groups — and
+    that each keeps the predicate that matches what a NULL subject means there.
+    """
+
+    rows = _platform_module()._tables()
+    covered = {name for name, _, _ in rows}
+
+    isolated = set(_revision_module().SUBJECT_ISOLATED_TABLES)
+    children = set(_extension_module().INHERITED_CHILDREN)
+    shared = set(_extension_module().SHARED_WITH_INSTALLATION)
+    assert covered == isolated | children | shared
+    assert len(rows) == len(covered), "a table was rewritten twice"
+
+    for name, before, after in rows:
+        # The subject comparison survives; the platform clause is added to it.
+        assert before in after or "subject_id IS NULL" in after
+        assert "vitals.platform_scope" in after
+        # Only the shared group keeps treating a NULL subject as a real state.
+        assert ("subject_id IS NULL" in after) == (name in shared)
+
+
+def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
+    """The list is the review surface. A sixth caller has to be added here first.
+
+    Row security is worth having only while the ways past it are countable.
+    Each of these is subject-less for a reason that is about the work itself:
+    a visitor with a token has no account to bind, and a sweep across everybody
+    has no one person to act as. A path that merely *forgot* to resolve its
+    subject belongs nowhere near this list — for that one, seeing nothing is
+    the correct outcome and the fix is to bind.
+    """
+
+    import ast
+
+    permitted = {
+        # The visitor holding a published link has no account; the token is the
+        # authorization, checked by share_service itself before anything is read.
+        ("vitals/services/share_service.py", "resolve_public"),
+        ("vitals/services/share_service.py", "register_open"),
+        # Housekeeping across every subject, with no person to act as.
+        ("vitals/services/share_service.py", "purge_job"),
+        ("vitals/services/ai_gateway_service.py", "reconciliation_job"),
+        ("vitals/services/proactive/delivery.py", "delivery_reconciliation_job"),
+    }
+
+    def _enclosing(tree):
+        """Attribute each call to the innermost function containing it."""
+
+        found = set()
+        stack: list[tuple] = [(tree, None)]
+        while stack:
+            node, owner = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                owner = node.name
+            if (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "enter_platform_scope"
+            ):
+                found.add(owner)
+            stack.extend((child, owner) for child in ast.iter_child_nodes(node))
+        return found
+
+    actual = set()
+    for path in sorted(
+        list(Path("vitals").rglob("*.py")) + list(Path("web").rglob("*.py"))
+    ):
+        source = path.read_text()
+        if "enter_platform_scope" not in source or path.name == "rls_session.py":
+            continue
+        for name in _enclosing(ast.parse(source)):
+            actual.add((path.as_posix(), name))
+
+    added = sorted(actual - permitted)
+    assert not added, (
+        f"new callers of enter_platform_scope: {added} — each one is a path that "
+        "reads across every subject. Add it here with the reason it cannot bind "
+        "one, or resolve a subject and bind instead"
+    )
+    gone = sorted(permitted - actual)
+    assert not gone, (
+        f"no longer enters the platform scope: {gone} — if that is deliberate, "
+        "drop it from the list; if not, the path now reads nothing under RLS"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_postgres_platform_scope_reaches_across_subjects(
+    db_session,
+    monkeypatch,
+):
+    """What the published-link path needs, and what it must not become.
+
+    Revision 0050 covered ``shared_reports``, and the visitor who opens a
+    published link has no account to bind — so the policy matched nothing and
+    every doctor link answered "not found", indistinguishable from revoked. The
+    scope is the fix. It has to reach every subject to be any use, and it has to
+    be something a session asks for by name rather than a state it can drift
+    into, or it is just row security switched off.
+    """
+
+    from alembic.config import Config as AlembicConfig
+
+    from vitals.services.rls_session import PLATFORM_SETTING
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    try:
+        first, second = await _seed_two_subjects(admin)
+
+        async with restricted.connect() as connection:
+            # Not asking for it changes nothing: still nothing, not everything.
+            assert await connection.scalar(
+                sa.text("SELECT count(*) FROM supplements")
+            ) == 0
+
+            await connection.execute(
+                sa.text("SELECT set_config(:name, 'on', false)"),
+                {"name": PLATFORM_SETTING},
+            )
+            visible = {
+                row.subject_id
+                for row in (
+                    await connection.execute(
+                        sa.text("SELECT subject_id FROM supplements")
+                    )
+                ).all()
+            }
+            assert {first, second} <= visible
+
+            # Any other value is not the scope. Only the exact string opens it,
+            # so a stray setting or a truncated one closes rather than opens.
+            for value in ("", "off", "ON", "true", "1"):
+                await connection.execute(
+                    sa.text("SELECT set_config(:name, :value, false)"),
+                    {"name": PLATFORM_SETTING, "value": value},
+                )
+                assert await connection.scalar(
+                    sa.text("SELECT count(*) FROM supplements")
+                ) == 0, f"{value!r} must not read as the platform scope"
+    finally:
+        await restricted.dispose()
+        await admin.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_real_postgres_platform_scope_is_transaction_local(
+    db_session,
+    monkeypatch,
+):
+    """It ends with the transaction, and the session re-declares the next one.
+
+    Same property the subject binding has, and it matters more here: this scope
+    reads across everybody, so one leaking onto a pooled connection would hand
+    the next request the whole installation. The listener re-applying it is what
+    lets a job commit mid-sweep without either losing the scope or extending it.
+    """
+
+    from alembic.config import Config as AlembicConfig
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from vitals.services.rls_session import (
+        PLATFORM_SETTING,
+        enter_platform_scope,
+        in_platform_scope,
+    )
+
+    database_url = os.environ["VITALS_TEST_DATABASE_URL"]
+    assert database_url.startswith("postgresql")
+    monkeypatch.setenv("VITALS_DATABASE_URL", database_url)
+    await db_session.close()
+
+    admin = await _migrated_engine(
+        database_url, AlembicConfig(str(REPOSITORY_ROOT / "alembic.ini"))
+    )
+    restricted = await restricted_engine(database_url)
+    try:
+        await _seed_two_subjects(admin)
+        factory = async_sessionmaker(
+            restricted, expire_on_commit=False, class_=AsyncSession
+        )
+
+        async with factory() as session:
+            await enter_platform_scope(session)
+            assert in_platform_scope(session)
+            assert await session.scalar(
+                sa.text("SELECT count(*) FROM supplements")
+            ) == 2
+
+            # A sweep commits as it goes; the listener re-declares the scope on
+            # the transaction that opens next.
+            await session.commit()
+            assert await session.scalar(
+                sa.text("SELECT count(*) FROM supplements")
+            ) == 2
+
+        # A fresh session on the same pooled connection starts closed. This is
+        # the leak the transaction-local setting exists to prevent.
+        async with factory() as session:
+            assert not in_platform_scope(session)
+            assert await session.scalar(
+                sa.text(f"SELECT current_setting('{PLATFORM_SETTING}', true)")
+            ) in (None, "")
+            assert await session.scalar(
+                sa.text("SELECT count(*) FROM supplements")
+            ) == 0
+    finally:
+        await restricted.dispose()
+        await admin.dispose()

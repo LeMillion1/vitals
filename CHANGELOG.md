@@ -8,6 +8,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — work that belongs to nobody in particular
+
+- **Every published doctor link would have answered "not found".** Revision 0050
+  put row security on `shared_reports`, and the visitor who opens a published
+  link has no account: nothing binds `vitals.subject_id`, the policy's
+  comparison is NULL, and the report the token names is invisible — reading
+  exactly like a revoked link. Four housekeeping jobs had the same shape, each
+  sweeping across every subject with no person to act as.
+- Revision 0053 rewrites all 51 policies to admit a second, explicit scope:
+  `vitals.platform_scope`. It is transaction-local like the subject binding, it
+  has to be asked for by name through `enter_platform_scope`, and only the exact
+  string `on` opens it — a stray or truncated value closes.
+- Five call sites use it, and a contract test enumerates them, so a sixth is
+  something a reviewer sees rather than something that accumulates. Reaching for
+  it to make an empty page non-empty is the misuse it guards against: for a path
+  that merely forgot to resolve its subject, seeing nothing is correct and the
+  fix is to bind.
+- `tests/test_scheduled_job_scope.py` is the guard against the next one. Every
+  registered job is classified as either binding a subject or acting for the
+  installation, and a new job fails the test until somebody decides which — the
+  decision that was never explicitly made for the three that broke. It matters
+  more for jobs than for routes because a job that reads nothing does not error:
+  it finishes, commits, and reports success while the scheduler stays green.
+- Worth naming why the suite was silent about this. Both suites build the schema
+  with `create_all`, which knows about columns and constraints and nothing about
+  policies — so 4555 passing tests said nothing at all about row security.
+  `tests/test_row_level_security.py` is the exception, and the only place the
+  boundary is actually exercised: schema from the migrations, connection from a
+  role with no `BYPASSRLS`.
+
 ### Added — federated authentication (PR-05)
 
 - **Vitals stops authenticating anybody.** `vitals/services/oidc.py` verifies

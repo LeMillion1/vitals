@@ -724,6 +724,17 @@ Delivered:
   forty-one tables whose `subject_id` is mandatory.
   `rls_session.bind_session_subject` sets the transaction-local value the policy
   reads; an unbound session sees nothing rather than everything.
+- Revision `0051` covers the ten remaining tables that name a subject, with a
+  second predicate for the ones where a NULL subject is a real state rather than
+  an unfinished backfill.
+- Revision `0053` admits a second scope, `vitals.platform_scope`, to all
+  fifty-one policies, for the four paths that legitimately act for the
+  installation rather than for a person: the published report a visitor opens
+  with a token, and the three sweeps that run across every subject. Without it
+  each of them reads nothing and reports success — a shared link answering
+  "not found" indistinguishably from a revoked one, and three jobs going green
+  while doing nothing at all. `enter_platform_scope` is the only way in, and a
+  contract test enumerates every caller.
 
 Partly delivered since: the policy engine now has a caller.
 `vitals/services/access_resolution.py` resolves a real `AccessContext` — a

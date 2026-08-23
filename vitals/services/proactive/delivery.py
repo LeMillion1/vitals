@@ -88,6 +88,7 @@ from vitals.services.proactive.channels import (
     resolve_legacy_bound_notifier,
 )
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
+from vitals.services.rls_session import enter_platform_scope
 from vitals.services.transaction_outcome import (
     TransactionOutcomeError,
     register_root_transaction_outcome,
@@ -3952,6 +3953,9 @@ async def delivery_reconciliation_job(session_factory, redis=None) -> None:
     del redis
     current = now_utc().astimezone(timezone.utc)
     async with session_factory() as session:
+        # Sweeps every subject's stalled deliveries, so it belongs to nobody in
+        # particular and row security would otherwise match no row at all.
+        await enter_platform_scope(session)
         await reconcile_stale_pending_deliveries(
             session,
             stale_before=current - PENDING_STALE_AFTER,

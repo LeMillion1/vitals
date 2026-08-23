@@ -1487,6 +1487,47 @@ therefore builds a migrated database and connects as a role with no special
 attributes — the suite's own superuser bypasses row security by definition,
 which is precisely why the boundary needs a proof that does not use it.
 
+#### Stage 6F — the work that belongs to nobody in particular
+
+Revisions 0050 and 0051 assume every transaction is somebody's. Most are. Four
+paths are not, and the assumption would have taken each of them out silently.
+
+The visible one is the published report. A patient shares a link with a doctor;
+the doctor has no account here, and is not meant to need one. The token in the
+URL *is* the authorization, and `share_service` checks it before reading
+anything. But there is no session to bind, so `vitals.subject_id` reads as NULL,
+the comparison in the policy is NULL, and the report the token names does not
+exist as far as the database is concerned. The page that comes back is the same
+one a revoked link produces — which is the worst possible failure here, because
+it looks deliberate. Nobody would have filed it as a bug; they would have
+re-shared the link.
+
+The other three are jobs, and they fail more quietly still: the share purge, the
+AI invocation reconciler and the delivery reconciler each sweep across every
+subject on a schedule. Under the policies each one would find nothing, do
+nothing, and report success. Reservations would stop being released, stale
+deliveries would stop being reconciled, and expired shares would stop being
+purged — with a green scheduler the whole time.
+
+Revision 0053 rewrites all fifty-one policies to accept a second scope:
+
+    USING (subject_id = <bound subject> OR current_setting('vitals.platform_scope', true) = 'on')
+
+Adding a way past a boundary deserves more suspicion than the boundary itself,
+so the shape is deliberately narrow. It is transaction-local exactly like the
+subject binding, because a scope that reads across everybody is the last thing
+that should ride a pooled connection into the next request. It must be asked for
+by name — `enter_platform_scope` — rather than being a state a session can drift
+into. Only the exact string `on` opens it, so a truncated or stray value closes
+rather than opens. And `tests/test_row_level_security.py` enumerates all five
+call sites, so a sixth is something a reviewer reads rather than something that
+accumulates.
+
+The distinction that keeps it honest: this is for work that has no subject, not
+for work that failed to find one. A path that merely forgot to resolve its
+subject should see nothing — that is the design working — and its fix is to bind,
+never to declare itself the installation.
+
 #### The cutover as one operation
 
 The twenty phases, the contract revision and the policies are three parts of one
