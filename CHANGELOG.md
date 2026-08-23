@@ -8,6 +8,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — five pages served a stack trace where they meant to say "not yet"
+
+Found by walking the app in a browser against a ten-patient installation, and
+now walked by a test that does the same thing.
+
+- `/nutrition`, `/supplements`, `/skincare`, `/genetics` and `/settings`
+  answered **500** in a shared installation. Refusing was correct — nothing was
+  written, no other person's row was read — but the refusal had nowhere to land:
+  four bridge exceptions were never registered on the handler that turns them
+  into a clean 409. A refusal that arrives as a crash sends whoever meets it
+  looking for a bug that is not there.
+- The cause was two lists that drifted. One tuple named the bridge refusals at
+  startup, a stack of decorators named them again per request, and a type added
+  to one was missing from the other. There is now one tuple, registration loops
+  over it, and the log names *which bridge* refused as well as the route.
+- `GET /settings/export` crashed the same way for a different reason: backup
+  format v1 describes an installation holding one person, and this one holds
+  several. That is a limit of the format, not a fault, so it is now a 409 that
+  names the export which does work — `/settings/export-subject` carries one
+  record and restores on its own. The refusal got its own type,
+  `MultiSubjectBackupError`, because a router cannot tell it apart from a
+  malformed-file error by reading a translated string.
+- A subject with no notification-policy rows was read as *corrupt* rather than
+  *unconfigured*. Only the legacy owner's rows are seeded at startup, so
+  `/settings` crashed for everybody else. Missing partitions now fall back to
+  the defaults on the human read; the write paths still require all three,
+  because there a missing one means a half-written split.
+
+`tests/test_shared_installation_pages.py` is the durable version of that browser
+minute: it walks every page against a two-subject database and asserts none
+answers 500, and separately pins exactly which pages still refuse — in both
+directions, so the backlog cannot go stale while nobody is looking.
+
+### Changed — the unowned-alert bridge asks what it is for, not how many people there are
+
+- The bridge widens exactly one predicate, `subject_id IS NULL AND
+  integration_connection_id IS NULL`, and demanded a sole health subject
+  whenever it was requested — including when no such row existed anywhere. Two
+  questions had been fused. *Is there an alert nobody owns* is what the bridge
+  exists to answer; only if that is yes does *is this installation one person*
+  have to hold, because with two people nothing can say whose it is.
+- `_prepare_context` now answers the first under the governance lock it already
+  takes, and **returns the bridge that actually applies** — `REJECT` when there
+  is nothing to adopt. Every caller uses the returned value. That is the
+  load-bearing part: skipping the proof while the query still widened would be
+  the one combination that could show one person another's alert. The predicate
+  and the proof cannot disagree, so an unowned row committed a microsecond later
+  simply is not selected.
+- The refusal is kept for the case it was written for: an unowned row plus two
+  people still closes the bridge. The way out is unchanged and already shipped —
+  `scripts/backfill_system_alert_subject_ownership.py`, run while the
+  installation is still one person, which is exactly when adopting an unowned
+  row into that person is right.
+- Opened `/nutrition`, `/supplements` and `/genetics`; `/garmin` and `/hevy`
+  opened too, once seeded subjects got the integration roots the app creates
+  only for the legacy owner.
+
 ### Fixed — the settings gate stops closing the app, and starts guarding what it meant
 
 First of the 36 sole-subject gates, and the one behind the module map — which

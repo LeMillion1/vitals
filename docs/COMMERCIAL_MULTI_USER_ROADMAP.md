@@ -996,19 +996,62 @@ Retired so far:
 - `scoped_settings_service` — the shared `app_settings` key is what stops
   meaning anything with two people, not the scoped row. Reads fall through to
   the default, writes skip the mirror, adoption stops entirely.
+- `alerts_service`'s fully-unowned bridge — it widens exactly one predicate,
+  `subject_id IS NULL AND integration_connection_id IS NULL`, and demanded a
+  sole subject whenever it was requested, including when no such row existed.
+  Two questions had been fused: *is there an alert nobody owns* is what the
+  bridge is for, and only if that is yes does *is this one person* have to hold.
+  `_prepare_context` now answers the first under the governance lock it already
+  takes, and returns the bridge that actually applies — `REJECT` when there is
+  nothing to adopt. Callers use the returned value, which is the load-bearing
+  part: skipping the proof while still widening the query is the one combination
+  that could show one person another's alert. Opened `/nutrition`,
+  `/supplements`, `/genetics`.
+- `proactive.prefs.get_preferences_bundle` — not a count at all. A subject with
+  no notification-policy rows was read as *corrupt* rather than
+  *unconfigured*, and only the legacy owner's rows are seeded at startup, so
+  `/settings` crashed for everybody else. Missing partitions now fall back to
+  the defaults on the human read; the write paths still require all three,
+  because there a missing one means a half-written split.
 
-Next, and not straightforward: `conflict_engine`'s `FULLY_UNOWNED` bridge. It
-exists so facts with no `subject_id` can join one person's evaluation, and needs
-a sole subject because adopting nobody's rows for somebody is otherwise wrong.
-The tempting reading — that revision 0049 removed unowned rows, so the bridge is
-obsolete — is **false**: ten tables still allow a NULL subject, and among them
-are the inherited children (`hevy_sets`, `hrt_cycle_items`, `body_scan_metrics`
-and others) where NULL still means the backfill has not reached them. Retiring
-this one needs an analysis of which resolvers can actually see those rows, not a
-loosened count.
+Two shapes of defect, and it is worth naming them separately:
 
-The working list is the warning log: `web/main.py` turns each of these refusals
-into a 409 and logs the route, so a shared installation names its own backlog.
+1. **A gate that fires when it has nothing to guard.** The fix is never a
+   loosened count. It is to ask what the bridge is *for* — is there anything
+   unowned to adopt? — and to make the widening and the proof agree, so that
+   when the answer is no, neither happens.
+2. **A refusal with nowhere to land.** `/nutrition`, `/supplements`,
+   `/skincare`, `/genetics` and `/settings` served 500 with a stack trace
+   because their bridge exception was not registered on the handler. Refusing
+   was right; arriving as a crash was not, and it sends whoever meets it looking
+   for a bug that is not there.
+
+Next, and still the largest single blocker at seven pages: `conflict_engine`'s
+`FULLY_UNOWNED` bridge. The analysis is now done and the shape is clearer than
+it looked. The bridge widens nine predicates. **Seven of them cannot match a row
+at head** — they test `subject_id IS NULL` on columns revision 0049 made `NOT
+NULL`, and the only schema where they are satisfiable is the pre-0049 one that
+`tests/schema_modes.py` builds on purpose. Two remain live, both mixed catalogs
+where a NULL subject is a real state: an unclassified `conflict_rules` row
+(`code IS NULL`) and a non-curated unowned `hrt_compounds` row.
+
+So the earlier note here — that ten nullable tables make this hard — was reading
+the wrong ten. Migration 0051 already separates them: five are shared catalogs
+where NULL means *the installation's own row*, and five are inherited children
+where NULL means *not backfilled*, and those the row-security policy already
+makes invisible. What is left is two catalog predicates and a probe for them.
+
+The way off every one of these bridges is the same and already shipped:
+`scripts/backfill_*_subject_ownership.py`, run while the installation is still
+one person, which is exactly when adopting an unowned row into that person is
+the right thing to do. Afterwards the probe answers no and the bridge is inert.
+
+The working list is checked in, in two places. `web/main.py` turns each refusal
+into a 409 and logs *which bridge* refused along with the route, so a running
+shared installation names its own backlog. And
+`tests/test_shared_installation_pages.py` walks every page against a two-subject
+database: one test asserts no page answers 500, the other pins exactly which
+pages still refuse — in both directions, so the list cannot go stale in either.
 
 ### PR 09 — Subject integrations, platform AI gateway, scheduler, and notifications
 
