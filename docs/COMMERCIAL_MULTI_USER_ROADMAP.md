@@ -879,9 +879,33 @@ Tests:
 Rollback: keep original files until verified migration checksums and access logs
 match. No destructive global restore is exposed to ordinary users.
 
-### PR 07 — Professional profiles, invitations, relationships, and consent
+### PR 07 — Professional profiles, invitations, relationships, and consent — **landed**
 
-Scope:
+Delivered, as five tables and four services:
+
+- `professional_profiles` holds what somebody claims about themselves and an
+  operator's verdict on it. Verification answers a question about the world
+  outside this installation; it grants access to nothing, and the table has no
+  `subject_id` because nothing in it belongs to a patient.
+- `professional_invitations` is a one-time, expiring, address-bound link whose
+  token is stored only as a hash. Every refusal — spent, expired, revoked, wrong
+  address, never existed — is the same message, because told apart they map who
+  is being treated by whom.
+- `care_relationships` and `consent_grants` are the two halves access needs, and
+  `resolve_access_context` now loads them into the `RelationshipGrant` the
+  policy engine has been able to evaluate since PR-04 and had never been given.
+  Consent is versioned rather than edited, so what applied last month survives
+  this month's change.
+- Doctors and trainers differ by domain, the kind lives on the relationship
+  rather than the profile, and every default on patient facts is read-only.
+- `professional_notes` and `care_plans` are where a professional's contribution
+  goes instead. Only the author may change one, and neither has a delete path.
+
+Revisions `0054` through `0057`, each new subject-bearing table carrying the
+two-clause policy from the start. The RLS contract now reads its covered set
+from every policy revision, so the next table is one line rather than a rewrite.
+
+Original scope:
 
 - add professional verification states and operator verification workflow;
 - implement one-time hashed invitations with email binding and expiry;
