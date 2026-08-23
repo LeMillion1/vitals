@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Vitals Architecture</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -233,7 +234,25 @@ figcaption {
   background: var(--surface-2);
 }
 figcaption b { color: var(--ink); font-weight: 600; }
-pre.mermaid { background: transparent; margin: 0; text-align: center; }
+/* The family matters, and not for looks. ``<pre>`` is monospace by user-agent
+   default, and everything mermaid puts in a ``foreignObject`` inherits from it —
+   while mermaid sizes each box by measuring the label in its *configured*
+   family, IBM Plex Sans. Measured narrow, rendered wide, and every label was
+   clipped: "Garmin Connect" arrived as "Garmin Connec". Naming the same family
+   here is what makes the measurement true. */
+pre.mermaid {
+  background: transparent;
+  margin: 0;
+  text-align: center;
+  font-family: var(--sans);
+}
+/* Mermaid sizes each foreignObject from its own measurement, which still lands
+   a pixel or two short on some glyph runs even with the family matched, and the
+   default ``overflow: hidden`` then eats the last letter — "consent-scoped read"
+   became "consent-scoped reac". Nothing in these diagrams overlaps, so letting a
+   label spill its box by a pixel is strictly better than losing a character. */
+pre.mermaid foreignObject,
+pre.mermaid foreignObject > div { overflow: visible; }
 
 /* ── Tables ───────────────────────────────────────────────────────── */
 .tablewrap { overflow-x: auto; margin: 1.6rem 0; max-width: none; }
@@ -344,7 +363,7 @@ tbody tr:hover td { background: var(--surface-2); }
       <li><a href="#context">What it is</a></li>
       <li><a href="#containers">Containers</a></li>
       <li><a href="#ownership">The ownership graph</a></li>
-      <li><a href="#domains">Fifteen domains</a></li>
+      <li><a href="#domains">Fourteen domains</a></li>
       <li><a href="#lake">Raw, fact, artifact</a></li>
       <li><a href="#write">How a write happens</a></li>
       <li><a href="#read">How a read is bounded</a></li>
@@ -416,10 +435,10 @@ flowchart TB
 flowchart LR
   subgraph proc ["FastAPI process"]
     direction TB
-    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>25 routers, server-rendered</span>"]
+    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>26 routers, server-rendered</span>"]
     mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
     api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
-    svc["<b>Domain services</b><br/><span style='font-size:11px'>88 modules — the only writers</span>"]
+    svc["<b>Domain services</b><br/><span style='font-size:11px'>93 modules — the only writers</span>"]
     sched["<b>Scheduler</b><br/><span style='font-size:11px'>14 jobs: sync, digest, nudge,<br/>reconcile, sweep</span>"]
   end
 
@@ -546,7 +565,7 @@ erDiagram
 <!-- ══════════════════════════════════════════════════════════════ -->
 <section id="domains">
   <p class="eyebrow">The record</p>
-  <h2>Fifteen domains</h2>
+  <h2>Fourteen domains</h2>
   <p>Each domain owns its tables, its service module, its conflict resolver and its page. They share one write contract and one read contract; nothing else is common between them.</p>
 
   <div class="tablewrap">
@@ -891,3 +910,34 @@ flowchart TB
 
 </main>
 </div>
+
+<script type="module">
+  /* Two ways this file gets opened, and only one of them used to work.
+
+     Published as an artifact, the host renders every <pre class="mermaid">
+     itself and its CSP blocks this import — so the catch below is the normal
+     path there, not an error. Opened straight from docs/ in a browser, nothing
+     rendered the diagrams at all and eight of them showed their own source.
+
+     The guard is on an already-rendered block rather than on which host we are,
+     because that is the thing that actually matters: if something else drew the
+     diagrams, this must not draw them twice. */
+  if (!document.querySelector("pre.mermaid svg")) {
+    try {
+      /* Before mermaid, not after: it sizes each node from the measured width
+         of its label, and measuring in the fallback face then letting IBM Plex
+         swap in wider is what clips "Garmin Connect" to "Garmin Connec". */
+      if (document.fonts && document.fonts.ready) await document.fonts.ready;
+      const { default: mermaid } = await import(
+        "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"
+      );
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
+      await mermaid.run({ querySelector: "pre.mermaid" });
+    } catch (error) {
+      /* Offline, or the host forbids the import. The diagram source stays on
+         screen: worse than a diagram, better than an empty box, and it says
+         plainly that something did not load rather than hiding it. */
+      console.warn("mermaid did not load; diagrams remain as source", error);
+    }
+  }
+</script>

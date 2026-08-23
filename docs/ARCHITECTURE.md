@@ -6,8 +6,27 @@ ownership graph, the data lake's raw/fact/artifact lifecycle, the write and read
 paths, the conflict engine, the conversion timeline, and the cutover sequence.
 
 It is HTML rather than Markdown because the diagrams carry most of its meaning
-and are worth rendering rather than describing. Open it in a browser, or publish
-it as an artifact.
+and are worth rendering rather than describing.
+
+**How to open it.** The file is authored as an *artifact body* — no `<!doctype>`,
+`<html>`, `<head>` or `<body>` of its own — so publishing it as an artifact is
+the intended path, and the artifact host renders every `<pre class="mermaid">`
+itself.
+
+Opened straight from `docs/` it now renders too, which it did not until
+2026-08-24: there was nothing to turn the diagram source into a diagram, so all
+eight showed their own mermaid markup and the page read as broken. A small module
+script at the end of the file imports mermaid from a CDN and runs it, guarded so
+it does nothing when something else has already drawn the diagrams. Three
+consequences worth knowing:
+
+- **It needs network, and only for the diagrams.** Offline, the prose and tables
+  are fine and the diagram source stays visible with a console warning. That is
+  the honest failure: worse than a diagram, better than an empty box.
+- **In an artifact the import is blocked** by the CSP, which is correct and not
+  an error — the host has already rendered them, and the guard sees that.
+- **`file://` will not do**, because a module script cannot be imported from it.
+  Serve the directory (`python3 -m http.server`) or publish it.
 
 ## Keeping it true
 
@@ -25,6 +44,7 @@ page needs the same edit:
 | migration count | `migrations/versions/` | 59, head `0059` |
 | RLS table count | revisions `0050` + `0051`, asserted in `tests/test_row_level_security.py` | 55 |
 | platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 6 |
+| routers, service modules | `web/routers/`, `vitals/services/` | 26 and 93 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own
