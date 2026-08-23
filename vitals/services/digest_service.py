@@ -781,6 +781,50 @@ HOW TO WRITE:
 
 
 # ── Context assembly ──────────────────────────────────────────────────────────
+async def _config_profile_if_it_describes(
+    session: AsyncSession, *, subject_id: uuid.UUID, cfg: Any
+) -> dict[str, Any]:
+    """The age, sex, height, programme and goals — but only if they are theirs.
+
+    These five live in ``.env``, which is a single-user artifact: there is one
+    set of them for the whole process, and nothing in them names a subject. In a
+    one-person installation that is unambiguous, and they are that person's.
+
+    With two people it describes at most one of them and cannot say which, so
+    including it put the installation owner's age, sex, height and treatment
+    programme into every other patient's weekly digest, doctor's report and
+    share link — attributed to them, in a document written to be read by a
+    clinician. Omitting it costs the owner five fields in their own report.
+    Getting it wrong costs somebody else a medical document about a body that is
+    not theirs.
+
+    The profile becomes subject-scoped state in PR-09, and this goes with it.
+    """
+
+    del subject_id  # the check is about the installation, not about this person
+    with session.no_autoflush:
+        subject_ids = list(
+            await session.scalars(
+                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+            )
+        )
+    if len(subject_ids) != 1:
+        return {
+            "age": None,
+            "sex": None,
+            "height_cm": None,
+            "program": None,
+            "goals": None,
+        }
+    return {
+        "age": cfg.user_age,
+        "sex": cfg.sex,
+        "height_cm": cfg.height_cm,
+        "program": cfg.user_program,
+        "goals": cfg.user_goals,
+    }
+
+
 async def assemble_context(
     session: AsyncSession,
     *,
@@ -860,13 +904,9 @@ async def assemble_context(
             "previous_end": prev_end.isoformat(),
         },
         "coverage": {},
-        "user_profile": {
-            "age": cfg.user_age,
-            "sex": cfg.sex,
-            "height_cm": cfg.height_cm,
-            "program": cfg.user_program,
-            "goals": cfg.user_goals,
-        },
+        "user_profile": await _config_profile_if_it_describes(
+            session, subject_id=subject_id, cfg=cfg
+        ),
     }
 
     from vitals.services import weight_service

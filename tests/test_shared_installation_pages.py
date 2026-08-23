@@ -202,3 +202,37 @@ async def test_an_account_without_a_record_is_told_that_and_not_something_else(
             wrong_answer.append(f"{path} blamed the migration")
 
     assert not wrong_answer, "; ".join(wrong_answer)
+
+
+async def test_the_env_profile_is_not_attributed_to_another_patient(
+    db_session, legacy_owner_roots, second_person
+):
+    """Age, sex, height, programme and goals live in .env, and .env names nobody.
+
+    One set of them for the whole process, and in a one-person installation that
+    is unambiguous. With two people it describes at most one and cannot say
+    which — and it was being written into every patient's weekly digest,
+    doctor's report and share link as though it were theirs. A medical document
+    about a body that is not the patient's is worse than one missing five
+    fields.
+    """
+
+    from sqlalchemy import select
+
+    from vitals.services import digest_service
+
+    other_subject_id = await db_session.scalar(
+        select(HealthSubject.id).where(
+            HealthSubject.owner_user_id != legacy_owner_roots.user_id
+        )
+    )
+    assert other_subject_id is not None
+
+    for subject_id in (other_subject_id, legacy_owner_roots.subject_id):
+        context = await digest_service.assemble_context(
+            db_session, subject_id=subject_id
+        )
+        profile = context["user_profile"]
+        assert profile["age"] is None
+        assert profile["height_cm"] is None
+        assert profile["program"] is None
