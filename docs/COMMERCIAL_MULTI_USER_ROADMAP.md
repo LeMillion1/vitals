@@ -930,9 +930,36 @@ Tests:
 Rollback: relationship/grant rows may remain dormant; disabling the feature
 removes all professional access without changing patient ownership.
 
-### PR 08 — Professional UX and explicit patient context
+### PR 08 — Professional UX and explicit patient context — **mostly landed**
 
-Scope:
+Delivered:
+
+- `/care` is the professional's roster and `/care/{subject_id}` one patient's
+  record; `/settings/care` is the patient's side — who holds their record, what
+  each sees, and pause/withdraw/end. `/care/accept/{token}` takes up an
+  invitation, and a GET only asks: a one-time link must not be spent by a link
+  preview.
+- **The selected patient travels in the URL, never in the session.** That is the
+  design rather than a URL style — a stale tab submitting an old form must land
+  on the patient it was rendered for, not on whoever is selected now. Driven by
+  a test that runs exactly that sequence. The patient's own routes resolve their
+  subject from who they are, for the same underlying rule: the subject comes
+  from whichever source cannot go stale.
+- Every page says on what grounds it is open, and refusals are uniform — absent,
+  no relationship, paused, lapsed are one 404.
+- Two real defects fell out. The page chrome resolved its subject through the
+  sole-owner adapter and threw on every request once a second person existed;
+  it now resolves the signed-in account's own record, and a new handler turns a
+  legacy route's refusal into a 409 instead of a 500. And htmx was caching a
+  snapshot of every boosted page in `localStorage`, leaving somebody's record in
+  the browser after the session ended.
+
+Not done: the professional inbox (invitations are found by their link, not by a
+list), and navigation computed as modules ∩ role ∩ consent — the chrome is the
+signed-in account's own, which is correct but not yet narrowed per patient. The
+accessibility and compiled-CSS contracts in the original test list are untouched.
+
+Original scope:
 
 - add roster, pending invitation, consent center, and professional inbox;
 - put opaque subject IDs in professional routes and HTMX form actions;
