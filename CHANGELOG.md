@@ -8,6 +8,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — a professional sees the record, not only the notes about it
+
+The patient screen showed notes and plans and nothing else. The policy already
+granted the whole record — a doctor and a trainer are given the same domains,
+because the kind decides who is writing and not what may be read — so a doctor
+opening a patient had permission to see everything and was shown almost nothing.
+
+It now renders the record as per-domain summaries: weight and its trend, flagged
+labs, nutrition averages, the active protocol, supplements, and the rest.
+
+- **Consent is applied as a whitelist.** The first attempt filtered by asking the
+  report assembler to leave out the domains the patient withheld, which is wrong
+  in a way a demo would not show: that assembler forces every *core* section on
+  whatever it is handed, weight and labs among them, so a withheld weight would
+  still have been rendered. The view is built out of the permitted sections
+  instead, so a section this screen has not thought about yet cannot leak either.
+- **What the patient withheld is named**, not quietly missing. A clinician
+  reasoning from a partial record has to know it is partial; a gap they cannot
+  see reads as "nothing there" and gets reasoned from. Sections the patient does
+  not use are not named — that is not about this professional.
+- **The card is dated.** It shows the same closed period every report here uses,
+  completed days only, which means the latest reading can be a day behind the
+  patient's own dashboard. Undated staleness is a defect; a named period is a
+  report.
+
+### Fixed — a doctor's screens had no navigation at all
+
+Every page added for professionals omitted one variable the base template hides
+the entire chrome behind, so the rail, the bottom bar and the sign-out button
+vanished on exactly the screens a doctor lives on. A doctor is sent there from
+their own dashboard, which meant landing on a page with no way anywhere.
+
+With the chrome back, the second half showed: it offered Today, every module
+section, Share and Settings to an account with no health record of its own, and
+each of those bounces straight back. They are hidden now. Sign-out stays — a page
+with no way out is a trap.
+
 ### Changed — every page answers in a shared installation
 
 Twenty-five of twenty-seven pages return 200 with ten patients, two doctors, two

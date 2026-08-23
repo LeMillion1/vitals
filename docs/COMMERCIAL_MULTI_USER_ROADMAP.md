@@ -930,7 +930,7 @@ Tests:
 Rollback: relationship/grant rows may remain dormant; disabling the feature
 removes all professional access without changing patient ownership.
 
-### PR 08 — Professional UX and explicit patient context — **mostly landed**
+### PR 08 — Professional UX and explicit patient context — **landed, minus the inbox**
 
 Delivered:
 
@@ -954,10 +954,50 @@ Delivered:
   snapshot of every boosted page in `localStorage`, leaving somebody's record in
   the browser after the session ended.
 
-Not done: the professional inbox (invitations are found by their link, not by a
-list), and navigation computed as modules ∩ role ∩ consent — the chrome is the
-signed-in account's own, which is correct but not yet narrowed per patient. The
-accessibility and compiled-CSS contracts in the original test list are untouched.
+- **The professional sees the record, not only the notes about it.** The policy
+  always granted it — `default_scopes` returns every domain for both kinds,
+  because the kind decides who is writing and not what may be read — but the
+  screen showed notes and plans and nothing else. It now assembles the patient's
+  record through `digest_service.assemble_context`, which is already the
+  doctor's-report assembler, and renders it as per-domain summaries.
+
+  Consent is applied as a **whitelist**, not through the module gate. The first
+  attempt filtered by passing `enabled_modules`, which would not have shown up in
+  a demo: `assemble_context` forces every *core* module on whatever it is handed
+  — weight, labs and garmin among them — so a patient who withheld their weight
+  would still have had it rendered. What the patient withheld is named rather
+  than quietly absent; a clinician reasoning from a partial record has to know it
+  is partial. The card is dated, because it shows the same closed period every
+  report here uses and the latest reading can be a day behind the patient's own
+  dashboard.
+
+- **Navigation is what the account can actually reach.** Two defects, one behind
+  the other. Every template response added by this PR omitted `username`, and
+  `base.html` hides the entire chrome behind it — so the rail, the bottom bar and
+  the sign-out button vanished on exactly the screens a doctor lives on, and a
+  doctor redirected there had no way anywhere, including out. With the chrome
+  back, the rail was offering Today, every module section, Share and Settings to
+  an account with no record of its own, each of which bounces straight back.
+  Those are now gated on `request.state.has_own_record`.
+
+  Which is the rule the original scope called "modules ∩ role ∩ consent", arrived
+  at from the other end: not about roles, but about whether the thing a link
+  leads to exists for this reader.
+
+Not done: the professional inbox. Invitations are found by their link, and
+`invitation_service.accept` is explicit that **the token is what authorizes
+reading the row at all** — so a list by email is not a missing screen but a
+different security model, and one worth deciding on rather than implementing
+sideways.
+
+Per-patient narrowing of the chrome is also still open: the navigation is the
+signed-in account's own, correct as far as it goes.
+
+The compiled-CSS contract from the original test list now exists —
+`tests/test_design_modifier_contract.py`, written from a real miss: a `v-dot`
+modifier borrowed from another base rendered as the plain style, so a lab value
+out of range looked exactly like one inside it. Accessibility and EN/RU parity
+contracts are still untouched.
 
 Original scope:
 
