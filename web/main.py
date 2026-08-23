@@ -30,6 +30,9 @@ from vitals.services.conflict_activation_service import (
 )
 from vitals.services.conflict_engine import ConflictLegacyBridgeError
 from vitals.services.digest_service import DigestOwnershipError
+from vitals.services.garmin_weight_service import (
+    GarminWeightExportLegacyBridgeError,
+)
 from vitals.services.proactive.prefs import (
     LegacyProactivePreferencesBridgeClosedError,
 )
@@ -176,6 +179,7 @@ _LEGACY_BOOTSTRAP_CLOSED = (
     AlertLegacyBridgeError,
     ConflictActivationLegacyBridgeError,
     LegacyProactivePreferencesBridgeClosedError,
+    GarminWeightExportLegacyBridgeError,
 )
 
 

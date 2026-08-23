@@ -122,6 +122,16 @@ class GarminWeightExportOwnershipError(RuntimeError):
     """A scoped outbox operation cannot prove its complete ownership graph."""
 
 
+class GarminWeightExportLegacyBridgeError(GarminWeightExportOwnershipError):
+    """The fully-unowned outbox bridge cannot be proved safe.
+
+    Its own type rather than the base, because the base covers a broken
+    ownership graph — a real fault, and a 500 is the right answer to it. This
+    one is the compatibility bridge declining in an installation with more than
+    one person, which is a limit to state rather than a fault to report.
+    """
+
+
 class GarminWeightExportPreparedError(GarminWeightExportOwnershipError):
     """A scoped outbox capability is forged, stale, or used in another scope."""
 
@@ -263,7 +273,7 @@ async def prepare_scoped_export(
                 )
             )
             if subject_ids != [context.identity.subject_id]:
-                raise GarminWeightExportOwnershipError(
+                raise GarminWeightExportLegacyBridgeError(
                     "fully-unowned outbox bridge requires exactly one subject"
                 )
         subject = await session.scalar(
