@@ -56,6 +56,72 @@ services:
       - "127.0.0.1:8000:8000"
     restart: unless-stopped
 
+  # ── Identity provider ────────────────────────────────────────────────────
+  #
+  # Behind a profile, so it does not start until you ask for it:
+  #
+  #     docker compose --profile idp up -d
+  #
+  # Vitals does not authenticate anybody once VITALS_OIDC_ISSUER is set, so
+  # bringing this up is the cutover. Read docs/OIDC_SETUP.md before you do:
+  # there is an order to it, and the last step is irreversible in the sense
+  # that the password login stops existing.
+  #
+  # ZITADEL is AGPLv3. Running it beside Vitals over OIDC does not make Vitals
+  # AGPL — separate processes, standard protocol, no linking — but shipping a
+  # bundle to somebody else is a different question. See the same document.
+  vitals_idp:
+    image: ghcr.io/zitadel/zitadel:v2.66.0
+    container_name: vitals_idp
+    profiles: ["idp"]
+    depends_on:
+      vitals_idp_db:
+        condition: service_healthy
+    command: >
+      start-from-init
+      --masterkeyFromEnv
+      --tlsMode external
+    environment:
+      ZITADEL_MASTERKEY: ${VITALS_IDP_MASTERKEY:?VITALS_IDP_MASTERKEY must be set — 32 characters}
+      ZITADEL_EXTERNALDOMAIN: ${VITALS_IDP_DOMAIN:-localhost}
+      ZITADEL_EXTERNALPORT: ${VITALS_IDP_PORT:-8080}
+      ZITADEL_EXTERNALSECURE: ${VITALS_IDP_SECURE:-false}
+      ZITADEL_DATABASE_POSTGRES_HOST: vitals_idp_db
+      ZITADEL_DATABASE_POSTGRES_PORT: 5432
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${VITALS_IDP_DB_PASSWORD:?VITALS_IDP_DB_PASSWORD must be set}
+      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: zitadel
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${VITALS_IDP_DB_PASSWORD:?VITALS_IDP_DB_PASSWORD must be set}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
+    ports:
+      # Same reasoning as the app: bound to loopback, because this is the door
+      # to the health record and belongs behind the same VPN.
+      - "127.0.0.1:${VITALS_IDP_PORT:-8080}:8080"
+    restart: unless-stopped
+
+  # Its own database rather than a schema in the app's. They have different
+  # backup and restore rhythms — losing the identity store means logging back
+  # in, losing the health store means losing the record — and one pg_dump that
+  # holds both invites restoring both when you meant one.
+  vitals_idp_db:
+    image: postgres:15-alpine
+    container_name: vitals_idp_db
+    profiles: ["idp"]
+    environment:
+      POSTGRES_USER: zitadel
+      POSTGRES_PASSWORD: ${VITALS_IDP_DB_PASSWORD:?VITALS_IDP_DB_PASSWORD must be set}
+      POSTGRES_DB: zitadel
+    volumes:
+      - vitals_idp_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zitadel -d zitadel"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   vitals_backup:
     image: postgres:15-alpine
     container_name: vitals_backup
@@ -82,3 +148,4 @@ volumes:
   vitals_pgdata:
   vitals_redis_data:
   vitals_garmin_session:
+  vitals_idp_pgdata:

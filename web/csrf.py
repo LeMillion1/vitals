@@ -1,9 +1,25 @@
-"""CSRF origin check + security headers (ported from Boxly's ``web/csrf.py``).
+"""Cross-site request forgery defences, and the security headers.
 
-Session cookies are ``SameSite=lax`` (primary CSRF defence). This adds a second,
-independent barrier: unsafe-method requests carrying a cross-origin ``Origin``
-header are rejected. The CSP keeps ``'unsafe-eval'`` because Alpine compiles every
-``x-*`` expression with ``Function()`` — without it the UI silently breaks.
+Three barriers, deliberately independent, because each has a gap the next one
+covers.
+
+``SameSite=lax`` on the session cookie is the first: a cross-site POST simply
+arrives without credentials. It is also the one a misconfigured reverse proxy or
+an old browser can quietly undo.
+
+The ``Origin`` check is the second, and its gap is the reason for the third: a
+request that carries *no* ``Origin`` header passes it. Some clients omit the
+header, and "absent" cannot be distinguished from "same-origin" without more
+information.
+
+Fetch Metadata is that information. Every current browser sends
+``Sec-Fetch-Site`` on every request, and it says directly where the request came
+from rather than leaving it to be inferred. A cross-site request that mutates is
+refused whatever its ``Origin`` says, and a request that carries neither header
+is a non-browser client, which the exemptions below already account for.
+
+The CSP keeps ``'unsafe-eval'`` because Alpine compiles every ``x-*`` expression
+with ``Function()`` — without it the UI silently breaks.
 """
 from __future__ import annotations
 
@@ -14,21 +30,37 @@ from fastapi.responses import PlainTextResponse
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
+#: Where a request may come from and still be allowed to change something.
+#: ``same-origin`` is this page talking to itself. ``same-site`` covers a
+#: subdomain, which a self-hosted deployment may legitimately use.
+_ALLOWED_FETCH_SITES = frozenset({"same-origin", "same-site"})
+
+#: Paths whose callers authenticate with their own secret rather than a session
+#: cookie, so a forged cross-site request carries nothing worth forging: MCP,
+#: the OAuth token exchange, and the Telegram webhook — which a forged
+#: ``Origin`` header would otherwise 403 instead of ignore.
+def _is_exempt(path: str) -> bool:
+    return path.startswith("/mcp") or path.startswith("/tg/") or path == "/oauth/token"
+
 
 async def _origin_check(request: Request, call_next):
-    path = request.url.path
-    # Server-to-server callers that authenticate with their own secret, not a
-    # session cookie: MCP, the OAuth token exchange, and the Telegram webhook
-    # (which a forged Origin header would otherwise 403 instead of ignore).
-    if path.startswith("/mcp") or path.startswith("/tg/") or path == "/oauth/token":
+    if _is_exempt(request.url.path) or request.method in _SAFE_METHODS:
         return await call_next(request)
 
-    if request.method not in _SAFE_METHODS:
-        origin = request.headers.get("origin")
-        if origin:
-            host = request.headers.get("host", "")
-            if urlsplit(origin).netloc != host:
-                return PlainTextResponse("Origin not allowed.", status_code=403)
+    # Fetch Metadata first: it is present on every request from a current
+    # browser and says where the request came from rather than leaving it to be
+    # inferred from a header that may be absent.
+    fetch_site = request.headers.get("sec-fetch-site")
+    if fetch_site is not None and fetch_site not in _ALLOWED_FETCH_SITES:
+        # ``none`` means the user typed the address or opened a bookmark, which
+        # no browser does for a mutating method — so it is as unexpected here as
+        # ``cross-site``.
+        return PlainTextResponse("Cross-site request refused.", status_code=403)
+
+    origin = request.headers.get("origin")
+    if origin and urlsplit(origin).netloc != request.headers.get("host", ""):
+        return PlainTextResponse("Origin not allowed.", status_code=403)
+
     return await call_next(request)
 
 

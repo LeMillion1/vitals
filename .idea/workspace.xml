@@ -5,9 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="4f7d8d26-b83f-429b-a4a5-0ed778c9a66c" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/tests/test_session_revocation.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_session_revocation.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/vitals/services/session_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/vitals/services/session_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/web/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/web/config.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/web/csrf.py" beforeDir="false" afterPath="$PROJECT_DIR$/web/csrf.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -174,7 +172,7 @@
       <workItem from="1784309643642" duration="30875000" />
       <workItem from="1786724999730" duration="7000" />
       <workItem from="1786725020818" duration="6965000" />
-      <workItem from="1786814082863" duration="40612000" />
+      <workItem from="1786814082863" duration="41265000" />
     </task>
     <servers />
   </component>

@@ -35,6 +35,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   reset, recovery codes and rotation already live.
 - Revision 0052 adds `user_federated_identities` and makes `users.password_hash`
   nullable.
+- CSRF gains a third barrier. The `Origin` check had a real gap — a request
+  carrying no `Origin` at all passes it, because "absent" and "same-origin" look
+  the same from the server. `Sec-Fetch-Site` names the relationship instead of
+  leaving it inferred, is sent by every current browser, and cannot be set by a
+  script, so where the two disagree the unforgeable one decides. Reads stay
+  unaffected, which is what lets the provider's cross-site redirect reach the
+  callback.
+- ZITADEL runs behind a compose profile, with its own database and volume:
+  bringing it up is the cutover, and that has to be a decision rather than a
+  side effect of a routine restart. `docs/OIDC_SETUP.md` is the order to do it
+  in, including how to get back in if the provider is down — and a test checks
+  the document against the variables the code actually reads.
 
 
 ### Removed

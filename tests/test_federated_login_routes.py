@@ -391,3 +391,57 @@ async def test_after_the_cutover_a_stored_password_hash_is_not_a_way_in(
     cfg = get_web_config()
     assert cfg.oidc_enabled
     assert authenticate(cfg.auth_username, "the-real-password") is False
+
+
+def test_the_setup_document_names_the_variables_the_code_actually_reads():
+    """A runbook that names a variable nothing reads is a runbook that fails.
+
+    The operator follows the document; the document is therefore the thing that
+    has to be checked against the code rather than trusted to have kept up.
+    """
+
+    import inspect
+    from pathlib import Path
+
+    import web.config
+
+    document = (
+        Path(__file__).resolve().parent.parent / "docs" / "OIDC_SETUP.md"
+    ).read_text()
+    source = inspect.getsource(web.config)
+
+    for name in (
+        "VITALS_OIDC_ISSUER",
+        "VITALS_OIDC_CLIENT_ID",
+        "VITALS_OIDC_CLIENT_SECRET",
+        "VITALS_OIDC_REDIRECT_URL",
+        "VITALS_OIDC_BOOTSTRAP_SUBJECT",
+    ):
+        assert name in source, f"{name} is documented but nothing reads it"
+        assert name in document, f"{name} is read but nothing documents it"
+
+
+def test_the_compose_file_keeps_the_provider_behind_a_profile():
+    """Bringing the provider up is the cutover, so it must be a decision.
+
+    A service that starts with ``docker compose up`` would make the cutover a
+    side effect of a routine restart.
+    """
+
+    from pathlib import Path
+
+    import yaml
+
+    compose = yaml.safe_load(
+        (Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text()
+    )
+    for name in ("vitals_idp", "vitals_idp_db"):
+        assert compose["services"][name]["profiles"] == ["idp"], name
+
+    # Its own volume, so restoring the health store and restoring the identity
+    # store are separate decisions.
+    assert "vitals_idp_pgdata" in compose["volumes"]
+    assert (
+        compose["services"]["vitals_idp_db"]["volumes"][0].split(":")[0]
+        == "vitals_idp_pgdata"
+    )

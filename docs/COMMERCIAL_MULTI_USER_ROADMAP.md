@@ -808,8 +808,8 @@ for the pre-cutover owner (`federated_login_service`); and the two routes
 themselves, whose handoff cookie carries state, nonce and verifier under its own
 serializer salt and is cleared on every path out.
 
-Still open in this PR: CSRF hardening with Fetch Metadata on Internet-facing
-mutations, and the ZITADEL deployment profile with its operator documentation.
+Both closed since: Fetch Metadata now guards every mutating route, and ZITADEL
+runs behind a compose profile documented in `docs/OIDC_SETUP.md`.
 The MCP OAuth server is deliberately untouched — Vitals issues those tokens
 itself and PR-10 owns that surface; what changed for it is that a session
 version bump now invalidates the browser sessions beside it.
