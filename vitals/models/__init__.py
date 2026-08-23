@@ -102,6 +102,9 @@ from vitals.models.proactive import Notification, NotificationDeliveryIntent
 # Doctor reports — frozen snapshots published behind a password.
 from vitals.models.share import SharedReport
 
+# Who a professional claims to be, and who checked. Not a grant of anything.
+from vitals.models.professional import ProfessionalProfile
+
 __all__ = [
     "Base",
     "TimestampMixin",
@@ -117,6 +120,7 @@ __all__ = [
     "HealthSubject",
     "SupportAccessGrant",
     "SupportAccessScope",
+    "ProfessionalProfile",
     "AuditEvent",
     "IntegrationConnection",
     "PlatformIntegrationConnection",

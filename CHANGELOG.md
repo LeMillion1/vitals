@@ -8,6 +8,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — a professional's claim, and an operator deciding about it (PR-07)
+
+- `professional_profiles` holds what somebody claims about themselves: a name, a
+  licence number, a kind. `professional_service` is the operator workflow that
+  decides whether the claim checks out.
+- **None of it grants access to anything, and that is the design.** Verification
+  answers a question about the world outside this installation — is this person
+  a doctor at all. Consent answers a question about one patient's record. If
+  verification implied access, one operator approving one licence would admit
+  that person to every record in the installation and no patient would ever have
+  been asked. The table therefore has no `subject_id` and no row security: there
+  is nothing here that belongs to a patient.
+- Two states are constrained rather than merely recorded. `verified` requires
+  both a timestamp and a reviewer, so a claim cannot verify itself, and nobody
+  reviews their own. `rejected` and `suspended` require a note — the
+  professional needs to know what to fix, and the next operator needs to see
+  what the last one concluded.
+- Suspending is reachable from `verified` and withdraws the stamp. A licence can
+  lapse after the fact; deleting the profile instead would erase the trail of it
+  ever having been approved, which is what an audit of a withdrawn licence needs
+  most.
+- Revision `0054` adds the table.
+
 ### Changed — private files stop being addressed by their path (PR-06)
 
 - **`GET /files/{opaque_key}`** replaces `/static/uploads/{key}`. The key is

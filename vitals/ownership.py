@@ -314,6 +314,16 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
     "skincare_observations": _SUBJECT,
     "skincare_products": _SUBJECT,
     "supplements": _SUBJECT,
+    # A claim about the world outside this installation, attached to an account.
+    # No subject: being a verified doctor is not access to anybody's record, and
+    # giving this table a subject column would be the first step to reading it
+    # as though it were.
+    "professional_profiles": OwnershipSpec(
+        OwnershipClass.ACCOUNT_CONTROL,
+        subject=TargetColumn.NONE,
+        actor=TargetColumn.NONE,
+        user_portable=False,
+    ),
     "support_access_grants": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL,
         subject=TargetColumn.REQUIRED,

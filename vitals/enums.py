@@ -48,6 +48,35 @@ class SupportAccessStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class ProfessionalKind(StrEnum):
+    """What a professional is, from the patient's point of view.
+
+    Deliberately the same vocabulary as the roles rather than a richer taxonomy.
+    A person may hold both; the relationship names which one it is, because the
+    defaults a doctor gets and the defaults a trainer gets differ by domain and
+    a single account holding both must not silently take the wider of the two.
+    """
+
+    DOCTOR = "doctor"
+    TRAINER = "trainer"
+
+
+class ProfessionalVerificationStatus(StrEnum):
+    """How far an operator has got with checking who this person claims to be.
+
+    Only ``VERIFIED`` is ever a basis for anything. The rest exist so the state
+    a profile is in has a name — an unverified profile is not a broken one, it
+    is one nobody has looked at yet, and telling those apart is what makes the
+    queue workable.
+    """
+
+    UNVERIFIED = "unverified"
+    PENDING = "pending"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+    SUSPENDED = "suspended"
+
+
 class SupportScopeResourceType(StrEnum):
     """Kind of resource named by an explicit support-access scope."""
 
