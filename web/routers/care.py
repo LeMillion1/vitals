@@ -6,6 +6,7 @@ not a URL style choice — see ``web.care_context`` for why a server-side
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date as date_type
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -17,12 +18,99 @@ from vitals.access import PolicyAction, PolicyResourceType
 from vitals.enums import CareRelationshipStatus, ConsentStatus
 from vitals.models.identity import HealthSubject
 from vitals.models.professional import CareRelationship, ConsentGrant
+from vitals.services import care_service, invitation_service
 from vitals.services import professional_record_service as records
 from web.care_context import CareContext, principal_user_id, require_care_context
 from web.deps import get_session, require_auth
 from web.templating import templates
 
 router = APIRouter(prefix="/care", tags=["care"])
+
+
+@router.get("/accept/{token}", response_class=HTMLResponse)
+async def show_invitation(
+    request: Request,
+    token: str,
+    _username: str = Depends(require_auth),
+):
+    """Confirm before spending a one-time link.
+
+    A GET must not consume it. Browsers, link previews and mail scanners fetch
+    URLs without anybody having decided anything, and a one-time invitation
+    spent by a preview is one the intended person can never use.
+    """
+
+    return templates.TemplateResponse(
+        request, "care/accept.html", {"token": token}
+    )
+
+
+@router.post("/accept/{token}")
+async def accept_invitation(
+    request: Request,
+    token: str,
+    db: AsyncSession = Depends(get_session),
+    _username: str = Depends(require_auth),
+):
+    """Take up an offer, which establishes care and nothing more.
+
+    No consent is created here. Being in care and having agreed to show
+    something are the patient's two separate decisions, and accepting on their
+    behalf would be making the second one for them.
+    """
+
+    user_id = await principal_user_id(request, db)
+    verified_email = await _verified_email(request, db, user_id=user_id)
+    try:
+        invitation = await invitation_service.accept(
+            db,
+            token=token,
+            accepting_user_id=user_id,
+            verified_email=verified_email,
+        )
+        relationship = await care_service.establish_from_invitation(
+            db, invitation=invitation
+        )
+    except invitation_service.InvitationError:
+        # Spent, expired, revoked, wrong address, never existed. One answer.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    except care_service.KindMismatch as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except care_service.CareError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    await db.commit()
+    return RedirectResponse(
+        url=f"/care/{relationship.subject_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+async def _verified_email(
+    request: Request, db: AsyncSession, *, user_id: uuid.UUID
+) -> str | None:
+    """The address this session has actually proved, or nothing.
+
+    After the federated cutover the provider states it at sign-in; before it,
+    the account's own column counts only once somebody has verified it. Neither
+    is inferred from the other, and an unverified address is not an address —
+    it is somebody asserting they own a mailbox, which is what the invitation's
+    binding exists to stop.
+    """
+
+    from vitals.models.identity import User as UserModel
+
+    row = (
+        await db.execute(
+            select(UserModel.normalized_email, UserModel.email_verified_at).where(
+                UserModel.id == user_id
+            )
+        )
+    ).one_or_none()
+    if row is None or row.email_verified_at is None:
+        return None
+    return row.normalized_email
 
 
 @router.get("", response_class=HTMLResponse)

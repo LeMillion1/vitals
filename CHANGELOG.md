@@ -8,6 +8,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — the patient's side of the same pair (PR-08)
+
+- `/settings/care` is where a patient sees who holds their record, what each of
+  those people can see, and how to stop it: pause, resume, withdraw, end, and
+  invite. Withdrawing takes effect on the professional's next request.
+- The subject is resolved from *who the patient is* rather than from the path —
+  the mirror image of the professional routes, and the same rule underneath:
+  the subject comes from whichever source cannot go stale. A patient has one
+  record and nothing to select.
+- **The invitation link never enters a URL the browser keeps.** The page is
+  rendered straight from the POST rather than redirected to with the token in a
+  query string: a URL ends up in history, in the access log and in the next
+  page's referrer, and an invitation link is a capability. It is shown once, and
+  there is no page that can show it again because only its hash is stored.
+- `GET /care/accept/{token}` asks; `POST` accepts. A one-time link must not be
+  spent by a browser prefetch, a link preview or a mail scanner — none of which
+  involve anybody having decided anything, and any of which would burn an
+  invitation the intended person could then never use.
+- Accepting establishes care and opens nothing. Being in care and having agreed
+  to show something are the patient's two separate decisions, and accepting on
+  their behalf would be making the second one for them.
+
 ### Added — the professional's side, and the patient it is about (PR-08)
 
 - `/care` lists the records a professional currently holds; `/care/{subject_id}`

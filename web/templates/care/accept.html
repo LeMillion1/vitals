@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("care.accept_title") }}{% endblock %}
+
+{% block content %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page px-6 py-7 max-w-2xl mx-auto space-y-6">
+
+    {% call masthead_header('care', t('care.accept_heading'), []) %}{% endcall %}
+
+    <div class="v-card p-6 space-y-4">
+        <p class="v-text-body">{{ t("care.accept_description") }}</p>
+        <p class="v-text-body" style="color: var(--muted)">{{ t("care.accept_email_note") }}</p>
+
+        {# A GET must not spend the link. Browsers, link previews and mail
+           scanners fetch URLs without anybody having decided anything, and a
+           one-time invitation spent by a preview is one the intended person can
+           never use. So the confirmation is a POST. #}
+        <form action="/care/accept/{{ token }}" method="POST">
+            <button type="submit" class="v-btn text-xs">{{ t("care.accept_submit") }}</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

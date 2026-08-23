@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("consents.page_title") }}{% endblock %}
+
+{% block content %}
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+
+    {% call masthead_header('consents', t('consents.heading'), []) %}{% endcall %}
+    <p class="v-text-body max-w-2xl" style="color: var(--muted)">
+        {{ t("consents.description") }}
+    </p>
+
+    {% if issued_link %}
+    {# Shown once. The token is not stored — only its hash is — so there is no
+       page that can show it again, and no operator who can read it back. #}
+    <div class="v-alert warn space-y-2">
+        <p class="v-text-body">{{ t("consents.link_once") }}</p>
+        <code class="v-text-micro" style="word-break: break-all; user-select: all">
+            {{ request.base_url }}care/accept/{{ issued_link }}
+        </code>
+    </div>
+    {% endif %}
+
+    <!-- ─── WHO HOLDS THIS RECORD ──────────────────────────────────────────── -->
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("consents.people_title")) }}
+
+        {% if not professionals %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("consents.people_empty") }}</p>
+        {% else %}
+        {% for p in professionals %}
+        <div class="v-card-inset p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="space-y-1">
+                    <span class="v-text-body font-semibold">{{ p.name }}</span>
+                    <div class="v-text-micro" style="color: var(--faint)">
+                        {{ t("care.kind." ~ p.kind) }}
+                        {% if p.verified %}· {{ t("consents.verified") }}{% endif %}
+                    </div>
+                </div>
+                {% if p.consent_status == 'active' %}
+                <span class="v-chip v-chip-sm good">{{ t("consents.state.active") }}</span>
+                {% elif p.consent_status == 'paused' %}
+                <span class="v-chip v-chip-sm">{{ t("consents.state.paused") }}</span>
+                {% else %}
+                <span class="v-chip v-chip-sm">{{ t("consents.state.none") }}</span>
+                {% endif %}
+            </div>
+
+            {% if p.domains %}
+            <div class="v-text-micro" style="color: var(--muted)">
+                {{ t("consents.sees") }}:
+                {% for domain in p.domains %}{{ t("nav." ~ domain) if t("nav." ~ domain) else domain }}{% if not loop.last %}, {% endif %}{% endfor %}
+            </div>
+            {% endif %}
+
+            <div class="flex flex-wrap gap-2">
+                {% if p.consent_status == 'active' %}
+                <form action="/settings/care/{{ p.relationship_id }}/pause" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.pause") }}</button>
+                </form>
+                <form action="/settings/care/{{ p.relationship_id }}/revoke" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.revoke") }}</button>
+                </form>
+                {% elif p.consent_status == 'paused' %}
+                <form action="/settings/care/{{ p.relationship_id }}/pause" method="POST">
+                    <input type="hidden" name="resume" value="1">
+                    <button type="submit" class="v-btn text-xs">{{ t("consents.resume") }}</button>
+                </form>
+                <form action="/settings/care/{{ p.relationship_id }}/revoke" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.revoke") }}</button>
+                </form>
+                {% else %}
+                <form action="/settings/care/{{ p.relationship_id }}/grant" method="POST">
+                    <button type="submit" class="v-btn text-xs">{{ t("consents.grant") }}</button>
+                </form>
+                {% endif %}
+                <form action="/settings/care/{{ p.relationship_id }}/end" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.end") }}</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+
+    <!-- ─── OUTSTANDING OFFERS ─────────────────────────────────────────────── -->
+    {% if pending %}
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("consents.pending_title")) }}
+        {% for invitation in pending %}
+        <div class="v-card-inset p-4 flex flex-wrap items-center justify-between gap-3">
+            <div class="space-y-1">
+                <span class="v-text-body">{{ invitation.invited_email }}</span>
+                <div class="v-text-micro" style="color: var(--faint)">
+                    {{ t("care.kind." ~ invitation.kind) }}
+                </div>
+            </div>
+            <form action="/settings/care/invitation/{{ invitation.id }}/revoke" method="POST">
+                <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.withdraw") }}</button>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- ─── INVITE ─────────────────────────────────────────────────────────── -->
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("consents.invite_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("consents.invite_hint") }}</p>
+        <form action="/settings/care/invite" method="POST" class="space-y-3">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="space-y-1.5">
+                    <label for="invite-email" class="v-label">{{ t("consents.invite_email") }}</label>
+                    <input id="invite-email" name="email" type="email" class="v-input" required
+                           autocomplete="off" placeholder="name@example.com">
+                </div>
+                <div class="space-y-1.5">
+                    <label for="invite-kind" class="v-label">{{ t("consents.invite_kind") }}</label>
+                    <select id="invite-kind" name="kind" class="v-input" required>
+                        {% for kind in kinds %}
+                        <option value="{{ kind }}">{{ t("care.kind." ~ kind) }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn text-xs">{{ t("consents.invite_submit") }}</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

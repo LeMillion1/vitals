@@ -512,6 +512,7 @@ from web.routers.more import router as more_router  # noqa: E402
 from web.routers.weight import router as weight_router  # noqa: E402
 from web.routers.files import router as files_router  # noqa: E402
 from web.routers.care import router as care_router  # noqa: E402
+from web.routers.consents import router as consents_router  # noqa: E402
 from web.routers.glp1 import router as glp1_router  # noqa: E402
 from web.routers.supplements import router as supplements_router  # noqa: E402
 from web.routers.hrt import router as hrt_router  # noqa: E402
@@ -548,6 +549,9 @@ app.include_router(files_router)
 # rather than a URL style, and not gated on a module: which modules the
 # patient has on is their setting, not a reason to hide their doctor.
 app.include_router(care_router)
+# The patient's side of the same pair. Registered before the settings router
+# so /settings/care is matched by its own routes rather than swallowed.
+app.include_router(consents_router)
 app.include_router(garmin_router)
 app.include_router(labs_router)
 app.include_router(reports_router)
