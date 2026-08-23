@@ -23,9 +23,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.services.access_resolution import AccessDeniedError
+from vitals.services.alerts_service import AlertLegacyBridgeError
 from vitals.services.legacy_ownership import LegacyOwnershipError
+from vitals.services.conflict_activation_service import (
+    ConflictActivationLegacyBridgeError,
+)
 from vitals.services.conflict_engine import ConflictLegacyBridgeError
 from vitals.services.digest_service import DigestOwnershipError
+from vitals.services.proactive.prefs import (
+    LegacyProactivePreferencesBridgeClosedError,
+)
 from vitals.services.scoped_settings_service import (
     LegacyScopedSettingBridgeClosedError,
 )
@@ -166,6 +173,9 @@ _LEGACY_BOOTSTRAP_CLOSED = (
     ConflictLegacyBridgeError,
     ShareOwnershipError,
     DigestOwnershipError,
+    AlertLegacyBridgeError,
+    ConflictActivationLegacyBridgeError,
+    LegacyProactivePreferencesBridgeClosedError,
 )
 
 
@@ -471,11 +481,6 @@ async def module_disabled_handler(request: Request, exc: ModuleDisabled):
     return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": exc.detail})
 
 
-@app.exception_handler(LegacyOwnershipError)
-@app.exception_handler(LegacyScopedSettingBridgeClosedError)
-@app.exception_handler(ConflictLegacyBridgeError)
-@app.exception_handler(ShareOwnershipError)
-@app.exception_handler(DigestOwnershipError)
 async def legacy_ownership_handler(request: Request, exc: Exception):
     """A route still on the sole-owner adapter, in an installation with two people.
 
@@ -509,6 +514,15 @@ async def legacy_ownership_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT, content={"detail": detail}
     )
+
+
+# Registered from the tuple rather than by a stack of decorators, so the backlog
+# is stated once. It was two lists before, and they drifted: four pages served a
+# 500 with a stack trace because ``AlertLegacyBridgeError`` had been added to one
+# of them and not the other. A refusal that reads as a crash is worse than the
+# refusal — it sends whoever meets it looking for a bug that is not there.
+for _bridge_refusal in _LEGACY_BOOTSTRAP_CLOSED:
+    app.add_exception_handler(_bridge_refusal, legacy_ownership_handler)
 
 
 @app.exception_handler(AccessDeniedError)
