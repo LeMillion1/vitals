@@ -82,6 +82,20 @@ def _bare_report(token: str, **roots) -> SharedReport:
     )
 
 
+async def _add_fully_unowned_report(session) -> SharedReport:
+    """A report from before the ownership backfill: no subject, no actors."""
+
+    row = _bare_report(
+        "unowned-report-token",
+        subject_id=None,
+        created_by_user_id=None,
+        revoked_by_user_id=None,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
 def _bridge(
     monkeypatch,
     *,
@@ -445,11 +459,26 @@ async def test_human_revoke_adopts_only_subject_and_preserves_unknown_creator(
 
 
 @pytest.mark.asyncio
-async def test_second_subject_fails_before_global_snapshot_reader(
+async def test_an_unowned_report_fails_before_the_global_snapshot_reader(
     db_session,
     legacy_owner_roots,
     monkeypatch,
 ):
+    """The proof still runs before composing, and still stops it.
+
+    Two refusals stacked here once. The legacy resolver rejected any
+    installation holding a second subject; it selects the actor's own record
+    now. Share's own bridge kept refusing a layer lower — correctly, because an
+    unowned report genuinely cannot say whose snapshot it describes, but it
+    refused whether or not such a report existed, and /share was unreachable in
+    a shared installation for a row nobody had.
+
+    So the test now supplies the row. What it has always been really about is
+    the ``forbidden`` monkeypatch: the proof has to fail *before* the global
+    snapshot reader runs, or a refusal would still have assembled one person's
+    data on the way to declining.
+    """
+
     second_user = User(
         username="share-second-owner",
         normalized_username="share-second-owner",
@@ -459,6 +488,7 @@ async def test_second_subject_fails_before_global_snapshot_reader(
     db_session.add(second_user)
     await db_session.flush()
     db_session.add(HealthSubject(owner_user_id=second_user.id, timezone="Asia/Almaty"))
+    await _add_fully_unowned_report(db_session)
     await db_session.commit()
 
     from vitals.services import digest_service
@@ -470,12 +500,6 @@ async def test_second_subject_fails_before_global_snapshot_reader(
         pytest.fail("global snapshot reader ran after exact-one proof failed")
 
     monkeypatch.setattr(digest_service, "assemble_context", forbidden)
-    # The refusal moved a layer down and did not go away. The legacy resolver
-    # used to reject any installation holding a second subject, which took every
-    # page down with it once the professional features made a second subject the
-    # point; it now selects the actor's *own* record. Share still refuses,
-    # because its own compatibility bridge is the one that genuinely cannot
-    # decide whose snapshot an unowned report describes.
     with pytest.raises(SharePreparedOwnerError, match="exactly one"):
         await share_router.create(
             request=SimpleNamespace(

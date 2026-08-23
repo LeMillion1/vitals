@@ -408,41 +408,55 @@ async def test_today_and_timeline_web_reads_close_with_second_subject(
     from web.routers import reports as reports_router
 
     del legacy_owner_roots
-    await _new_identity(db_session, "milestone-web-second-subject")
+    second_subject_label = "milestone-web-second-subject"
+    await _new_identity(db_session, second_subject_label)
     await db_session.commit()
 
-    # ``request=None`` is deliberate and was load-bearing: these calls used to
-    # die in the resolver, long before anything rendered. They no longer do —
-    # the resolver selects the actor's own record — so what stops them now is
-    # either their own sole-subject bridge or, for the ones with none, the
-    # template asking a ``None`` request for its state.
+    # ``request=None`` was load-bearing once: these calls died in the resolver
+    # long before anything rendered, so nothing ever asked the request for
+    # anything. They no longer die there — the resolver selects the actor's own
+    # record, and the sole-subject bridges below it now widen only when there is
+    # something unowned to widen to — so rendering is reached and a ``None``
+    # request raises from the template instead.
     #
-    # A Jinja error is not a security property, so the assertion is the one that
-    # is: nothing reached the second subject's record. The routes themselves are
-    # covered by the web tests, which pass a real request.
+    # Which is not a security property, and asserting on it would only pin how
+    # far into Jinja the call got. The assertion is the same one its sibling
+    # above makes: whatever answers, answers about the owner and nobody else.
+    # The routes themselves are covered by the web tests, which pass a real
+    # request.
     calls = (
-        lambda: today_router.today_dashboard(
+        ("today", lambda: today_router.today_dashboard(
             request=None,
             db=db_session,
             username="tester",
-        ),
-        lambda: timeline_router.timeline_feed(
+        )),
+        ("timeline", lambda: timeline_router.timeline_feed(
             request=None,
             db=db_session,
             username="tester",
-        ),
-        lambda: reports_router.generate_digest_now(
+        )),
+        ("digest", lambda: reports_router.generate_digest_now(
             request=None,
             db=db_session,
             username="tester",
             _rl=None,
-        ),
+        )),
     )
     from jinja2 import UndefinedError
 
-    for call in calls:
-        with pytest.raises(_CLOSED_IN_A_SHARED_INSTALLATION + (UndefinedError,)):
-            await call()
+    reached_second_subject = []
+    for name, call in calls:
+        try:
+            result = await call()
+        except _CLOSED_IN_A_SHARED_INSTALLATION:
+            continue
+        except (UndefinedError, AttributeError):
+            # Rendering, with no request to render into. Nothing was returned,
+            # so nothing was disclosed.
+            continue
+        if second_subject_label in str(result):
+            reached_second_subject.append(name)
+    assert not reached_second_subject, reached_second_subject
 
 
 async def test_whole_lake_mcp_and_digest_reject_partial_milestone_roots(

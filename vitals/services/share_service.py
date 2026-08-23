@@ -128,6 +128,33 @@ class PreparedShareOwner:
 _PREPARED_OWNER_SEAL = object()
 
 
+async def legacy_unowned_report_present(session: AsyncSession) -> bool:
+    """Whether any shared report is still waiting for the ownership backfill.
+
+    Mirror of the second arm of :func:`_owner_scope`, which is the entire
+    widening this bridge performs. It is a different question from how many
+    people the installation holds: only if a report belongs to nobody does it
+    matter that there is more than one person it could belong to.
+
+    ``scripts/backfill_shared_report_subject_ownership.py`` empties this set,
+    run while the installation is still one person. Revision 0049 made
+    ``shared_reports.subject_id`` NOT NULL, so on a current schema this is one
+    index probe that answers no.
+    """
+
+    with session.no_autoflush:
+        found = await session.scalar(
+            select(SharedReport.id)
+            .where(
+                SharedReport.subject_id.is_(None),
+                SharedReport.created_by_user_id.is_(None),
+                SharedReport.revoked_by_user_id.is_(None),
+            )
+            .limit(1)
+        )
+    return found is not None
+
+
 async def prepare_legacy_owner(
     session: AsyncSession,
     *,
@@ -143,15 +170,17 @@ async def prepare_legacy_owner(
     )
     identity = ownership.owner_action()
     with session.no_autoflush:
-        subject_ids = list(
-            await session.scalars(
-                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+        if await legacy_unowned_report_present(session):
+            subject_ids = list(
+                await session.scalars(
+                    select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+                )
             )
-        )
-        if subject_ids != [identity.subject_id]:
-            raise SharePreparedOwnerError(
-                "share compatibility requires exactly one matching health subject"
-            )
+            if subject_ids != [identity.subject_id]:
+                raise SharePreparedOwnerError(
+                    "share compatibility requires exactly one matching "
+                    "health subject"
+                )
         subject = await session.scalar(
             select(HealthSubject)
             .where(HealthSubject.id == identity.subject_id)

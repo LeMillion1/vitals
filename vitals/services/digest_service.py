@@ -3230,6 +3230,31 @@ async def _validate_digest_rows(
             )
 
 
+async def legacy_unowned_digest_present(session: AsyncSession) -> bool:
+    """Whether any weekly digest is still waiting for the ownership backfill.
+
+    What the digest compatibility bridge is for, and a different question from
+    how many people the installation holds. A digest row with no subject is
+    tolerated by the root validation below — see the ``root.subject_id is None``
+    arm — and that toleration is the whole widening. With no such row it widens
+    nothing, and there is nobody's digest to decide the owner of.
+
+    ``scripts/backfill_weekly_digest_subject_ownership.py`` empties this set,
+    run while the installation is still one person, which is exactly when
+    adopting an unowned digest into that person is right. Revision 0049 made
+    ``weekly_digests.subject_id`` NOT NULL, so on a current schema the answer is
+    already no and this costs one index probe.
+    """
+
+    with session.no_autoflush:
+        found = await session.scalar(
+            select(WeeklyDigest.id)
+            .where(WeeklyDigest.subject_id.is_(None))
+            .limit(1)
+        )
+    return found is not None
+
+
 async def prepare_digest_owner(
     session: AsyncSession,
     *,
@@ -3244,15 +3269,16 @@ async def prepare_digest_owner(
         actor_username=actor_username,
     )
     with session.no_autoflush:
-        subject_ids = list(
-            await session.scalars(
-                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+        if await legacy_unowned_digest_present(session):
+            subject_ids = list(
+                await session.scalars(
+                    select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+                )
             )
-        )
-        if subject_ids != [ownership.subject_id]:
-            raise DigestOwnershipError(
-                "digest compatibility requires exactly one health subject"
-            )
+            if subject_ids != [ownership.subject_id]:
+                raise DigestOwnershipError(
+                    "digest compatibility requires exactly one health subject"
+                )
         subject = await session.scalar(
             select(HealthSubject)
             .where(HealthSubject.id == ownership.subject_id)
@@ -3307,15 +3333,16 @@ async def prepare_digest_owner_for_identity(
         raise DigestOwnershipError("digest core owner identity is invalid")
     await acquire_identity_governance_lock(session)
     with session.no_autoflush:
-        subject_ids = list(
-            await session.scalars(
-                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+        if await legacy_unowned_digest_present(session):
+            subject_ids = list(
+                await session.scalars(
+                    select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
+                )
             )
-        )
-        if subject_ids != [identity.subject_id]:
-            raise DigestOwnershipError(
-                "digest compatibility requires exactly one health subject"
-            )
+            if subject_ids != [identity.subject_id]:
+                raise DigestOwnershipError(
+                    "digest compatibility requires exactly one health subject"
+                )
         subject = await session.scalar(
             select(HealthSubject)
             .where(HealthSubject.id == identity.subject_id)
