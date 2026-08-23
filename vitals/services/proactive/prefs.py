@@ -461,6 +461,32 @@ def _bundle_from_clean(clean: dict[str, Any]) -> ProactivePreferencesBundle:
     )
 
 
+def _stored_or_default(
+    subject_value: Any, delivery_value: Any, garmin_value: Any
+) -> tuple[Any, Any, Any]:
+    """Fill in the partitions nobody has written yet, and only those.
+
+    The decoders are strict on purpose: a stored row with the wrong field set is
+    tampered-with or from a schema this build does not understand, and coercing
+    it would silently apply a policy the person never chose. Absent is not that.
+    A subject who has never opened the notification settings has no row, and the
+    honest reading of no row is the defaults — the same ones the form shows.
+
+    Only the human read reaches this. The write paths go through
+    ``_require_complete_rows``, where a missing partition means a half-written
+    split and must still stop.
+    """
+
+    if subject_value is not None and delivery_value is not None and garmin_value is not None:
+        return subject_value, delivery_value, garmin_value
+    clean = sanitize(None)
+    return (
+        _subject_value(clean) if subject_value is None else subject_value,
+        _delivery_value(clean) if delivery_value is None else delivery_value,
+        _garmin_value(clean) if garmin_value is None else garmin_value,
+    )
+
+
 def _required_actor_lookup_key(actor_username: str) -> str:
     try:
         return normalize_username(actor_username).lookup_key
@@ -737,7 +763,7 @@ async def get_preferences_bundle(
         raise ProactivePreferencesScopeError(
             "proactive preference actor or resource graph is out of scope"
         )
-    return _decode_bundle(row[0], row[1], row[2])
+    return _decode_bundle(*_stored_or_default(row[0], row[1], row[2]))
 
 
 async def get_exact_one_preferences_bundle(

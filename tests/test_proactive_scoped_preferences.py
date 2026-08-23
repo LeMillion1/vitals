@@ -212,19 +212,33 @@ async def test_startup_seeds_explicit_defaults_before_strict_runtime_reads(
     )
 
 
-async def test_missing_partial_malformed_and_drifted_state_fail_closed(
+async def test_partial_malformed_and_drifted_state_fail_closed(
     db_session,
     legacy_owner_roots,
 ):
+    """Missing is not malformed, and only one of the two is a failure.
+
+    A row with the wrong field set is tampered-with or from a schema this build
+    does not understand, and every path below still stops on it. A row that does
+    not exist is a person who has never opened the notification settings, and
+    the honest answer to that is the defaults — the same ones the form shows.
+
+    The two used to be one case, which made the settings page crash for anybody
+    but the legacy owner: only the owner's rows are seeded at startup, so every
+    other subject read as corrupt. The write side still requires all three
+    partitions, because there a missing one means a half-written split.
+    """
+
     scope = await _legacy_scope(db_session)
     await _clear_preferences(db_session, scope)
 
-    with pytest.raises(prefs.ProactivePreferencesUnavailableError):
-        await prefs.get_preferences_bundle(
-            db_session,
-            scope=scope,
-            actor_username="tester",
-        )
+    unconfigured = await prefs.get_preferences_bundle(
+        db_session,
+        scope=scope,
+        actor_username="tester",
+    )
+    assert unconfigured.as_flat_dict() == prefs.sanitize(None)
+
     with pytest.raises(prefs.ProactivePreferencesUnavailableError):
         await prefs.get_locked_delivery_policy(
             db_session,
