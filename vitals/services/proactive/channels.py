@@ -25,7 +25,7 @@ from typing import Callable, Optional, Protocol, Sequence, runtime_checkable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.config import Config, load_config
+from vitals.config import Config
 from vitals.enums import (
     IntegrationConnectionStatus,
     IntegrationConnectionType,
@@ -170,122 +170,6 @@ class BoundNotifier(Notifier, Protocol):
     binding: DeliveryEndpointBinding
 
 
-class TelegramNotifier:
-    """Bot API over plain ``httpx``. One chat, passed in — not read from config
-    here, so the class itself carries nothing single-user about it."""
-
-    channel = "telegram"
-
-    def __init__(self, token: str, chat_id: str, *, base_url: str = TELEGRAM_API):
-        try:
-            private_recipient_id = int(chat_id)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Telegram recipient must be a private user id") from exc
-        if private_recipient_id <= 0:
-            # Telegram groups/supergroups use negative chat ids. PHI delivery
-            # must fail closed even if that id was accidentally configured.
-            raise ValueError("Telegram recipient must be a private user id")
-        self._token = token
-        self._chat_id = str(private_recipient_id)
-        self._base_url = base_url.rstrip("/")
-
-    async def _call(self, method: str, payload: dict) -> dict:
-        import httpx  # already a dependency; imported here like the other clients
-
-        url = f"{self._base_url}/bot{self._token}/{method}"
-        try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-                resp = await client.post(url, json=payload)
-            data = resp.json() if resp.content else {}
-            if not isinstance(data, dict):
-                raise ValueError
-        except Exception:
-            # httpx exception strings include the request URL, which embeds the
-            # bot token. JSON errors may include provider response fragments.
-            raise RuntimeError(f"Telegram {method} transport failed") from None
-        if resp.status_code >= 400 or not data.get("ok"):
-            # HTTP exception strings and response bodies can include the bot URL,
-            # request text, or provider diagnostics.  The durable delivery layer
-            # records only an allowlisted outcome code, so keep this exception
-            # equally sterile for direct edit/callback paths.
-            raise RuntimeError(
-                f"Telegram {method} failed ({resp.status_code})"
-            ) from None
-        return data.get("result") or {}
-
-    async def send(
-        self,
-        text: str,
-        *,
-        buttons: Optional[Buttons] = None,
-        reply_to: Optional[str] = None,
-    ) -> str:
-        # No parse_mode: everything sent so far is plain prose, and Markdown/HTML
-        # would turn an unescaped '_' or '*' in the owner's own words into a
-        # failed send. Formatting can be switched on when a message wants it.
-        payload: dict = {"chat_id": self._chat_id, "text": _clip(text)}
-        if buttons:
-            payload["reply_markup"] = _keyboard(buttons)
-        if reply_to:
-            payload["reply_to_message_id"] = int(reply_to)
-            # The message may have been deleted; a reply that can't attach should
-            # still arrive rather than erroring the whole send.
-            payload["allow_sending_without_reply"] = True
-        result = await self._call("sendMessage", payload)
-        return str(result.get("message_id") or "")
-
-    async def answer_callback(self, callback_id: str, text: str = "") -> None:
-        await self._call(
-            "answerCallbackQuery", {"callback_query_id": callback_id, "text": text}
-        )
-
-    async def edit(
-        self,
-        message_id: str,
-        text: str,
-        *,
-        buttons: Optional[Buttons] = None,
-    ) -> None:
-        # ``reply_markup`` always rides along, empty included: left out entirely,
-        # Telegram keeps the previous keyboard — so the question just answered
-        # would stay tappable under a line that already says it was answered.
-        await self._call(
-            "editMessageText",
-            {
-                "chat_id": self._chat_id,
-                "message_id": int(message_id),
-                "text": _clip(text),
-                "reply_markup": _keyboard(buttons),
-            },
-        )
-
-
-class BoundTelegramNotifier(TelegramNotifier):
-    """Token-bearing Telegram client issued for one exact recipient graph."""
-
-    def __init__(
-        self,
-        token: str,
-        chat_id: str,
-        *,
-        binding: DeliveryEndpointBinding,
-        base_url: str = TELEGRAM_API,
-    ) -> None:
-        if not isinstance(binding, DeliveryEndpointBinding):
-            raise NotifierBindingError("binding must be a DeliveryEndpointBinding")
-        super().__init__(token, chat_id, base_url=base_url)
-        self._binding = binding
-
-    @property
-    def binding(self) -> DeliveryEndpointBinding:
-        return self._binding
-
-    def __setattr__(self, name, value) -> None:
-        if name in {"binding", "_binding"} and hasattr(self, "_binding"):
-            raise AttributeError("BoundTelegramNotifier binding is immutable")
-        super().__setattr__(name, value)
-
-
 BoundNotifierResolver = Callable[
     [DeliveryEndpointBinding, str], Optional[BoundNotifier]
 ]
@@ -297,31 +181,22 @@ def resolve_legacy_bound_notifier(
     *,
     config: Optional[Config] = None,
 ) -> Optional[BoundNotifier]:
-    """Resolve the reviewed legacy-env Telegram endpoint without DB access.
+    """No transport is configured, so no endpoint resolves.
 
-    The delivery service calls this only after locking and proving exact S/Q/C
-    and the connection's resolver handle.  Keeping the resolver synchronous
-    mirrors the platform-AI gateway and gives tests a no-network factory seam.
+    This is a seam, not a stub. The delivery journal below it is deliberately
+    transport-agnostic — ``notification_delivery_intents`` says so in its own
+    docstring: *a second delivery channel adds rows here, not a second table* —
+    and every caller already handles "no endpoint" as an ordinary answer,
+    because a Telegram that was not configured gave the same one.
+
+    Telegram was the first channel and is gone: one bot token and one chat id in
+    the environment, which is a single-user shape that a shared installation
+    cannot have. Web push replaces it, and replaces it here — this function is
+    where a resolver that reads a per-subject subscription belongs.
     """
 
-    if not isinstance(binding, DeliveryEndpointBinding):
-        raise NotifierBindingError("binding must be a DeliveryEndpointBinding")
-    if credential_ref != LEGACY_TELEGRAM_CREDENTIAL_REF:
-        raise NotifierBindingError("Telegram credential resolver is not reviewed")
-    config = config or load_config()
-    if not config.telegram_bot_token or not config.telegram_chat_id:
-        return None
-    try:
-        return BoundTelegramNotifier(
-            config.telegram_bot_token,
-            config.telegram_chat_id,
-            binding=binding,
-        )
-    except ValueError:
-        logger.warning(
-            "Telegram delivery disabled: recipient is not a private user"
-        )
-        return None
+    del binding, credential_ref, config
+    return None
 
 
 async def build_legacy_bound_notifier(
@@ -394,15 +269,13 @@ async def build_legacy_bound_notifier(
 
 
 def build_notifier(config: Optional[Config] = None) -> Optional[Notifier]:
-    """The factory. ``None`` = no channel configured — callers treat that
-    as "stay quiet", which is how the app behaves before the bot exists."""
-    config = config or load_config()
-    if config.telegram_bot_token and config.telegram_chat_id:
-        try:
-            return TelegramNotifier(config.telegram_bot_token, config.telegram_chat_id)
-        except ValueError:
-            logger.warning("Telegram delivery disabled: recipient is not a private user")
-            return None
+    """The factory. ``None`` = no channel configured, which is every call today.
+
+    Callers treat that as "stay quiet", which is how the app behaved before the
+    bot existed and how it behaves again now that the bot is gone.
+    """
+
+    del config
     logger.debug("no delivery channel configured; proactive messages are dropped")
     return None
 

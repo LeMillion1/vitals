@@ -450,7 +450,6 @@ HEALTH_ALERT_KEYS = frozenset(
         "scheduler.job_failed:daily_brief",
         "scheduler.job_failed:evening_block",
         "scheduler.job_failed:nudges",
-        "scheduler.job_failed:question_reply_recovery",
         "scheduler.job_failed:weekly_digest",
     }
 )

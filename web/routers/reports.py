@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.config import load_config
 from vitals.enums import (
     AIInvocationSource,
     AIInvocationStatus,
@@ -75,7 +74,6 @@ async def reports_dashboard(
         kind=DigestKind.DAILY_BRIEF.value,
         prepared_owner=digest_owner,
     )
-    config = load_config()
     ai_availability = await brief.project_ai_availability(
         db,
         actor_username=username,
@@ -93,7 +91,12 @@ async def reports_dashboard(
             "goal_domains": GOAL_DOMAINS,
             "llm_configured": ai_availability.available,
             "brief_ai_available": ai_availability.available,
-            "channel_configured": bool(config.telegram_bot_token and config.telegram_chat_id),
+            # No delivery channel exists until web push lands: Telegram was the
+            # only one and its single env token/chat pair could not belong to
+            # more than one person. The page keeps the flag so the section that
+            # offers to send a brief stays honestly switched off rather than
+            # disappearing without explanation.
+            "channel_configured": False,
             "brief_build_token": secrets.token_urlsafe(24),
             "brief_test_token": secrets.token_urlsafe(24),
             "today": today_local().isoformat(),

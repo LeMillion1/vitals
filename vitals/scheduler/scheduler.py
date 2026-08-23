@@ -57,7 +57,6 @@ JOB_FAILURE_FAMILY_BY_ID = MappingProxyType(
         "share_purge": JobFailureFamily.PLATFORM,
         "ai_invocation_reconcile": JobFailureFamily.PLATFORM,
         "notification_delivery_reconcile": JobFailureFamily.PLATFORM,
-        "question_reply_recovery": JobFailureFamily.SUBJECT,
         "glp1_plateau": JobFailureFamily.SUBJECT,
         "hrt_reminders": JobFailureFamily.SUBJECT,
         "nutrition_day_end": JobFailureFamily.SUBJECT,

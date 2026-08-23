@@ -8,7 +8,6 @@ import pickle
 import uuid
 from datetime import UTC, datetime
 
-import httpx
 import pytest
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -2469,22 +2468,12 @@ async def test_unrecognized_preopened_transaction_cannot_authorize_legacy_send(
     await db_session.rollback()
 
 
-@pytest.mark.asyncio
-async def test_telegram_transport_exception_is_sterile(monkeypatch, caplog):
-    token = "TOKEN_SENTINEL"
-    phi = "HEALTH_SENTINEL"
-
-    async def fail_post(_self, url, *, json):
-        raise RuntimeError(f"{url} {json['text']}")
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", fail_post)
-    notifier = channels.TelegramNotifier(token, "12345")
-    with pytest.raises(RuntimeError) as raised:
-        await notifier.send(phi)
-
-    rendered = f"{raised.value}\n{caplog.text}"
-    assert token not in rendered
-    assert phi not in rendered
+# ``test_telegram_transport_exception_is_sterile`` lived here: a transport
+# failure had to carry neither the bot token (which sits in the request URL) nor
+# the message text (which is PHI). The Telegram client is gone, and the property
+# is not — whichever transport web push brings will need the same test, written
+# against its own client. The delivery journal below already records only an
+# allowlisted outcome code, which is the half of it that survives.
 
 
 @pytest.mark.asyncio

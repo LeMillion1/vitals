@@ -160,7 +160,7 @@ def test_the_credential_bound_jobs_are_not_fanned_out():
         # One Telegram bot token and one chat id. These read the lake and then
         # *send*, and the send is where the single credential is — which is why
         # they look like lake work and are not.
-        "daily_brief", "evening_block", "nudges", "question_reply_recovery",
+        "daily_brief", "evening_block", "nudges",
     }
     assert not (fanned & external), (
         "these run against one process-wide credential and must not be fanned "

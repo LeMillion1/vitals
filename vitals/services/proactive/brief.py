@@ -1539,7 +1539,7 @@ async def brief_job(session_factory, redis=None) -> None:
     from vitals.services import garmin_service
     from vitals.services.language_service import get_language
     from vitals.i18n import current_lang
-    from vitals.services.proactive import channels, delivery, inbound, prefs
+    from vitals.services.proactive import channels, delivery, prefs
 
     today = today_local()
     legacy_delivery_key = dedupe_key(today)
@@ -1610,30 +1610,10 @@ async def brief_job(session_factory, redis=None) -> None:
             )
         )
 
-        # Second pass at yesterday's unparsed messages, in its own transaction and
-        # behind its own guard: a recovered row belongs in the lake before the
-        # brief reads it, and a model that is still down must not cost the brief.
-        try:
-            recovered = await inbound.reparse_pending(
-                session,
-                ownership=ownership,
-            )
-            await session.commit()
-            if recovered:
-                logger.info(
-                    "re-parsed %d stored message(s) before the brief",
-                    len(recovered),
-                )
-        except Exception:
-            await session.rollback()
-            logger.warning("pre-brief signal reparse failed (code=internal_error)")
-
-        # Re-establish the exact channel/language read roots after an optional
-        # legacy reparse rollback; platform Daily Brief auth is independent.
-        ownership = await channels.resolve_legacy_channel_ownership(
-            session,
-            actor_username=None,
-        )
+        # A second pass at yesterday's unparsed messages used to run here: the
+        # brief was the deadline signals had to be reparsed before. Signals and
+        # the inbound channel that fed them are both gone, so there is nothing
+        # left to recover and no rollback to re-establish roots after.
         current_lang.set(
             await get_language(
                 session,

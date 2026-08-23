@@ -693,7 +693,6 @@ from web.routers.charts import router as charts_router  # noqa: E402
 from web.routers.timeline import router as timeline_router  # noqa: E402
 from web.routers.signals import router as signals_router  # noqa: E402
 from web.routers.external_api import router as external_api_router  # noqa: E402
-from web.routers.telegram import router as telegram_router  # noqa: E402
 from web.routers.public_report import router as public_report_router  # noqa: E402
 from web.routers.share import router as share_router  # noqa: E402
 
@@ -727,7 +726,6 @@ app.include_router(charts_router)
 # Read-only JSON API for an external personal dashboard (Bearer-token guarded, not session auth).
 app.include_router(external_api_router)
 # Telegram webhook — its own secret path + header, no session auth.
-app.include_router(telegram_router)
 # The published doctor document. The ONE anonymous route in the app: no
 # require_auth (the visitor has no account) and no require_module gate (the
 # module set is already baked into the frozen snapshot). Its own, stricter CSP

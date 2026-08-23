@@ -58,7 +58,6 @@ BINDS_A_SUBJECT = {
     "daily_brief": "resolve_legacy_channel_ownership",
     "evening_block": "resolve_legacy_channel_ownership",
     "nudges": "resolve_legacy_channel_ownership",
-    "question_reply_recovery": "resolve_legacy_channel_ownership",
     "weekly_digest": "prepare_subject_digest_owner",
     # Scans unprocessed payloads and then binds per domain before touching
     # anything owned — the outer scan reads a table the sweep itself stamped.

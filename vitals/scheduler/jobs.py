@@ -35,7 +35,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     #
     #   hevy_sync, garmin_sync, garmin_pulse, garmin_weight_export
     #       VITALS_GARMIN_EMAIL / VITALS_HEVY_API_KEY — one watch, one account.
-    #   daily_brief, evening_block, nudges, question_reply_recovery
+    #   daily_brief, evening_block, nudges
     #       one Telegram bot token and one chat id. See
     #       channels.build_legacy_bound_notifier, which says so itself: the env
     #       token/chat pair is safe only while the graph resolves to exactly one
@@ -64,7 +64,6 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.proactive.brief import brief_job, last_attempt_hour
     from vitals.services.proactive.day_plan import evening_job
     from vitals.services.proactive.nudges import nudges_job
-    from vitals.services.proactive.inbound import question_reply_recovery_job
     from vitals.services.proactive.delivery import delivery_reconciliation_job
     from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
     from vitals.services.share_service import purge_job as share_purge_job
@@ -154,15 +153,6 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         minutes=15,
     )
 
-    # Claimed Telegram questions are raw-first. This bounded worker resumes the
-    # zero-attempt and terminal-journal gaps without replaying a paid dispatch.
-    register_job(
-        "question_reply_recovery",
-        question_reply_recovery_job,
-        trigger="interval",
-        failure_family=JobFailureFamily.SUBJECT,
-        minutes=15,
-    )
 
     # Hevy sync — every 6h. No-ops when Hevy isn't configured.
     register_job(
