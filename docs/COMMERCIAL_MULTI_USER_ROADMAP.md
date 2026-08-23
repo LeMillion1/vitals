@@ -831,9 +831,37 @@ Vitals coupled only through OIDC/OAuth metadata and claims. A provider-specific
 management API may automate invitations, but it must not become the PHI policy
 engine.
 
-### PR 06 — Private files, portability, and settings separation
+### PR 06 — Private files, portability, and settings separation — **landed**
 
-Scope:
+Delivered:
+
+- `GET /files/{opaque_key}` serves private medical files by
+  `FileAsset.opaque_key`, and `/static/uploads/{key:path}` is a seal that
+  answers 404 to everybody so the static mount can never reach the private
+  tree. Two checks the old path-addressed route needed — purpose gating and the
+  `uploads/labs/x` alias — are gone with what they defended against.
+- Upload confirmation was already bound to subject, raw payload, uploader and
+  the intended model by the PR-03/PR-04 work; PR-06 pins the last of those with
+  a test that offers a lab sheet through the body-scan door and vice versa.
+- `export_subject` / `import_subject` are the personal half of portability,
+  scoped to one subject and unable to touch another. Primary keys are
+  reassigned because the id space is shared, references between carried rows
+  are remapped, and references into the installation's catalog travel as a
+  natural key.
+- A full restore and a process restart are decided by
+  `require_installation_operator` rather than by holding a session.
+  `/settings/import` previously had no authorization at all.
+- The settings page stops rendering the sign-in card once the provider owns
+  sign-in — it was painting a stale TOTP secret beside buttons that 404.
+
+Not done, and stated rather than implied: `import_full` still deletes each
+portable table unqualified. That is correct for a whole-database restore, which
+is now an operator's operation, but it leaves the operator path all-or-nothing
+while the personal one is scoped. Moving the uploads tree out of
+`web/static/uploads` to a private root would also make the file guarantee
+structural rather than a matter of route ordering.
+
+Original scope:
 
 - move protected uploads behind `FileAsset` ownership checks and opaque keys;
 - bind upload confirmation to subject, raw payload, uploader, and intended model;
