@@ -164,6 +164,28 @@ async def get_request_chrome_scope(
         scope = None
 
     request.state.chrome_scope = scope
+    # Whether to offer the roster at all. Asked here because the nav is chrome
+    # and must not raise; a link that answers an empty page is worse than no
+    # link, and a professional who holds nobody has no roster to visit.
+    request.state.holds_patients = False
+    if scope is not None:
+        try:
+            from vitals.enums import CareRelationshipStatus
+            from vitals.models.professional import CareRelationship
+
+            request.state.holds_patients = bool(
+                await session.scalar(
+                    select(CareRelationship.id)
+                    .where(
+                        CareRelationship.professional_user_id == scope.user_id,
+                        CareRelationship.status
+                        != CareRelationshipStatus.ENDED.value,
+                    )
+                    .limit(1)
+                )
+            )
+        except Exception:
+            logger.exception("roster check failed; hiding the link")
     setattr(request.state, cache_marker, True)
     return scope
 

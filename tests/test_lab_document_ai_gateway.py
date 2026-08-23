@@ -39,7 +39,7 @@ from vitals.models.tenancy import (
 from vitals.services import ai_gateway_service as gateway
 from vitals.services import conflict_engine, labs_service
 from vitals.services import lab_document_ai_service as lab_ai
-from vitals.services.legacy_ownership import LegacyActorMismatchError
+from vitals.services.legacy_ownership import LegacySubjectResolutionError
 from web.config import get_web_config
 
 
@@ -427,7 +427,11 @@ async def test_prepare_rejects_foreign_actor_before_file_raw_or_reservation(
     legacy_owner_roots,
 ):
     await _configure_platform(db_session, legacy_owner_roots)
-    with pytest.raises(LegacyActorMismatchError):
+    # Still refused before a file, a raw row or a reservation exists, and now
+    # refused structurally: the owner is named in the resolver's query, so a
+    # foreign actor matches no row rather than loading one and being compared
+    # against it.
+    with pytest.raises(LegacySubjectResolutionError, match="found 0"):
         await lab_ai.prepare_lab_document_parse(
             db_session,
             actor_username="foreign-user",

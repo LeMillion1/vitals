@@ -18,7 +18,6 @@ from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services.identity_service import normalize_username
 from vitals.services.legacy_ownership import (
-    LegacyActorMismatchError,
     LegacyConnectionAmbiguousError,
     LegacyConnectionMissingError,
     LegacyConnectionNotResolvedError,
@@ -142,10 +141,19 @@ async def test_human_actor_uses_shared_unicode_normalization(db_session):
 
 
 @pytest.mark.asyncio
-async def test_actor_must_match_exact_normalized_owner(db_session):
+async def test_an_actor_who_owns_nothing_resolves_nothing(db_session):
+    """The mismatch is structural now, and that is stronger than it was.
+
+    This used to load the sole subject, then compare its owner to the actor and
+    refuse — ``LegacyActorMismatchError``. The owner is named in the query
+    instead, so a stranger's request matches no row at all: there is nothing to
+    load and nothing to compare, and the refusal cannot be reached by any path
+    that forgets the comparison.
+    """
+
     await _subject(db_session, username="owner")
 
-    with pytest.raises(LegacyActorMismatchError):
+    with pytest.raises(LegacySubjectResolutionError, match="found 0"):
         await resolve_legacy_ownership_context(
             db_session,
             actor_username="someone-else",

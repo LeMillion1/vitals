@@ -53,7 +53,7 @@ from vitals.services import (
     weight_service,
 )
 from vitals.services import body_scan_ai_service as body_ai
-from vitals.services.legacy_ownership import LegacyActorMismatchError
+from vitals.services.legacy_ownership import LegacySubjectResolutionError
 from web.config import get_web_config
 
 
@@ -775,7 +775,11 @@ async def test_prepare_rejects_foreign_actor_before_file_raw_or_reservation(
     legacy_owner_roots,
 ):
     await _configure_platform(db_session, legacy_owner_roots)
-    with pytest.raises(LegacyActorMismatchError):
+    # Still refused before a file, a raw row or a reservation exists, and now
+    # refused structurally: the owner is named in the resolver's query, so a
+    # foreign actor matches no row rather than loading one and being compared
+    # against it.
+    with pytest.raises(LegacySubjectResolutionError, match="found 0"):
         await body_ai.prepare_body_scan_parse(
             db_session,
             actor_username="foreign-user",

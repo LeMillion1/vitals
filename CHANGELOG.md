@@ -8,7 +8,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Security — what the browser was allowed to keep
+### Fixed — the app could not be run at all by the installations PR-07 was for
+
+Found by opening a browser, which no test in this repository does: every web
+test runs against a database holding exactly one health subject, so none of
+this was reachable from the suite.
+
+- **The process refused to start.** The startup lifespan reconciles the `.env`
+  credential with the durable identity, materializes the owner's module map and
+  seeds their hormone panel — all through sole-owner bridges that fail closed on
+  a second health subject. Correct while that state was impossible; PR-07 made a
+  second subject the point, and the result was that the professional features
+  could not be deployed by anybody who used them. Both steps now skip with a
+  warning: there is nothing to reconcile in a shared installation and nothing to
+  lose by not trying.
+- **Then every page answered 409.** `/today`, `/weight`, `/labs`, `/settings`,
+  `/more` — the whole existing app. `resolve_legacy_ownership_context` asked
+  whether the database held exactly one subject, when the check right below it
+  already required the actor to *own* the subject; the count was standing in for
+  a relationship it could have asked about directly. It now selects the actor's
+  own record, which is both narrower and structural — a stranger matches no row
+  rather than loading one and being compared against it.
+- That is one gate. **There are 36 more**, across 14 service modules, each its
+  own sole-subject bridge with its own reasoning about what it guards. They are
+  being retired one at a time rather than in a sweep, and the list is in
+  `web/main.py` beside the handler that turns them into a 409 rather than a 500.
+  A shared installation today reaches `/care` and `/settings/care`, and little
+  else.
+- Verified in the browser both ways: a single-subject installation — the one
+  actually deployed — serves every page with no console errors, and a
+  two-subject one now boots and serves the care pages.
+
+### Fixed — the browser was keeping a record it is no longer allowed to see
+
+
 
 - **htmx caches a snapshot of every boosted page in `localStorage`**, under
   `htmx-history-cache`. Nothing configured it, so on a shared machine a

@@ -140,9 +140,14 @@
        actually gone quiet. #}
     {% if request.state.nav_status %}<div class="mh-rail-stats">{{ mh_stat_rows() }}</div>{% endif %}
     <div class="mh-rail-foot">
-        {# Two destinations, stacked: the rail has no "More" screen to hide them
-           behind, and /share is otherwise reachable only by typing the URL. #}
+        {# Stacked destinations: the rail has no "More" screen to hide them
+           behind, and each is otherwise reachable only by typing the URL.
+           ``/care`` is shown only to somebody who actually holds a record —
+           a link that answers an empty page is worse than no link. #}
         <div class="mh-rail-foot-links">
+            {% if request.state.holds_patients %}
+            <a href="/care" class="mh-rail-foot-link {% if current_path.startswith('/care') %}is-active{% endif %}">{{ t('care.roster_heading') }}</a>
+            {% endif %}
             <a href="/share" class="mh-rail-foot-link {% if current_path.startswith('/share') %}is-active{% endif %}">{{ t('share.heading') }}</a>
             <a href="/settings" class="mh-rail-foot-link {% if current_path.startswith('/settings') %}is-active{% endif %}">{{ t('nav.settings') }}</a>
         </div>
@@ -181,12 +186,18 @@
 {% set rb.num = module_rubrics.index(spec.rubric) + 1 %}
 {% endif %}
 {% if section == 'settings' %}{% set rb.cat = 'nav.settings' %}{% set rb.num = module_rubrics|length + 1 %}{% endif %}
+{% if section == 'care' %}{% set rb.cat = 'care.roster_heading' %}{% set rb.num = module_rubrics|length + 2 %}{% endif %}
+{% if section == 'consents' %}{% set rb.cat = 'consents.heading' %}{% set rb.num = module_rubrics|length + 3 %}{% endif %}
 <div class="mh-head">
     <div class="mh-bar">
         <h1 class="mh-title">{{ title }}</h1>
         {% if caller %}<div class="mh-actions">{{ caller() }}</div>{% endif %}
     </div>
-    <span class="mh-eyebrow">{{ t("masthead.section_word") }} {{ "%02d" | format(rb.num) }} · {{ t(rb.cat) if rb.cat else '' }}</span>
+    {# A section with no rubric has no number, and "SECTION 00 ·" reads as
+       filler rather than as information. Say nothing instead. #}
+    {% if rb.cat %}
+    <span class="mh-eyebrow">{{ t("masthead.section_word") }} {{ "%02d" | format(rb.num) }} · {{ t(rb.cat) }}</span>
+    {% endif %}
     <nav class="mh-tabs">
         {% for s in rb.members %}
         <a href="{{ s.route }}" class="mh-tab {% if s.key == section %}is-active{% endif %}">{{ t('nav.' + s.key) }}</a>

@@ -24,7 +24,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import hevy_service
-from vitals.services.legacy_ownership import LegacyActorMismatchError
+from vitals.services.legacy_ownership import LegacySubjectResolutionError
 
 from tests.conftest import legacy_unenforced_write
 
@@ -800,7 +800,10 @@ async def test_sync_job_actor_mismatch_fails_before_fetch(
         lambda: client,
     )
 
-    with pytest.raises(LegacyActorMismatchError):
+    # Still refused before a single byte is fetched, and refused structurally:
+    # the owner is named in the query now, so an actor who owns nothing matches
+    # no row rather than loading one and being compared against it.
+    with pytest.raises(LegacySubjectResolutionError, match="found 0"):
         await hevy_service.sync_job(
             session_factory,
             actor_username="different-user",

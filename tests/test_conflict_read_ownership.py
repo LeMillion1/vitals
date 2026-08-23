@@ -1177,15 +1177,21 @@ async def test_mcp_v1_conflict_read_closes_when_second_subject_exists(
     await _add_subject(db_session, label="subject-b")
     await db_session.commit()
 
-    with pytest.raises(LegacySubjectResolutionError):
-        await mcp_router.check_conflicts(
-            Domain.SUPPLEMENTS.value,
-            {"key": "iron", "active": True},
-        )
-    with pytest.raises(LegacySubjectResolutionError):
-        await mcp_router.check_supplement_conflicts("iron")
-    with pytest.raises(LegacySubjectResolutionError):
-        await mcp_router.list_conflict_rules()
+    # The refusal moved a layer down and did not go away. The legacy resolver
+    # used to reject any installation holding a second subject, which took every
+    # page down with it once the professional features made a second subject the
+    # point; it now selects the actor's own record. The conflict engine's own
+    # bridge still refuses, because an unowned rule genuinely does not say whose
+    # state it was evaluated against.
+    for call in (
+        lambda: mcp_router.check_conflicts(
+            Domain.SUPPLEMENTS.value, {"key": "iron", "active": True}
+        ),
+        lambda: mcp_router.check_supplement_conflicts("iron"),
+        lambda: mcp_router.list_conflict_rules(),
+    ):
+        with pytest.raises(conflict_engine.ConflictLegacyBridgeError):
+            await call()
 
 
 async def test_mcp_missing_resolver_returns_explicit_fail_closed_error(

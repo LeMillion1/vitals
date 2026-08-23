@@ -10,12 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import pytest
 
-from vitals.enums import Domain, Source, UserStatus
+from vitals.enums import Source, UserStatus
 from vitals.models.hrt import HrtCycle, HrtCycleItem, HrtDose, HrtSideEffect
 from vitals.models.identity import HealthSubject, User
 from vitals.ownership import WriteIdentity
 from vitals.services import conflict_engine, hrt_catalog, hrt_cycle_service, modules_service
-from vitals.services.legacy_ownership import LegacySubjectResolutionError
 
 
 mcp_router = pytest.importorskip("web.routers.mcp")
@@ -128,7 +127,18 @@ async def test_mcp_delete_covers_hrt_side_effect(db_session):
     assert await db_session.get(HrtSideEffect, payload["id"]) is None
 
 
-async def test_second_subject_closes_mcp_v1_before_hrt_mutation(db_session):
+async def test_a_second_subject_still_closes_the_hrt_mutation(db_session):
+    """Refused one layer lower than it used to be, and still refused.
+
+    The legacy resolver no longer rejects an installation for holding a second
+    subject — it selects the actor's own record — but the conflict engine's
+    fully-unowned bridge is its own sole-subject gate, and it is the one that
+    stops this write. That gate is about unowned conflict *rules* rather than
+    about the actor, so it needs its own reasoning to retire and has not had it
+    yet. Until then a domain write that evaluates against the unowned catalog
+    remains unavailable in a shared installation.
+    """
+
     before = await db_session.scalar(select(func.count()).select_from(HrtDose))
     user = User(
         username="second-hrt-owner",
@@ -141,7 +151,9 @@ async def test_second_subject_closes_mcp_v1_before_hrt_mutation(db_session):
     db_session.add(HealthSubject(owner_user_id=user.id, timezone="Asia/Almaty"))
     await db_session.commit()
 
-    with pytest.raises(LegacySubjectResolutionError, match="exactly one health subject"):
+    with pytest.raises(
+        conflict_engine.ConflictLegacyBridgeError, match="exactly one matching"
+    ):
         await mcp_router.log_hrt_dose(
             compound_key="testosterone_enanthate",
             dose=125,
@@ -151,9 +163,6 @@ async def test_second_subject_closes_mcp_v1_before_hrt_mutation(db_session):
 
     after = await db_session.scalar(select(func.count()).select_from(HrtDose))
     assert after == before
-    assert await db_session.scalar(
-        select(func.count()).select_from(HrtDose).where(HrtDose.domain == Domain.HRT.value)
-    ) == before
 
 
 @pytest.mark.integration

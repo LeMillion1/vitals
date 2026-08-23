@@ -462,7 +462,7 @@ async def test_second_subject_fails_before_global_snapshot_reader(
     await db_session.commit()
 
     from vitals.services import digest_service
-    from vitals.services.legacy_ownership import LegacySubjectResolutionError
+    from vitals.services.share_service import SharePreparedOwnerError
     from web.routers import share as share_router
 
     async def forbidden(*args, **kwargs):
@@ -470,7 +470,13 @@ async def test_second_subject_fails_before_global_snapshot_reader(
         pytest.fail("global snapshot reader ran after exact-one proof failed")
 
     monkeypatch.setattr(digest_service, "assemble_context", forbidden)
-    with pytest.raises(LegacySubjectResolutionError, match="exactly one"):
+    # The refusal moved a layer down and did not go away. The legacy resolver
+    # used to reject any installation holding a second subject, which took every
+    # page down with it once the professional features made a second subject the
+    # point; it now selects the actor's *own* record. Share still refuses,
+    # because its own compatibility bridge is the one that genuinely cannot
+    # decide whose snapshot an unowned report describes.
+    with pytest.raises(SharePreparedOwnerError, match="exactly one"):
         await share_router.create(
             request=SimpleNamespace(
                 state=SimpleNamespace(enabled_modules={"weight": True})

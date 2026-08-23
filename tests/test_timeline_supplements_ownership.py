@@ -43,7 +43,6 @@ from vitals.services import (
     supplements_service,
     timeline_service,
 )
-from vitals.services.legacy_ownership import LegacySubjectResolutionError
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped
@@ -1136,7 +1135,9 @@ async def test_mcp_v1_fails_closed_before_cross_subject_id_use(
     )
     await db_session.commit()
 
-    with pytest.raises(LegacySubjectResolutionError):
+    # The refusal moved down a layer and did not go away — see the note on
+    # test_web_legacy_owner_bridge_closes_with_second_subject.
+    with pytest.raises(conflict_engine.ConflictLegacyBridgeError):
         await mcp_router.set_supplement_active(foreign.id, active=False)
     await db_session.refresh(foreign)
     assert foreign.active is True

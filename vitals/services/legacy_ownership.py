@@ -230,21 +230,54 @@ async def resolve_legacy_ownership_context(
     # Prevent a nominally read-only lookup from autoflushing unrelated pending
     # caller state. Pending identity/tenancy rows are not authoritative roots.
     with session.no_autoflush:
-        subject_rows = list(
-            await session.execute(
-                select(HealthSubject.id, HealthSubject.owner_user_id)
-                .order_by(HealthSubject.id)
-                .limit(2)
+        if actor_lookup_key is not None:
+            # A named actor selects *their own* record. This used to ask whether
+            # the database held exactly one subject, which is a different
+            # question and the wrong one: the check further down already
+            # requires the actor to own the subject, so the count was standing
+            # in for a relationship it could have asked about directly.
+            #
+            # It mattered the moment a second person existed. Every page in the
+            # app resolves through here, so a doctor taking on one patient lost
+            # their own dashboard, their own weight log and their own settings —
+            # the count refused, and it refused for everybody rather than for
+            # the one request that was genuinely ambiguous.
+            #
+            # ``uq_health_subjects_owner_user_id`` makes this at most one row,
+            # so "the subject they own" is never ambiguous either.
+            subject_rows = list(
+                await session.execute(
+                    select(HealthSubject.id, HealthSubject.owner_user_id)
+                    .join(User, User.id == HealthSubject.owner_user_id)
+                    .where(User.normalized_username == actor_lookup_key)
+                    .limit(2)
+                )
             )
-        )
-        if len(subject_rows) != 1:
-            count_label = "2 or more" if len(subject_rows) == 2 else str(
-                len(subject_rows)
+            if len(subject_rows) != 1:
+                raise LegacySubjectResolutionError(
+                    "legacy ownership requires the actor to own exactly one "
+                    f"health subject; found {len(subject_rows)}"
+                )
+        else:
+            # No actor to select by — a scheduled job or the startup bootstrap.
+            # There the sole-subject requirement is the only honest answer:
+            # nothing names whose record was meant, and picking one would be
+            # inventing the answer.
+            subject_rows = list(
+                await session.execute(
+                    select(HealthSubject.id, HealthSubject.owner_user_id)
+                    .order_by(HealthSubject.id)
+                    .limit(2)
+                )
             )
-            raise LegacySubjectResolutionError(
-                "legacy ownership requires exactly one health subject; "
-                f"found {count_label}"
-            )
+            if len(subject_rows) != 1:
+                count_label = "2 or more" if len(subject_rows) == 2 else str(
+                    len(subject_rows)
+                )
+                raise LegacySubjectResolutionError(
+                    "legacy ownership requires exactly one health subject; "
+                    f"found {count_label}"
+                )
         subject_id, owner_user_id = subject_rows[0]
 
     # Bind before the first read of a policy-protected table. ``health_subjects``

@@ -24,6 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.services.access_resolution import AccessDeniedError
 from vitals.services.legacy_ownership import LegacyOwnershipError
+from vitals.services.conflict_engine import ConflictLegacyBridgeError
+from vitals.services.digest_service import DigestOwnershipError
+from vitals.services.scoped_settings_service import (
+    LegacyScopedSettingBridgeClosedError,
+)
+from vitals.services.share_service import ShareOwnershipError
 from web.auth import router as auth_router
 from web.csrf import add_csrf_origin_check, add_security_headers
 from web.deps import (
@@ -113,9 +119,54 @@ async def _bootstrap_legacy_identity(
             )
             await session.commit()
             return preference_bundle
+        except _LEGACY_BOOTSTRAP_CLOSED:
+            # Not a misconfiguration — the destination of this whole migration.
+            #
+            # Every step above is compatibility scaffolding for an installation
+            # that is one person: reconcile the .env credential with the durable
+            # identity, materialize that person's module map, seed their
+            # notification preferences. All three resolve "the subject" through
+            # the sole-owner bridge, which fail-closes the moment a second
+            # health subject exists, because it genuinely cannot tell whose
+            # record was meant.
+            #
+            # Refusing to boot was the right answer while that state was
+            # impossible. It stopped being right when PR-07 made a second
+            # subject the point: the process would not start at all, so the
+            # professional features could not be deployed by the installations
+            # they were built for.
+            #
+            # There is nothing to reconcile here and nothing to lose by
+            # skipping. Scheduled jobs fall back to their defaults, which is
+            # what a shared installation needs anyway — per-subject schedules
+            # are PR-09's work, not something to fake from one person's row.
+            await session.rollback()
+            logger.warning(
+                "legacy identity bootstrap skipped: this installation holds "
+                "more than one health subject, so there is no sole owner to "
+                "reconcile. Scheduled jobs use their defaults."
+            )
+            return None
         except Exception:
             await session.rollback()
             raise
+
+
+#: Every "this needs exactly one health subject" refusal, from the several
+#: compatibility bridges that each grew their own. They share no base class,
+#: which is why this is a list rather than a catch — and the list is useful as
+#: itself: it is the porting backlog. A module leaves it by resolving through
+#: ``resolve_access_context`` instead of a sole-subject bridge.
+#:
+#: Kept narrow on purpose. Every *other* error still fails closed, at startup
+#: and in a request, because a half-reconciled identity must not go on serving.
+_LEGACY_BOOTSTRAP_CLOSED = (
+    LegacyOwnershipError,
+    LegacyScopedSettingBridgeClosedError,
+    ConflictLegacyBridgeError,
+    ShareOwnershipError,
+    DigestOwnershipError,
+)
 
 
 @asynccontextmanager
@@ -153,7 +204,11 @@ async def lifespan(app: FastAPI):
     async with session_factory() as session:
         # Job schedules come from the DB (Settings → proactive), so the registry is
         # attached here rather than before the session opens.
-        register_all_jobs(preference_bundle.as_flat_dict())
+        register_all_jobs(
+            preference_bundle.as_flat_dict()
+            if preference_bundle is not None
+            else None
+        )
         await conflict_catalog.sync_catalog(session)
         # Upsert the curated HRT compound catalog (vitals/data/hrt_compounds.yaml).
         await hrt_catalog.sync_catalog(session)
@@ -166,23 +221,35 @@ async def lifespan(app: FastAPI):
     from vitals.utils.timeutils import today_local
 
     async with session_factory() as session:
-        conflict_context = (
-            await conflict_engine.resolve_legacy_conflict_write_context(
-                session,
-                actor_username=None,
-                evaluation_date=today_local(),
+        try:
+            conflict_context = (
+                await conflict_engine.resolve_legacy_conflict_write_context(
+                    session,
+                    actor_username=None,
+                    evaluation_date=today_local(),
+                )
             )
-        )
-        prepared = await conflict_engine.prepare_scoped_write(
-            session,
-            context=conflict_context,
-        )
-        await hrt_reminders.seed_hormone_panel(
-            session,
-            identity=conflict_context.identity,
-            prepared_conflict_write=prepared,
-        )
-        await session.commit()
+            prepared = await conflict_engine.prepare_scoped_write(
+                session,
+                context=conflict_context,
+            )
+            await hrt_reminders.seed_hormone_panel(
+                session,
+                identity=conflict_context.identity,
+                prepared_conflict_write=prepared,
+            )
+            await session.commit()
+        except _LEGACY_BOOTSTRAP_CLOSED:
+            # Seeding one person's hormone panel from the curated catalog, in an
+            # installation that has more than one person. There is no "the
+            # person" to seed for, and picking one would be inventing a fact
+            # about somebody's treatment. Skipped, like the identity bootstrap
+            # above and for the same reason.
+            await session.rollback()
+            logger.warning(
+                "hormone panel seed skipped: more than one health subject, so "
+                "there is no sole owner to seed for"
+            )
 
     if redis is not None:
         await seed_heartbeats(redis)
@@ -405,7 +472,11 @@ async def module_disabled_handler(request: Request, exc: ModuleDisabled):
 
 
 @app.exception_handler(LegacyOwnershipError)
-async def legacy_ownership_handler(request: Request, exc: LegacyOwnershipError):
+@app.exception_handler(LegacyScopedSettingBridgeClosedError)
+@app.exception_handler(ConflictLegacyBridgeError)
+@app.exception_handler(ShareOwnershipError)
+@app.exception_handler(DigestOwnershipError)
+async def legacy_ownership_handler(request: Request, exc: Exception):
     """A route still on the sole-owner adapter, in an installation with two people.
 
     Most write routers resolve their subject through
