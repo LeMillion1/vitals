@@ -893,3 +893,74 @@ async def test_web_document_upload_stamps_openrouter_connection(
         AIInvocationStatus.SUCCEEDED.value,
     )
     assert asset.storage_ref == payload["file_key"]
+
+
+@pytest.mark.parametrize("domain", ["body", "labs"])
+async def test_an_upload_can_only_be_confirmed_as_what_it_was_uploaded_for(
+    db_session, domain
+):
+    """The owner's own upload, confirmed through the wrong door, is refused.
+
+    Every other check in this file is about somebody else's row. This one is
+    not: the subject matches, the actor matches, the uploader matches, the file
+    is live. What does not match is what the upload was *for* — a lab sheet
+    offered as a body scan, or the reverse.
+
+    Nothing about the bytes distinguishes them; a PDF is a PDF. The binding is
+    the raw payload's domain and source and the asset's purpose, recorded when
+    the file arrived and never taken from the confirming request. Without it,
+    the same document could be parsed by one extractor and then committed as
+    though a different one had read it.
+    """
+
+    user, subject, identity = await _identity_graph(db_session, f"crossdoor-{domain}")
+    is_body = domain == "body"
+
+    # Upload for one domain...
+    _asset, raw = await _owned_document(
+        db_session,
+        user=user,
+        subject=subject,
+        identity=identity,
+        purpose=(
+            FileAssetPurpose.LAB_DOCUMENT
+            if is_body
+            else FileAssetPurpose.BODY_SCAN_DOCUMENT
+        ),
+        storage_ref="labs/crossdoor.png" if is_body else "body/crossdoor.png",
+        domain=Domain.LABS.value if is_body else Domain.BODY_COMPOSITION.value,
+        source=(
+            Source.LAB_PARSER.value if is_body else Source.BODY_SCAN.value
+        ),
+        payload={},
+    )
+
+    # ...confirmed through the other one.
+    expected_error = (
+        conflict_engine.ConflictRawOwnershipError if is_body else UploadOwnershipError
+    )
+    with pytest.raises(expected_error):
+        if is_body:
+            await body_scan_service.save_scan(
+                db_session,
+                on_date=date(2026, 8, 19),
+                file_key="labs/crossdoor.png",
+                raw_payload_id=raw.id,
+                metrics=[],
+                identity=identity,
+                prepared_weight_write=await _prepared_weight(db_session, identity),
+            )
+        else:
+            await labs_service.confirm_extracted(
+                db_session,
+                on_date=date(2026, 8, 19),
+                markers=[{"marker": "TSH", "value": 2.0}],
+                raw_payload_id=raw.id,
+                file_key="body/crossdoor.png",
+                identity=identity,
+                prepared_conflict_write=await _prepared(db_session, identity),
+            )
+
+    assert await db_session.scalar(select(func.count()).select_from(BodyScan)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(LabResult)) == 0
+    assert raw.processed_at is None

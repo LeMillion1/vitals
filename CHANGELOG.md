@@ -37,6 +37,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `web/static/uploads`; moving them to a private root would make the guarantee
   structural rather than a matter of route ordering, and is follow-up work.
 
+### Security — a restore and a restart are operator work (PR-06)
+
+- **`/settings/import` had no authorization beyond holding a session.** Its
+  paired `/settings/export` was policy-decided; the half that *replaces the
+  database* was not. `/settings/restart` had none either — any account could
+  stop the process.
+- Both now go through `require_installation_operator`, which asks a question the
+  subject-scoped policy engine cannot: these operations have no subject. A
+  platform superadmin is an operator; while the installation holds exactly one
+  subject, that subject's owner is one, because on a self-hosted install they
+  are; and a second subject closes the operations until somebody holds the role.
+- Refusing is deliberate rather than a gap. A full restore wipes portable tables
+  for everybody, so it cannot be made safe per-subject, and guessing which half
+  of the database the caller meant would be worse than saying no.
+- The shape is the point. Passing the caller's own subject into `is_allowed`
+  would have read as a check while being unconditionally true — self-ownership
+  authorizes everything on one's own subject — so every account would have
+  inherited the restore button. That trap is pinned as a test.
+- Today the second-subject clause is not yet what closes these routes:
+  `resolve_legacy_ownership_context` refuses a second subject first, so they
+  currently fail with a resolution error. That is an accident of the
+  compatibility resolver, and it disappears when `resolve_access_context`
+  replaces it — at which point the answer is still no, for a stated reason.
+
 ### Fixed — work that belongs to nobody in particular
 
 - **Every published doctor link would have answered "not found".** Revision 0050

@@ -47,6 +47,10 @@ from vitals.access import PolicyAction, PolicyResourceType
 from web.config import get_web_config
 from vitals.services.access_resolution import AccessDeniedError, require_access
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+from vitals.services.installation_operator import (
+    NotAnOperator,
+    require_installation_operator,
+)
 from vitals.services.proactive import day_plan, prefs
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
@@ -1233,6 +1237,31 @@ async def _authorize_export(db: AsyncSession, username: str) -> None:
 
 
 
+async def _authorize_installation_operation(
+    db: AsyncSession, username: str, *, operation: str
+) -> None:
+    """Decide an operation that is about the installation, not about a record.
+
+    Restoring a backup replaces portable data for everybody in the database, and
+    restarting takes the whole process down. Neither is a question about one
+    subject, so neither goes through the subject-scoped policy — see
+    ``vitals.services.installation_operator`` for why passing the caller's own
+    subject in would read as a check while always saying yes.
+    """
+
+    ownership = await resolve_legacy_ownership_context(db, actor_username=username)
+    try:
+        await require_installation_operator(
+            db,
+            access=ownership.access,
+            operation=operation,
+        )
+    except NotAnOperator as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+        ) from exc
+
+
 @router.get("/export")
 async def export_backup(
     username: str = Depends(require_auth),
@@ -1283,6 +1312,9 @@ async def import_backup(
     rolls everything back. Validation failures return a clean 400 (no silent
     errors); success returns an OOB fragment with the per-domain stats.
     """
+    await _authorize_installation_operation(
+        db, username, operation="a restore"
+    )
     validate_extension(backup_file.filename, JSON_EXTS)
     # Backups can be large (the raw_payloads data-lake), so allow the bigger cap.
     raw = await read_capped(backup_file, max_bytes=VCF_MAX_BYTES)
@@ -1311,11 +1343,16 @@ async def import_backup(
 async def restart_container(
     request: Request,
     username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
 ):
     import os
     import signal
     import asyncio
     from fastapi.responses import JSONResponse
+
+    await _authorize_installation_operation(
+        db, username, operation="a restart"
+    )
 
     logger.info("User %s requested container restart. Terminating process in 500ms...", username)
 
