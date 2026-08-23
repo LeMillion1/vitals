@@ -724,7 +724,6 @@ app.include_router(settings_router)
 app.include_router(charts_router)
 # Read-only JSON API for an external personal dashboard (Bearer-token guarded, not session auth).
 app.include_router(external_api_router)
-# Telegram webhook — its own secret path + header, no session auth.
 # The published doctor document. The ONE anonymous route in the app: no
 # require_auth (the visitor has no account) and no require_module gate (the
 # module set is already baked into the frozen snapshot). Its own, stricter CSP

@@ -105,14 +105,14 @@ async def test_the_oidc_callback_survives_a_cross_site_navigation(client):
 
 
 @pytest.mark.parametrize(
-    "path", ["/mcp", "/tg/whatever-secret", "/oauth/token"]
+    "path", ["/mcp", "/oauth/token"]
 )
 async def test_secret_bearing_callers_are_exempt(client, path):
     """They authenticate with their own credential, so there is nothing to forge.
 
     A forged cross-site request to these carries no session and gets nowhere;
-    refusing it on CSRF grounds would 403 the Telegram webhook for sending a
-    header it has no reason to send.
+    refusing it on CSRF grounds would 403 a server-to-server caller for not
+    sending a header it has no reason to send.
     """
 
     response = await client.post(

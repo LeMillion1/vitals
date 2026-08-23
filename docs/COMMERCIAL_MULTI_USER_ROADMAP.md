@@ -1140,6 +1140,14 @@ Landed already, because the scheduler could not wait:
   fix covers the request path, so a patient abroad sees their own date.
 - **Telegram is gone**, which retired four of the eight jobs that could not be
   fanned out. See the CHANGELOG entry; the delivery journal survives for push.
+- **The settings the removals left behind went too**, which is the half of a
+  deletion that is easy to skip. Four `VITALS_TELEGRAM_*` variables nothing read;
+  the evening block's time field, still in the stored policy where a strict
+  decoder would have raised on it (revision 0059 rewrites the rows); a week
+  template whose inputs had stopped being passed, so `/settings` rendered a
+  heading over an empty box and still answered 200; a module gate that could only
+  return `False` after its module left the registry. None of it was caught by a
+  suite. All of it was visible on the page.
 
 Still not fanned out, and the reason is the whole of what is left here: four jobs
 sign in to one Garmin or Hevy account whose credentials are one set for the whole
@@ -1159,7 +1167,7 @@ answer.
 Scope:
 
 - create encrypted/reference-backed per-subject `IntegrationConnection` records
-  for Garmin, Hevy, Telegram recipients, and future subject providers;
+  for Garmin, Hevy, push subscriptions, and future subject providers;
 - create one separately modeled `PlatformIntegrationConnection` for OpenRouter,
   administered only by active platform superadmins, plus subject-owned
   `AIInvocation` reservation/usage rows for every model call;
@@ -1173,7 +1181,7 @@ Scope:
 - persist notification intents before provider I/O with explicit
   `pending`/`sent`/`ambiguous` outcomes and a reconciliation policy for timeouts
   after possible provider acceptance;
-- keep Telegram notifications free of PHI by default.
+- keep notification previews free of PHI by default.
 
 Tests:
 
@@ -1378,7 +1386,7 @@ attach, share, export, and sync where applicable:
 | Reports/LLM | One-subject bounded context, frozen report ownership, list/revoke/download isolation, redacted prompts/logs. |
 | Integrations | Connection-scoped credentials/raw keys/cursors/breakers/outbox, no external calls in ordinary saves. |
 | Scheduler/Redis | Per-connection leases/locks/budgets/dedupe; failure and timezone isolation. |
-| Notifications | Recipient mapping, consent re-check, no PHI in push/Telegram preview, idempotency per recipient. |
+| Notifications | Recipient mapping, consent re-check, no PHI in a push preview, idempotency per recipient. |
 | Portability | Subject-only export/import, no secrets/roles/consents/live links, never global wipe for a user. |
 | Support | No role-only PHI, step-up/TTL/scope/revoke, immutable audit, repair diff, patient-visible history. |
 | PostgreSQL | RLS, FORCE RLS, composite FK/unique/partial indexes, pooled context cleanup, concurrent revoke. |

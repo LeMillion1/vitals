@@ -379,16 +379,13 @@ flowchart TB
 
   garmin["Garmin Connect<br/><span style='font-size:11px'>sleep, HRV, steps, weigh-ins</span>"]
   hevy["Hevy<br/><span style='font-size:11px'>strength training</span>"]
-  tg["Telegram<br/><span style='font-size:11px'>inbound signals, outbound nudges</span>"]
   llm["OpenRouter<br/><span style='font-size:11px'>digests, parsing, briefs</span>"]
   mcp["MCP client<br/><span style='font-size:11px'>Claude, over a scoped grant</span>"]
 
   owner -->|web UI| vitals
-  owner -.->|messages| tg
   pro -.->|"consent-scoped read"| vitals
   vitals <-->|pull + weigh-in export| garmin
   vitals -->|pull| hevy
-  vitals <-->|send + receive| tg
   vitals -->|"metered, quota'd"| llm
   mcp -->|tools + resources| vitals
 
@@ -396,7 +393,7 @@ flowchart TB
   classDef ext fill:#eef2f2,stroke:#ccd6d8,color:#3d4a52
   classDef person fill:#ffffff,stroke:#12181f,color:#12181f
   class vitals sys
-  class garmin,hevy,tg,llm,mcp ext
+  class garmin,hevy,llm,mcp ext
   class owner,pro person
   style pro stroke-dasharray: 5 4
   style platform fill:none,stroke:none
@@ -481,7 +478,7 @@ flowchart LR
 erDiagram
   USERS ||--o| HEALTH_SUBJECTS : "owns exactly one"
   USERS ||--o{ USER_ROLES : "additive, never a data grant"
-  HEALTH_SUBJECTS ||--o{ INTEGRATION_CONNECTIONS : "garmin, hevy, telegram, openrouter"
+  HEALTH_SUBJECTS ||--o{ INTEGRATION_CONNECTIONS : "garmin, hevy, openrouter"
   HEALTH_SUBJECTS ||--o{ FILE_ASSETS : "opaque private keys"
   HEALTH_SUBJECTS ||--o{ RAW_PAYLOADS : "the lake"
   HEALTH_SUBJECTS ||--o{ SUBJECT_DATA : "34 domain tables"
@@ -560,14 +557,13 @@ erDiagram
         <tr><td><b>Body composition</b></td><td><code>body_scans</code>, <code>body_scan_metrics</code>, <code>body_measurements</code>, <code>progress_photos</code></td><td>Scan PDFs, manual, photos</td><td>Scan documents are parsed by an LLM into a metric sheet; the original stays in the lake. Photos are pointers — the file is a <code>file_asset</code>.</td></tr>
         <tr><td><b>GLP-1</b></td><td><code>glp1_injections</code>, <code>glp1_dose_phases</code>, <code>glp1_side_effects</code></td><td>Manual, MCP</td><td>Phases model a titration schedule; a plateau alert watches the weight domain across the boundary.</td></tr>
         <tr><td><b>HRT</b></td><td><code>hrt_cycles</code>, <code>hrt_doses</code>, <code>hrt_side_effects</code>, <code>hrt_cycle_templates</code></td><td>Manual, MCP</td><td>The largest graph: cycles hold items, items reference compounds, templates instantiate cycles. The compound catalog is <em>mixed</em> — curated entries are global, custom ones are one person's.</td></tr>
-        <tr><td><b>Nutrition</b></td><td><code>meal_logs</code></td><td>Manual, MCP, Telegram</td><td>A day-end job evaluates rules that only make sense once the day is over — a running total is trivially under target at breakfast.</td></tr>
+        <tr><td><b>Nutrition</b></td><td><code>meal_logs</code></td><td>Manual, MCP</td><td>A day-end job evaluates rules that only make sense once the day is over — a running total is trivially under target at breakfast.</td></tr>
         <tr><td><b>Labs</b></td><td><code>lab_results</code>, <code>lab_markers</code></td><td>PDF panels, manual, MCP</td><td>A parsed document becomes many results linked to one raw payload. Out-of-range and overdue-retest alerts are per-marker.</td></tr>
         <tr><td><b>Genetics</b></td><td><code>genetic_variants</code></td><td>VCF import</td><td>The most identifying data held. Ingestion takes the subject and the conflict decision together, or refuses.</td></tr>
         <tr><td><b>Supplements</b></td><td><code>supplements</code></td><td>Manual, MCP</td><td>Feeds the conflict engine: an iron supplement against a hemochromatosis marker is a hard block.</td></tr>
         <tr><td><b>Skincare</b></td><td><code>skincare_logs</code>, <code>skincare_observations</code>, <code>skincare_products</code></td><td>Manual</td><td>A routine with timing slots; retinoid and acid peel on the same evening is a timing conflict.</td></tr>
         <tr><td><b>Garmin</b></td><td><code>garmin_daily</code>, <code>garmin_intraday</code>, <code>garmin_activities</code></td><td>Garmin API, Health Auto Export</td><td>Intraday holds ~2k samples per day — the reason the <code>NOT NULL</code> migration avoids a full-table lock. A daily bundle may carry a weigh-in, which crosses into the weight domain.</td></tr>
         <tr><td><b>Workouts</b></td><td><code>hevy_workouts</code>, <code>hevy_exercises</code>, <code>hevy_sets</code></td><td>Hevy API</td><td>A three-level tree; children inherit subject and connection from the workout through composite foreign keys.</td></tr>
-        <tr><td><b>Signals</b></td><td><code>signals</code>, <code>day_context</code></td><td>Telegram</td><td>Free text a person sent the bot, parsed by an LLM into typed symptoms and states. Unparseable text is parked verbatim and re-parsed later.</td></tr>
         <tr><td><b>Milestones</b></td><td><code>milestones</code></td><td>Manual</td><td>Goals with progress computed from whichever domain the goal is about.</td></tr>
         <tr><td><b>Timeline</b></td><td><code>annotations</code></td><td>Manual + derived</td><td>Hand-written notes merged with events derived from ten other domains into one feed.</td></tr>
         <tr><td><b>Reports</b></td><td><code>weekly_digests</code>, <code>shared_reports</code></td><td>Generated</td><td>The one place data deliberately leaves the boundary. A share is a frozen snapshot behind a revocable token; a digest names the OpenRouter account that produced it.</td></tr>
@@ -587,7 +583,7 @@ erDiagram
 <pre class="mermaid">
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"IBM Plex Sans, sans-serif","fontSize":"13px","primaryColor":"#dceaec","primaryTextColor":"#12181f","primaryBorderColor":"#0e7c86","lineColor":"#5c6b72","secondaryColor":"#eef2f2"}}}%%
 flowchart LR
-  ext["Provider response<br/>Uploaded PDF<br/>Telegram message"]
+  ext["Provider response<br/>Uploaded PDF"]
   raw[("<b>raw_payloads</b><br/><span style='font-size:11px'>verbatim JSONB · GIN index<br/>subject + connection stamped</span>")]
   fact[("<b>Domain fact</b><br/><span style='font-size:11px'>typed columns<br/>links back to its raw</span>")]
   art[("<b>Artifact</b><br/><span style='font-size:11px'>digest, share, alert,<br/>notification</span>")]

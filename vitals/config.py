@@ -117,14 +117,6 @@ class Config:
     # here: it lives in app_settings via vitals/services/proactive/prefs.py, so
     # the settings card can change it without a container restart.
 
-    # ── Telegram (proactive channel) ────────────────────────────────────────────
-    # All four empty by default: the bot simply never sends and the webhook fails
-    # closed, so the app runs exactly as before until the owner configures it.
-    # ``chat_id`` is the single recipient — everything from any other chat is
-    # dropped. ``webhook_path`` is a random secret segment (the URL itself is a
-    # credential); ``webhook_secret`` is what Telegram echoes back in the
-    # ``X-Telegram-Bot-Api-Secret-Token`` header. Both are compared constant-time.
-
     db_statement_timeout_ms: int = DEFAULT_DB_STATEMENT_TIMEOUT_MS
     db_pool_size: int = DEFAULT_DB_POOL_SIZE
     db_max_overflow: int = DEFAULT_DB_MAX_OVERFLOW

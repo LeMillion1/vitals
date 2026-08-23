@@ -8,7 +8,3 @@
 {% from "partials/nav_mobile.html" import mobile_bottom_nav with context %}
 {% with oob=true %}{% include "partials/nav_masthead.html" %}{% endwith %}
 {{ mobile_bottom_nav(oob=true) }}
-{# The proactive card's "module off" chip (proactive_card.html) — only
-   present in the DOM while on /settings, harmless no-op OOB elsewhere since
-   htmx drops an OOB fragment with no id match in the current page. #}
-<span id="proactive-off-chip" hx-swap-oob="true"></span>

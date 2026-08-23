@@ -4060,12 +4060,6 @@ async def _prepare_delivery(
             raw_payload_id=journal_raw_payload_id,
             invocation_raw_payload_id=invocation_raw_payload_id,
         )
-    if not await prefs.bot_enabled(
-        session,
-        subject_id=(ownership.subject_id if ownership is not None else None),
-    ):
-        logger.info("skipping %s: the signals module is switched off", category)
-        return None
     if dedupe_key:
         existing = await session.scalar(
             select(Notification).where(Notification.dedupe_key == dedupe_key)

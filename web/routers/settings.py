@@ -995,10 +995,6 @@ async def save_proactive(
     username: str = Depends(require_auth),
     db: AsyncSession = Depends(get_session),
     brief_time: str = Form(prefs.DEFAULTS["brief_time"]),
-    evening_time: str = Form(prefs.DEFAULTS["evening_time"]),
-    quiet_start: str = Form(prefs.DEFAULTS["quiet_start"]),
-    quiet_end: str = Form(prefs.DEFAULTS["quiet_end"]),
-    daily_budget: int = Form(prefs.DEFAULTS["daily_budget"]),
     garmin_sync_hours: int = Form(prefs.DEFAULTS["garmin_sync_hours"]),
     garmin_weight_export_minutes: int = Form(
         prefs.DEFAULTS["garmin_weight_export_minutes"]
@@ -1009,33 +1005,42 @@ async def save_proactive(
     pulse_seconds: int = Form(prefs.DEFAULTS["pulse_seconds"]),
     pulse_start_hour: int = Form(prefs.DEFAULTS["pulse_start_hour"]),
     pulse_end_hour: int = Form(prefs.DEFAULTS["pulse_end_hour"]),
-    nudges: list[str] = Form([]),
 ):
     """Save the proactive settings **and rebuild the schedule on the spot**.
 
     Everything else on this page writes ``.env`` and needs a restart; these are in
     the DB precisely so they don't. ``prefs.sanitize`` clamps whatever arrives —
     the HTML min/max are a courtesy, not the guard.
+
+    The card no longer offers quiet hours, the daily budget or the nudge
+    switches: every one of them gates a *send*, and with the Telegram transport
+    gone there is nothing to send with. The stored policy keeps them, because the
+    delivery engine still reads it and a first web push has to be governed by
+    something — so this handler reads the current values and writes them back
+    unchanged rather than letting the ``Form`` defaults quietly reset whatever the
+    owner last chose.
     """
+    preference_scope = await prefs.resolve_legacy_preferences_scope(
+        db,
+        actor_username=username,
+    )
+    current = (
+        await prefs.get_preferences_bundle(
+            db,
+            scope=preference_scope,
+            actor_username=username,
+        )
+    ).as_flat_dict()
     raw_prefs = {
+        **current,
         "brief_time": brief_time,
-        "evening_time": evening_time,
-        "quiet_start": quiet_start,
-        "quiet_end": quiet_end,
-        "daily_budget": daily_budget,
         "garmin_sync_hours": garmin_sync_hours,
         "garmin_weight_export_minutes": garmin_weight_export_minutes,
         "garmin_weight_max_age_days": garmin_weight_max_age_days,
         "pulse_seconds": pulse_seconds,
         "pulse_start_hour": pulse_start_hour,
         "pulse_end_hour": pulse_end_hour,
-        # Unchecked boxes don't post, so the checked list *is* the answer.
-        "nudges": {c: c in nudges for c in prefs.NUDGE_CATEGORIES},
     }
-    preference_scope = await prefs.resolve_legacy_preferences_scope(
-        db,
-        actor_username=username,
-    )
     settings = (
         await prefs.set_preferences_bundle(
             db,

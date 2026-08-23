@@ -302,7 +302,7 @@ The rail's contents, the in-content tab row, the phone's bottom bar and the
 globals — so no two surfaces can drift apart. Sections are grouped into three
 rubrics: Health (weight, garmin, hevy, nutrition, timeline, reports, charts),
 Markers (glp1, hrt, labs, genetics), Lifestyle (supplements, skincare,
-interactions, signals); membership is gated by `enabled_modules`.
+interactions); membership is gated by `enabled_modules`.
 
 **Every section is a row, always on screen.** Collapsing the rubrics to one open
 group was tried (it fits a 1440x900 laptop without scrolling) and reverted at the

@@ -36,11 +36,15 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 _ALLOWED_FETCH_SITES = frozenset({"same-origin", "same-site"})
 
 #: Paths whose callers authenticate with their own secret rather than a session
-#: cookie, so a forged cross-site request carries nothing worth forging: MCP,
-#: the OAuth token exchange, and the Telegram webhook — which a forged
-#: ``Origin`` header would otherwise 403 instead of ignore.
+#: cookie, so a forged cross-site request carries nothing worth forging: MCP and
+#: the OAuth token exchange, which a forged ``Origin`` header would otherwise 403
+#: instead of ignore.
+#:
+#: ``/tg/`` — the Telegram webhook — used to be here. It is gone, and so is the
+#: exemption: a prefix that exempts a route nobody has mounted is an open door
+#: waiting for the next thing to be mounted behind it.
 def _is_exempt(path: str) -> bool:
-    return path.startswith("/mcp") or path.startswith("/tg/") or path == "/oauth/token"
+    return path.startswith("/mcp") or path == "/oauth/token"
 
 
 async def _origin_check(request: Request, call_next):

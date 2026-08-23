@@ -352,13 +352,14 @@ footer {
 </section>
 {% endif %}
 
-{# ── 7. Side effects and symptoms — three sources, one list, in date order.
+{# ── 7. Side effects — two sources, one list, in date order. Symptoms the
+       patient described in their own words were the third, out of `signals`,
+       and nothing replaces them: no device produces a sentence.
        Merged here rather than in the snapshot: which sources exist depends on
        which sections were ticked, and that is already decided above. ───── #}
 {% set effects = [] %}
 {% if blocks.glp1 %}{% for e in blocks.glp1.side_effects %}{% set _ = effects.append({"date": e.date, "what": e.effect_type, "severity": e.severity}) %}{% endfor %}{% endif %}
 {% if blocks.hrt %}{% for e in blocks.hrt.side_effects %}{% set _ = effects.append({"date": e.date, "what": e.effect_type, "severity": e.severity}) %}{% endfor %}{% endif %}
-{% if blocks.signals %}{% for s in blocks.signals.symptoms %}{% set _ = effects.append({"date": s.date, "what": s.what, "severity": s.severity}) %}{% endfor %}{% endif %}
 {% if effects %}
 <section>
   <h2>{{ t("doc.effects") }}</h2>

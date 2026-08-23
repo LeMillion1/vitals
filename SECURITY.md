@@ -79,42 +79,24 @@ restart. Until database sessions land, rotate `VITALS_SESSION_SECRET` as a
 separate step when already issued browser/MCP credentials must be invalidated.
 Never make bootstrap overwrite one side automatically.
 
-## The Telegram Webhook
+## Inbound Endpoints
 
-The proactive layer adds the only endpoint that is reachable without a session:
-`POST /tg/<path>`. It is guarded in layers, and it is **off unless you configure
-it** — with no `VITALS_TELEGRAM_WEBHOOK_SECRET` the route fails closed with 401,
-it is never open.
+There is no webhook. `POST /tg/<path>` — the Telegram bot's endpoint, and the
+only route in the app that was reachable without a session — has been removed
+along with the bot, and so has its CSRF exemption: a prefix that waves through
+requests to a route nobody has mounted is a door left open for whatever gets
+mounted behind it next.
 
-- The path segment itself is a random secret (`VITALS_TELEGRAM_WEBHOOK_PATH`), so
-  the endpoint is not discoverable by crawling.
-- Telegram's `X-Telegram-Bot-Api-Secret-Token` header must match
-  `VITALS_TELEGRAM_WEBHOOK_SECRET`. Both comparisons use `compare_digest` — a
-  plain `==` on a secret leaks its prefix through timing.
-- A rate limit sits in front of the route (fail-open on Redis, as everywhere else).
-- Only a private chat whose chat id **and sender id** match the configured positive
-  user id is accepted. Group/supergroup ids are refused for both inbound capture
-  and outbound PHI delivery. A foreign/non-private update gets a plain `200` and
-  is discarded. Not a 403: a distinguishable answer tells a prober they found
-  something, and Telegram would retry a non-200 for hours.
-- The complete upstream update is durably claimed by subject and `update_id`
-  before parsing or action handling. Retries cannot double-write; edits retain
-  raw history while superseding the prior normalized facts. A failure before the
-  durable claim returns a retryable `503`; after that claim, the recovery sweep
-  can complete stored normalization or callback state without losing the input.
-  The immediate reply/echo is still best-effort until the notification outbox
-  cutover: a transport failure cannot safely be retried without a provider-side
-  idempotency key because acceptance followed by a timeout is ambiguous.
+What remains reachable without a session is listed and enforced in
+`tests/test_anonymous_surface.py`, which fails if a new route joins that set
+without a stated reason. Today it is the login and OAuth handshakes, `/health`,
+the Bearer-token external summary, and the published doctor document.
 
-Optionally narrow the path to Telegram's own subnets at your reverse proxy — that
-is infrastructure, not application code.
-
-**Revoking bot access:** clear the webhook at Telegram
-(`curl -X POST "https://api.telegram.org/bot<TOKEN>/deleteWebhook"`), then rotate
-or blank `VITALS_TELEGRAM_BOT_TOKEN` and `VITALS_TELEGRAM_WEBHOOK_SECRET` in
-`.env` and restart. Switching the **Signals** module off in Settings silences all
-outgoing messages immediately, without a deploy — it is the emergency switch, not
-a revocation.
+**When web push replaces the transport**, its subscription endpoint is the next
+thing to appear here. The shape to keep: a per-subject subscription in the
+database, not one credential in the environment — the reason the Telegram
+transport could not survive a shared installation is that one bot token and one
+chat id cannot belong to more than one person.
 
 ## Revoking Claude.ai Access
 

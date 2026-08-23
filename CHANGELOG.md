@@ -46,6 +46,48 @@ patient said in their own words, which is the one thing no device produces. That
 is a gap rather than a tidy-up, and the strongest argument for whatever captures
 free text next.
 
+### Removed — the settings the three removals left behind
+
+Deleting a feature and deleting its knobs are two jobs, and only the first had
+been done. What was still on screen or in the environment after the chat, the
+signals domain and the day context went:
+
+- **`VITALS_TELEGRAM_BOT_TOKEN`, `_CHAT_ID`, `_WEBHOOK_PATH`, `_WEBHOOK_SECRET`**
+  in `.env.example`, plus the setup section and the environment table in the
+  README that told a new installation to fill them in. Nothing had read them
+  since the transport went. Every remaining `VITALS_*` in `.env.example` is now
+  checked to have a reader.
+- **The evening block's time field**, on the settings card and in the stored
+  policy. Revision 0059 rewrites the rows, and that is not cosmetic: the policy
+  decoder compares a stored row's key set against the code's with `!=` — on
+  purpose, because a preference that has drifted is worth failing on — so any
+  installation that had ever saved its proactive settings would have come back up
+  raising on every read.
+- **The week template** — seven rows of dropdowns asking what each weekday is
+  usually like. Its inputs stopped being passed to the template when
+  `day_context` went, so `/settings` had been rendering a heading, a hint about
+  "the evening block", and an empty box beneath them. No test saw it; the page
+  still returned 200.
+- **The proactive layer's module gate.** `prefs.bot_enabled` read the `signals`
+  key out of the enabled-modules map, and `signals` had left the module registry,
+  so it could only ever return `False`. Nothing was silently off today only
+  because nothing can send at all yet — it would have been the first thing to
+  break when web push landed, and it would have broken as silence.
+- **The CSRF exemption for `/tg/`**, along with its two stale test-inventory
+  entries. A prefix that waves requests past the origin check for a route nobody
+  has mounted is a door held open for whatever is mounted there next.
+- **42 dead i18n keys** in both languages — the whole `/signals` page vocabulary,
+  the week-template labels, the weekday names that only it used. The i18n tests
+  check that every referenced key exists, not that every key is referenced, which
+  is exactly how they accumulated.
+
+And the strings that were still true-sounding but wrong: the brief card named two
+environment variables that no longer exist and offered to send "to Telegram"; the
+empty state promised briefs "at 11:00"; the parser model was labelled as parsing
+signals. The AI report prompt was the one with teeth — it still described a
+`day_context` key in both languages, so the model was being told about data the
+context could not carry. A test now asserts neither prompt names it.
+
 ### Added — a professional sees the record, not only the notes about it
 
 The patient screen showed notes and plans and nothing else. The policy already

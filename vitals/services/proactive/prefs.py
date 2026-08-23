@@ -5,7 +5,7 @@ The legacy application stored twelve unrelated knobs in one global
 subjects or two provider connections exist. The commercial cutover splits it
 into three non-secret control-plane rows:
 
-* subject schedule/content policy (brief, evening, nudge categories);
+* subject schedule/content policy (brief time, nudge categories);
 * Telegram recipient policy (quiet hours and daily initiative budget);
 * Garmin connection policy (sync, pulse, and weight-export cadence).
 
@@ -57,8 +57,11 @@ GARMIN_POLICY_KEY = "garmin_proactive_policy"
 # Compatibility label only. Scoped runtime APIs never use this global key.
 SETTINGS_KEY = LEGACY_SETTINGS_KEY
 
-# The subject module that acts as the proactive emergency switch.
-MODULE_KEY = "signals"
+# No module gates this layer any more. The switch was the ``signals`` module,
+# which was also the free-text capture domain, and both went with the chat.
+# Reading it after the module left MODULE_REGISTRY would have returned False for
+# everybody, for ever — a layer that is off and says nothing about being off.
+# The schedule and the nudge categories below are the whole of the answer now.
 
 CATEGORY_ACTIVITY = "activity"
 CATEGORY_NUTRITION = "nutrition"
@@ -77,7 +80,6 @@ PULSE_SECONDS_RANGE = (60, 3600)
 
 DEFAULTS: dict[str, Any] = {
     "brief_time": "11:00",
-    "evening_time": "23:45",
     "quiet_start": "02:00",
     "quiet_end": "10:00",
     "daily_budget": 4,
@@ -90,7 +92,7 @@ DEFAULTS: dict[str, Any] = {
     "nudges": {category: True for category in NUDGE_CATEGORIES},
 }
 
-_SUBJECT_FIELDS = frozenset({"brief_time", "evening_time", "nudges"})
+_SUBJECT_FIELDS = frozenset({"brief_time", "nudges"})
 _DELIVERY_FIELDS = frozenset({"quiet_start", "quiet_end", "daily_budget"})
 _GARMIN_FIELDS = frozenset(
     {
@@ -174,7 +176,6 @@ class ProactivePreferencesScope:
 @dataclass(frozen=True, slots=True)
 class SubjectProactivePolicy:
     brief_time: time_type
-    evening_time: time_type
     enabled_nudge_categories: frozenset[str]
 
 
@@ -207,7 +208,6 @@ class ProactivePreferencesBundle:
         enabled = self.subject.enabled_nudge_categories
         return {
             "brief_time": self.subject.brief_time.strftime("%H:%M"),
-            "evening_time": self.subject.evening_time.strftime("%H:%M"),
             "quiet_start": self.delivery.quiet_start.strftime("%H:%M"),
             "quiet_end": self.delivery.quiet_end.strftime("%H:%M"),
             "daily_budget": self.delivery.daily_budget,
@@ -266,9 +266,6 @@ def sanitize(raw: Any) -> dict[str, Any]:
 
     return {
         "brief_time": _time(src.get("brief_time"), DEFAULTS["brief_time"]),
-        "evening_time": _time(
-            src.get("evening_time"), DEFAULTS["evening_time"]
-        ),
         "quiet_start": _time(src.get("quiet_start"), DEFAULTS["quiet_start"]),
         "quiet_end": _time(src.get("quiet_end"), DEFAULTS["quiet_end"]),
         "daily_budget": _int(
@@ -369,9 +366,6 @@ def _decode_subject(raw: Any) -> SubjectProactivePolicy:
         )
     return SubjectProactivePolicy(
         brief_time=_strict_time(value["brief_time"], field="brief_time"),
-        evening_time=_strict_time(
-            value["evening_time"], field="evening_time"
-        ),
         enabled_nudge_categories=frozenset(
             key for key in NUDGE_CATEGORIES if nudges[key]
         ),
@@ -1180,63 +1174,6 @@ async def get_prefs(session: AsyncSession) -> dict[str, Any]:
     return await get_pre_identity_legacy_prefs(session)
 
 
-async def bot_enabled(
-    session: AsyncSession,
-    *,
-    subject_id: uuid.UUID | None,
-    strict: bool = False,
-) -> bool:
-    """Return the subject module gate; strict mode rejects an absent subject.
-
-    ``subject_id`` is mandatory: whether the bot may speak is one person's
-    setting, and every caller already knows whose delivery it is about. ``None``
-    remains a legal value and means the zero-subject installation gate — the
-    single installation-wide row a database with no subjects still has — but a
-    caller has to ask for it rather than fall into it by omission.
-    """
-
-    from vitals.services import modules_service
-
-    if strict:
-        if subject_id is None:
-            raise ValueError("strict module gating requires a subject_id")
-        from vitals.services.scoped_settings_service import (
-            ScopedSettingKey,
-            SettingScope,
-            get_scoped_setting,
-        )
-
-        raw = await get_scoped_setting(
-            session,
-            scope=SettingScope.SUBJECT,
-            key=ScopedSettingKey.ENABLED_MODULES,
-            scope_id=subject_id,
-            default=dict(modules_service.DEFAULT_STATE),
-        )
-        return bool(raw.get(MODULE_KEY)) if isinstance(raw, dict) else False
-
-    if subject_id is None:
-        # A database with no subjects has no per-person module state to read,
-        # only the installation-wide row the bootstrap will later split. This
-        # arm is the zero-subject compatibility gate and goes with it.
-        from sqlalchemy import select
-
-        from vitals.models.app_settings import AppSetting
-
-        raw = await session.scalar(
-            select(AppSetting.value).where(
-                AppSetting.key == modules_service.SETTINGS_KEY
-            )
-        )
-        state = raw if isinstance(raw, dict) else dict(modules_service.DEFAULT_STATE)
-        return bool(state.get(MODULE_KEY))
-    state = await modules_service.get_enabled_modules(
-        session,
-        subject_id=subject_id,
-    )
-    return bool(state.get(MODULE_KEY))
-
-
 __all__ = [
     "BUDGET_RANGE",
     "CATEGORY_ACTIVITY",
@@ -1248,7 +1185,6 @@ __all__ = [
     "GarminProactivePolicy",
     "LEGACY_SETTINGS_KEY",
     "LegacyProactivePreferencesBridgeClosedError",
-    "MODULE_KEY",
     "NUDGE_CATEGORIES",
     "PULSE_SECONDS_RANGE",
     "ProactivePreferencesBundle",
@@ -1266,7 +1202,6 @@ __all__ = [
     "WEIGHT_EXPORT_MINUTES_RANGE",
     "WEIGHT_MAX_AGE_DAYS_RANGE",
     "as_time",
-    "bot_enabled",
     "get_exact_one_preferences_bundle",
     "get_garmin_policy",
     "get_locked_delivery_policy",

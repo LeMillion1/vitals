@@ -109,7 +109,6 @@ def _custom(**overrides):
     value = prefs.sanitize(
         {
             "brief_time": "08:15",
-            "evening_time": "22:30",
             "quiet_start": "00:30",
             "quiet_end": "07:45",
             "daily_budget": 7,
@@ -160,7 +159,7 @@ async def test_startup_splits_legacy_value_and_strict_reads_are_typed(
         IntegrationConnectionSetting,
         (scope.garmin_connection_id, prefs.GARMIN_POLICY_KEY),
     )
-    assert set(subject_row.value) == {"brief_time", "evening_time", "nudges"}
+    assert set(subject_row.value) == {"brief_time", "nudges"}
     assert set(delivery_row.value) == {"quiet_start", "quiet_end", "daily_budget"}
     assert set(garmin_row.value) == {
         "garmin_sync_hours",

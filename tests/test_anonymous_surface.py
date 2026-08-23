@@ -38,8 +38,6 @@ ANONYMOUS_BY_DESIGN = {
     ("GET", "/health"),
     # Bearer token, not a session.
     ("GET", "/external/summary"),
-    # Secret path plus Telegram's own header.
-    ("POST", "/tg/{secret_path}"),
     # The published doctor document: the visitor has no account, the link carries
     # a token and the page asks for a password.
     ("GET", "/r/{token}"),

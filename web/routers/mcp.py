@@ -321,7 +321,7 @@ async def _mcp_v1_aux_weight_write(
 
 # tool name → the optional module it belongs to. Writes register themselves through
 # ``gated``; the reads of those same domains are listed below. Used only to hide a
-# switched-off module's tools from ``tools/list`` — the surface is 75 tools and
+# switched-off module's tools from ``tools/list`` — the surface is 69 tools and
 # their schemas are re-sent with every message of every conversation, so a domain
 # the owner does not track is pure weight. Reads are classified separately below;
 # ownership-sensitive reads may also use this decorator to reject direct calls.
@@ -822,7 +822,7 @@ async def get_weekly_digests(limit: int = 5) -> list[dict]:
             actor_username=get_web_config().auth_username,
         )
         # Through the service, so this stays weekly-only: the same table now also
-        # holds the daily Telegram briefs.
+        # holds the daily briefs.
         digests = await digest_service.list_digests(
             session,
             limit=limit,
@@ -2154,9 +2154,7 @@ async def delete_record(domain: str, record_id: int) -> dict:
     glp1_side_effect, glp1_dose_phase, hrt_dose, hrt_side_effect, hrt_cycle
     (with its compound plans), hrt_cycle_item (one plan, cycle kept), body_comp
     (a scan with its metrics), timeline (a manual event), skincare_observation,
-    supplements (a catalog entry), genetics (a variant) (one parsed
-    signal — the raw message stays in the lake; for a whole batch parsed wrongly
-    out of one message use ``mark_signal_misparse`` instead).
+    supplements (a catalog entry), genetics (a variant).
 
     Deleting a weight log reactivates the next-highest-priority log for that date.
     Returns ``{"deleted": false, ...}`` when nothing has that id."""
@@ -2884,7 +2882,7 @@ async def export_everything(
 ) -> dict:
     """Returns the health history as one compact, secret-free, LLM-ready export
     grouped by domain (weight, measurements, body scans, GLP-1, HRT, labs, Garmin,
-    workouts, nutrition, skincare, supplements, genetics, day context,
+    workouts, nutrition, skincare, supplements, genetics,
     milestones, timeline). This is the way to read long-term history in a single
     call rather than paging each domain's newest-100 read tool. Read-only.
 
@@ -3759,12 +3757,11 @@ async def get_trend(
 
 @mcp.tool()
 async def get_proactive_state(limit: int = 10) -> dict:
-    """Retrieves the state of the proactive Telegram layer: whether it is on, its
-    settings (message times, daily budget, which nudge categories are allowed), the
-    week template (what each weekday is assumed to be until the owner says
-    otherwise), and the last messages the bot actually sent. Read this before
-    explaining why the bot did or didn't say something. READ tool — the settings are
-    read-only here; retiming or muting the bot is done in Settings, by the owner."""
+    """Retrieves the state of the proactive layer: its settings (brief time, daily
+    message budget, which nudge categories are allowed) and the last messages it
+    actually sent. Read this before explaining why something did or didn't arrive.
+    READ tool — the settings are read-only here; retiming or muting the layer is
+    done in Settings, by the owner."""
     from vitals.services.proactive import channels, delivery, prefs
 
     session_factory = get_session_factory()

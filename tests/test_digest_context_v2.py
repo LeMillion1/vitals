@@ -752,7 +752,12 @@ async def test_ru_and_en_prompts_describe_the_same_v2_contract():
             "planned_administrations",
             "sample_counts",
             "freshness_days",
-            "resolved",
         ):
             assert key in prompt
         assert "active_compounds" not in prompt
+        # A prompt that names a key the context cannot carry is worse than one
+        # that says nothing: the model answers about data nobody has. Both of
+        # these were described here for a while after their domains were
+        # dropped — ``resolved`` was ``day_context.resolved`` and went with it.
+        for phantom in ("day_context", "signals"):
+            assert phantom not in prompt, phantom

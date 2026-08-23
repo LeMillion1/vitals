@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  <strong>Self-hosted personal health data lake & dashboard with 75 MCP tools for Claude.ai</strong><br>
-  <sub>Masthead UI · EN/RU interface · 15 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · Signals & Telegram · AI Digests · Doctor Report</sub>
+  <strong>Self-hosted personal health data lake & dashboard with 69 MCP tools for Claude.ai</strong><br>
+  <sub>Masthead UI · EN/RU interface · 14 Domains · Weight & BIA · HRT/TRT · GLP-1 · Garmin · Hevy · Nutrition · Labs · Genetics · Skincare · Timeline · AI Digests · Doctor Report</sub>
 </p>
 
 <p align="center">
@@ -45,7 +45,7 @@
 
 Главное отличие от фитнес-трекеров — **принцип максимального сохранения сырых данных**. Vitals — умный навигатор здоровья, который подсвечивает неочевидные взаимосвязи между сном, тренировками, медикаментами и весом, помогая принимать взвешенные решения. Не надзиратель — штурман.
 
-С недавних пор у Vitals есть **голос**: проактивный слой в Telegram присылает утренний бриф, вечером спрашивает про завтра и ловит свободный текст («голова раскалывается», «кофе в 22») в отдельный домен сигналов. Дашборд больше не ждёт, пока в него зайдут.
+У Vitals есть **голос**: проактивный слой сам собирает утренний бриф и подсказки по условию, вместо того чтобы ждать, пока в дашборд зайдут. Транспорт сейчас один — сама страница `/reports`; пуши в PWA — следующий.
 
 ### Зачем я это сделал
 
@@ -79,8 +79,8 @@ Vitals написан с Claude в качестве основного инст�
 
 **🤖 AI и интеграции**
 - Еженедельные AI-дайджесты (Claude / GPT) из версионированного контекста за закрытый период: Garmin и Hevy, GLP-1 и ГЗТ, состав тела, анализы, питание и остальные включённые домены
-- Проактивный канал в Telegram: утренний бриф, вечерний блок, подсказки по условию
-- 75 MCP-инструментов для Claude.ai (чтение + запись + override)
+- Проактивный слой: утренний бриф и подсказки по условию, с тихими часами и дневным бюджетом сообщений
+- 69 MCP-инструментов для Claude.ai (чтение + запись + override)
 - OAuth 2.0 + PKCE авторизация MCP
 - Полный экспорт данных для LLM (copy-paste ready)
 - Атомарный бэкап и восстановление БД
@@ -122,7 +122,7 @@ Vitals написан с Claude в качестве основного инст�
 - [Философия и ключевые принципы](#-философия-и-ключевые-принципы)
 - [Домены данных (15 модулей)](#-домены-данных)
 - [Архитектура системы](#-архитектура-системы)
-- [MCP-интеграция с Claude.ai (75 инструментов)](#-mcp-интеграция-с-claudeai)
+- [MCP-интеграция с Claude.ai (69 инструментов)](#-mcp-интеграция-с-claudeai)
 - [Быстрый старт (Docker Compose)](#-быстрый-старт)
 - [Безопасный деплой (Сетап автора)](#-безопасный-деплой-сетап-автора)
 - [Параметры конфигурации (.env)](#-параметры-конфигурации)
@@ -298,22 +298,15 @@ Vitals написан с Claude в качестве основного инст�
 </details>
 
 <details>
-<summary><strong>💬 15. Сигналы и проактивный канал (Telegram)</strong></summary>
+<summary><strong>💬 15. Проактивный слой</strong></summary>
 
-- **Модели**: `Signal`, `DayContext`, `NotificationLog` (журнал отправок)
-- Домен, который **объясняет** цифры остальных четырнадцати: всё, что случилось «в моменте» и не имеет формы — «спать хочу», «голова болит», «кофе в 22». Свободный текст в Telegram → сырое сообщение в `raw_payloads` → разбор в строки `Signal` трёх видов (`state` / `symptom` / `exposure`) с эхо-подтверждением и кнопкой «не то» для отката всей пачки
-- Ключи сигналов сознательно **свободные** на период обкатки: хранятся как их написала модель и сворачиваются к каноничному имени **на чтении** (`KEY_ALIASES`) — консолидация словаря будет правкой словаря, а не миграцией
-- Страница `/signals`: лента захваченного, таблица частот ключей с реальными формулировками под каждым (материал для будущего реестра) и точечное удаление строки, которую парсер понял неправильно. Ввод — только через бота: приложение не второй бот, бот не вторая форма ввода
-- Сообщения, на которых парсер споткнулся (модель упала, кончился баланс), не теряются: утренний бриф перед сборкой делает второй заход — неделя назад, до 20 сообщений
-- `DayContext` — одна строка на день: удалёнка/офис, зал, нагрузка. Вечерний блок в 23:45 спрашивает про завтра, шаблон недели заранее заполняет то, что предсказуемо по дню недели; каждая кнопка несёт свою дату, так что ответ после полуночи попадает в нужный день
-- **Утренний бриф**: детерминированные блоки собирает код из того же кросс-доменного контекста, что и недельный дайджест, модель добавляет ровно один абзац интерпретации — упала модель, бриф всё равно придёт; пустой день = молчание, а не пустой бриф. Хранится в `weekly_digests` (`kind='daily_brief'`), виден в `/reports` (там же кнопки «Собрать бриф» и «Отправить тестовое»)
+- **Модели**: `NotificationLog`, `notification_delivery_intents` (журнал доставки)
+- **Утренний бриф**: детерминированные блоки собирает код из того же кросс-доменного контекста, что и недельный дайджест, модель добавляет ровно один абзац интерпретации — упала модель, бриф всё равно придёт; пустой день = молчание, а не пустой бриф. Хранится в `weekly_digests` (`kind='daily_brief'`), виден в `/reports`
 - **Нуджи** (подсказки в течение дня) — список спецификаций (условие, текст, кулдаун, категория-переключатель), один движок обходит реестр; добавить подсказку = одна запись. Сейчас три категории: активность, питание, свежесть данных
-- Единые ворота отправки: выключенный модуль, дедуп, тихие часы (только для нудджей) и дневной бюджет сообщений; ответы на вопросы владельца из бюджета исключены
-- Ответы на вопросы: реплай на сообщение бота или просто «почему hrv просел?» — модель видит то сообщение, на которое отвечают, и контекст последнего брифа, и ничего больше. Глубокие разборы — в Claude.ai через MCP, там 75 инструментов и модель получше
-- Сигналы и `day_context` попадают в контекст и недельного дайджеста, и брифа — с временем суток, потому что «кофе в 22» и «кофе в 9» это разные факты с одним ключом
-- Канал — за протоколом `Notifier`, выше него никто не знает про Telegram. Модуль `signals` по умолчанию **выключен** и работает как рубильник всего проактивного слоя: выключен — бот молчит совсем. Настройки (время брифа и вечернего блока, тихие часы, бюджет, категории нуджей, частота опроса Garmin, интервал и окно свежести экспорта веса, шаблон недели) — на карточке в `/settings`, сохранение перевешивает задачи на живом планировщике **без перезапуска**
-- MCP: `get_signals`, `log_signal`, `get_day_context` — Клод видит то, что владелец сказал боту
-- Настройка: `VITALS_TELEGRAM_BOT_TOKEN`, `VITALS_TELEGRAM_CHAT_ID`, `VITALS_TELEGRAM_WEBHOOK_PATH`, `VITALS_TELEGRAM_WEBHOOK_SECRET` (см. `.env.example`) — слушается **единственный** chat id, вебхук проверяется по секретному заголовку
+- Единые ворота отправки: дедуп, тихие часы (только для нуджей) и дневной бюджет сообщений
+- Настройки (время брифа, тихие часы, бюджет, категории нуджей, частота опроса Garmin, интервал и окно свежести экспорта веса) — на карточке в `/settings`, сохранение перевешивает задачи на живом планировщике **без перезапуска**
+
+> **Чего здесь больше нет.** Телеграм-бот, домен сигналов (свободный текст, разобранный моделью в строки) и `day_context` (какой это был день) удалены целиком: один токен бота и один chat id в окружении — это форма на одного пользователя, а установка на нескольких так не умеет. Ушёл вместе с ними и единственный источник **входящего** текста — того, что человек сказал о себе своими словами. Ни один прибор не производит предложение, так что раздел симптомов во врачебном отчёте сейчас пуст. Журнал доставки специально оставлен транспортно-независимым: следующий канал (пуши в PWA) добавляет строки в него, а не вторую таблицу.
 </details>
 
 ---
@@ -327,7 +320,6 @@ graph TD
     Labs[PDF-анализы / Фото] -->|LLM-парсинг| Raw
     BIA[PDF/Фото InBody] -->|LLM-парсинг| Raw
     VCF[Генетические VCF] -->|импорт| Raw
-    TGin[Telegram: свободный текст] -->|вебхук| Raw
 
     Raw --> CE[Conflict Engine]
     CE --> IL[InsightsMixin Layer]
@@ -341,7 +333,7 @@ graph TD
     FastAPI --> UI[Jinja2 + HTMX + Alpine.js]
     FastAPI --> MCP[FastMCP · streamable HTTP]
     Scheduler --> PL[Проактивный слой]
-    PL -->|ворота: бюджет, тихие часы, дедуп| TGout[Telegram: бриф, вечер, нуджи]
+    PL -->|ворота: бюджет, тихие часы, дедуп| Out[Журнал доставки · бриф, нуджи]
 
     UI --> Charts[Chart.js]
     UI --> AI[AI-Дайджесты · LLM]
@@ -352,7 +344,7 @@ graph TD
 | :--- | :--- |
 | **`vitals/`** (ядро) | Модели, сервисы, бизнес-логика. Не знает о FastAPI. Импортируется в скрипты и тесты. |
 | **`web/`** (доставка) | FastAPI-роутинг, авторизация, CSRF, шаблоны Jinja2. Вызывает сервисы, не содержит бизнес-логику. |
-| **`vitals/services/proactive/`** | Проактивный слой четырьмя швами: `channels` (как сообщение уходит), `delivery` (можно ли его отправить), `compose`/`brief` (что сказано), `inbound` (что пришло обратно), `nudges` (когда повод есть), `day_plan` и `prefs`. Ничего выше `channels` не знает слова «telegram». |
+| **`vitals/services/proactive/`** | Проактивный слой швами: `channels` (как сообщение уходит), `delivery` (можно ли его отправить), `compose`/`brief` (что сказано), `nudges` (когда повод есть) и `prefs`. Выше `channels` про транспорт не знает никто — потому его и удалось вынуть целиком, оставив шов на месте. |
 | **Фронтенд** | HTML-over-the-wire: HTMX + Alpine.js + Chart.js. Единственная оболочка — Masthead (см. [DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)). Тексты — через `vitals/i18n.py` (RU/EN). |
 
 #### Фоновые задачи (APScheduler)
@@ -371,7 +363,6 @@ graph TD
 | `garmin_pulse` | интервал в активные часы (настройка) | Лёгкий пульс: шаги за сегодня, один запрос без логина |
 | `garmin_weight_export` | каждые N мин (настройка, по умолчанию 15) | Безопасная сверка последнего подходящего локального веса с Garmin; выключенная или ненастроенная интеграция ничего не делает |
 | `daily_brief` | время из настроек (по умолчанию 11:00) | Синк Garmin → сборка брифа → отправка под бюджетом |
-| `evening_block` | время из настроек (по умолчанию 23:45) | Итог дня + вопросы про завтра |
 | `nudges` | ежечасно в :05 | Обход реестра подсказок: условие, кулдаун, категория |
 | `weekly_digest` | понедельник, 08:00 | AI-дайджест |
 
@@ -383,7 +374,7 @@ graph TD
 
 Встроенный сервер [FastMCP](https://github.com/jlowin/fastmcp) server доступен на `/mcp/` (транспорт streamable HTTP). Авторизация: OAuth 2.0 с верификацией Bearer-токенов. PKCE (`S256`) **обязателен** — запрос на `/oauth/authorize` без `code_challenge` отклоняется, а не проходит мимо проверки. Метаданные защищённого ресурса отдаются на `/.well-known/oauth-protected-resource` (RFC 9728), и ответ `401` указывает на них через `WWW-Authenticate: Bearer resource_metadata="..."`, чтобы клиент сам нашёл, где авторизоваться. Настраивается в веб-интерфейсе (раздел настроек).
 
-**75 инструментов** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурса (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`. Список инструментов фильтруется по включённым модулям: выключенный домен не показывается в `tools/list` (он и так отклонял запись), так что контекст разговора не тратится на схемы того, что владелец не отслеживает. Включили модуль обратно — инструменты вернутся при следующем подключении коннектора, без перезапуска.
+**69 инструментов** — Claude может полноценно читать и записывать данные во все домены. Плюс 2 ресурса (`vitals://profile`, `vitals://digest/latest`) и промпт `weekly_review`. Список инструментов фильтруется по включённым модулям: выключенный домен не показывается в `tools/list` (он и так отклонял запись), так что контекст разговора не тратится на схемы того, что владелец не отслеживает. Включили модуль обратно — инструменты вернутся при следующем подключении коннектора, без перезапуска.
 
 #### Чтение (33 инструмента)
 
@@ -400,6 +391,7 @@ graph TD
 | `get_skincare_logs` | Рутина ухода и наблюдения за состоянием кожи |
 | `get_genetics_snps` | Генетические варианты с фильтром по гену и/или rsid («покажи мой rs1801133») |
 | `get_active_alerts` | Нерешённые предупреждения и уведомления о конфликтах |
+| `get_proactive_state` | Состояние проактивного слоя: настройки (время брифа, бюджет, категории нуджей) и что было отправлено последним |
 | `get_weekly_digests` | Архив AI-дайджестов |
 | `check_supplement_conflicts` | Проверка добавки (по названию, RU/EN) на конфликты с генетикой, анализами, другими добавками и уходом за кожей |
 | `list_conflict_rules` | Список курируемых правил конфликтов, фильтр по домену и/или категории |
@@ -419,9 +411,6 @@ graph TD
 | `get_milestones` | Карточки целей с расчётом прогресса |
 | `get_modules` | Какие опциональные модули включены |
 | `get_trend` | Тренд метрики: наклон (день/неделя), скользящее среднее, прогноз даты до цели |
-| `get_signals` | Сигналы из бота: состояния, симптомы, воздействия (фильтры по виду, ключу, датам) |
-| `get_day_context` | Какой это был день: удалёнка/офис, зал, нагрузка |
-| `get_proactive_state` | Состояние проактивного слоя: включён ли, расписание, шаблон недели, недавние отправки (только чтение — перенастройка бота остаётся за владельцем) |
 
 #### Запись (40 инструментов)
 
@@ -459,10 +448,6 @@ graph TD
 | `add_noise_marker` | Отметить период как шумовой (исключается из тренда веса) |
 | `upsert_genetic_variant` | Добавить или обновить генетический вариант (по паре ген + rsid) |
 | `set_module` | Включить/выключить опциональный модуль |
-| `log_signal` | Записать сигнал (состояние / симптом / воздействие) — через тот же сервис, что и бот |
-| `mark_signal_misparse` | Пометить разбор сообщения как ошибочный — то же, что кнопка «не то» в боте (по `batch_id`) |
-| `log_day_context` | Записать, какой это был день — те же ответы, что владелец нажимает в вечернем блоке (догадка шаблона сохраняется рядом с ответом) |
-| `set_week_template` | Задать шаблон недели: чем считается каждый будний день, пока владелец не сказал иначе |
 | `resolve_alert` | Закрыть предупреждение — оно исчезает из `get_active_alerts` |
 | `override_alert` | Отметить блокирующее предупреждение как «принято, делаю всё равно» |
 | `generate_digest_now` | Сгенерировать свежий еженедельный AI-дайджест сейчас |
@@ -489,7 +474,7 @@ graph TD
 > **Провенанс.** Записи через коннектор помечаются источником `mcp`. В приоритете источников веса `mcp` равен ручному вводу — то есть перекрывает Garmin и не перекрывается им; между собой решает свежесть. Старые записи задним числом не перекрашиваются.
 
 > [!NOTE]
-> **Ответ платит только за то, о чём спросили.** Схемы 75 инструментов пересылаются с каждым сообщением разговора, а чтение по умолчанию отдаёт сотню строк — поэтому в ответах нет ничего, чем модель не может воспользоваться.
+> **Ответ платит только за то, о чём спросили.** Схемы 69 инструментов пересылаются с каждым сообщением разговора, а чтение по умолчанию отдаёт сотню строк — поэтому в ответах нет ничего, чем модель не может воспользоваться.
 >
 > - **Строка — это данные, а не служебка.** `serialize_row` не отдаёт колонки, которые ни один инструмент не принимает обратно (`domain`, `created_at`, `updated_at`, `raw_payload_id`), и не отдаёт незаполненные поля: отсутствующий ключ и `null` читаются одинаково, а `null` стоит токенов на каждой строке. `id`, `date` и `source` остаются — правки и удаления адресуются по id, а провенанс сам по себе ответ. Строка ужимается на 39–59%.
 > - **Гипнограмма — по запросу.** Поминутная раскладка фаз сна и события дыхания — это ~70% дневной строки Garmin, и раньше они ехали на каждом чтении последней сотни ночей. По умолчанию сворачиваются в счётчик с подсказкой (`"28 entries — call again with sleep_detail=True"`), а не исчезают: молчание модель прочитала бы как «фаз сна нет». Флаг отдельный от `intraday` — вопрос про форму одной ночи не тянет за собой все кривые окна. Чтение за 100 дней: ~96k → ~24k токенов.
@@ -566,22 +551,11 @@ docker compose up -d --build
 curl -s http://127.0.0.1:8000/health
 ```
 
-#### 6. Проактивный слой в Telegram (опционально)
+#### 6. Проактивный слой (опционально)
 
-Без этих четырёх переменных приложение работает ровно как раньше: бот молчит, вебхук отвечает 401.
+Настраивается целиком в приложении: карточка «Проактивный слой» в `/settings` задаёт время брифа, тихие часы, дневной бюджет и категории нуджей, а сохранение перевешивает задачи на живом планировщике без перезапуска. Переменных окружения для этого нет — и по замыслу не будет: расписание принадлежит человеку, а не установке.
 
-1. Создайте бота у [@BotFather](https://t.me/BotFather) → `VITALS_TELEGRAM_BOT_TOKEN`.
-2. Узнайте свой положительный id пользователя у [@userinfobot](https://t.me/userinfobot) → `VITALS_TELEGRAM_CHAT_ID`. Это должен быть **личный чат**; отрицательные id групп/супергрупп отклоняются, чтобы медицинские данные не ушли другим участникам.
-3. Сгенерируйте секретный сегмент пути и секрет заголовка:
-   ```bash
-   python -c "import secrets; print(secrets.token_urlsafe(24))"
-   ```
-   → `VITALS_TELEGRAM_WEBHOOK_PATH` и `VITALS_TELEGRAM_WEBHOOK_SECRET`.
-4. Зарегистрируйте вебхук один раз (домен должен быть доступен Telegram снаружи):
-   ```bash
-   curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" -d "url=https://<ваш-хост>/tg/<PATH>" -d "secret_token=<SECRET>"
-   ```
-5. Включите модуль **Сигналы** в `/settings` — он же рубильник всего проактивного слоя — и настройте время брифа, тихие часы и бюджет сообщений на карточке «Проактивный слой».
+Отправлять брифы пока некуда: телеграм-бота больше нет, пуши в PWA — следующий канал. До тех пор бриф собирается по расписанию и лежит в `/reports`.
 
 ---
 
@@ -734,10 +708,6 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_MCP_CLIENT_SECRET` | OAuth Client Secret для MCP | *Обязательно* |
 | `VITALS_MCP_REDIRECT_HOSTS` | Разрешённые хосты OAuth-callback'ов (через запятую, только https) | `claude.ai,chatgpt.com,oauth-redirect.googleusercontent.com` |
 | `VITALS_EXTERNAL_API_TOKEN` | Токен для сервер-сервер Glance API | *Опционально* |
-| `VITALS_TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather | *Опционально* |
-| `VITALS_TELEGRAM_CHAT_ID` | Единственный чат, который бот слушает | *Опционально* |
-| `VITALS_TELEGRAM_WEBHOOK_PATH` | Секретный сегмент URL вебхука (`/tg/<path>`) | *Опционально* |
-| `VITALS_TELEGRAM_WEBHOOK_SECRET` | Секрет из заголовка `X-Telegram-Bot-Api-Secret-Token` | *Опционально* |
 
 > Расписаний здесь нет намеренно: время брифа и вечернего блока, тихие часы, дневной бюджет сообщений, категории нуджей, частота опроса Garmin, интервал и окно свежести экспорта веса живут в БД и правятся на карточке «Проактивный слой» в `/settings` — эти настройки должны применяться без перезапуска контейнера.
 </details>
@@ -810,13 +780,13 @@ The interface standardizes entirely on a single UI shell — **Masthead** — fe
 
 Unlike typical fitness trackers, Vitals prioritizes **preserving raw historical data**. It serves as a smart wellness navigator — uncovering correlations between sleep, workouts, supplements, and body composition. Not a watchdog — a co-pilot.
 
-Vitals now has a **voice**: a proactive layer over Telegram delivers a morning brief, asks about tomorrow in the evening, and catches free text ("headache", "coffee at 22:00") into its own signals domain. The dashboard no longer waits to be opened.
+Vitals has a **voice**: a proactive layer builds a morning brief and condition-driven nudges by itself rather than waiting for the dashboard to be opened. There is one transport today — the `/reports` page itself; web push in the PWA is next.
 
 ### Why I built this
 
 My data was scattered across many apps: Garmin, Hevy, GLP-1 and HRT notes, a spreadsheet with lab results, a file with supplements. None of them could cross-reference sleep with training recovery or link therapy side effects to nutrition — I had to keep it all in my head.
 
-Built with Claude as the primary coding tool — but the data model, architecture, and domain design are mine. The MCP layer is the key part: Claude can read and write data across all 15 domains in real time, answering questions like "how did my sleep this week affect my recovery?" with actual numbers.
+Built with Claude as the primary coding tool — but the data model, architecture, and domain design are mine. The MCP layer is the key part: Claude can read and write data across all 14 domains in real time, answering questions like "how did my sleep this week affect my recovery?" with actual numbers.
 
 <p align="center">
   <img src="./gifs/MCP_en.gif" alt="Claude querying Vitals via MCP" width="100%">
@@ -848,8 +818,8 @@ Built with Claude as the primary coding tool — but the data model, architectur
 
 **🤖 AI & Integrations**
 - Weekly AI digests (Claude / GPT via OpenRouter) from versioned closed-period context: Garmin and Hevy, GLP-1 and HRT, body composition, labs, nutrition, and the other enabled domains
-- Proactive Telegram channel: morning brief, evening block, condition-driven nudges
-- 75 MCP tools for Claude.ai (read + write + override)
+- Proactive layer: a morning brief and condition-driven nudges, with quiet hours and a daily message budget
+- 69 MCP tools for Claude.ai (read + write + override)
 - OAuth 2.0 + PKCE authorization for MCP
 - Full data export for LLM (copy-paste ready)
 - Atomic database backup & restore
@@ -891,7 +861,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 - [Core Philosophy](#-core-philosophy)
 - [Supported Domains (15 modules)](#-supported-domains)
 - [Technical Architecture](#-technical-architecture)
-- [MCP Integration with Claude.ai (75 tools)](#-mcp-integration-with-claudeai-1)
+- [MCP Integration with Claude.ai (69 tools)](#-mcp-integration-with-claudeai-1)
 - [Quick Start (Docker Compose)](#-quick-start)
 - [Secure Deployment (Creator's Setup)](#-secure-deployment-creators-setup)
 - [Configuration (.env)](#-configuration)
@@ -1067,22 +1037,15 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 </details>
 
 <details>
-<summary><strong>💬 15. Signals & Proactive Channel (Telegram)</strong></summary>
+<summary><strong>💬 15. Proactive Layer</strong></summary>
 
-- **Models**: `Signal`, `DayContext`, `NotificationLog` (the send journal)
-- The domain that **explains** the numbers in the other fourteen: everything that happens "in the moment" and has no shape — "can't keep my eyes open", "headache", "coffee at 22:00". Free text in Telegram → the raw message into `raw_payloads` → parsed into `Signal` rows of three kinds (`state` / `symptom` / `exposure`), echoed back with a "wrong" button that undoes the whole batch
-- Signal keys stay deliberately **free** during the shake-out period: stored exactly as the parser wrote them and folded to a canonical name **on read** (`KEY_ALIASES`) — consolidating the vocabulary is a dict edit, not a migration
-- The `/signals` page: the capture feed, a key-frequency table showing the actual phrasings behind each key (the raw material for a future closed registry), and per-row deletion when the parser got one wrong. Capture happens through the bot only — the app is not a second bot, the bot is not a second input form
-- Messages the parser choked on (model down, no balance) aren't lost: the morning brief takes a second pass before it assembles — one week back, up to 20 messages
-- `DayContext` — one row per day: remote/office, gym, workload. The evening block asks about tomorrow at 23:45; the week template pre-fills what a weekday can actually predict. Every button carries its own date, so a tap after midnight still answers the right day
-- **Morning brief**: the deterministic blocks are built by code from the same cross-domain context the weekly digest assembles, and the model contributes exactly one interpretation paragraph — if it fails, the brief still arrives; an empty day is silence, not an empty brief. Stored in `weekly_digests` (`kind='daily_brief'`), visible in `/reports` along with "Build brief" and "Send a test message" buttons
-- **Nudges** — a list of specs (condition, text, cooldown, category toggle) walked by one engine; adding a nudge is a single entry. Three categories today: activity, nutrition, data freshness
-- One gate for everything outgoing: module off, dedupe, quiet hours (nudges only) and a daily message budget; replies to the owner are deliberately exempt from the budget
-- Answering questions: a reply to one of the bot's messages, or just "why is my hrv down?" — the model sees the message being replied to plus the context the last brief was built on, and nothing else. Deep analysis belongs in Claude.ai over MCP, which has 75 tools and a better model
-- Signals and `day_context` reach both the weekly digest and the brief, with the hour attached — "coffee at 22:00" and "coffee at 09:00" are opposite facts wearing the same key
-- The channel sits behind a `Notifier` protocol — nothing above it knows about Telegram. The `signals` module is **off by default** and doubles as the master switch for the whole proactive layer: off means the bot says nothing at all. Brief and evening times, quiet hours, budget, nudge categories, the Garmin poll rate, the weight-export interval and freshness window, and the week template live on a card in `/settings`, and saving re-registers the jobs on the running scheduler **without a restart**
-- MCP: `get_signals`, `log_signal`, `get_day_context` — Claude can see what the owner told the bot
-- Setup: `VITALS_TELEGRAM_BOT_TOKEN`, `VITALS_TELEGRAM_CHAT_ID`, `VITALS_TELEGRAM_WEBHOOK_PATH`, `VITALS_TELEGRAM_WEBHOOK_SECRET` (see `.env.example`) — exactly **one** chat id is listened to, and the webhook is verified by a secret header
+- **Models**: `NotificationLog`, `notification_delivery_intents` (the delivery journal)
+- **Morning brief**: the deterministic blocks are assembled by code from the same cross-domain context the weekly digest reads, and the model adds exactly one paragraph of interpretation — if the model is down the brief still arrives; an empty day means silence, not an empty brief. Stored in `weekly_digests` (`kind='daily_brief'`), visible in `/reports`
+- **Nudges** — a list of specs (condition, text, cooldown, category toggle) walked by one engine; adding a hint is one entry. Three categories today: activity, nutrition, data freshness
+- One set of gates on the way out: dedupe, quiet hours (nudges only) and a daily message budget
+- Settings (brief time, quiet hours, budget, nudge categories, Garmin poll frequency, weight-export interval and freshness window) live on a card in `/settings`; saving reschedules the jobs on the live scheduler **without a restart**
+
+> **What is no longer here.** The Telegram bot, the signals domain (free text parsed by a model into typed rows) and `day_context` (what a given day was made of) were removed outright: one bot token and one chat id in the environment is a single-user shape, and a shared installation cannot have it. Removing it also removed the only source of **inbound** text — what a person says about themselves in their own words. No device produces a sentence, so the symptoms section of the doctor's report is empty for now. The delivery journal is deliberately transport-agnostic: the next channel (web push in the PWA) adds rows to it rather than a second table.
 </details>
 
 ---
@@ -1096,7 +1059,6 @@ graph TD
     Labs[Lab PDFs / Images] -->|LLM parsing| Raw
     BIA[InBody PDFs / Images] -->|LLM parsing| Raw
     VCF[Genetics VCF] -->|import| Raw
-    TGin[Telegram: free text] -->|webhook| Raw
 
     Raw --> CE[Conflict Engine]
     CE --> IL[InsightsMixin Layer]
@@ -1110,7 +1072,7 @@ graph TD
     FastAPI --> UI[Jinja2 + HTMX + Alpine.js]
     FastAPI --> MCP[FastMCP · streamable HTTP]
     Scheduler --> PL[Proactive layer]
-    PL -->|gate: budget, quiet hours, dedupe| TGout[Telegram: brief, evening, nudges]
+    PL -->|gate: budget, quiet hours, dedupe| Out[Delivery journal · brief, nudges]
 
     UI --> Charts[Chart.js]
     UI --> AI[AI Digests · LLM]
@@ -1121,7 +1083,7 @@ graph TD
 | :--- | :--- |
 | **`vitals/`** (core) | Models, services, business logic. Zero web dependencies. Importable in scripts and tests. |
 | **`web/`** (delivery) | FastAPI routing, auth, CSRF, Jinja2 templates. Calls services — contains no business logic. |
-| **`vitals/services/proactive/`** | The proactive layer along four seams: `channels` (how a message leaves), `delivery` (whether it may), `compose`/`brief` (what is said), `inbound` (what comes back), `nudges` (when there's a reason at all), plus `day_plan` and `prefs`. Nothing above `channels` knows the word "telegram". |
+| **`vitals/services/proactive/`** | The proactive layer along its seams: `channels` (how a message leaves), `delivery` (whether it may), `compose`/`brief` (what is said), `nudges` (when there's a reason at all), plus `prefs`. Nothing above `channels` knows about the transport — which is why the transport could be taken out whole, leaving the seam in place. |
 | **Frontend** | HTML-over-the-wire: HTMX + Alpine.js + Chart.js. One shell — Masthead (see [DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)). All copy flows through `vitals/i18n.py` (EN/RU). |
 
 #### Background jobs (APScheduler)
@@ -1140,7 +1102,6 @@ Every job runs under a Redis lock (one runner across workers) and stamps a heart
 | `garmin_pulse` | interval, active hours (setting) | Light pulse: today's steps, one request, no login |
 | `garmin_weight_export` | every N minutes (setting, default 15) | Safely reconcile the latest eligible local weight with Garmin; no-op while disabled or unconfigured |
 | `daily_brief` | from settings (default 11:00) | Garmin sync → assemble the brief → send under budget |
-| `evening_block` | from settings (default 23:45) | Day summary + questions about tomorrow |
 | `nudges` | hourly at :05 | Walks the nudge registry: condition, cooldown, category |
 | `weekly_digest` | Mondays, 08:00 | AI digest |
 
@@ -1152,7 +1113,7 @@ Brief time, evening time, the Garmin poll rate, the weight-export interval and i
 
 Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streamable HTTP transport). Authorization: OAuth 2.0 with signed Bearer token verification. PKCE (`S256`) is **mandatory** — an `/oauth/authorize` request without a `code_challenge` is rejected rather than skipping the check. Protected-resource metadata is served at `/.well-known/oauth-protected-resource` (RFC 9728), and a `401` points at it via `WWW-Authenticate: Bearer resource_metadata="..."` so the client can discover where to authorize. Configured in the web dashboard settings.
 
-**75 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt. The listing is filtered by enabled modules: a switched-off domain is not shown in `tools/list` at all (it already refused writes), so a conversation does not spend its context on schemas for what the owner does not track. Switch a module back on and its tools return on the connector's next reconnect, no restart needed.
+**69 tools** — Claude can fully read and write data across all domains. Plus 2 resources (`vitals://profile`, `vitals://digest/latest`) and a `weekly_review` prompt. The listing is filtered by enabled modules: a switched-off domain is not shown in `tools/list` at all (it already refused writes), so a conversation does not spend its context on schemas for what the owner does not track. Switch a module back on and its tools return on the connector's next reconnect, no restart needed.
 
 #### Read (33 tools)
 
@@ -1169,6 +1130,7 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `get_skincare_logs` | Skincare routine logs and skin observations |
 | `get_genetics_snps` | Genetic SNPs filtered by gene and/or rsid ("show me my rs1801133") |
 | `get_active_alerts` | Unresolved warnings and conflict notifications |
+| `get_proactive_state` | State of the proactive layer: its settings (brief time, budget, nudge categories) and what was sent last |
 | `get_weekly_digests` | Historical AI digest archive |
 | `check_supplement_conflicts` | Check a supplement (by name, RU/EN) against genetics, labs, other supplements, and skincare |
 | `list_conflict_rules` | List the curated conflict-rule catalog, filterable by domain and/or category |
@@ -1188,9 +1150,6 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `get_milestones` | Goal cards with computed progress (filter by status) |
 | `get_modules` | Which optional modules are enabled |
 | `get_trend` | Metric trend: slope (day/week), latest rolling mean, projected date-to-target |
-| `get_signals` | Signals captured by the bot: states, symptoms, exposures (filter by kind, key, dates) |
-| `get_day_context` | What kind of day it was: remote/office, gym, workload |
-| `get_proactive_state` | State of the proactive layer: on/off, schedule, week template, recent sends (read-only — retiming or muting the bot stays with the owner) |
 
 #### Write (40 tools)
 
@@ -1228,10 +1187,6 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 | `add_noise_marker` | Mark a range as noise (excluded from the weight trend) |
 | `upsert_genetic_variant` | Add or update a genetic variant (keyed on gene + rsid) |
 | `set_module` | Enable/disable an optional module |
-| `log_signal` | Record a signal (state / symptom / exposure) — through the same service the bot uses |
-| `mark_signal_misparse` | Flag one message's parse as wrong — the bot's "не то" button, by `batch_id` |
-| `log_day_context` | Record what kind of day it was — the same answers the owner taps in the evening block (the template's guess is kept next to the answer) |
-| `set_week_template` | Set the week template: what each weekday is assumed to be until the owner says otherwise |
 | `resolve_alert` | Resolve an alert — it disappears from `get_active_alerts` |
 | `override_alert` | Mark a blocking alert overridden — "noted, doing it anyway" |
 | `generate_digest_now` | Generate a fresh weekly AI digest now |
@@ -1258,7 +1213,7 @@ Built-in [FastMCP](https://github.com/jlowin/fastmcp) server at `/mcp/` (streama
 > **Provenance.** Records written through the connector are stamped `source = "mcp"`. In the weight source priority `mcp` ranks equal to manual entry — it overrides a Garmin import and is not overridden by one; between equals, recency decides. Existing rows are not relabelled retroactively.
 
 > [!NOTE]
-> **A response pays only for what was asked.** The 75 tool schemas are re-sent with every message of a conversation, and a read answers with a hundred rows by default — so responses carry nothing the model cannot act on.
+> **A response pays only for what was asked.** The 69 tool schemas are re-sent with every message of a conversation, and a read answers with a hundred rows by default — so responses carry nothing the model cannot act on.
 >
 > - **A row is data, not bookkeeping.** `serialize_row` omits the columns no tool accepts back (`domain`, `created_at`, `updated_at`, `raw_payload_id`) and every unset field: an absent key and a `null` read the same, and the `null` costs tokens on every row. `id`, `date` and `source` stay — edits and deletes address rows by id, and provenance is an answer in its own right. Rows shrink 39–59%.
 > - **The hypnogram is opt-in.** The per-minute sleep-stage timeline and breathing events are ~70% of a Garmin daily row, and used to ride along on every read of the last hundred nights. They now fold to a count plus a hint (`"28 entries — call again with sleep_detail=True"`) rather than vanishing: silence would read as "this night has no stages". The switch is separate from `intraday`, so asking about the shape of one night does not pull every curve in the window. A 100-day read drops from ~96k to ~24k tokens.
@@ -1335,22 +1290,11 @@ Dashboard: `http://127.0.0.1:8000`
 curl -s http://127.0.0.1:8000/health
 ```
 
-#### 6. Proactive Telegram layer (optional)
+#### 6. Proactive layer (optional)
 
-Leave these four empty and the app behaves exactly as before: the bot never sends, and the webhook fails closed with 401.
+Configured entirely inside the app: the "Proactive layer" card in `/settings` sets the brief time, quiet hours, the daily budget and the nudge categories, and saving reschedules the jobs on the live scheduler without a restart. There are no environment variables for any of it, by design — a schedule belongs to a person, not to an installation.
 
-1. Create a bot with [@BotFather](https://t.me/BotFather) → `VITALS_TELEGRAM_BOT_TOKEN`.
-2. Get your positive user id from [@userinfobot](https://t.me/userinfobot) → `VITALS_TELEGRAM_CHAT_ID`. It must be a **private chat**; negative group/supergroup ids are rejected so health data cannot be sent to other members.
-3. Generate the secret URL segment and the header secret:
-   ```bash
-   python -c "import secrets; print(secrets.token_urlsafe(24))"
-   ```
-   → `VITALS_TELEGRAM_WEBHOOK_PATH` and `VITALS_TELEGRAM_WEBHOOK_SECRET`.
-4. Register the webhook once (the host must be reachable by Telegram):
-   ```bash
-   curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" -d "url=https://<your-host>/tg/<PATH>" -d "secret_token=<SECRET>"
-   ```
-5. Enable the **Signals** module in `/settings` — it is the master switch for the whole proactive layer — then set brief time, quiet hours and the daily message budget on the "Proactive layer" card.
+There is nowhere to send a brief yet: the Telegram bot is gone and web push is the next channel. Until then the brief is built on schedule and kept in `/reports`.
 
 ---
 
@@ -1505,10 +1449,6 @@ Two-factor sign-in has no variable: it is off by default and switched on in the 
 | `VITALS_MCP_CLIENT_SECRET` | MCP OAuth Client Secret | *Required* |
 | `VITALS_MCP_REDIRECT_HOSTS` | Allowed OAuth callback hosts (comma-separated, https only) | `claude.ai,chatgpt.com,oauth-redirect.googleusercontent.com` |
 | `VITALS_EXTERNAL_API_TOKEN` | Token for server-server Glance API | *Optional* |
-| `VITALS_TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | *Optional* |
-| `VITALS_TELEGRAM_CHAT_ID` | The only chat the bot listens to | *Optional* |
-| `VITALS_TELEGRAM_WEBHOOK_PATH` | Secret segment of the webhook URL (`/tg/<path>`) | *Optional* |
-| `VITALS_TELEGRAM_WEBHOOK_SECRET` | Secret in the `X-Telegram-Bot-Api-Secret-Token` header | *Optional* |
 
 > No schedules here, on purpose: brief and evening times, quiet hours, the daily message budget, nudge categories, the Garmin poll rate, and the weight-export interval and freshness window live in the database and are edited on the "Proactive layer" card in `/settings` — those settings have to apply without restarting the container.
 </details>

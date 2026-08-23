@@ -726,16 +726,17 @@ async def test_settings_restart_endpoint(auth_client, monkeypatch):
 async def test_settings_save_proactive_flags_adjusted_values(auth_client):
     """prefs.sanitize() (called inside set_preferences_bundle) silently clamps
     out-of-range input. The redirect must say so instead of a bare "saved",
-    or the user has no way to know their number was changed underneath them."""
+    or the user has no way to know their number was changed underneath them.
+
+    Clamped on ``garmin_sync_hours`` rather than ``daily_budget``: the budget
+    gates a send, and the card stopped offering the controls that do that when
+    the transport went, so the handler no longer accepts it from a form.
+    """
     r = await auth_client.post(
         "/settings/proactive",
         data={
             "brief_time": "11:00",
-            "evening_time": "23:45",
-            "quiet_start": "02:00",
-            "quiet_end": "10:00",
-            "daily_budget": "9000",  # BUDGET_RANGE is (1, 12) — gets clamped
-            "garmin_sync_hours": "6",
+            "garmin_sync_hours": "9000",  # SYNC_HOURS_RANGE is (1, 24)
             "pulse_seconds": "900",
             "pulse_start_hour": "8",
             "pulse_end_hour": "24",
@@ -745,16 +746,70 @@ async def test_settings_save_proactive_flags_adjusted_values(auth_client):
     assert r.headers["location"] == "/settings?saved=proactive&adjusted=1"
 
 
+async def test_saving_the_card_does_not_reset_the_hidden_delivery_policy(
+    auth_client, db_session
+):
+    """The risk created by taking those controls off the card.
+
+    ``Form(default)`` fills in a field the browser did not post, so a save from
+    the reduced card would have written the *defaults* over quiet hours, the
+    budget and the nudge switches — settings the owner had chosen, silently
+    reset by a form that no longer mentions them. The handler reads the stored
+    bundle and overlays only what the card still asks about.
+    """
+
+    from vitals.services.proactive import prefs
+
+    scope = await prefs.resolve_legacy_preferences_scope(
+        db_session, actor_username="tester"
+    )
+    await prefs.set_preferences_bundle(
+        db_session,
+        {
+            **(
+                await prefs.get_preferences_bundle(
+                    db_session, scope=scope, actor_username="tester"
+                )
+            ).as_flat_dict(),
+            "quiet_start": "01:15",
+            "daily_budget": 11,
+            "nudges": {"activity": False, "nutrition": True, "data": False},
+        },
+        scope=scope,
+        actor_username="tester",
+    )
+    await db_session.commit()
+
+    r = await auth_client.post(
+        "/settings/proactive",
+        data={
+            "brief_time": "09:30",
+            "garmin_sync_hours": "6",
+            "pulse_seconds": "900",
+            "pulse_start_hour": "8",
+            "pulse_end_hour": "24",
+        },
+    )
+    assert r.status_code == 303
+
+    db_session.expire_all()
+    after = (
+        await prefs.get_preferences_bundle(
+            db_session, scope=scope, actor_username="tester"
+        )
+    ).as_flat_dict()
+    assert after["brief_time"] == "09:30", "the field the card does offer is saved"
+    assert after["quiet_start"] == "01:15"
+    assert after["daily_budget"] == 11
+    assert after["nudges"] == {"activity": False, "nutrition": True, "data": False}
+
+
 async def test_settings_save_proactive_no_adjusted_flag_in_range(auth_client):
     """The flip side: an in-range save must not claim anything was adjusted."""
     r = await auth_client.post(
         "/settings/proactive",
         data={
             "brief_time": "11:00",
-            "evening_time": "23:45",
-            "quiet_start": "02:00",
-            "quiet_end": "10:00",
-            "daily_budget": "4",
             "garmin_sync_hours": "6",
             "pulse_seconds": "900",
             "pulse_start_hour": "8",

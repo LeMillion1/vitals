@@ -171,25 +171,10 @@ async def _ready(
 
     subject = await db_session.get(HealthSubject, legacy_owner_roots.subject_id)
     subject.timezone = timezone
-    module_policy = await db_session.scalar(
-        select(SubjectSetting)
-        .where(
-            SubjectSetting.subject_id == legacy_owner_roots.subject_id,
-            SubjectSetting.key == "enabled_modules",
-        )
-        .with_for_update()
-    )
-    if module_policy is None:
-        module_policy = SubjectSetting(
-            subject_id=legacy_owner_roots.subject_id,
-            key="enabled_modules",
-            value={},
-        )
-        db_session.add(module_policy)
-    module_policy.value = {
-        **(module_policy.value if isinstance(module_policy.value, dict) else {}),
-        prefs.MODULE_KEY: True,
-    }
+    # No module has to be switched on here any more. The proactive layer used to
+    # be gated on ``signals``, which was also the free-text capture domain, and
+    # this fixture existed largely to turn it on; both the domain and the gate
+    # are gone, and the layer's own preferences decide what it sends.
 
     async def policy(*_args, **_kwargs):
         return {

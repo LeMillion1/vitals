@@ -301,9 +301,8 @@ def test_service_strings_and_case_errors_are_gone():
     from vitals.i18n import STRINGS
 
     ru = STRINGS["ru"]
-    # "2 ПРОМАХОВ" — a caption takes the plain plural, not the form that only
-    # agrees with five.
-    assert ru["signals.metric_misparse"] == "Промахи"
+    # The other half of this — "2 ПРОМАХОВ" on the signals page, where a caption
+    # had taken the form that only agrees with five — went with the page.
     assert ru["glp1.toggle_form"] == "Новая запись"
     # "Метрика #1" restated the label of the field directly under it.
     charts = (ROOT / "web/templates/charts/index.html").read_text(encoding="utf-8")

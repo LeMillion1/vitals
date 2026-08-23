@@ -624,8 +624,8 @@ DIGEST_SYSTEM = """\
 Контекст имеет schema_version=2. Любой домен может быть null, но null сам по себе НЕ означает «пользователь не ведёт данные»: сначала читай coverage.
 - report_meta: report_date, mode, period_start / period_end, previous_start / previous_end и period_days. closed_period состоит из ПОЛНОСТЬЮ ЗАКРЫТЫХ дней и заканчивается вчера, если отчёт сделан сегодня; daily_brief — отдельный текущий день. Период называй по period_start–period_end.
 - coverage: по каждому домену enabled/status, число строк текущего и прошлого окон, first_date/last_date, freshness_days (возраст последней записи относительно period_end) и truncated. Говорить «данных нет» можно только если модуль enabled, status=empty и truncated=false. disabled — сознательно отключено; truncated — данных может быть больше. metric_samples и period_stats.sample_counts — реальные знаменатели отдельных показателей.
-- days: ТАБЛИЦА ПО ДНЯМ — одна строка на каждый день периода, где домены УЖЕ СВЕДЕНЫ: полный компактный Garmin daily, вес и замеры, все макросы, отдельные массивы garmin_activities и hevy_workouts, GLP-1/ГЗТ события, уход и resolved day context. Отсутствующий ключ = данных за день нет. Legacy workout — только одна Hevy-сессия для совместимости; для анализа используй массив hevy_workouts.
-  ЭТО ГЛАВНЫЙ ИНСТРУМЕНТ ДЛЯ СВЯЗЕЙ. Читай таблицу по столбцам и ищи совпадения со сдвигом: тренировка → сон и HRV следующей ночи; exposure вечером → метрика наутро; тяжёлый день или офис → восстановление; дни с низкими калориями → шаги, стресс, вес через 2-3 дня. Называй связь С ДАТАМИ («после сессии 28-го HRV просел на две ночи») — без дат это не наблюдение, а общая фраза. Если совпадение однократное — так и скажи, что это одно совпадение, а не закономерность.
+- days: ТАБЛИЦА ПО ДНЯМ — одна строка на каждый день периода, где домены УЖЕ СВЕДЕНЫ: полный компактный Garmin daily, вес и замеры, все макросы, отдельные массивы garmin_activities и hevy_workouts, GLP-1/ГЗТ события и уход. Отсутствующий ключ = данных за день нет. Legacy workout — только одна Hevy-сессия для совместимости; для анализа используй массив hevy_workouts.
+  ЭТО ГЛАВНЫЙ ИНСТРУМЕНТ ДЛЯ СВЯЗЕЙ. Читай таблицу по столбцам и ищи совпадения со сдвигом: тренировка → сон и HRV следующей ночи; exposure вечером → метрика наутро; плотный день тренировок → восстановление; дни с низкими калориями → шаги, стресс, вес через 2-3 дня. Называй связь С ДАТАМИ («после сессии 28-го HRV просел на две ночи») — без дат это не наблюдение, а общая фраза. Если совпадение однократное — так и скажи, что это одно совпадение, а не закономерность.
 - user_profile: возраст, рост, программа, цели
 - weight: последний замер as-of period_end, MA7 и тренд, noise_markers, последние антропометрические measurements и measurement_delta
   ВАЖНО: если активен noise_marker, то ma7_date — это последний чистый день ДО начала шума, а не сегодня. Не сравнивай latest_kg и ma7_kg как если бы они были одновременными. Разрыв между ними объясняется давностью MA, а не текущим шумом.
@@ -645,7 +645,6 @@ DIGEST_SYSTEM = """\
 - hrt: cycle.items и schedule — назначенный протокол, planned_administrations — план, doses — факт текущего окна, comparison_doses — факт прошлого; side_effects тоже разделены. Связывай вмешательство со сном/HRV, анализами, кожей и настроением, но не давай назначения доз.
 - supplements: текущий справочник, а не дневной adherence-log; skincare: продукты, реальные daily logs и observations; genetics: только курированные impact/interpretation/action_notes; alerts: активные предупреждения as-of среза.
 - timeline: ручные события и только не дублирующие доменные блоки derived lifecycle events. certainty=audit_timestamp означает приблизительную дату изменения справочника.
-- day_context: planned — догадка шаблона, answers — ручные переопределения, resolved — их итог; source_by_field показывает силу каждого поля. Вывод на одном template-поле не строй.
 - milestones: активные цели с прогрессом и дедлайнами
 
 ИНВАРИАНТЫ (нарушение = баг):
@@ -664,7 +663,7 @@ DIGEST_SYSTEM = """\
 Главный критерий: отчёт бесполезен, если пользователь мог получить то же самое, открыв дашборд. Все текущие значения он уже видит — там они крупнее и свежее. Ты нужен ради того, чего на экране нет физически, в этом порядке приоритета:
 
 1. ИЗМЕНЕНИЕ. Что сдвинулось против прошлого периода и насколько (period_stats.current vs previous). Пересказ текущего значения без дельты — впустую потраченный абзац.
-2. СВЯЗЬ МЕЖДУ ДОМЕНАМИ. Это то, чего он ждёт и чего пока не получает. Работай по таблице days: бери день, где один столбец заметно отклонился, и смотри, что стояло в остальных столбцах в этот день и в соседние. Тренировка ↔ сон и HRV следующей ночи; exposure вечером ↔ метрика наутро; тяжёлый день или офис ↔ восстановление; провал калорий ↔ шаги, стресс, вес через пару дней; HRT/добавки ↔ анализы, кожа, настроение.
+2. СВЯЗЬ МЕЖДУ ДОМЕНАМИ. Это то, чего он ждёт и чего пока не получает. Работай по таблице days: бери день, где один столбец заметно отклонился, и смотри, что стояло в остальных столбцах в этот день и в соседние. Тренировка ↔ сон и HRV следующей ночи; exposure вечером ↔ метрика наутро; плотный день тренировок ↔ восстановление; провал калорий ↔ шаги, стресс, вес через пару дней; HRT/добавки ↔ анализы, кожа, настроение.
    Связь без дат не считается. «Сон связан с нагрузкой» — пустая фраза, её можно написать не глядя в данные. «28-го сессия на 11 т, в ночь после неё HRV 41 против обычных 53, и это повторилось 1-го» — наблюдение. Если ни одного такого совпадения в данных нет — скажи об этом одной строкой и не подменяй его общими словами о том, как связаны домены вообще.
    Минимум одна такая проверенная по датам связь на отчёт, если данные вообще позволяют её найти.
 3. ДРЕЙФ И ТРАЕКТОРИЯ. Куда всё идёт, если ничего не менять: labs.trends внутри нормы, наклон веса против дедлайна цели, тоннаж от периода к периоду.
@@ -694,8 +693,8 @@ INPUT DATA (JSON):
 The context has schema_version=2. Any domain may be null, but null alone does NOT mean the user does not track it: read coverage first.
 - report_meta: report_date, mode, period_start / period_end, previous_start / previous_end and period_days. closed_period contains FULLY CLOSED days and ends yesterday when generated today; daily_brief is the explicit current-day mode. Name the period by period_start–period_end.
 - coverage: enabled/status, current/previous row counts, first_date/last_date, freshness_days (age of the latest row relative to period_end), and truncated for every domain. Say "there is no data" only when the module is enabled, status=empty and truncated=false. disabled is an owner choice; truncated means more data may exist. metric_samples and period_stats.sample_counts are the real denominators for individual metrics.
-- days: THE DAY TABLE — one row per day with a compact full Garmin daily row, weight and measurements, every macro, separate garmin_activities and hevy_workouts arrays, GLP-1/HRT events, skincare and resolved day context. A missing key means no value for that day. Legacy workout is only one Hevy session for compatibility; use hevy_workouts for analysis.
-  THIS IS THE MAIN TOOL FOR FINDING LINKS. Read it column-wise and look for shifted coincidences: a session → next night's sleep and HRV; an evening exposure → the next morning's metric; a heavy or office day → recovery; low-calorie days → steps, stress, weight two or three days later. Name the link WITH DATES ("after the session on the 28th, HRV sat two nights below its usual") — without dates it isn't an observation, it's a generality. If a coincidence happens once, say it happened once rather than calling it a pattern.
+- days: THE DAY TABLE — one row per day with a compact full Garmin daily row, weight and measurements, every macro, separate garmin_activities and hevy_workouts arrays, GLP-1/HRT events and skincare. A missing key means no value for that day. Legacy workout is only one Hevy session for compatibility; use hevy_workouts for analysis.
+  THIS IS THE MAIN TOOL FOR FINDING LINKS. Read it column-wise and look for shifted coincidences: a session → next night's sleep and HRV; an evening exposure → the next morning's metric; a dense run of sessions → recovery; low-calorie days → steps, stress, weight two or three days later. Name the link WITH DATES ("after the session on the 28th, HRV sat two nights below its usual") — without dates it isn't an observation, it's a generality. If a coincidence happens once, say it happened once rather than calling it a pattern.
 - user_profile: age, height, program, goals
 - weight: latest reading as of period_end, MA7 and trend, noise_markers, recent anthropometric measurements and measurement_delta
   IMPORTANT: if a noise_marker is active, ma7_date is the last clean day BEFORE the noise started — not today. Do NOT compare latest_kg and ma7_kg as if they are simultaneous. Any gap between them reflects how stale the MA is, not current noise.
@@ -715,7 +714,6 @@ The context has schema_version=2. Any domain may be null, but null alone does NO
 - hrt: cycle.items/schedule are the prescribed plan; planned_administrations are planned; doses are current-window facts and comparison_doses are previous-window facts; side effects are split likewise. Relate the intervention to sleep/HRV, labs, skin and mood, but do not prescribe doses.
 - supplements is a current catalog, not a daily adherence log; skincare has products, actual daily logs and observations; genetics contains curated impact/interpretation/action_notes only; alerts are active warnings as of the slice.
 - timeline: manual events plus only derived lifecycle events not duplicated by first-class blocks. certainty=audit_timestamp means an approximate catalog-change date.
-- day_context: planned is the template guess, answers are manual overrides, resolved is the effective result, and source_by_field carries the strength of each field. Do not build a conclusion on one template-only field.
 - milestones: active goals with progress and deadlines
 
 INVARIANTS (breaking = bug):
@@ -734,7 +732,7 @@ WHAT TO WRITE:
 The test that matters: the report is useless if the user could have got the same thing by opening the dashboard. He already sees every current value there — bigger and fresher. You exist for what the screen physically cannot show, in this order of priority:
 
 1. CHANGE. What moved against the previous period and by how much (period_stats.current vs previous). Restating a current value without a delta is a wasted paragraph.
-2. CROSS-DOMAIN LINKS. This is what he is waiting for and not getting. Work off the days table: take a day where one column moved noticeably and look at what the other columns held that day and the days around it. Training ↔ next night's sleep and HRV; an evening exposure ↔ the next morning's metric; a heavy or office day ↔ recovery; a calorie dip ↔ steps, stress, weight a couple of days later; HRT/supplements ↔ labs, skin, mood.
+2. CROSS-DOMAIN LINKS. This is what he is waiting for and not getting. Work off the days table: take a day where one column moved noticeably and look at what the other columns held that day and the days around it. Training ↔ next night's sleep and HRV; an evening exposure ↔ the next morning's metric; a dense run of sessions ↔ recovery; a calorie dip ↔ steps, stress, weight a couple of days later; HRT/supplements ↔ labs, skin, mood.
    A link without dates doesn't count. "Sleep is related to load" is an empty sentence anyone could write without opening the data. "The session on the 28th ran 11 t, HRV that night was 41 against a usual 53, and it repeated on the 1st" is an observation. If no such coincidence exists in the data — say so in one line rather than substituting generalities about how domains relate.
    At least one date-checked link per report, whenever the data allows one to be found.
 3. DRIFT AND TRAJECTORY. Where this ends up if nothing changes: labs.trends inside the normal range, the weight slope against a goal deadline, tonnage period over period.
@@ -2340,16 +2338,13 @@ async def assemble_context(
         extra={"event_limit": _TIMELINE_LIMIT},
     )
 
-    # Day context — what each day was *made of*: office or remote, gym or not, how
-    # heavy it turned out. Every other block says what the body did; this says what
-    # the week asked of it, which is the whole difference between "HRV fell" and
-    # "HRV fell across three heavy office days in a row". Read straight off the
-    # model: the domain's service resolves one day at a time (the bot only ever
-    # needs today), and a period read has no other caller.
-
     # ``day_context`` stood here — remote or office, gym, how heavy the day was.
-    # It went with the questions that asked it: the evening block was the only
-    # thing that ever put an answer in, and it went with Telegram.
+    # It was the difference between "HRV fell" and "HRV fell across three heavy
+    # office days in a row", and it went with the questions that asked it: the
+    # evening block was the only thing that ever put an answer in, and the
+    # evening block went with the chat. The prompt no longer names the key
+    # either — describing a field the context cannot carry is how a model comes
+    # back with a paragraph about data nobody has.
     # ── The join ──────────────────────────────────────────────────────────────
     # One row per day with every domain on it. The report kept reading as a stack
     # of separate domains because that is exactly what it was handed: recovery in

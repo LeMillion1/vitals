@@ -3,97 +3,38 @@
 
    Unlike every other card on this page these settings go to the DB, not .env:
    saving re-registers the scheduler jobs on the spot, so no restart banner and
-   no "applies after restart" caveat. The whole card is gated on the `signals`
-   module being on — the switch to turn it off is the modules card above. #}
+   no "applies after restart" caveat.
+
+   There is no master switch above these fields any more. It used to be the
+   `signals` module, which was also the free-text capture domain; both went with
+   the chat. What the layer sends and how often is now said here and nowhere
+   else. #}
 {% set p = proactive %}
 <div class="v-card v-setting-row p-6 space-y-5">
-    {% call card_header(t("settings.proactive_title")) %}
-    {# Always-present id so the toggle_module OOB fragment (modules_oob.html)
-       has something to swap into — an OOB target that doesn't already exist in the
-       DOM is silently dropped by htmx, so the conditional lives inside the span,
-       not around it. #}
-    <span id="proactive-off-chip"></span>
-    {% endcall %}
+    {{ card_header(t("settings.proactive_title")) }}
     <p class="v-text-body" style="color: var(--muted)">
         {{ t("settings.proactive_description") }}
     </p>
 
     <form action="/settings/proactive" method="POST" class="space-y-5" hx-disabled-elt="find button[type='submit']">
         <!-- ── When it talks ───────────────────────────────────────────── -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div class="space-y-1.5">
-                <label for="s-brief-time" class="v-label">{{ t("settings.brief_time") }}</label>
-                <input id="s-brief-time" name="brief_time" type="time" required
-                       value="{{ p.brief_time }}" class="v-input">
-                <p class="v-text-micro mt-1">{{ t("settings.brief_time_hint") }}</p>
-            </div>
-            <div class="space-y-1.5">
-                <label for="s-evening-time" class="v-label">{{ t("settings.evening_time") }}</label>
-                <input id="s-evening-time" name="evening_time" type="time" required
-                       value="{{ p.evening_time }}" class="v-input">
-                <p class="v-text-micro mt-1">{{ t("settings.evening_time_hint") }}</p>
-            </div>
+        {# One time, not two: the evening block asked the day-context questions
+           and went with them, so its field set a schedule nothing reads. #}
+        <div class="space-y-1.5">
+            <label for="s-brief-time" class="v-label">{{ t("settings.brief_time") }}</label>
+            <input id="s-brief-time" name="brief_time" type="time" required
+                   value="{{ p.brief_time }}" class="v-input">
+            <p class="v-text-micro mt-1">{{ t("settings.brief_time_hint") }}</p>
         </div>
 
-        <!-- ── When it must not ────────────────────────────────────────── -->
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div class="space-y-1.5">
-                <label for="s-quiet-start" class="v-label">{{ t("settings.quiet_start") }}</label>
-                <input id="s-quiet-start" name="quiet_start" type="time" required
-                       value="{{ p.quiet_start }}" class="v-input">
-            </div>
-            <div class="space-y-1.5">
-                <label for="s-quiet-end" class="v-label">{{ t("settings.quiet_end") }}</label>
-                <input id="s-quiet-end" name="quiet_end" type="time" required
-                       value="{{ p.quiet_end }}" class="v-input">
-            </div>
-            <div class="space-y-1.5">
-                <label for="s-budget" class="v-label">{{ t("settings.daily_budget") }}</label>
-                <input inputmode="numeric" id="s-budget" name="daily_budget" type="number"
-                       min="{{ budget_range[0] }}" max="{{ budget_range[1] }}" step="1"
-                       value="{{ p.daily_budget }}" class="v-input">
-            </div>
-        </div>
-        <p class="v-text-micro" style="color: var(--muted)">{{ t("settings.budget_hint") }}</p>
-
-        <!-- ── Nudge categories ────────────────────────────────────────── -->
-        <div class="pt-4 space-y-2.5" style="border-top: 1px solid var(--line)">
-            <span class="v-label">{{ t("settings.nudges_label") }}</span>
-            <p class="v-text-micro" style="color: var(--muted)">{{ t("settings.nudges_hint") }}</p>
-            {% for category in nudge_categories %}
-            <div class="v-module-row">
-                <span class="v-text-body" style="color: var(--fg-2)">{{ t("settings.nudge." + category) }}</span>
-                <label class="v-switch">
-                    <input type="checkbox" role="switch" name="nudges" value="{{ category }}"
-                           {% if p.nudges.get(category) %}checked{% endif %}>
-                    <span class="v-switch-track"><span class="v-switch-thumb"></span></span>
-                </label>
-            </div>
-            {% endfor %}
-        </div>
-
-        <!-- ── Week template ───────────────────────────────────────────── -->
-        <div class="pt-4 space-y-2.5" style="border-top: 1px solid var(--line)">
-            <span class="v-label">{{ t("settings.week_template_label") }}</span>
-            <p class="v-text-micro" style="color: var(--muted)">{{ t("settings.week_template_hint") }}</p>
-            <div class="space-y-3">
-                {% for day in weekdays %}
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
-                    <span class="v-text-body" style="color: var(--fg-2)">{{ t("proactive.day." + day) }}</span>
-                    {% for question in day_questions %}
-                    <select name="tpl_{{ day }}_{{ question.key }}" class="v-select"
-                            aria-label="{{ t('proactive.day.' + day) }} — {{ t('settings.question.' + question.key) }}">
-                        {# encode(): "1"/"0" for the yes/no questions — bool("False") is True,
-                           and that mistake silently inverts an answer. #}
-                        {% for value, label in question.labels.items() %}
-                        <option value="{{ encode(value) }}" {% if week_template[day][question.key] == value %}selected{% endif %}>{{ label }}</option>
-                        {% endfor %}
-                    </select>
-                    {% endfor %}
-                </div>
-                {% endfor %}
-            </div>
-        </div>
+        {# Quiet hours, the daily message budget and the three nudge
+           switches stood here. All three gate a *send*, and there is nothing to
+           send with: the Telegram transport is gone and web push has not landed.
+           They are not deleted — the delivery engine still reads the stored
+           policy, and its defaults are what a first push will be governed by —
+           but a control whose effect is currently zero does not belong on a
+           settings page. They come back with the channel. #}
+        <p class="v-text-micro" style="color: var(--muted)">{{ t("settings.proactive_no_channel") }}</p>
 
         <!-- ── Garmin poll schedule ──────────────────────────────────────── -->
         <div class="pt-4 space-y-2.5" style="border-top: 1px solid var(--line)">

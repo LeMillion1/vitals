@@ -60,11 +60,11 @@ def login_rate_limit(
 
     Unlike :func:`rate_limit`, this must NOT depend on ``require_auth`` — the whole
     point is to guard endpoints where there is no username yet: ``/login``, where
-    password-guessing would otherwise be completely unbounded, and the Telegram
-    webhook, which authenticates with its own secret. ``bucket`` keeps those
-    counters apart so webhook traffic can't exhaust the login allowance. Keyed by
-    the caller's IP. Fail-open like ``rate_limit`` — a missing Redis must never
-    lock the owner out of their own app.
+    password-guessing would otherwise be completely unbounded, and any webhook
+    that authenticates with its own secret. ``bucket`` keeps those counters apart
+    so webhook traffic can't exhaust the login allowance. Keyed by the caller's
+    IP. Fail-open like ``rate_limit`` — a missing Redis must never lock the owner
+    out of their own app.
 
     ``per_ip=False`` shares one counter across every caller. That is the right
     shape for the 2FA code step and the wrong one everywhere else: a six-digit
