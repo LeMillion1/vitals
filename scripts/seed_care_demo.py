@@ -60,6 +60,9 @@ from vitals.models.identity import HealthSubject, User, UserRole  # noqa: E402
 from vitals.models.scoped_settings import SubjectSetting  # noqa: E402
 from vitals.models.weight import WeightLog  # noqa: E402
 from vitals.services import modules_service  # noqa: E402
+from vitals.services.tenancy_bootstrap import (  # noqa: E402
+    bootstrap_legacy_resource_roots,
+)
 from vitals.services import care_service, invitation_service  # noqa: E402
 from vitals.services import professional_service  # noqa: E402
 from vitals.utils.timeutils import now_utc  # noqa: E402
@@ -118,6 +121,13 @@ async def _patient(
     )
     session.add(subject)
     await session.flush()
+    # Every subject needs its own integration roots. The app creates them only
+    # for the legacy sole owner, at startup, because that is still the only
+    # place a subject comes into existence — when registration lands it will
+    # have to do this too, and until then a seeded patient without them makes
+    # /settings, /garmin and /hevy refuse for a reason that has nothing to do
+    # with the migration.
+    await bootstrap_legacy_resource_roots(session, subject_id=subject.id)
     # Optional modules default to off, which is the right default for a fresh
     # installation and the wrong one here: with them off, most of the pages this
     # script exists to look at answer 404 and the browser check silently covers
