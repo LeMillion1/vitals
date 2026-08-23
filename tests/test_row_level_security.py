@@ -61,6 +61,7 @@ _POLICY_REVISIONS = (
     "0050_force_subject_row_level_security",
     "0051_row_security_for_catalogs_and_children",
     "0055_professional_invitations",
+    "0056_care_relationships_and_consent",
 )
 
 

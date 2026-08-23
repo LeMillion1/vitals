@@ -8,6 +8,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — care relationships and versioned consent (PR-07)
+
+- `care_relationships` says a professional is in care for a patient;
+  `consent_grants` says what that patient agreed they may see. **Access needs
+  both, live, at the moment of the request.** `resolve_access_context` now loads
+  the pair into the `RelationshipGrant` the policy engine has been able to
+  evaluate since PR-04 and has never been given.
+- The asymmetry is deliberate. A relationship with no live consent is an
+  ordinary, correct state — somebody the patient agreed to work with and has not
+  yet, or no longer, agreed to show anything to.
+- **Consent is versioned rather than edited.** Narrowing what somebody may read
+  is a new version superseding the old, so "what was this professional allowed
+  to see on the day they read it" stays answerable; an updated row cannot answer
+  that, and it is the question any later dispute is about. Exactly one version
+  per relationship may be live, enforced by a partial unique index rather than a
+  convention, because two live versions would mean the wider silently wins.
+- **Doctors and trainers differ by domain**, and the split is about what the
+  work needs rather than seniority: a trainer planning sessions needs load,
+  bodyweight and recovery, not a genome, a hormone schedule or a lab panel.
+  Defaulting them in would make the narrower choice the one a patient has to
+  know to ask for. The kind lives on the relationship, not on the profile, so an
+  account that is both cannot take the wider of the two.
+- **Every default is read-only.** A patient's record is theirs; a professional's
+  contribution belongs in their own note rather than inside somebody else's
+  measurement. A test pins that no default carries create, update, delete, share
+  or export for either kind.
+- Pause and revoke are different operations. A pause is the patient taking a
+  break and resuming must not cost a new invitation; a revocation does not come
+  back. Ending the relationship revokes every consent under it, because a live
+  consent behind an ended relationship is a permission waiting for somebody to
+  re-establish the pair.
+- Revocation takes effect on the next decision — not the next login, not a cache
+  expiry — because the grant is loaded per context and the policy re-checks the
+  actor, lifecycle, expiry and exact scope every time.
+- Every relationship is resolved *inside* the actor's scope — the ownership
+  condition is in the `WHERE`, not a check after the read — so somebody else's
+  relationship does not exist rather than being refused. Told apart, "not yours"
+  and "no such thing" would let a caller enumerate relationships by trying ids.
+  The bare-key ratchet in `vitals/legacy_scope.py` is what caught the first
+  version of this, which fetched by id and asked afterwards.
+- Revision `0056` adds the three tables, each with row security carrying both
+  clauses. The consent tables repeat `subject_id` rather than reaching it
+  through a join: a row reachable only by joining is a row outside the policy
+  protecting everything else of that patient's.
+
 ### Added — one link, one professional, one record (PR-07)
 
 - `professional_invitations` plus `invitation_service`: a patient offers one

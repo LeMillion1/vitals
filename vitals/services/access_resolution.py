@@ -142,11 +142,30 @@ async def resolve_access_context(
                 )
             resolved_subject_id = subject_id
 
+    decided_at = evaluated_at or datetime.now(timezone.utc)
+
+    # Only for somebody else's record. The owner's own access needs no
+    # relationship, and looking one up for them would be a query per request
+    # that can only ever answer "no" — and, worse, a place for a stray row to
+    # start meaning something about a person who already has full access.
+    relationship_grant = None
+    if owner_user_id != principal.user_id:
+        from vitals.services.care_service import load_relationship_grant
+
+        with session.no_autoflush:
+            relationship_grant = await load_relationship_grant(
+                session,
+                subject_id=resolved_subject_id,
+                professional_user_id=principal.user_id,
+                evaluated_at=decided_at,
+            )
+
     return AccessContext(
         principal=principal,
         subject_id=resolved_subject_id,
         subject_owner_user_id=owner_user_id,
-        evaluated_at=evaluated_at or datetime.now(timezone.utc),
+        evaluated_at=decided_at,
+        relationship_grant=relationship_grant,
     )
 
 

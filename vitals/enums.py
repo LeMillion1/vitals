@@ -93,6 +93,36 @@ class ProfessionalInvitationStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class CareRelationshipStatus(StrEnum):
+    """Whether a professional is currently in care for this patient.
+
+    ``PAUSED`` and ``ENDED`` are kept apart deliberately. A pause is the patient
+    stepping back — a treatment break, a second opinion, a holiday — and resuming
+    it must not need a new invitation. An end is an end, and re-entering care is
+    a fresh offer the patient has to make again.
+    """
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    ENDED = "ended"
+
+
+class ConsentStatus(StrEnum):
+    """Lifecycle of one version of what a patient agreed to.
+
+    Consent is versioned rather than edited. Narrowing what somebody may see is
+    a new version superseding the old, so "what was this professional allowed to
+    read on the day they read it" stays answerable — which is the question any
+    later dispute is actually about.
+    """
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    SUPERSEDED = "superseded"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
 class SupportScopeResourceType(StrEnum):
     """Kind of resource named by an explicit support-access scope."""
 

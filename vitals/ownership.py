@@ -334,6 +334,28 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         actor=TargetColumn.NONE,
         user_portable=False,
     ),
+    # Half of what access needs, and the patient's row either way.
+    "care_relationships": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.NONE,
+        user_portable=False,
+    ),
+    # The other half. Versioned rather than edited, so a superseded row is
+    # history and not clutter — which is why it is control-plane rather than
+    # portable: a restore that recreated consents would re-grant them.
+    "consent_grants": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.NONE,
+        user_portable=False,
+    ),
+    "consent_scopes": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL_CHILD,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.NONE,
+        user_portable=False,
+    ),
     "support_access_grants": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL,
         subject=TargetColumn.REQUIRED,
