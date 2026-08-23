@@ -432,6 +432,11 @@ def clear_session_cookie(response: Response) -> None:
 
 def authenticate(username: str, password: str) -> bool:
     """Verify single-user credentials with constant-time check fallback."""
+    if get_web_config().oidc_enabled:
+        # After the cutover Vitals holds no password material worth checking,
+        # and a stored hash from before it must not become a second way in.
+        return False
+
     cfg = get_web_config()
     if username != cfg.auth_username:
         verify_password_dummy(password)
@@ -631,6 +636,13 @@ async def login_page(request: Request, next: Optional[str] = None):
     token = request.cookies.get(SESSION_COOKIE)
     if read_session(token) is not None:
         return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+    if get_web_config().oidc_enabled:
+        # A bookmark from before the cutover still works; it lands at the
+        # provider instead of at a password field.
+        target = "/auth/start"
+        if next:
+            target += f"?next={quote(safe_next(next), safe='')}"
+        return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse(request, "login.html", {"next": safe_next(next)})
 
 
@@ -646,6 +658,11 @@ async def login(
     _rl: None = Depends(login_rate_limit(limit=10, window=300)),
     db: AsyncSession = Depends(get_session),
 ):
+    if get_web_config().oidc_enabled:
+        # Hard cutover: this deployment authenticates through its provider, so
+        # there is no password to check and no code to consume. 404 rather than
+        # 403 — the route is not something this installation has.
+        raise HTTPException(status_code=404)
     next_url = safe_next(next)
     if authenticate(username, password):
         # 2FA on → the password alone completes nothing. Hand over only the
@@ -676,6 +693,8 @@ async def login(
 
 @router.get("/login/2fa", response_class=HTMLResponse)
 async def login_2fa_page(request: Request, next: Optional[str] = None):
+    if get_web_config().oidc_enabled:
+        raise HTTPException(status_code=404)
     # Reachable only with a live pending handle, so the page can't be used to
     # probe whether 2FA is on for this install.
     if read_pending_2fa(request.cookies.get(PENDING_2FA_COOKIE)) is None:
@@ -696,6 +715,8 @@ async def login_2fa(
     db: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ):
+    if get_web_config().oidc_enabled:
+        raise HTTPException(status_code=404)
     next_url = safe_next(next)
     token = request.cookies.get(PENDING_2FA_COOKIE)
     username = read_pending_2fa(token)

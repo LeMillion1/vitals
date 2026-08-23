@@ -44,6 +44,7 @@ from vitals.services import (
 )
 from vitals.services.modules_service import ModuleToggleError
 from vitals.access import PolicyAction, PolicyResourceType
+from web.config import get_web_config
 from vitals.services.access_resolution import AccessDeniedError, require_access
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.services.proactive import day_plan, prefs
@@ -925,6 +926,11 @@ async def start_twofa(
     db: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ):
+    if get_web_config().oidc_enabled:
+        # The provider owns second factors now — enrolling one here would be a
+        # second thing to keep, rotate and recover, competing with the one that
+        # already does it properly.
+        raise HTTPException(status_code=404)
     """Mint a secret and show it. 2FA is NOT on yet — see ``confirm_twofa``."""
     if (await twofa_service.get_state(db)).enabled:
         return _redirect()
@@ -942,6 +948,11 @@ async def confirm_twofa(
     redis: Redis = Depends(get_redis),
     _rl: None = Depends(rate_limit("twofa_setup", limit=10, window=300)),
 ):
+    if get_web_config().oidc_enabled:
+        # The provider owns second factors now — enrolling one here would be a
+        # second thing to keep, rotate and recover, competing with the one that
+        # already does it properly.
+        raise HTTPException(status_code=404)
     """Finish enrolment: a correct code proves the secret reached the phone."""
     if not await twofa_service.confirm_enrolment(db, code):
         return await _page(request, username, db=db, redis=redis, error="twofa_bad_code")
@@ -958,6 +969,11 @@ async def disable_twofa(
     redis: Redis = Depends(get_redis),
     _rl: None = Depends(rate_limit("twofa_setup", limit=10, window=300)),
 ):
+    if get_web_config().oidc_enabled:
+        # The provider owns second factors now — enrolling one here would be a
+        # second thing to keep, rotate and recover, competing with the one that
+        # already does it properly.
+        raise HTTPException(status_code=404)
     """Switch 2FA off (needs a current code), or drop a half-finished enrolment
     (needs nothing — it never granted anything)."""
     if not await twofa_service.disable(db, code):

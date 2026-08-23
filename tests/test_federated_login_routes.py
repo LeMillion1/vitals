@@ -309,3 +309,85 @@ async def test_every_refusal_renders_the_same_page(
             "different issuer",
         ):
             assert leak not in body, leak
+
+
+# ── The cutover ──────────────────────────────────────────────────────────────
+#
+# Hard, and switched by configuration rather than by deployment: while no
+# provider is configured the old login still works, and setting the issuer is
+# what closes it. The switch therefore happens when there is somewhere to
+# switch to, which is the difference between a cutover and a lockout.
+
+
+async def test_before_the_cutover_the_password_login_still_works(client):
+    """Shipping this code changes nothing until a provider is configured."""
+
+    assert (await client.get("/login")).status_code == 200
+    assert (await client.get("/auth/start")).status_code == 404
+
+
+async def test_after_the_cutover_the_login_page_sends_you_to_the_provider(
+    client, federated
+):
+    response = await client.get("/login", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/auth/start")
+
+
+async def test_after_the_cutover_the_login_page_keeps_where_you_were_going(
+    client, federated
+):
+    response = await client.get("/login?next=/labs", follow_redirects=False)
+    assert "next=%2Flabs" in response.headers["location"]
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("post", "/login"), ("get", "/login/2fa"), ("post", "/login/2fa")],
+)
+async def test_after_the_cutover_the_password_paths_are_gone(
+    client, federated, method, path
+):
+    """404, not 403: these are not things this installation has any more."""
+
+    if method == "get":
+        response = await client.get(path)
+    else:
+        response = await client.post(
+            path, data={"username": "x", "password": "y", "code": "123456"}
+        )
+    assert response.status_code == 404, path
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/settings/2fa/start", "/settings/2fa/enable", "/settings/2fa/disable"],
+)
+async def test_after_the_cutover_enrolling_a_second_factor_here_is_gone(
+    auth_client, federated, path
+):
+    """Authenticated, so the 404 is the cutover rather than the session guard.
+
+    An anonymous request gets 401 first, which is correct and proves nothing
+    about whether the route still exists.
+    """
+
+    response = await auth_client.post(path, data={"code": "123456"})
+    assert response.status_code == 404, path
+
+
+async def test_after_the_cutover_a_stored_password_hash_is_not_a_way_in(
+    client, federated
+):
+    """The pre-cutover owner's bcrypt hash survives in the column, unused.
+
+    ``authenticate`` refuses before it reaches the hash, so a route that
+    somehow called it — or a future one that did — still gets nothing.
+    """
+
+    from web.auth import authenticate
+    from web.config import get_web_config
+
+    cfg = get_web_config()
+    assert cfg.oidc_enabled
+    assert authenticate(cfg.auth_username, "the-real-password") is False

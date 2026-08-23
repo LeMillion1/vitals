@@ -788,6 +788,32 @@ Rollback: compatibility login is retained for one release behind an operator-onl
 emergency flag; rollback invalidates all new sessions rather than accepting both
 credential models indefinitely.
 
+Delivered, in four pieces, with two decisions taken against this plan:
+
+- **ZITADEL**, and the adapter is provider-agnostic anyway — the choice is
+  configuration, not code.
+- **A hard cutover rather than the compatibility flag above.** The switch is
+  `VITALS_OIDC_ISSUER`: while it is unset the existing login works, and setting
+  it makes `/login` redirect to the provider and the password and TOTP paths
+  404. That keeps the property the flag was for — nobody is locked out of their
+  only copy of their medical record by a deploy — without two credential models
+  ever being live at once. `authenticate()` refuses before it reaches the stored
+  hash, so a bcrypt value surviving in the column is not a second way in.
+
+What landed: the OIDC boundary (`vitals/services/oidc.py`) with every check in
+one place because nothing downstream re-validates a login; revocable sessions
+carrying the user id, session version and the provider's `auth_time`
+(`session_service`); closed provisioning with a single operator-driven binding
+for the pre-cutover owner (`federated_login_service`); and the two routes
+themselves, whose handoff cookie carries state, nonce and verifier under its own
+serializer salt and is cleared on every path out.
+
+Still open in this PR: CSRF hardening with Fetch Metadata on Internet-facing
+mutations, and the ZITADEL deployment profile with its operator documentation.
+The MCP OAuth server is deliberately untouched — Vitals issues those tokens
+itself and PR-10 owns that surface; what changed for it is that a session
+version bump now invalidates the browser sessions beside it.
+
 Release gate: pin and inventory the IdP image, verify backup/restore and upgrade
 procedures, complete an AGPL/commercial-distribution review for ZITADEL, and keep
 Vitals coupled only through OIDC/OAuth metadata and claims. A provider-specific

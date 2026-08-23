@@ -8,6 +8,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — federated authentication (PR-05)
+
+- **Vitals stops authenticating anybody.** `vitals/services/oidc.py` verifies
+  what a provider hands back: the issuer verbatim in the discovery document, the
+  token and the authorization response (RFC 9207); the audience and `azp`; the
+  nonce; the state; PKCE with S256 only; token times; and `auth_time` when an
+  operation demands freshness. Signing keys are fetched with the same HTTP
+  client as everything else, so a provider that hangs fails a login rather than
+  hanging it.
+- Email and display name are read for display and are never lookup keys. A
+  provider may let somebody claim an address later, and matching on it would
+  hand over the whole record.
+- Session cookies gain a version 2 carrying the local user id, the session
+  version and the provider's `auth_time`. `session_service` confirms each
+  against the account on every request, so bumping one row revokes every session
+  that account holds — with no server-side store to grow and go stale.
+- Provisioning is closed: a valid login by somebody with no account is a
+  refusal. The one exception is a one-time binding for an installation that
+  predates federated login, driven by a subject an operator reads from the
+  provider's own console.
+- **The cutover is switched by `VITALS_OIDC_ISSUER`, not by deploying.** While
+  it is unset the existing login works; setting it turns `/login` into a
+  redirect to the provider and makes the password and TOTP paths 404. Second
+  factors become the provider's business, which is where password hashing,
+  reset, recovery codes and rotation already live.
+- Revision 0052 adds `user_federated_identities` and makes `users.password_hash`
+  nullable.
+
+
 ### Removed
 
 - Ten public service functions with no caller anywhere: a digest-owner alias, an
