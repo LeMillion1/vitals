@@ -25,7 +25,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
-from sqlalchemy import Table, and_, func, or_, select
+from sqlalchemy import Table, and_, func, inspect, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import UserStatus
@@ -296,7 +296,20 @@ async def _require_stage3_completed(
             )
 
 
-def _subject_scoped_tables() -> tuple[Table, ...]:
+def _subject_scoped_tables(present: frozenset[str] | None = None) -> tuple[Table, ...]:
+    """The subject-scoped tables this validation is about.
+
+    ``present`` is the set of tables the database actually has. It matters
+    because this phase runs *before* the contract migration, against a lake at
+    the pre-contract revision, while ``Base.metadata`` describes the schema at
+    head. A table introduced by a later revision has no unowned history to
+    prove — it is created with its ownership mandatory from the first row — so
+    validating it would mean querying a relation that is not there yet.
+
+    ``None`` means every registered table, which is what a caller inspecting the
+    schema at head wants.
+    """
+
     tables = []
     for name, table in sorted(Base.metadata.tables.items()):
         spec = OWNERSHIP_REGISTRY.get(name)
@@ -304,9 +317,21 @@ def _subject_scoped_tables() -> tuple[Table, ...]:
             raise OwnershipValidationStateError(
                 "a persisted table is missing from the ownership registry"
             )
+        if present is not None and name not in present:
+            continue
         if spec.ownership in _SUBJECT_SCOPED_CLASSES:
             tables.append(table)
     return tuple(tables)
+
+
+async def _present_tables(session: AsyncSession) -> frozenset[str]:
+    """What the database in front of us actually holds, right now."""
+
+    connection = await session.connection()
+    names = await connection.run_sync(
+        lambda sync_connection: inspect(sync_connection).get_table_names()
+    )
+    return frozenset(names)
 
 
 def _root_references(table: Table) -> dict[str, list[str]]:
@@ -330,11 +355,13 @@ def _root_references(table: Table) -> dict[str, list[str]]:
     return grouped
 
 
-def _parent_references(table: Table) -> list[tuple[str, str]]:
+def _parent_references(
+    table: Table, present: frozenset[str] | None = None
+) -> list[tuple[str, str]]:
     """Return this table's single-column links to another subject-scoped table."""
 
     parents: list[tuple[str, str]] = []
-    scoped = {item.name for item in _subject_scoped_tables()}
+    scoped = {item.name for item in _subject_scoped_tables(present)}
     for constraint in sorted(
         table.foreign_key_constraints, key=lambda item: str(item.elements[0].parent.name)
     ):
@@ -372,7 +399,8 @@ async def _run_checks(
     digest = _EMPTY_SHA256
     checks = 0
     rows_inspected = 0
-    tables = _subject_scoped_tables()
+    present = await _present_tables(session)
+    tables = _subject_scoped_tables(present)
     subject_table = Base.metadata.tables[_SUBJECT_TABLE]
     connections = Base.metadata.tables[_CONNECTION_TABLE]
     files = Base.metadata.tables[_FILE_TABLE]
@@ -396,7 +424,9 @@ async def _run_checks(
         # An inherited child carries whatever its parent carries, so its
         # reachable parents decide whether a missing subject is a gap.
         parents = (
-            _parent_references(table) if "subject_id" in table.columns else []
+            _parent_references(table, present)
+            if "subject_id" in table.columns
+            else []
         )
 
         if table.name != _SUBJECT_TABLE and "subject_id" in table.columns:

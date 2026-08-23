@@ -212,7 +212,19 @@ async def _remaining_nulls(engine: AsyncEngine) -> dict[str, int]:
 
     outstanding: dict[str, int] = {}
     async with engine.connect() as connection:
+        # ``required_ownership_columns`` describes the schema at head, and this
+        # runs against a lake at the pre-contract revision. A table introduced
+        # by a later revision is created with its ownership mandatory from the
+        # first row, so it has no unowned history for the guard to find — and
+        # querying it here would only ask about a relation that is not there.
+        present = set(
+            await connection.run_sync(
+                lambda sync_connection: sa.inspect(sync_connection).get_table_names()
+            )
+        )
         for table_name, column_name in required_ownership_columns():
+            if table_name not in present:
+                continue
             remaining = await connection.scalar(
                 sa.text(
                     f'SELECT count(*) FROM "{table_name}" '

@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — validating a lake against the schema it actually has
+
+- The Stage-4 whole-lake validation and two rehearsals derive their inventory
+  from `Base.metadata`, which describes the schema at *head*, and run against a
+  lake at the pre-contract revision. Every table PR-07 adds is created after
+  that point, so the validation started querying relations that were not there
+  yet and the audit CLI reported `internal_error` where the contract says
+  `dependency_error`.
+- All three now filter to the tables the database in front of them actually
+  holds. That is the right rule rather than a workaround: a table introduced
+  after the contract is created with its ownership mandatory from the first row,
+  so it has no unowned history to prove.
+
 ### Added — where a professional's contribution goes (PR-07)
 
 - `professional_notes` and `care_plans`, plus
