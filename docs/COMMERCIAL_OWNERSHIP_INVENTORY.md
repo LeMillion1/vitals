@@ -230,6 +230,43 @@ mount as the site assets. Nothing serves from there any more, so the seal is
 sufficient, but moving the tree to a private root would make the guarantee
 structural rather than a matter of route ordering.
 
+### Portability, backup, and the difference between them
+
+Two questions were being answered by one file. `export_full` answers "what is in
+this installation" — every portable table, `app_settings` included, primary keys
+preserved so `import_full` can replace the database with it. `export_subject`
+answers "what is mine", and PR-06 adds it as a separate shape rather than a flag
+on the first one, because the parts that differ are not the `WHERE` clause.
+
+A personal export leaves `app_settings` behind: it is the deployment's
+configuration — the scheduler's timezone, which modules are switched on — and
+carrying it would make a personal download a way to reconfigure whatever
+imported it. It leaves NULL-subject rows behind for the same reason: those are
+the installation's curated catalog, the conflict rules among them, and the
+receiving installation seeds its own. A personal file that could overwrite
+another installation's safety rules is not portability.
+
+The two kinds are named in the envelope and `import_full` refuses the personal
+one. That guard is not hypothetical politeness: both are valid JSON with the
+same envelope and overlapping table names, and `import_full` replaces every
+portable table for everybody — so without it the file would load, empty the
+database, and put one person back into the hole.
+
+Restore and restart are now decided by `require_installation_operator` rather
+than by holding a session. `/settings/import` previously had no authorization at
+all, while its paired export was policy-decided. The check is deliberately not
+routed through `is_allowed`: these operations have no subject, and passing the
+caller's own subject in would read as a check while being unconditionally true,
+since self-ownership authorizes everything on one's own subject.
+
+Remaining work: the matching subject-scoped *import*. `import_full` deletes each
+portable table unqualified, which is safe today only because the compatibility
+resolver refuses a second subject. Scoping the delete is the easy half; every one
+of the 39 portable tables has an integer primary key, so a per-subject restore
+cannot preserve ids the way the full one does, and needs an id remap across the
+16 references between those tables. References into the installation's shared
+catalog are harder still and want a natural key rather than an id.
+
 ### Reports, alerts, notifications, and outbox
 
 - report list/get/revoke/delete and snapshot construction are global;

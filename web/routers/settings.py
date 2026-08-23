@@ -1215,7 +1215,7 @@ async def change_password(
 # ── Data portability (backup / restore / LLM export) ──────────────────────────
 
 
-async def _authorize_export(db: AsyncSession, username: str) -> None:
+async def _authorize_export(db: AsyncSession, username: str):
     """Decide the export, rather than infer it from being logged in.
 
     Downloading the record is the one routine operation that takes the data out
@@ -1234,6 +1234,7 @@ async def _authorize_export(db: AsyncSession, username: str) -> None:
         resource_key="data_portability.export",
         action=PolicyAction.EXPORT,
     )
+    return ownership
 
 
 
@@ -1273,6 +1274,33 @@ async def export_backup(
     snapshot = await data_portability_service.export_full(db)
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_backup_{today_local().strftime('%Y%m%d')}.json"
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/export-subject")
+async def export_subject_backup(
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+    _rl: None = Depends(rate_limit("data_export", limit=2, window=60)),
+):
+    """Download exactly this subject's record — no installation configuration.
+
+    The other export answers "what is in this installation" and is an operator's
+    file. This one answers "what is mine": one subject's rows, no app settings,
+    and none of the installation's curated catalog, which the receiving
+    installation seeds for itself.
+    """
+
+    ownership = await _authorize_export(db, username)
+    snapshot = await data_portability_service.export_subject(
+        db, subject_id=ownership.subject_id
+    )
+    body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
+    filename = f"vitals_record_{today_local().strftime('%Y%m%d')}.json"
     return Response(
         content=body,
         media_type="application/json",

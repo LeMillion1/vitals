@@ -37,6 +37,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `web/static/uploads`; moving them to a private root would make the guarantee
   structural rather than a matter of route ordering, and is follow-up work.
 
+### Added — a personal export, separate from the installation's backup (PR-06)
+
+- `GET /settings/export-subject` answers "what is mine". The existing
+  `/settings/export` answers "what is in this installation" and is an operator's
+  file; conflating the two is how a personal download ends up carrying things
+  that are not personal.
+- Three things it deliberately leaves behind. `app_settings` is the deployment's
+  configuration — the scheduler's timezone, which modules are on — so carrying
+  it would make a personal file a way to reconfigure whatever imported it. Rows
+  with a NULL subject are the installation's curated catalog, including the
+  conflict rules, and the receiving installation seeds its own; shipping a copy
+  would let one person's file overwrite another installation's safety rules.
+  Ownership and private-storage columns are suppressed exactly as the full
+  backup suppresses them, because those are assigned by a trusted boundary on
+  the way in and never read from a file.
+- The two kinds are now named in the envelope, and `import_full` refuses a
+  personal export. It replaces every portable table for everybody, and a
+  personal export is valid JSON with the same envelope and overlapping table
+  names — so without the check it would load, emptying the database and putting
+  one person back into the hole.
+- Still to come: the matching subject-scoped *import*. `import_full` deletes
+  each portable table unqualified, which is safe today only because the
+  compatibility resolver refuses a second subject. Scoping the wipe is not the
+  hard part; every portable table has an integer primary key, so a per-subject
+  restore cannot preserve ids the way the full one does and needs an id remap
+  across the 16 references between those tables.
+
 ### Security — a restore and a restart are operator work (PR-06)
 
 - **`/settings/import` had no authorization beyond holding a session.** Its

@@ -447,6 +447,72 @@ async def export_full(session: AsyncSession) -> dict[str, Any]:
     return out
 
 
+#: What a subject export is, so the whole-database importer can tell them apart.
+#: Feeding one to ``import_full`` would wipe every table for everybody and then
+#: restore one person into the hole — a plausible mistake with an implausible
+#: blast radius, so the two shapes are named rather than merely shaped.
+KIND_SUBJECT = "subject_export"
+
+
+async def export_subject(
+    session: AsyncSession, *, subject_id: Any
+) -> dict[str, Any]:
+    """Snapshot exactly one subject's portable rows, and nothing else.
+
+    Different question from :func:`export_full`, which answers "what is in this
+    installation". This one answers "what is mine", and the difference is not
+    only a ``WHERE`` clause:
+
+    ``app_settings`` is left out entirely. It is the installation's
+    configuration, not a person's — the timezone the scheduler runs on, the
+    modules that are switched on for the deployment. Carrying it in a personal
+    export would make the file a way to reconfigure whatever imports it.
+
+    Rows with a NULL subject are left out for the same reason. In the mixed
+    tables those are the installation's curated catalog — the safety rules, the
+    compound reference data — which the receiving installation has its own copy
+    of, seeded by its own migrations. Including them would let a personal export
+    overwrite somebody's safety catalog.
+
+    What remains is the subject's own rows, with ownership and private-resource
+    columns suppressed exactly as the full backup suppresses them: those are
+    assigned by a trusted boundary on the way back in, never read from a file.
+    """
+
+    if subject_id is None:
+        raise _contract_error("portability.error.v1_missing_subject")
+
+    out: dict[str, Any] = {
+        "metadata": {
+            "version": BACKUP_VERSION,
+            "kind": KIND_SUBJECT,
+            "exported_at": now_local().isoformat(timespec="seconds"),
+            "timezone": os.getenv("VITALS_TIMEZONE", "Europe/Chisinau"),
+        }
+    }
+
+    for table in Base.metadata.sorted_tables:
+        if table.name in _EXCLUDED_TABLES:
+            continue
+        if "subject_id" not in table.columns:
+            # Installation configuration, not this person's record.
+            continue
+        result = await session.execute(
+            select(table).where(table.c.subject_id == subject_id)
+        )
+        column_names = [
+            name
+            for name in table.columns.keys()
+            if name not in GENERIC_OUTPUT_SUPPRESSED_COLUMNS
+        ]
+        out[table.name] = [
+            {col: _serialize_value(mapping[col]) for col in column_names}
+            for mapping in result.mappings().all()
+        ]
+
+    return out
+
+
 # ── Full backup: import (replace) ──────────────────────────────────────────────
 
 
@@ -461,6 +527,15 @@ def _validate_payload(payload: Any) -> BackupMetadata:
         meta = BackupMetadata.model_validate(payload["metadata"])
     except ValidationError as exc:
         raise PortabilityError(t("import.error.bad_metadata", msg=exc.errors()[0].get("msg", exc)))
+
+    # A subject export and a whole-database backup are both valid JSON with the
+    # same envelope and overlapping table names, and this importer replaces
+    # every portable table for everybody. Loading one as the other would empty
+    # the database and put one person back into it. The kinds are therefore
+    # checked rather than inferred — an older file with no kind at all is still
+    # accepted, because that is what a v1 backup looks like.
+    if meta.kind == KIND_SUBJECT:
+        raise _contract_error("portability.error.v1_subject_export_is_not_a_backup")
 
     known = set(Base.metadata.tables.keys())
     for key, value in payload.items():
