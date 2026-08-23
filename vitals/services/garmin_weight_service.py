@@ -266,6 +266,7 @@ async def prepare_scoped_export(
         if (
             context.legacy_bridge
             is conflict_engine.LegacyConflictBridge.FULLY_UNOWNED
+            and await legacy_unowned_outbox_present(session)
         ):
             subject_ids = list(
                 await session.scalars(
@@ -482,6 +483,25 @@ def _outbox_legacy_scope():
         GarminWeightExport.integration_connection_id.is_(None),
         GarminWeightExport.requested_by_user_id.is_(None),
     )
+
+
+async def legacy_unowned_outbox_present(session: AsyncSession) -> bool:
+    """Whether any outbox row is still waiting for the ownership backfill.
+
+    Mirror of :func:`_outbox_legacy_scope`, kept beside it. This is what the
+    fully-unowned bridge is for, and it is a different question from how many
+    people the installation holds: only if there is a row nobody owns does it
+    matter that there is more than one person to give it to.
+
+    ``scripts/backfill_garmin_weight_export_subject_ownership.py`` is what
+    empties this set, run while the installation is still one person.
+    """
+
+    with session.no_autoflush:
+        found = await session.scalar(
+            select(GarminWeightExport.id).where(_outbox_legacy_scope()).limit(1)
+        )
+    return found is not None
 
 
 def _outbox_visible_scope(context: GarminWeightExportContext):

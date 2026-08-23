@@ -30,11 +30,8 @@ from vitals.models.identity import HealthSubject, User
 #: therefore answer 409 in a shared installation. Shrinks as PR-09 ports them.
 STILL_SOLE_SUBJECT = {
     "/today",
-    "/weight",
-    "/weight/measures",
     "/reports",
     "/share",
-    "/settings",
     "/settings/export",
 }
 
