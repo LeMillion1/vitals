@@ -26,12 +26,11 @@ from vitals.enums import UserStatus
 from vitals.models.identity import HealthSubject, User
 
 
-#: Pages that still resolve their subject through a sole-owner bridge and
-#: therefore answer 409 in a shared installation. Shrinks as PR-09 ports them.
+#: What still refuses in a shared installation. One entry left, and it is not a
+#: gate: backup format v1 describes an installation holding one person, so with
+#: several it has nothing honest to write and says so, naming the per-subject
+#: export that does work.
 STILL_SOLE_SUBJECT = {
-    "/today",
-    "/reports",
-    "/share",
     "/settings/export",
 }
 
@@ -150,3 +149,56 @@ async def test_the_refusing_pages_are_the_ones_on_the_backlog(
         "these pages no longer refuse — remove them from STILL_SOLE_SUBJECT: "
         + ", ".join(sorted(now_working))
     )
+
+
+@pytest.fixture
+async def professional_client(client, db_session, legacy_owner_roots):
+    """A signed-in account that keeps no health record of its own.
+
+    Which is most doctors and every trainer. They are not an edge case to be
+    tolerated — they are half of what this product is now — and until recently
+    every personal page told them it did not support several records yet, which
+    is both untrue and unactionable.
+    """
+
+    from web.auth import create_session
+    from web.deps import SESSION_COOKIE
+
+    doctor = User(
+        username="dr-no-record",
+        normalized_username="dr-no-record",
+        password_hash="synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(doctor)
+    await db_session.commit()
+
+    client.cookies.set(SESSION_COOKIE, create_session("dr-no-record"))
+    return client
+
+
+async def test_an_account_without_a_record_is_told_that_and_not_something_else(
+    professional_client
+):
+    from web.main import app
+
+    wrong_answer = []
+    for path in _page_routes(app):
+        if path in NOT_A_MIGRATION_QUESTION:
+            continue
+        response = await professional_client.get(
+            path, headers={"Accept": "text/html"}
+        )
+        if response.status_code == 500:
+            wrong_answer.append(f"{path} crashed")
+            continue
+        if response.status_code != 409:
+            continue
+        body = response.text
+        # The distinction that matters: "you have no record here" is true and
+        # actionable, "this page does not support several records yet" sends
+        # them looking for a setting that will never exist.
+        if "несколько записей" in body:
+            wrong_answer.append(f"{path} blamed the migration")
+
+    assert not wrong_answer, "; ".join(wrong_answer)

@@ -45,6 +45,18 @@ class LegacySubjectResolutionError(LegacyOwnershipError):
     """There is not exactly one local health subject."""
 
 
+class NoPersonalRecordError(LegacySubjectResolutionError):
+    """The signed-in account keeps no health record of its own.
+
+    A doctor or a trainer is a real account with no personal record, and that is
+    not a fault, a missing feature, or a half-finished migration. Every page
+    that answers "your weight", "your labs", "your day" has nothing to be about
+    for them, and the honest answer names that rather than reporting a limit
+    that does not apply — they were being told the page did not support several
+    records yet, which sends them looking for a setting that will never exist.
+    """
+
+
 class LegacyOwnerResolutionError(LegacyOwnershipError):
     """The sole subject does not have a resolvable active owner identity."""
 
@@ -253,6 +265,10 @@ async def resolve_legacy_ownership_context(
                     .limit(2)
                 )
             )
+            if not subject_rows:
+                raise NoPersonalRecordError(
+                    "this account keeps no health record of its own"
+                )
             if len(subject_rows) != 1:
                 raise LegacySubjectResolutionError(
                     "legacy ownership requires the actor to own exactly one "

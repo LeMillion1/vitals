@@ -24,7 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.services.access_resolution import AccessDeniedError
 from vitals.services.alerts_service import AlertLegacyBridgeError
-from vitals.services.legacy_ownership import LegacyOwnershipError
+from vitals.services.legacy_ownership import (
+    LegacyOwnershipError,
+    NoPersonalRecordError,
+)
 from vitals.services.conflict_activation_service import (
     ConflictActivationLegacyBridgeError,
 )
@@ -483,6 +486,36 @@ async def module_disabled_handler(request: Request, exc: ModuleDisabled):
     if request.method == "GET" and "text/html" in accept:
         return RedirectResponse(url="/weight", status_code=status.HTTP_303_SEE_OTHER)
     return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": exc.detail})
+
+
+@app.exception_handler(NoPersonalRecordError)
+async def no_personal_record_handler(request: Request, exc: NoPersonalRecordError):
+    """A doctor or a trainer reaching a page about their own health data.
+
+    Registered ahead of the bridge handler and matched more narrowly, because it
+    is a different sentence. These accounts are not blocked by an unfinished
+    migration and there is no setting that will let them in: the page answers
+    "your weight", "your labs", "your day", and they keep no record of their
+    own. Somebody who does hold patients is sent where their work actually is;
+    anybody else is told plainly, rather than being handed a limit that does not
+    apply to them and sent looking for it.
+    """
+
+    del exc
+    holds_patients = bool(getattr(request.state, "holds_patients", False))
+    accept = request.headers.get("accept", "")
+    wants_html = request.method == "GET" and "text/html" in accept
+    if holds_patients and wants_html:
+        return RedirectResponse(url="/care", status_code=status.HTTP_303_SEE_OTHER)
+    detail = (
+        "У этого аккаунта нет собственной медицинской записи. "
+        "Эта страница — о ваших данных, а работа с подопечными живёт в разделе «Подопечные»."
+    )
+    if wants_html:
+        return HTMLResponse(content=detail, status_code=status.HTTP_409_CONFLICT)
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT, content={"detail": detail}
+    )
 
 
 async def legacy_ownership_handler(request: Request, exc: Exception):

@@ -134,6 +134,7 @@ async def get_request_chrome_scope(
         return getattr(request.state, "chrome_scope", None)
 
     scope: ChromeScope | None = None
+    signed_in_user_id: uuid.UUID | None = None
     try:
         from web.auth import decode_session
 
@@ -150,6 +151,7 @@ async def get_request_chrome_scope(
                     )
                 )
             if user_id is not None:
+                signed_in_user_id = user_id
                 subject_id = await session.scalar(
                     select(HealthSubject.id).where(
                         HealthSubject.owner_user_id == user_id
@@ -162,13 +164,20 @@ async def get_request_chrome_scope(
         # never a 500 on a page whose content resolved perfectly well.
         logger.exception("chrome scope resolution failed; using safe defaults")
         scope = None
+        signed_in_user_id = None
 
     request.state.chrome_scope = scope
     # Whether to offer the roster at all. Asked here because the nav is chrome
     # and must not raise; a link that answers an empty page is worse than no
     # link, and a professional who holds nobody has no roster to visit.
+    #
+    # Asked about the signed-in account rather than about ``scope``, which is
+    # None for anybody who owns no record of their own. That is most doctors and
+    # every trainer, so keying this off the scope hid the roster from precisely
+    # the people who have one — they signed in and saw no way to reach their
+    # patients at all.
     request.state.holds_patients = False
-    if scope is not None:
+    if signed_in_user_id is not None:
         try:
             from vitals.enums import CareRelationshipStatus
             from vitals.models.professional import CareRelationship
@@ -177,7 +186,8 @@ async def get_request_chrome_scope(
                 await session.scalar(
                     select(CareRelationship.id)
                     .where(
-                        CareRelationship.professional_user_id == scope.user_id,
+                        CareRelationship.professional_user_id
+                        == signed_in_user_id,
                         CareRelationship.status
                         != CareRelationshipStatus.ENDED.value,
                     )

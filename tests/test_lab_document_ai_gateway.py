@@ -431,7 +431,7 @@ async def test_prepare_rejects_foreign_actor_before_file_raw_or_reservation(
     # refused structurally: the owner is named in the resolver's query, so a
     # foreign actor matches no row rather than loading one and being compared
     # against it.
-    with pytest.raises(LegacySubjectResolutionError, match="found 0"):
+    with pytest.raises(LegacySubjectResolutionError, match="no health record of its own"):
         await lab_ai.prepare_lab_document_parse(
             db_session,
             actor_username="foreign-user",

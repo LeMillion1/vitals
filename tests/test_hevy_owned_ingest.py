@@ -803,7 +803,7 @@ async def test_sync_job_actor_mismatch_fails_before_fetch(
     # Still refused before a single byte is fetched, and refused structurally:
     # the owner is named in the query now, so an actor who owns nothing matches
     # no row rather than loading one and being compared against it.
-    with pytest.raises(LegacySubjectResolutionError, match="found 0"):
+    with pytest.raises(LegacySubjectResolutionError, match="no health record of its own"):
         await hevy_service.sync_job(
             session_factory,
             actor_username="different-user",

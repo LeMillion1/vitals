@@ -153,7 +153,7 @@ async def test_an_actor_who_owns_nothing_resolves_nothing(db_session):
 
     await _subject(db_session, username="owner")
 
-    with pytest.raises(LegacySubjectResolutionError, match="found 0"):
+    with pytest.raises(LegacySubjectResolutionError, match="no health record of its own"):
         await resolve_legacy_ownership_context(
             db_session,
             actor_username="someone-else",
@@ -176,6 +176,9 @@ async def test_invalid_actor_username_fails_as_typed_validation(
 
 @pytest.mark.asyncio
 async def test_missing_subject_fails_closed(db_session):
+    # The actorless arm — a scheduled job or the startup bootstrap — has no
+    # account to have a record, so its refusal is still about the installation
+    # rather than about anybody.
     with pytest.raises(LegacySubjectResolutionError, match="found 0"):
         await resolve_legacy_ownership_context(db_session, actor_username=None)
 
