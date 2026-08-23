@@ -6,21 +6,30 @@ the single-user configuration loaded from web/config.py.
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import quote, urlsplit
 
-from fastapi import APIRouter, Depends, Form, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from itsdangerous import BadData, BadSignature, SignatureExpired, URLSafeTimedSerializer
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import t
 from vitals.services import twofa_service
 from vitals.utils.passwords import verify_password, verify_password_dummy
-from web.config import PENDING_2FA_COOKIE, PENDING_2FA_TTL, SESSION_COOKIE, get_web_config
+from web.config import (
+    OIDC_HANDOFF_COOKIE,
+    OIDC_HANDOFF_TTL,
+    PENDING_2FA_COOKIE,
+    PENDING_2FA_TTL,
+    SESSION_COOKIE,
+    get_web_config,
+)
 from web.deps import get_redis, get_session
 from web.ratelimit import login_rate_limit
 from web.templating import templates
@@ -98,6 +107,20 @@ def _get_mcp_serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(cfg.session_secret, salt="vitals-mcp")
 
 
+def _get_oidc_handoff_serializer() -> URLSafeTimedSerializer:
+    """A fourth salt, for what the browser carries to the provider and back.
+
+    Same reasoning as the two above: this handle must be worthless anywhere a
+    session is expected, and verification across salts fails by construction.
+    It holds the state, nonce and PKCE verifier — the three secrets that bind a
+    callback to the login request that started it, and which therefore must not
+    be guessable, reusable, or readable as a session.
+    """
+
+    cfg = get_web_config()
+    return URLSafeTimedSerializer(cfg.session_secret, salt="vitals-oidc-handoff")
+
+
 def _get_pending_2fa_serializer() -> URLSafeTimedSerializer:
     """A third salt, for the handle issued between the password step and the code
     step. Same reasoning as the MCP salt above: this token must be worthless if
@@ -139,6 +162,77 @@ def set_pending_2fa_cookie(response: Response, token: str) -> None:
 
 def clear_pending_2fa_cookie(response: Response) -> None:
     response.delete_cookie(key=PENDING_2FA_COOKIE, path="/")
+
+
+def create_oidc_handoff(*, state: str, nonce: str, code_verifier: str, next_url: str) -> str:
+    """Seal what the callback will need, for the browser to carry there."""
+
+    return _get_oidc_handoff_serializer().dumps(
+        {
+            "state": state,
+            "nonce": nonce,
+            "code_verifier": code_verifier,
+            "next": next_url,
+        }
+    )
+
+
+def read_oidc_handoff(token: str | None) -> dict[str, str] | None:
+    """Open the handoff, or fail closed.
+
+    Every field must be a non-empty string of the exact expected set. A handoff
+    missing one is a handoff this version did not write, and completing a login
+    from it would mean skipping whichever check that field feeds.
+    """
+
+    if not isinstance(token, str) or not token:
+        return None
+    try:
+        payload = _get_oidc_handoff_serializer().loads(token, max_age=OIDC_HANDOFF_TTL)
+    except BadData:
+        return None
+    if not isinstance(payload, dict) or set(payload) != {
+        "state",
+        "nonce",
+        "code_verifier",
+        "next",
+    }:
+        return None
+    for key in ("state", "nonce", "code_verifier"):
+        value = payload[key]
+        if not isinstance(value, str) or not value.strip():
+            return None
+    if not isinstance(payload["next"], str):
+        return None
+    return payload
+
+
+def set_oidc_handoff_cookie(response: Response, token: str) -> None:
+    cfg = get_web_config()
+    response.set_cookie(
+        key=OIDC_HANDOFF_COOKIE,
+        value=token,
+        max_age=OIDC_HANDOFF_TTL,
+        httponly=True,
+        secure=cfg.cookie_secure,
+        # The provider redirects the browser back to us from its own origin, so
+        # the cookie has to survive a cross-site navigation. ``lax`` does for a
+        # top-level GET, which is what a redirect is; ``strict`` would drop it
+        # and every login would fail at the callback.
+        samesite="lax",
+        path="/",
+    )
+
+
+def clear_oidc_handoff_cookie(response: Response) -> None:
+    cfg = get_web_config()
+    response.delete_cookie(
+        key=OIDC_HANDOFF_COOKIE,
+        httponly=True,
+        secure=cfg.cookie_secure,
+        samesite="lax",
+        path="/",
+    )
 
 
 def safe_next(next: str | None) -> str:
@@ -346,6 +440,189 @@ def authenticate(username: str, password: str) -> bool:
 
 
 # ── Auth Endpoints ────────────────────────────────────────────────────────────
+
+
+# ── Federated login ──────────────────────────────────────────────────────────
+#
+# Two routes and a handoff cookie. ``/auth/start`` builds the authorization
+# request and seals its secrets; the provider sends the browser to
+# ``/auth/callback`` with a code; that route proves the code is one we asked
+# for, and only then does a session exist.
+
+
+_provider_cache: tuple[tuple[str, str, str], object] | None = None
+
+
+def _provider():
+    """The configured provider, kept between requests.
+
+    Discovery and the signing keys are cached on the provider object, so a new
+    one per request would mean two extra round trips on every login — and a
+    provider that is briefly slow would then be slow for each of them rather
+    than once. The cache key is the configuration, so changing it in place
+    (which the tests do) builds a new one rather than serving the old.
+    """
+
+    global _provider_cache
+    from vitals.services.oidc import OidcProvider, OidcSettings
+
+    cfg = get_web_config()
+    key = (cfg.oidc_issuer, cfg.oidc_client_id, cfg.oidc_redirect_url)
+    if _provider_cache is not None and _provider_cache[0] == key:
+        return _provider_cache[1]
+
+    provider = OidcProvider(
+        OidcSettings(
+            issuer=cfg.oidc_issuer,
+            client_id=cfg.oidc_client_id,
+            client_secret=cfg.oidc_client_secret,
+            redirect_url=cfg.oidc_redirect_url,
+        )
+    )
+    _provider_cache = (key, provider)
+    return provider
+
+
+def _login_failed(request: Request, reason: str):
+    """One page for every way a login can fail.
+
+    The reason is logged and never rendered. "No such account", "your account
+    is suspended" and "that token was not for us" are three different sentences
+    and one fact to whoever is trying: it did not work.
+    """
+
+    logger.warning("federated login refused: %s", reason)
+    response = templates.TemplateResponse(
+        request,
+        "login.html",
+        {"error": t("login.error.federated"), "next": "/"},
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+    clear_oidc_handoff_cookie(response)
+    return response
+
+
+@router.get("/auth/start")
+async def federated_login_start(request: Request, next: Optional[str] = None):
+    """Begin a login at the provider."""
+
+    cfg = get_web_config()
+    if not cfg.oidc_enabled:
+        raise HTTPException(status_code=404)
+    if read_session(request.cookies.get(SESSION_COOKIE)) is not None:
+        return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+
+    from vitals.services.oidc import OidcError
+
+    try:
+        login = await _provider().begin_login()
+    except OidcError as exc:
+        return _login_failed(request, f"could not begin a login: {exc}")
+
+    response = RedirectResponse(
+        url=login.authorization_url, status_code=status.HTTP_303_SEE_OTHER
+    )
+    set_oidc_handoff_cookie(
+        response,
+        create_oidc_handoff(
+            state=login.state,
+            nonce=login.nonce,
+            code_verifier=login.code_verifier,
+            next_url=safe_next(next),
+        ),
+    )
+    return response
+
+
+@router.get("/auth/callback")
+async def federated_login_callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    iss: Optional[str] = None,
+    error: Optional[str] = None,
+    _rl: None = Depends(login_rate_limit(limit=10, window=300)),
+    db: AsyncSession = Depends(get_session),
+):
+    """Complete a login, or refuse it.
+
+    The handoff cookie is cleared on every path out of here, success or not. A
+    handoff that survives its callback is one that can be replayed.
+    """
+
+    cfg = get_web_config()
+    if not cfg.oidc_enabled:
+        raise HTTPException(status_code=404)
+
+    handoff = read_oidc_handoff(request.cookies.get(OIDC_HANDOFF_COOKIE))
+    if handoff is None:
+        return _login_failed(request, "callback arrived with no usable handoff")
+
+    if error:
+        # The provider declined. Its error code says why and is for the log.
+        return _login_failed(request, f"provider returned an error: {error}")
+    if not code or not state:
+        return _login_failed(request, "callback arrived without a code and state")
+
+    # Constant-time, because an attacker who can measure how far the comparison
+    # got can recover the state a character at a time and forge a callback.
+    if not secrets.compare_digest(state, handoff["state"]):
+        return _login_failed(request, "callback state does not match this browser's")
+
+    from vitals.services.federated_login_service import (
+        FederatedLoginError,
+        resolve_federated_user,
+    )
+    from vitals.services.oidc import OidcError
+
+    provider = _provider()
+    try:
+        provider.check_response_issuer(iss)
+        identity = await provider.complete_login(
+            code=code,
+            code_verifier=handoff["code_verifier"],
+            expected_nonce=handoff["nonce"],
+        )
+    except OidcError as exc:
+        return _login_failed(request, f"token rejected: {exc}")
+
+    try:
+        user = await resolve_federated_user(
+            db,
+            issuer=identity.issuer,
+            subject=identity.subject,
+            authenticated_at=identity.authenticated_at,
+            bootstrap_subject=cfg.oidc_bootstrap_subject,
+        )
+    except FederatedLoginError as exc:
+        return _login_failed(request, f"no session for this identity: {exc}")
+
+    # Queried rather than reached through ``user.owned_subject``: that
+    # relationship lazy-loads, which outside a greenlet context raises instead
+    # of loading — on the one path where every successful login goes.
+    from vitals.models.identity import HealthSubject
+
+    subject_id = await db.scalar(
+        select(HealthSubject.id).where(HealthSubject.owner_user_id == user.id)
+    )
+
+    token = create_federated_session(
+        username=user.username,
+        user_id=user.id,
+        session_version=user.session_version,
+        authenticated_at=(
+            int(identity.authenticated_at.timestamp())
+            if identity.authenticated_at is not None
+            else None
+        ),
+        subject_id=subject_id,
+    )
+    response = RedirectResponse(
+        url=safe_next(handoff["next"]), status_code=status.HTTP_303_SEE_OTHER
+    )
+    set_session_cookie(response, token)
+    clear_oidc_handoff_cookie(response)
+    return response
 
 
 @router.get("/login", response_class=HTMLResponse)

@@ -20,6 +20,12 @@ DEFAULT_SESSION_TTL = 30 * 24 * 3600  # 30 days
 PENDING_2FA_COOKIE = "vitals_2fa"
 PENDING_2FA_TTL = 300  # 5 minutes to reach for the phone and type the code
 
+# The handle carrying state, nonce and PKCE verifier while the browser is away
+# at the provider. Short, because it is only alive for one redirect round trip;
+# a long window is a long window in which a stale one can be replayed.
+OIDC_HANDOFF_COOKIE = "vitals_oidc"
+OIDC_HANDOFF_TTL = 600
+
 # Callback hosts of the AI clients allowed to connect to the MCP server. Matched
 # by host rather than by full URL on purpose: Claude and ChatGPT each use one
 # fixed callback path, but Google mints a per-user one

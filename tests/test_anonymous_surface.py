@@ -27,6 +27,13 @@ ANONYMOUS_BY_DESIGN = {
     ("POST", "/login/2fa"),
     # Nothing to authenticate — it only clears cookies.
     ("POST", "/logout"),
+    # The federated login handshake. Both run before a session can exist, which
+    # is the point of them: /auth/start has nothing to carry but a redirect to
+    # the provider, and /auth/callback is where a session is created rather than
+    # required. Both are 404 until a provider is configured, and the callback is
+    # rate-limited by IP because it is the pre-auth entry point.
+    ("GET", "/auth/start"),
+    ("GET", "/auth/callback"),
     # Liveness for external monitoring. Job names are owner-only — see web/main.py.
     ("GET", "/health"),
     # Bearer token, not a session.
