@@ -6,6 +6,7 @@ the single-user configuration loaded from web/config.py.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import quote, urlsplit
@@ -33,21 +34,54 @@ _SESSION_TOKEN_TYPE = "web_session"
 _SESSION_AUTH_SOURCE = "legacy_env"
 _SESSION_V1_KEYS = frozenset({"v", "type", "auth_source", "username"})
 
+_OIDC_TOKEN_VERSION = 2
+_OIDC_AUTH_SOURCE = "oidc"
+_SESSION_V2_KEYS = frozenset(
+    {
+        "v",
+        "type",
+        "auth_source",
+        "username",
+        "user_id",
+        "session_version",
+        "authenticated_at",
+        "subject_id",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SessionClaims:
     """Validated browser-session identity without authorization state.
 
-    PR-02 still authenticates the single legacy owner from environment-backed
-    credentials.  The versioned envelope gives a later database-auth cutover a
-    stable compatibility boundary without putting roles, subject access, or
-    health data in the signed (but readable) cookie.
+    The envelope is versioned because its contents changed as authentication
+    did. Version 1 carries the environment-backed owner's username. Version 2
+    carries what a federated login produces: the local user's id, which is
+    stable where a username is not; the session version that makes the session
+    revocable; and the moment the provider actually authenticated the person,
+    which is what a step-up check measures freshness against.
+
+    A cookie is signed, not secret — anybody holding it can read it. Roles,
+    subject access and health data therefore stay out of it, and everything
+    here is either an opaque identifier or a timestamp.
     """
 
     version: int
     token_type: str
     auth_source: str
     username: str
+    #: Version 2 only. The local user this session belongs to.
+    user_id: uuid.UUID | None = None
+    #: Version 2 only. Compared against the user's current value on every
+    #: request: bumping that value revokes every session ever issued for them,
+    #: which is what makes a session revocable without a server-side store.
+    session_version: int | None = None
+    #: Version 2 only. When the provider authenticated, as epoch seconds. Not
+    #: when the token was issued — a refresh can make that arbitrarily recent
+    #: without anybody having proved anything.
+    authenticated_at: int | None = None
+    #: Version 2 only. The health subject this session is acting for.
+    subject_id: uuid.UUID | None = None
 
 
 def _get_serializer() -> URLSafeTimedSerializer:
@@ -150,6 +184,9 @@ def decode_session(token: str | None) -> SessionClaims | None:
             username=payload,
         )
 
+    if isinstance(payload, dict) and set(payload) == _SESSION_V2_KEYS:
+        return _decode_v2(payload)
+
     if not isinstance(payload, dict) or set(payload) != _SESSION_V1_KEYS:
         return None
     if type(payload["v"]) is not int or payload["v"] != _SESSION_TOKEN_VERSION:
@@ -167,6 +204,91 @@ def decode_session(token: str | None) -> SessionClaims | None:
         token_type=_SESSION_TOKEN_TYPE,
         auth_source=_SESSION_AUTH_SOURCE,
         username=username,
+    )
+
+
+def _decode_v2(payload: dict) -> SessionClaims | None:
+    """Strictly decode a federated session, or fail closed.
+
+    Every field is checked for shape here rather than trusted downstream. A
+    cookie is signed, so this cannot be forged — but it can be an old envelope
+    from a previous release, and accepting a half-understood one is how a
+    session outlives the rules that were meant to bound it.
+    """
+
+    if type(payload["v"]) is not int or payload["v"] != _OIDC_TOKEN_VERSION:
+        return None
+    if payload["type"] != _SESSION_TOKEN_TYPE:
+        return None
+    if payload["auth_source"] != _OIDC_AUTH_SOURCE:
+        return None
+
+    username = payload["username"]
+    if not isinstance(username, str) or not username.strip():
+        return None
+    session_version = payload["session_version"]
+    if type(session_version) is not int or session_version < 1:
+        return None
+    authenticated_at = payload["authenticated_at"]
+    if authenticated_at is not None and type(authenticated_at) is not int:
+        return None
+
+    try:
+        user_id = uuid.UUID(payload["user_id"])
+        subject_id = (
+            uuid.UUID(payload["subject_id"])
+            if payload["subject_id"] is not None
+            else None
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    return SessionClaims(
+        version=_OIDC_TOKEN_VERSION,
+        token_type=_SESSION_TOKEN_TYPE,
+        auth_source=_OIDC_AUTH_SOURCE,
+        username=username,
+        user_id=user_id,
+        session_version=session_version,
+        authenticated_at=authenticated_at,
+        subject_id=subject_id,
+    )
+
+
+def create_federated_session(
+    *,
+    username: str,
+    user_id: uuid.UUID,
+    session_version: int,
+    authenticated_at: int | None,
+    subject_id: uuid.UUID | None,
+) -> str:
+    """Issue a version 2 session for somebody the provider authenticated.
+
+    The username rides along so page chrome can greet a person without a
+    database read; it is display only. Identity is ``user_id``, and authority
+    to still be here is ``session_version``, both of which are checked against
+    the database on every request that matters.
+    """
+
+    if not isinstance(username, str) or not username.strip():
+        raise ValueError("session username must be a non-blank string")
+    if not isinstance(user_id, uuid.UUID):
+        raise ValueError("session user_id must be a UUID")
+    if type(session_version) is not int or session_version < 1:
+        raise ValueError("session_version must be a positive integer")
+
+    return _get_serializer().dumps(
+        {
+            "v": _OIDC_TOKEN_VERSION,
+            "type": _SESSION_TOKEN_TYPE,
+            "auth_source": _OIDC_AUTH_SOURCE,
+            "username": username,
+            "user_id": str(user_id),
+            "session_version": session_version,
+            "authenticated_at": authenticated_at,
+            "subject_id": str(subject_id) if subject_id is not None else None,
+        }
     )
 
 
