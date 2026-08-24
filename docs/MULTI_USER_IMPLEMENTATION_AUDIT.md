@@ -89,8 +89,8 @@ a current validation result.
   explicit waiting-for-sharing notice rather than entering a closed record.
 - The patient screen now writes granular domain, authored-guidance, and message
   scopes; changing the selection creates a new immutable consent version. Plan
-  creation is visible and notes/plans name their author, but plan lifecycle
-  controls are still absent.
+  creation, author-only activation and archival are visible, and notes/plans
+  name their author.
 - A new conversation now takes its topic and first message together. Message
   attachments, unread state, a professional inbox, and a patient notification
   for accepted invitations remain unbuilt.
@@ -237,10 +237,9 @@ suite must be rerun without concurrent PostgreSQL/full-suite load before the
 shared result can be classified as a product defect or a harness/load failure.
 
 The largest remaining confirmed UX gaps are the missing invitation task/inbox,
-plan lifecycle controls, conversations without unread state, support expiry
-shown without time/countdown, low-contrast `--faint` microcopy outside the
-touched care screens, and roster cards without urgency or recent-activity
-prioritization.
+conversations without unread state, support expiry shown without time/countdown,
+low-contrast `--faint` microcopy outside the touched care screens, and roster
+cards without urgency or recent-activity prioritization.
 
 ## Architecture status and next moves
 

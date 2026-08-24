@@ -194,6 +194,45 @@ async def test_notes_and_plans_name_their_author(doctor_client):
     assert "Easy week" in page.text
 
 
+async def test_the_plan_lifecycle_is_available_to_its_author(
+    doctor_client, db_session
+):
+    from vitals.enums import CarePlanStatus
+    from vitals.models.professional import CarePlan
+
+    client, _doctor, (_owner_a, subject_a), _b = doctor_client
+    subject_id = subject_a.id
+    await client.post(
+        f"/care/{subject_id}/plan",
+        data={
+            "title": "Easy week",
+            "body": "Keep every session conversational.",
+            "effective_from": "2026-09-01",
+        },
+    )
+    plan = await db_session.scalar(select(CarePlan))
+    assert plan is not None
+    plan_id = plan.id
+
+    activated = await client.post(
+        f"/care/{subject_id}/plan/{plan_id}/status",
+        data={"plan_status": CarePlanStatus.ACTIVE.value},
+        follow_redirects=False,
+    )
+    assert activated.status_code == 303
+    db_session.expire_all()
+    assert (await db_session.get(CarePlan, plan_id)).status == CarePlanStatus.ACTIVE
+
+    archived = await client.post(
+        f"/care/{subject_id}/plan/{plan_id}/status",
+        data={"plan_status": CarePlanStatus.ARCHIVED.value},
+        follow_redirects=False,
+    )
+    assert archived.status_code == 303
+    db_session.expire_all()
+    assert (await db_session.get(CarePlan, plan_id)).status == CarePlanStatus.ARCHIVED
+
+
 async def test_a_revoked_consent_refuses_the_stale_tab(doctor_client, db_session):
     """The other correct outcome: not the wrong patient, and not a silent write."""
 

@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.access import PolicyAction, PolicyResourceType
-from vitals.enums import CareRelationshipStatus, ConsentStatus, Domain
+from vitals.enums import CarePlanStatus, CareRelationshipStatus, ConsentStatus, Domain
 from vitals.models.identity import HealthSubject
 from vitals.models.professional import CareRelationship, ConsentGrant
 from vitals.services import digest_service, modules_service
@@ -331,6 +331,11 @@ async def patient(
                 action=PolicyAction.CREATE,
                 resource_type=PolicyResourceType.ARTIFACT,
             ),
+            "may_update_plan": care.may(
+                resource_key=records.PLAN_ARTIFACT,
+                action=PolicyAction.UPDATE,
+                resource_type=PolicyResourceType.ARTIFACT,
+            ),
         },
     )
 
@@ -537,6 +542,40 @@ async def add_plan(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     except records.NotInLiveCare:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    await db.commit()
+    return RedirectResponse(
+        url=f"/care/{care.subject_id}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@router.post("/{subject_id}/plan/{plan_id}/status")
+async def change_plan_status(
+    request: Request,
+    plan_id: uuid.UUID,
+    plan_status: str = Form(""),
+    care: CareContext = Depends(require_care_context),
+    db: AsyncSession = Depends(get_session),
+):
+    """Move the current professional's plan through its visible lifecycle."""
+
+    try:
+        resolved = CarePlanStatus(plan_status)
+        await records.set_plan_status(
+            db,
+            context=care.access,
+            plan_id=plan_id,
+            status=resolved,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid plan status"
+        ) from exc
+    except records.ProfessionalRecordValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except (records.NotInLiveCare, records.NotTheAuthor):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     await db.commit()
     return RedirectResponse(

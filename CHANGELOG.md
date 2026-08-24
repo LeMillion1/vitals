@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — care plans have visible lifecycle controls
+
+The professional who wrote a plan can now start it from draft and archive it
+from the patient record. The route keeps the patient in the URL, checks the
+current consent on every request, and relies on the authored-record boundary so
+another professional cannot change somebody else's plan.
+
 ### Added — patients choose exactly what a professional may use
 
 The care-access screen now turns consent into a visible choice instead of one

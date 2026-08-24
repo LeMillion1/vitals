@@ -124,6 +124,22 @@
                     {{ plan.author.username }} · {{ plan.effective_from }}{% if plan.effective_to %} — {{ plan.effective_to }}{% endif %}
                 </div>
                 <p class="v-text-body" style="white-space: pre-wrap">{{ plan.body }}</p>
+                {% if may_update_plan and plan.actor_user_id == care.access.principal.user_id %}
+                <div class="flex flex-wrap gap-2 pt-2">
+                    {% if plan.status == 'draft' %}
+                    <form action="/care/{{ care.subject_id }}/plan/{{ plan.id }}/status" method="POST">
+                        <input type="hidden" name="plan_status" value="active">
+                        <button type="submit" class="v-btn text-xs">{{ t("care.plan_activate") }}</button>
+                    </form>
+                    {% endif %}
+                    {% if plan.status in ('draft', 'active') %}
+                    <form action="/care/{{ care.subject_id }}/plan/{{ plan.id }}/status" method="POST">
+                        <input type="hidden" name="plan_status" value="archived">
+                        <button type="submit" class="v-btn-ghost text-xs">{{ t("care.plan_archive") }}</button>
+                    </form>
+                    {% endif %}
+                </div>
+                {% endif %}
             </div>
             {% endfor %}
         </div>
