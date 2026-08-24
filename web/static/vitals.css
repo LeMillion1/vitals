@@ -2869,7 +2869,16 @@ sup {
 }
 @media (max-width: 767px) {
     .v-nutrition-intake .mh-macro-card { padding: 9px; }
-    .v-nutrition-intake .mh-macro-card-top { align-items: flex-start; }
+    /* Stacked rather than side by side. Three cards across a phone leave the
+       label sharing a row with its percentage, and the label is what loses:
+       "Protein" and "Carbs" rendered as "Pr…" and "Ca…" while "Fat" fit, so
+       the legend under the macro bar named one macro out of three. On its own
+       line the word has the whole card and needs no ellipsis. */
+    .v-nutrition-intake .mh-macro-card-top {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+    }
 }
 /* ── Screen: Today (the landing page) ──────────────────────────────────────
    The one page with no masthead: it opens the app, so it carries its own hero

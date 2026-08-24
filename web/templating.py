@@ -115,8 +115,20 @@ def format_hm(seconds: Any) -> str:
 
 
 def meal_word(n: Any) -> str:
-    """Russian plural for meal count: 1 приём, 2 приёма, 5 приёмов."""
-    return plural_ru(n, "приём", "приёма", "приёмов")
+    """The word for "meal" agreeing with ``n``, in the catalogue's language.
+
+    The forms were hardcoded Russian and applied with the Russian rule, so an
+    English installation rendered "Today's meals · 1 приём" — one line of the
+    page speaking the other language. The catalogue has carried
+    ``nutrition.meal_word_*`` in both languages the whole time; this filter was
+    the one that never started reading them, while ``days_word`` beside it did.
+    """
+    return plural(
+        n,
+        t("nutrition.meal_word_1"),
+        t("nutrition.meal_word_234"),
+        t("nutrition.meal_word_many"),
+    )
 
 
 def days_word(n: Any) -> str:

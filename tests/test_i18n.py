@@ -77,6 +77,30 @@ def test_days_word_agrees_with_the_count():
     assert days_word(42) == "days"
 
 
+def test_meal_word_agrees_with_the_count_and_the_language():
+    """The nutrition page counts meals out loud, next to English headings.
+
+    The filter hardcoded the Russian forms and the Russian rule, so an English
+    installation rendered "Today's meals · 1 приём" — the page speaking two
+    languages on one line. The catalogue carried both all along; only this
+    filter never read them. Found by photographing the page, which is the only
+    place a single wrong word next to a right one is obvious.
+    """
+
+    from web.templating import meal_word
+
+    current_lang.set("ru")
+    assert meal_word(1) == "приём"
+    assert meal_word(2) == "приёма"
+    assert meal_word(5) == "приёмов"
+    assert meal_word(11) == "приёмов"
+
+    current_lang.set("en")
+    assert meal_word(1) == "meal"
+    assert meal_word(2) == "meals"
+    assert meal_word(5) == "meals"
+
+
 def test_digest_build_prompt():
     context = {"test": "data"}
 
