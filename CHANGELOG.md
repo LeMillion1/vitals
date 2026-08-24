@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — professionals keep navigation on a phone
+
+Doctors and trainers without a personal health record now retain a compact
+mobile bar for Patients and Sign out. Platform support appears there when the
+role has it. Previously the personal record bar was correctly hidden but no
+professional replacement was rendered, leaving care screens without global
+navigation or logout below the desktop breakpoint.
+
 ### Fixed — care guidance and conversations use human names
 
 Notes, plans, conversation participants, and message authors now prefer the

@@ -938,6 +938,18 @@ body.ui-masthead .mh-bnav {
     border-top: 1px solid var(--line);
 }
 
+/* The five-column record bar is a closed, stable map of personal sections.
+   A professional without a personal record has a smaller control-plane map:
+   Patients and/or Support, plus Sign out. Keep those equal rather than leaving
+   three empty personal-section columns on the right. */
+body.ui-masthead .mh-bnav.mh-role-bnav-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+body.ui-masthead .mh-bnav.mh-role-bnav-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 @media (max-width: 767px) {
     body.ui-masthead .mh-bnav {
         display: grid;
@@ -956,6 +968,11 @@ body.ui-masthead .mh-bnav .v-bnav-link {
     color: var(--faint);
     text-decoration: none;
     text-align: center;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    font-family: inherit;
+    width: 100%;
 }
 
 body.ui-masthead .mh-bnav .v-bnav-link.is-active {

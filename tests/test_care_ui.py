@@ -314,6 +314,29 @@ async def test_the_roster_lists_both_patients(doctor_client):
     assert "consent v" not in response.text
 
 
+async def test_a_professional_keeps_phone_navigation_and_logout(client, db_session):
+    doctor = await _user(
+        db_session, "mobile-doctor", roles=(UserRoleName.DOCTOR,)
+    )
+    owner, subject = await _patient(db_session, "mobile-patient")
+    await _take_into_care(
+        db_session, owner=owner, subject=subject, professional=doctor
+    )
+    await db_session.commit()
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client.cookies.set(SESSION_COOKIE, create_session(doctor.username))
+
+    response = await client.get("/care", headers={"Accept": "text/html"})
+
+    assert response.status_code == 200
+    assert 'class="md:hidden v-bottom-nav mh-bnav mh-role-bnav-2"' in response.text
+    assert 'href="/care"' in response.text
+    assert 'action="/logout"' in response.text
+
+
 async def test_a_paused_consent_is_shown_as_paused_rather_than_hidden(
     doctor_client, db_session
 ):

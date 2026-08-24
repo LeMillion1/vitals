@@ -442,7 +442,7 @@
 <body class="v-app-shell flex flex-col overflow-hidden select-none ui-masthead" hx-boost="true">
     <div id="top-progress-bar" class="v-progress-bar"></div>
 
-    {% from "partials/nav_mobile.html" import mobile_bottom_nav with context %}
+    {% from "partials/nav_mobile.html" import mobile_bottom_nav, mobile_role_nav with context %}
     <!-- Masthead: compact mobile top bar; the desktop rail is included below.
          No controls on it any more (nav handoff, July): the phone used to carry
          three navigation surfaces at once — this bar's "Menu" button, the bottom
@@ -521,12 +521,13 @@
     </main>
     </div>
 
-    {# Hidden for an account with no record of its own: every slot in it is a
-       personal section, and the roster is reached from the rail on a desktop
-       and from the patient page's own "All patients" button on a phone. #}
+    {# Personal records and professional/control-plane accounts have different
+       destinations. The latter still need persistent phone navigation: hiding
+       the personal bar must not also hide Patients, Support, and Sign out. #}
     {% if username and request.state.has_own_record %}
     {{ mobile_bottom_nav() }}
-
+    {% elif username and (request.state.holds_patients or request.state.is_platform_admin) %}
+    {{ mobile_role_nav() }}
     {% endif %}
 
     <!-- Service worker setup -->

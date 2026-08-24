@@ -137,6 +137,12 @@ def test_bottom_bar_is_56px():
     assert "78px" not in NAV_MOBILE
 
 
+def test_role_bottom_bar_has_no_empty_personal_columns():
+    assert "mh-role-bnav-{{ role_slots }}" in NAV_MOBILE
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in MASTHEAD_CSS
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr));" in MASTHEAD_CSS
+
+
 @pytest.mark.asyncio
 async def test_header_renders_four_independent_blocks(auth_client):
     """The macro emits bar / eyebrow / tabs / metrics as siblings — no wrapper

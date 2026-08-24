@@ -247,6 +247,11 @@ visible author and participant names. They now resolve professional profile
 display names and the patient's record display name, retaining usernames only
 as a fallback for an incomplete professional profile.
 
+The professional shell also disappeared entirely below 768 px because hiding
+the patient's five-slot record navigation had no role-specific replacement.
+Professionals without their own record now keep a compact Patients/Support and
+Sign out bar, matching the destinations the desktop rail already exposed.
+
 The first shared UI run reported 25 passed and 10 failures after a revoked
 support-record navigation timed out; the remaining nine were cascading server
 timeouts. The exact HTTP flow was added as a three-second regression and passed,
