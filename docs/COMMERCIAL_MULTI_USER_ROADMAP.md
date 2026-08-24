@@ -952,6 +952,10 @@ a property of there being nowhere for an account to come from.
   installation is byte-identical to its refusal for an unknown identity.
 - `scripts/provision_account.py` is how an operator creates one today: no form,
   no route, no token, and whoever runs it already has a shell on the host.
+- `scripts/link_identity.py` completes that closed operator flow by binding the
+  new active account to the provider's exact `(issuer, subject)` identity. It
+  does not search by email, cannot move an existing link, and is deliberately
+  not exposed through a browser route.
 - `scripts/registration_mode.py` reads and sets the stored mode, and is the only
   caller of `set_stored_mode`. Until it existed the mode had been described,
   gated and left without a handle: an installation could be unlocked and still

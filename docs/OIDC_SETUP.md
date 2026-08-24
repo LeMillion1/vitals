@@ -81,6 +81,23 @@ variable — you can remove it, and should.
 The issuer must be `https` unless it is `http://localhost`, which is allowed
 only because a machine talking to itself cannot be intercepted.
 
+## Adding another person while registration is closed
+
+Creating a local account and deciding which provider identity may enter it are
+two explicit operator actions. Run both from a shell with
+`VITALS_DATABASE_URL` set:
+
+```bash
+python scripts/provision_account.py --username dr-ivanova --role doctor
+python scripts/link_identity.py --username dr-ivanova \
+  --issuer https://idp.example.com --subject 2417...
+```
+
+Use the provider's exact `iss` and opaque `sub` values. Never substitute an
+email address: ownership of an address can change, while this link grants
+access to health records. The link command refuses inactive or unknown local
+accounts and never moves an identity already bound to somebody else.
+
 ## If a login is refused
 
 Every refusal renders the same page on purpose: "no such account", "your account

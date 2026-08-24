@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — an operator-provisioned account can actually sign in
+
+`scripts/provision_account.py` created accounts without a local password and
+said that an operator would bind each one to its provider identity, but that
+second operation did not exist. After the one-time owner bootstrap had been
+spent, every additional account was therefore unreachable. The new
+`scripts/link_identity.py` binds an existing active account to the provider's
+exact `(issuer, subject)` pair under the identity-governance lock. It refuses
+unknown or inactive accounts and never moves an identity already linked to
+someone else.
+
 ### Fixed — the optional identity-provider profile blocked ordinary Compose commands
 
 Compose interpolates every service before applying profiles. Required-value

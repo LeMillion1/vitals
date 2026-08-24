@@ -22,9 +22,10 @@ a subject the fan-out still runs jobs for.
 
 **It prints no credential**, because there is none to print. Under the OIDC
 cutover the provider owns sign-in, and this account becomes reachable when its
-provider identity is linked — which, until registration opens, is an operator
-step too. Before the cutover, an account created here cannot use the password
-login either: that authenticates exactly one username from ``.env``.
+provider identity is linked with ``scripts/link_identity.py`` — which, until
+registration opens, is an operator step too. Before the cutover, an account
+created here cannot use the password login either: that authenticates exactly
+one username from ``.env``.
 """
 
 from __future__ import annotations

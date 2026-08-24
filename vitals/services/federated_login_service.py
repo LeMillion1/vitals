@@ -36,7 +36,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import UserStatus
 from vitals.models.identity import User, UserFederatedIdentity
-from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.services.identity_service import (
+    IdentityValidationError,
+    acquire_identity_governance_lock,
+    normalize_username,
+)
 
 
 class FederatedLoginError(RuntimeError):
@@ -80,6 +84,85 @@ async def _link(
     session.add(link)
     await session.flush()
     return link
+
+
+class IdentityAlreadyLinked(FederatedLoginError):
+    """That provider identity already belongs to an account here."""
+
+
+class NoSuchAccount(FederatedLoginError):
+    """There is no local account by that name to link."""
+
+
+async def link_identity(
+    session: AsyncSession,
+    *,
+    username: str,
+    issuer: str,
+    subject: str,
+) -> UserFederatedIdentity:
+    """Bind an existing account to a provider identity. Never commits.
+
+    The operator step after ``provision_account`` had always been described and
+    never implemented. An account created by the CLI can use no password — the password
+    login authenticates exactly one username from ``.env`` — so until its
+    provider identity is linked it is an account nobody can reach, and the
+    only binding that existed was the one-time bootstrap, which refuses the
+    moment an installation has more than one user or more than no links.
+
+    Deliberately by ``(issuer, subject)`` and never by email: a provider may
+    let somebody claim an address later, and a link made on that basis hands
+    over a whole health record.
+
+    Not exposed through the web layer, and the reason is what a link is. It
+    says which human being reaches this record; anybody who could add one from
+    a browser could point somebody else's record at themselves. That decision
+    stays with whoever has a shell on the machine.
+    """
+
+    if not issuer.strip() or not subject.strip():
+        raise FederatedLoginError("a link needs both an issuer and a subject")
+    if issuer != issuer.strip() or subject != subject.strip():
+        raise FederatedLoginError(
+            "issuer and subject must match the provider values exactly, "
+            "without surrounding whitespace"
+        )
+
+    await acquire_identity_governance_lock(session)
+
+    try:
+        lookup = normalize_username(username).lookup_key
+    except IdentityValidationError as exc:
+        raise NoSuchAccount(f"no account named {username!r}") from exc
+    user = await session.scalar(
+        select(User).where(User.normalized_username == lookup)
+    )
+    if user is None:
+        raise NoSuchAccount(f"no account named {username!r}")
+    if user.status != UserStatus.ACTIVE.value:
+        raise InactiveAccount("that account is not active")
+
+    existing = await session.scalar(
+        select(UserFederatedIdentity).where(
+            UserFederatedIdentity.issuer == issuer,
+            UserFederatedIdentity.subject == subject,
+        )
+    )
+    if existing is not None:
+        # Named rather than silently re-pointed. Moving a link is how one
+        # person's identity comes to open another person's record, and if it is
+        # ever wanted it should be its own operation with its own name.
+        raise IdentityAlreadyLinked(
+            "that provider identity is already linked to an account"
+        )
+
+    return await _link(
+        session,
+        user_id=user.id,
+        issuer=issuer,
+        subject=subject,
+        authenticated_at=None,
+    )
 
 
 async def _bootstrap_owner(
