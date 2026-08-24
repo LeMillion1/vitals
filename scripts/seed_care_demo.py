@@ -66,6 +66,7 @@ from vitals.models.identity import HealthSubject, User, UserRole  # noqa: E402
 from vitals.models.labs import LabResult  # noqa: E402
 from vitals.models.nutrition import MealLog  # noqa: E402
 from vitals.models.supplements import Supplement  # noqa: E402
+from vitals.services import labs_service  # noqa: E402
 from vitals.models.weight import WeightLog  # noqa: E402
 from vitals.services import (  # noqa: E402
     account_provisioning_service,
@@ -237,31 +238,49 @@ async def _seed_record(session: AsyncSession, subject_id, *, seed: int) -> None:
 
     # One marker inside its range and one outside, because a report that never
     # shows a flag never shows whether flagging works.
+    #
+    # Names go through the service's own normalizer rather than in as typed.
+    # Every read path normalizes the marker it looks up, so a row written
+    # around it is found by the table (which lists whatever is stored) and
+    # missed by the chart (which asks for the normalized name): "tsh" is
+    # stored, "Tsh" is asked for, and the per-marker graph renders empty next
+    # to a value that is plainly there. Seeded data that the app itself could
+    # not have written tests the wrong app.
+    #
+    # Four dates rather than one, so the chart has a line to draw. A single
+    # point renders as an empty grid, which is indistinguishable from the bug
+    # above — and an installation seeded for looking at should not need the
+    # database opened to tell those apart.
     markers = (
         ("ferritin", 30.0 + seed * 9, "ng/mL", 30.0, 400.0),
         ("tsh", 0.2 + seed * 0.05, "mIU/L", 0.4, 4.0),
     )
     for marker, value, unit, low, high in markers:
-        flag = "normal"
-        if value < low:
-            flag = "low"
-        elif value > high:
-            flag = "high"
-        session.add(
-            LabResult(
-                subject_id=subject_id,
-                domain=Domain.LABS.value,
-                source=Source.MANUAL.value,
-                date=TODAY - timedelta(days=2),
-                marker=marker,
-                value=round(value, 2),
-                unit=unit,
-                ref_low=low,
-                ref_high=high,
-                flag=flag,
-                lab_name="Synevo",
+        for index, days_ago in enumerate((84, 56, 28, 2)):
+            # Drifting towards the latest value, so the series reads as a
+            # measurement over time rather than four copies of one number.
+            drift = 1.0 + (len(range(4)) - index - 1) * 0.08
+            reading = round(value * drift, 2)
+            flag = "normal"
+            if reading < low:
+                flag = "low"
+            elif reading > high:
+                flag = "high"
+            session.add(
+                LabResult(
+                    subject_id=subject_id,
+                    domain=Domain.LABS.value,
+                    source=Source.MANUAL.value,
+                    date=TODAY - timedelta(days=days_ago),
+                    marker=labs_service.normalize_marker(marker),
+                    value=reading,
+                    unit=unit,
+                    ref_low=low,
+                    ref_high=high,
+                    flag=flag,
+                    lab_name="Synevo",
+                )
             )
-        )
 
     for days_ago in (0, 1, 2):
         session.add(

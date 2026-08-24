@@ -6,8 +6,14 @@
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
 <div class="v-page v-page-labs px-6 py-7 max-w-6xl mx-auto space-y-8" x-data="labsUpload({% if latest %}false{% else %}true{% endif %})">
 
+    {# The first metric counts the markers this record has results for — the
+       same set the table below lists and the same one ``out_of_range`` is
+       drawn from. It used to count the marker *catalog*, which is a different
+       thing with its own card on the right, so a record with two results under
+       an empty catalog read "0 Markers · 1 out of range" above a table of two.
+       A summary that contradicts the table under it is worse than no summary. #}
     {% call masthead_header('labs', t('nav.labs'), [
-        {'label': t('labs.metric_markers'), 'primary': true, 'value': markers | length},
+        {'label': t('labs.metric_markers'), 'primary': true, 'value': latest | length},
         {'label': t('labs.metric_oor'), 'tone': ('bad' if out_of_range > 0 else ''), 'value': out_of_range},
         {'label': t('labs.metric_selected'), 'value': selected or '—'},
         {'label': t('labs.metric_recognition'), 'tone': ('good' if llm_configured else ''), 'value': t('labs.llm_connected') if llm_configured else t('labs.llm_not_configured')}
