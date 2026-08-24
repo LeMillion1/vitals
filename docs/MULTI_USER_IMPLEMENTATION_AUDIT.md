@@ -150,29 +150,15 @@ and break-glass, scoped professional MCP/PAT grants, registration modes, lab
 marker collision migration, private-byte relocation outside static storage, and
 final legacy configuration contraction.
 
-### `COMMERCIAL_OWNERSHIP_INVENTORY.md` — strong rationale, incomplete table
+### `COMMERCIAL_OWNERSHIP_INVENTORY.md` — strong rationale, now exhaustive
 
 The provenance rules, ownership classes, raw-first policy, scoped natural-key
 reasoning, composite-FK rules, and historical cutover analysis are strong. The
 machine registry is the source of truth and is complete.
 
-The prose inventory lists 64 live and two dropped tables, not all 76 live
-tables. Missing rows are:
-
-```text
-care_plans
-care_relationships
-consent_grants
-consent_scopes
-external_api_tokens
-mcp_access_tokens
-professional_invitations
-professional_notes
-professional_profiles
-support_access_request_scopes
-support_access_requests
-user_federated_identities
-```
+The prose inventory previously listed only 64 live and two dropped tables. It
+now includes the twelve missing identity, professional-care, support-request,
+and credential rows and matches all 76 live tables in the machine registry.
 
 The historical Stage 3/4/5 narrative should be archived separately from a
 generated current registry table.

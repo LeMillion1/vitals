@@ -2,7 +2,7 @@
 
 Status: PR-03 Stage-3 through Stage-5 and PR-04 Stage-6 implementation source of truth
 
-Last reviewed: 2026-08-24
+Last reviewed: 2026-08-25
 
 This document classifies every SQLAlchemy table currently registered in
 `Base.metadata` and records the ownership, provenance, key, backfill, and
@@ -14,12 +14,11 @@ owns the exact registry membership and target-column categories. Both forms
 must change together.
 
 The original table-by-table inventory contains the 55 tables present at the
-Stage-0 expansion. The post-foundation control-plane tables below brought that
-exhaustive `Base.metadata` and machine registry to 62 tables.
+Stage-0 expansion. The post-foundation and later identity/care tables below keep
+the prose inventory aligned with the machine-readable registry.
 
-**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 68 tables today.** Later
-revisions added the care, consent, professional-note and HRT-template tables, and
-revision `0058` dropped two: `signals` and `day_context`. Their rows below are
+**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 76 live tables today.** Revision
+`0058` also dropped two historical tables: `signals` and `day_context`. Their rows below are
 kept, struck through, at their original numbers — the numbering is referenced
 from the Stage-3 narrative further down, and renumbering would silently
 invalidate every one of those references. A row marked *dropped* is history: the
@@ -191,6 +190,27 @@ future AI artifacts link to `AIInvocation`, not to a fabricated per-subject
 OpenRouter connection. Existing subject OpenRouter C values are preserved and
 mapped explicitly to the platform root during expand/backfill; they are never
 silently reassigned or deleted.
+
+### Later identity, professional-care, and credential additions
+
+These twelve live tables arrived after the earlier prose additions. Together
+with the sections above they make this hand-reviewed inventory exhaustive for
+the same 76 live tables as `OWNERSHIP_REGISTRY`.
+
+| Table | Ownership | Contract |
+| --- | --- | --- |
+| `user_federated_identities` / `UserFederatedIdentity` | Account control plane | An exact, globally unique provider `(issuer, subject)` pair binds to one local user. Email and display name are never identity keys; provider `auth_time` is retained for step-up freshness. |
+| `professional_profiles` / `ProfessionalProfile` | Account control plane | One professional claim per user/kind. Verification records the reviewing operator and time; rejection or suspension retains a bounded reason. A role or verified profile alone never grants PHI access. |
+| `professional_invitations` / `ProfessionalInvitation` | Required S control state | One-time patient offer stored as a token hash and bound to a verified email address. Acceptance, expiry, and revocation are retained; acceptance creates a relationship but no consent. |
+| `care_relationships` / `CareRelationship` | Required S control state | Names the patient owner and professional explicitly. At most one non-ended relationship exists for a pair; pause and end are lifecycle state, not deletion. |
+| `consent_grants` / `ConsentGrant` | Required S control state | Versioned grant under one relationship with one live active/paused version. Positive expiry and pause/revoke state are constrained; the patient is the granting authority. |
+| `consent_scopes` / `ConsentScope` | Required S child of consent | Exact `(resource_type, resource_key, action)` rows; wildcards are forbidden. S is repeated for RLS and inherited from the grant, not independently selectable. |
+| `professional_notes` / `ProfessionalNote` | Required S and author A | Immutable clinical-history row tied to the relationship under which it was written. Only its author may revise it; there is no delete path. Not ordinary-user portable because it is also the professional's authored record. |
+| `care_plans` / `CarePlan` | Required S and author A | Relationship-bound authored plan with draft/active/archived lifecycle and a valid effective range. Archived plans remain history and are not deleted or ordinary-user portable. |
+| `external_api_tokens` / `ExternalApiToken` | Required S control state | Bearer secret is stored only as a SHA-256 hash and binds one external client to one subject. Issuer, expiry, coarse last use, and revocation history remain; no role or installation-global fallback grants access. |
+| `mcp_access_tokens` / `McpAccessToken` | Account control plane | Revocable connector `jti` bound to one account, client, audience, issuer claim, and positive expiry. It carries no S: subject selection is resolved at the request boundary, not duplicated in the credential row. |
+| `support_access_requests` / `SupportAccessRequest` | Required S control state | A reasoned, expiring ask is distinct from a grant. The requesting admin cannot approve it; decision actor/time and the optional resulting grant are constrained and retained. |
+| `support_access_request_scopes` / `SupportAccessRequestScope` | Required S child of request | Exact non-wildcard resource/action rows shown to the patient before a decision. A composite FK prevents the child S from drifting from its request. |
 
 ## Critical cross-surface dependencies
 
