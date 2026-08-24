@@ -343,3 +343,38 @@ async def test_a_stranger_cannot_withdraw_somebody_elses_consent(
             f"/settings/care/{relationship_id}/revoke"
         )
     assert response.status_code == 404
+
+
+async def test_an_account_with_no_record_is_told_so_rather_than_404ed(
+    client, db_session, legacy_owner_roots
+):
+    """A doctor's bookmark of the patient's own consent page.
+
+    This page is about "who holds *my* record", and a doctor or a trainer keeps
+    none. It resolved its subject itself and answered a bare 404, which says
+    nothing — the same shape PR-08 fixed on every other personal page, reached
+    here by a different route. Somebody who holds patients is sent where their
+    work is; anybody else is told plainly.
+    """
+
+    from vitals.enums import UserStatus
+    from vitals.models.identity import User
+    from web.auth import create_session
+    from web.deps import SESSION_COOKIE
+
+    doctor = User(
+        username="dr-bookmark",
+        normalized_username="dr-bookmark",
+        password_hash="synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(doctor)
+    await db_session.commit()
+
+    client.cookies.set(SESSION_COOKIE, create_session("dr-bookmark"))
+    response = await client.get(
+        "/settings/care", headers={"Accept": "text/html"}, follow_redirects=False
+    )
+    assert response.status_code == 409
+    assert "несколько записей" not in response.text
+    assert "нет собственной медицинской записи" in response.text

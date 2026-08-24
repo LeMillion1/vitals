@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.services.legacy_ownership import NoPersonalRecordError
 from vitals.enums import (
     CareRelationshipStatus,
     ConsentStatus,
@@ -56,8 +57,16 @@ async def _own_subject(request: Request, db: AsyncSession) -> tuple[uuid.UUID, u
     user_id = await principal_user_id(request, db)
     try:
         access = await resolve_access_context(db, user_id=user_id, subject_id=None)
-    except AccessResolutionError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    except AccessResolutionError as exc:
+        # A doctor or a trainer keeps no record of their own, and this page is
+        # about "who holds *mine*". A bare 404 said nothing to them — it is the
+        # same shape PR-08 fixed on every other personal page, arrived at here
+        # by a different route because this one resolves its subject itself.
+        # The registered handler redirects somebody who holds patients to their
+        # roster and tells anybody else plainly.
+        raise NoPersonalRecordError(
+            "this account keeps no health record of its own"
+        ) from exc
     return user_id, access.subject_id
 
 

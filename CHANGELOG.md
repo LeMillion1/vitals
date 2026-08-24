@@ -8,6 +8,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the patient's consent page answered a bare 404 to a doctor
+
+`/settings/care` is about "who holds *my* record", and a doctor or a trainer
+keeps none. It resolves its own subject rather than going through the chrome
+adapter, so it missed the answer PR-08 gave every other personal page and
+returned a 404 that said nothing. Somebody who holds patients is redirected to
+their roster now; anybody else is told plainly that this account has no record
+of its own.
+
+Found by opening the seeded shared installation in a browser and walking the
+pages as each account, which is how the previous three defects of this shape
+were found too.
+
+
 ### Changed — every scheduled job about a record now runs once per record
 
 Eight of the fourteen jobs ran once for the installation, and the four left over
