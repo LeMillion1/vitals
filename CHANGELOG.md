@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the bundled identity provider no longer invites orphan sign-ups
+
+Fresh ZITADEL instances now start with public self-registration disabled.
+Vitals deliberately provisions and links each local account, so the provider's
+upstream registration default only produced identities that could never enter
+the application. The OIDC runbook also explains how to close registration on
+an existing identity database without deleting it.
+
 ### Added — care plans have visible lifecycle controls
 
 The professional who wrote a plan can now start it from draft and archive it

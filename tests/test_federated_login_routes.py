@@ -645,3 +645,21 @@ def test_the_provider_profile_replaces_the_known_first_admin_password():
     assert "Password1!" not in source
     for document in (root / ".env.example", root / "docs" / "OIDC_SETUP.md"):
         assert "VITALS_IDP_ADMIN_PASSWORD" in document.read_text()
+
+
+def test_the_provider_profile_does_not_advertise_orphan_registration():
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    compose = yaml.safe_load((root / "docker-compose.yml").read_text())
+    environment = compose["services"]["vitals_idp"]["environment"]
+
+    assert environment[
+        "ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER"
+    ] == "false"
+
+    runbook = (root / "docs" / "OIDC_SETUP.md").read_text()
+    assert "allow_register=false" in runbook
+    assert "already existed" in runbook

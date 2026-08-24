@@ -114,6 +114,10 @@ services:
       # v2.66.0 otherwise creates a first administrator with a known default.
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${VITALS_IDP_ADMIN_PASSWORD:-}
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "true"
+      # Vitals provisions and links every account explicitly. ZITADEL defaults
+      # this to true, which would advertise a sign-up flow that can only create
+      # an orphan identity with no Vitals account or health subject.
+      ZITADEL_DEFAULTINSTANCE_LOGINPOLICY_ALLOWREGISTER: "false"
       ZITADEL_EXTERNALDOMAIN: ${VITALS_IDP_DOMAIN:-localhost}
       ZITADEL_EXTERNALPORT: ${VITALS_IDP_PORT:-8080}
       ZITADEL_EXTERNALSECURE: ${VITALS_IDP_SECURE:-false}

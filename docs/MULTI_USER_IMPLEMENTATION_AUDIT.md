@@ -224,9 +224,11 @@ as current evidence.
 ## UI/browser findings
 
 The Compose application redirected correctly to its configured local ZITADEL.
-The IdP advertised public self-registration even though Vitals registration is
-closed, producing an orphan-account dead end. Its Russian copy contains typos,
-mobile controls are below the project's 44 px target, and the registration back
+The IdP originally advertised public self-registration even though Vitals
+registration is closed, producing an orphan-account dead end. Fresh instances
+now disable that upstream default and the runbook covers existing databases.
+Its Russian copy still contains typos, mobile controls are below the project's
+44 px target, and the registration back
 icon lacks an accessible name.
 
 The first shared UI run reported 25 passed and 10 failures after a revoked

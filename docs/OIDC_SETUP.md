@@ -55,7 +55,25 @@ explicit first-instance password exist to ensure it is never used. Changing a
 `FIRSTINSTANCE` value after `vitals_idp_pgdata` has been created does not update
 the existing administrator.
 
-## 1. Create the application in ZITADEL
+## 1. Keep provider registration closed
+
+Vitals does not create a local account from an arbitrary provider identity.
+Every person is provisioned and linked explicitly, so the provider must not
+advertise self-registration. The Compose profile sets ZITADEL's default
+instance login policy to `allow_register=false` for a new identity database.
+
+That default-instance setting is only consumed while the instance is created.
+If `vitals_idp_pgdata` already existed before this setting was added, open the
+ZITADEL Console's instance login settings, disable user registration, and save
+the policy. Do not delete the volume to make the default apply: it contains the
+identity store. Verify the result in a private browser window: the login page
+must not offer a register/sign-up action.
+
+An identity accidentally created through provider self-registration still has
+no Vitals account and cannot enter a health record. Remove or retain it under
+your identity-retention policy; never bind it merely because its email matches.
+
+## 2. Create the application in ZITADEL
 
 In the ZITADEL console, create a project and inside it a **Web** application
 with authentication method **Code**, and:
@@ -71,7 +89,7 @@ with authentication method **Code**, and:
 
 Copy the **client ID** and **client secret**.
 
-## 2. Find your own subject
+## 3. Find your own subject
 
 This is the value that binds the account you already have in Vitals to the
 identity ZITADEL will vouch for. It is an opaque number, not your username or
@@ -83,7 +101,7 @@ yourself, and copy the **ID**. In the token this arrives as `sub`.
 Email is deliberately not used for this. A provider may let somebody claim an
 address later, and a link made on that basis would hand over the whole record.
 
-## 3. Configure Vitals, and cut over
+## 4. Configure Vitals, and cut over
 
 ```bash
 VITALS_OIDC_ISSUER=https://idp.example.com          # no trailing slash
