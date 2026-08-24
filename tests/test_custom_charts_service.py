@@ -8,7 +8,7 @@ import logging
 
 import pytest
 
-from vitals.models.app_settings import AppSetting
+from vitals.models.scoped_settings import SubjectSetting
 from vitals.services import custom_charts_service as svc
 from vitals.services.custom_charts_service import ChartConfigError
 
@@ -133,7 +133,13 @@ async def test_get_chart_by_id(db_session, legacy_owner_roots):
 
 
 async def test_malformed_value_falls_back(db_session, legacy_owner_roots, caplog):
-    db_session.add(AppSetting(key=svc.SETTINGS_KEY, value={"not": "a list"}))
+    db_session.add(
+        SubjectSetting(
+            subject_id=legacy_owner_roots.subject_id,
+            key=svc.SETTINGS_KEY,
+            value={"not": "a list"},
+        )
+    )
     await db_session.commit()
 
     with caplog.at_level(logging.WARNING):
@@ -144,12 +150,26 @@ async def test_malformed_value_falls_back(db_session, legacy_owner_roots, caplog
 
 
 async def test_malformed_entries_dropped(db_session, legacy_owner_roots):
-    db_session.add(AppSetting(key=svc.SETTINGS_KEY, value=[
-        {"id": "ok1", "name": "Good", "series": [{"metric_key": "weight.weight_kg"}]},
-        {"id": "bad1"},  # missing name/series
-        "not-even-a-dict",
-        {"id": "ok2", "name": "Also good", "series": []},  # empty series → dropped
-    ]))
+    db_session.add(
+        SubjectSetting(
+            subject_id=legacy_owner_roots.subject_id,
+            key=svc.SETTINGS_KEY,
+            value=[
+                {
+                    "id": "ok1",
+                    "name": "Good",
+                    "series": [{"metric_key": "weight.weight_kg"}],
+                },
+                {"id": "bad1"},  # missing name/series
+                "not-even-a-dict",
+                {  # empty series → dropped
+                    "id": "ok2",
+                    "name": "Also good",
+                    "series": [],
+                },
+            ],
+        )
+    )
     await db_session.commit()
 
     charts = await svc.list_charts(db_session, redis=None, subject_id=legacy_owner_roots.subject_id)

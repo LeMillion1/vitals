@@ -1,11 +1,12 @@
 """Custom chart builder — saved configurations.
 
-Storage: one ``app_settings`` row, ``key='custom_charts'``, ``value`` a JSON
-array of chart configs (not an object — this key just happens to hold a list).
-Redis (``settings:custom_charts``) is a read-through cache; the DB is the
-source of truth. Same shape as ``modules_service``/``ui_version_service``:
-``_sanitize()`` never raises, projecting arbitrary stored data onto a clean
-shape so a corrupt row degrades to an empty list instead of 500-ing.
+Storage: one ``subject_settings`` row per health subject, with
+``key='custom_charts'`` and a JSON array of chart configs. The reviewed scoped
+settings bridge can still read the legacy singleton ``app_settings`` row while
+an installation has exactly one subject. Redis uses a subject-namespaced
+read-through cache; the database is the source of truth. ``_sanitize()`` never
+raises, projecting arbitrary stored data onto a clean shape so a corrupt row
+degrades to an empty list instead of 500-ing.
 
 A chart config::
 
