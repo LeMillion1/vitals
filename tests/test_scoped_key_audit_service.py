@@ -211,6 +211,19 @@ async def test_row_without_its_connection_scope_fails_closed(
         await service.preflight_scoped_key_audit(db_session)
 
 
+def _dialect(session) -> str:
+    """The dialect this session is actually speaking.
+
+    These cases used to pass ``"sqlite"`` literally, which is right for the
+    fast suite and wrong for the integration one: the audit builds each index's
+    partial predicate per dialect, and the SQLite form compares a boolean
+    column to ``1`` — not an operator PostgreSQL has. The test then failed on
+    the database it exists to make claims about.
+    """
+
+    return session.bind.dialect.name if session.bind is not None else "sqlite"
+
+
 @asynccontextmanager
 async def _without_indexes(session, *names: str):
     """Drop unique indexes the way a cutover — or a restore — leaves them.
@@ -229,13 +242,19 @@ async def _without_indexes(session, *names: str):
         for name in names
     ]
     for index in indexes:
-        await session.execute(DropIndex(index))
+        await session.execute(DropIndex(index, if_exists=True))
     try:
         yield
     finally:
         await session.rollback()
+        # ``if_not_exists`` because DDL is transactional on PostgreSQL: the
+        # rollback above puts the index back, and an unconditional CREATE then
+        # fails with "already exists" — so this helper errored on the only
+        # database production runs while working on SQLite, where the drop
+        # survives the rollback. Both are handled by asking for the end state
+        # rather than for the step.
         for index in indexes:
-            await session.execute(CreateIndex(index))
+            await session.execute(CreateIndex(index, if_not_exists=True))
 
 
 @pytest.mark.asyncio
@@ -265,7 +284,7 @@ async def test_collision_under_a_proposed_key_fails_closed(
         table = Base.metadata.tables["lab_markers"]
         index = SCOPED_KEY_REGISTRY["ix_lab_markers_name"].replacements[0]
         in_scope, collisions, missing = await service._audit_index(
-            db_session, table=table, index=index, dialect="sqlite"
+            db_session, table=table, index=index, dialect=_dialect(db_session)
         )
         assert in_scope == 2
         assert collisions == 1
@@ -291,7 +310,7 @@ async def test_two_subjects_may_share_a_date_under_the_scoped_key(
         table = Base.metadata.tables["weight_logs"]
         index = SCOPED_KEY_REGISTRY["uq_active_weight_per_date"].replacements[0]
         in_scope, collisions, missing = await service._audit_index(
-            db_session, table=table, index=index, dialect="sqlite"
+            db_session, table=table, index=index, dialect=_dialect(db_session)
         )
         assert in_scope == 2
         # One date, two people, no collision: this is what the legacy global key

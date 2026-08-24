@@ -219,6 +219,20 @@ async def test_an_unverified_address_is_not_an_address(db_session):
         )
 
 
+def _age_out(invitation) -> None:
+    """Make an offer lapsed the way time does, not the way a shortcut does.
+
+    Both timestamps move back together so ``expires_at`` stays strictly after
+    ``created_at``. The schema requires that — an offer that expires the instant
+    it is issued is not a state the service can produce — and PostgreSQL
+    enforces it where SQLite lets it through.
+    """
+
+    lapsed = invitation.created_at - timedelta(days=30)
+    invitation.created_at = lapsed
+    invitation.expires_at = lapsed + timedelta(days=7)
+
+
 async def test_an_expired_offer_is_refused_and_stops_claiming_to_be_open(db_session):
     """The state is corrected on the way past, so the list stops lying."""
 
@@ -227,8 +241,14 @@ async def test_an_expired_offer_is_refused_and_stops_claiming_to_be_open(db_sess
     )
     doctor = await _user(db_session, "inv-expired-doctor")
 
-    # Reach past the clock rather than waiting on it.
-    issued.invitation.expires_at = issued.invitation.created_at
+    # Reach past the clock rather than waiting on it — by moving the whole
+    # offer into the past, not by pulling its expiry back onto its issue time.
+    # ``ck_professional_invitations_positive_ttl`` forbids
+    # ``expires_at <= created_at``, so the shortcut builds a row PostgreSQL
+    # rejects outright and the test errors in its own setup on the only
+    # database production runs. Aged, the term stays positive and the row is
+    # what a lapsed offer actually looks like.
+    _age_out(issued.invitation)
     await db_session.flush()
 
     with pytest.raises(invitation_service.InvitationRefused):
@@ -287,7 +307,7 @@ async def test_every_refusal_says_exactly_the_same_thing(db_session):
     )
 
     _o2, _s2, expired = await _offer(db_session, slug="inv-uniform-expired")
-    expired.invitation.expires_at = expired.invitation.created_at
+    _age_out(expired.invitation)
     _o3, _s3, wrong = await _offer(db_session, slug="inv-uniform-wrong")
     await db_session.flush()
 
