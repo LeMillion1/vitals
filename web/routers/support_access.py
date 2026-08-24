@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import Domain
+from vitals.enums import RECORD_SECTIONS, Domain
 from vitals.services.legacy_ownership import NoPersonalRecordError
 from vitals.services import support_access_service as support
 from vitals.services.access_resolution import (
@@ -101,7 +101,7 @@ async def console(
             "grants": state.grants,
             "requests": state.requests,
             "subjects": subjects,
-            "domains": [domain.value for domain in Domain],
+            "domains": [domain.value for domain in RECORD_SECTIONS],
             "default_hours": int(
                 support.DEFAULT_GRANT_TTL.total_seconds() // 3600
             ),
@@ -127,6 +127,11 @@ async def ask_for_access(
     try:
         chosen = [Domain(value) for value in domains]
     except ValueError:
+        return _back("/settings/platform/support", "error=domain")
+    if any(domain not in RECORD_SECTIONS for domain in chosen):
+        # Not a section of anybody's record, so not a thing to be asked for —
+        # checked here as well as omitted from the form, because the form is a
+        # suggestion and this is the rule.
         return _back("/settings/platform/support", "error=domain")
     try:
         await support.open_request(

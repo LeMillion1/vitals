@@ -768,6 +768,57 @@ async def test_the_console_renders_for_an_administrator(
     del admin, legacy_owner_roots
 
 
+async def test_the_console_offers_only_sections_a_record_actually_has(
+    client, db_session, legacy_owner_roots
+):
+    """``Domain`` has a member for infrastructure alerts, and a record has no
+    such section. Offering it beside Labs and Nutrition asks a patient to
+    approve reading something that does not exist — and the patient reads this
+    list, so every line of it has to mean something to them."""
+
+    admin = await _admin(db_session, "sections-console-admin")
+    await db_session.commit()
+
+    _sign_in(client, "sections-console-admin")
+    page = (
+        await client.get(
+            "/settings/platform/support", headers={"Accept": "text/html"}
+        )
+    ).text
+    assert 'value="labs"' in page
+    assert 'value="system"' not in page, "the console offered a section nobody has"
+    del admin, legacy_owner_roots
+
+
+async def test_an_ask_naming_a_section_nobody_has_is_refused(
+    client, db_session, legacy_owner_roots
+):
+    """The form omits it; this is the rule behind the form."""
+
+    admin = await _admin(db_session, "sections-post-admin")
+    _owner, subject = await _patient(db_session, "sections-patient")
+    await db_session.commit()
+
+    _sign_in(client, "sections-post-admin")
+    response = await client.post(
+        "/settings/platform/support/request",
+        data={
+            "subject_id": str(subject.id),
+            "reason": "Looking into a ticket about missing labs.",
+            "hours": "2",
+            "domains": ["system"],
+            "ticket_reference": "SUP-1",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code in (302, 303)
+    assert "error=domain" in response.headers["location"]
+
+    state = await support.console_for_admin(db_session, admin_user_id=admin.id)
+    assert not state.requests, "an ask for a section nobody has was recorded"
+    del legacy_owner_roots
+
+
 async def test_a_granted_record_opens_and_shows_only_what_was_granted(
     client, db_session, legacy_owner_roots
 ):

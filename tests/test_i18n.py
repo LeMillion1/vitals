@@ -194,3 +194,54 @@ def test_referenced_keys_exist_in_dictionaries():
 
     assert not missing_tpl, f"Template t() keys missing from dictionary: {sorted(missing_tpl)}"
     assert not missing_js, f"JS window.t() keys missing from js.* namespace: {sorted(missing_js)}"
+
+
+# ``t("enum.domain." ~ key)`` is built at render time, so the scanner above —
+# which only sees literal keys — cannot cover any of it. That is not a
+# theoretical hole: two of ``Domain``'s fourteen members shipped without a
+# translation and the support console rendered them as ``enum.domain.system``
+# to whoever asked for a section by name. What makes these safe to check
+# exhaustively is that the member list *is* the key list: every value the
+# template can interpolate is a member of one enumeration.
+_ENUM_NAMESPACES = {
+    "annotation_kind": "AnnotationKind",
+    "cycle_kind": "CycleKind",
+    "domain": "Domain",
+    "drug": "Drug",
+    "flag": "LabFlag",
+    "site": "InjectionSite",
+    "status": "MilestoneStatus",
+}
+
+
+@pytest.mark.parametrize("namespace,enum_name", sorted(_ENUM_NAMESPACES.items()))
+def test_every_enum_member_can_be_named_in_both_languages(namespace, enum_name):
+    from vitals import enums
+    from vitals.i18n import STRINGS
+
+    members = [member.value for member in getattr(enums, enum_name)]
+    for lang in ("en", "ru"):
+        missing = [
+            value
+            for value in members
+            if f"enum.{namespace}.{value}" not in STRINGS[lang]
+        ]
+        assert not missing, (
+            f"{enum_name} members with no {lang.upper()} name: {missing} — "
+            f"a template interpolating one shows the raw key"
+        )
+
+
+def test_every_compound_class_in_the_catalog_can_be_named():
+    """The HRT catalogue is data rather than an enumeration, so a new file adds
+    a class without anything in the code changing. The dose picker groups by it."""
+
+    from vitals.i18n import STRINGS
+    from vitals.services.hrt_catalog import load_compound_catalog
+
+    classes = {entry["compound_class"] for _key, entry in load_compound_catalog()}
+    for lang in ("en", "ru"):
+        missing = sorted(
+            cls for cls in classes if f"enum.compound_class.{cls}" not in STRINGS[lang]
+        )
+        assert not missing, f"compound classes with no {lang.upper()} name: {missing}"

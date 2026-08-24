@@ -1687,6 +1687,12 @@ _EN: dict[str, str] = {
     "timeline.kind.photo": "Photo",
     "enum.domain.timeline": "All charts",
     "enum.domain.body_comp": "Body composition",
+    "enum.domain.milestones": "Goals",
+    # Not a section of the record: the domain infrastructure stamps on rows that
+    # belong to no module. It reaches a person only through screens that list
+    # every domain there is — the support console asks for a section by name,
+    # and this is the name.
+    "enum.domain.system": "System",
 
 
     # ── Settings: proactive layer ─────────────────────────────────────────
@@ -3418,6 +3424,8 @@ _RU: dict[str, str] = {
     "timeline.kind.photo": "Фото",
     "enum.domain.timeline": "Все графики",
     "enum.domain.body_comp": "Состав тела",
+    "enum.domain.milestones": "Цели",
+    "enum.domain.system": "Система",
 
     # ── Сигналы (свободный текст + рубильник проактивного слоя) ───────────
 

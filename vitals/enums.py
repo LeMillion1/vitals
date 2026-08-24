@@ -368,6 +368,16 @@ class Domain(StrEnum):
     SYSTEM = "system"
 
 
+#: The domains that name a section of somebody's record, which is not all of
+#: them. ``SYSTEM`` stamps infrastructure alerts that belong to no module and
+#: to no person; offering it beside Labs and Nutrition on the support console
+#: asks a patient to approve reading a section of their record that does not
+#: exist. Anything a person is asked to consent to comes from here.
+RECORD_SECTIONS: tuple[Domain, ...] = tuple(
+    domain for domain in Domain if domain is not Domain.SYSTEM
+)
+
+
 class Evidence(StrEnum):
     """Strength-of-evidence tier for a supplement (catalog reference)."""
 
