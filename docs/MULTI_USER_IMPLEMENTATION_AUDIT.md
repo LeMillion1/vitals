@@ -1,6 +1,6 @@
 # Multi-user implementation audit
 
-Last verified: 2026-08-25, branch `commercial/main`, through commit `84a0631`.
+Last verified: 2026-08-25, branch `commercial/main`.
 
 This is the current-state companion to the commercial roadmap and ownership
 cutover history. It separates shipped behavior from target design and records
@@ -26,8 +26,8 @@ The earlier documentation overstated completion in four important areas:
    session versions, and support actions without step-up were found in this
    audit. Commits `b6e3e91`, `7ff5271`, `c159b5d`, and `84a0631` close those
    specific gaps.
-3. The ownership inventory calls itself exhaustive but omits 12 of 76 live
-   tables. The machine registry is exhaustive; the prose table is not.
+3. The ownership inventory called itself exhaustive but originally omitted 12
+   of 76 live tables. The prose table now matches the machine registry.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
    Its schema, migration, router, service, RLS, ownership-class, and roadmap
    counters were synchronized during this audit.
@@ -47,7 +47,7 @@ The earlier documentation overstated completion in four important areas:
 | Application services | 95 tracked non-`__init__` modules after the care, authentication, analytics, and persistence moves | Verified |
 | Flat service debt | 77 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
-| Commercial Git history | 220 commits after base `c91456a`; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
+| Commercial Git history | 247 commits after base `c91456a`; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. Only a command executed against the current tree is recorded as
@@ -254,10 +254,11 @@ Sign out bar, matching the destinations the desktop rail already exposed.
 
 The first shared UI run reported 25 passed and 10 failures after a revoked
 support-record navigation timed out; the remaining nine were cascading server
-timeouts. The exact HTTP flow was added as a three-second regression and passed,
-and the isolated browser scenario passed in 11.98 seconds. The full 35-scenario
-suite must be rerun without concurrent PostgreSQL/full-suite load before the
-shared result can be classified as a product defect or a harness/load failure.
+timeouts. The product flow passed in isolation. The deterministic full-run cause
+was the UI fixture piping Uvicorn access logs without draining the pipe: once
+the OS buffer filled, the server blocked while handling a request. The fixture
+now writes its synthetic server log to the run's temporary directory, and the
+complete suite passes: 35 scenarios in 93.49 seconds.
 
 The largest remaining confirmed UX gaps are the missing invitation task/inbox,
 conversations without unread state, support expiry shown without time/countdown,
@@ -296,8 +297,26 @@ application-service APIs stabilize.
 - federated session enforcement focus: 147 passed, 1 skipped;
 - support step-up/session-envelope focus: 132 passed, 1 skipped;
 - isolated revoked-support HTTP regression: passed within its 3-second bound;
-- isolated revoked-support browser scenario: 1 passed in 11.98 seconds.
-
-Full fast, full PostgreSQL, full UI, Compose rebuild, Tailwind/static UI gates,
-and final diff/lint checks must be recorded from the final commit rather than
-copied from an earlier snapshot.
+- full browser suite: 35 passed in 93.49 seconds;
+- final fast suite: 4,621 passed, 168 skipped, 35 deselected in 129.71 seconds;
+- PostgreSQL migration rehearsal: upgrade to `0064`, downgrade to `0034`, and
+  upgrade back to `0064` completed successfully;
+- every one of the 4,789 PostgreSQL-selected tests completed successfully across
+  ordered fresh-process segments. The largest final segment passed 1,982 tests
+  in 30 minutes. A single monolithic process still accumulates asyncpg
+  cancellation/resource warnings and once returned an opaque CLI
+  `internal_error` after 2,077 passes; that exact rehearsal passed in a fresh
+  process. CI should shard this suite instead of treating that runner leak as a
+  product failure;
+- the PostgreSQL sweep exposed and corrected three SQLite-only historical-data
+  fixtures: HRT child, HRT compound/component, and HRT template child ownership
+  mismatches now use the explicit `unenforced_legacy_write` seam and pass on
+  both databases;
+- Tailwind rebuild completed; final `ruff check .` and `git diff --check`
+  passed;
+- Compose rebuilt the application image from the final tree. `/health` returned
+  200, `/` redirected 303 to `/today`, OIDC discovery returned 200, PostgreSQL
+  and Redis were healthy, and Alembic reported `0064 (head)`;
+- the rebuilt browser session retained the doctor/patient conversation and the
+  consent screen rendered human names, one record-section summary, clean
+  collaboration copy, and no untranslated `nav.milestones` key.
