@@ -104,10 +104,29 @@ def _text(value: object, field: str, *, limit: int) -> str:
 
 
 async def _now(session: AsyncSession) -> datetime:
-    stamp = await session.scalar(select(func.now()))
-    if stamp is None:  # pragma: no cover - supported DBs always return now()
-        return datetime.now(timezone.utc)
-    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=timezone.utc)
+    """The wall clock, not the transaction's.
+
+    ``now()`` in PostgreSQL is the instant the *transaction* began, so
+    everything written inside one carries the same timestamp. A conversation
+    then falls back to its tiebreak, which is a random UUID, and a reply can
+    render above the message it answers — which is what the seeded demo showed.
+    Two messages in one transaction are not exotic: an import, a seeder, or a
+    reply written alongside a note all do it.
+
+    ``clock_timestamp()`` is the real time now and advances within a
+    transaction. SQLite has no equivalent and its ``CURRENT_TIMESTAMP`` is
+    whole seconds, which ties just as readily, so there the process clock is
+    used instead — that path is local and single-node, where it is the same
+    clock anyway.
+    """
+
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        stamp = await session.scalar(select(func.clock_timestamp()))
+        if stamp is not None:
+            return (
+                stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=timezone.utc)
+            )
+    return datetime.now(timezone.utc)
 
 
 def _require_scope(context: AccessContext, *, action: PolicyAction) -> None:
@@ -386,15 +405,20 @@ async def send_message(
     # not outlive "is in care".
     await _live_relationship_or_none(session, context=context)
 
+    # Stamped here rather than left to the column default, which is ``now()``
+    # and therefore the same instant for everything in one transaction. The
+    # order a conversation reads in is part of what it says.
+    said_at = await _now(session)
     message = CareMessage(
         thread_id=thread.id,
         subject_id=context.subject_id,
         actor_user_id=context.principal.user_id,
         body=clean,
+        created_at=said_at,
     )
     session.add(message)
     # So a roster ordered by activity is ordered by what actually happened.
-    thread.updated_at = await _now(session)
+    thread.updated_at = said_at
     await session.flush()
     return message
 

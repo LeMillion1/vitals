@@ -553,3 +553,41 @@ async def test_a_random_thread_id_is_not_found_rather_than_crashing(db_session):
         await threads.read_thread(
             db_session, context=context, thread_id=uuid.uuid4()
         )
+
+
+async def test_a_conversation_reads_in_the_order_it_was_said(db_session):
+    """Even when every message is written inside one transaction.
+
+    ``created_at`` used to come from the column default, which is ``now()`` —
+    in PostgreSQL the instant the *transaction* began, identical for everything
+    written in it. The thread then ordered by its tiebreak, a random UUID, and
+    the seeded demo rendered the patient's "I'll book Monday" above the
+    doctor's message it was answering. A clinical record that can show a reply
+    before what it replies to is worse than one with a coarse clock.
+
+    Written as one transaction on purpose: that is the case that broke, and the
+    one an import or a seeder produces.
+    """
+
+    owner, subject = await _patient(db_session, "thread-order")
+    doctor, _rel, _grant = await _take_into_care(
+        db_session, subject=subject, owner=owner, slug="thread-order-doc"
+    )
+    doctor_context = await _context(db_session, doctor, subject)
+    patient_context = await _context(db_session, owner, subject)
+
+    thread = await threads.open_thread(
+        db_session, context=doctor_context, title="Bloods"
+    )
+    said = ["Ferritin is low.", "Understood.", "Repeat in two weeks.", "Will do."]
+    contexts = [doctor_context, patient_context, doctor_context, patient_context]
+    for body, context in zip(said, contexts):
+        await threads.send_message(
+            db_session, context=context, thread_id=thread.id, body=body
+        )
+    await db_session.commit()
+
+    _thread, messages, _participants = await threads.read_thread(
+        db_session, context=doctor_context, thread_id=thread.id
+    )
+    assert [message.body for message in messages] == said
