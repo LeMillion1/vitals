@@ -42,6 +42,10 @@
             <label for="thread-title" class="v-label">{{ t("care.thread_title_label") }}</label>
             <input id="thread-title" name="title" type="text" class="v-input" required
                    maxlength="200" placeholder="{{ t('care.thread_title_placeholder') }}">
+            <label for="thread-first-message" class="v-label">{{ t("care.message_label") }}</label>
+            <textarea id="thread-first-message" name="body" rows="4" maxlength="20000"
+                      class="v-input" required
+                      placeholder="{{ t('care.message_placeholder') }}"></textarea>
             <div class="flex justify-end">
                 <button type="submit" class="v-btn text-xs">{{ t("care.thread_open") }}</button>
             </div>
@@ -57,7 +61,7 @@
             <a href="/care/{{ care.subject_id }}/messages/{{ item.id }}"
                class="v-card-inset p-4 flex items-center justify-between gap-3">
                 <span class="v-text-body">{{ item.title }}</span>
-                <span class="v-text-micro" style="color: var(--faint)">
+                <span class="v-text-micro" style="color: var(--muted)">
                     {% if item.status == 'closed' %}{{ t("care.thread_closed") }} · {% endif %}
                     {{ item.updated_at | format_date }}
                 </span>
@@ -77,7 +81,7 @@
         {# Who is in the room, said plainly. A conversation whose participants
            are implicit is one nobody can check they are not being talked about
            behind. #}
-        <p class="v-text-micro" style="color: var(--faint)">
+        <p class="v-text-micro" style="color: var(--muted)">
             {{ t("care.thread_participants") }}:
             {% for person in participants %}
                 {%- if not person.removed_at %}{{ person.participant.username }}{% if not loop.last %}, {% endif %}{% endif -%}
@@ -88,7 +92,7 @@
         <div class="space-y-3">
             {% for message in thread_messages %}
             <div class="v-card-inset p-4 space-y-1">
-                <div class="v-text-micro" style="color: var(--faint)">
+                <div class="v-text-micro" style="color: var(--muted)">
                     {{ message.author.username }} · {{ message.created_at | format_date }}
                     {% if message.edited_at %} · {{ t("care.message_edited") }}{% endif %}
                 </div>

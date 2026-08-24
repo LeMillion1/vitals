@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — a care conversation starts in one step
+
+Professionals and patients no longer create an empty conversation and then
+write its first message on a second screen. The new-conversation form sends the
+topic and first message together in one transaction, while existing clients
+that create an empty thread remain compatible.
+
 ### Changed — authentication code now has one boundary
 
 OIDC verification, provider identity binding, session revocation, OAuth client

@@ -433,6 +433,27 @@ async def test_a_stale_tab_talks_to_the_patient_it_was_looking_at(
     assert subject_b.id not in {row.subject_id for row in rows}
 
 
+async def test_a_conversation_starts_with_its_first_message(
+    doctor_client, db_session
+):
+    """Starting a shared conversation is one action, not two screens."""
+
+    from vitals.models.care_thread import CareMessage
+
+    client, _doctor, (_owner_a, subject_a), _b = doctor_client
+    opened = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Bloods", "body": "Please fast for twelve hours."},
+        follow_redirects=False,
+    )
+
+    assert opened.status_code == 303
+    message = await db_session.scalar(select(CareMessage))
+    assert message is not None
+    assert message.subject_id == subject_a.id
+    assert message.body == "Please fast for twelve hours."
+
+
 async def test_another_patients_thread_is_not_reachable_by_its_id(
     doctor_client, db_session
 ):
