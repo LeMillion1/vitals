@@ -168,17 +168,22 @@ def installation(tmp_path_factory, playwright_api):
         pytest.fail(f"the seeder printed no session cookies:\n{seeded.stdout}")
 
     port = _free_port()
+    server_log = workdir / "server.log"
+    server_output = server_log.open("w", encoding="utf-8")
     server = subprocess.Popen(
         [sys.executable, "-m", "tests.ui._serve", str(port)],
         cwd=REPOSITORY_ROOT,
         env=environment,
-        stdout=subprocess.PIPE,
+        # A PIPE nobody drains eventually fills and blocks uvicorn while it is
+        # handling a request. The full suite used to hang at a repeatable but
+        # misleading browser navigation once enough access-log lines amassed.
+        stdout=server_output,
         stderr=subprocess.STDOUT,
         text=True,
     )
     base_url = f"http://127.0.0.1:{port}"
     try:
-        _wait_for(server, base_url)
+        _wait_for(server, base_url, server_log)
         yield Installation(base_url, accounts, database)
     finally:
         server.terminate()
@@ -186,17 +191,23 @@ def installation(tmp_path_factory, playwright_api):
             server.wait(timeout=10)
         except subprocess.TimeoutExpired:  # pragma: no cover - a wedged server
             server.kill()
+        server_output.close()
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _wait_for(server: subprocess.Popen, base_url: str, seconds: int = 40) -> None:
+def _wait_for(
+    server: subprocess.Popen,
+    base_url: str,
+    server_log: pathlib.Path,
+    seconds: int = 40,
+) -> None:
     import urllib.error
     import urllib.request
 
     deadline = time.time() + seconds
     while time.time() < deadline:
         if server.poll() is not None:
-            pytest.fail(f"the server exited:\n{server.stdout.read() if server.stdout else ''}")
+            pytest.fail(f"the server exited:\n{server_log.read_text(encoding='utf-8')}")
         try:
             with urllib.request.urlopen(f"{base_url}/login", timeout=2) as answer:
                 if answer.status == 200:
