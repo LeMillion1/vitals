@@ -30,26 +30,30 @@ than trusting them if this date has gone stale.
 | Alembic head | `0061` — 61 revisions |
 | Schema | 72 tables; 59 carry `subject_id` and are covered by an RLS policy; 49 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4406 fast passed / 168 skipped |
+| Suites | 4408 fast passed / 168 skipped |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
 expansion and backfill, PR-04 scoped services + policy engine + FORCE RLS,
 PR-05 OIDC, provisioning and the registration decision, PR-06
 files/portability/settings, PR-07 professionals/relationships/consent, PR-08
-professional UX (minus the inbox), PR-09 minus its notification transport.
+professional UX (minus the inbox), PR-09 minus its notification transport,
+PR-11 care-team messaging (minus private attachments).
 
-**PR-05 is complete.** Registration is closed by a decision rather than by
-absence — `registration_service` answers `disabled`, behind a deployment gate an
-administrator cannot flip — and a `HealthSubject` is born in one place,
-`account_provisioning_service`, which an operator reaches through
-`scripts/provision_account.py` and the demo seeder now goes through too. **The
-next gate is PR-09's scheduler work**: the credentials that blocked it have
-landed, so what is left is a per-connection dispatcher. PR-10 onward is
-unstarted.
+**The next gate is PR-10** — the MCP wire-protocol migration to `2026-07-28`,
+the external API, and LLM context isolation. It is the largest remaining piece
+and depends on an external SDK release; nothing in it has started. PR-12's
+support console is the other unstarted one, and is mostly wiring the
+`SupportAccessGrant` machinery PR-01 already built to screens.
 
-**Two things are deliberately unfinished and will look like bugs if you don't
-know:**
+**Three gaps are decisions rather than unbuilt scope**, and each is named
+where it lives: private attachments on a care-team message (the download route
+still resolves through the sole-owner adapter, so a professional gets a 404 that
+is not about permission); the professional inbox from PR-08 (finding an
+invitation by email is a different security model, not a missing screen); and
+`import_full`, which still deletes each portable table unqualified.
+
+**Two behaviours will look like bugs if you don't know they were chosen:**
 
 1. **There is no notification transport.** Telegram was removed outright (see the
    decision log); web push has not landed. The proactive layer composes a brief
