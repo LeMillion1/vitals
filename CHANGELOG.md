@@ -8,6 +8,71 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — support access a patient decides, and can end (PR-12)
+
+The policy engine has understood support grants since PR-02. `_support_allows`
+in `vitals/access.py` checks the grantee, the lifecycle, the expiry, the mode
+ceiling and the exact scope — and nothing had ever created one, so the branch
+was dead code and a platform superadmin's role authorized precisely nothing.
+`access_resolution`'s own docstring has claimed since it was written that
+support grants are read there; they were not. This makes the sentence true.
+
+**An ask is not a grant, and gets its own table.** `support_access_grants`
+cannot hold a pending one, and that is a feature of it: its constraints say a
+row there was approved by somebody who is not its grantee and expires strictly
+after that approval. A "pending" status would cost both, and those two are most
+of what makes a row there mean *authorized*. Revision `0062` adds
+`support_access_requests` and its scopes; approving one is the only thing that
+ever writes a grant.
+
+**The order is enforced three times.** `open_request` refuses an actor who is
+not an active superadmin. `approve_request` refuses an actor who does not own
+the subject. The schema refuses a grant whose approver is its grantee. The
+superadmin check runs again at approval, not only at the ask — a request can sit
+for a week, and a patient's yes must not authorize somebody the platform removed
+in the meantime.
+
+**Read only.** `repair` and `export` are refused by name. A mode accepted and
+unimplemented would read as approved to the patient and then do nothing, or
+something nobody designed; each needs its own review, and the roadmap sequences
+them after this.
+
+**The granted record can be opened**, on the same screens a professional uses.
+What may be shown is decided by the policy from the grant's exact scopes, so a
+grant covering weight and labs renders those and lists the rest as not shared,
+and every write affordance is hidden. Three things are said differently: the
+banner does not call support a doctor, the withheld-domains line names a grant
+rather than a consent, and the record route asks the policy before listing notes
+instead of catching the refusal after — which is what turned an ordinary
+partial-scope reader into a 500.
+
+**The care-team conversation stays shut.** Being in the room is a participant
+row and a grant does not add one, so the thread list is empty for support and a
+direct thread URL answers 404.
+
+**Nothing is deleted and the banner is not optional.** Declined and withdrawn
+asks stay — "support asked in March and I said no" is a thing a patient is
+entitled to find — and a live grant draws a banner on every page with a link
+that ends it. Either side may revoke: the patient must not have to find somebody
+to change their mind, and the admin should be able to put the access down rather
+than wait it out.
+
+Audit events carry no free text. The admin's sentence about why they want to
+read somebody's record is shown to that patient and stored on the request; the
+audit envelope goes to log sinks read by people with no business seeing it.
+
+Two new callers enter the platform scope and are on the named list with their
+reasons: an admin's own console spans every record that answered them, and the
+list of records an ask may name is the auditable list `/settings/platform/ai`
+already shows rather than a search for a patient by name. Both return frozen
+values, so nothing reachable under the open scope leaves the function.
+
+Not in this release, and named rather than implied: operational dashboards, the
+repair workflow, export approval, incident retention controls, and the
+break-glass path. The roadmap's PR-12 scope lists them and they need their own
+review.
+
+
 ### Added — the care-team conversation, with the patient in the room
 
 The safe first communication feature, and the shape carries the decision. A
