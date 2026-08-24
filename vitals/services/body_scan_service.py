@@ -50,7 +50,7 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import alerts_service, conflict_engine, raw_payload_service, weight_service
-from vitals.services.analytics.body_metrics import (
+from vitals.analytics.body_metrics import (
     CAT_OTHER,
     METRIC_REGISTRY,
     body_fat_pct_from_scan,

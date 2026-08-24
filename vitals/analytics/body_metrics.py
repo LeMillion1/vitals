@@ -1,4 +1,4 @@
-"""Body-composition metric registry & normalization (pure logic, no DB/I/O).
+"""Body-composition metric registry and normalization (pure logic, no DB/I/O).
 
 InBody and МедАсс analyzers print a known, finite vocabulary of metrics — unlike
 the open-ended lab-marker space — so the registry lives in code (like

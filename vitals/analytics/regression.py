@@ -1,4 +1,4 @@
-"""Least-squares linear trend + target-date projection.
+"""Least-squares linear trend and target-date projection.
 
 Used to project when weight will reach a goal. Noise ranges are excluded by the
 caller (or pass them through ``exclude``); the fit itself is a plain numpy
@@ -13,7 +13,7 @@ from typing import Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 
-from vitals.services.analytics import Point, exclude_ranges
+from vitals.analytics import Point, exclude_ranges
 
 # Slopes below this (value-units per day) are treated as flat — numpy.polyfit on
 # a level series returns a ~1e-16 slope rather than exactly 0, which would

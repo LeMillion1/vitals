@@ -290,7 +290,7 @@ async def _current_body_fat(
     bia_val = None
     if body_comp_enabled and source_pref in ("latest", "bia"):
         from vitals.services import body_scan_service
-        from vitals.services.analytics import body_metrics
+        from vitals.analytics import body_metrics
 
         scans = await body_scan_service.list_scans(
             session,

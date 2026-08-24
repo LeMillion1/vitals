@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from vitals.services.analytics.progression import (
+from vitals.analytics.progression import (
     ADVANCE,
     DELOAD,
     DOUBLE_PROGRESSION,

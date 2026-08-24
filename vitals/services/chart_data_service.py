@@ -16,8 +16,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.services import body_scan_service, hevy_service, labs_service
-from vitals.services.analytics import body_metrics, chart_registry
-from vitals.services.analytics.chart_registry import MetricField
+from vitals.analytics import body_metrics, chart_registry
+from vitals.analytics.chart_registry import MetricField
 
 _AGGREGATORS = {"avg": func.avg, "sum": func.sum, "max": func.max, "min": func.min}
 

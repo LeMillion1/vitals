@@ -729,7 +729,7 @@ async def _body_comp_block(
 ) -> dict:
     from vitals.i18n import current_lang
     from vitals.services import body_scan_service
-    from vitals.services.analytics.body_metrics import METRIC_REGISTRY, display_name
+    from vitals.analytics.body_metrics import METRIC_REGISTRY, display_name
 
     lang = current_lang.get()
     scans = await body_scan_service.list_scans(

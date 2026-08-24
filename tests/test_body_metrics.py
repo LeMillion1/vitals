@@ -1,5 +1,5 @@
 """Pure unit tests for the body-composition metric registry (no DB)."""
-from vitals.services.analytics import body_metrics as bm
+from vitals.analytics import body_metrics as bm
 
 
 def test_normalize_known_russian_labels():

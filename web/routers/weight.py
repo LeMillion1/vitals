@@ -33,7 +33,7 @@ from vitals.services import (
     garmin_weight_service,
     weight_service,
 )
-from vitals.services.analytics import body_metrics
+from vitals.analytics import body_metrics
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
 from web.deps import get_session, require_auth, require_module

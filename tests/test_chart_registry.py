@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from vitals.services.analytics import chart_registry
-from vitals.services.analytics.chart_registry import REGISTRY
+from vitals.analytics import chart_registry
+from vitals.analytics.chart_registry import REGISTRY
 
 
 def test_registry_keys_are_unique():

@@ -1098,7 +1098,7 @@ async def assemble_context(
         },
     )
 
-    from vitals.services.analytics.body_metrics import (
+    from vitals.analytics.body_metrics import (
         HEADLINE_KEYS,
         METRIC_REGISTRY,
         lbm_from_scan,

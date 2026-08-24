@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Iterable, List
 
-from vitals.services.analytics import Point
+from vitals.analytics import Point
 
 
 def rolling_mean_by_date(points: Iterable[Point], window_days: int = 7) -> List[Point]:

@@ -30,7 +30,7 @@ from typing import Any, Optional
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.services.analytics import chart_registry
+from vitals.analytics import chart_registry
 from vitals.services.scoped_settings_service import (
     ScopedSettingKey,
     SettingScope,

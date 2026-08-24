@@ -1,9 +1,7 @@
-"""Pure analytical functions (no DB, no I/O) — unit-tested in isolation.
+"""Health analytics and declarative metric metadata.
 
-These back the weight charts and projections: Navy body-fat / LBM, date-windowed
-rolling means, and least-squares date projection. Keeping them side-effect-free is
-deliberate — they're the part of the system that most benefits from fast, exact
-unit tests.
+The calculation modules are pure and unit-tested without DB or I/O. The chart
+registry contains declarative ORM field references, but performs no queries.
 """
 from __future__ import annotations
 

@@ -280,7 +280,7 @@ async def test_progress_propagates_subject_to_weight_measurement_scan_and_settin
     monkeypatch,
 ):
     from vitals.services import body_scan_service, modules_service, weight_service
-    from vitals.services.analytics import body_metrics
+    from vitals.analytics import body_metrics
 
     identity = _identity(legacy_owner_roots)
     seen: list[tuple[str, object, bool]] = []

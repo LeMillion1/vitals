@@ -34,7 +34,7 @@ from vitals.services import (
     modules_service,
     weight_service,
 )
-from vitals.services.analytics.regression import fit_trend
+from vitals.analytics.regression import fit_trend
 from vitals.utils.timeutils import today_local
 
 PLATEAU_ALERT_KEY = "glp1.plateau"

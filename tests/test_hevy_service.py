@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from vitals.models.hevy import HevyExercise, HevySet
 from vitals.models.raw_payload import RawPayload
 from vitals.services import hevy_service
-from vitals.services.analytics.progression import ADVANCE
+from vitals.analytics.progression import ADVANCE
 
 
 
@@ -155,7 +155,7 @@ async def test_working_weight_series_and_catalog(
 async def test_progression_advance_when_top_of_range_hit(
     db_session, owned_by_legacy_subject
 , *, hevy_owned_scope):
-    from vitals.services.analytics.progression import ProgressionConfig
+    from vitals.analytics.progression import ProgressionConfig
 
     client = FakeHevyClient(
         [

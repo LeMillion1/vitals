@@ -4021,10 +4021,10 @@ async def get_trend(
     ``hevy.working_weight`` (``param`` = exercise id), ``body_comp.metric``
     (``param`` = ``metric_key`` or ``metric_key:segment``). Read-only."""
     from vitals.services import chart_data_service, weight_service
-    from vitals.services.analytics import exclude_ranges
-    from vitals.services.analytics.regression import fit_trend, project_date_for_value
-    from vitals.services.analytics.rolling import rolling_mean_by_date
-    from vitals.services.analytics.chart_registry import get as get_metric
+    from vitals.analytics import exclude_ranges
+    from vitals.analytics.regression import fit_trend, project_date_for_value
+    from vitals.analytics.rolling import rolling_mean_by_date
+    from vitals.analytics.chart_registry import get as get_metric
 
     session_factory = get_session_factory()
     async with session_factory() as session:

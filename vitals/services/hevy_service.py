@@ -41,7 +41,7 @@ from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import raw_payload_service
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.analytics.progression import (
+from vitals.analytics.progression import (
     ProgressionConfig,
     ProgressionVerdict,
     SessionResult,

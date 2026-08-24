@@ -1,4 +1,4 @@
-"""US Navy body-fat method + lean body mass (metric / cm inputs).
+"""US Navy body-fat method and lean body mass (metric / cm inputs).
 
 Male (per the project spec):
 

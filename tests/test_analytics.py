@@ -5,13 +5,13 @@ from datetime import date, timedelta
 
 import pytest
 
-from vitals.services.analytics import exclude_ranges
-from vitals.services.analytics.navy import lean_body_mass_kg, navy_body_fat_pct
-from vitals.services.analytics.regression import (
+from vitals.analytics import exclude_ranges
+from vitals.analytics.navy import lean_body_mass_kg, navy_body_fat_pct
+from vitals.analytics.regression import (
     fit_trend,
     project_date_for_value,
 )
-from vitals.services.analytics.rolling import rolling_mean_by_date
+from vitals.analytics.rolling import rolling_mean_by_date
 
 
 # ── Navy body fat ─────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-"""Strength-progression engine (pure, no DB).
+"""Strength progression engine (pure, no DB).
 
 Given the chronological history of an exercise's *working* sets, decide what to do
 next. Two schemes (per the module-5 spec):

@@ -180,7 +180,7 @@ Vitals написан с Claude в качестве основного инст�
 - Загрузка PDF / фото листка анализатора (InBody / МедАсс) → LLM vision-модель распознаёт **все** доступные метрики (скелетная мускулатура, минералы, белок, висцеральный жир, внеклеточная вода, фазовый угол, сегментарный анализ, общий балл)
 - Интерактивная таблица предпросмотра для валидации данных перед сохранением
 - Жир% и LBM от BIA-скана и Navy сосуществуют на одном графике как разные источники
-- Реестр метрик описан в `vitals/services/analytics/body_metrics.py` (не требует БД-каталога)
+- Реестр метрик описан в `vitals/analytics/body_metrics.py` (не требует БД-каталога)
 </details>
 
 <details>
@@ -926,7 +926,7 @@ All domains share the `InsightsMixin` interface (`date`, `domain`, `source` + co
 - Upload InBody/МедАсс analyzer sheets (PDF/photo) → LLM vision model extracts **every** biomarker (skeletal muscle, minerals, protein, visceral fat, extracellular water, phase angle, segmental analysis, score)
 - Interactive preview table for validation before final save
 - BIA scans and Navy circumference measurements coexist on charts as distinct data sources
-- Metric definitions live dynamically in `vitals/services/analytics/body_metrics.py` (no DB catalog required)
+- Metric definitions live dynamically in `vitals/analytics/body_metrics.py` (no DB catalog required)
 </details>
 
 <details>

@@ -1,4 +1,4 @@
-"""Cross-domain metric registry for the custom chart builder (pure logic, no I/O).
+"""Cross-domain metric registry for the custom chart builder (declarative, no I/O).
 
 Declares every time-series metric a user can plot, across every domain, as a
 flat ``REGISTRY`` keyed by a globally unique ``key``. Two shapes of entry:
