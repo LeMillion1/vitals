@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -457,6 +458,77 @@ class SupportAccessScope(Base):
     grant: Mapped[SupportAccessGrant] = relationship(
         back_populates="scopes", foreign_keys=[grant_id]
     )
+
+
+class McpAccessToken(Base):
+    """One connector's access to one account, and the ability to take it back.
+
+    The token itself stays a signed value the server does not need to look up to
+    validate — that is what makes it cheap. This row is what makes it
+    *revocable*: the token carries a ``jti``, this table says whether that id is
+    still good, and a check against it is one indexed read per request.
+
+    Before this, revoking an issued connector token meant rotating
+    ``VITALS_SESSION_SECRET``, which invalidates every MCP token *and* every web
+    session at once — everybody signs in again and reconnects. "Disconnect the
+    laptop I lost" and "log the whole household out" were the same operation,
+    so in practice nobody did either.
+
+    Rows are kept after revocation. "This connector could read my record until
+    March" belongs to the same history as the support grants and the external
+    API keys, and it is not derivable from anywhere else.
+    """
+
+    __tablename__ = "mcp_access_tokens"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(client_id)) > 0", name="ck_mcp_access_tokens_client_id"
+        ),
+        CheckConstraint(
+            "expires_at > issued_at", name="ck_mcp_access_tokens_positive_ttl"
+        ),
+        Index("ix_mcp_access_tokens_user_issued", "user_id", "issued_at"),
+    )
+
+    #: The ``jti``. Generated when the token is minted and carried inside it, so
+    #: a request presents its own row's primary key.
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: Which client holds it, and what that client calls itself. The name comes
+    #: from a client metadata document when the client brought one; a
+    #: pre-registered connector has none, and the screen shows the id instead.
+    client_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    #: What the token was minted for. Checked on every request: a token issued
+    #: for one resource must not be replayable against another.
+    audience: Mapped[str] = mapped_column(String(255), nullable=False)
+    issued_at: Mapped[datetime] = _created_at()
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    #: Coarse on purpose — a date, not an access log. It answers "is this one
+    #: still in use" before somebody revokes it.
+    last_used_on: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: True for a token minted before this table existed, adopted on first use.
+    #: Kept visible because such a token was issued without an audience and
+    #: without a ``jti`` of its own, and a person reading the list is entitled to
+    #: know which of their connections predate the guarantee.
+    adopted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
 
 
 class ExternalApiToken(Base):

@@ -17,7 +17,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from web.auth import read_session, _get_mcp_serializer
 from web.config import SESSION_COOKIE, get_web_config
-from web.deps import get_redis
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from web.deps import get_redis, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +326,7 @@ async def oauth_approve(
 async def oauth_token(
     request: Request,
     redis = Depends(get_redis),
+    db: AsyncSession = Depends(get_session),
 ):
     """Exchanges an authorization code for a signed JWT access token."""
     content_type = request.headers.get("content-type", "")
@@ -431,20 +434,37 @@ async def oauth_token(
     # salt — see web.auth._get_mcp_serializer — so this token can never be replayed
     # as a session cookie or vice versa.
     #
-    # Revocation: tokens are stateless (no server-side store), so to revoke an
-    # issued token before it expires, rotate VITALS_SESSION_SECRET — that
-    # invalidates every signature at once (all MCP tokens AND session cookies →
-    # re-login + re-connect the Claude.ai connector). There is no per-token revoke.
+    # Revocation: the payload carries a ``jti`` naming a row in
+    # ``mcp_access_tokens``, and that row is checked on every request. One
+    # connector can be disconnected from Settings without touching anybody
+    # else's — which is what rotating VITALS_SESSION_SECRET used to mean, since
+    # it invalidates every MCP token *and* every web session at once.
+    from vitals.services import mcp_token_service
+
+    cfg = get_web_config()
+    audience = mcp_token_service.audience_for(cfg.public_url)
+    try:
+        token_payload, _record = await mcp_token_service.issue(
+            db,
+            username=code_data["username"],
+            client_id=client_id,
+            audience=audience,
+            issuer=cfg.public_url.rstrip("/"),
+            client_name=code_data.get("client_name"),
+        )
+    except mcp_token_service.McpTokenError:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_grant",
+                     "error_description": "the authorizing account is not active"},
+        )
+    await db.commit()
+
     serializer = _get_mcp_serializer()
-    token_payload = {
-        "username": code_data["username"],
-        "client_id": client_id,
-        "type": "mcp_access_token",
-    }
     access_token = serializer.dumps(token_payload)
 
     return {
         "access_token": access_token,
         "token_type": "Bearer",
-        "expires_in": 31536000,  # 1 year
+        "expires_in": int(mcp_token_service.TOKEN_LIFETIME.total_seconds()),
     }

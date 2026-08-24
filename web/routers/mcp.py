@@ -96,31 +96,44 @@ class _ConnectorTokenVerifier:
     async def verify_token(self, token: str) -> AccessToken | None:
         from itsdangerous import BadSignature, SignatureExpired
 
+        from vitals.services import mcp_token_service
         from web.auth import _get_mcp_serializer
 
-        client_id = get_web_config().mcp_client_id
+        cfg = get_web_config()
         try:
-            payload = _get_mcp_serializer().loads(token, max_age=_TOKEN_MAX_AGE)
+            payload, signed_at = _get_mcp_serializer().loads(
+                token, max_age=_TOKEN_MAX_AGE, return_timestamp=True
+            )
         except (SignatureExpired, BadSignature):
             return None
         if not isinstance(payload, dict):
             return None
-        if payload.get("type") != "mcp_access_token":
-            return None
-        if payload.get("client_id") != client_id:
-            return None
 
-        # The account that stood at the consent screen. A token minted before
-        # the identity was read carries none, and ``_mcp_actor_username``
-        # treats that as "names nobody" rather than as "no request happened".
-        claimed = payload.get("username")
-        named = claimed if isinstance(claimed, str) and claimed else None
+        # The signature says the token is ours and unaltered. Everything a
+        # signature *cannot* say — which resource it was minted for, whether the
+        # account still exists, whether somebody has since taken it back — is
+        # asked of the database, on every request, because each of those can
+        # become false while a valid signature stays valid.
+        async with get_session_factory()() as session:
+            verified = await mcp_token_service.verify(
+                session,
+                payload=payload,
+                token=token,
+                expected_client_id=cfg.mcp_client_id,
+                expected_audience=mcp_token_service.audience_for(cfg.public_url),
+                signed_at=signed_at,
+            )
+            if verified is None:
+                return None
+            await session.commit()
+
+        named = verified.username or None
         return AccessToken(
             token=token,
-            client_id=client_id,
+            client_id=verified.client_id,
             scopes=["vitals:record"],
             subject=named,
-            claims={"username": named} if named else {},
+            claims={"username": named, "jti": str(verified.jti)} if named else {},
         )
 
 

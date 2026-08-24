@@ -1319,6 +1319,21 @@ _EN: dict[str, str] = {
     "external_api.error_refused": "That key could not be issued.",
     "external_api.issued": "Issued. Copy the key above — it is not shown again.",
     "external_api.revoked": "Stopped. That key no longer reads anything.",
+    # ── Connected assistants (MCP connectors) ───────────────────────────────
+    "mcp_tokens.title": "Connected assistants",
+    "mcp_tokens.description": (
+        "Assistants you have connected to this record. Disconnecting one stops "
+        "it immediately and does not sign you out anywhere else."
+    ),
+    "mcp_tokens.none_yet": "Nothing is connected.",
+    "mcp_tokens.state_active": "connected",
+    "mcp_tokens.state_revoked": "disconnected",
+    "mcp_tokens.state_expired": "expired",
+    "mcp_tokens.since": "since",
+    "mcp_tokens.predates": "connected before this record kept a list",
+    "mcp_tokens.revoke": "Disconnect",
+    "mcp_tokens.revoked": "Disconnected. It stops on its next request.",
+    "mcp_tokens.error_refused": "That connection could not be stopped.",
     "consents.page_title": "Who sees my record",
     "consents.heading": "Access to my record",
     "consents.description": "People you have let into your record, what each of them can see, and how to stop it. Withdrawing takes effect on their next request.",
@@ -3035,6 +3050,21 @@ _RU: dict[str, str] = {
     "external_api.error_refused": "Ключ выпустить не удалось.",
     "external_api.issued": "Выпущен. Скопируйте ключ выше — больше он не покажется.",
     "external_api.revoked": "Остановлен. Этот ключ больше ничего не читает.",
+    # ── Подключённые помощники (коннекторы MCP) ─────────────────────────────
+    "mcp_tokens.title": "Подключённые помощники",
+    "mcp_tokens.description": (
+        "Помощники, которых вы подключили к этой записи. Отключение действует "
+        "сразу и не выкидывает вас из сессий в других местах."
+    ),
+    "mcp_tokens.none_yet": "Ничего не подключено.",
+    "mcp_tokens.state_active": "подключён",
+    "mcp_tokens.state_revoked": "отключён",
+    "mcp_tokens.state_expired": "истёк",
+    "mcp_tokens.since": "с",
+    "mcp_tokens.predates": "подключён до того, как список стал вестись",
+    "mcp_tokens.revoke": "Отключить",
+    "mcp_tokens.revoked": "Отключено. Перестанет работать на следующем запросе.",
+    "mcp_tokens.error_refused": "Не удалось отключить.",
     "consents.page_title": "Кто видит мою запись",
     "consents.heading": "Доступ к моей записи",
     "consents.description": "Люди, которых вы впустили в свою запись, что видит каждый из них и как это прекратить. Отзыв действует с их следующего запроса.",

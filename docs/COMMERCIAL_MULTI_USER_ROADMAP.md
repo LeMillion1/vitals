@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0063` — 63 revisions |
-| Schema | 75 tables; 62 carry `subject_id` and are covered by an RLS policy; 52 have it `NOT NULL` |
+| Alembic head | `0064` — 64 revisions |
+| Schema | 76 tables; 62 carry `subject_id` and are covered by an RLS policy; 52 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4548 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
+| Suites | 4561 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -39,7 +39,7 @@ PR-05 OIDC, provisioning and the registration decision, PR-06
 files/portability/settings, PR-07 professionals/relationships/consent, PR-08
 professional UX (minus the inbox), PR-09 minus its notification transport,
 PR-11 care-team messaging (minus private attachments), PR-12's read-only support
-access.
+access, PR-10.
 
 **The next gate is PR-10**, and it has started at the end that does not wait
 on an external SDK. Its external API now authenticates against per-subject
@@ -62,10 +62,10 @@ turned out to be the SDK's: `server/discover`, per-request version negotiation,
 `resultType`, server identity in `_meta` and private `cacheScope` all hold, with
 tests. The OAuth profile is in as well: client
 metadata documents replace Dynamic Client Registration, their fetching is
-treated as hostile input, and the authorization response carries `iss`. What
-remains of PR-10 is token binding — an `aud`/`jti` in the connector token and a
-revocation store, so an issued credential can be withdrawn without rotating the
-signing secret. Revision `0062` adds the ask as its own table because the grant's
+treated as hostile input, and the authorization response carries `iss`. Token binding is in as well: the
+connector token carries `sub`, `aud`, `iss` and `jti`, and revision `0064` gives
+it a revocation store, so one connector can be disconnected without rotating the
+signing secret and signing the whole installation out. **PR-10 is complete.** Revision `0062` adds the ask as its own table because the grant's
 constraints, correctly, cannot express a pending one. `repair`, `export`,
 operational dashboards, retention controls and the break-glass path are named
 and not built; each needs its own review and the roadmap already sequences them

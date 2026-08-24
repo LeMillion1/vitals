@@ -406,6 +406,10 @@ async def _page(
     external_tokens = await _external_token_rows(
         db, subject_id=preference_scope.subject_id
     )
+    # Assistants connected to this account. An account rather than a record:
+    # the token authorizes a person, and which record it then reaches is
+    # decided per request.
+    mcp_connectors = await _connector_rows(db, actor_username=username)
     # Redis is external I/O. Read it before any database *preparation* can
     # acquire transaction-lifetime identity/outbox locks — which is what
     # ``prepare_scoped_export`` below does, and what this ordering is about.
@@ -460,6 +464,7 @@ async def _page(
         "user_program": profile.program or "",
         "user_goals": ", ".join(profile.goals),
         "external_tokens": external_tokens,
+        "mcp_connectors": mcp_connectors,
         # Handed straight through from the redirect. Shown once and stored
         # nowhere: only the hash reaches the database.
         "issued_external_token": issued_external_token,
@@ -656,6 +661,83 @@ async def _external_token_rows(db: AsyncSession, *, subject_id) -> list[dict]:
             }
         )
     return listed
+
+
+async def _connector_rows(db: AsyncSession, *, actor_username: str) -> list[dict]:
+    """The connector list as a template can read it.
+
+    Flattened for the reason the credential list beside it is: an ORM row on a
+    settings page is one a template can lazy-load from.
+    """
+
+    from datetime import datetime, timezone as _timezone
+
+    from vitals.services import mcp_token_service
+    from vitals.services.identity_service import normalize_username
+    from vitals.models.identity import User
+
+    lookup = normalize_username(actor_username).lookup_key
+    user_id = await db.scalar(
+        select(User.id).where(User.normalized_username == lookup)
+    )
+    if user_id is None:
+        return []
+
+    now = datetime.now(_timezone.utc)
+    rows = await mcp_token_service.list_for_user(db, user_id=user_id)
+    listed = []
+    for row in rows:
+        if row.revoked_at is not None:
+            state = "revoked"
+        elif mcp_token_service.is_live(row, at=now):
+            state = "active"
+        else:
+            # Lapsed rather than disconnected: nobody stopped it, the clock did,
+            # and the screen should say which.
+            state = "expired"
+        listed.append(
+            {
+                "id": row.id,
+                "name": row.client_name or row.client_id,
+                "state": state,
+                "issued_at": row.issued_at,
+                "adopted": row.adopted,
+            }
+        )
+    return listed
+
+
+@router.post("/connectors/{connector_id}/revoke")
+async def revoke_connector(
+    request: Request,
+    connector_id: uuid.UUID,
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """Disconnect one assistant, and nothing else.
+
+    The point of the whole ``jti`` mechanism: before it, withdrawing an issued
+    connector token meant rotating the signing secret, which also invalidates
+    every web session in the installation.
+    """
+
+    from vitals.models.identity import User
+    from vitals.services import mcp_token_service
+    from vitals.services.identity_service import normalize_username
+
+    lookup = normalize_username(username).lookup_key
+    user_id = await db.scalar(
+        select(User.id).where(User.normalized_username == lookup)
+    )
+    if user_id is None:
+        return _redirect("?error=mcp_tokens")
+    try:
+        await mcp_token_service.revoke(db, user_id=user_id, jti=connector_id)
+    except mcp_token_service.McpTokenError:
+        await db.rollback()
+        return _redirect("?error=mcp_tokens")
+    await db.commit()
+    return _redirect("?saved=mcp_tokens")
 
 
 @router.post("/external-api")

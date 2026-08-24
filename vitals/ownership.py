@@ -405,6 +405,10 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         user_portable=False,
     ),
+    # An account's connector credentials, not a subject's data: the token
+    # authorizes a person, and which record they then reach is decided per
+    # request by the subject seam.
+    "mcp_access_tokens": _ACCOUNT,
     "support_access_requests": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL,
         subject=TargetColumn.REQUIRED,

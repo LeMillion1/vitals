@@ -185,19 +185,23 @@ async def test_a_forged_token_is_refused_at_the_transport(endpoint):
     assert response.status_code == 401
 
 
-async def test_a_token_that_names_nobody_still_connects(endpoint):
-    """An old connector keeps working on a single-subject installation.
+async def test_a_token_that_names_nobody_is_refused_at_the_transport(endpoint):
+    """It cannot be attributed, so it cannot be listed or taken back.
 
-    Breaking every issued token on upgrade would be its own defect. What such a
-    token cannot do is name a record, which is why it is refused once there is
-    more than one — proved next door in ``test_mcp_actor_identity.py``.
+    A credential nobody can revoke is what ``mcp_access_tokens`` exists to stop
+    existing, and one that names no account cannot have a row. Nothing real is
+    lost: ``/oauth/token`` has carried the authorizing account's name since the
+    flow was written, so a token without one is not something this application
+    ever issued.
     """
 
-    async with _serving(endpoint) as app:
-        async with _connect(app, _token(None)) as streams:
-            async with ClientSession(streams[0], streams[1]) as session:
-                listed = await session.list_tools()
-    assert listed.tools
+    async with _http(endpoint[0], _token(None)) as http:
+        response = await http.post(
+            BASE,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers={"Accept": "application/json, text/event-stream"},
+        )
+    assert response.status_code == 401
 
 
 # ── Protocol conformance ─────────────────────────────────────────────────────

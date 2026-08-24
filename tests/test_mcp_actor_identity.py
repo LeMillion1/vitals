@@ -343,43 +343,50 @@ async def _verify(token: str):
     return await mcp_router._ConnectorTokenVerifier().verify_token(token)
 
 
-async def test_the_verifier_hands_the_sdk_the_tokens_identity():
+async def test_the_verifier_hands_the_sdk_the_tokens_identity(
+    db_session, legacy_owner_roots
+):
     """A signed token in, a subject out — which is what ``get_access_token``
     then gives every tool."""
 
-    granted = await _verify(_token_for("patient01"))
+    await db_session.commit()
+    granted = await _verify(_token_for("tester"))
     assert granted is not None
-    assert granted.subject == "patient01"
-    assert granted.claims["username"] == "patient01"
+    assert granted.subject == "tester"
+    assert granted.claims["username"] == "tester"
+    # And it names the row that can withdraw it.
+    assert granted.claims["jti"]
 
 
-async def test_a_token_that_names_nobody_verifies_with_no_subject():
-    """The distinction the whole fix rests on.
+async def test_a_token_that_names_nobody_is_refused(db_session, legacy_owner_roots):
+    """It cannot be attributed, so it cannot be listed or taken back.
 
-    An old token is a valid credential that identifies no one. It must verify —
-    breaking every existing connector on upgrade would be its own defect — and
-    it must arrive with ``subject`` empty, so ``_current_actor`` can report it
-    as anonymous rather than as "no request happened".
+    A credential nobody can revoke is the thing this whole table exists to stop
+    existing. Nothing is lost by refusing it: ``/oauth/token`` has carried the
+    authorizing account's name since the flow was written, so a token without
+    one is not something this application ever issued.
     """
 
-    granted = await _verify(_token_for(None))
-    assert granted is not None
-    assert granted.subject is None
-    assert granted.claims == {}
+    await db_session.commit()
+    assert await _verify(_token_for(None)) is None
 
 
-async def test_an_unsigned_or_tampered_token_verifies_as_nothing():
-    for token in ("", "not-a-token", _token_for("patient01")[:-4]):
+async def test_an_unsigned_or_tampered_token_verifies_as_nothing(
+    db_session, legacy_owner_roots
+):
+    await db_session.commit()
+    for token in ("", "not-a-token", _token_for("tester")[:-4]):
         assert await _verify(token) is None, f"{token!r} verified"
 
 
-async def test_a_token_for_another_client_is_refused():
+async def test_a_token_for_another_client_is_refused(db_session, legacy_owner_roots):
     """The client id is part of what a token is for."""
 
-    assert await _verify(_token_for("patient01", client_id="somebody-else")) is None
+    await db_session.commit()
+    assert await _verify(_token_for("tester", client_id="somebody-else")) is None
 
 
-async def test_a_token_of_the_wrong_type_is_refused():
+async def test_a_token_of_the_wrong_type_is_refused(db_session, legacy_owner_roots):
     """A session cookie replayed as a connector token, and the reverse.
 
     They are signed with different salts, so this cannot happen by accident —
@@ -388,14 +395,17 @@ async def test_a_token_of_the_wrong_type_is_refused():
 
     from web.auth import _get_mcp_serializer
 
+    await db_session.commit()
     forged = _get_mcp_serializer().dumps(
-        {"username": "patient01", "client_id": "vitals-claude-connector",
+        {"username": "tester", "client_id": "vitals-claude-connector",
          "type": "web_session"}
     )
     assert await _verify(forged) is None
 
 
-async def test_the_verified_subject_is_what_the_tools_resolve_from():
+async def test_the_verified_subject_is_what_the_tools_resolve_from(
+    db_session, legacy_owner_roots
+):
     """The two halves joined, without a running server.
 
     ``_current_actor`` reads ``get_access_token()``; the verifier is what fills
@@ -403,7 +413,8 @@ async def test_the_verified_subject_is_what_the_tools_resolve_from():
     being two ideas about who is asking.
     """
 
-    granted = await _verify(_token_for("patient01"))
+    await db_session.commit()
+    granted = await _verify(_token_for("tester"))
     assert granted is not None
 
     import mcp.server.auth.middleware.auth_context as auth_context
@@ -414,6 +425,6 @@ async def test_the_verified_subject_is_what_the_tools_resolve_from():
         auth_context.AuthenticatedUser(granted)
     )
     try:
-        assert mcp_router._current_actor() == "patient01"
+        assert mcp_router._current_actor() == "tester"
     finally:
         auth_context.auth_context_var.reset(restore)

@@ -370,6 +370,42 @@
         </form>
     </div>
 
+    <!-- ─── CONNECTED ASSISTANTS ───────────────────────────────────────────── -->
+    <div class="v-card v-setting-row p-6 space-y-5">
+        {{ card_header(t("mcp_tokens.title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("mcp_tokens.description") }}
+        </p>
+
+        {% if mcp_connectors %}
+        <div class="space-y-2">
+            {% for connector in mcp_connectors %}
+            <div class="v-card-inset p-4 flex flex-wrap items-center justify-between gap-3">
+                <span class="v-text-body">
+                    <strong>{{ connector.name }}</strong>
+                    · {{ t("mcp_tokens.state_" ~ connector.state) }}
+                    {% if connector.state == 'active' %}
+                    · {{ t("mcp_tokens.since") }} {{ connector.issued_at | format_date }}
+                    {% endif %}
+                    {% if connector.adopted %}
+                    <span class="v-text-micro" style="color: var(--faint)">
+                        · {{ t("mcp_tokens.predates") }}
+                    </span>
+                    {% endif %}
+                </span>
+                {% if connector.state == 'active' %}
+                <form action="/settings/connectors/{{ connector.id }}/revoke" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("mcp_tokens.revoke") }}</button>
+                </form>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("mcp_tokens.none_yet") }}</p>
+        {% endif %}
+    </div>
+
     <!-- ─── EXTERNAL API CREDENTIALS ───────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
         {{ card_header(t("external_api.title")) }}

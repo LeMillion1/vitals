@@ -371,12 +371,20 @@ async def test_session_token_rejected_as_mcp_bearer(client):
 # ``tests/test_mcp_actor_identity.py``, against the token verifier.
 
 
-async def test_mcp_initialize_over_streamable_http(client):
+async def test_mcp_initialize_over_streamable_http(
+    client, session_factory, legacy_owner_roots, monkeypatch
+):
     """The streamable-HTTP session manager only exists while the mounted app's own
     lifespan is running, and app.mount() never runs it — web/main.py has to forward it
     via app.state.mcp_lifespan. Drop that forwarding and the server still boots, so
     this is the only test that catches it: a real ``initialize`` over /mcp/."""
     from web.main import app
+    from web.routers import mcp as mcp_router
+
+    # The token verifier opens a session of its own — it runs below FastAPI's
+    # dependency injection, so the ``client`` fixture's override does not reach
+    # it. Without this it reads a database that has no tables.
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
     mcp_lifespan = app.state.mcp_lifespan  # set by main.py at mount time
 

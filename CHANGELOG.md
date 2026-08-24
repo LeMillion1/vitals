@@ -8,6 +8,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — a connector token that names what it is for, and can be taken back
+
+The payload carried a username, a client id and a type. No audience, so a token
+minted for one installation was a token for any installation sharing a signing
+secret — a restored backup, a staging copy. And no id of its own, so the only
+way to withdraw an issued token was rotating `VITALS_SESSION_SECRET`, which also
+invalidates every web session: "disconnect the laptop I lost" and "sign the
+whole household out and reconnect every client" were one operation, which is a
+revocation mechanism in the sense that a fire alarm is a door.
+
+It now carries `sub`, `aud`, `iss` and `jti`. The token stays a signed value, so
+the signature still validates without a lookup; what the database answers is
+everything a signature *cannot* say and that can become false while a valid
+signature stays valid — that this token was minted for this resource, that the
+account still exists and is active, and that nobody has since taken it back.
+
+The audience is `{public_url}/mcp` rather than the origin. This origin also
+serves a website, a JSON API and an OAuth authorization server, and a token whose
+audience were the origin would be a token for all of them.
+
+Revision `0064` adds `mcp_access_tokens`. No subject column and no row-security
+policy: this is an account's credential, not a record's, and which record a
+connector reaches is decided per request by the subject seam. Putting a subject
+here would be a second answer to that question with no way to keep the two in
+step.
+
+**Old tokens are adopted rather than broken.** A token minted before the table
+existed carries no `jti`, and the first time it is presented a row is recorded
+for it — dated from the signature's own timestamp, so the list is truthful about
+when the connector was actually authorized. From that moment it is listable and
+revocable like any other, and marked `adopted` so somebody reading their
+connections can see which predate the guarantee. Its row id is derived from the
+token by hash, so the table does not become a copy of the secret.
+
+One behaviour changed deliberately: a token naming no account is now refused
+outright. It cannot be attributed, so it can be neither listed nor revoked, and
+a credential nobody can withdraw is what this table exists to stop existing.
+Nothing real is lost — `/oauth/token` has carried the authorizing account's name
+since the flow was written.
+
+Settings gains **Connected assistants**: what is connected, since when, and a
+button that disconnects one and nothing else.
+
+
 ### Added — the MCP OAuth profile: client metadata documents, fetched as hostile input
 
 A client can identify itself by an HTTPS URL now instead of by a pre-registered
