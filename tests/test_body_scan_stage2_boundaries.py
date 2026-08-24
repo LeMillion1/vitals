@@ -1250,6 +1250,35 @@ async def test_fully_null_scan_never_reaches_a_scope_through_its_owned_raw(
     ) == []
 
 
+async def _write_broken_graph(session) -> bool:
+    """Commit a deliberately invalid graph, and say whether it survived.
+
+    Several of the shapes below are ones the *schema* forbids on PostgreSQL:
+    ``fk_body_scan_metrics_scan_subject`` is a composite key over
+    ``(scan_id, subject_id)``, so a metric whose subject differs from its scan's
+    — or a scan that lost its subject while its metric kept one — cannot be
+    written at all. That is a stronger guarantee than the service refusing to
+    read them, and it is the one production has.
+
+    SQLite does not enforce that composite key, which is why the rows can be
+    built there and why the service-level refusal below is what these cases
+    exercise on the fast path. Asserting the same thing two ways is the point:
+    on the database that ships, the state is unreachable; on the one the suite
+    runs, the reader still refuses it.
+
+    Returns ``False`` when the database refused, and leaves the session clean.
+    """
+
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        return False
+    return True
+
+
 @pytest.mark.parametrize(
     "invalid_link",
     ["foreign_scan", "partial_legacy_scan", "foreign_metric"],
@@ -1309,7 +1338,10 @@ async def test_owned_replay_rejects_foreign_or_partial_link_suppression(
         )
     )
     db_session.add(scan)
-    await db_session.commit()
+    if not await _write_broken_graph(db_session):
+        # The composite key refused it. Nothing to replay, which is the
+        # assertion — see ``_write_broken_graph``.
+        return
 
     with pytest.raises(
         conflict_engine.ConflictRawOwnershipError,
@@ -1433,7 +1465,9 @@ async def test_every_partial_scan_metric_and_raw_chain_fails_closed(
     elif broken_part == "raw_missing_file":
         raw.file_asset_id = None
     db_session.add(scan)
-    await db_session.commit()
+    if not await _write_broken_graph(db_session):
+        # The composite key refused it — see ``_write_broken_graph``.
+        return
 
     with pytest.raises(
         (

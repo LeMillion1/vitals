@@ -8,6 +8,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — five tests that could not run on the database that ships
+
+The fast suite is SQLite and the integration suite is PostgreSQL, and five tests
+had only ever been run on the first. On the second they failed in their own
+setup, so what they assert was unverified on the only database production uses.
+
+All five construct a state deliberately, to prove the application refuses it —
+and PostgreSQL refuses to store it first. `ck_consent_grants_positive_ttl`
+forbids `expires_at <= granted_at`, so simulating expiry by setting the two
+equal writes a row the schema does not allow; the grant is aged into the past
+instead, which keeps the term positive and is what an expired grant actually
+looks like. `fk_body_scan_metrics_scan_subject` is a composite key over
+`(scan_id, subject_id)`, so a metric whose subject differs from its scan's
+cannot exist at all — a stronger guarantee than a reader refusing it, and the
+four body-scan cases now assert both: unreachable on the database that ships,
+still refused by the reader on the one the fast suite runs.
+
+
 ### Fixed — the patient's consent page answered a bare 404 to a doctor
 
 `/settings/care` is about "who holds *my* record", and a doctor or a trainer

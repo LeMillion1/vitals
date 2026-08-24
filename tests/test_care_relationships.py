@@ -552,7 +552,17 @@ async def test_only_the_patient_decides_what_is_shown(db_session):
 
 
 async def test_consent_lapses_rather_than_standing_forever(db_session):
-    """Consent nobody revisits is consent nobody withdrew either."""
+    """Consent nobody revisits is consent nobody withdrew either.
+
+    The grant is aged rather than given a zero term. ``ck_consent_grants_
+    positive_ttl`` forbids ``expires_at <= granted_at``, so the shortcut this
+    used to take — setting the expiry equal to the grant — built a row
+    PostgreSQL rejects outright, and the test errored in its own setup on the
+    only database that runs in production. Moving both timestamps into the past
+    keeps the term positive and is what an expired grant actually looks like.
+    """
+
+    from datetime import datetime, timezone
 
     owner, subject, professional, relationship = await _in_care(
         db_session, "care-expiry"
@@ -565,7 +575,9 @@ async def test_consent_lapses_rather_than_standing_forever(db_session):
     )
     assert await _may(db_session, professional, subject)
 
-    grant.expires_at = grant.granted_at
+    now = datetime.now(timezone.utc)
+    grant.granted_at = now - timedelta(days=30)
+    grant.expires_at = now - timedelta(days=29)
     await db_session.flush()
     assert not await _may(db_session, professional, subject)
 
