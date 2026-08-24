@@ -1,4 +1,4 @@
-"""Tell the database whose request this transaction is serving.
+"""Bind database transactions to their authorization scope.
 
 Revision 0050 gives every subject-owned table a policy that compares
 ``subject_id`` to the ``vitals.subject_id`` session setting. This module is the

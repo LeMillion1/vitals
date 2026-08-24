@@ -28,7 +28,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.tenancy import IntegrationConnection
 from vitals.access import AccessContext
 from vitals.ownership import WriteIdentity
-from vitals.services.rls_session import bind_session_subject
+from vitals.persistence.rls import bind_session_subject
 from vitals.services.identity_service import IdentityValidationError, normalize_username
 from vitals.services.tenancy_bootstrap import LEGACY_CONNECTION_TYPES
 

@@ -32,7 +32,7 @@ from vitals.services.proactive import channels, delivery, prefs
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
 from vitals.ownership import WriteIdentity
 from vitals.services import ai_gateway_service as ai_gateway
-from vitals.services import transaction_outcome
+from vitals.persistence import transactions as transaction_outcome
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped

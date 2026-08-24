@@ -36,7 +36,7 @@ from vitals.access import (
 )
 from vitals.enums import UserRoleName, UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.services.rls_session import bind_session_subject
+from vitals.persistence.rls import bind_session_subject
 
 
 class AccessResolutionError(RuntimeError):

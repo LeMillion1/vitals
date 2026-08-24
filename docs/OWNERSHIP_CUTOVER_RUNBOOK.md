@@ -103,7 +103,7 @@ and the count if a phase was skipped or is unfinished. Revision `0050` then
 enables the row policies.
 
 After this the application must supply `vitals.subject_id` on every transaction
-that reads patient data; `vitals/services/rls_session.py` does it, and an unbound
+that reads patient data; `vitals/persistence/rls.py` does it, and an unbound
 session sees nothing rather than everything. Roles that must see across subjects
 — the migration runner, these backfill jobs, the platform control plane — need
 `BYPASSRLS` or superuser. A backfill that could not see an unstamped row could

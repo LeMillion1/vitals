@@ -41,7 +41,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.share import SharedReport
 from vitals.ownership import WriteIdentity
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.rls_session import enter_platform_scope
+from vitals.persistence.rls import enter_platform_scope
 from vitals.utils.passwords import hash_password
 from vitals.utils.timeutils import now_local, today_local
 

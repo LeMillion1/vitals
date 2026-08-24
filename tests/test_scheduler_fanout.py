@@ -365,7 +365,7 @@ def unbound_session_factory(session_factory, db_session):
     session does for free.
     """
 
-    from vitals.services import rls_session
+    from vitals.persistence import rls as rls_session
 
     class _CM:
         async def __aenter__(self):
@@ -413,7 +413,7 @@ async def test_a_failure_is_filed_against_the_record_it_happened_to(
             job, job_id="garmin_sync", provider=IntegrationProvider.GARMIN
         )(unbound_session_factory)
 
-    from vitals.services import rls_session
+    from vitals.persistence import rls as rls_session
 
     db_session.info.pop(rls_session._SUBJECT_KEY, None)
     rows = list(

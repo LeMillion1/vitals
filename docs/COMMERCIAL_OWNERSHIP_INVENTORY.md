@@ -1562,7 +1562,7 @@ backfill, the platform control plane — are exempt by role attribute
 (`BYPASSRLS`) or by being superuser. That is deliberate, not an oversight: a
 backfill that could not see an unstamped row could not stamp it.
 
-`vitals/services/rls_session.py` is the other half. `bind_session_subject` sets
+`vitals/persistence/rls.py` is the other half. `bind_session_subject` sets
 the value with `set_config(..., is_local => true)`, so it is discarded at commit
 or rollback and cannot outlive the request that resolved it or ride a pooled
 connection into the next one — the leak that makes connection-level session

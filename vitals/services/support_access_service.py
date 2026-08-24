@@ -711,7 +711,7 @@ async def console_for_admin(
     """
 
     await _require_platform_admin(session, user_id=admin_user_id)
-    from vitals.services.rls_session import enter_platform_scope
+    from vitals.persistence.rls import enter_platform_scope
 
     await enter_platform_scope(session)
     now = await _now(session)
@@ -785,7 +785,7 @@ async def reachable_subjects(
     """
 
     await _require_platform_admin(session, user_id=admin_user_id)
-    from vitals.services.rls_session import enter_platform_scope
+    from vitals.persistence.rls import enter_platform_scope
 
     await enter_platform_scope(session)
     rows = (

@@ -40,13 +40,13 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services.rls_session import enter_platform_scope
+from vitals.persistence.rls import enter_platform_scope
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.platform_admin_service import (
     PreparedPlatformAdmin,
     require_prepared_platform_admin,
 )
-from vitals.services.transaction_outcome import (
+from vitals.persistence.transactions import (
     TransactionOutcomeError,
     register_root_transaction_outcome,
 )

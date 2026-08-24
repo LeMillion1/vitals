@@ -41,7 +41,7 @@ def _use_test_factory(session_factory, db_session, monkeypatch):
     Clearing the binding on entry is what a new session does for free.
     """
 
-    from vitals.services import rls_session
+    from vitals.persistence import rls as rls_session
 
     class _Unbound:
         async def __aenter__(self):

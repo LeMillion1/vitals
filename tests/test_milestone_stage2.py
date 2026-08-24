@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vitals.services.rls_session import RlsSessionError
+from vitals.persistence.rls import RlsSessionError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.enums import Domain, UserStatus

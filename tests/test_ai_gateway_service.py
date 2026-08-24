@@ -27,7 +27,7 @@ from vitals.models.tenancy import PlatformIntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.services import ai_gateway_service as gateway
 from vitals.services import platform_admin_service
-from vitals.services import transaction_outcome
+from vitals.persistence import transactions as transaction_outcome
 from vitals.services.identity_service import assign_role, change_user_status
 from web.config import get_web_config
 

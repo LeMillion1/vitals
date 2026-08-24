@@ -34,7 +34,7 @@ from sqlalchemy.pool import NullPool
 
 import vitals.models  # noqa: F401 -- register the complete metadata graph
 from vitals.ownership import OWNERSHIP_REGISTRY, TargetColumn
-from vitals.services.rls_session import SUBJECT_SETTING
+from vitals.persistence.rls import SUBJECT_SETTING
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 _MIGRATION = (
@@ -423,7 +423,7 @@ async def test_real_postgres_binding_survives_a_commit_and_refuses_a_switch(
     from alembic.config import Config as AlembicConfig
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from vitals.services.rls_session import (
+    from vitals.persistence.rls import (
         RlsSessionError,
         bind_session_subject,
         bound_subject,
@@ -676,7 +676,7 @@ def _platform_module():
 def test_the_platform_setting_is_named_the_same_in_both_halves():
     """Same contract as the subject: the policy reads what the session writes."""
 
-    from vitals.services.rls_session import PLATFORM_SETTING
+    from vitals.persistence.rls import PLATFORM_SETTING
 
     assert _platform_module().PLATFORM_SETTING == PLATFORM_SETTING
 
@@ -803,7 +803,7 @@ async def test_real_postgres_platform_scope_reaches_across_subjects(
 
     from alembic.config import Config as AlembicConfig
 
-    from vitals.services.rls_session import PLATFORM_SETTING
+    from vitals.persistence.rls import PLATFORM_SETTING
 
     database_url = os.environ["VITALS_TEST_DATABASE_URL"]
     assert database_url.startswith("postgresql")
@@ -870,7 +870,7 @@ async def test_real_postgres_platform_scope_is_transaction_local(
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from vitals.services.rls_session import (
+    from vitals.persistence.rls import (
         PLATFORM_SETTING,
         enter_platform_scope,
         in_platform_scope,

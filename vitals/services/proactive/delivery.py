@@ -86,8 +86,8 @@ from vitals.services.proactive.channels import (
     resolve_legacy_bound_notifier,
 )
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
-from vitals.services.rls_session import enter_platform_scope
-from vitals.services.transaction_outcome import (
+from vitals.persistence.rls import enter_platform_scope
+from vitals.persistence.transactions import (
     TransactionOutcomeError,
     register_root_transaction_outcome,
 )

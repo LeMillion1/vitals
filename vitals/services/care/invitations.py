@@ -39,7 +39,7 @@ from vitals.enums import (
 from vitals.models.identity import HealthSubject, User
 from vitals.models.professional import ProfessionalInvitation
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.rls_session import enter_platform_scope
+from vitals.persistence.rls import enter_platform_scope
 
 #: How long an offer stands. Long enough to survive a weekend and a spam folder,
 #: short enough that a link found in an old mailbox is no longer a way in.
