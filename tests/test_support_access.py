@@ -10,6 +10,7 @@ bounded in time and in scope. Either side can end it. Nothing is deleted.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -711,6 +712,55 @@ async def test_the_patient_can_answer_from_the_page_and_the_banner_appears(
     page = await client.get("/weight", headers={"Accept": "text/html"})
     assert page.status_code == 200
     assert "/settings/access" in page.text
+
+
+async def test_a_revoked_grant_closes_the_former_holder_route_immediately(
+    client, db_session, legacy_owner_roots
+):
+    """The next request is a bounded refusal, not a stale page or a hang."""
+
+    admin = await _admin(db_session, "web-support-revoked-admin")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Investigating a failed lab import.",
+        scopes=support.read_scopes_for((Domain.LABS,)),
+    )
+    grant = await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+
+    _sign_in(client, admin.username)
+    opened = await asyncio.wait_for(
+        client.get(
+            f"/care/{legacy_owner_roots.subject_id}",
+            headers={"Accept": "text/html"},
+        ),
+        timeout=3,
+    )
+    assert opened.status_code == 200
+
+    await support.revoke_grant(
+        db_session,
+        actor_user_id=legacy_owner_roots.user_id,
+        grant_id=grant.id,
+        reason="Withdrawn by the record owner.",
+    )
+    await db_session.commit()
+
+    refused = await asyncio.wait_for(
+        client.get(
+            f"/care/{legacy_owner_roots.subject_id}",
+            headers={"Accept": "text/html"},
+        ),
+        timeout=3,
+    )
+    assert refused.status_code == 404
+    assert "<html" in refused.text.lower()
 
 
 async def test_the_banner_is_absent_when_nothing_is_open(
