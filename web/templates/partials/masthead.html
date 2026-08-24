@@ -152,6 +152,13 @@
             {% if request.state.holds_patients %}
             <a href="/care" class="mh-rail-foot-link {% if current_path.startswith('/care') %}is-active{% endif %}">{{ t('care.roster_heading') }}</a>
             {% endif %}
+            {% if request.state.is_platform_admin %}
+            {# The support console. Here rather than only on /settings, because
+               a superadmin usually keeps no record of their own and /settings
+               refuses them outright — this was the one link in the product
+               whose intended audience could not reach it. #}
+            <a href="/settings/platform/support" class="mh-rail-foot-link {% if current_path.startswith('/settings/platform/support') %}is-active{% endif %}">{{ t('support.console_heading') }}</a>
+            {% endif %}
             {% if request.state.has_own_record %}
             {# The patient's door into the conversations about their own record.
                Offered only to somebody who has one: a professional reaches the

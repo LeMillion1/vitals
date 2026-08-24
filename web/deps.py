@@ -201,6 +201,31 @@ async def get_request_chrome_scope(
             )
         except Exception:
             logger.exception("roster check failed; hiding the link")
+
+    # Whether to offer the support console. Asked about the signed-in account
+    # for the same reason the roster is, and it matters more here: a platform
+    # superadmin usually keeps no record of their own, so ``/settings`` and
+    # ``/more`` both refuse them — and the console's only link lived on
+    # ``/settings``. The one account the console exists for could reach it by
+    # typing the URL and no other way.
+    request.state.is_platform_admin = False
+    if signed_in_user_id is not None:
+        try:
+            from vitals.enums import UserRoleName
+            from vitals.models.identity import UserRole
+
+            request.state.is_platform_admin = bool(
+                await session.scalar(
+                    select(UserRole.id)
+                    .where(
+                        UserRole.user_id == signed_in_user_id,
+                        UserRole.role == UserRoleName.PLATFORM_SUPERADMIN.value,
+                    )
+                    .limit(1)
+                )
+            )
+        except Exception:
+            logger.exception("platform-admin check failed; hiding the link")
     setattr(request.state, cache_marker, True)
     return scope
 
