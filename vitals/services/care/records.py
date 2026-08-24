@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from vitals.access import (
     AccessContext,
@@ -200,6 +201,7 @@ async def list_notes(
         await session.scalars(
             select(ProfessionalNote)
             .where(ProfessionalNote.subject_id == context.subject_id)
+            .options(selectinload(ProfessionalNote.author))
             .order_by(ProfessionalNote.created_at.desc(), ProfessionalNote.id)
         )
     )
@@ -287,7 +289,11 @@ async def list_plans(
     """What this record is being asked to do, and optionally what it once was."""
 
     _require_scope(context, artifact=PLAN_ARTIFACT, action=PolicyAction.LIST)
-    statement = select(CarePlan).where(CarePlan.subject_id == context.subject_id)
+    statement = (
+        select(CarePlan)
+        .where(CarePlan.subject_id == context.subject_id)
+        .options(selectinload(CarePlan.author))
+    )
     if not include_archived:
         statement = statement.where(
             CarePlan.status != CarePlanStatus.ARCHIVED.value

@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — professional guidance names its author
+
+Shared notes and care plans now show who wrote them. Their authors are loaded
+with the record query rather than through async template lazy-loading, so the
+attribution is both visible and safe to render for patients and other members
+of the care team.
+
 ### Changed — a care conversation starts in one step
 
 Professionals and patients no longer create an empty conversation and then

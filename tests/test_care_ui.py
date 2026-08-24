@@ -168,6 +168,32 @@ async def test_the_form_action_names_the_patient(doctor_client):
     assert f'action="/care/{subject_a.id}/plan"' in response.text
 
 
+async def test_notes_and_plans_name_their_author(doctor_client):
+    """A shared record must say who wrote professional guidance."""
+
+    client, doctor, (_owner_a, subject_a), _b = doctor_client
+    await client.post(
+        f"/care/{subject_a.id}/note",
+        data={"body": "Watch the recovery trend."},
+    )
+    await client.post(
+        f"/care/{subject_a.id}/plan",
+        data={
+            "title": "Easy week",
+            "body": "Keep every session conversational.",
+            "effective_from": "2026-09-01",
+        },
+    )
+
+    page = await client.get(
+        f"/care/{subject_a.id}", headers={"Accept": "text/html"}
+    )
+    assert page.status_code == 200
+    assert page.text.count(doctor.username) >= 2
+    assert "Watch the recovery trend." in page.text
+    assert "Easy week" in page.text
+
+
 async def test_a_revoked_consent_refuses_the_stale_tab(doctor_client, db_session):
     """The other correct outcome: not the wrong patient, and not a silent write."""
 

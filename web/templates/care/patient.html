@@ -75,7 +75,7 @@
             {% for note in notes %}
             <div class="v-card-inset p-4 space-y-1">
                 <div class="v-text-micro" style="color: var(--muted)">
-                    {{ note.created_at | format_date }}
+                    {{ note.author.username }} · {{ note.created_at | format_date }}
                 </div>
                 <p class="v-text-body" style="white-space: pre-wrap">{{ note.body }}</p>
             </div>
@@ -121,7 +121,7 @@
                     <span class="v-chip v-chip-sm">{{ t("care.plan_status." ~ plan.status) }}</span>
                 </div>
                 <div class="v-text-micro" style="color: var(--muted)">
-                    {{ plan.effective_from }}{% if plan.effective_to %} — {{ plan.effective_to }}{% endif %}
+                    {{ plan.author.username }} · {{ plan.effective_from }}{% if plan.effective_to %} — {{ plan.effective_to }}{% endif %}
                 </div>
                 <p class="v-text-body" style="white-space: pre-wrap">{{ plan.body }}</p>
             </div>
