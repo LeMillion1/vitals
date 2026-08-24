@@ -42,6 +42,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from vitals.enums import (
     AuditOutcome,
+    ExternalApiTokenStatus,
     SupportAccessMode,
     SupportAccessRequestStatus,
     SupportAccessStatus,
@@ -456,6 +457,100 @@ class SupportAccessScope(Base):
     grant: Mapped[SupportAccessGrant] = relationship(
         back_populates="scopes", foreign_keys=[grant_id]
     )
+
+
+class ExternalApiToken(Base):
+    """A bearer credential that names one record, and only that record.
+
+    It replaces ``VITALS_EXTERNAL_API_TOKEN``, which was one string for the
+    whole installation that resolved to whoever the ``.env`` file said the owner
+    was. On a single-user machine that is the same thing as a per-subject token;
+    the moment a second person exists it is a credential with no boundary — its
+    holder reads a record it was never granted, and nothing about the token says
+    whose data came back.
+
+    The secret is never stored. Only its SHA-256 is, so an operator reading this
+    table cannot use what they find — the same rule
+    ``professional_invitations`` follows, for the same reason.
+
+    Revoked rows stay. "This dashboard could read my weight until March" is part
+    of a record of who saw what, and a table that forgets its revocations cannot
+    answer it.
+    """
+
+    __tablename__ = "external_api_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_external_api_tokens_token_hash"),
+        CheckConstraint(
+            f"status IN ({_values(ExternalApiTokenStatus)})",
+            name="ck_external_api_tokens_status",
+        ),
+        CheckConstraint(
+            "length(token_hash) = 64 AND lower(token_hash) = token_hash",
+            name="ck_external_api_tokens_token_hash_shape",
+        ),
+        CheckConstraint(
+            "length(trim(label)) > 0 AND length(label) <= 120",
+            name="ck_external_api_tokens_label",
+        ),
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_external_api_tokens_positive_ttl",
+        ),
+        # Revoked has a time and a person; active has neither. Without this a
+        # row could read "revoked" with nobody having revoked it, which is the
+        # one thing a credential history must not do.
+        CheckConstraint(
+            "(status = 'revoked' AND revoked_at IS NOT NULL) OR "
+            "(status <> 'revoked' AND revoked_at IS NULL)",
+            name="ck_external_api_tokens_revocation_state",
+        ),
+        Index(
+            "ix_external_api_tokens_subject_status",
+            "subject_id",
+            "status",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("health_subjects.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: Who minted it. The subject's owner, always — the service refuses anybody
+    #: else — and kept because "who issued this" is part of reading the list
+    #: back.
+    issued_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    #: What the holder is, in the owner's words: "kitchen dashboard", "phone
+    #: widget". A list of indistinguishable secrets is a list nobody can revoke
+    #: from with any confidence.
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=ExternalApiTokenStatus.ACTIVE.value
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    #: Advisory, and deliberately coarse. It answers "is this one still in use"
+    #: before somebody revokes it, and a precise access log belongs in
+    #: ``audit_events`` rather than in a column that is written on every read.
+    last_used_on: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    issued_by: Mapped[User] = relationship(foreign_keys=[issued_by_user_id])
 
 
 class SupportAccessRequest(Base):

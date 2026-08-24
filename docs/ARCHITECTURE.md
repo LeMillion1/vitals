@@ -36,15 +36,15 @@ page needs the same edit:
 
 | The page says | Comes from | Today |
 | --- | --- | --- |
-| table count, ownership classes | `vitals/ownership.py` | 74 tables, 32 of them `subject_data` |
-| mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 51 |
+| table count, ownership classes | `vitals/ownership.py` | 75 tables, 32 of them `subject_data` |
+| mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 52 |
 | the backfill phases | `OWNERSHIP_BACKFILL_SEQUENCE` in `vitals/ownership_deploy.py` | 18 |
 | the domains | `vitals.enums.Domain` | 14 |
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 14, of which 11 fan out per record |
-| migration count | `migrations/versions/` | 62, head `0062` |
-| RLS table count | revisions `0050` + `0051` + `0060` + `0061` + `0062`, asserted in `tests/test_row_level_security.py` | 61 |
+| migration count | `migrations/versions/` | 63, head `0063` |
+| RLS table count | revisions `0050` + `0051` + `0060` + `0061` + `0062` + `0063`, asserted in `tests/test_row_level_security.py` | 62 |
 | platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 8 |
-| routers, service modules | `web/routers/`, `vitals/services/` | 28 and 100 |
+| routers, service modules | `web/routers/`, `vitals/services/` | 28 and 101 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own

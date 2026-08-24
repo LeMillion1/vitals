@@ -18,17 +18,32 @@ Design rules for this module:
 
 Auth deliberately bypasses the session/OAuth stack: the caller holds one
 long-lived token in its own env and presents ``Authorization: Bearer <token>``.
+
+**The token names the record.** It used to be one installation-wide string
+(``VITALS_EXTERNAL_API_TOKEN``) and the endpoint resolved its subject from
+whoever ``.env`` said the owner was — a per-subject credential by accident on a
+single-user machine, and a credential with no boundary the moment a second
+person exists. Credentials are now rows: issued by the record's owner, hashed at
+rest, expiring, revocable, and answering "whose data is this" by themselves.
+
+The environment token still works while the installation holds exactly one
+subject, which is the same fail-closed rule the rest of this migration uses: it
+cannot name a record, so it is refused as soon as there is a choice to make. The
+answer then is to issue one from Settings, not to guess.
 """
 from __future__ import annotations
 
 import secrets
+import uuid
 from datetime import timedelta
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, MilestoneStatus
+from vitals.models.identity import HealthSubject
 from vitals.services import conflict_engine
 from vitals.utils.timeutils import today_local
 from web.config import get_web_config
@@ -41,18 +56,78 @@ router = APIRouter(prefix="/external", tags=["external"])
 _ACTIVITY_WINDOW_DAYS = 60
 
 
-async def require_external_token(request: Request) -> None:
-    """Guard: a valid static Bearer token, constant-time compared.
-
-    503 (not 401) when the server token is unset so the caller can tell
-    "feature is switched off here" apart from "my token is wrong"."""
-    expected = get_web_config().external_api_token
-    if not expected:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="external_api_disabled")
+def _presented(request: Request) -> str:
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
-    if scheme.lower() != "bearer" or not token or not secrets.compare_digest(token, expected):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token")
+    return token if scheme.lower() == "bearer" else ""
+
+
+async def resolve_external_caller(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> uuid.UUID:
+    """Which record this bearer token opens.
+
+    Returns the subject rather than nothing, because "who is asking" and "whose
+    data may they have" are the same question here and answering them in two
+    places is how they drift apart.
+
+    Two credentials are accepted, and the difference is the whole point of this
+    change. A row in ``external_api_tokens`` names its record, so it is checked
+    and its subject is used. The environment token names nothing, so it is
+    honoured only while the installation holds exactly one subject — where "the
+    record" is unambiguous — and refused as soon as it would have to guess.
+
+    503 (not 401) when neither credential is configured at all, so the caller
+    can tell "switched off here" from "my token is wrong".
+    """
+
+    from vitals.services import external_api_token_service as tokens
+
+    presented = _presented(request)
+    configured = get_web_config().external_api_token
+
+    if presented:
+        record = await tokens.authenticate(session, presented=presented)
+        if record is not None:
+            return record.subject_id
+
+    if not configured:
+        # No environment token and the presented one matched no row. If nothing
+        # is configured and nothing is issued, the endpoint is off rather than
+        # picky — but a database that holds credentials is switched on, and a
+        # wrong token there is a wrong token.
+        if await _any_token_exists(session):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token"
+            )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="external_api_disabled",
+        )
+
+    if not presented or not secrets.compare_digest(presented, configured):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token"
+        )
+
+    # The environment token, which cannot say whose record it means.
+    subject_ids = tuple(
+        await session.scalars(select(HealthSubject.id).limit(2))
+    )
+    if len(subject_ids) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="external_api_token_cannot_name_a_record",
+        )
+    return subject_ids[0]
+
+
+async def _any_token_exists(session: AsyncSession) -> bool:
+    from vitals.models.identity import ExternalApiToken
+
+    return (
+        await session.scalar(select(ExternalApiToken.id).limit(1))
+    ) is not None
 
 
 async def _weight_block(
@@ -171,15 +246,23 @@ async def _activity_block(
     }
 
 
-@router.get("/summary", dependencies=[Depends(require_external_token)])
-async def external_summary(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
-    """One compact payload for the caller's four health glance cards."""
+@router.get("/summary")
+async def external_summary(
+    session: AsyncSession = Depends(get_session),
+    subject_id: uuid.UUID = Depends(resolve_external_caller),
+) -> dict[str, Any]:
+    """One compact payload for the caller's four health glance cards.
+
+    The subject comes from the credential rather than from ``.env``. That is the
+    entire difference: every read below was already scoped, and was scoped to
+    whoever the environment named.
+    """
     from vitals.services import nutrition_service
 
-    scope = await conflict_engine.resolve_legacy_conflict_scope(
-        session,
-        actor_username=get_web_config().auth_username,
+    scope = conflict_engine.ConflictScope(
+        subject_id=subject_id,
         evaluation_date=today_local(),
+        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
     )
     nutrition_today = await nutrition_service.daily_summary(
         session,

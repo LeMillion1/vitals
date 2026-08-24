@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0062` — 62 revisions |
-| Schema | 74 tables; 61 carry `subject_id` and are covered by an RLS policy; 51 have it `NOT NULL` |
+| Alembic head | `0063` — 63 revisions |
+| Schema | 75 tables; 62 carry `subject_id` and are covered by an RLS policy; 52 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4461 fast passed / 168 skipped; 2011 on PostgreSQL |
+| Suites | 4483 fast passed / 168 skipped; 33 browser scenarios; 2011 on PostgreSQL |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -41,11 +41,14 @@ professional UX (minus the inbox), PR-09 minus its notification transport,
 PR-11 care-team messaging (minus private attachments), PR-12's read-only support
 access.
 
-**The next gate is PR-10** — the MCP wire-protocol migration to `2026-07-28`,
-the external API, and LLM context isolation. It is the largest remaining piece
-and depends on an external SDK release; nothing in it has started. Two thirds of
-it do not wait on that SDK — context isolation and the external API are this
-codebase's own work — so it can begin before the release lands.
+**The next gate is PR-10**, and it has started at the end that does not wait
+on an external SDK. Its external API now authenticates against per-subject
+credentials rather than one installation-wide string that resolved to the `.env`
+owner — the last such read on a data path. What remains there is the wire-protocol
+migration to `2026-07-28`, which is pinned to an SDK release nobody here
+controls, and LLM context isolation, which is not: `assemble_context` already
+takes a mandatory subject and gates every optional domain, so what is missing is
+the proof rather than the boundary.
 
 **PR-12 is in, in its read-only half.** An administrator asks, the patient
 answers, and approving is the only thing that writes a `SupportAccessGrant` —
@@ -61,7 +64,11 @@ where it lives: private attachments on a care-team message (the download route
 still resolves through the sole-owner adapter, so a professional gets a 404 that
 is not about permission); the professional inbox from PR-08 (finding an
 invitation by email is a different security model, not a missing screen); and
-`import_full`, which still deletes each portable table unqualified.
+`import_full`, whose wipe is still unqualified — though not reachable while it
+matters: both it and `export_full` refuse a database holding more than one
+subject, so the unqualified delete only ever runs where there is exactly one
+record for it to replace. What is missing is the multi-subject backup format,
+not a guard.
 
 **One defect is named and not fixed.** `labs_service.normalize_marker`
 promises to standardize casing, and does so only for the 62 names in

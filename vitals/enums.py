@@ -48,6 +48,13 @@ class SupportAccessStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class ExternalApiTokenStatus(StrEnum):
+    """Lifecycle of one subject-scoped external API credential."""
+
+    ACTIVE = "active"
+    REVOKED = "revoked"
+
+
 class SupportAccessRequestStatus(StrEnum):
     """Lifecycle of an *ask* for support access, which is not access.
 

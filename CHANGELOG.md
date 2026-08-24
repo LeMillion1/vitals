@@ -8,6 +8,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — the external API token names a record (PR-10, in part)
+
+`VITALS_EXTERNAL_API_TOKEN` was one string for the whole installation, and the
+endpoint it opened resolved its subject from whoever `.env` named as the owner.
+On a single-user machine that is a per-subject credential by accident. With a
+second person in the database it is a credential with no boundary: its holder
+reads a record nobody granted them, and nothing about the token says whose data
+came back. It was the last `.env`-owner read left on a data path.
+
+Credentials are rows now (revision `0063`). Issued by the record's owner and by
+nobody else — not a professional in care, not a platform administrator, because
+handing out a long-lived key to somebody's health data is not something a
+support grant should be able to do quietly. Labelled, so a list of secrets is
+one somebody can revoke from with confidence. Expiring by themselves, revocable,
+and kept after revocation: "this dashboard could read my weight until March" is
+part of who-saw-what.
+
+**The secret exists once.** Only its SHA-256 is stored, and the page that mints
+it is rendered from the POST rather than redirected — a URL ends up in browser
+history, in the access log and in the next page's referrer, and a bearer token
+is a capability. The rule `consents.issue_invitation` already followed.
+
+**Authentication asks again every time**, and about more than the token: a
+suspended owner's credentials stop working on the next request rather than
+eventually.
+
+The environment token still works while the installation holds exactly one
+subject — the same fail-closed rule as the rest of this migration — and is
+refused with `external_api_token_cannot_name_a_record` as soon as it would have
+to guess. It used to resolve silently to the `.env` owner, with the holder none
+the wiser about whose data they had.
+
+
 ### Added — a browser suite with page objects, roles and scenarios
 
 Seven defects on this branch were found only by opening the product, and each

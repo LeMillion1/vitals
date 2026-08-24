@@ -21,6 +21,54 @@ class SettingsPage(Page):
     def height(self) -> str:
         return self.page.input_value(self.HEIGHT)
 
+    @property
+    def external_keys(self) -> "ExternalKeysCard":
+        return ExternalKeysCard(self)
+
+
+class ExternalKeysCard:
+    """The credentials card on the settings page.
+
+    Not a page of its own — it lives on ``/settings`` — but its locators belong
+    somewhere other than a test, and a card with a form and a list is exactly
+    what a page object is for.
+    """
+
+    LABEL = 'input[name="label"]'
+    DAYS = 'input[name="days"]'
+    ISSUE = 'button:has-text("Issue a key")'
+    STOP = 'button:has-text("Stop it")'
+
+    def __init__(self, settings: "SettingsPage"):
+        self.settings = settings
+        self.page = settings.page
+
+    def issue(self, label: str, *, days: int = 30) -> str:
+        """Mint one and return the secret, which is on the page exactly once.
+
+        Read off the rendered page rather than out of the database, because the
+        thing worth proving is that the person who pressed the button can see
+        it — the secret is stored nowhere and this is its only appearance.
+        """
+
+        import re
+
+        before = set(re.findall(r"[A-Za-z0-9_-]{40,}", self.page.content()))
+        self.page.fill(self.LABEL, label)
+        self.page.fill(self.DAYS, str(days))
+        self.settings._act(self.ISSUE)
+        after = re.findall(r"[A-Za-z0-9_-]{40,}", self.page.content())
+        fresh = [candidate for candidate in after if candidate not in before]
+        assert fresh, "no credential appeared on the page"
+        return fresh[0]
+
+    def stop_the_first(self) -> None:
+        self.settings._act(self.STOP)
+
+    @property
+    def live_count(self) -> int:
+        return self.page.locator(self.STOP).count()
+
 
 class AccessHistoryPage(Page):
     """The patient's side: who has asked to open this record, and the answers.

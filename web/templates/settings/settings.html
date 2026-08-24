@@ -370,6 +370,63 @@
         </form>
     </div>
 
+    <!-- ─── EXTERNAL API CREDENTIALS ───────────────────────────────────────── -->
+    <div class="v-card v-setting-row p-6 space-y-5">
+        {{ card_header(t("external_api.title")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("external_api.description") }}
+        </p>
+
+        {% if issued_external_token %}
+        {# Shown once, and there is no page that can show it again: only the
+           hash is stored, so nobody — including an operator with the database
+           open — can read it back. #}
+        <div class="v-alert warn space-y-2">
+            <p class="v-text-body">{{ t("external_api.shown_once") }}</p>
+            <code class="v-text-micro" style="word-break: break-all; user-select: all">{{ issued_external_token }}</code>
+        </div>
+        {% endif %}
+
+        {% if external_tokens %}
+        <div class="space-y-2">
+            {% for token in external_tokens %}
+            <div class="v-card-inset p-4 flex flex-wrap items-center justify-between gap-3">
+                <span class="v-text-body">
+                    <strong>{{ token.label }}</strong>
+                    · {{ t("external_api.state_" ~ token.state) }}
+                    {% if token.state == 'active' %} · {{ t("external_api.until") }} {{ token.expires_at | format_date }}{% endif %}
+                </span>
+                {% if token.state == 'active' %}
+                <form action="/settings/external-api/{{ token.id }}/revoke" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("external_api.revoke") }}</button>
+                </form>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("external_api.none_yet") }}</p>
+        {% endif %}
+
+        <form action="/settings/external-api" method="POST" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="space-y-1.5">
+                    <label for="ext-label" class="v-label">{{ t("external_api.field_label") }}</label>
+                    <input id="ext-label" name="label" type="text" class="v-input" required
+                           maxlength="120" placeholder="{{ t('external_api.field_label_hint') }}">
+                </div>
+                <div class="space-y-1.5">
+                    <label for="ext-days" class="v-label">{{ t("external_api.field_days") }}</label>
+                    <input id="ext-days" name="days" type="number" inputmode="numeric" step="1"
+                           class="v-input" min="1" max="365" value="90" required>
+                </div>
+            </div>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn text-xs">{{ t("external_api.issue") }}</button>
+            </div>
+        </form>
+    </div>
+
     <!-- ─── DATA PORTABILITY ───────────────────────────────────────────────── -->
     <div class="v-card v-setting-row p-6 space-y-5">
         {{ card_header(t("settings.data_title")) }}

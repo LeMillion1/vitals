@@ -358,8 +358,14 @@ async def _page(
     error: Optional[str] = None,
     adjusted: Optional[str] = None,
     deferred: Optional[str] = None,
+    issued_external_token: Optional[str] = None,
 ) -> HTMLResponse:
-    """Build the template context and render settings.html."""
+    """Build the template context and render settings.html.
+
+    ``issued_external_token`` is handed in by the POST that minted it and
+    rendered once. It never travels through a URL — see
+    :func:`issue_external_api_token`.
+    """
     preference_scope = await prefs.resolve_legacy_preferences_scope(
         db,
         actor_username=username,
@@ -392,6 +398,12 @@ async def _page(
         db, subject_id=preference_scope.subject_id
     )
     hevy_account = await provider_credentials_service.resolve_hevy_account(
+        db, subject_id=preference_scope.subject_id
+    )
+    # Read-only credentials for another app's glance cards. Listed with the
+    # revoked and lapsed ones, because "what can read my data" and "what could"
+    # are the same list to somebody auditing it.
+    external_tokens = await _external_token_rows(
         db, subject_id=preference_scope.subject_id
     )
     # Redis is external I/O. Read it before any database *preparation* can
@@ -447,6 +459,10 @@ async def _page(
         "timezone": subject_timezone_value,
         "user_program": profile.program or "",
         "user_goals": ", ".join(profile.goals),
+        "external_tokens": external_tokens,
+        # Handed straight through from the redirect. Shown once and stored
+        # nowhere: only the hash reaches the database.
+        "issued_external_token": issued_external_token,
         # AI
         "can_manage_openrouter": can_manage_openrouter,
         "openrouter_api_key_set": (
@@ -604,6 +620,112 @@ async def save_profile(
             subject.timezone = zone
     await db.commit()
     return _redirect("?saved=profile")
+
+
+async def _external_token_rows(db: AsyncSession, *, subject_id) -> list[dict]:
+    """The credential list as a template can read it.
+
+    Flattened to dictionaries on purpose: an ORM row on a settings page is one a
+    template can lazy-load from, and this list exists on a screen that renders
+    a dozen other things.
+    """
+
+    from datetime import datetime, timezone as _timezone
+
+    from vitals.enums import ExternalApiTokenStatus
+    from vitals.services import external_api_token_service as external_tokens
+
+    now = datetime.now(_timezone.utc)
+    rows = await external_tokens.list_for_subject(db, subject_id=subject_id)
+    listed = []
+    for row in rows:
+        if row.status == ExternalApiTokenStatus.REVOKED.value:
+            state = "revoked"
+        elif external_tokens.is_live(row, at=now):
+            state = "active"
+        else:
+            # Lapsed rather than stopped. The row still says ``active`` because
+            # nobody revoked it; the clock did, and the screen should say which.
+            state = "expired"
+        listed.append(
+            {
+                "id": row.id,
+                "label": row.label,
+                "state": state,
+                "expires_at": row.expires_at,
+            }
+        )
+    return listed
+
+
+@router.post("/external-api")
+async def issue_external_api_token(
+    request: Request,
+    label: str = Form(""),
+    days: int = Form(90),
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """Mint a read-only credential for this record.
+
+    The secret comes back through the redirect and is rendered once. It is not
+    stored, so there is no second chance to show it and no query that could —
+    which is the point rather than an inconvenience.
+    """
+
+    from datetime import timedelta
+
+    from vitals.services import external_api_token_service as external_tokens
+
+    identity = await resolve_legacy_ownership_context(db, actor_username=username)
+    try:
+        issued = await external_tokens.issue(
+            db,
+            owner_user_id=identity.access.principal.user_id,
+            subject_id=identity.subject_id,
+            label=label,
+            lifetime=timedelta(days=days),
+        )
+    except external_tokens.ExternalApiTokenError:
+        await db.rollback()
+        return _redirect("?error=external_api")
+    await db.commit()
+    # Rendered straight from the POST rather than redirected with the secret in
+    # the query string, for the reason ``consents.issue_invitation`` records: a
+    # URL ends up in browser history, in the access log and in the next page's
+    # referrer, and a bearer token is a capability. This body is the only copy
+    # that leaves here, and nothing can show it again because only its hash was
+    # stored.
+    return await _page(
+        request,
+        username,
+        db=db,
+        saved="external_api",
+        issued_external_token=issued.secret,
+    )
+
+
+@router.post("/external-api/{token_id}/revoke")
+async def revoke_external_api_token(
+    request: Request,
+    token_id: uuid.UUID,
+    username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    from vitals.services import external_api_token_service as external_tokens
+
+    identity = await resolve_legacy_ownership_context(db, actor_username=username)
+    try:
+        await external_tokens.revoke(
+            db,
+            owner_user_id=identity.access.principal.user_id,
+            token_id=token_id,
+        )
+    except external_tokens.ExternalApiTokenError:
+        await db.rollback()
+        return _redirect("?error=external_api")
+    await db.commit()
+    return _redirect("?saved=external_api_revoked")
 
 
 @router.get("/platform/ai", response_class=HTMLResponse)

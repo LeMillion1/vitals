@@ -252,6 +252,7 @@ _SCENARIO_TABLES = (
     "support_access_scopes",
     "support_access_grants",
     "audit_events",
+    "external_api_tokens",
 )
 
 

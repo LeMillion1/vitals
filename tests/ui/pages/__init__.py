@@ -16,6 +16,7 @@ from tests.ui.pages.care import (
 )
 from tests.ui.pages.settings import (
     AccessHistoryPage,
+    ExternalKeysCard,
     SettingsPage,
     SupportConsolePage,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "AccessHistoryPage",
     "CareRecordPage",
     "CareRosterPage",
+    "ExternalKeysCard",
     "ConversationPage",
     "ConversationsPage",
     "Page",

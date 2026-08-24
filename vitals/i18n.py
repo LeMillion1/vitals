@@ -1295,6 +1295,30 @@ _EN: dict[str, str] = {
     "support.field_hours": "For how many hours",
     "support.field_ticket": "Ticket reference (optional)",
     "support.field_domains": "Which sections",
+    # ── External API credentials ────────────────────────────────────────────
+    "external_api.title": "External dashboard access",
+    "external_api.description": (
+        "A read-only key another app can use to show your glance cards. It names "
+        "this record and no other, expires by itself, and you can stop it at any "
+        "time."
+    ),
+    "external_api.shown_once": (
+        "Copy it now. Only its fingerprint is stored, so this is the one time it "
+        "can be shown — not even an operator can read it back."
+    ),
+    "external_api.none_yet": "No key has been issued for this record.",
+    "external_api.state_active": "in use",
+    "external_api.state_revoked": "stopped",
+    "external_api.state_expired": "expired",
+    "external_api.until": "until",
+    "external_api.revoke": "Stop it",
+    "external_api.issue": "Issue a key",
+    "external_api.field_label": "What is it for",
+    "external_api.field_label_hint": "Kitchen dashboard",
+    "external_api.field_days": "Days until it expires",
+    "external_api.error_refused": "That key could not be issued.",
+    "external_api.issued": "Issued. Copy the key above — it is not shown again.",
+    "external_api.revoked": "Stopped. That key no longer reads anything.",
     "consents.page_title": "Who sees my record",
     "consents.heading": "Access to my record",
     "consents.description": "People you have let into your record, what each of them can see, and how to stop it. Withdrawing takes effect on their next request.",
@@ -2987,6 +3011,30 @@ _RU: dict[str, str] = {
     "support.field_hours": "На сколько часов",
     "support.field_ticket": "Номер обращения (необязательно)",
     "support.field_domains": "Какие разделы",
+    # ── Ключи внешнего доступа ──────────────────────────────────────────────
+    "external_api.title": "Доступ внешней панели",
+    "external_api.description": (
+        "Ключ только на чтение для другого приложения, показывающего ваши "
+        "карточки. Он относится к этой записи и ни к какой другой, сам "
+        "истекает, и вы можете прекратить его в любой момент."
+    ),
+    "external_api.shown_once": (
+        "Скопируйте сейчас. Хранится только отпечаток, поэтому показать его "
+        "второй раз невозможно — даже оператору."
+    ),
+    "external_api.none_yet": "Для этой записи ключей не выпускали.",
+    "external_api.state_active": "работает",
+    "external_api.state_revoked": "остановлен",
+    "external_api.state_expired": "истёк",
+    "external_api.until": "до",
+    "external_api.revoke": "Остановить",
+    "external_api.issue": "Выпустить ключ",
+    "external_api.field_label": "Для чего",
+    "external_api.field_label_hint": "Панель на кухне",
+    "external_api.field_days": "Сколько дней действует",
+    "external_api.error_refused": "Ключ выпустить не удалось.",
+    "external_api.issued": "Выпущен. Скопируйте ключ выше — больше он не покажется.",
+    "external_api.revoked": "Остановлен. Этот ключ больше ничего не читает.",
     "consents.page_title": "Кто видит мою запись",
     "consents.heading": "Доступ к моей записи",
     "consents.description": "Люди, которых вы впустили в свою запись, что видит каждый из них и как это прекратить. Отзыв действует с их следующего запроса.",

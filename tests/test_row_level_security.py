@@ -66,6 +66,7 @@ _POLICY_REVISIONS = (
     "0060_per_subject_provider_credentials",
     "0061_care_team_threads_and_messages",
     "0062_support_access_requests",
+    "0063_external_api_tokens",
 )
 
 

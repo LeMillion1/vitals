@@ -27,8 +27,9 @@ def test_every_registered_table_has_exactly_one_ownership_contract():
     # 70 until revision 0058 dropped ``signals`` and ``day_context``; 69 since
     # 0060 added ``integration_credentials``; 72 since 0061 added the care-team
     # thread, its participants and its messages; 74 since 0062 added the support
-    # access request and its scopes.
-    assert len(OWNERSHIP_REGISTRY) == 74
+    # access request and its scopes; 75 since 0063 added the per-subject external
+    # API token.
+    assert len(OWNERSHIP_REGISTRY) == 75
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -88,6 +89,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "platform_settings",
         "professional_invitations",
         "professional_notes",
+        "external_api_tokens",
         "professional_profiles",
         "shared_reports",
         "subject_settings",

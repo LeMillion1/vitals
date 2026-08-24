@@ -400,6 +400,11 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         user_portable=False,
     ),
+    "external_api_tokens": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "support_access_requests": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL,
         subject=TargetColumn.REQUIRED,

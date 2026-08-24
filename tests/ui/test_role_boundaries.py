@@ -68,3 +68,45 @@ def test_the_doctors_pages_fit_a_phone(sign_in, screen):
     doctor = sign_in("dr-ivanov", phone=True)
     page = doctor.roster() if screen == "roster" else doctor.record_of("timur")
     assert page.status == 200
+
+
+def test_a_key_issued_on_the_settings_page_opens_the_external_api(sign_in):
+    """The screen and the endpoint have to agree, which is the only thing that
+    matters about a credential.
+
+    One minted by a settings page and refused by the API — or the reverse — is
+    the shape this branch keeps finding: each half correct, the product broken.
+    The secret is read off the rendered page because that is its only
+    appearance; nothing stores it, including the row it authenticates against.
+    """
+
+    import urllib.request
+
+    patient = sign_in("timur")
+    settings = patient.settings()
+    secret = settings.external_keys.issue("Kitchen dashboard")
+
+    request = urllib.request.Request(
+        f"{patient.installation.base_url}/external/summary",
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as answer:
+        assert answer.status == 200
+
+
+def test_stopping_a_key_closes_it_immediately(sign_in):
+    import urllib.error
+    import urllib.request
+
+    patient = sign_in("timur")
+    settings = patient.settings()
+    secret = settings.external_keys.issue("Kitchen dashboard")
+    patient.settings().external_keys.stop_the_first()
+
+    request = urllib.request.Request(
+        f"{patient.installation.base_url}/external/summary",
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        urllib.request.urlopen(request, timeout=10)
+    assert refused.value.code in (401, 503)
