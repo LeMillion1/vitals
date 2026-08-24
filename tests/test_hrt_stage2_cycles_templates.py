@@ -268,7 +268,11 @@ async def test_scoped_template_import_is_parse_only_and_subject_isolated(db_sess
     assert await db_session.scalar(select(func.count()).select_from(RawPayload)) == 0
 
 
-async def test_template_graph_rejects_foreign_child_and_partial_legacy_parent(db_session, *, legacy_owner_roots):
+async def test_template_graph_rejects_foreign_child_and_partial_legacy_parent(
+    db_session,
+    legacy_owner_roots,
+    unenforced_legacy_write,
+):
     first = await _identity(db_session, "hrt-template-graph-first")
     second = await _identity(db_session, "hrt-template-graph-second")
     template = HrtCycleTemplate(
@@ -288,16 +292,19 @@ async def test_template_graph_rejects_foreign_child_and_partial_legacy_parent(db
     )
     db_session.add_all([template, partial])
     await db_session.flush()
-    db_session.add(
-        HrtCycleTemplateItem(
-            subject_id=second.subject_id,
-            template=template,
-            compound_key="synthetic-free-text",
-            unit="mg",
-            schedule=SCHEDULE,
+    # The current PostgreSQL schema rejects this graph at the composite FK.
+    # Reproduce a pre-0046 row through the explicit historical-data seam so the
+    # scoped reader still proves it fails closed on legacy corruption.
+    async with unenforced_legacy_write(db_session):
+        db_session.add(
+            HrtCycleTemplateItem(
+                subject_id=second.subject_id,
+                template=template,
+                compound_key="synthetic-free-text",
+                unit="mg",
+                schedule=SCHEDULE,
+            )
         )
-    )
-    await db_session.flush()
 
     with pytest.raises(conflict_engine.ConflictScopeError):
         await hrt_template_service.get_template(
