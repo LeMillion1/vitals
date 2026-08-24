@@ -8,3 +8,10 @@ fakeredis>=2.26
 freezegun>=1.5
 Pillow>=10.0
 ruff>=0.16
+
+# Browser tests (tests/ui). Skipped automatically when absent, so this is
+# optional — but the defects they catch are the ones every other layer passed:
+# a page that answers 200 and shows the wrong thing. Install the Chromium too:
+#   python -m playwright install chromium
+# or point VITALS_CHROMIUM at one already on the machine.
+playwright>=1.40

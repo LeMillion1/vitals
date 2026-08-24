@@ -1744,20 +1744,25 @@ At the start of a new implementation session:
    Save on the notification card answering 409, the patient's consent page
    answering a bare 404 to a doctor, and the conversation page answering 500.
 
-8. **Then photograph it, at 1280 and at 390.** An HTTP pass finds pages that
-   answer wrongly; it cannot see a page that answers 200 and *shows* the wrong
-   thing. Six defects were found only this way and each had a green suite over
-   it: a reply rendered above the message it answered, three refusals rendered
-   as one unstyled sentence with no link out, a labs header reading "0 markers"
-   above a table of two, a per-marker chart drawing an empty grid beside a value
-   plainly in the table, "Today's meals · 1 приём" on an English page, and two
-   of three macro labels truncated to "Pr…" and "Ca…" on a phone.
+8. **Then run `pytest tests/ui -m ui`, and read what it photographs.** An HTTP
+   pass finds pages that answer wrongly; it cannot see a page that answers 200
+   and *shows* the wrong thing. Seven defects were found only that way and each
+   had a green suite over it: a reply rendered above the message it answered,
+   three refusals rendered as one unstyled sentence with no link out, a labs
+   header reading "0 markers" above a table of two, a per-marker chart drawing
+   an empty grid beside a value plainly in the table, "Today's meals · 1 приём"
+   on an English page, two of three macro labels truncated to "Pr…" and "Ca…" on
+   a phone, and a support console whose only link lived on a page its intended
+   audience is refused from.
 
-   Playwright drives it, against the Chromium already in
-   `~/Library/Caches/ms-playwright` — no browser download and nothing installed
-   into the project environment. Sign each account in by setting the
-   `vitals_session` cookie the seeder printed, wait for `networkidle` and then
-   about a second more for htmx fragments and Chart.js, and collect console
-   errors, `pageerror`, any response ≥ 400, and
-   `documentElement.scrollWidth > innerWidth` per page. The last one is what
-   catches a phone layout nobody looked at.
+   The suite seeds a database and starts a server of its own, so it is one
+   command and not a checklist. Locators live on page objects, a `Role` opens
+   screens by name rather than by URL, and every load collects console errors,
+   unexpected 4xx/5xx and horizontal overflow — a scenario that passes its own
+   assertions and leaves a 500 in the network log still fails. A failing test
+   leaves the screen and its markup in `.ui-failures/` and prints the paths.
+
+   Skipped when Playwright or a Chromium is absent, and excluded from the
+   default run because it takes ninety seconds. It is not optional: assertions
+   about what a page answers had a clean record while all seven of the above
+   were live.

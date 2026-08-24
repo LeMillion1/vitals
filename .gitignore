@@ -81,3 +81,7 @@ yarn-error.log*
 
 # Local browser-testing database created by run_local.py
 local_vitals.db
+
+# Screenshots and markup left behind by a failing browser test. Evidence for
+# the run that produced them, stale the moment the next one starts.
+.ui-failures/

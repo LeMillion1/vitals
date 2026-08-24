@@ -8,6 +8,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — a browser suite with page objects, roles and scenarios
+
+Seven defects on this branch were found only by opening the product, and each
+had a green suite over it. What every one of them has in common is that the
+service was right, the route answered 200, and the page showed the wrong thing —
+or showed the right thing where nobody could reach it. Nothing below the browser
+distinguishes those from working.
+
+`tests/ui/` is that layer, built as a framework rather than a script:
+
+- **It starts its own installation.** A session fixture seeds a throwaway
+  database, starts the app on a free port and tears both down. A browser suite
+  that needs a README before it works is one nobody runs.
+- **Locators live on page objects**, one class per screen, and navigation
+  returns the page it lands on — so a flow reads as `console.ask_for(...)
+  .open_the_record()` rather than as a pile of selectors.
+- **Tests address people, not URLs.** `doctor.record_of("timur")` resolves the
+  subject id from the seeded database, because every id changes on a reseed and
+  a pasted one becomes a 404 that reads exactly like a regression.
+- **Every load is watched.** Console errors, unexpected 4xx/5xx and horizontal
+  overflow are collected by a fixture and raised at the end of the test, so a
+  scenario cannot pass its own assertions while walking past a 500.
+- **A failure is photographed.** The screen and its markup land in
+  `.ui-failures/` and the paths are printed, one per role — a two-role flow
+  fails on one of them and which one is the question.
+- **The installation is left as it was found.** Sharing one seeded app across
+  33 scenarios is a fifteen-second saving and a real hazard: a pending support
+  request one scenario leaves behind is one the next reasonably concludes is a
+  bug. Four tests failed exactly that way before the reset fixture existed.
+
+Skipped when Playwright or a Chromium is absent and excluded from the default
+run — `pytest tests/ui -m ui`, 33 scenarios in about ninety seconds.
+
+Building it caught one defect in itself worth recording: the first version
+started plain uvicorn against a Redis that was not there. The app did not crash;
+it rendered, answered 200, and silently lost a message that had just been
+written. A harness that degrades quietly invents defects that look like product
+defects, so `tests/ui/_serve.py` substitutes FakeRedis exactly as `run_local.py`
+does, and says why.
+
+
 ### Added — support access a patient decides, and can end (PR-12)
 
 The policy engine has understood support grants since PR-02. `_support_allows`
