@@ -280,8 +280,24 @@ async def patient(
 ):
     """One patient's record, as this professional is allowed to see it."""
 
-    notes = await records.list_notes(db, context=care.access)
-    plans = await records.list_plans(db, context=care.access)
+    # Asked before reading, not caught after. Both services refuse a context
+    # without the artifact scope, and that refusal is correct — but a viewer
+    # whose grant covers domains and not notes is an ordinary, expected reader
+    # now that platform support can be one, and an expected reader must not
+    # produce an exception. The page already asks ``may()`` this way for its
+    # write affordances; this is the same question for its reads.
+    may_read_notes = care.may(
+        resource_key=records.NOTE_ARTIFACT,
+        action=PolicyAction.READ,
+        resource_type=PolicyResourceType.ARTIFACT,
+    )
+    may_read_plans = care.may(
+        resource_key=records.PLAN_ARTIFACT,
+        action=PolicyAction.READ,
+        resource_type=PolicyResourceType.ARTIFACT,
+    )
+    notes = await records.list_notes(db, context=care.access) if may_read_notes else []
+    plans = await records.list_plans(db, context=care.access) if may_read_plans else []
     visible, withheld = await _visible_record(db, care)
     return templates.TemplateResponse(
         request,

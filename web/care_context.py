@@ -75,6 +75,18 @@ class CareContext:
 
         return self.basis == "self"
 
+    @property
+    def is_support(self) -> bool:
+        """Whether this is platform support, here on an approved grant.
+
+        Not a professional in care, and the screen must not describe them as
+        one: ``kind`` carries a placeholder for them because the field is not
+        nullable, and a banner reading "(Doctor)" over a support session would
+        tell the patient something untrue about who is reading their record.
+        """
+
+        return self.basis == "support"
+
     def may(
         self,
         *,
@@ -161,6 +173,26 @@ async def resolve_care_context(
             kind=ProfessionalKind.DOCTOR,
             consent_version=0,
             basis="self",
+        )
+
+    if access.support_grant is not None:
+        # Platform support, on a grant this patient approved. The same screens,
+        # deliberately: what a support engineer may see is decided by the policy
+        # from the grant's exact scopes, and ``may()`` below already asks it —
+        # so the record renders the domains that were agreed to and nothing
+        # else, and every write affordance is hidden because a read grant
+        # ceilings out at read. Building a second, narrower record view would
+        # mean two places for "what may be shown" to drift apart.
+        return CareContext(
+            access=access,
+            subject_id=subject_id,
+            subject_display_name=display_name or "",
+            relationship_id=uuid.UUID(int=0),
+            #: A placeholder: the column is not nullable and support is not a
+            #: professional kind. ``is_support`` is what the screens read.
+            kind=ProfessionalKind.DOCTOR,
+            consent_version=0,
+            basis="support",
         )
 
     grant = access.relationship_grant

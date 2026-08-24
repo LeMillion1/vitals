@@ -196,8 +196,13 @@
   {% endfor %}
 
   {% if withheld_domains %}
+  {# Two sentences for the same fact, because the fact has two sources. A
+     professional is outside a *consent* the patient granted for care; platform
+     support is outside a *grant* the patient approved for one investigation.
+     Telling a support engineer they are outside somebody's consent names the
+     wrong document, on the one line of this page that is about privacy. #}
   <p class="v-text-micro" style="color: var(--faint)">
-    {{ t("care.record_withheld",
+    {{ t("care.record_withheld_support" if care.is_support else "care.record_withheld",
           domains=(withheld_domains | map("format_domain") | join(", "))) }}
   </p>
   {% endif %}

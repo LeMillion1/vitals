@@ -619,3 +619,265 @@ async def test_a_grant_for_one_patient_says_nothing_about_another(db_session):
     assert context_b.support_grant is None
     assert not is_allowed(context_b, _labs_read(subject_b.id))
     del owner_b
+
+
+# ── The screens, opened rather than asserted about ───────────────────────────
+#
+# Every service test above passes against a page that answers 500. That is not
+# hypothetical here: the care-team conversation shipped with seventeen green
+# service tests and a template that raised ``MissingGreenlet`` on the one page
+# the feature existed for. These render.
+
+
+def _sign_in(client, username: str):
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client.cookies.set(SESSION_COOKIE, create_session(username))
+
+
+async def test_the_patients_access_page_renders_before_anybody_has_asked(
+    client, db_session, legacy_owner_roots
+):
+    """The empty state is the answer, not a placeholder.
+
+    A page that only exists once support has been in is one nobody knows to
+    look for, and "has anybody been reading my record" is worth being able to
+    ask on a quiet day and get *no* for.
+    """
+
+    _sign_in(client, "tester")
+    response = await client.get("/settings/access", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    assert "<html" in response.text.lower()
+    del db_session, legacy_owner_roots
+
+
+async def test_the_patients_access_page_renders_a_pending_ask(
+    client, db_session, legacy_owner_roots
+):
+    """Rendered, not just written.
+
+    The template reaches ``row.requested_by.username`` and walks ``row.scopes``;
+    a relationship lazy-loading outside the async driver's greenlet raises
+    rather than loads, which is exactly how the conversation page answered 500.
+    """
+
+    admin = await _admin(db_session, "web-support-admin")
+    await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Checking a failed import from ticket 12.",
+        scopes=support.read_scopes_for((Domain.LABS, Domain.NUTRITION)),
+    )
+    await db_session.commit()
+
+    _sign_in(client, "tester")
+    response = await client.get("/settings/access", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    assert "ticket 12" in response.text
+    assert "web-support-admin" in response.text
+
+
+async def test_the_patient_can_answer_from_the_page_and_the_banner_appears(
+    client, db_session, legacy_owner_roots
+):
+    """Approval through the form, and then the banner on an unrelated page.
+
+    The banner is the part that is easy to ship broken: it is a global
+    dependency reading a different service on every document request, and if it
+    raises, every page in the app goes with it.
+    """
+
+    admin = await _admin(db_session, "web-support-banner-admin")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Investigating a sync failure.",
+        scopes=support.read_scopes_for((Domain.LABS,)),
+    )
+    await db_session.commit()
+    request_id = request.id
+
+    _sign_in(client, "tester")
+    approved = await client.post(
+        f"/settings/access/{request_id}/approve", follow_redirects=False
+    )
+    assert approved.status_code == 303
+
+    # An ordinary page, nothing to do with support.
+    page = await client.get("/weight", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert "/settings/access" in page.text
+
+
+async def test_the_banner_is_absent_when_nothing_is_open(
+    client, db_session, legacy_owner_roots
+):
+    """A warning stripe that is always there is one nobody reads."""
+
+    _sign_in(client, "tester")
+    page = await client.get("/weight", headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert "/settings/access/grant/" not in page.text
+    del db_session, legacy_owner_roots
+
+
+async def test_the_console_refuses_an_account_that_is_not_an_administrator(
+    client, db_session, legacy_owner_roots
+):
+    """403, and by asking the database rather than trusting the session.
+
+    Signed in as an ordinary member, not as the installation owner: bootstrap
+    gives that account ``platform_superadmin`` along with ``member``, so it is
+    the wrong account to prove a refusal with — it would pass.
+    """
+
+    await _user(db_session, "web-console-nobody")
+    await db_session.commit()
+
+    _sign_in(client, "web-console-nobody")
+    response = await client.get(
+        "/settings/platform/support", headers={"Accept": "text/html"}
+    )
+    assert response.status_code == 403
+    del legacy_owner_roots
+
+
+async def test_the_console_renders_for_an_administrator(
+    client, db_session, legacy_owner_roots
+):
+    """Including the list of records an ask may name.
+
+    Which is a list rather than a search box on purpose: choosing whose record
+    to investigate has to be a choice somebody can audit later, not a patient
+    found by typing part of their name.
+    """
+
+    admin = await _admin(db_session, "web-console-admin")
+    await db_session.commit()
+
+    _sign_in(client, "web-console-admin")
+    response = await client.get(
+        "/settings/platform/support", headers={"Accept": "text/html"}
+    )
+    assert response.status_code == 200
+    assert "<html" in response.text.lower()
+    del admin, legacy_owner_roots
+
+
+async def test_a_granted_record_opens_and_shows_only_what_was_granted(
+    client, db_session, legacy_owner_roots
+):
+    """The console's "open the record" link, followed.
+
+    Before this the button led to a 404 — ``/care`` is the professional's
+    surface and a support grant was not a basis for it — so a read grant
+    authorized reads nobody could perform. The same screens serve both readers
+    deliberately: what may be shown is decided by the policy from the grant's
+    exact scopes, and building a second, narrower record view would mean two
+    places for that to drift apart.
+    """
+
+    admin = await _admin(db_session, "care-support-admin")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Checking a sync failure.",
+        scopes=support.read_scopes_for((Domain.WEIGHT,)),
+    )
+    await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+
+    _sign_in(client, "care-support-admin")
+    page = await client.get(
+        f"/care/{legacy_owner_roots.subject_id}", headers={"Accept": "text/html"}
+    )
+    assert page.status_code == 200
+    # Named as support, not as a professional: a banner reading "(Doctor)" over
+    # a support session tells the patient something untrue about who is here.
+    assert "care.kind" not in page.text
+    # And the withheld line names a grant rather than a consent, because those
+    # are different documents and this is the privacy line of the page.
+    assert "support grant" in page.text or "поддержке" in page.text
+
+
+async def test_a_read_grant_cannot_write_a_note_through_the_record_screen(
+    client, db_session, legacy_owner_roots
+):
+    """The affordance is hidden, and the route refuses anyway.
+
+    Hiding a button is a courtesy; the service asking the policy is the
+    guarantee. Both are checked, because a screen that only hides is one a
+    crafted POST walks straight past.
+    """
+
+    admin = await _admin(db_session, "care-support-write")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Checking a sync failure.",
+        scopes=support.read_scopes_for((Domain.WEIGHT,)),
+    )
+    await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+
+    _sign_in(client, "care-support-write")
+    page = await client.get(
+        f"/care/{legacy_owner_roots.subject_id}", headers={"Accept": "text/html"}
+    )
+    assert page.status_code == 200
+    assert f'action="/care/{legacy_owner_roots.subject_id}/note"' not in page.text
+
+    posted = await client.post(
+        f"/care/{legacy_owner_roots.subject_id}/note",
+        data={"body": "A note support had no business writing."},
+        follow_redirects=False,
+    )
+    assert posted.status_code >= 400
+
+
+async def test_the_clinical_conversation_is_not_opened_by_a_support_grant(
+    client, db_session, legacy_owner_roots
+):
+    """Being in the room is a row, and a grant does not add one.
+
+    A care-team thread is joined by somebody adding you, and support was not
+    added. The list is therefore empty for them rather than filtered — which is
+    the same answer, reached without the grant ever being asked about it.
+    """
+
+    admin = await _admin(db_session, "care-support-threads")
+    request = await support.open_request(
+        db_session,
+        admin_user_id=admin.id,
+        subject_id=legacy_owner_roots.subject_id,
+        reason="Checking a sync failure.",
+        scopes=support.read_scopes_for((Domain.WEIGHT,)),
+    )
+    await support.approve_request(
+        db_session,
+        owner_user_id=legacy_owner_roots.user_id,
+        request_id=request.id,
+    )
+    await db_session.commit()
+
+    _sign_in(client, "care-support-threads")
+    page = await client.get(
+        f"/care/{legacy_owner_roots.subject_id}/messages",
+        headers={"Accept": "text/html"},
+    )
+    assert page.status_code == 200
+    assert "care-support-threads" not in page.text

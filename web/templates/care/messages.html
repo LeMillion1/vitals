@@ -18,7 +18,10 @@
         <span>
             <strong>{{ care.subject_display_name }}</strong>
             · {{ t("care.basis." ~ care.basis.split(":")[0]) }}
-            {% if not care.is_owner %}({{ t("care.kind." ~ care.kind.value) }}){% endif %}
+            {# Support is not a professional kind, and saying "(Doctor)" over a
+               support session would tell the patient something untrue about who
+               is reading their record. #}
+            {% if not care.is_owner and not care.is_support %}({{ t("care.kind." ~ care.kind.value) }}){% endif %}
         </span>
         <a href="/care/{{ care.subject_id }}" class="v-btn-ghost text-xs">{{ t("care.back_to_record") }}</a>
     </div>
