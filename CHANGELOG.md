@@ -65,6 +65,94 @@ There is also no notification: the transport was removed with Telegram and web
 push has not landed, so a message waits on the screen.
 
 
+### Fixed — six defects a browser found and the suites could not
+
+Six, on four screens, and none of them visible to an assertion about a status
+code or a substring. They are grouped because they share a cause: the suites
+check what a page *answers*, and these are all defects in what it *shows*.
+
+**A reply could render above the message it answered.** `care_messages.created_at`
+came from the column default, which is `now()` — in PostgreSQL the instant the
+*transaction* began, identical for every row written inside it. Two messages in
+one transaction therefore carry the same timestamp, the thread falls back to its
+tiebreak, and the tiebreak is a random UUID. `_now` asks for `clock_timestamp()`
+on PostgreSQL now, which advances inside a transaction, and uses the process
+clock elsewhere; `send_message` stamps the row rather than leaving it to the
+default. A clinical conversation that can reorder itself is worse than one with
+a coarse clock.
+
+**A refused page was a sentence on a white screen with no way out.** Three
+exception handlers answered a browser navigation with
+`HTMLResponse(content=detail)`: one unstyled line, no masthead, no navigation,
+no link anywhere. It is worst for the account that meets it most — a platform
+superadmin on a shared installation can open exactly one address, `/care`, and
+on all the others was left on a blank page with the name of the section they
+wanted written out in prose and no way to reach it. All three render
+`refusal.html` now, with the button chosen from what the account holds. The
+access denial keeps the property it was written for: a denial and a miss still
+look identical from outside, and a test holds that.
+
+**The labs header said "0 markers" above a table of two.** The first masthead
+metric counted the marker *catalog*, which is a different thing with its own
+card on the right of the same page. It counts the set the table lists now, and
+that `out_of_range` is drawn from, so the summary and the table agree.
+
+**The per-marker chart rendered an empty grid beside a value that was plainly
+there.** The demo seeder wrote lab rows straight through the model with the
+marker name as typed, and every read path normalizes the name it looks up:
+"tsh" was stored, "Tsh" was asked for. Seeded data the app itself could not
+have written tests the wrong app. Each marker also gets four dates instead of
+one, because a single point draws an empty grid too — indistinguishable, by
+eye, from the bug above.
+
+**The nutrition page counted in Russian on an English installation.**
+`meal_word` hardcoded the Russian forms and applied the Russian rule, so the
+page rendered "Today's meals · 1 приём" — one line speaking the other language.
+The catalogue has carried `nutrition.meal_word_*` in both languages the whole
+time; this filter never read them, while `days_word` directly beside it always
+did.
+
+**And it named one macro out of three on a phone.** Three macro cards across
+390px leave each label sharing its row with a percentage, and the label is what
+loses: "Protein" and "Carbs" came out as "Pr…" and "Ca…" while "Fat" happened
+to fit. Stacked below 767px, where the word has the whole card.
+
+
+### Fixed — four more tests that could not run on the database that ships
+
+The same shape as the five below, in the two files the earlier integration run
+was killed before reaching. All four failed in their own setup on PostgreSQL,
+so what they assert was unverified on the only database production uses.
+
+`ck_professional_invitations_positive_ttl` forbids `expires_at <= created_at`,
+so simulating a lapsed offer by pulling the expiry back onto the issue time
+writes a row the schema rejects; the offer is aged into the past instead.
+`_without_indexes` dropped an index, rolled back, and recreated it — which works
+on SQLite and cannot on PostgreSQL, where DDL is transactional: the rollback
+puts the index back and the CREATE then fails as a duplicate. It asks for the
+end state now rather than for the step. And two cases passed `dialect="sqlite"`
+literally while running against PostgreSQL, where the SQLite partial-index
+predicate compares a boolean column to `1` — not an operator that exists there.
+
+Pre-existing: none of these files has been touched on this branch.
+
+
+### Known — the same analyte typed two ways becomes two markers
+
+`labs_service.normalize_marker` promises to standardize casing and does so only
+for the 62 names in `MARKER_ALIASES`; everything else falls through to
+"upper-case the first character, keep the rest". So `TSH`, `tsh` and `tSh` are
+three markers with three histories and three charts, and the lab form takes free
+text, so a person reaches this by typing.
+
+Not fixed, deliberately. The fix re-keys stored clinical data: changing the
+fallback splits every existing installation's history at the moment of the
+change unless a migration re-keys the rows first, and re-keying makes two
+spellings collide under `uq_lab_markers_subject_name`, which needs a merge
+policy rather than a rename. Normalizer, migration and collision policy are one
+piece of work, and half of it would be worse than the defect.
+
+
 ### Fixed — five tests that could not run on the database that ships
 
 The fast suite is SQLite and the integration suite is PostgreSQL, and five tests

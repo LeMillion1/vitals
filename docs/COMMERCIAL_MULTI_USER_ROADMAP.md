@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0061` — 61 revisions |
 | Schema | 72 tables; 59 carry `subject_id` and are covered by an RLS policy; 49 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4408 fast passed / 168 skipped |
+| Suites | 4419 fast passed / 168 skipped; 2011 on PostgreSQL |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -1727,8 +1727,26 @@ At the start of a new implementation session:
 7. **Open a browser on the seeded shared installation.** `scripts/seed_care_demo.py`
    builds one and prints a session cookie per account;
    `tests/test_shared_installation_pages.py` walks the same ground, and the
-   difference between them keeps being where the defects are. Four separate ones
-   this month were found in the first minute of clicking and were invisible to
-   several thousand passing tests: the app refusing to start, every page
-   answering 409, Save on the notification card answering 409, and the patient's
-   consent page answering a bare 404 to a doctor.
+   difference between them keeps being where the defects are. Five separate ones
+   were found in the first minute of clicking and were invisible to several
+   thousand passing tests: the app refusing to start, every page answering 409,
+   Save on the notification card answering 409, the patient's consent page
+   answering a bare 404 to a doctor, and the conversation page answering 500.
+
+8. **Then photograph it, at 1280 and at 390.** An HTTP pass finds pages that
+   answer wrongly; it cannot see a page that answers 200 and *shows* the wrong
+   thing. Six defects were found only this way and each had a green suite over
+   it: a reply rendered above the message it answered, three refusals rendered
+   as one unstyled sentence with no link out, a labs header reading "0 markers"
+   above a table of two, a per-marker chart drawing an empty grid beside a value
+   plainly in the table, "Today's meals · 1 приём" on an English page, and two
+   of three macro labels truncated to "Pr…" and "Ca…" on a phone.
+
+   Playwright drives it, against the Chromium already in
+   `~/Library/Caches/ms-playwright` — no browser download and nothing installed
+   into the project environment. Sign each account in by setting the
+   `vitals_session` cookie the seeder printed, wait for `networkidle` and then
+   about a second more for htmx fragments and Chart.js, and collect console
+   errors, `pageerror`, any response ≥ 400, and
+   `documentElement.scrollWidth > innerWidth` per page. The last one is what
+   catches a phone layout nobody looked at.
