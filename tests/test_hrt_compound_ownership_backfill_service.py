@@ -277,6 +277,7 @@ async def test_live_tail_requires_exact_subject_and_actor(db_session):
 @pytest.mark.asyncio
 async def test_completed_custom_business_edit_allowed_but_ownership_drift_rejected(
     db_session,
+    unenforced_legacy_write,
 ):
     _owner, subject = await _scope(db_session)
     custom = _custom()
@@ -288,8 +289,12 @@ async def test_completed_custom_business_edit_allowed_but_ownership_drift_reject
     custom.components[0].mg = 13
     await db_session.flush()
     assert (await preflight_hrt_compound_ownership_backfill(db_session)).completed
-    custom.subject_id = None
-    await db_session.flush()
+    # A current PostgreSQL write cannot drift the parent away from its stamped
+    # component because revision 0046 enforces their composite ownership FK.
+    # Seed the pre-constraint corruption explicitly so the service-level
+    # completed-check still proves it fails closed on historical data.
+    async with unenforced_legacy_write(db_session):
+        custom.subject_id = None
     with pytest.raises(HrtCompoundOwnershipBackfillStateError):
         await preflight_hrt_compound_ownership_backfill(db_session)
     assert subject.id is not None
