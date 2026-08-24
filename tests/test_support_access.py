@@ -714,6 +714,46 @@ async def test_the_patient_can_answer_from_the_page_and_the_banner_appears(
     assert "/settings/access" in page.text
 
 
+async def test_a_stale_login_must_reauthenticate_before_support_changes(
+    client, db_session, legacy_owner_roots
+):
+    from datetime import datetime, timezone
+
+    from web.auth import create_federated_session
+    from web.config import SESSION_COOKIE
+
+    admin = await _admin(db_session, "web-support-stale-admin")
+    await db_session.commit()
+    client.cookies.set(
+        SESSION_COOKIE,
+        create_federated_session(
+            username=admin.username,
+            user_id=admin.id,
+            session_version=admin.session_version,
+            authenticated_at=int(datetime.now(timezone.utc).timestamp()) - 3600,
+            subject_id=None,
+        ),
+    )
+
+    response = await client.post(
+        "/settings/platform/support/request",
+        data={
+            "subject_id": str(legacy_owner_roots.subject_id),
+            "reason": "This must not be created from a stale session.",
+            "hours": "2",
+            "domains": "labs",
+        },
+        headers={
+            "Accept": "text/html",
+            "Referer": "http://test/settings/platform/support",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/login?")
+    assert response.cookies.get(SESSION_COOKIE) in (None, "")
+
+
 async def test_a_revoked_grant_closes_the_former_holder_route_immediately(
     client, db_session, legacy_owner_roots
 ):

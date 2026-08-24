@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — support decisions require recent authentication
+
+Opening, answering, withdrawing, or revoking controlled support access used an
+ordinary long-lived browser session. These sensitive transitions now require an
+authentication proof from the last fifteen minutes. A stale federated session
+is sent through an OIDC `prompt=login` step-up whose returned `auth_time` is
+validated; legacy password mode clears the old cookie and requires a fresh
+login before the action can be retried.
+
 ### Fixed — revoked federated sessions stop at the web boundary
 
 Versioned OIDC cookies carried a revocable `session_version`, but protected web

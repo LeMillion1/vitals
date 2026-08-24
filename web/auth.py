@@ -9,6 +9,7 @@ import logging
 import secrets
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -164,7 +165,14 @@ def clear_pending_2fa_cookie(response: Response) -> None:
     response.delete_cookie(key=PENDING_2FA_COOKIE, path="/")
 
 
-def create_oidc_handoff(*, state: str, nonce: str, code_verifier: str, next_url: str) -> str:
+def create_oidc_handoff(
+    *,
+    state: str,
+    nonce: str,
+    code_verifier: str,
+    next_url: str,
+    max_age_seconds: int | None = None,
+) -> str:
     """Seal what the callback will need, for the browser to carry there."""
 
     return _get_oidc_handoff_serializer().dumps(
@@ -173,11 +181,12 @@ def create_oidc_handoff(*, state: str, nonce: str, code_verifier: str, next_url:
             "nonce": nonce,
             "code_verifier": code_verifier,
             "next": next_url,
+            "max_age_seconds": max_age_seconds,
         }
     )
 
 
-def read_oidc_handoff(token: str | None) -> dict[str, str] | None:
+def read_oidc_handoff(token: str | None) -> dict | None:
     """Open the handoff, or fail closed.
 
     Every field must be a non-empty string of the exact expected set. A handoff
@@ -196,6 +205,7 @@ def read_oidc_handoff(token: str | None) -> dict[str, str] | None:
         "nonce",
         "code_verifier",
         "next",
+        "max_age_seconds",
     }:
         return None
     for key in ("state", "nonce", "code_verifier"):
@@ -203,6 +213,11 @@ def read_oidc_handoff(token: str | None) -> dict[str, str] | None:
         if not isinstance(value, str) or not value.strip():
             return None
     if not isinstance(payload["next"], str):
+        return None
+    max_age_seconds = payload["max_age_seconds"]
+    if max_age_seconds is not None and (
+        type(max_age_seconds) is not int or max_age_seconds <= 0
+    ):
         return None
     return payload
 
@@ -299,6 +314,22 @@ def decode_session(token: str | None) -> SessionClaims | None:
         auth_source=_SESSION_AUTH_SOURCE,
         username=username,
     )
+
+
+def session_issued_at(token: str | None) -> datetime | None:
+    """Return the signed cookie issuance time after full envelope validation."""
+
+    if decode_session(token) is None:
+        return None
+    try:
+        _payload, issued_at = _get_serializer().loads(
+            token,
+            max_age=get_web_config().session_ttl,
+            return_timestamp=True,
+        )
+    except BadData:
+        return None
+    return issued_at
 
 
 def _decode_v2(payload: dict) -> SessionClaims | None:
@@ -508,19 +539,23 @@ def _login_failed(request: Request, reason: str):
 
 
 @router.get("/auth/start")
-async def federated_login_start(request: Request, next: Optional[str] = None):
+async def federated_login_start(
+    request: Request,
+    next: Optional[str] = None,
+    step_up: bool = False,
+):
     """Begin a login at the provider."""
 
     cfg = get_web_config()
     if not cfg.oidc_enabled:
         raise HTTPException(status_code=404)
-    if read_session(request.cookies.get(SESSION_COOKIE)) is not None:
+    if not step_up and read_session(request.cookies.get(SESSION_COOKIE)) is not None:
         return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
 
     from vitals.services.oidc import OidcError
 
     try:
-        login = await _provider().begin_login()
+        login = await _provider().begin_login(prompt="login" if step_up else None)
     except OidcError as exc:
         return _login_failed(request, f"could not begin a login: {exc}")
 
@@ -534,6 +569,7 @@ async def federated_login_start(request: Request, next: Optional[str] = None):
             nonce=login.nonce,
             code_verifier=login.code_verifier,
             next_url=safe_next(next),
+            max_age_seconds=900 if step_up else None,
         ),
     )
     return response
@@ -587,6 +623,7 @@ async def federated_login_callback(
             code=code,
             code_verifier=handoff["code_verifier"],
             expected_nonce=handoff["nonce"],
+            max_age_seconds=handoff["max_age_seconds"],
         )
     except OidcError as exc:
         return _login_failed(request, f"token rejected: {exc}")

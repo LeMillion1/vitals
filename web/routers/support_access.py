@@ -28,7 +28,7 @@ from vitals.services.access_resolution import (
     resolve_access_context,
 )
 from web.care_context import principal_user_id
-from web.deps import get_session, require_auth
+from web.deps import get_session, require_auth, require_recent_auth
 from web.templating import templates
 
 admin_router = APIRouter(prefix="/settings/platform/support", tags=["support"])
@@ -120,7 +120,7 @@ async def ask_for_access(
     hours: int = Form(...),
     domains: list[str] = Form(default=[]),
     ticket_reference: str = Form(default=""),
-    _username: str = Depends(require_auth),
+    _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     admin_user_id = await _admin_id(request, db)
@@ -159,7 +159,7 @@ async def ask_for_access(
 async def withdraw(
     request: Request,
     request_id: uuid.UUID,
-    _username: str = Depends(require_auth),
+    _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     admin_user_id = await _admin_id(request, db)
@@ -178,7 +178,7 @@ async def withdraw(
 async def hand_it_back(
     request: Request,
     grant_id: uuid.UUID,
-    _username: str = Depends(require_auth),
+    _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     """The admin putting the access down rather than waiting for it to lapse."""
@@ -238,7 +238,7 @@ async def access_history(
 async def approve(
     request: Request,
     request_id: uuid.UUID,
-    _username: str = Depends(require_auth),
+    _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     user_id, _subject_id = await _own_subject(request, db)
@@ -257,7 +257,7 @@ async def approve(
 async def decline(
     request: Request,
     request_id: uuid.UUID,
-    _username: str = Depends(require_auth),
+    _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     user_id, _subject_id = await _own_subject(request, db)
@@ -276,7 +276,7 @@ async def decline(
 async def take_it_back(
     request: Request,
     grant_id: uuid.UUID,
-    _username: str = Depends(require_auth),
+    _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
 ):
     """Changing your mind, without having to find anybody to ask."""

@@ -11,6 +11,7 @@ callbacks that should not produce a session.
 from __future__ import annotations
 
 import time
+import uuid
 
 import httpx
 import jwt
@@ -153,6 +154,65 @@ async def test_start_sends_the_browser_to_the_provider_with_pkce(
     assert query["state"] and query["nonce"]
     # The verifier is the one thing that must never leave in the redirect.
     assert "code_verifier" not in query
+
+
+async def test_step_up_forces_provider_login_and_rejects_stale_authentication(
+    client, federated
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    response = await client.get(
+        "/auth/start?step_up=true&next=/settings/access",
+        follow_redirects=False,
+    )
+    query = parse_qs(urlsplit(response.headers["location"]).query)
+    assert query["prompt"] == ["login"]
+    federated.pending_claims.update(
+        {
+            "nonce": query["nonce"][0],
+            "auth_time": int(time.time()) - 3600,
+        }
+    )
+
+    refused = await client.get(
+        f"/auth/callback?code=the-code&state={query['state'][0]}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    assert refused.status_code == 401
+    assert not refused.cookies.get(SESSION_COOKIE)
+
+
+async def test_sensitive_support_action_redirects_a_stale_session_to_step_up(
+    client, federated, db_session, legacy_owner_roots
+):
+    from web.auth import create_federated_session
+    from vitals.models.identity import User
+
+    user = await db_session.get(User, legacy_owner_roots.user_id)
+    assert user is not None
+    client.cookies.set(
+        SESSION_COOKIE,
+        create_federated_session(
+            username=user.username,
+            user_id=user.id,
+            session_version=user.session_version,
+            authenticated_at=int(time.time()) - 3600,
+            subject_id=legacy_owner_roots.subject_id,
+        ),
+    )
+    response = await client.post(
+        f"/settings/access/{uuid.uuid4()}/approve",
+        headers={
+            "Accept": "text/html",
+            "Referer": "http://test/settings/access",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    target = response.headers["location"]
+    assert target.startswith("/auth/start?")
+    assert "step_up=true" in target
+    assert "next=%2Fsettings%2Faccess" in target
 
 
 async def test_the_handoff_cookie_never_carries_the_verifier_in_the_clear(

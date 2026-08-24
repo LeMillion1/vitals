@@ -104,6 +104,12 @@ Restart the app. From this point:
   browser session. If provider discovery is unavailable, local logout still
   succeeds and the failure is logged.
 
+Controlled-support request, approval, refusal and revoke actions require an
+authentication performed within the last fifteen minutes. A stale session is
+redirected through `/auth/start?step_up=true`; Vitals sends `prompt=login` and
+refuses the callback if the provider's `auth_time` is missing or too old. After
+returning to the support page, submit the decision again.
+
 Log in. The first login whose subject matches `VITALS_OIDC_BOOTSTRAP_SUBJECT`
 binds your existing user to that provider identity, once, under the identity
 governance lock. Every login after that finds the link and does not need the

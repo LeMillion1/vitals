@@ -83,6 +83,16 @@ class NotAuthenticated(HTTPException):
         super().__init__(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
 
+class RecentAuthenticationRequired(HTTPException):
+    """A sensitive browser action needs a recent provider/password proof."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Recent authentication required",
+        )
+
+
 async def require_auth(
     request: Request,
     db: AsyncSession = Depends(get_session),
@@ -91,7 +101,7 @@ async def require_auth(
     # Lazy import breaks the web.auth ↔ web.deps cycle: auth.py imports the login
     # rate-limiter (web.ratelimit → web.deps), so deps must not import auth at
     # module-load time.
-    from web.auth import decode_session
+    from web.auth import decode_session, session_issued_at
 
     token = request.cookies.get(SESSION_COOKIE)
     claims = decode_session(token)
@@ -118,9 +128,30 @@ async def require_auth(
         except (SessionRejected, ValueError, OSError, OverflowError):
             raise NotAuthenticated() from None
         request.state.live_session = live
+        request.state.session_authenticated_at = live.authenticated_at
         return live.username
 
+    request.state.session_authenticated_at = session_issued_at(token)
     return claims.username
+
+
+async def require_recent_auth(
+    request: Request,
+    _username: str = Depends(require_auth),
+) -> str:
+    """Require authentication performed within the last fifteen minutes."""
+
+    from datetime import datetime, timezone
+
+    authenticated_at = getattr(request.state, "session_authenticated_at", None)
+    if authenticated_at is None:
+        raise RecentAuthenticationRequired()
+    if authenticated_at.tzinfo is None:
+        authenticated_at = authenticated_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - authenticated_at
+    if age.total_seconds() > 900:
+        raise RecentAuthenticationRequired()
+    return _username
 
 
 @dataclass(frozen=True, slots=True)

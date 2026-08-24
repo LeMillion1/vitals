@@ -9,7 +9,7 @@ import logging
 import os
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -48,6 +48,7 @@ from web.csrf import add_csrf_origin_check, add_security_headers
 from web.deps import (
     ModuleDisabled,
     NotAuthenticated,
+    RecentAuthenticationRequired,
     get_redis_client,
     get_session_factory,
     get_session,
@@ -396,6 +397,46 @@ async def auth_exception_handler(request: Request, exc: NotAuthenticated):
         return RedirectResponse(url=login_url, status_code=status.HTTP_302_FOUND)
 
     return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": "Not authenticated"})
+
+
+@app.exception_handler(RecentAuthenticationRequired)
+async def recent_authentication_handler(
+    request: Request, exc: RecentAuthenticationRequired
+):
+    """Send a sensitive browser action through a real authentication step."""
+
+    del exc
+    accept = request.headers.get("accept", "")
+    if "text/html" not in accept:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Recent authentication required"},
+        )
+
+    next_path = request.url.path if request.method == "GET" else "/"
+    referer = request.headers.get("referer")
+    if referer:
+        parsed = urlsplit(referer)
+        if parsed.netloc == request.url.netloc and parsed.path.startswith("/"):
+            next_path = parsed.path
+            if parsed.query:
+                next_path += f"?{parsed.query}"
+
+    from web.auth import clear_session_cookie
+    from web.config import get_web_config
+
+    if get_web_config().oidc_enabled:
+        target = "/auth/start?" + urlencode(
+            {"step_up": "true", "next": next_path}
+        )
+        return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
+
+    response = RedirectResponse(
+        url="/login?" + urlencode({"next": next_path}),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    clear_session_cookie(response)
+    return response
 
 
 
