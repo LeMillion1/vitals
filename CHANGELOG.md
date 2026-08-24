@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — an open care conversation is one screen
+
+Opening a conversation no longer leaves the new-conversation form and the full
+thread list above the messages. The focused screen contains the conversation,
+its composer, and one “all conversations” route back to the list.
+
 ### Fixed — shared record sections are shown once
 
 The patient access screen no longer repeats every health section for the

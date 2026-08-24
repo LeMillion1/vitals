@@ -424,7 +424,6 @@ async def thread(
         opened, thread_messages, participants = await care_threads.read_thread(
             db, context=care.access, thread_id=thread_id
         )
-        threads = await care_threads.list_threads(db, context=care.access)
     except (care_threads.NotInTheConversation, care_threads.ThreadNotFound):
         # Absent, not yours, and no longer yours are one answer, exactly as the
         # care context itself answers.
@@ -436,7 +435,10 @@ async def thread(
         {
             "username": username,
             "care": care,
-            "threads": threads,
+            # An open conversation is one screen. The list and new-thread form
+            # belong to its parent route and would otherwise sit above the chat
+            # as two unrelated tasks the reader has to scroll past.
+            "threads": [],
             "open_thread": opened,
             "thread_messages": thread_messages,
             "participants": participants,

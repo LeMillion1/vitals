@@ -30,6 +30,7 @@
 
     <p class="v-text-body" style="color: var(--muted)">{{ t("care.messages_description") }}</p>
 
+    {% if not open_thread %}
     <!-- ─── THE CONVERSATIONS ──────────────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("care.threads_title")) }}
@@ -72,11 +73,16 @@
         <p class="v-text-body" style="color: var(--muted)">{{ t("care.threads_empty") }}</p>
         {% endif %}
     </div>
+    {% endif %}
 
     {% if open_thread %}
     <!-- ─── ONE CONVERSATION ───────────────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4">
-        {{ card_header(open_thread.title) }}
+        {% call card_header(open_thread.title) %}
+        <a href="/care/{{ care.subject_id }}/messages" class="v-btn-ghost text-xs">
+            {{ t("care.back_to_threads") }}
+        </a>
+        {% endcall %}
 
         {# Who is in the room, said plainly. A conversation whose participants
            are implicit is one nobody can check they are not being talked about

@@ -612,6 +612,9 @@ async def test_the_conversation_page_renders_what_was_said(
     # Who said it and who is in the room, both of which come off a relationship.
     assert doctor.username in page.text
     assert "Bloods" in page.text
+    assert "All conversations" in page.text or "Все разговоры" in page.text
+    assert "Start conversation" not in page.text
+    assert "Начать разговор" not in page.text
 
 
 async def test_the_conversation_list_renders(doctor_client):
@@ -627,3 +630,4 @@ async def test_the_conversation_list_renders(doctor_client):
     )
     assert page.status_code == 200
     assert "Bloods" in page.text
+    assert "Start conversation" in page.text or "Начать разговор" in page.text

@@ -236,6 +236,12 @@ times because it exposed the underlying read/list/search scope rows, and used
 the missing `nav.milestones` key. It now collapses policy actions into one
 human record-section summary and uses the dedicated consent translations.
 
+The live professional thread route stacked the new-thread form, the complete
+thread list, and the open conversation vertically. It now separates the list
+and creation task from the focused conversation screen, with an explicit route
+back, so the doctor or trainer does not scroll past two unrelated tasks before
+reading a reply.
+
 The first shared UI run reported 25 passed and 10 failures after a revoked
 support-record navigation timed out; the remaining nine were cascading server
 timeouts. The exact HTTP flow was added as a three-second regression and passed,
