@@ -480,7 +480,12 @@ async def test_an_account_with_no_record_is_told_so_at_the_patients_door(
         "/messages", headers={"Accept": "text/html"}, follow_redirects=False
     )
     assert response.status_code == 409
-    assert "нет собственной медицинской записи" in response.text
+    # A page, not a sentence: the refusal is rendered through ``refusal.html``
+    # so whoever meets it has somewhere to go. An account with no record of its
+    # own can open exactly one address on a shared installation, and being told
+    # the right thing on a white page with no link is still a dead end.
+    assert "нет собственной записи" in response.text
+    assert 'href="/care"' in response.text
     del doctor
 
 

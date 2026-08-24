@@ -125,3 +125,67 @@ def test_the_refusal_is_a_conflict_and_says_so_in_words():
     )
     assert response.status_code == status.HTTP_409_CONFLICT
     assert response.body.decode("utf-8").strip()
+
+
+def _render(handler, exc, *, path: str = "/weight", state: dict | None = None):
+    """Run one refusal handler against a bare browser GET."""
+
+    import asyncio
+
+    from starlette.datastructures import Headers
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": path,
+        "headers": Headers({"accept": "text/html"}).raw,
+        "query_string": b"",
+        "state": dict(state or {}),
+    }
+    return asyncio.run(handler(Request(scope), exc))
+
+
+@pytest.mark.parametrize(
+    "handler_name, exc_factory",
+    [
+        ("legacy_ownership_handler", lambda: RuntimeError("probe")),
+        ("no_personal_record_handler", lambda: Exception("probe")),
+        ("access_denied_handler", lambda: Exception("probe")),
+    ],
+)
+def test_a_refused_browser_navigation_gets_a_page_not_a_sentence(
+    handler_name, exc_factory
+):
+    """Every browser-facing refusal has to be somewhere you can leave from.
+
+    All three used to answer ``HTMLResponse(content=detail)``: one unstyled
+    sentence on a white page, no masthead and no link anywhere. The sentence was
+    correct, which is why the suites were happy — a status assertion cannot see
+    that the page is a dead end. A superadmin on a shared installation can open
+    exactly one address, ``/care``, and every other one left them stranded with
+    no way to find it.
+
+    Asserted on the anchor rather than on the styling: what makes it a page
+    instead of an error string is that it offers somewhere to go.
+    """
+
+    body = _render(getattr(main_module, handler_name), exc_factory()).body.decode()
+    assert "<html" in body.lower(), "the refusal is not a rendered page"
+    assert 'href="/' in body, "the refusal offers nowhere to go"
+
+
+def test_the_access_denial_page_still_says_nothing_about_the_record():
+    """A denial and a miss have to look the same from outside.
+
+    The page gained a headline and a button; it must not have gained a hint.
+    Naming the subject, or wording that separates "you may not" from "it is not
+    there", turns the refusal itself into a way to probe for who exists.
+    """
+
+    body = _render(
+        main_module.access_denied_handler,
+        Exception("probe"),
+        path="/care/00000000-0000-0000-0000-000000000001",
+    ).body.decode()
+    assert "00000000-0000-0000-0000-000000000001" not in body

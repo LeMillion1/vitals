@@ -376,5 +376,10 @@ async def test_an_account_with_no_record_is_told_so_rather_than_404ed(
         "/settings/care", headers={"Accept": "text/html"}, follow_redirects=False
     )
     assert response.status_code == 409
+    # Still the narrower sentence, not the bridge's: the two refusals are
+    # different answers and telling somebody the wrong one sends them looking
+    # for a setting that would not help.
     assert "несколько записей" not in response.text
-    assert "нет собственной медицинской записи" in response.text
+    assert "нет собственной записи" in response.text
+    # And it is a page with a way out of it, not a sentence on a white screen.
+    assert 'href="/care"' in response.text

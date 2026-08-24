@@ -14,7 +14,6 @@ from urllib.parse import urlencode
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import (
-    HTMLResponse,
     JSONResponse,
     RedirectResponse,
 )
@@ -462,6 +461,69 @@ async def _populate_state_for_error_page(request: Request) -> None:
     request.state.nav_status = []
 
 
+async def _render_refusal(
+    request: Request,
+    *,
+    status_code: int,
+    kicker_ru: str,
+    kicker_en: str,
+    headline_ru: str,
+    headline_en: str,
+    body_ru: str,
+    body_en: str,
+    primary_href: str,
+    primary_ru: str,
+    primary_en: str,
+):
+    """Render a refusal as a page instead of a naked sentence.
+
+    Both callers used to answer a browser with ``HTMLResponse(content=detail)``.
+    The sentence was right; the page was a dead end — no masthead, no
+    navigation, no link. A superadmin on a shared installation can open exactly
+    one address, ``/care``, and on every other one they were left on a white
+    page with no way to find it. That is invisible to a status-code assertion
+    and obvious the moment you open the thing.
+
+    ``base.html`` reads ``request.state`` for language and module state. A
+    matched route has already populated it, but these exceptions can be raised
+    from inside a dependency that runs before ``load_language`` — so fill it in
+    when it is missing rather than assume, or the refusal page itself 500s.
+    """
+
+    if not hasattr(request.state, "lang") or not hasattr(
+        request.state, "enabled_modules"
+    ):
+        await _populate_state_for_error_page(request)
+    if not hasattr(request.state, "nav_status"):
+        request.state.nav_status = []
+
+    is_ru = getattr(request.state, "lang", "en") == "ru"
+    username = None
+    try:
+        from web.auth import read_session
+        from web.config import SESSION_COOKIE
+
+        username = read_session(request.cookies.get(SESSION_COOKIE))
+    except Exception:
+        logger.exception("Could not resolve user for refusal page")
+
+    return templates.TemplateResponse(
+        request,
+        "refusal.html",
+        {
+            "username": username,
+            "alerts": [],
+            "kicker": kicker_ru if is_ru else kicker_en,
+            "headline": headline_ru if is_ru else headline_en,
+            "body": body_ru if is_ru else body_en,
+            "primary_href": primary_href,
+            "primary_label": primary_ru if is_ru else primary_en,
+            "back_label": "Назад" if is_ru else "Go back",
+        },
+        status_code=status_code,
+    )
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """Render a branded 404 page for browser navigations and keep JSON 404s for API/HTMX."""
@@ -532,7 +594,25 @@ async def no_personal_record_handler(request: Request, exc: NoPersonalRecordErro
         "Эта страница — о ваших данных, а работа с подопечными живёт в разделе «Подопечные»."
     )
     if wants_html:
-        return HTMLResponse(content=detail, status_code=status.HTTP_409_CONFLICT)
+        return await _render_refusal(
+            request,
+            status_code=status.HTTP_409_CONFLICT,
+            kicker_ru="Страница о ваших данных",
+            kicker_en="A page about your own data",
+            headline_ru="У этого аккаунта нет собственной записи",
+            headline_en="This account keeps no record of its own",
+            body_ru=(
+                "Эта страница показывает ваш вес, ваши анализы, ваш день. "
+                "Работа с подопечными живёт в разделе «Подопечные»."
+            ),
+            body_en=(
+                "This page shows your weight, your labs, your day. Work with "
+                "the people in your care lives under Patients."
+            ),
+            primary_href="/care",
+            primary_ru="К подопечным",
+            primary_en="Go to patients",
+        )
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT, content={"detail": detail}
     )
@@ -570,8 +650,28 @@ async def legacy_ownership_handler(request: Request, exc: Exception):
     detail = "Эта страница ещё не поддерживает несколько записей."
     accept = request.headers.get("accept", "")
     if request.method == "GET" and "text/html" in accept:
-        return HTMLResponse(
-            content=detail, status_code=status.HTTP_409_CONFLICT
+        return await _render_refusal(
+            request,
+            status_code=status.HTTP_409_CONFLICT,
+            kicker_ru="Раздел ещё переезжает",
+            kicker_en="This section is still migrating",
+            headline_ru="Эта страница пока знает только одну запись",
+            headline_en="This page still knows only one record",
+            body_ru=(
+                "В установке больше одной медицинской записи, и этот раздел "
+                "ещё не умеет спрашивать, о чьей идёт речь. Он отказывается, "
+                "а не угадывает: ничего не записано и ничья чужая запись "
+                "не затронута."
+            ),
+            body_en=(
+                "This installation holds more than one health record, and this "
+                "section cannot yet ask which one you meant. It refuses rather "
+                "than guesses: nothing was written and nobody else's record was "
+                "touched."
+            ),
+            primary_href="/today",
+            primary_ru="На главную",
+            primary_en="Go to dashboard",
         )
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT, content={"detail": detail}
@@ -601,7 +701,30 @@ async def access_denied_handler(request: Request, exc: AccessDeniedError):
     detail = "Недостаточно прав для этой операции."
     accept = request.headers.get("accept", "")
     if request.method == "GET" and "text/html" in accept:
-        return HTMLResponse(content=detail, status_code=status.HTTP_403_FORBIDDEN)
+        # The wording stays as generic as the JSON: no name, no hint whether
+        # the record exists. Where the button points is not a leak — it is
+        # decided by what *this* account holds, which it already knows.
+        holds_patients = bool(getattr(request.state, "holds_patients", False))
+        return await _render_refusal(
+            request,
+            status_code=status.HTTP_403_FORBIDDEN,
+            kicker_ru="Доступ закрыт",
+            kicker_en="Access refused",
+            headline_ru="Недостаточно прав для этой операции",
+            headline_en="Not enough rights for this operation",
+            body_ru=(
+                "Возможно, согласие отозвано или срок доступа истёк. "
+                "Если это чужая запись — попросите её владельца открыть доступ."
+            ),
+            body_en=(
+                "Consent may have been withdrawn, or the access window may have "
+                "closed. If this is somebody else's record, ask them to grant "
+                "access."
+            ),
+            primary_href="/care" if holds_patients else "/today",
+            primary_ru="К подопечным" if holds_patients else "На главную",
+            primary_en="Go to patients" if holds_patients else "Go to dashboard",
+        )
     return JSONResponse(
         status_code=status.HTTP_403_FORBIDDEN, content={"detail": detail}
     )
