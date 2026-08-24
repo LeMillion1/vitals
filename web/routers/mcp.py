@@ -129,6 +129,32 @@ class _ConnectorTokenVerifier:
 _TOKEN_MAX_AGE = 31536000
 
 
+def _described_for_a_model(tool):
+    """Send the model what the tool does, not why it is written that way.
+
+    The SDK derives a tool's description from its docstring, whole. These
+    docstrings are also the place this codebase records *decisions* — why a
+    field moved out of ``.env``, which refusal a caller should expect — and none
+    of that helps a model choose a tool. It is read by something that pays for
+    every token of it, on every listing, and it is internal engineering history
+    sent to a third party.
+
+    So the first paragraph goes out and the rest stays home. Written this way
+    on purpose: a rule at the boundary, rather than sixty ``description=``
+    arguments that would drift from the docstrings beside them, or docstrings
+    trimmed until they stopped explaining anything to the next person who reads
+    the code.
+    """
+
+    description = (tool.description or "").strip()
+    if not description:
+        return tool
+    summary = description.split("\n\n", 1)[0].strip()
+    if summary == description:
+        return tool
+    return tool.model_copy(update={"description": summary})
+
+
 class VitalsMCPServer(MCPServer):
     """The server, with a switched-off module's tools left out of the listing.
 
@@ -150,7 +176,7 @@ class VitalsMCPServer(MCPServer):
     """
 
     async def list_tools(self, *args, **kwargs):
-        tools = await super().list_tools(*args, **kwargs)
+        tools = [_described_for_a_model(t) for t in await super().list_tools(*args, **kwargs)]
         try:
             session_factory = get_session_factory()
             async with session_factory() as session:
@@ -3175,10 +3201,13 @@ async def export_everything(
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        await _mcp_v1_composition_scope(session)
+        scope = await _mcp_v1_composition_scope(session)
         try:
             return await data_portability_service.export_llm(
-                session, domains=domains, since=cutoff
+                session,
+                subject_id=scope.subject_id,
+                domains=domains,
+                since=cutoff,
             )
         except ValueError as e:
             return {"error": str(e)}
@@ -3223,13 +3252,21 @@ async def get_data_overview() -> dict:
     session_factory = get_session_factory()
     overview: dict = {}
     async with session_factory() as session:
-        await _mcp_v1_composition_scope(session)
+        scope = await _mcp_v1_composition_scope(session)
         for name, model, date_col in dated:
             cols = [func.count(), func.min(date_col), func.max(date_col)]
             updated_col = getattr(model, "updated_at", None)
             if updated_col is not None:
                 cols.append(func.max(updated_col))
-            row = (await session.execute(select(*cols))).one()
+            # Filtered by the subject this call resolved. It used to resolve one
+            # and count over every row in the table, which is a smaller
+            # disclosure than the export beside it and the same kind: how many
+            # lab results somebody else has, and when the earliest was taken.
+            row = (
+                await session.execute(
+                    select(*cols).where(model.subject_id == scope.subject_id)
+                )
+            ).one()
             entry = {
                 "count": row[0],
                 "earliest": row[1].isoformat() if row[1] else None,

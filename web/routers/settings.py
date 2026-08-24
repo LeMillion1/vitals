@@ -1624,8 +1624,14 @@ async def export_llm(
     _rl: None = Depends(rate_limit("data_export", limit=2, window=60)),
 ):
     """Download a curated, flat, secret-free digest for pasting into an LLM chat."""
-    await _authorize_export(db, username)
-    snapshot = await data_portability_service.export_llm(db)
+    # The subject the authorization just resolved, handed on rather than
+    # dropped. It used to be dropped, and ``export_llm`` read every table
+    # unfiltered — so this download returned everybody's record on an
+    # installation with more than one person in it.
+    ownership = await _authorize_export(db, username)
+    snapshot = await data_portability_service.export_llm(
+        db, subject_id=ownership.subject_id
+    )
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_llm_{today_local().strftime('%Y%m%d')}.json"
     return Response(

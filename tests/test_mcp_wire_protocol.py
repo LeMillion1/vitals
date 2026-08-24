@@ -198,3 +198,132 @@ async def test_a_token_that_names_nobody_still_connects(endpoint):
             async with ClientSession(streams[0], streams[1]) as session:
                 listed = await session.list_tools()
     assert listed.tools
+
+
+# ── Protocol conformance ─────────────────────────────────────────────────────
+
+
+async def test_the_server_answers_discover_with_the_versions_it_speaks(endpoint):
+    """``server/discover`` is mandatory in ``2026-07-28``.
+
+    It is how a client learns what this server supports without a handshake,
+    which is the whole shape of the stateless contract. Asked through the SDK
+    client rather than by hand: a raw POST without the ``_meta`` envelope is
+    treated as a legacy peer, for which the method does not exist — a
+    distinction easy to mistake for a missing feature.
+    """
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                discovered = await session.discover()
+                negotiated = session.protocol_version
+
+    assert mcp_types.LATEST_PROTOCOL_VERSION in discovered.supported_versions
+    assert negotiated == mcp_types.LATEST_PROTOCOL_VERSION
+    assert discovered.capabilities.tools is not None, "no tools capability advertised"
+
+
+async def test_a_result_says_what_it_is_and_who_produced_it(endpoint):
+    """``resultType`` and the server identity in ``_meta``.
+
+    Both are ``2026-07-28`` requirements and both are how a client tells one
+    server's answer from another's when several are connected at once.
+
+    ``discover`` first, because that is what a real client does and because the
+    identity depends on it: before discovery the server has no reason to think
+    its peer speaks the modern protocol, and it does not stamp an envelope the
+    peer might not understand. Reaching for ``call_tool`` alone and finding no
+    identity looks like a missing feature and is a missing step.
+    """
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                await session.discover()
+                answer = await session.call_tool("get_user_profile", {})
+
+    assert answer.result_type, "the result does not say what kind it is"
+    identity = (answer.meta or {}).get("io.modelcontextprotocol/serverInfo")
+    assert identity, "the result does not say which server produced it"
+    assert identity["name"] == "Vitals"
+
+
+async def test_a_health_answer_is_never_cacheable_by_a_shared_cache(endpoint):
+    """Every one of these answers is one person's medical record.
+
+    The SDK defaults to ``cache_scope="private"`` and ``ttl_ms=0``, which is the
+    right default and exactly why this is asserted: a default is a thing
+    somebody can change, and the change that matters here would let an
+    intermediary serve one patient's weight to the next caller.
+    """
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                answer = await session.call_tool("get_user_profile", {})
+                listed = await session.list_tools()
+
+    for result in (answer, listed):
+        assert getattr(result, "cache_scope", "private") == "private", (
+            f"{type(result).__name__} may be cached by a shared cache"
+        )
+        assert getattr(result, "ttl_ms", 0) == 0, (
+            f"{type(result).__name__} may be held past the moment it was true"
+        )
+
+
+async def test_a_tool_description_is_what_it_does_not_why_it_is_written_so(
+    endpoint,
+):
+    """The docstrings here record decisions; a model needs the first line.
+
+    Everything after the summary is engineering history — which field moved out
+    of ``.env`` and why, which refusal to expect. A model pays for every token
+    of it on every listing and cannot act on any of it, and it is internal
+    commentary handed to a third party.
+    """
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                listed = await session.list_tools()
+
+    profile = next(t for t in listed.tools if t.name == "get_user_profile")
+    assert profile.description
+    assert "\n\n" not in profile.description, (
+        "more than the summary is being sent: " + profile.description[:200]
+    )
+    assert ".env" not in profile.description, (
+        "internal commentary reached the model: " + profile.description[:200]
+    )
+
+    # And the source still explains itself to the next person who reads it.
+    from web.routers import mcp as module
+
+    assert ".env" in (module.get_user_profile.__doc__ or ""), (
+        "the docstring was trimmed instead of the description"
+    )
+
+
+async def test_every_listed_tool_has_a_schema_a_client_can_read(endpoint):
+    """Deterministic listings with usable input schemas.
+
+    A tool the model cannot call correctly is worse than one that is missing:
+    it produces a malformed call, an error, and a retry.
+    """
+
+    async with _serving(endpoint) as app:
+        async with _connect(app, _token()) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                first = await session.list_tools()
+                second = await session.list_tools()
+
+    assert [t.name for t in first.tools] == [t.name for t in second.tools], (
+        "two listings of the same surface disagreed on order"
+    )
+    for tool in first.tools:
+        assert tool.description, f"{tool.name} has no description"
+        assert tool.input_schema.get("type") == "object", (
+            f"{tool.name} has no object input schema"
+        )

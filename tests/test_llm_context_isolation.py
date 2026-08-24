@@ -356,3 +356,68 @@ async def test_the_context_says_nothing_about_who_this_is(
         if value and str(value) in prompt
     ]
     assert not leaked, f"the prompt names the person: {leaked}"
+
+
+# ── The whole-lake export ────────────────────────────────────────────────────
+
+
+async def test_the_llm_export_carries_one_persons_lake_and_no_others(
+    db_session, legacy_owner_roots
+):
+    """``export_llm`` had twenty-two selects and not one subject among them.
+
+    Written when the installation held one person, correct then, and a
+    cross-subject export the moment it held two — in the worst possible shape,
+    because the result is a single LLM-ready document of everybody's record.
+    Both callers made it worse by resolving a subject and then not passing it:
+    the MCP ``export_everything`` tool, and the ``/settings/export-llm``
+    download in the browser.
+    """
+
+    from vitals.services import data_portability_service
+
+    other = await _second_person(db_session)
+    db_session.add(
+        WeightLog(
+            subject_id=legacy_owner_roots.subject_id,
+            domain=Domain.WEIGHT.value,
+            source=Source.MANUAL.value,
+            date=DAY,
+            weight_kg=72.5,
+        )
+    )
+    await db_session.commit()
+
+    mine = await data_portability_service.export_llm(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    )
+    found = _leaks(str(mine))
+    assert not found, f"the export carries another person's record: {found}"
+
+    # The mirror, so this cannot pass by exporting nothing at all.
+    theirs = await data_portability_service.export_llm(
+        db_session, subject_id=other.id
+    )
+    assert _leaks(str(theirs)), (
+        "exporting the second person's record returned none of their data — the "
+        "assertion above is passing on an empty document"
+    )
+
+
+async def test_the_export_refuses_to_run_without_a_subject(
+    db_session, legacy_owner_roots
+):
+    """No default, deliberately.
+
+    An omittable scope is the shape ``vitals/legacy_scope.py`` exists to keep
+    out of this codebase, and this function is the reason why: both of its
+    callers had a subject in hand and neither passed one, which a default
+    parameter would have hidden forever.
+    """
+
+    from vitals.services import data_portability_service
+
+    for absent in (None, "not-a-uuid"):
+        with pytest.raises(data_portability_service.PortabilityError):
+            await data_portability_service.export_llm(db_session, subject_id=absent)
+    del legacy_owner_roots

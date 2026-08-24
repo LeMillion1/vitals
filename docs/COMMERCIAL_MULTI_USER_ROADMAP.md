@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0063` — 63 revisions |
 | Schema | 75 tables; 62 carry `subject_id` and are covered by an RLS policy; 52 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4507 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
+| Suites | 4514 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -57,15 +57,11 @@ for anything of theirs — including their name, which is asserted absent becaus
 that is how it would be lost. The wire-protocol migration is in too: `mcp==2.0.0`
 replaced FastMCP, the transport is stateless, authentication moved into the
 SDK's token verifier, and six tests drive the endpoint with the SDK's own
-client. What remains of PR-10 is the conformance detail — `server/discover`,
-explicit per-request version negotiation, `resultType` and private
-`cacheScope` — and the OAuth profile work: Client ID Metadata Documents, and
-treating metadata fetching as hostile SSRF input.
-
-**PR-12 is in, in its read-only half.** An administrator asks, the patient
-answers, and approving is the only thing that writes a `SupportAccessGrant` —
-which is what finally makes `_support_allows` reachable after four PRs of being
-dead code. Revision `0062` adds the ask as its own table because the grant's
+client. The conformance detail is done and mostly
+turned out to be the SDK's: `server/discover`, per-request version negotiation,
+`resultType`, server identity in `_meta` and private `cacheScope` all hold, with
+tests. What remains of PR-10 is the OAuth profile work — Client ID Metadata
+Documents, and treating metadata fetching as hostile SSRF input. Revision `0062` adds the ask as its own table because the grant's
 constraints, correctly, cannot express a pending one. `repair`, `export`,
 operational dashboards, retention controls and the break-glass path are named
 and not built; each needs its own review and the roadmap already sequences them

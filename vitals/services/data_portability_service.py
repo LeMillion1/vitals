@@ -42,6 +42,7 @@ Design notes:
 from __future__ import annotations
 
 import os
+import uuid
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -1845,6 +1846,7 @@ def _row_within(row: dict[str, Any], since_iso: str) -> bool:
 async def export_llm(
     session: AsyncSession,
     *,
+    subject_id: uuid.UUID,
     domains: Sequence[str] | None = None,
     since: date | None = None,
 ) -> dict[str, Any]:
@@ -1855,13 +1857,28 @@ async def export_llm(
     years of daily Garmin rows. ``domains`` names top-level blocks of the result
     (``weight_history``, ``biomarkers``, …); ``since`` drops rows that ended before
     that date.
+
+    **The subject is mandatory, and every read below is filtered by it.** Twenty-two
+    selects here had no subject at all: written when the installation held one
+    person, correct then, and a cross-subject export the moment it held two. The
+    MCP ``export_everything`` tool resolved a scope before calling this and then
+    handed it nothing — so the whole lake came back, everybody's rows in one
+    LLM-ready document, which is the worst possible shape for that mistake to
+    take.
+
+    No default, deliberately. An omittable scope is exactly what
+    ``vitals/legacy_scope.py`` exists to keep out of this codebase, and this
+    function is the reason why.
     """
+
+    if not isinstance(subject_id, uuid.UUID) or subject_id.int == 0:
+        raise PortabilityError("export_llm requires the subject it is about")
     out: dict[str, Any] = {"profile": _llm_profile()}
 
     # Weight — active rows only (superseded duplicates are noise for analysis).
     weights = (
         await session.execute(
-            select(WeightLog).where(WeightLog.superseded.is_(False)).order_by(WeightLog.date)
+            select(WeightLog).where(WeightLog.subject_id == subject_id).where(WeightLog.superseded.is_(False)).order_by(WeightLog.date)
         )
     ).scalars().all()
     out["weight_history"] = [
@@ -1870,7 +1887,7 @@ async def export_llm(
     ]
 
     measurements = (
-        await session.execute(select(BodyMeasurement).order_by(BodyMeasurement.date))
+        await session.execute(select(BodyMeasurement).where(BodyMeasurement.subject_id == subject_id).order_by(BodyMeasurement.date))
     ).scalars().all()
     out["body_measurements"] = [
         _compact(
@@ -1890,7 +1907,7 @@ async def export_llm(
     # (the body_comp domain; complements the Navy body_fat_pct/lbm above).
     scans = (
         await session.execute(
-            select(BodyScan)
+            select(BodyScan).where(BodyScan.subject_id == subject_id)
             .options(selectinload(BodyScan.metrics))
             .order_by(BodyScan.date, BodyScan.id)
         )
@@ -1918,7 +1935,7 @@ async def export_llm(
     ]
 
     noise = (
-        await session.execute(select(NoiseMarker).order_by(NoiseMarker.start_date))
+        await session.execute(select(NoiseMarker).where(NoiseMarker.subject_id == subject_id).order_by(NoiseMarker.start_date))
     ).scalars().all()
     out["noise_periods"] = [
         _compact(
@@ -1933,14 +1950,14 @@ async def export_llm(
 
     # GLP-1 protocol.
     injections = (
-        await session.execute(select(Injection).order_by(Injection.date))
+        await session.execute(select(Injection).where(Injection.subject_id == subject_id).order_by(Injection.date))
     ).scalars().all()
     out["glp1_injections"] = [
         _compact({"date": i.date.isoformat(), "drug": i.drug, "dose_mg": i.dose_mg, "site": i.site})
         for i in injections
     ]
     phases = (
-        await session.execute(select(DosePhase).order_by(DosePhase.start_date))
+        await session.execute(select(DosePhase).where(DosePhase.subject_id == subject_id).order_by(DosePhase.start_date))
     ).scalars().all()
     out["glp1_dose_phases"] = [
         _compact(
@@ -1954,7 +1971,7 @@ async def export_llm(
         for p in phases
     ]
     effects = (
-        await session.execute(select(SideEffect).order_by(SideEffect.date))
+        await session.execute(select(SideEffect).where(SideEffect.subject_id == subject_id).order_by(SideEffect.date))
     ).scalars().all()
     out["glp1_side_effects"] = [
         _compact(
@@ -1966,7 +1983,7 @@ async def export_llm(
     # HRT / TRT protocol — doses (with grey-market provenance), cycles with their
     # per-compound plans, side effects, and the user's saved cycle templates.
     hrt_doses = (
-        await session.execute(select(HrtDose).order_by(HrtDose.date, HrtDose.id))
+        await session.execute(select(HrtDose).where(HrtDose.subject_id == subject_id).order_by(HrtDose.date, HrtDose.id))
     ).scalars().all()
     out["hrt_doses"] = [
         _compact(
@@ -1987,7 +2004,7 @@ async def export_llm(
     ]
     hrt_cycles = (
         await session.execute(
-            select(HrtCycle)
+            select(HrtCycle).where(HrtCycle.subject_id == subject_id)
             .options(selectinload(HrtCycle.items))
             .order_by(HrtCycle.start_date, HrtCycle.id)
         )
@@ -2016,7 +2033,7 @@ async def export_llm(
         for c in hrt_cycles
     ]
     hrt_effects = (
-        await session.execute(select(HrtSideEffect).order_by(HrtSideEffect.date))
+        await session.execute(select(HrtSideEffect).where(HrtSideEffect.subject_id == subject_id).order_by(HrtSideEffect.date))
     ).scalars().all()
     out["hrt_side_effects"] = [
         _compact(
@@ -2026,7 +2043,7 @@ async def export_llm(
     ]
     hrt_templates = (
         await session.execute(
-            select(HrtCycleTemplate)
+            select(HrtCycleTemplate).where(HrtCycleTemplate.subject_id == subject_id)
             .options(selectinload(HrtCycleTemplate.items))
             .order_by(HrtCycleTemplate.name)
         )
@@ -2055,7 +2072,7 @@ async def export_llm(
 
     # Labs.
     labs = (
-        await session.execute(select(LabResult).order_by(LabResult.date, LabResult.marker))
+        await session.execute(select(LabResult).where(LabResult.subject_id == subject_id).order_by(LabResult.date, LabResult.marker))
     ).scalars().all()
     out["biomarkers"] = [
         _compact(
@@ -2080,19 +2097,19 @@ async def export_llm(
     # ``garmin_intraday`` sample table stays out: ~3k samples a day would bury the
     # rest of the digest, and the daily row already carries its summaries.
     garmin = (
-        await session.execute(select(GarminDaily).order_by(GarminDaily.date))
+        await session.execute(select(GarminDaily).where(GarminDaily.subject_id == subject_id).order_by(GarminDaily.date))
     ).scalars().all()
     out["garmin_daily"] = [_row_dump(g) for g in garmin]
     activities = (
         await session.execute(
-            select(GarminActivity).order_by(GarminActivity.date, GarminActivity.id)
+            select(GarminActivity).where(GarminActivity.subject_id == subject_id).order_by(GarminActivity.date, GarminActivity.id)
         )
     ).scalars().all()
     out["garmin_activities"] = [_row_dump(a) for a in activities]
 
     # Nutrition.
     meals = (
-        await session.execute(select(MealLog).order_by(MealLog.date))
+        await session.execute(select(MealLog).where(MealLog.subject_id == subject_id).order_by(MealLog.date))
     ).scalars().all()
     out["nutrition"] = [
         _compact(
@@ -2110,7 +2127,7 @@ async def export_llm(
 
     # Reference catalogs.
     supplements = (
-        await session.execute(select(Supplement).order_by(Supplement.name))
+        await session.execute(select(Supplement).where(Supplement.subject_id == subject_id).order_by(Supplement.name))
     ).scalars().all()
     out["supplements"] = [
         _compact(
@@ -2126,7 +2143,7 @@ async def export_llm(
         for s in supplements
     ]
     variants = (
-        await session.execute(select(GeneticVariant).order_by(GeneticVariant.gene))
+        await session.execute(select(GeneticVariant).where(GeneticVariant.subject_id == subject_id).order_by(GeneticVariant.gene))
     ).scalars().all()
     out["genetics"] = [
         _compact(
@@ -2143,7 +2160,7 @@ async def export_llm(
 
     # Skincare logs + observations.
     sk_logs = (
-        await session.execute(select(SkincareLog).order_by(SkincareLog.date))
+        await session.execute(select(SkincareLog).where(SkincareLog.subject_id == subject_id).order_by(SkincareLog.date))
     ).scalars().all()
     out["skincare_logs"] = [
         _compact(
@@ -2161,7 +2178,7 @@ async def export_llm(
         for s in sk_logs
     ]
     sk_obs = (
-        await session.execute(select(SkincareObservation).order_by(SkincareObservation.date))
+        await session.execute(select(SkincareObservation).where(SkincareObservation.subject_id == subject_id).order_by(SkincareObservation.date))
     ).scalars().all()
     out["skincare_observations"] = [
         _compact(
@@ -2177,7 +2194,7 @@ async def export_llm(
 
     # Goals + generated narratives.
     milestones = (
-        await session.execute(select(Milestone).order_by(Milestone.id))
+        await session.execute(select(Milestone).where(Milestone.subject_id == subject_id).order_by(Milestone.id))
     ).scalars().all()
     out["milestones"] = [
         _compact(
@@ -2193,7 +2210,7 @@ async def export_llm(
         for m in milestones
     ]
     digests = (
-        await session.execute(select(WeeklyDigest).order_by(WeeklyDigest.date))
+        await session.execute(select(WeeklyDigest).where(WeeklyDigest.subject_id == subject_id).order_by(WeeklyDigest.date))
     ).scalars().all()
     out["weekly_digests"] = [
         _compact({"date": d.date.isoformat(), "content": d.content}) for d in digests
@@ -2202,7 +2219,7 @@ async def export_llm(
     # Timeline — manual annotations (derived events already surface through
     # their own domain's block above, so they aren't repeated here).
     annotations = (
-        await session.execute(select(Annotation).order_by(Annotation.date))
+        await session.execute(select(Annotation).where(Annotation.subject_id == subject_id).order_by(Annotation.date))
     ).scalars().all()
     out["timeline_annotations"] = [
         _compact(

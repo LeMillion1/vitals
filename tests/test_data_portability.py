@@ -3393,7 +3393,7 @@ async def _seed_hrt(session, owner_write):
 
 async def test_llm_export_includes_hrt(db_session, owner_write):
     await _seed_hrt(db_session, owner_write)
-    out = await export_llm(db_session)
+    out = await export_llm(db_session, subject_id=owner_write.subject_id)
     assert out["hrt_doses"][0]["compound"] == "testosterone_enanthate"
     assert out["hrt_doses"][0]["brand"] == "TestBrand"
     assert out["hrt_side_effects"][0]["effect_type"] == "acne"

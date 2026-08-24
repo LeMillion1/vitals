@@ -8,6 +8,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the LLM export read every person's record (PR-10)
+
+`data_portability_service.export_llm` had twenty-two selects and not one subject
+among them. Written when the installation held one person, correct then, and a
+cross-subject export the moment it held two — in the worst shape that mistake can
+take, because the result is a single LLM-ready document of everybody's weight,
+labs, meals, injections and notes.
+
+Both callers made it worse by resolving a subject and then not passing it: the
+MCP `export_everything` tool, and the `/settings/export-llm` download in the
+browser. Verified rather than reasoned about: with two records seeded, the
+export returned the other person's weight.
+
+The subject is a required keyword now and every read is filtered by it. No
+default, deliberately — an omittable scope is the shape `vitals/legacy_scope.py`
+exists to keep out of this codebase, and this function is why: two callers had
+one in hand and neither passed it, which a default would have hidden forever.
+
+`get_data_overview` had the smaller version of the same defect — it resolved a
+scope and then counted rows across every table. A count is a lesser disclosure
+than a value and still tells one person how many lab results another has and
+when the earliest was taken.
+
+### Added — protocol conformance, proven rather than assumed (PR-10)
+
+Most of what PR-10 asks for on the wire the SDK already does, and the work was
+finding out which parts: `server/discover` answers with the versions this server
+speaks, the session negotiates `2026-07-28`, results carry `resultType` and the
+server identity in `_meta`, and caching defaults to `private` with a zero TTL.
+Five tests hold each of those, because a default is a thing somebody can change
+and the change that matters here would let an intermediary serve one patient's
+weight to the next caller.
+
+Two of those took a wrong turn first. `server/discover` answers "Method not
+found" to a raw POST — the envelope decides whether a peer is legacy, and
+without it the method does not exist for that caller. And the server identity
+appears only after a client has discovered, which is correct: before that the
+server has no reason to think its peer speaks the modern protocol.
+
+**Tool descriptions are trimmed to their first paragraph.** The SDK sends a
+docstring whole, and these docstrings are also where this codebase records
+decisions — why a field moved out of `.env`, which refusal to expect. That is
+21 KB of internal engineering history, sent to a third party on every listing,
+that no model can act on. The summary goes out; the rest stays in the source
+where the next person to read the code will find it.
+
+
 ### Changed — MCP moved to the official SDK and protocol 2026-07-28 (PR-10)
 
 `fastmcp==3.4.5` is replaced by `mcp==2.0.0`, the Tier-1 Python SDK, released
