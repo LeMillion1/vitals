@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — care guidance and conversations use human names
+
+Notes, plans, conversation participants, and message authors now prefer the
+professional's submitted display name. The patient is named from their health
+record; technical login handles remain only as a fallback when no profile has
+been submitted.
+
 ### Changed — an open care conversation is one screen
 
 Opening a conversation no longer leaves the new-conversation form and the full

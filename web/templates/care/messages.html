@@ -89,9 +89,7 @@
            behind. #}
         <p class="v-text-micro" style="color: var(--muted)">
             {{ t("care.thread_participants") }}:
-            {% for person in participants %}
-                {%- if not person.removed_at %}{{ person.participant.username }}{% if not loop.last %}, {% endif %}{% endif -%}
-            {% endfor %}
+            {{ active_participant_names | join(", ") }}
         </p>
 
         {% if thread_messages %}
@@ -99,7 +97,7 @@
             {% for message in thread_messages %}
             <div class="v-card-inset p-4 space-y-1">
                 <div class="v-text-micro" style="color: var(--muted)">
-                    {{ message.author.username }} · {{ message.created_at | format_date }}
+                    {{ conversation_names.get(message.actor_user_id, message.author.username) }} · {{ message.created_at | format_date }}
                     {% if message.edited_at %} · {{ t("care.message_edited") }}{% endif %}
                 </div>
                 <p class="v-text-body" style="white-space: pre-wrap">{{ message.body }}</p>

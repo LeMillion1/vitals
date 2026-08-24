@@ -242,6 +242,11 @@ and creation task from the focused conversation screen, with an explicit route
 back, so the doctor or trainer does not scroll past two unrelated tasks before
 reading a reply.
 
+Care guidance and the live conversation also exposed account usernames as the
+visible author and participant names. They now resolve professional profile
+display names and the patient's record display name, retaining usernames only
+as a fallback for an incomplete professional profile.
+
 The first shared UI run reported 25 passed and 10 failures after a revoked
 support-record navigation timed out; the remaining nine were cascading server
 timeouts. The exact HTTP flow was added as a three-second regression and passed,

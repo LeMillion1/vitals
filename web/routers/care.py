@@ -17,7 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.access import PolicyAction, PolicyResourceType
 from vitals.enums import CarePlanStatus, CareRelationshipStatus, ConsentStatus, Domain
 from vitals.models.identity import HealthSubject
-from vitals.models.professional import CareRelationship, ConsentGrant
+from vitals.models.professional import (
+    CareRelationship,
+    ConsentGrant,
+    ProfessionalProfile,
+)
 from vitals.services import digest_service, modules_service
 from vitals.services.care import invitations, records, relationships
 from vitals.services.care import threads as care_threads
@@ -26,6 +30,30 @@ from web.deps import get_session, require_auth
 from web.templating import templates
 
 router = APIRouter(prefix="/care", tags=["care"])
+
+
+async def _professional_display_names(
+    db: AsyncSession, user_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """Human names professionals submitted, keyed without changing identity.
+
+    Usernames remain the safe fallback: identity lookup still uses immutable
+    IDs, while this small presentation map keeps technical login handles out of
+    clinical guidance and conversations whenever a profile exists.
+    """
+
+    if not user_ids:
+        return {}
+    return dict(
+        (
+            await db.execute(
+                select(
+                    ProfessionalProfile.user_id,
+                    ProfessionalProfile.display_name,
+                ).where(ProfessionalProfile.user_id.in_(user_ids))
+            )
+        ).all()
+    )
 
 
 @router.get("/accept/{token}", response_class=HTMLResponse)
@@ -303,6 +331,10 @@ async def patient(
     )
     notes = await records.list_notes(db, context=care.access) if may_read_notes else []
     plans = await records.list_plans(db, context=care.access) if may_read_plans else []
+    author_names = await _professional_display_names(
+        db,
+        {item.actor_user_id for item in (*notes, *plans)},
+    )
     visible, withheld = await _visible_record(db, care)
     return templates.TemplateResponse(
         request,
@@ -316,6 +348,7 @@ async def patient(
             "care": care,
             "notes": notes,
             "plans": plans,
+            "author_names": author_names,
             "record": visible["record"],
             "coverage": visible["coverage"],
             "period": visible["period"],
@@ -429,6 +462,27 @@ async def thread(
         # care context itself answers.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
 
+    participant_users = {
+        person.user_id: person.participant.username for person in participants
+    }
+    message_users = {
+        message.actor_user_id: message.author.username for message in thread_messages
+    }
+    names = await _professional_display_names(
+        db, set(participant_users) | set(message_users)
+    )
+    names.update(
+        {
+            user_id: fallback
+            for user_id, fallback in (participant_users | message_users).items()
+            if user_id not in names
+        }
+    )
+    # A patient has a record display name even though their account deliberately
+    # has no presentation-name column. It is the right label whenever they are
+    # speaking as the subject of this conversation.
+    names[care.access.subject_owner_user_id] = care.subject_display_name
+
     return templates.TemplateResponse(
         request,
         "care/messages.html",
@@ -442,6 +496,12 @@ async def thread(
             "open_thread": opened,
             "thread_messages": thread_messages,
             "participants": participants,
+            "conversation_names": names,
+            "active_participant_names": [
+                names[person.user_id]
+                for person in participants
+                if person.removed_at is None
+            ],
             "may_send": care.may(
                 resource_key=care_threads.MESSAGE_OPERATION,
                 action=care_threads.SEND_ACTION,

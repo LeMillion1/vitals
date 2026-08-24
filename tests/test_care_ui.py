@@ -168,10 +168,20 @@ async def test_the_form_action_names_the_patient(doctor_client):
     assert f'action="/care/{subject_a.id}/plan"' in response.text
 
 
-async def test_notes_and_plans_name_their_author(doctor_client):
+async def test_notes_and_plans_name_their_author(doctor_client, db_session):
     """A shared record must say who wrote professional guidance."""
 
     client, doctor, (_owner_a, subject_a), _b = doctor_client
+    from vitals.models.professional import ProfessionalProfile
+
+    db_session.add(
+        ProfessionalProfile(
+            user_id=doctor.id,
+            kind=ProfessionalKind.DOCTOR.value,
+            display_name="Dr Human Name",
+        )
+    )
+    await db_session.commit()
     await client.post(
         f"/care/{subject_a.id}/note",
         data={"body": "Watch the recovery trend."},
@@ -189,7 +199,7 @@ async def test_notes_and_plans_name_their_author(doctor_client):
         f"/care/{subject_a.id}", headers={"Accept": "text/html"}
     )
     assert page.status_code == 200
-    assert page.text.count(doctor.username) >= 2
+    assert page.text.count("Dr Human Name") >= 2
     assert "Watch the recovery trend." in page.text
     assert "Easy week" in page.text
 
@@ -582,14 +592,23 @@ async def test_the_conversation_page_renders_what_was_said(
 ):
     """Rendered, not just written.
 
-    The service tests read messages back as objects and passed while this page
-    answered 500: the template asks for ``message.author.username``, and a
-    relationship lazy-loading outside the async driver's greenlet raises rather
-    than loading. So the one page the feature exists for failed on exactly the
-    rows it exists to show, and nothing but a browser saw it.
+    The service tests read messages back as objects and once passed while this
+    page answered 500 on async relationship loading. Rendering also has to use
+    human record/profile names rather than expose login handles as chat names.
     """
 
     client, doctor, (_owner_a, subject_a), _b = doctor_client
+
+    from vitals.models.professional import ProfessionalProfile
+
+    db_session.add(
+        ProfessionalProfile(
+            user_id=doctor.id,
+            kind=ProfessionalKind.DOCTOR.value,
+            display_name="Dr Conversation Name",
+        )
+    )
+    await db_session.commit()
 
     opened = await client.post(
         f"/care/{subject_a.id}/messages",
@@ -609,8 +628,11 @@ async def test_the_conversation_page_renders_what_was_said(
     )
     assert page.status_code == 200
     assert "Please fast for twelve hours." in page.text
-    # Who said it and who is in the room, both of which come off a relationship.
-    assert doctor.username in page.text
+    # Who said it and who is in the room, in names humans recognize rather than
+    # the account handles authorization uses.
+    assert "Dr Conversation Name" in page.text
+    assert subject_a.display_name in page.text
+    assert doctor.username not in page.text
     assert "Bloods" in page.text
     assert "All conversations" in page.text or "Все разговоры" in page.text
     assert "Start conversation" not in page.text
