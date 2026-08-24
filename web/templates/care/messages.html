@@ -48,8 +48,11 @@
         {% if threads %}
         <div class="space-y-2">
             {% for item in threads %}
+            {# ``flex`` on the anchor, not ``block`` beside it: the two are the
+               same property and the later one wins, which is a coin toss to
+               read. #}
             <a href="/care/{{ care.subject_id }}/messages/{{ item.id }}"
-               class="v-card-inset p-4 flex items-center justify-between gap-3 block">
+               class="v-card-inset p-4 flex items-center justify-between gap-3">
                 <span class="v-text-body">{{ item.title }}</span>
                 <span class="v-text-micro" style="color: var(--faint)">
                     {% if item.status == 'closed' %}{{ t("care.thread_closed") }} · {% endif %}

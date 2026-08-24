@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from vitals.access import (
     AccessContext,
@@ -479,10 +480,16 @@ async def read_thread(
         session, thread_id=thread.id, user_id=context.principal.user_id
     )
 
+    # The author and the participant are loaded here rather than left to the
+    # relationship. A template asking for ``message.author.username`` would
+    # lazy-load outside the greenlet the async driver needs, which raises rather
+    # than loading — so the page 500s on exactly the rows it exists to show, and
+    # no service-level test sees it because none of them render.
     messages = list(
         await session.scalars(
             select(CareMessage)
             .where(CareMessage.thread_id == thread.id)
+            .options(selectinload(CareMessage.author))
             .order_by(CareMessage.created_at, CareMessage.id)
         )
     )
@@ -490,6 +497,7 @@ async def read_thread(
         await session.scalars(
             select(CareThreadParticipant)
             .where(CareThreadParticipant.thread_id == thread.id)
+            .options(selectinload(CareThreadParticipant.participant))
             .order_by(CareThreadParticipant.joined_at)
         )
     )

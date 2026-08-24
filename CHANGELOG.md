@@ -51,6 +51,12 @@ are. Deliberately the same screens: a separate patient-facing view of a clinical
 conversation is a place for the two to drift apart, and the argument for a
 patient-visible thread is that they cannot.
 
+One defect found the way this feature's own screens were: the thread page
+answered 500 because the template asks for `message.author.username`, and a
+relationship lazy-loading outside the async driver's greenlet raises rather than
+loading. Every service test passed — they read messages back as objects and
+none of them renders. The reads eager-load now, and two tests render the page.
+
 **Not done, and stated rather than implied:** private attachments. The download
 route resolves its subject through the sole-owner adapter, so a professional
 opening a patient's file gets a 404 for a reason that has nothing to do with

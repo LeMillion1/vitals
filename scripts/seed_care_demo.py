@@ -177,6 +177,44 @@ async def _patient(
     return user, subject
 
 
+async def _seed_conversation(session, *, owner, subject, professional) -> None:
+    """One care-team conversation with something in it.
+
+    The screens for this shipped with nothing to look at, which is the same
+    problem the rest of this script exists to solve: an empty state tells you
+    the page renders and nothing about whether it reads.
+
+    Both sides speak, because that is the shape worth checking — a thread where
+    only the professional has said anything looks identical whether or not the
+    patient can reply.
+    """
+
+    from vitals.services import care_thread_service
+    from vitals.services.access_resolution import resolve_access_context
+
+    doctor_context = await resolve_access_context(
+        session, user_id=professional.id, subject_id=subject.id
+    )
+    thread = await care_thread_service.open_thread(
+        session, context=doctor_context, title="Результаты анализов"
+    )
+    await care_thread_service.send_message(
+        session,
+        context=doctor_context,
+        thread_id=thread.id,
+        body="Ферритин ниже нормы. Сдайте повторно натощак через две недели.",
+    )
+    patient_context = await resolve_access_context(
+        session, user_id=owner.id, subject_id=subject.id
+    )
+    await care_thread_service.send_message(
+        session,
+        context=patient_context,
+        thread_id=thread.id,
+        body="Хорошо, запишусь на утро понедельника.",
+    )
+
+
 async def _seed_record(session: AsyncSession, subject_id, *, seed: int) -> None:
     """Enough of a record for a professional's screen to be worth looking at.
 
@@ -378,7 +416,7 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
 
     # ── Every state the screens have to draw ─────────────────────────────────
     # Open: relationship and consent both live.
-    for owner, subject in patients[:3]:
+    for index, (owner, subject) in enumerate(patients[:3]):
         relationship = await _take_into_care(
             session,
             owner=owner,
@@ -389,6 +427,10 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
         await care_service.grant_consent(
             session, relationship_id=relationship.id, actor_user_id=owner.id
         )
+        if index == 0:
+            await _seed_conversation(
+                session, owner=owner, subject=subject, professional=doctor_a
+            )
 
     # In care, no consent yet: the ordinary state right after accepting.
     owner, subject = patients[3]

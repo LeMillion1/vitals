@@ -482,3 +482,55 @@ async def test_an_account_with_no_record_is_told_so_at_the_patients_door(
     assert response.status_code == 409
     assert "нет собственной медицинской записи" in response.text
     del doctor
+
+
+async def test_the_conversation_page_renders_what_was_said(
+    doctor_client, db_session
+):
+    """Rendered, not just written.
+
+    The service tests read messages back as objects and passed while this page
+    answered 500: the template asks for ``message.author.username``, and a
+    relationship lazy-loading outside the async driver's greenlet raises rather
+    than loading. So the one page the feature exists for failed on exactly the
+    rows it exists to show, and nothing but a browser saw it.
+    """
+
+    client, doctor, (_owner_a, subject_a), _b = doctor_client
+
+    opened = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Bloods"},
+        follow_redirects=False,
+    )
+    thread_id = opened.headers["location"].rsplit("/", 1)[1]
+    await client.post(
+        f"/care/{subject_a.id}/messages/{thread_id}",
+        data={"body": "Please fast for twelve hours."},
+        follow_redirects=False,
+    )
+
+    page = await client.get(
+        f"/care/{subject_a.id}/messages/{thread_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert page.status_code == 200
+    assert "Please fast for twelve hours." in page.text
+    # Who said it and who is in the room, both of which come off a relationship.
+    assert doctor.username in page.text
+    assert "Bloods" in page.text
+
+
+async def test_the_conversation_list_renders(doctor_client):
+    client, _doctor, (_owner_a, subject_a), _b = doctor_client
+
+    await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Bloods"},
+        follow_redirects=False,
+    )
+    page = await client.get(
+        f"/care/{subject_a.id}/messages", headers={"Accept": "text/html"}
+    )
+    assert page.status_code == 200
+    assert "Bloods" in page.text
