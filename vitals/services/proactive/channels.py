@@ -333,3 +333,5 @@ async def resolve_legacy_channel_ownership(
         required_connections=(IntegrationProvider.TELEGRAM,),
     )
     return ownership_from_legacy(ownership)
+
+

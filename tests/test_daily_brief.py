@@ -494,7 +494,7 @@ async def test_job_waits_for_the_night_instead_of_briefing_over_it(
     )
     await db_session.commit()
 
-    await brief.brief_job(session_factory)
+    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert notifier.sent == []
     assert (await db_session.execute(select(WeeklyDigest))).scalars().all() == []
@@ -505,7 +505,7 @@ async def test_job_waits_for_the_night_instead_of_briefing_over_it(
     await garmin_service.ingest_owned_daily(db_session, DAY, GARMIN_RAW, identity=garmin_owned_scope.identity, integration_connection_id=garmin_owned_scope.connection_id)
     await db_session.commit()
 
-    await brief.brief_job(session_factory)
+    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
     assert "Сон 80" in notifier.sent[0]["text"]
@@ -532,7 +532,7 @@ async def test_job_stops_waiting_at_the_end_of_the_window(
     )
     await db_session.commit()
 
-    await brief.brief_job(session_factory)
+    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
     assert compose.LINE_NIGHT_PENDING in notifier.sent[0]["text"]
@@ -591,7 +591,7 @@ async def test_job_stays_quiet_on_an_empty_day_and_says_so_in_the_web(
     _patch_job(monkeypatch, notifier, FakeLLM())
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
 
-    await brief.brief_job(session_factory)
+    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert notifier.sent == []
     assert (await db_session.execute(select(WeeklyDigest))).scalars().all() == []
@@ -624,8 +624,8 @@ async def test_job_sends_once_a_day_and_clears_the_empty_alert(
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    await brief.brief_job(session_factory)
-    await brief.brief_job(session_factory)
+    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
+    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
     assert "Сон 80" in notifier.sent[0]["text"]
@@ -692,7 +692,7 @@ async def test_brief_network_awaits_have_no_open_database_transaction(
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    await brief.brief_job(session_factory)
+    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert len(notifier.sent) == 1
 
@@ -738,7 +738,7 @@ async def test_already_sent_replay_clears_stale_alert_without_network(
     monkeypatch.setattr(garmin_service, "sync_job", no_garmin)
     monkeypatch.setattr(brief, "today_local", lambda: DAY)
 
-    await brief.brief_job(session_factory)
+    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
 
     assert stale.resolved_at is not None
     assert stale.subject_id == ownership.subject_id
@@ -922,7 +922,7 @@ async def test_job_sends_the_brief_even_when_garmin_sync_explodes(
         owner_write,
     garmin_owned_scope=garmin_owned_scope)
 
-    await brief.brief_job(session_factory)
+    await brief.brief_job(session_factory, subject_id=legacy_owner_roots.subject_id)
     assert len(notifier.sent) == 1
 
 

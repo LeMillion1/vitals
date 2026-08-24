@@ -31,32 +31,34 @@ REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 #: Jobs that resolve a subject and bind it, so row security applies to them the
 #: same way it applies to a request. The value is the resolver they reach.
 #:
-#: The ``resolve_subject_*`` family is the system path: the scheduler fans the
-#: job out over every subject and each run names the one it is for. The subject
-#: is mandatory there, which is the difference that matters — the ``legacy``
-#: family asks for "the sole subject or refuse", and a job asking that refused
-#: outright the moment a second person existed.
+#: Every one of them is now on the ``resolve_subject_*`` family, which is the
+#: system path: the scheduler fans the job out and each run names the record it
+#: is for. The subject is mandatory there, and that is the difference that
+#: matters — the ``legacy`` family asks for "the sole subject or refuse", and a
+#: job asking that refused outright the moment a second person existed.
+#:
+#: Four of these were the last holdouts, and their reason is worth keeping: the
+#: provider syncs signed in to one Garmin or Hevy account from the environment,
+#: and the proactive pair sent to one Telegram bot token and chat id. Fanning
+#: them out then would have turned a visible outage into a disclosure. The
+#: transport was removed and ``integration_credentials`` gave each account its
+#: own credential, so both reasons are gone.
 BINDS_A_SUBJECT = {
     # A write into a domain resolves the conflict-write context, which resolves
     # the ownership context, which binds.
     "glp1_plateau": "resolve_subject_conflict_write_context",
     "hrt_reminders": "resolve_subject_conflict_write_context",
     "nutrition_day_end": "resolve_subject_conflict_write_context",
-    # Provider syncs resolve the owner before touching the connection. Still on
-    # the sole-subject path, and deliberately: their credentials are one set for
-    # the whole process, so fanning them out would write the operator's own
-    # watch data into everybody else's record.
-    "hevy_sync": "resolve_legacy_ownership_context",
-    "garmin_sync": "resolve_legacy_ownership_context",
-    "garmin_pulse": "resolve_legacy_ownership_context",
-    "garmin_weight_export": "resolve_legacy_ownership_context",
+    # Provider syncs resolve the owner before touching the connection, once per
+    # connected account.
+    "hevy_sync": "resolve_subject_ownership_context",
+    "garmin_sync": "resolve_subject_ownership_context",
+    "garmin_pulse": "resolve_subject_ownership_context",
+    "garmin_weight_export": "resolve_subject_ownership_context",
     # The proactive family resolves the channel owner: a message needs somebody
-    # to send it to before it needs anything to say. Still on the sole-subject
-    # path, and for the same reason as the provider syncs — one Telegram bot
-    # token and one chat id for the whole process, so fanning them out would
-    # deliver ten people's messages to one person's chat.
-    "daily_brief": "resolve_legacy_channel_ownership",
-    "nudges": "resolve_legacy_channel_ownership",
+    # to send it to before it needs anything to say.
+    "daily_brief": "resolve_subject_channel_ownership",
+    "nudges": "resolve_subject_channel_ownership",
     "weekly_digest": "prepare_subject_digest_owner",
     # Scans unprocessed payloads and then binds per domain before touching
     # anything owned — the outer scan reads a table the sweep itself stamped.

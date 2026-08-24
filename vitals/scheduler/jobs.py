@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from vitals.scheduler.fanout import for_each_subject
+from vitals.enums import IntegrationProvider
+from vitals.scheduler.fanout import for_each_connection, for_each_subject
 from vitals.scheduler.scheduler import JobFailureFamily, clear_jobs, register_job
 from vitals.services.proactive import prefs
 
@@ -29,27 +30,26 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     settings = prefs.sanitize(settings)
     clear_jobs()
 
-    # Eight jobs below are deliberately *not* fanned out over subjects, and the
-    # reason is the same for all of them: they reach an external account whose
-    # credentials are one set for the whole process.
+    # Every job below runs once per record. That took two removals and a
+    # migration to become true, and the comment that used to be here — naming
+    # eight jobs that could not be fanned out — is worth remembering rather than
+    # deleting:
     #
-    #   hevy_sync, garmin_sync, garmin_pulse, garmin_weight_export
-    #       VITALS_GARMIN_EMAIL / VITALS_HEVY_API_KEY — one watch, one account.
-    #   daily_brief, nudges
-    #       one Telegram bot token and one chat id. See
-    #       channels.build_legacy_bound_notifier, which says so itself: the env
-    #       token/chat pair is safe only while the graph resolves to exactly one
-    #       subject.
+    #   daily_brief, nudges  were blocked by one Telegram bot token and one chat
+    #       id in the environment. The transport is gone; what they compose now
+    #       goes to a delivery journal that is per subject by construction.
+    #   hevy_sync, garmin_sync, garmin_pulse, garmin_weight_export  were blocked
+    #       by VITALS_GARMIN_EMAIL and VITALS_HEVY_API_KEY — one watch and one
+    #       workout account for the whole process. Running them per subject
+    #       would have filed the operator's own data as everybody else's, which
+    #       is a disclosure rather than the visible outage they were instead.
+    #       ``integration_credentials`` gave each account its own credential,
+    #       token store, session cache and login breaker.
     #
-    # Running any of them once per subject would deliver ten people's data to
-    # one person's watch or one person's chat. That is strictly worse than the
-    # outage they are today: a fail-closed refusal is visible and reversible, a
-    # cross-subject write or send is neither. They stay refused until
-    # connections carry per-subject credentials (PR-09).
-    #
-    # The proactive four are the ones worth naming twice, because they look like
-    # lake work. They read the lake and then *send*, and the send is where the
-    # single credential is.
+    # The provider four use ``for_each_connection`` rather than
+    # ``for_each_subject``: a subject who has not connected a watch has nothing
+    # for them to do, and enumerating them would mean four scheduled no-ops a
+    # day per person.
     from vitals.services.glp1_service import plateau_job
     from vitals.services.hevy_service import sync_job as hevy_sync_job
     from vitals.services.garmin_service import sync_job as garmin_sync_job
@@ -156,7 +156,9 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # Hevy sync — every 6h. No-ops when Hevy isn't configured.
     register_job(
         "hevy_sync",
-        hevy_sync_job,
+        for_each_connection(
+            hevy_sync_job, job_id="hevy_sync", provider=IntegrationProvider.HEVY
+        ),
         trigger="interval",
         failure_family=JobFailureFamily.HEVY_ACCOUNT,
         hours=6,
@@ -168,7 +170,11 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # No-ops when Garmin isn't configured.
     register_job(
         "garmin_sync",
-        garmin_sync_job,
+        for_each_connection(
+            garmin_sync_job,
+            job_id="garmin_sync",
+            provider=IntegrationProvider.GARMIN,
+        ),
         trigger="cron",
         failure_family=JobFailureFamily.GARMIN_ACCOUNT,
         hour=f"*/{settings['garmin_sync_hours']}",
@@ -180,7 +186,11 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # returns before constructing a Garmin client or touching the network.
     register_job(
         "garmin_weight_export",
-        garmin_weight_export_job,
+        for_each_connection(
+            garmin_weight_export_job,
+            job_id="garmin_weight_export",
+            provider=IntegrationProvider.GARMIN,
+        ),
         trigger="interval",
         failure_family=JobFailureFamily.GARMIN_ACCOUNT,
         minutes=settings["garmin_weight_export_minutes"],
@@ -200,7 +210,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     brief_hour, brief_minute = prefs.hhmm(settings["brief_time"])
     register_job(
         "daily_brief",
-        brief_job,
+        for_each_subject(brief_job, job_id="daily_brief"),
         trigger="cron",
         failure_family=JobFailureFamily.SUBJECT,
         hour=f"{brief_hour}-{last_attempt_hour(brief_hour)}",
@@ -216,7 +226,11 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     if settings["pulse_seconds"]:
         register_job(
             "garmin_pulse",
-            garmin_pulse_job,
+            for_each_connection(
+                garmin_pulse_job,
+                job_id="garmin_pulse",
+                provider=IntegrationProvider.GARMIN,
+            ),
             trigger="interval",
             failure_family=JobFailureFamily.GARMIN_ACCOUNT,
             seconds=settings["pulse_seconds"],
@@ -229,7 +243,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     # enforced downstream by delivery.send.
     register_job(
         "nudges",
-        nudges_job,
+        for_each_subject(nudges_job, job_id="nudges"),
         trigger="cron",
         failure_family=JobFailureFamily.SUBJECT,
         minute=5,

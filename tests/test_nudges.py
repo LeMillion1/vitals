@@ -482,7 +482,7 @@ async def test_pulse_swallows_a_throttled_login(db_session, *, garmin_owned_scop
 
 @pytest.mark.parametrize("hour, runs", [(3, False), (9, True), (23, True)])
 async def test_pulse_job_only_runs_in_active_hours(
-    session_factory, garmin_connected, monkeypatch, hour, runs
+    session_factory, legacy_owner_roots, garmin_connected, monkeypatch, hour, runs
 ):
     """``garmin_connected`` because "is Garmin configured" is now a question
     about this record rather than about the process: the job resolves the
@@ -508,5 +508,7 @@ async def test_pulse_job_only_runs_in_active_hours(
     import vitals.integrations.garmin_client as gc
 
     monkeypatch.setattr(gc, "GarminClient", _Client)
-    await garmin_service.pulse_job(session_factory)
+    await garmin_service.pulse_job(
+        session_factory, subject_id=legacy_owner_roots.subject_id
+    )
     assert bool(calls) is runs

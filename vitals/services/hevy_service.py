@@ -1292,11 +1292,43 @@ async def latest_notes(
 
 
 # ── Scheduler job ─────────────────────────────────────────────────────────────
+async def sync_now_for_actor(
+    session_factory,
+    redis=None,
+    *,
+    actor_username: str,
+) -> Optional[dict]:
+    """"Sync my Hevy now", for a person who asked through MCP.
+
+    A separate entry point rather than an optional argument on :func:`sync_job`
+    — see the sibling in ``garmin_service`` for why.
+    """
+
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+
+    async with session_factory() as session:
+        ownership = await resolve_legacy_ownership_context(
+            session,
+            actor_username=actor_username,
+            required_connections=(IntegrationProvider.HEVY,),
+        )
+        subject_id = ownership.subject_id
+        actor_user_id = ownership.actor_user_id
+    return await sync_job(
+        session_factory,
+        redis,
+        subject_id=subject_id,
+        actor_user_id=actor_user_id,
+    )
+
+
 async def sync_job(
     session_factory,
     redis=None,
     *,
-    actor_username: str | None = None,
+    subject_id: uuid.UUID,
+    integration_connection_id: uuid.UUID | None = None,
+    actor_user_id: uuid.UUID | None = None,
 ) -> Optional[dict]:
     """Every-6h Hevy sync (registered in vitals/scheduler/jobs.py). No-ops cleanly
     when Hevy isn't configured so the scheduler never logs spurious failures —
@@ -1304,18 +1336,20 @@ async def sync_job(
     reports it back to the model)."""
     from vitals.integrations.hevy_client import HevyClient
 
+    del integration_connection_id  # named by the fan-out; resolved below
+
     async with session_factory() as session:
         from vitals.services import provider_credentials_service
         from vitals.services.legacy_ownership import (
-            resolve_legacy_ownership_context,
+            resolve_subject_ownership_context,
         )
 
         # Ownership before the client. It was the other way round, so "is Hevy
         # configured" was answered about the installation's one API key before
         # anything had said whose workouts this run was for.
-        ownership = await resolve_legacy_ownership_context(
+        ownership = await resolve_subject_ownership_context(
             session,
-            actor_username=actor_username,
+            subject_id=subject_id,
             required_connections=(IntegrationProvider.HEVY,),
         )
         account = await provider_credentials_service.resolve_hevy_account(
@@ -1329,7 +1363,13 @@ async def sync_job(
             summary = await sync_owned(
                 session,
                 client,
-                identity=ownership.write_identity,
+                # Attributed to the person who asked, when one did; a
+                # scheduled run leaves it the account's.
+                identity=(
+                    WriteIdentity(ownership.subject_id, actor_user_id)
+                    if actor_user_id is not None
+                    else ownership.write_identity
+                ),
                 integration_connection_id=ownership.connection_id(
                     IntegrationProvider.HEVY
                 ),

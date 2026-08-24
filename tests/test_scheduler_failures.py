@@ -22,6 +22,7 @@ from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
 from vitals.scheduler import scheduler as scheduler_mod
+from vitals.scheduler.fanout import for_each_connection, for_each_subject
 from vitals.scheduler.jobs import register_all_jobs
 from vitals.scheduler.scheduler_lock import scheduler_heartbeat_age
 from vitals.services import alerts_service
@@ -29,21 +30,64 @@ from vitals.services import alerts_service
 
 
 def _runner(session_factory, job_id: str, func, redis=None):
+    """A runner around the job *as it is registered*, fan-out included.
+
+    Wrapping a bare function used to be the same thing. It is not any more: a
+    job about a record reports its outcome per record, from inside the fan-out,
+    because the runner's own version asked for "the sole subject" and had
+    nothing honest to say once there were two. A test that skips the wrapper
+    tests a shape production does not have.
+    """
+
+    family = scheduler_mod.JOB_FAILURE_FAMILY_BY_ID[job_id]
+    if family is scheduler_mod.JobFailureFamily.GARMIN_ACCOUNT:
+        wrapped = for_each_connection(
+            _subject_arity(func), job_id=job_id, provider=IntegrationProvider.GARMIN
+        )
+    elif family is scheduler_mod.JobFailureFamily.HEVY_ACCOUNT:
+        wrapped = for_each_connection(
+            _subject_arity(func), job_id=job_id, provider=IntegrationProvider.HEVY
+        )
+    elif family is scheduler_mod.JobFailureFamily.SUBJECT:
+        wrapped = for_each_subject(_subject_arity(func), job_id=job_id)
+    else:
+        wrapped = func
+
     spec = scheduler_mod.JobSpec(
         id=job_id,
-        func=func,
+        func=wrapped,
         trigger="interval",
-        failure_family=scheduler_mod.JOB_FAILURE_FAMILY_BY_ID[job_id],
+        failure_family=family,
         trigger_kwargs={"hours": 6},
     )
     return scheduler_mod._make_runner(spec, session_factory, redis)
+
+
+def _subject_arity(func):
+    """The two-argument test doubles here, in the shape a fan-out calls."""
+
+    async def _call(session_factory, redis=None, **kwargs):
+        del kwargs
+        return await func(session_factory, redis)
+
+    _call.__name__ = getattr(func, "__name__", "job")
+    _call.__module__ = getattr(func, "__module__", __name__)
+    return _call
 
 
 async def test_failing_job_raises_owned_provider_alert_and_does_not_propagate(
     session_factory,
     db_session,
     legacy_owner_roots,
+    garmin_connected,
 ):
+    """``garmin_connected`` because the fan-out runs per *account*.
+
+    A subject with a connection root and no credential has not connected a
+    watch, so there is nothing for this job to do for them and nothing that can
+    fail — which is why they are absent from the fan-out rather than present and
+    reporting an outage.
+    """
     async def boom(_factory, _redis):
         raise RuntimeError("Garmin said no")
 
@@ -70,6 +114,7 @@ async def test_repeated_failures_do_not_pile_up(
     session_factory,
     db_session,
     legacy_owner_roots,
+    hevy_connected,
 ):
     async def boom(_factory, _redis):
         raise RuntimeError("still down")
@@ -88,6 +133,7 @@ async def test_successful_run_clears_the_alert_without_a_human_actor(
     session_factory,
     db_session,
     legacy_owner_roots,
+    hevy_connected,
 ):
     state = {"fail": True}
 
@@ -122,6 +168,7 @@ async def test_lock_busy_tick_does_not_clear_previous_failure(
     session_factory,
     db_session,
     legacy_owner_roots,
+    hevy_connected,
     redis,
 ):
     calls = 0

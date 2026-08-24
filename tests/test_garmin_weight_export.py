@@ -542,17 +542,19 @@ async def test_stale_weight_is_not_exported(db_session, owner_write, garmin_expo
 
 
 async def test_disabled_job_never_constructs_a_garmin_client(
-    db_session, session_factory, monkeypatch
+    db_session, session_factory, legacy_owner_roots, monkeypatch
 ):
     def explode(*_args, **_kwargs):
         raise AssertionError("disabled export must not create a Garmin client")
 
     monkeypatch.setattr(GarminClient, "from_config", explode)
-    await garmin_weight_service.export_job(session_factory, redis=None)
+    await garmin_weight_service.export_job(
+        session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
+    )
 
 
 async def test_unconfigured_job_does_not_reconcile_retry_or_alert(
-    session_factory, monkeypatch, owner_write, garmin_export
+    session_factory, monkeypatch, legacy_owner_roots, owner_write, garmin_export
 ):
     class UnconfiguredClient:
         is_configured = False
@@ -575,7 +577,9 @@ async def test_unconfigured_job_does_not_reconcile_retry_or_alert(
     monkeypatch.setattr(
         GarminClient, "from_config", lambda *args, **kwargs: UnconfiguredClient()
     )
-    await garmin_weight_service.export_job(session_factory, redis=None)
+    await garmin_weight_service.export_job(
+        session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
+    )
 
     async with session_factory() as session:
         row = await _outbox(session)
@@ -586,7 +590,12 @@ async def test_unconfigured_job_does_not_reconcile_retry_or_alert(
 
 
 async def test_weight_job_surfaces_garmin_token_cache_warnings(
-    session_factory, monkeypatch, owner_write, garmin_export, garmin_connected
+    session_factory,
+    monkeypatch,
+    legacy_owner_roots,
+    owner_write,
+    garmin_export,
+    garmin_connected,
 ):
     class WarningClient(FakeWeightClient):
         is_configured = True
@@ -604,7 +613,9 @@ async def test_weight_job_surfaces_garmin_token_cache_warnings(
     monkeypatch.setattr(
         GarminClient, "from_config", lambda *args, **kwargs: WarningClient()
     )
-    await garmin_weight_service.export_job(session_factory, redis=None)
+    await garmin_weight_service.export_job(
+        session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
+    )
 
     async with session_factory() as session:
         alerts = await alerts_service.list_active(session, domain="garmin", subject_id=owner_write.subject_id)

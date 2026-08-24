@@ -1452,7 +1452,7 @@ async def _run_scheduled_brief_generation(
 
 
 # ── Scheduler job ─────────────────────────────────────────────────────────────
-async def brief_job(session_factory, redis=None) -> None:
+async def brief_job(session_factory, redis=None, *, subject_id) -> None:
     """The 11:00 brief — fired hourly across the wait window, sent once.
 
     Pulls Garmin first, on its own, instead of hoping the poll schedule happened
@@ -1481,9 +1481,9 @@ async def brief_job(session_factory, redis=None) -> None:
     # Before the Garmin pull, not after: on a normal day the brief left at 11:00
     # and every later fire in the window is a no-op that must not cost a login.
     async with session_factory() as session:
-        ownership = await channels.resolve_legacy_channel_ownership(
+        ownership = await channels.resolve_subject_channel_ownership(
             session,
-            actor_username=None,
+            subject_id=subject_id,
         )
         confirmed_journal = await delivery.confirmed_delivery_journal(
             session,
@@ -1527,14 +1527,17 @@ async def brief_job(session_factory, redis=None) -> None:
     out_of_patience = now_local().hour >= last_attempt_hour(brief_hour)
 
     try:
-        await garmin_service.sync_job(session_factory, redis)
+        # This subject's watch. It pulled "the sole subject's" before the brief
+        # was fanned out, which on a two-person installation meant the brief
+        # either refused or composed one person's morning from another's night.
+        await garmin_service.sync_job(session_factory, redis, subject_id=subject_id)
     except Exception:
         logger.warning("garmin sync before the brief failed; using stored data", exc_info=True)
 
     async with session_factory() as session:
-        ownership = await channels.resolve_legacy_channel_ownership(
+        ownership = await channels.resolve_subject_channel_ownership(
             session,
-            actor_username=None,
+            subject_id=subject_id,
         )
         current_lang.set(
             await get_language(
@@ -1589,9 +1592,9 @@ async def brief_job(session_factory, redis=None) -> None:
     buttons = None
 
     async with session_factory() as session:
-        ownership = await channels.resolve_legacy_channel_ownership(
+        ownership = await channels.resolve_subject_channel_ownership(
             session,
-            actor_username=None,
+            subject_id=subject_id,
         )
         bound_notifier = await channels.build_legacy_bound_notifier(
             session,

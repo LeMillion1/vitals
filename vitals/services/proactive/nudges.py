@@ -376,7 +376,7 @@ async def run(
     return sent
 
 
-async def nudges_job(session_factory, redis=None) -> None:
+async def nudges_job(session_factory, redis=None, *, subject_id) -> None:
     """Hourly. Cheap by design — most runs evaluate three conditions and send
     nothing, and the ones that would send are still subject to the daily budget
     (which the brief and the evening block have already taken two of).
@@ -385,9 +385,9 @@ async def nudges_job(session_factory, redis=None) -> None:
     the strict builder returns ``None`` without reserving or sending when the
     recipient credential is unavailable."""
     async with session_factory() as session:
-        ownership = await channels.resolve_legacy_channel_ownership(
+        ownership = await channels.resolve_subject_channel_ownership(
             session,
-            actor_username=None,
+            subject_id=subject_id,
         )
         await run(
             session,

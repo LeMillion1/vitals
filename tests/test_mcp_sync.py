@@ -29,7 +29,7 @@ async def test_sync_garmin_caps_at_three_a_day_and_clamps_the_window(monkeypatch
         calls.append((days, actor_username))
         return {"days": days, "activities": 0, "error": None}
 
-    monkeypatch.setattr(garmin_service, "sync_job", fake_sync_job)
+    monkeypatch.setattr(garmin_service, "sync_now_for_actor", fake_sync_job)
 
     assert (await mcp_router.sync_garmin())["days"] == 2
     # A gap of a few days is a legitimate ask; a year is not — the window clamps.
@@ -53,7 +53,7 @@ async def test_sync_garmin_says_so_when_garmin_is_not_configured(monkeypatch):
     ):
         return None
 
-    monkeypatch.setattr(garmin_service, "sync_job", unconfigured)
+    monkeypatch.setattr(garmin_service, "sync_now_for_actor", unconfigured)
     assert "not configured" in (await mcp_router.sync_garmin())["error"]
 
 
@@ -69,7 +69,7 @@ async def test_sync_hevy_refuses_a_disabled_module_without_spending_quota(
         called.append(actor_username)
         return {"fetched": 1, "created": 1, "updated": 0, "skipped": 0}
 
-    monkeypatch.setattr(hevy_service, "sync_job", fake_sync_job)
+    monkeypatch.setattr(hevy_service, "sync_now_for_actor", fake_sync_job)
 
     # Optional modules default to off.
     assert await mcp_router.sync_hevy() == {"error": "module 'hevy' is disabled"}

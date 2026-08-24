@@ -2162,7 +2162,8 @@ async def pulse_job(
     session_factory,
     redis=None,
     *,
-    actor_username: str | None = None,
+    subject_id: uuid.UUID,
+    integration_connection_id: uuid.UUID | None = None,
 ) -> None:
     """The light pulse on its own interval (both from the settings card).
 
@@ -2177,15 +2178,17 @@ async def pulse_job(
     from vitals.services.legacy_ownership import (
         LegacyOwnershipError,
         LegacySubjectResolutionError,
-        resolve_legacy_ownership_context,
+        resolve_subject_ownership_context,
     )
     from vitals.services.proactive import prefs
 
+    del integration_connection_id  # named by the fan-out; resolved below
+
     async with session_factory() as session:
         try:
-            ownership = await resolve_legacy_ownership_context(
+            ownership = await resolve_subject_ownership_context(
                 session,
-                actor_username=actor_username,
+                subject_id=subject_id,
                 required_connections=(IntegrationProvider.GARMIN,),
             )
         except LegacySubjectResolutionError:
@@ -2564,18 +2567,66 @@ async def daily_count(session: AsyncSession) -> int:
 
 
 # ── Scheduler job ─────────────────────────────────────────────────────────────
+async def sync_now_for_actor(
+    session_factory,
+    redis=None,
+    *,
+    actor_username: str,
+    days: int = 2,
+) -> Optional[dict]:
+    """"Sync my Garmin now", for a person who asked through MCP.
+
+    A separate entry point rather than an optional argument on :func:`sync_job`.
+    An omittable scope is the shape ``vitals/legacy_scope.py`` exists to keep
+    out, and the two callers mean genuinely different things: this one resolves
+    the record the *actor* owns, and the scheduler names the record directly.
+    """
+
+    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+
+    async with session_factory() as session:
+        ownership = await resolve_legacy_ownership_context(
+            session,
+            actor_username=actor_username,
+            required_connections=(IntegrationProvider.GARMIN,),
+        )
+        subject_id = ownership.subject_id
+        actor_user_id = ownership.actor_user_id
+    return await sync_job(
+        session_factory,
+        redis,
+        days=days,
+        subject_id=subject_id,
+        actor_user_id=actor_user_id,
+    )
+
+
 async def sync_job(
     session_factory,
     redis=None,
     *,
     days: int = 2,
-    actor_username: str | None = None,
+    subject_id: uuid.UUID,
+    integration_connection_id: uuid.UUID | None = None,
+    actor_user_id: uuid.UUID | None = None,
 ) -> Optional[dict]:
     """Garmin poll (registered in vitals/scheduler/jobs.py). No-ops cleanly when
-    Garmin isn't configured — returns None in that case, else the sync summary
-    (the MCP ``sync_garmin`` tool reports it back to the model)."""
+    this record has no Garmin account — returns None in that case, else the sync
+    summary.
+
+    ``subject_id`` is mandatory, and deliberately: it used to be absent, so the
+    resolver was asked for "the sole subject, or refuse" and the whole job
+    stopped on a two-person installation. The fan-out passes it once per
+    configured account.
+
+    ``actor_user_id`` is attribution rather than scope — whose *request* this
+    was, not whose record. A scheduled run leaves it unset and the rows belong
+    to the account; :func:`sync_now_for_actor` fills it in when a person asked.
+    """
     from vitals.integrations.garmin_client import GarminClient
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+
+    del integration_connection_id  # named by the fan-out; resolved below
 
     async with session_factory() as session:
         from vitals.services.language_service import get_language
@@ -2585,9 +2636,9 @@ async def sync_job(
         # The client used to be built from ``load_config()`` before anything had
         # said whose record this run was for, so "is Garmin configured" was a
         # question about the installation. It is a question about the account.
-        ownership = await resolve_legacy_ownership_context(
+        ownership = await resolve_subject_ownership_context(
             session,
-            actor_username=actor_username,
+            subject_id=subject_id,
             required_connections=(IntegrationProvider.GARMIN,),
         )
         account = await provider_credentials_service.resolve_garmin_account(
@@ -2608,7 +2659,13 @@ async def sync_job(
             summary = await sync_owned(
                 session,
                 client,
-                identity=ownership.write_identity,
+                # Attributed to the person who asked, when one did; a
+                # scheduled run leaves it the account's.
+                identity=(
+                    WriteIdentity(ownership.subject_id, actor_user_id)
+                    if actor_user_id is not None
+                    else ownership.write_identity
+                ),
                 integration_connection_id=ownership.connection_id(
                     IntegrationProvider.GARMIN
                 ),

@@ -381,6 +381,36 @@ async def resolve_legacy_export_context(
     )
 
 
+async def resolve_scoped_export_context(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+) -> GarminWeightExportContext:
+    """The same graph, for a subject a trusted boundary has named.
+
+    ``resolve_legacy_export_context`` above asks "the sole subject, or refuse",
+    which is right for a direct call that named nobody and was the reason this
+    job stopped entirely on a two-person installation. A scheduled run is in a
+    position to say whose weight it is exporting, once per configured account.
+    """
+
+    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+
+    await acquire_identity_governance_lock(session)
+    ownership = await resolve_subject_ownership_context(
+        session,
+        subject_id=subject_id,
+        required_connections=(IntegrationProvider.GARMIN,),
+    )
+    return GarminWeightExportContext(
+        identity=ownership.system_action(),
+        integration_connection_id=ownership.connection_id(
+            IntegrationProvider.GARMIN
+        ),
+        legacy_bridge=conflict_engine.LegacyConflictBridge.FULLY_UNOWNED,
+    )
+
+
 async def resolve_optional_legacy_export_context(
     session: AsyncSession,
     *,
@@ -2859,9 +2889,14 @@ async def send_now_scoped(
     if redis is not None:
         from vitals.scheduler.scheduler_lock import with_scheduler_lock
 
+        # Per connection, not per job. The flat ``garmin_weight_export`` name
+        # was one lock for the installation, so with two people one patient
+        # pressing Send now made the other's answer "busy" — for an operation
+        # that touches a different Garmin account entirely. Mutual exclusion is
+        # about the account the outbox is draining into.
         result = await with_scheduler_lock(
             redis,
-            "garmin_weight_export",
+            f"garmin_weight_export:{context.integration_connection_id}",
             OPERATION_LOCK_TTL_SECONDS,
             run_scoped_export,
         )
@@ -2918,7 +2953,13 @@ async def _export_job_pre_identity_legacy(session, *, redis=None) -> None:
     await session.commit()
 
 
-async def export_job(session_factory, redis=None) -> None:
+async def export_job(
+    session_factory,
+    redis=None,
+    *,
+    subject_id: uuid.UUID,
+    integration_connection_id: uuid.UUID | None = None,
+) -> None:
     """Scheduled scoped entry point for the sole registration-off owner graph."""
     from vitals.i18n import current_lang
     from vitals.integrations.garmin_client import GarminClient
@@ -2927,27 +2968,17 @@ async def export_job(session_factory, redis=None) -> None:
 
     async with session_factory() as session:
         await acquire_identity_governance_lock(session)
-        subject_ids = list(
-            await session.scalars(
-                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
-            )
-        )
-        if not subject_ids:
+        any_subject = await session.scalar(select(HealthSubject.id).limit(1))
+        if any_subject is None:
             # Re-enter through the shared guarded zero-subject boundary. The
-            # cardinality probe above opened an unrecognized read transaction.
+            # probe above opened an unrecognized read transaction.
             await session.rollback()
             await _export_job_pre_identity_legacy(session, redis=redis)
             return
-        if len(subject_ids) != 1:
-            logger.warning(
-                "Garmin Weight export ownership is unavailable: "
-                "expected exactly one health subject"
-            )
-            return
         try:
-            context = await resolve_legacy_export_context(
+            context = await resolve_scoped_export_context(
                 session,
-                actor_username=None,
+                subject_id=subject_id,
             )
             prepared = await prepare_scoped_export(
                 session,

@@ -3861,7 +3861,7 @@ async def sync_garmin(days: int = 2) -> dict:
     if spent:
         return spent
 
-    summary = await garmin_service.sync_job(
+    summary = await garmin_service.sync_now_for_actor(
         get_session_factory(),
         get_redis_client(),
         days=max(1, min(int(days), 30)),
@@ -3886,7 +3886,7 @@ async def sync_hevy() -> dict:
         return spent
 
     try:
-        summary = await hevy_service.sync_job(
+        summary = await hevy_service.sync_now_for_actor(
             get_session_factory(),
             get_redis_client(),
             actor_username=get_web_config().auth_username,

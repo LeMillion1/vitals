@@ -12,6 +12,7 @@ heartbeat each tick. Job functions have the signature
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -202,51 +203,116 @@ async def _record_job_outcome(
     spec: JobSpec,
     error: Optional[str],
 ) -> None:
-    """Raise a ``warn`` alert when a job run failed; clear it when one succeeds.
+    """The tick's outcome, for a job about the installation itself.
 
-    Without this a broken sync is invisible: the heartbeat is stamped before the
-    run, so ``/health`` stays green while the data lake quietly stops filling.
-    One guard on the shared runner covers every registered job — ``hevy_service``
-    handles no errors at all today and ``garmin_service`` only auth/MFA ones.
+    Without this a broken sweep is invisible: the heartbeat is stamped before
+    the run, so ``/health`` stays green while the data lake quietly stops
+    filling.
+
+    **A job about a record does not report here.** It used to — through a
+    resolver that asked for "the sole subject" — and that was the same thing
+    only while an installation was one person. With two it refused, and the
+    refusal was swallowed by the handler below, so the alert never appeared at
+    all; had it resolved, one person's failure would have been filed against
+    whoever the resolver happened to return. Those jobs are fanned out and
+    report per record from :func:`record_subject_job_outcome`.
     """
-    from vitals.enums import Domain, IntegrationProvider, Severity
+
+    from vitals.enums import Domain, Severity
     from vitals.i18n import t
     from vitals.services import alerts_service
-    from vitals.services.legacy_ownership import resolve_legacy_ownership_context
+
+    _require_failure_family(spec.id, spec.failure_family)
+    if spec.failure_family is not JobFailureFamily.PLATFORM:
+        return
 
     alert_key = f"{JOB_FAILED_KEY_PREFIX}:{spec.id}"
     try:
-        _require_failure_family(spec.id, spec.failure_family)
         async with session_factory() as session:
-            if spec.failure_family is JobFailureFamily.PLATFORM:
-                context: alerts_service.AlertContext = (
-                    alerts_service.PlatformAlertContext(
-                        namespace=alerts_service.PlatformAlertNamespace.SCHEDULER_JOB_FAILURE,
-                        actor_user_id=None,
-                    )
-                )
-                legacy_bridge = alerts_service.LegacyAlertBridge.REJECT
-            else:
-                provider = {
-                    JobFailureFamily.GARMIN_ACCOUNT: IntegrationProvider.GARMIN,
-                    JobFailureFamily.HEVY_ACCOUNT: IntegrationProvider.HEVY,
-                }.get(spec.failure_family)
-                ownership = await resolve_legacy_ownership_context(
+            context = alerts_service.PlatformAlertContext(
+                namespace=alerts_service.PlatformAlertNamespace.SCHEDULER_JOB_FAILURE,
+                actor_user_id=None,
+            )
+            if error is None:
+                await alerts_service.resolve_scoped_by_key(
                     session,
-                    actor_username=None,
-                    required_connections=((provider,) if provider is not None else ()),
+                    context=context,
+                    alert_key=alert_key,
+                    legacy_bridge=alerts_service.LegacyAlertBridge.REJECT,
                 )
-                if provider is None:
-                    context = alerts_service.HealthAlertContext(
-                        ownership.system_action()
-                    )
-                else:
-                    context = alerts_service.ProviderAlertContext(
-                        identity=ownership.system_action(),
-                        provider=provider,
-                        integration_connection_id=ownership.connection_id(provider),
-                    )
-                legacy_bridge = alerts_service.LegacyAlertBridge.FULLY_UNOWNED
+            else:
+                await alerts_service.raise_scoped_alert(
+                    session,
+                    context=context,
+                    domain=Domain.SYSTEM,
+                    severity=Severity.WARN,
+                    message=t("alert.job_failed", job=spec.id, error=error),
+                    alert_key=alert_key,
+                    legacy_bridge=alerts_service.LegacyAlertBridge.REJECT,
+                )
+            await session.commit()
+    except Exception:
+        # Alert bookkeeping must never break the tick that reported the failure.
+        logger.exception("Could not record outcome of scheduled job %s", spec.id)
+
+
+async def record_subject_job_outcome(
+    session_factory: async_sessionmaker[AsyncSession],
+    job_id: str,
+    error: Optional[str],
+    *,
+    subject_id: uuid.UUID,
+) -> None:
+    """One record's outcome for one job, called once per record by the fan-out.
+
+    The subject is mandatory and deliberately so: an omittable one is exactly
+    the shape ``vitals/legacy_scope.py`` exists to keep out of this codebase,
+    and the reason is this function's own history — the version that could be
+    called without saying whose record it meant attributed every failure to the
+    sole subject, and stopped attributing anything at all once there were two.
+    """
+
+    from vitals.enums import Domain, IntegrationProvider, Severity
+    from vitals.i18n import t
+    from vitals.services import alerts_service
+    from vitals.services.legacy_ownership import resolve_subject_ownership_context
+
+    # The reviewed registry rather than a live ``JobSpec``: the family is a
+    # property of the job, declared once and asserted by its own contract test,
+    # and reading it from whatever happens to be registered would make this
+    # silently do nothing in any context that builds a spec without registering
+    # it — which is how the first version of this quietly recorded nothing.
+    family = JOB_FAILURE_FAMILY_BY_ID.get(job_id)
+    if family is None:
+        raise JobFailureClassificationError(
+            f"scheduled job {job_id!r} has no reviewed failure-alert family"
+        )
+    if family is JobFailureFamily.PLATFORM:
+        return
+
+    alert_key = f"{JOB_FAILED_KEY_PREFIX}:{job_id}"
+    provider = {
+        JobFailureFamily.GARMIN_ACCOUNT: IntegrationProvider.GARMIN,
+        JobFailureFamily.HEVY_ACCOUNT: IntegrationProvider.HEVY,
+    }.get(family)
+    try:
+        async with session_factory() as session:
+            ownership = await resolve_subject_ownership_context(
+                session,
+                subject_id=subject_id,
+                required_connections=((provider,) if provider is not None else ()),
+            )
+            if provider is None:
+                context: alerts_service.AlertContext = (
+                    alerts_service.HealthAlertContext(ownership.system_action())
+                )
+            else:
+                context = alerts_service.ProviderAlertContext(
+                    identity=ownership.system_action(),
+                    provider=provider,
+                    integration_connection_id=ownership.connection_id(provider),
+                )
+            legacy_bridge = alerts_service.LegacyAlertBridge.FULLY_UNOWNED
 
             if error is None:
                 await alerts_service.resolve_scoped_by_key(
@@ -261,14 +327,18 @@ async def _record_job_outcome(
                     context=context,
                     domain=Domain.SYSTEM,
                     severity=Severity.WARN,
-                    message=t("alert.job_failed", job=spec.id, error=error),
+                    message=t("alert.job_failed", job=job_id, error=error),
                     alert_key=alert_key,
                     legacy_bridge=legacy_bridge,
                 )
             await session.commit()
     except Exception:
-        # Alert bookkeeping must never break the tick that reported the failure.
-        logger.exception("Could not record outcome of scheduled job %s", spec.id)
+        # Alert bookkeeping must never break the run that reported the failure.
+        logger.exception(
+            "Could not record outcome of scheduled job %s for subject %s",
+            job_id,
+            subject_id,
+        )
 
 
 def _make_runner(

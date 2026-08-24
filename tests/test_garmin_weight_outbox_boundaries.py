@@ -798,7 +798,9 @@ async def test_export_job_projects_with_system_requester_null(
         ignore_token_alert,
     )
 
-    await garmin_weight_service.export_job(session_factory, redis=None)
+    await garmin_weight_service.export_job(
+        session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
+    )
 
     outbox = await db_session.scalar(
         select(GarminWeightExport).where(GarminWeightExport.date == DAY)
@@ -850,7 +852,9 @@ async def test_export_job_inactive_connection_never_constructs_client_or_network
 
     monkeypatch.setattr(GarminClient, "from_config", forbidden_client)
 
-    await garmin_weight_service.export_job(session_factory, redis=None)
+    await garmin_weight_service.export_job(
+        session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
+    )
 
     assert await db_session.scalar(select(GarminWeightExport.id)) is None
 
@@ -885,7 +889,9 @@ async def test_export_job_unconfigured_client_makes_no_vendor_call(
         classmethod(lambda cls, config=None, redis=None: client),
     )
 
-    await garmin_weight_service.export_job(session_factory, redis=None)
+    await garmin_weight_service.export_job(
+        session_factory, redis=None, subject_id=legacy_owner_roots.subject_id
+    )
 
     assert await db_session.scalar(select(GarminWeightExport.id)) is None
 

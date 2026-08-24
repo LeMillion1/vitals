@@ -778,7 +778,7 @@ async def test_sync_job_resolves_system_and_named_owner_actor(
         lambda config=None: client,
     )
 
-    await hevy_service.sync_job(session_factory)
+    await hevy_service.sync_job(session_factory, subject_id=subject.id)
     system_workout = await db_session.scalar(
         select(HevyWorkout).where(HevyWorkout.external_id == "job-system")
     )
@@ -790,7 +790,9 @@ async def test_sync_job_resolves_system_and_named_owner_actor(
     ) == (subject.id, None, connection.id)
 
     client.workouts = [_payload("job-owner")]
-    await hevy_service.sync_job(session_factory, actor_username="  OWNER  ")
+    await hevy_service.sync_job(
+        session_factory, subject_id=subject.id, actor_user_id=owner.id
+    )
     owner_workout = await db_session.scalar(
         select(HevyWorkout).where(HevyWorkout.external_id == "job-owner")
     )
@@ -806,14 +808,16 @@ async def test_sync_job_actor_mismatch_fails_before_fetch(
     client = FakeHevyClient([_payload("must-not-fetch")])
     monkeypatch.setattr(
         "vitals.integrations.hevy_client.HevyClient.from_config",
-        lambda: client,
+        lambda config=None: client,
     )
 
-    # Still refused before a single byte is fetched, and refused structurally:
-    # the owner is named in the query now, so an actor who owns nothing matches
-    # no row rather than loading one and being compared against it.
+    # Through the actor-named entry point, which is the one a human reaches:
+    # ``sync_job`` takes a subject and has no actor to mismatch. Still refused
+    # before a single byte is fetched, and refused structurally — the owner is
+    # named in the query, so an actor who owns nothing matches no row rather
+    # than loading one and being compared against it.
     with pytest.raises(LegacySubjectResolutionError, match="no health record of its own"):
-        await hevy_service.sync_job(
+        await hevy_service.sync_now_for_actor(
             session_factory,
             actor_username="different-user",
         )
@@ -826,7 +830,7 @@ async def test_sync_job_noops_for_disabled_connection(
     session_factory,
     monkeypatch,
 ):
-    await _roots(
+    _owner, subject, _connection = await _roots(
         db_session,
         "owner",
         status=IntegrationConnectionStatus.DISABLED,
@@ -834,10 +838,10 @@ async def test_sync_job_noops_for_disabled_connection(
     client = FakeHevyClient([_payload("must-not-fetch")])
     monkeypatch.setattr(
         "vitals.integrations.hevy_client.HevyClient.from_config",
-        lambda: client,
+        lambda config=None: client,
     )
 
-    result = await hevy_service.sync_job(session_factory)
+    result = await hevy_service.sync_job(session_factory, subject_id=subject.id)
 
     assert result is None
     assert client.calls == 0

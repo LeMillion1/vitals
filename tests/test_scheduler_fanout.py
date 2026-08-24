@@ -1,4 +1,4 @@
-"""A scheduled job runs once per subject, and one bad record does not silence the rest.
+"""A scheduled job runs once per record, and one bad record does not silence the rest.
 
 Every job used to arrive at the ownership resolver with neither an actor nor a
 subject, which means "the sole subject, or refuse". On a two-person installation
@@ -8,12 +8,16 @@ screen. It was found by reading the log of a running installation with ten
 patients in it.
 
 The fix is not a loosened count. The caller says whose record it is acting on,
-and a scheduler is in a position to say it once per subject.
+and a scheduler is in a position to say it once per record.
 
-Five jobs moved. Eight did not, and the last test here is about them: they end
-in a send — to one Garmin account, or to one Telegram chat — and the credential
-for it is one set for the whole process. Fanning those out would turn an outage
-into a disclosure.
+Five jobs moved first. The other eight could not, for two reasons that have both
+since gone: the proactive pair sent to one Telegram bot token and chat id, and
+the four provider jobs signed in to one Garmin or Hevy account from the
+environment — fanning those out would have turned a visible outage into a
+disclosure. The transport was removed and ``integration_credentials`` gave each
+account its own credential, so all eight are fanned out now, the provider four
+per *connection* rather than per subject: somebody who has not connected a watch
+has nothing for them to do.
 """
 
 from __future__ import annotations
@@ -58,7 +62,7 @@ async def test_the_job_runs_once_for_every_subject(
     async def job(session_factory, redis=None, *, subject_id):
         seen.append(subject_id)
 
-    await for_each_subject(job, job_id="probe")(session_factory, None)
+    await for_each_subject(job, job_id="weekly_digest")(session_factory, None)
 
     expected = await list_subject_ids(session_factory)
     assert seen == list(expected)
@@ -89,7 +93,7 @@ async def test_one_failing_subject_does_not_stop_the_others(
             raise RuntimeError("this record is broken")
 
     with pytest.raises(RuntimeError, match="this record is broken"):
-        await for_each_subject(job, job_id="probe")(session_factory, None)
+        await for_each_subject(job, job_id="weekly_digest")(session_factory, None)
 
     assert len(seen) == 2
     assert broken_id in seen
@@ -103,7 +107,7 @@ async def test_an_empty_installation_is_not_a_failure(session_factory):
     async def job(session_factory, redis=None, *, subject_id):
         ran.append(subject_id)
 
-    await for_each_subject(job, job_id="probe")(session_factory, None)
+    await for_each_subject(job, job_id="weekly_digest")(session_factory, None)
     assert ran == []
 
 
@@ -125,19 +129,28 @@ def test_the_wrapper_keeps_the_job_findable():
     assert wrapped.__wrapped__ is digest_job
 
 
-def test_the_credential_bound_jobs_are_not_fanned_out():
-    """Eight jobs deliberately still refuse, and the reason is worth pinning.
+def test_every_job_about_a_record_runs_once_per_record():
+    """The inverse of what this test used to assert, and the reason it changed.
 
-    Eight, in two groups. The provider syncs sign in to one Garmin or Hevy
-    account; the proactive four send to one Telegram bot token and chat id.
-    Either way the credential is one set for the whole process, so running them
-    once per subject would deliver ten people's data to one person's watch or
-    one person's chat — a cross-subject send, strictly worse than the
-    fail-closed outage they are today.
+    Eight jobs used to be pinned here as deliberately *not* fanned out, in two
+    groups. The provider syncs signed in to one Garmin or Hevy account from the
+    environment; the proactive pair sent to one Telegram bot token and chat id.
+    Either way the credential was one set for the whole process, so running them
+    once per subject would have delivered ten people's data to one person's
+    watch or one person's chat — strictly worse than the fail-closed outage they
+    were instead.
 
-    The proactive four are the ones this test is really for. They read the lake
-    and look exactly like the jobs that were ported; the difference is the last
-    step, where they send.
+    Both reasons are gone. The transport was removed outright, and
+    ``integration_credentials`` gave each account its own credential, token
+    store, session cache and login breaker. So the list this test keeps is the
+    other one: every job that is *about a record* has to run once per record,
+    and a job that quietly stops being fanned out is a job that silently serves
+    one person on an installation holding ten.
+
+    The four platform jobs are the exception and are named, not defaulted: they
+    are about the installation's own state — sweeping unprocessed payloads,
+    purging expired links, reconciling provider invocations — and have no
+    subject to run for.
     """
 
     from vitals.scheduler.scheduler import _registry, clear_jobs
@@ -146,6 +159,7 @@ def test_the_credential_bound_jobs_are_not_fanned_out():
     clear_jobs()
     try:
         job_module.register_all_jobs(None)
+        registered = set(_registry)
         fanned = {
             job_id
             for job_id, spec in _registry.items()
@@ -154,23 +168,22 @@ def test_the_credential_bound_jobs_are_not_fanned_out():
     finally:
         clear_jobs()
 
-    external = {
-        # One watch, one Hevy account.
-        "hevy_sync", "garmin_sync", "garmin_weight_export", "garmin_pulse",
-        # One Telegram bot token and one chat id. These read the lake and then
-        # *send*, and the send is where the single credential is — which is why
-        # they look like lake work and are not.
-        "daily_brief", "nudges",
+    about_the_installation = {
+        "share_purge",
+        "ai_invocation_reconcile",
+        "notification_delivery_reconcile",
     }
-    assert not (fanned & external), (
-        "these run against one process-wide credential and must not be fanned "
-        f"out per subject: {sorted(fanned & external)}"
-    )
-    # And the ones that were ported stayed ported.
+    assert about_the_installation <= registered
+    assert not (fanned & about_the_installation)
+
+    # Everything else. Named rather than derived, so adding a job forces the
+    # decision instead of inheriting whichever answer the expression gives.
     assert {
         "weekly_digest", "hrt_reminders", "glp1_plateau", "nutrition_day_end",
-        "raw_payload_sweep",
+        "raw_payload_sweep", "daily_brief", "nudges",
+        "garmin_sync", "garmin_pulse", "garmin_weight_export", "hevy_sync",
     } <= fanned
+    assert registered - about_the_installation == fanned
 
 
 async def test_each_subject_is_run_on_their_own_clock(
@@ -200,7 +213,7 @@ async def test_each_subject_is_run_on_their_own_clock(
     async def job(session_factory, redis=None, *, subject_id):
         seen[subject_id] = now_local()
 
-    await for_each_subject(job, job_id="probe")(session_factory, None)
+    await for_each_subject(job, job_id="weekly_digest")(session_factory, None)
 
     # Twenty-five hours apart, so the two never share a wall-clock reading and
     # very often do not share a date either.
@@ -225,5 +238,190 @@ async def test_an_unusable_zone_does_not_take_the_tick_down(
     async def job(session_factory, redis=None, *, subject_id):
         seen[subject_id] = now_local()
 
-    await for_each_subject(job, job_id="probe")(session_factory, None)
+    await for_each_subject(job, job_id="weekly_digest")(session_factory, None)
     assert broken_id in seen
+
+
+# ── Per connection, not per subject ──────────────────────────────────────────
+
+
+async def _connected(session, subject_id, *, provider):
+    from vitals.enums import IntegrationProvider
+    from vitals.services import provider_credentials_service
+    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+
+    await bootstrap_legacy_resource_roots(session, subject_id=subject_id)
+    if provider is IntegrationProvider.GARMIN:
+        await provider_credentials_service.set_garmin_credentials(
+            session, subject_id=subject_id, email="a@example.test", password="x"
+        )
+    else:
+        await provider_credentials_service.set_hevy_credentials(
+            session, subject_id=subject_id, api_key="k"
+        )
+
+
+async def test_a_provider_job_runs_once_per_connected_account(
+    session_factory, db_session, legacy_owner_roots, garmin_connected
+):
+    """The four jobs that could not be fanned out until the credentials moved."""
+
+    from vitals.enums import IntegrationProvider
+    from vitals.scheduler.fanout import for_each_connection
+
+    other = await _subject(db_session, "second-athlete")
+    await _connected(db_session, other.id, provider=IntegrationProvider.GARMIN)
+    await db_session.commit()
+
+    seen: list[uuid.UUID] = []
+
+    async def job(_factory, _redis, *, subject_id, integration_connection_id):
+        del integration_connection_id
+        seen.append(subject_id)
+
+    await for_each_connection(
+        job, job_id="garmin_sync", provider=IntegrationProvider.GARMIN
+    )(session_factory)
+
+    assert sorted(map(str, seen)) == sorted(
+        map(str, [legacy_owner_roots.subject_id, other.id])
+    )
+
+
+async def test_a_subject_who_connected_nothing_is_absent_rather_than_failing(
+    session_factory, db_session, legacy_owner_roots, garmin_connected
+):
+    """Not an outage to report: they have not connected a watch.
+
+    Enumerating them would mean four scheduled no-ops a day per person, and a
+    failure alert for each would be an alert about nothing.
+    """
+
+    from vitals.enums import IntegrationProvider
+    from vitals.scheduler.fanout import for_each_connection
+
+    bare = await _subject(db_session, "no-watch")
+    from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
+
+    await bootstrap_legacy_resource_roots(db_session, subject_id=bare.id)
+    await db_session.commit()
+
+    seen: list[uuid.UUID] = []
+
+    async def job(_factory, _redis, *, subject_id, integration_connection_id):
+        del integration_connection_id
+        seen.append(subject_id)
+
+    await for_each_connection(
+        job, job_id="garmin_sync", provider=IntegrationProvider.GARMIN
+    )(session_factory)
+
+    assert seen == [legacy_owner_roots.subject_id]
+
+
+async def test_one_throttled_account_does_not_stop_the_next(
+    session_factory, db_session, legacy_owner_roots, garmin_connected
+):
+    """The failure the shared login breaker used to cause, from the other end.
+
+    Three failed logins used to pause every account for six hours because the
+    counters were one flat Redis key. They are per connection now, and so is
+    this: one account's refusal must not end the tick before the next account
+    has been tried.
+    """
+
+    from vitals.enums import IntegrationProvider
+    from vitals.scheduler.fanout import for_each_connection
+
+    other = await _subject(db_session, "second-athlete")
+    await _connected(db_session, other.id, provider=IntegrationProvider.GARMIN)
+    await db_session.commit()
+
+    seen: list[uuid.UUID] = []
+
+    async def job(_factory, _redis, *, subject_id, integration_connection_id):
+        del integration_connection_id
+        seen.append(subject_id)
+        if subject_id == legacy_owner_roots.subject_id:
+            raise RuntimeError("login throttled")
+
+    with pytest.raises(RuntimeError):
+        await for_each_connection(
+            job, job_id="garmin_sync", provider=IntegrationProvider.GARMIN
+        )(session_factory)
+
+    assert len(seen) == 2, "the second account must still have been tried"
+
+
+@pytest.fixture
+def unbound_session_factory(session_factory, db_session):
+    """A factory whose sessions arrive unbound, as production's do.
+
+    The suite's factory hands out one shared session, and row security binds it
+    to the first subject that uses it and then refuses to move — deliberately,
+    because one transaction serves one person. Production gives every job run
+    and every outcome record its own session, so the fan-out crosses subjects
+    without ever rebinding one. Clearing the binding on entry is what a new
+    session does for free.
+    """
+
+    from vitals.services import rls_session
+
+    class _CM:
+        async def __aenter__(self):
+            db_session.info.pop(rls_session._SUBJECT_KEY, None)
+            return db_session
+
+        async def __aexit__(self, *_):
+            return None
+
+    class _Factory:
+        def __call__(self):
+            return _CM()
+
+    del session_factory
+    return _Factory()
+
+
+async def test_a_failure_is_filed_against_the_record_it_happened_to(
+    unbound_session_factory, db_session, legacy_owner_roots, garmin_connected
+):
+    """It used to be filed against whoever the sole-owner resolver returned.
+
+    Which on a one-person installation was right by accident, and on a
+    two-person one was a refusal the handler swallowed — so a failing sync
+    raised no alert at all.
+    """
+
+    from sqlalchemy import select
+
+    from vitals.enums import IntegrationProvider
+    from vitals.models.system_alert import SystemAlert
+    from vitals.scheduler.fanout import for_each_connection
+
+    other = await _subject(db_session, "second-athlete")
+    await _connected(db_session, other.id, provider=IntegrationProvider.GARMIN)
+    await db_session.commit()
+
+    async def job(_factory, _redis, *, subject_id, integration_connection_id):
+        del integration_connection_id
+        if subject_id == other.id:
+            raise RuntimeError("only this record is broken")
+
+    with pytest.raises(RuntimeError):
+        await for_each_connection(
+            job, job_id="garmin_sync", provider=IntegrationProvider.GARMIN
+        )(unbound_session_factory)
+
+    from vitals.services import rls_session
+
+    db_session.info.pop(rls_session._SUBJECT_KEY, None)
+    rows = list(
+        await db_session.scalars(
+            select(SystemAlert).where(
+                SystemAlert.alert_key == "scheduler.job_failed:garmin_sync",
+                SystemAlert.resolved_at.is_(None),
+            )
+        )
+    )
+    assert [row.subject_id for row in rows] == [other.id]

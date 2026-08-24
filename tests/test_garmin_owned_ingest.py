@@ -702,14 +702,20 @@ async def test_owned_pending_sweep_is_scoped_and_rolls_back_bad_row(db_session):
     assert daily.actor_user_id is None
 
 
-@pytest.mark.parametrize("actor_username, human", [(None, False), (" OWNER ", True)])
+@pytest.mark.parametrize("human", [False, True])
 async def test_sync_job_resolves_system_or_owner_actor(
     db_session,
     session_factory,
     monkeypatch,
-    actor_username,
     human,
 ):
+    """Whose *request* it was, which is not whose record it is about.
+
+    The job used to take an ``actor_username`` and resolve the record from it —
+    so "whose record" and "who asked" were one argument, and omitting it meant
+    the sole subject. They are two now: the subject is mandatory and names the
+    record, and the actor is attribution a scheduled run simply does not have.
+    """
     owner, subject, connection = await _scope(db_session, "owner")
 
     class _Client:
@@ -745,7 +751,8 @@ async def test_sync_job_resolves_system_or_owner_actor(
     await garmin_service.sync_job(
         session_factory,
         days=1,
-        actor_username=actor_username,
+        subject_id=subject.id,
+        actor_user_id=owner.id if human else None,
     )
 
     raw_row = await db_session.scalar(select(RawPayload))
@@ -759,7 +766,7 @@ async def test_sync_job_noops_for_disabled_connection(
     session_factory,
     monkeypatch,
 ):
-    await _scope(
+    _owner, subject, _connection = await _scope(
         db_session,
         "owner",
         status=IntegrationConnectionStatus.DISABLED,
@@ -791,7 +798,9 @@ async def test_sync_job_noops_for_disabled_connection(
         _Client,
     )
 
-    result = await garmin_service.sync_job(session_factory, days=1)
+    result = await garmin_service.sync_job(
+        session_factory, days=1, subject_id=subject.id
+    )
 
     assert result is None
     assert client.calls == 0

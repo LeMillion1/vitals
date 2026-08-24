@@ -8,6 +8,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — every scheduled job about a record now runs once per record
+
+Eight of the fourteen jobs ran once for the installation, and the four left over
+were the last thing PR-09 was waiting on. Both reasons are gone: the Telegram
+transport was removed, and `integration_credentials` gave each account its own
+credential, token store, session cache and login breaker.
+
+`daily_brief` and `nudges` fan out per subject. The four provider jobs —
+`garmin_sync`, `garmin_pulse`, `garmin_weight_export`, `hevy_sync` — fan out per
+**connection**, which is a different question: a subject who has not connected a
+watch has nothing for them to do, and enumerating them would mean four scheduled
+no-ops a day per person. One account's failure is logged and the next account is
+still tried, which is the same rule the subject fan-out has and matters more
+here — three refused logins used to pause every account for six hours, because
+the breaker was one flat Redis key.
+
+**A failure is filed against the record it happened to.** The shared runner
+recorded one outcome per tick, through a resolver that asked for "the sole
+subject" — right by accident on a one-person installation, and on a two-person
+one a refusal the handler swallowed, so a failing sync raised no alert at all
+while `/health` stayed green. `record_subject_job_outcome` takes a mandatory
+subject and is called once per record by the fan-out; the runner keeps only the
+platform-family jobs, which are about the installation's own state and have no
+record to be about.
+
+**`subject_id` is mandatory on all four provider jobs**, and on the brief and
+the nudges. An omittable one is the shape `vitals/legacy_scope.py` exists to keep
+out, and it is exactly what let these jobs mean "the sole subject, or refuse".
+The human caller who asked through MCP for "sync my Garmin now" gets its own
+entry point, `sync_now_for_actor`, which resolves the record the *actor* owns —
+two callers that meant genuinely different things and had been sharing one
+argument. What is left on the job is `actor_user_id`: attribution rather than
+scope, whose request it was rather than whose record, unset for a scheduled run.
+
+The outbound-weight lock is per connection too. `garmin_weight_export` was one
+flat lock name for the installation, so one patient pressing **Send now** made
+another's answer "busy" — for an operation against a different Garmin account.
+
+`tests/test_scheduler_fanout.py` used to pin those eight jobs as deliberately
+*not* fanned out. It now pins the inverse — every job that is about a record runs
+once per record, and the three that are not are named rather than defaulted — so
+a job that quietly stops being fanned out is a job that silently serves one
+person on an installation holding ten.
+
+
 ### Added — an installation can gain a second person, and a decision about whether it may
 
 Two facts that had been one. `identity_bootstrap` makes the installation's own

@@ -11,6 +11,12 @@ os.environ["VITALS_AUTH_USERNAME"] = "timur"
 os.environ["VITALS_AUTH_PASSWORD_HASH"] = "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha"
 os.environ["VITALS_COOKIE_SECURE"] = "false"
 os.environ["VITALS_MCP_CLIENT_SECRET"] = "local-test-mcp-secret"
+# The credential vault's installation key. Provider credentials are per subject
+# and encrypted at rest, so without one the settings card refuses to store a
+# Garmin password — correct in production and unhelpful here. The same fixed
+# development key ``scripts/seed_care_demo.py`` uses, so a database seeded by
+# that script is readable by this server.
+os.environ["VITALS_CREDENTIAL_KEY"] = "c2VlZC1jYXJlLWRlbW8ta2V5LTMyLWJ5dGVzLWFhYWE="
 # Callback hosts are left at their defaults (Claude/ChatGPT/Gemini), so a real
 # connector can be tested against localhost through a tunnel. No loopback entry:
 # the allowlist is https-only, and a plaintext callback would be a hole worth

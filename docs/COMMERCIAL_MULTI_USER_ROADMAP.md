@@ -1287,10 +1287,30 @@ Three things are worth recording beyond the credential itself:
   `hevy_service.sync_job` built a client, and so answered "is this configured?",
   before anything had said whose record the run was for. Reordered.
 
-Still not fanned out: the four jobs run once, for the sole subject the resolver
-gives them. The credential blocker is gone, so what remains is the scheduler
-work — a per-connection dispatcher, per-connection locks, and failure alerts that
-name which account failed rather than which job.
+**Every job about a record now runs once per record.** `daily_brief` and
+`nudges` fan out per subject; the four provider jobs fan out per *connection*,
+because a subject who has not connected a watch has nothing for them to do and
+enumerating them would mean four scheduled no-ops a day per person.
+
+`subject_id` is mandatory on every one of them, which is what
+`vitals/legacy_scope.py` is a ratchet for: an omittable scope is exactly how
+these jobs came to mean "the sole subject, or refuse". The MCP caller asking to
+sync their own Garmin now gets `sync_now_for_actor`, resolving the record the
+*actor* owns — two callers that meant different things and had been sharing one
+argument. What stayed on the job is `actor_user_id`, which is attribution rather
+than scope and is unset for a scheduled run.
+
+The failure alert moved with them, and that is worth naming separately. The
+shared runner recorded one outcome per *tick*, through a resolver asking for the
+sole subject — right by accident while an installation was one person, and on a
+two-person one a refusal the handler swallowed, so a failing sync raised nothing
+at all while `/health` stayed green. `record_subject_job_outcome` takes a
+mandatory subject and is called once per record by the fan-out; the runner keeps
+only the platform-family jobs, which are about the installation's own state.
+
+What is left in PR-09 is the notification transport. There is none: Telegram was
+removed and web push has not landed, so the proactive layer composes on schedule
+and every send resolves to "no endpoint".
 
 **The shape of the rest.** `.env` should hold only what belongs to the
 installation: the database and Redis, the session secret, the identity provider,
@@ -1584,11 +1604,12 @@ Additional gates:
   born in `account_provisioning_service` and nowhere else; an operator reaches
   it through `scripts/provision_account.py`.
 - [x] Isolate files, settings, portability — PR-06.
-- [~] Isolate connectors, scheduler, and messaging — PR-09, partly. The scheduler
-  is fanned out per subject and runs on each subject's own clock; four
-  provider-sync jobs are not, because their credentials are one set for the whole
-  process. Messaging has no transport: Telegram was removed and web push has not
-  landed.
+- [~] Isolate connectors, scheduler, and messaging — PR-09, all but the
+  transport. Every job about a record runs once per record and on that record's
+  own clock; the four provider jobs fan out per connection, and each account has
+  its own credential, token store, session cache and login breaker. Messaging
+  still has no transport: Telegram was removed and web push has not landed, so
+  every send resolves to "no endpoint".
 - [x] Add verified professionals, relationships, and consent — PR-07, with the
   professional UX in PR-08 (minus the inbox).
 - [ ] Replace MCP/external auth with subject-scoped revocable grants.
@@ -1621,6 +1642,7 @@ Additional gates:
 | 2026-08-24 | A settings control whose effect is currently zero comes off the card; its stored value stays. | Quiet hours, the daily message budget and the nudge switches all gate a send, and there is nothing to send with. The delivery engine still reads the stored policy and a first web push has to be governed by something, so the handler now overlays only the fields the form still posts — `Form(default)` would otherwise silently reset what the owner last chose. |
 | 2026-08-24 | The profile moves to the subject, and an unset field stays unset rather than taking a default. | `.env` held one age, sex, height, programme, goals and set of nutrition targets for however many patients an installation has. Two defects sat behind that, and only the first looked like one: the five fields were printed on every patient's report as though they were theirs, and the Navy formula computed every patient's body fat and lean mass from the installation owner's height and sex. The second is the reason for the rule about defaults — 190 cm, male, 18 is not a convenience for somebody who has said nothing, it is a claim about their body that a formula then turns into a number in a medical record. Nutrition targets are the deliberate exception: a target is a goal, not a fact about a body. |
 | 2026-08-24 | Provider credentials are encrypted per connection in the database, and every Redis key and token path around them is namespaced by connection — the installation owner included. | One Garmin account and one Hevy key in `.env` is the single-user shape that kept four jobs from running per subject. The credential is only half of it: the cached token session, the login breaker and the token store were flat keys, so two subjects would share a session and one person's failed logins would pause everybody. Exempting the owner from the namespace to save them a login was considered and rejected — it makes "which subject is the owner" a question every lookup has to answer, and the available answers (creation order, a discriminator the demo seeder also writes) are ambiguous on exactly the installations this matters on. The cost is one login on the first sync after the upgrade. The vault is the first encrypted-at-rest store here; `VITALS_CREDENTIAL_KEY` belongs to the installation, and losing it costs every stored credential and no health data. |
+| 2026-08-24 | The provider jobs fan out per *connection*, and a job failure is filed against the record it happened to. | Per connection rather than per subject because a subject who has not connected a watch has nothing for those four jobs to do; enumerating them would be four scheduled no-ops a day per person, and a failure alert for each would be an alert about nothing. The outcome recording moved for a sharper reason: the shared runner recorded one outcome per *tick* through a resolver asking for the sole subject, which was right by accident on a one-person installation and, on a two-person one, a refusal the handler swallowed — so a failing sync raised no alert at all while `/health` stayed green. `record_subject_job_outcome` takes a mandatory subject; the runner keeps only the platform-family jobs, which have no record to be about. |
 | 2026-08-24 | Revision `0005` was edited after having been applied, to stop it seeding five unowned rows. | The alternative was a product that cannot be installed. `alembic upgrade head` is the container's start command; on an empty database revision `0049` refused because those five `skincare_products` rows can never get an owner — identity bootstrap runs after migrations. A later revision cannot fix it, because `0049` comes first and is what fails, and a conditional cannot either, because the ownership columns do not exist yet at `0005`. Removing an insert is a no-op for anyone who already ran the revision; the only behaviour that changes is the broken one. The general rule stands, and the exception is written into the migration's own docstring rather than a commit message. |
 
 ## Continuation protocol
