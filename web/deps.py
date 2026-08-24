@@ -83,18 +83,44 @@ class NotAuthenticated(HTTPException):
         super().__init__(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
 
-async def require_auth(request: Request) -> str:
-    """Guard every protected route. Returns the authenticated username or raises."""
+async def require_auth(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+) -> str:
+    """Guard every protected route and revalidate federated sessions."""
     # Lazy import breaks the web.auth ↔ web.deps cycle: auth.py imports the login
     # rate-limiter (web.ratelimit → web.deps), so deps must not import auth at
     # module-load time.
-    from web.auth import read_session
+    from web.auth import decode_session
 
     token = request.cookies.get(SESSION_COOKIE)
-    username = read_session(token)
-    if username is None:
+    claims = decode_session(token)
+    if claims is None:
         raise NotAuthenticated()
-    return username
+
+    if claims.user_id is not None:
+        from datetime import datetime, timezone
+
+        from vitals.services.session_service import SessionRejected, confirm_session
+
+        authenticated_at = (
+            datetime.fromtimestamp(claims.authenticated_at, tz=timezone.utc)
+            if claims.authenticated_at is not None
+            else None
+        )
+        try:
+            live = await confirm_session(
+                db,
+                user_id=claims.user_id,
+                session_version=claims.session_version or 0,
+                authenticated_at=authenticated_at,
+            )
+        except (SessionRejected, ValueError, OSError, OverflowError):
+            raise NotAuthenticated() from None
+        request.state.live_session = live
+        return live.username
+
+    return claims.username
 
 
 @dataclass(frozen=True, slots=True)

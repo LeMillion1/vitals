@@ -68,6 +68,39 @@ async def test_revoking_invalidates_a_cookie_that_still_verifies(db_session):
         )
 
 
+async def test_revoking_a_federated_session_closes_the_next_web_request(
+    client, db_session
+):
+    """The web boundary must call the service, not merely test it in isolation."""
+
+    from web.auth import create_federated_session
+    from web.config import SESSION_COOKIE
+
+    user = await _user(db_session, "web-session-revoked")
+    await db_session.commit()
+    token = create_federated_session(
+        username=user.username,
+        user_id=user.id,
+        session_version=user.session_version,
+        authenticated_at=int(datetime.now(timezone.utc).timestamp()),
+        subject_id=None,
+    )
+    client.cookies.set(SESSION_COOKIE, token)
+
+    before = await client.get(
+        "/care", headers={"Accept": "text/html"}, follow_redirects=False
+    )
+    assert before.status_code == 200
+
+    await revoke_all_sessions(db_session, user_id=user.id)
+    await db_session.commit()
+    after = await client.get(
+        "/care", headers={"Accept": "text/html"}, follow_redirects=False
+    )
+    assert after.status_code == 302
+    assert after.headers["location"].startswith("/login")
+
+
 async def test_a_session_issued_after_the_revocation_still_works(db_session):
     """Revocation ends the sessions that exist, not the ability to log in again."""
 

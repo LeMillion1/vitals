@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — revoked federated sessions stop at the web boundary
+
+Versioned OIDC cookies carried a revocable `session_version`, but protected web
+routes only verified the cookie signature. Suspending an account or incrementing
+its session version therefore did not end an already issued browser session.
+The shared authentication dependency now confirms every federated session
+against the current active user row, so one revocation closes the next request
+across every protected route.
+
 ### Fixed — signing out also ends the provider session
 
 Federated logout previously deleted only the Vitals cookie. The live OIDC
