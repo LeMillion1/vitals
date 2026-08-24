@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain, IntegrationProvider, Severity
 from vitals.integrations.hevy_client import HevyAPIError, HevyClient, HevyNotConfigured
-from vitals.services import alerts_service, hevy_service, legacy_subject_alerts
+from vitals.services import (
+    alerts_service,
+    hevy_service,
+    legacy_subject_alerts,
+    provider_credentials_service,
+)
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from web.deps import get_redis, get_session, require_auth
 from web.templating import templates
@@ -71,10 +76,20 @@ async def hevy_dashboard(
             (c["title"] for c in catalog if c["exercise_template_id"] == selected), selected
         )
 
-    client = HevyClient.from_config()
+    # This subject's Hevy account, not the process's — see the same change in
+    # the Garmin dashboard.
+    account = await provider_credentials_service.resolve_hevy_account(
+        db, subject_id=ownership.subject_id
+    )
+    is_configured = bool(account and account.configured)
+    namespace = account.namespace if account else ""
 
     last_sync = None
-    last_sync_raw = await redis.get("sync:last_success:hevy")
+    last_sync_raw = await redis.get(
+        provider_credentials_service.sync_marker_key(
+            IntegrationProvider.HEVY, namespace
+        )
+    )
     if last_sync_raw:
         try:
             from datetime import datetime, timezone
@@ -101,7 +116,7 @@ async def hevy_dashboard(
             "series": {"points": series},
             "verdict": verdict,
             "notes": notes,
-            "is_configured": client.is_configured,
+            "is_configured": is_configured,
             "last_sync": last_sync,
             "sync": request.query_params.get("sync"),
             "synced": request.query_params.get("synced"),
@@ -118,15 +133,17 @@ async def sync_now(
 ):
     """Pull the latest workouts from Hevy on demand. Failures surface as a passive
     ``warn`` alert (never a hard error) so the page still renders."""
-    client = HevyClient.from_config()
-    if not client.is_configured:
-        return _redirect(request, "?sync=not_configured")
-
     ownership = await resolve_legacy_ownership_context(
         db,
         actor_username=username,
         required_connections=(IntegrationProvider.HEVY,),
     )
+    account = await provider_credentials_service.resolve_hevy_account(
+        db, subject_id=ownership.subject_id
+    )
+    if account is None or not account.configured:
+        return _redirect(request, "?sync=not_configured")
+    client = HevyClient.from_config(account.config)
     alert_context = alerts_service.ProviderAlertContext(
         identity=ownership.system_action(),
         provider=IntegrationProvider.HEVY,
@@ -152,7 +169,12 @@ async def sync_now(
         await db.commit()
 
         import time
-        await redis.set("sync:last_success:hevy", str(int(time.time())))
+        await redis.set(
+            provider_credentials_service.sync_marker_key(
+                IntegrationProvider.HEVY, account.namespace
+            ),
+            str(int(time.time())),
+        )
     except hevy_service.HevyOwnershipInactiveConnectionError:
         await db.rollback()
         return _redirect(request, "?sync=not_configured")

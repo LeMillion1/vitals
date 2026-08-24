@@ -36,6 +36,15 @@ os.environ["VITALS_GARMIN_PASSWORD"] = ""
 os.environ["VITALS_HEVY_API_KEY"] = ""
 os.environ["VITALS_OPENROUTER_API_KEY"] = ""
 
+# A fixed installation key for the credential vault. Provider credentials are
+# per subject and encrypted at rest, so a test that drives a provider has to be
+# able to store one; without a key the vault refuses, which is the correct
+# production behaviour and an unhelpful default here. Fixed rather than
+# generated so a failure is reproducible.
+os.environ.setdefault(
+    "VITALS_CREDENTIAL_KEY", "dGVzdC1jcmVkZW50aWFsLWtleS0zMi1ieXRlcy1hYWE="
+)
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import text as sa_text
@@ -383,7 +392,11 @@ async def legacy_owner_roots(db_session):
         timezone=load_config().timezone,
     )
     await bootstrap_legacy_resource_roots(
-        db_session, subject_id=identity.subject_id
+        db_session,
+        subject_id=identity.subject_id,
+        # This fixture is production startup, which is the one caller allowed to
+        # say that ``.env``'s Garmin and Hevy values describe this record.
+        adopt_environment_credentials=True,
     )
     from vitals.services import modules_service
     from vitals.services.scoped_settings_service import (
@@ -655,6 +668,44 @@ async def hevy_connection_id(legacy_connection_ids):
     from vitals.enums import IntegrationProvider
 
     return legacy_connection_ids(IntegrationProvider.HEVY)
+
+
+@pytest_asyncio.fixture
+async def garmin_connected(db_session, legacy_owner_roots, garmin_connection_id):
+    """The owner has actually connected a Garmin account.
+
+    Provider credentials are per subject and encrypted against the connection,
+    so "is Garmin configured" is a question about a record rather than about the
+    process. The suite clears ``VITALS_GARMIN_*`` on purpose, so a test that
+    drives a sync has to say that somebody connected an account — which is also
+    what a real installation does, on the settings card.
+    """
+
+    from vitals.services import provider_credentials_service
+
+    await provider_credentials_service.set_garmin_credentials(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        email="owner@example.test",
+        password="test-garmin-password",
+    )
+    await db_session.commit()
+    return garmin_connection_id
+
+
+@pytest_asyncio.fixture
+async def hevy_connected(db_session, legacy_owner_roots, hevy_connection_id):
+    """The owner has actually connected a Hevy account — see ``garmin_connected``."""
+
+    from vitals.services import provider_credentials_service
+
+    await provider_credentials_service.set_hevy_credentials(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        api_key="test-hevy-api-key",
+    )
+    await db_session.commit()
+    return hevy_connection_id
 
 
 @pytest_asyncio.fixture

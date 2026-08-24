@@ -586,7 +586,7 @@ async def test_unconfigured_job_does_not_reconcile_retry_or_alert(
 
 
 async def test_weight_job_surfaces_garmin_token_cache_warnings(
-    session_factory, monkeypatch, owner_write, garmin_export
+    session_factory, monkeypatch, owner_write, garmin_export, garmin_connected
 ):
     class WarningClient(FakeWeightClient):
         is_configured = True

@@ -19,7 +19,11 @@ from vitals.models.garmin import (
     SERIES_STRESS,
     SLEEP_SERIES_TYPES,
 )
-from vitals.services import garmin_service, legacy_subject_alerts
+from vitals.services import (
+    garmin_service,
+    legacy_subject_alerts,
+    provider_credentials_service,
+)
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.utils.timeutils import today_local
 from web.deps import get_redis, get_session, require_auth
@@ -68,10 +72,21 @@ async def garmin_dashboard(
         domain=Domain.GARMIN,
     )
 
-    client = GarminClient.from_config()
+    # This subject's account, not the process's. A page built from
+    # ``load_config()`` told every patient the installation owner's Garmin was
+    # theirs — "connected", with a last-sync time, for data that never arrives.
+    account = await provider_credentials_service.resolve_garmin_account(
+        db, subject_id=ownership.subject_id
+    )
+    is_configured = bool(account and account.configured)
+    namespace = account.namespace if account else ""
 
     last_sync = None
-    last_sync_raw = await redis.get("sync:last_success:garmin")
+    last_sync_raw = await redis.get(
+        provider_credentials_service.sync_marker_key(
+            IntegrationProvider.GARMIN, namespace
+        )
+    )
     if last_sync_raw:
         try:
             from datetime import datetime, timezone
@@ -98,7 +113,7 @@ async def garmin_dashboard(
             "count": count,
             "advice": advice,
             "alerts": alerts,
-            "is_configured": client.is_configured,
+            "is_configured": is_configured,
             "last_sync": last_sync,
             "sync": request.query_params.get("sync"),
             "synced": request.query_params.get("synced"),
@@ -190,15 +205,20 @@ async def sync_now(
 ):
     """Pull the last week of Garmin metrics on demand. Auth/MFA failures are turned
     into a passive alert inside the service, so this never hard-errors."""
-    client = GarminClient.from_config(redis=redis)
-    if not client.is_configured:
-        return _redirect(request, "?sync=not_configured")
-
+    # Ownership first, then the client: which account this signs in as is a
+    # question about the person asking, and building the client before knowing
+    # who they are is how it ended up being the installation's for everybody.
     ownership = await resolve_legacy_ownership_context(
         db,
         actor_username=username,
         required_connections=(IntegrationProvider.GARMIN,),
     )
+    account = await provider_credentials_service.resolve_garmin_account(
+        db, subject_id=ownership.subject_id
+    )
+    if account is None or not account.configured:
+        return _redirect(request, "?sync=not_configured")
+    client = GarminClient.from_config(account.config, redis)
     try:
         summary = await garmin_service.sync_owned(
             db,
@@ -217,7 +237,12 @@ async def sync_now(
         return _redirect(request, f"?sync={summary['error']}")
 
     import time
-    await redis.set("sync:last_success:garmin", str(int(time.time())))
+    await redis.set(
+        provider_credentials_service.sync_marker_key(
+            IntegrationProvider.GARMIN, account.namespace
+        ),
+        str(int(time.time())),
+    )
     return _redirect(request, f"?sync=ok&synced={summary['days']}")
 
 

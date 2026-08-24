@@ -61,10 +61,20 @@ class LegacyResourceRootsBootstrapResult:
         return bool(self.created_connection_ids)
 
 
+#: Providers whose ``.env`` credential describes a person rather than the
+#: installation. A ``legacy_env:`` ref on one of these means "this account's
+#: secret is in the environment file", and only the record that file was written
+#: for may say it — see ``adopt_environment_credentials`` below.
+_SUBJECT_OWNED_PROVIDERS = frozenset(
+    {IntegrationProvider.GARMIN, IntegrationProvider.HEVY}
+)
+
+
 async def bootstrap_legacy_resource_roots(
     session: AsyncSession,
     *,
     subject_id: uuid.UUID,
+    adopt_environment_credentials: bool = False,
 ) -> LegacyResourceRootsBootstrapResult:
     """Create harmless legacy connection roots for one existing subject.
 
@@ -72,6 +82,17 @@ async def bootstrap_legacy_resource_roots(
     PostgreSQL workers.  Any existing row for the same subject/provider/type is
     authoritative regardless of discriminator or lifecycle state: bootstrap
     skips it verbatim and never repairs, activates, disables, or downgrades it.
+
+    ``adopt_environment_credentials`` decides whether the Garmin and Hevy roots
+    are allowed to claim the environment's credentials, and defaults to *no*.
+    It used to be unconditional, which was harmless while the only caller was
+    the startup bootstrap of the installation's own owner and became a
+    disclosure the moment a second subject was created: every new patient's
+    roots said "my Garmin password is in ``.env``", and ``.env`` holds the
+    operator's. Only the boot path that is reconciling ``VITALS_AUTH_USERNAME``
+    passes ``True``. OpenRouter and Telegram are unaffected either way — those
+    are installation-wide accounts, and their refs mean what they say for
+    everybody.
 
     The function mutates and flushes only.  It never commits.
     """
@@ -113,7 +134,12 @@ async def bootstrap_legacy_resource_roots(
             provider=provider.value,
             connection_type=connection_type.value,
             external_account_discriminator=LEGACY_ACCOUNT_DISCRIMINATOR,
-            credential_ref=f"legacy_env:{provider.value}",
+            credential_ref=(
+                None
+                if provider in _SUBJECT_OWNED_PROVIDERS
+                and not adopt_environment_credentials
+                else f"legacy_env:{provider.value}"
+            ),
             status=IntegrationConnectionStatus.LEGACY.value,
         )
         session.add(connection)

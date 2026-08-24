@@ -225,8 +225,20 @@ async def test_settings_save_ai_sentinel_not_overwritten(auth_client, tmp_path, 
     assert "VITALS_OPENROUTER_API_KEY=sk-or-real-key" in content
 
 
-async def test_settings_save_hevy(auth_client, tmp_path, monkeypatch):
-    """POST /settings/hevy writes the Hevy API key."""
+async def test_settings_save_hevy(
+    auth_client, db_session, legacy_owner_roots, tmp_path, monkeypatch
+):
+    """POST /settings/hevy stores the key against this person's connection.
+
+    It wrote ``VITALS_HEVY_API_KEY`` — one workout account for the whole
+    installation. The environment is left alone: it is the adoption source for a
+    deployment that has not upgraded yet, and a second answer that disagrees
+    with the stored one is worse than a stale one nothing reads.
+    """
+
+    from vitals.enums import IntegrationProvider
+    from vitals.services import provider_credentials_service
+
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_HEVY_API_KEY=\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
@@ -235,12 +247,30 @@ async def test_settings_save_hevy(auth_client, tmp_path, monkeypatch):
     assert r.status_code == 303
     assert "saved=hevy" in r.headers["location"]
 
-    content = env_file.read_text(encoding="utf-8")
-    assert "VITALS_HEVY_API_KEY=hevy_abc123" in content
+    db_session.expire_all()
+    account = await provider_credentials_service.resolve_account(
+        db_session,
+        subject_id=legacy_owner_roots.subject_id,
+        provider=IntegrationProvider.HEVY,
+    )
+    assert account.configured
+    assert account.config.hevy_api_key == "hevy_abc123"
+    assert env_file.read_text(encoding="utf-8") == "VITALS_HEVY_API_KEY=\n"
 
 
-async def test_settings_save_garmin(auth_client, db_session, tmp_path, monkeypatch):
-    """Credential saves are live, while export remains a separate explicit opt-in."""
+async def test_settings_save_garmin(
+    auth_client, db_session, legacy_owner_roots, tmp_path, monkeypatch
+):
+    """Credential saves are live, while export remains a separate explicit opt-in.
+
+    "Live" used to mean writing ``.env`` and then ``os.environ`` so the next
+    client built from ``load_config()`` would see it — the installation's one
+    watch. It means stored against this record now, which the resolver reads on
+    every construction, so it is live for the person who typed it and for nobody
+    else.
+    """
+    from vitals.services import provider_credentials_service
+
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_GARMIN_EMAIL=\nVITALS_GARMIN_PASSWORD=\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
@@ -257,14 +287,17 @@ async def test_settings_save_garmin(auth_client, db_session, tmp_path, monkeypat
     assert r.status_code == 303
     assert "saved=garmin" in r.headers["location"]
 
-    content = env_file.read_text(encoding="utf-8")
-    assert "VITALS_GARMIN_EMAIL=user@example.com" in content
-    assert "VITALS_GARMIN_PASSWORD=hunter2" in content
-
     from vitals.services import garmin_weight_service
 
-    assert os.environ["VITALS_GARMIN_EMAIL"] == "user@example.com"
-    assert os.environ["VITALS_GARMIN_PASSWORD"] == "hunter2"
+    db_session.expire_all()
+    account = await provider_credentials_service.resolve_garmin_account(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    )
+    assert account.config.garmin_email == "user@example.com"
+    assert account.config.garmin_password == "hunter2"
+    assert env_file.read_text(encoding="utf-8") == (
+        "VITALS_GARMIN_EMAIL=\nVITALS_GARMIN_PASSWORD=\n"
+    )
     assert await garmin_weight_service.is_enabled(db_session) is False
 
     page = await auth_client.get("/settings", headers={"Accept": "text/html"})
@@ -296,11 +329,20 @@ async def test_garmin_weight_toggle_refuses_missing_credentials(
 
 
 async def test_garmin_weight_toggle_applies_live_and_can_turn_off(
-    auth_client, db_session, tmp_path, monkeypatch
+    auth_client, db_session, garmin_connected, tmp_path, monkeypatch
 ):
+    """The opt-in is gated on *this* record having a Garmin account.
+
+    It used to be gated on ``VITALS_GARMIN_EMAIL`` and to copy those values into
+    ``os.environ`` on the way through, which is the installation's single watch:
+    a patient with no Garmin of their own passed the check on the strength of
+    the operator's, and their weight would have been pushed to somebody else's
+    account.
+    """
+
     env_file = tmp_path / "test.env"
     env_file.write_text(
-        "VITALS_GARMIN_EMAIL=user@example.com\nVITALS_GARMIN_PASSWORD=hunter2\n",
+        "VITALS_GARMIN_EMAIL=\nVITALS_GARMIN_PASSWORD=\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
@@ -318,8 +360,6 @@ async def test_garmin_weight_toggle_applies_live_and_can_turn_off(
     assert re.search(
         r'id="s-garmin-weight-export"[^>]*\schecked(?:\s|>)', enabled.text
     )
-    assert os.environ["VITALS_GARMIN_EMAIL"] == "user@example.com"
-    assert os.environ["VITALS_GARMIN_PASSWORD"] == "hunter2"
 
     from vitals.services import garmin_weight_service
 

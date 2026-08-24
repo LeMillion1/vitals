@@ -159,6 +159,7 @@ async def test_garmin_import_route_attributes_owner_subject_and_connection(
 async def test_garmin_sync_route_attributes_owner_subject_and_connection(
     auth_client,
     db_session,
+    garmin_connected,
     monkeypatch,
 ):
     owner, subject, connections = await _legacy_roots(db_session)
@@ -210,6 +211,7 @@ async def test_garmin_sync_route_attributes_owner_subject_and_connection(
 async def test_hevy_sync_route_attributes_owner_subject_and_connection(
     auth_client,
     db_session,
+    hevy_connected,
     monkeypatch,
 ):
     owner, subject, connections = await _legacy_roots(db_session)
@@ -230,7 +232,7 @@ async def test_hevy_sync_route_attributes_owner_subject_and_connection(
 
     class _Factory:
         @classmethod
-        def from_config(cls):
+        def from_config(cls, config=None):
             return _Client()
 
     from web.routers import hevy as hevy_router
@@ -275,6 +277,7 @@ async def test_hevy_sync_route_attributes_owner_subject_and_connection(
 async def test_hevy_sync_failure_alert_is_provider_owned(
     auth_client,
     db_session,
+    hevy_connected,
     monkeypatch,
 ):
     from vitals.integrations.hevy_client import HevyAPIError
@@ -290,7 +293,7 @@ async def test_hevy_sync_failure_alert_is_provider_owned(
 
     class _Factory:
         @classmethod
-        def from_config(cls):
+        def from_config(cls, config=None):
             return _Client()
 
     monkeypatch.setattr(hevy_router, "HevyClient", _Factory)

@@ -56,6 +56,24 @@ LOGIN_PAUSE_KEY = "garmin:login_pause"
 MAX_LOGINS_PER_DAY = 3
 LOGIN_PAUSE_SECONDS = 6 * 3600
 
+
+def namespaced(key: str, namespace: str) -> str:
+    """The same key, for one account rather than for the process.
+
+    All three keys above were flat literals, which was right while there was
+    one Garmin account in the installation. With two subjects it means one
+    person's cached session resuming as another's, and — worse and quieter —
+    one person's three failed logins pausing everybody else's sync for six
+    hours. The breaker is per account because that is what Garmin rate-limits.
+
+    An empty namespace returns the key unchanged, which is the installation
+    owner's: their session cache and their counters stay exactly where they
+    were, so the upgrade costs no login.
+    """
+
+    return key if not namespace else f"{key}:{namespace}"
+
+
 # Below this length garminconnect reads a token store argument as a filesystem
 # path instead of token JSON; the real session is ~2 KB.
 _TOKEN_STRING_MIN_LEN = 512
@@ -95,10 +113,16 @@ class GarminLoginThrottled(GarminAuthError):
     Garmin rate-limit into a multi-day account block."""
 
 
-async def login_breaker_state(redis: Any) -> dict:
+async def login_breaker_state(redis: Any, namespace: str = "") -> dict:
     """What the credential-login breaker has spent — read-only, for the settings
     card. Without it the poll-frequency fields would be set blind: the whole
     reason a higher frequency is safe is that logins stay rationed.
+
+    ``namespace`` names whose allowance this is; empty is the installation
+    owner's, whose counters are where they have always been. A settings page
+    reading the wrong one would show a patient somebody else's spent logins,
+    and — since the card is also how an owner decides whether to raise the poll
+    frequency — would have them decide it off a number that is not theirs.
 
     Unreadable state reports as ``paused=None`` rather than as "fine": a breaker
     nobody can see is exactly what the owner needs told.
@@ -106,8 +130,8 @@ async def login_breaker_state(redis: Any) -> dict:
     if redis is None:
         return {"used": 0, "max": MAX_LOGINS_PER_DAY, "paused": None}
     try:
-        used = int(await redis.get(LOGIN_ATTEMPTS_KEY) or 0)
-        paused = bool(await redis.get(LOGIN_PAUSE_KEY))
+        used = int(await redis.get(namespaced(LOGIN_ATTEMPTS_KEY, namespace)) or 0)
+        paused = bool(await redis.get(namespaced(LOGIN_PAUSE_KEY, namespace)))
     except Exception:  # noqa: BLE001
         logger.warning("Garmin breaker state unreadable", exc_info=True)
         return {"used": 0, "max": MAX_LOGINS_PER_DAY, "paused": None}
@@ -118,6 +142,11 @@ class GarminClient:
     def __init__(self, config: Optional[Config] = None, redis: Any = None):
         self._config = config or load_config()
         self._redis = redis
+        # Whose account this client is. Comes off the config because that is
+        # the object carrying the credentials it goes with — see
+        # ``Config.provider_key_namespace``. Empty for a client built from the
+        # environment, which is the installation owner's.
+        self._ns = getattr(self._config, "provider_key_namespace", "") or ""
         self._garmin: Any = None  # cached logged-in garminconnect.Garmin
         # Token-store failures collected during this client's life; the service
         # turns them into a warn alert instead of letting them pass as log noise.
@@ -144,7 +173,7 @@ class GarminClient:
         if self._redis is None:
             return None
         try:
-            return await self._redis.get(REDIS_SESSION_KEY)
+            return await self._redis.get(namespaced(REDIS_SESSION_KEY, self._ns))
         except Exception as e:  # noqa: BLE001
             self._warn_token(f"could not read the cached session from Redis: {e}")
             return None
@@ -161,7 +190,7 @@ class GarminClient:
             self._warn_token("the library returned an empty session")
             return
         try:
-            await self._redis.set(REDIS_SESSION_KEY, token_str, ex=SESSION_TTL_SECONDS)
+            await self._redis.set(namespaced(REDIS_SESSION_KEY, self._ns), token_str, ex=SESSION_TTL_SECONDS)
         except Exception as e:  # noqa: BLE001
             self._warn_token(f"could not cache the session in Redis: {e}")
 
@@ -241,16 +270,16 @@ class GarminClient:
             logger.warning("Garmin login breaker inactive: no Redis available")
             return
         try:
-            if await self._redis.get(LOGIN_PAUSE_KEY):
+            if await self._redis.get(namespaced(LOGIN_PAUSE_KEY, self._ns)):
                 raise GarminLoginThrottled(
                     f"login paused for up to {LOGIN_PAUSE_SECONDS // 3600}h "
                     "after the daily limit was hit"
                 )
-            used = int(await self._redis.incr(LOGIN_ATTEMPTS_KEY))
+            used = int(await self._redis.incr(namespaced(LOGIN_ATTEMPTS_KEY, self._ns)))
             if used == 1:
-                await self._redis.expire(LOGIN_ATTEMPTS_KEY, SESSION_TTL_SECONDS)
+                await self._redis.expire(namespaced(LOGIN_ATTEMPTS_KEY, self._ns), SESSION_TTL_SECONDS)
             if used > MAX_LOGINS_PER_DAY:
-                await self._redis.set(LOGIN_PAUSE_KEY, "1", ex=LOGIN_PAUSE_SECONDS)
+                await self._redis.set(namespaced(LOGIN_PAUSE_KEY, self._ns), "1", ex=LOGIN_PAUSE_SECONDS)
                 raise GarminLoginThrottled(
                     f"{MAX_LOGINS_PER_DAY} logins already used in 24h — "
                     f"pausing for {LOGIN_PAUSE_SECONDS // 3600}h"

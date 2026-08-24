@@ -70,6 +70,7 @@ from vitals.ownership import WriteIdentity
 from vitals.services import (
     alerts_service,
     conflict_engine,
+    provider_credentials_service,
     raw_payload_service,
     weight_service,
 )
@@ -2221,9 +2222,16 @@ async def pulse_job(
         if not policy.pulse_start_hour <= now_local().hour < policy.pulse_end_hour:
             return
 
-        client = GarminClient.from_config(redis=redis)
-        if not client.is_configured:
+        # This subject's watch. Built from the resolved account rather than
+        # from ``load_config()``, which is the installation's single Garmin —
+        # polling it under somebody else's ownership would file the operator's
+        # step count as that patient's.
+        account = await provider_credentials_service.resolve_garmin_account(
+            session, subject_id=ownership.subject_id
+        )
+        if account is None or not account.configured:
             return
+        client = GarminClient.from_config(account.config, redis)
         try:
             await pulse_owned(
                 session,
@@ -2569,18 +2577,26 @@ async def sync_job(
     from vitals.integrations.garmin_client import GarminClient
     from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 
-    client = GarminClient.from_config(redis=redis)
-    if not client.is_configured:
-        return None
     async with session_factory() as session:
         from vitals.services.language_service import get_language
         from vitals.i18n import current_lang
 
+        # Ownership before the client, which is a reordering and not a tidy-up.
+        # The client used to be built from ``load_config()`` before anything had
+        # said whose record this run was for, so "is Garmin configured" was a
+        # question about the installation. It is a question about the account.
         ownership = await resolve_legacy_ownership_context(
             session,
             actor_username=actor_username,
             required_connections=(IntegrationProvider.GARMIN,),
         )
+        account = await provider_credentials_service.resolve_garmin_account(
+            session, subject_id=ownership.subject_id
+        )
+        if account is None or not account.configured:
+            await session.rollback()
+            return None
+        client = GarminClient.from_config(account.config, redis)
         lang = await get_language(
             session,
             redis,
@@ -2605,5 +2621,10 @@ async def sync_job(
         await session.commit()
         if redis is not None and summary.get("error") is None:
             import time
-            await redis.set("sync:last_success:garmin", str(int(time.time())))
+            await redis.set(
+                provider_credentials_service.sync_marker_key(
+                    IntegrationProvider.GARMIN, account.namespace
+                ),
+                str(int(time.time())),
+            )
         return summary

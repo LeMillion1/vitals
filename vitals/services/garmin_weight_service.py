@@ -2819,10 +2819,14 @@ async def send_now_scoped(
     if not enabled:
         return {"status": "disabled", "sent": False}
     from vitals.integrations.garmin_client import GarminClient
+    from vitals.services import provider_credentials_service
 
-    client = GarminClient.from_config(redis=redis)
-    if not client.is_configured:
+    account = await provider_credentials_service.resolve_garmin_account(
+        session, subject_id=context.identity.subject_id
+    )
+    if account is None or not account.configured:
         return {"status": "unconfigured", "sent": False}
+    client = GarminClient.from_config(account.config, redis)
 
     # The Settings request prepared governance, advisory, identity, and account
     # locks before reaching this boundary. Release all of them before waiting on
@@ -2969,9 +2973,14 @@ async def export_job(session_factory, redis=None) -> None:
         current_lang.set(
             await get_language(session, redis, user_id=owner_user_id)
         )
-        client = GarminClient.from_config(redis=redis)
-        if not client.is_configured:
+        from vitals.services import provider_credentials_service
+
+        account = await provider_credentials_service.resolve_garmin_account(
+            session, subject_id=context.identity.subject_id
+        )
+        if account is None or not account.configured:
             return
+        client = GarminClient.from_config(account.config, redis)
         try:
             prepared = await prepare_scoped_export(
                 session,

@@ -22,6 +22,7 @@ from vitals.models.tenancy import (
     IntegrationConnection,
     PlatformIntegrationConnection,
 )
+from vitals.models.credentials import IntegrationCredential
 from vitals.models.ai import (
     AIInvocation,
     AIPlatformQuotaPeriod,
@@ -135,6 +136,7 @@ __all__ = [
     "ConsentScope",
     "AuditEvent",
     "IntegrationConnection",
+    "IntegrationCredential",
     "PlatformIntegrationConnection",
     "AIInvocation",
     "AIPlatformQuotaPeriod",

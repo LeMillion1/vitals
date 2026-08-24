@@ -1304,19 +1304,27 @@ async def sync_job(
     reports it back to the model)."""
     from vitals.integrations.hevy_client import HevyClient
 
-    client = HevyClient.from_config()
-    if not client.is_configured:
-        return None
     async with session_factory() as session:
+        from vitals.services import provider_credentials_service
         from vitals.services.legacy_ownership import (
             resolve_legacy_ownership_context,
         )
 
+        # Ownership before the client. It was the other way round, so "is Hevy
+        # configured" was answered about the installation's one API key before
+        # anything had said whose workouts this run was for.
         ownership = await resolve_legacy_ownership_context(
             session,
             actor_username=actor_username,
             required_connections=(IntegrationProvider.HEVY,),
         )
+        account = await provider_credentials_service.resolve_hevy_account(
+            session, subject_id=ownership.subject_id
+        )
+        if account is None or not account.configured:
+            await session.rollback()
+            return None
+        client = HevyClient.from_config(account.config)
         try:
             summary = await sync_owned(
                 session,
@@ -1333,5 +1341,10 @@ async def sync_job(
         await session.commit()
         if redis is not None:
             import time
-            await redis.set("sync:last_success:hevy", str(int(time.time())))
+            await redis.set(
+                provider_credentials_service.sync_marker_key(
+                    IntegrationProvider.HEVY, account.namespace
+                ),
+                str(int(time.time())),
+            )
         return summary

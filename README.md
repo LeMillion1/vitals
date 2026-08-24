@@ -705,10 +705,11 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_LLM_MODEL_DIGEST` | Модель для дайджестов | `anthropic/claude-sonnet-4.6` |
 | `VITALS_LLM_MODEL_PARSER` | Модель для OCR анализов и BIA | `google/gemini-2.5-flash` |
 | `VITALS_LLM_MODEL_BRIEF` | Модель утреннего брифа (пусто → модель дайджеста) | *Опционально* |
-| `VITALS_HEVY_API_KEY` | API-ключ Hevy | *Опционально* |
+| `VITALS_HEVY_API_KEY` | API-ключ Hevy — только источник переноса для записи владельца инсталляции | *Опционально* |
 | `VITALS_HEVY_BASE_URL` | Адрес API Hevy | `https://api.hevyapp.com` |
-| `VITALS_GARMIN_EMAIL` | Email Garmin Connect | *Опционально* |
+| `VITALS_GARMIN_EMAIL` | Email Garmin Connect — то же: аккаунт владельца, не чей-либо ещё | *Опционально* |
 | `VITALS_GARMIN_PASSWORD` | Пароль Garmin Connect | *Опционально* |
+| `VITALS_CREDENTIAL_KEY` | Ключ шифрования для `integration_credentials` — учётные данные провайдеров каждого субъекта. Без него карточка настроек откажется принимать пароль, а не сохранит его открытым текстом. Сгенерировать: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | *Обязательно, если кто-то кроме владельца подключает Garmin/Hevy* |
 | `VITALS_GARMIN_TOKEN_DIR` | Путь к токенам Garmin | `/data/garmin_session` |
 | `VITALS_MCP_CLIENT_ID` | OAuth Client ID для MCP | `vitals-claude-connector` |
 | `VITALS_MCP_CLIENT_SECRET` | OAuth Client Secret для MCP | *Обязательно* |
@@ -1453,10 +1454,11 @@ runtime reader opens them any more.
 | `VITALS_LLM_MODEL_DIGEST` | Digest model | `anthropic/claude-sonnet-4.6` |
 | `VITALS_LLM_MODEL_PARSER` | Lab OCR model | `google/gemini-2.5-flash` |
 | `VITALS_LLM_MODEL_BRIEF` | Morning-brief model (empty → the digest model) | *Optional* |
-| `VITALS_HEVY_API_KEY` | Hevy API key | *Optional* |
+| `VITALS_HEVY_API_KEY` | Hevy API key — adoption source for the installation owner's record only | *Optional* |
 | `VITALS_HEVY_BASE_URL` | Hevy API base URL | `https://api.hevyapp.com` |
-| `VITALS_GARMIN_EMAIL` | Garmin Connect email | *Optional* |
+| `VITALS_GARMIN_EMAIL` | Garmin Connect email — likewise the owner's account, and nobody else's | *Optional* |
 | `VITALS_GARMIN_PASSWORD` | Garmin Connect password | *Optional* |
+| `VITALS_CREDENTIAL_KEY` | Encryption key for `integration_credentials`, where each subject's provider credentials live. Without it the settings card refuses a password rather than storing it in the clear. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | *Required once anybody but the owner connects Garmin/Hevy* |
 | `VITALS_GARMIN_TOKEN_DIR` | Garmin session token path | `/data/garmin_session` |
 | `VITALS_MCP_CLIENT_ID` | MCP OAuth Client ID | `vitals-claude-connector` |
 | `VITALS_MCP_CLIENT_SECRET` | MCP OAuth Client Secret | *Required* |

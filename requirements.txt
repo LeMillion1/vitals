@@ -19,6 +19,11 @@ Jinja2>=3.1,<4.0
 python-multipart>=0.0.9
 bcrypt>=4.1,<6.0
 itsdangerous>=2.1,<3.0
+# Fernet, for the per-subject provider credentials in ``integration_credentials``
+# — the one thing here that has to be encrypted rather than hashed, because a
+# Garmin password has to come back out to be used. Already present transitively;
+# pinned explicitly now that application code imports it.
+cryptography>=42.0,<51.0
 # 2FA enrolment QR. Pure Python, no dependencies of its own, renders straight to
 # inline SVG — nothing to vendor into /static and no image pipeline.
 segno>=1.6,<2.0

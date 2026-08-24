@@ -62,7 +62,7 @@ from vitals.models.labs import LabResult  # noqa: E402
 from vitals.models.nutrition import MealLog  # noqa: E402
 from vitals.models.supplements import Supplement  # noqa: E402
 from vitals.models.weight import WeightLog  # noqa: E402
-from vitals.services import modules_service  # noqa: E402
+from vitals.services import modules_service, provider_credentials_service  # noqa: E402
 from vitals.services.tenancy_bootstrap import (  # noqa: E402
     bootstrap_legacy_resource_roots,
 )
@@ -143,7 +143,27 @@ async def _patient(
     # have to do this too, and until then a seeded patient without them makes
     # /settings, /garmin and /hevy refuse for a reason that has nothing to do
     # with the migration.
+    #
+    # Without ``adopt_environment_credentials`` — which is the default, and
+    # which only the startup bootstrap of the ``.env`` owner may pass. A seeded
+    # patient's roots must not claim that their Garmin password is in the
+    # environment file, because the one in there is the operator's.
     await bootstrap_legacy_resource_roots(session, subject_id=subject.id)
+    # A synthetic credential of their own, so the settings, Garmin and Hevy
+    # cards render the connected state a real patient's would. Nothing here ever
+    # reaches a provider: the demo seeds facts directly, and these strings would
+    # fail a real login on purpose.
+    await provider_credentials_service.set_garmin_credentials(
+        session,
+        subject_id=subject.id,
+        email=f"{username}@demo.invalid",
+        password="demo-not-a-real-password",
+    )
+    await provider_credentials_service.set_hevy_credentials(
+        session,
+        subject_id=subject.id,
+        api_key=f"demo-not-a-real-key-{seed}",
+    )
     # Optional modules default to off, which is the right default for a fresh
     # installation and the wrong one here: with them off, most of the pages this
     # script exists to look at answer 404 and the browser check silently covers

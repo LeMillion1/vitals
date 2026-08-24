@@ -45,6 +45,7 @@ from vitals.models.identity import HealthSubject
 from vitals.integrations.garmin_client import login_breaker_state
 from vitals.services import (
     ai_gateway_service,
+    credential_vault_service,
     data_portability_service,
     garmin_weight_service,
     health_profile_service,
@@ -52,6 +53,7 @@ from vitals.services import (
     modules_service,
     platform_ai_control_service,
     platform_admin_service,
+    provider_credentials_service,
     twofa_service,
 )
 from vitals.services.modules_service import ModuleToggleError
@@ -290,18 +292,20 @@ async def _prepare_platform_admin_or_403(
         ) from exc
 
 
-def _garmin_credentials() -> tuple[str, str]:
-    """Return the persisted Garmin credentials without ever logging them."""
-    return (
-        read_key("VITALS_GARMIN_EMAIL").strip(),
-        read_key("VITALS_GARMIN_PASSWORD").strip(),
+async def _subject_garmin_account(db: AsyncSession, username: str):
+    """This account's own Garmin connection, whatever it is signed in as.
+
+    Replaces reading ``VITALS_GARMIN_EMAIL`` off the environment, which is the
+    installation's one watch: on a shared installation every patient's settings
+    card showed the operator's address in the email box and "connected" beside
+    it, and the outbound-weight opt-in they were offered would have pushed their
+    weight to somebody else's Garmin.
+    """
+
+    identity = await resolve_legacy_ownership_context(db, actor_username=username)
+    return await provider_credentials_service.resolve_garmin_account(
+        db, subject_id=identity.subject_id
     )
-
-
-def _activate_garmin_credentials(email: str, password: str) -> None:
-    """Make persisted credentials visible to clients created in this process."""
-    os.environ["VITALS_GARMIN_EMAIL"] = email
-    os.environ["VITALS_GARMIN_PASSWORD"] = password
 
 
 async def _garmin_weight_control(
@@ -312,7 +316,7 @@ async def _garmin_weight_control(
     action: Optional[str] = None,
 ) -> HTMLResponse:
     """Render the self-contained HTMX control after a live action."""
-    email, password = _garmin_credentials()
+    account = await _subject_garmin_account(db, username)
     export_context = await garmin_weight_service.resolve_legacy_export_context(
         db,
         actor_username=username,
@@ -326,7 +330,7 @@ async def _garmin_weight_control(
         request,
         "partials/garmin_weight_export.html",
         {
-            "garmin_credentials_configured": bool(email and password),
+            "garmin_credentials_configured": bool(account and account.configured),
             "garmin_weight_export": await garmin_weight_service.get_status_scoped(
                 db,
                 prepared=prepared_export,
@@ -356,9 +360,6 @@ async def _page(
     deferred: Optional[str] = None,
 ) -> HTMLResponse:
     """Build the template context and render settings.html."""
-    # Redis is external I/O. Read it before any database preparation can acquire
-    # transaction-lifetime identity/outbox locks.
-    breaker = await login_breaker_state(redis)
     preference_scope = await prefs.resolve_legacy_preferences_scope(
         db,
         actor_username=username,
@@ -382,6 +383,23 @@ async def _page(
             actor_username=username,
         )
     ).as_flat_dict()
+    # Whose provider accounts these cards are about. Read from this subject's
+    # own connections rather than from the environment, which describes the
+    # installation's single watch and single workout account. Two plain selects,
+    # deliberately ahead of the Redis read below: the breaker's key is per
+    # account, so it cannot be read until the account is known.
+    garmin_account = await provider_credentials_service.resolve_garmin_account(
+        db, subject_id=preference_scope.subject_id
+    )
+    hevy_account = await provider_credentials_service.resolve_hevy_account(
+        db, subject_id=preference_scope.subject_id
+    )
+    # Redis is external I/O. Read it before any database *preparation* can
+    # acquire transaction-lifetime identity/outbox locks — which is what
+    # ``prepare_scoped_export`` below does, and what this ordering is about.
+    breaker = await login_breaker_state(
+        redis, garmin_account.namespace if garmin_account else ""
+    )
     export_context = await garmin_weight_service.resolve_legacy_export_context(
         db,
         actor_username=username,
@@ -460,11 +478,20 @@ async def _page(
             read_key("VITALS_LLM_MODEL_BRIEF") if can_manage_openrouter else ""
         ),
         # Hevy
-        "hevy_api_key_set": bool(read_key("VITALS_HEVY_API_KEY")),
+        "hevy_api_key_set": bool(hevy_account and hevy_account.configured),
         # Garmin
-        "garmin_email": read_key("VITALS_GARMIN_EMAIL"),
-        "garmin_password_set": bool(read_key("VITALS_GARMIN_PASSWORD")),
-        "garmin_credentials_configured": bool(all(_garmin_credentials())),
+        "garmin_email": (
+            garmin_account.config.garmin_email if garmin_account else ""
+        ),
+        "garmin_password_set": bool(
+            garmin_account and garmin_account.config.garmin_password
+        ),
+        # A deployment with no ``VITALS_CREDENTIAL_KEY`` cannot store one, and
+        # the card says so rather than accepting a password and failing on save.
+        "credential_vault_available": credential_vault_service.is_available(),
+        "garmin_credentials_configured": bool(
+            garmin_account and garmin_account.configured
+        ),
         "garmin_weight_export": await garmin_weight_service.get_status_scoped(
             db,
             prepared=prepared_export,
@@ -806,14 +833,33 @@ async def configure_platform_ai_quota(
 async def save_hevy(
     request: Request,
     username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
     hevy_api_key: str = Form(""),
 ):
-    updates: dict[str, str] = {}
-    if hevy_api_key.strip() and not _is_sentinel(hevy_api_key):
-        updates["VITALS_HEVY_API_KEY"] = hevy_api_key.strip()
+    """Store this person's Hevy key against their own connection.
 
-    if updates:
-        write_keys(updates)
+    It went into ``VITALS_HEVY_API_KEY`` — one workout account for the whole
+    installation. The blank/sentinel field still means "keep what is there",
+    which is what makes it safe to submit the card without retyping a secret.
+    """
+
+    submitted = hevy_api_key.strip()
+    if not submitted or _is_sentinel(submitted):
+        return _redirect("?saved=hevy")
+    identity = await resolve_legacy_ownership_context(db, actor_username=username)
+    try:
+        await provider_credentials_service.set_hevy_credentials(
+            db, subject_id=identity.subject_id, api_key=submitted
+        )
+    except credential_vault_service.CredentialVaultUnavailable:
+        await db.rollback()
+        logger.warning("Hevy credential not stored: no installation vault key")
+        return _redirect("?error=no_credential_key")
+    except provider_credentials_service.ProviderCredentialsError:
+        await db.rollback()
+        logger.warning("Hevy credential not stored", exc_info=True)
+        return _redirect("?error=hevy")
+    await db.commit()
     return _redirect("?saved=hevy")
 
 
@@ -821,10 +867,26 @@ async def save_hevy(
 async def save_garmin(
     request: Request,
     username: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
     garmin_email: str = Form(""),
     garmin_password: str = Form(""),
 ):
-    stored_email, stored_password = _garmin_credentials()
+    """Store this person's Garmin sign-in against their own connection.
+
+    It went into ``VITALS_GARMIN_EMAIL``/``_PASSWORD`` and then straight into
+    ``os.environ`` so a new client would see it — one watch for the whole
+    process, which is the reason four scheduled jobs still could not be run per
+    subject.
+
+    Blank and sentinel fields keep whatever is stored, so the card can be
+    submitted without retyping a password. That merge now happens against the
+    resolved account rather than against the environment file, which for a
+    second patient held somebody else's address.
+    """
+
+    account = await _subject_garmin_account(db, username)
+    stored_email = account.config.garmin_email if account else ""
+    stored_password = account.config.garmin_password if account else ""
     submitted_email = garmin_email.strip()
     submitted_password = garmin_password.strip()
     effective_email = submitted_email or stored_email
@@ -833,19 +895,26 @@ async def save_garmin(
         if submitted_password and not _is_sentinel(submitted_password)
         else stored_password
     )
+    if not (effective_email and effective_password):
+        return _redirect("?error=garmin")
 
-    updates: dict[str, str] = {}
-    if submitted_email:
-        updates["VITALS_GARMIN_EMAIL"] = submitted_email
-    if submitted_password and not _is_sentinel(submitted_password):
-        updates["VITALS_GARMIN_PASSWORD"] = submitted_password
-
-    if updates:
-        write_keys(updates)
-    # GarminClient reads load_config() for every new client. Updating the process
-    # environment here makes newly saved credentials effective immediately while
-    # preserving blank/sentinel fields as "keep the current value".
-    _activate_garmin_credentials(effective_email, effective_password)
+    identity = await resolve_legacy_ownership_context(db, actor_username=username)
+    try:
+        await provider_credentials_service.set_garmin_credentials(
+            db,
+            subject_id=identity.subject_id,
+            email=effective_email,
+            password=effective_password,
+        )
+    except credential_vault_service.CredentialVaultUnavailable:
+        await db.rollback()
+        logger.warning("Garmin credential not stored: no installation vault key")
+        return _redirect("?error=no_credential_key")
+    except provider_credentials_service.ProviderCredentialsError:
+        await db.rollback()
+        logger.warning("Garmin credential not stored", exc_info=True)
+        return _redirect("?error=garmin")
+    await db.commit()
     return _redirect("?saved=garmin")
 
 
@@ -858,10 +927,15 @@ async def toggle_garmin_weight_export(
     _rl: None = Depends(rate_limit("garmin_weight_toggle", limit=20, window=60)),
 ):
     """Apply the outbound-weight opt-in immediately, without a page reload."""
-    email, password = _garmin_credentials()
-    if enabled and not (email and password):
+    account = await _subject_garmin_account(db, username)
+    if enabled and not (account and account.configured):
         # Never persist a fail-open opt-in. The scheduled job also guards this,
         # but the settings boundary should make the rejected state explicit.
+        #
+        # Asked about *this* subject's account now. Reading the environment
+        # meant a patient with no Garmin of their own passed the check on the
+        # strength of the operator's, and their weight would have been pushed to
+        # somebody else's watch.
         return await _garmin_weight_control(
             request,
             db=db,
@@ -870,8 +944,6 @@ async def toggle_garmin_weight_export(
         )
 
     try:
-        if enabled:
-            _activate_garmin_credentials(email, password)
         export_context = await garmin_weight_service.resolve_legacy_export_context(
             db,
             actor_username=username,

@@ -554,6 +554,7 @@ async def test_settings_status_toggle_and_send_now_use_human_owner_and_exact_gar
     db_session,
     legacy_owner_roots,
     monkeypatch,
+    garmin_connected,
 ):
     identity = _identity(legacy_owner_roots)
     garmin = await _connection(
@@ -620,7 +621,7 @@ async def test_settings_status_toggle_and_send_now_use_human_owner_and_exact_gar
     original_breaker = settings_router.login_breaker_state
     original_prepare = garmin_weight_service.prepare_scoped_export
 
-    async def tracked_breaker(redis):
+    async def tracked_breaker(redis, namespace=""):
         order.append("redis")
         return await original_breaker(redis)
 
@@ -637,16 +638,6 @@ async def test_settings_status_toggle_and_send_now_use_human_owner_and_exact_gar
         garmin_weight_service,
         "prepare_scoped_export",
         tracked_prepare,
-    )
-    monkeypatch.setattr(
-        settings_router,
-        "_garmin_credentials",
-        lambda: ("synthetic@example.invalid", "synthetic-password"),
-    )
-    monkeypatch.setattr(
-        settings_router,
-        "_activate_garmin_credentials",
-        lambda email, password: None,
     )
 
     page = await auth_client.get("/settings", headers={"Accept": "text/html"})
@@ -690,6 +681,7 @@ async def test_send_now_releases_db_locks_before_redis_unlock(
     db_session,
     legacy_owner_roots,
     monkeypatch,
+    garmin_connected,
 ):
     from vitals.scheduler import scheduler_lock
 
@@ -708,7 +700,7 @@ async def test_send_now_releases_db_locks_before_redis_unlock(
     monkeypatch.setattr(
         GarminClient,
         "from_config",
-        classmethod(lambda cls, redis=None: client),
+        classmethod(lambda cls, config=None, redis=None: client),
     )
 
     async def leave_transaction_open(session, client, *, prepared, **kwargs):
@@ -778,6 +770,7 @@ async def test_export_job_projects_with_system_requester_null(
     session_factory,
     legacy_owner_roots,
     monkeypatch,
+    garmin_connected,
 ):
     garmin = await _connection(
         db_session,
@@ -793,7 +786,7 @@ async def test_export_job_projects_with_system_requester_null(
     monkeypatch.setattr(
         GarminClient,
         "from_config",
-        classmethod(lambda cls, redis=None: client),
+        classmethod(lambda cls, config=None, redis=None: client),
     )
 
     async def ignore_token_alert(*args, **kwargs):
@@ -889,7 +882,7 @@ async def test_export_job_unconfigured_client_makes_no_vendor_call(
     monkeypatch.setattr(
         GarminClient,
         "from_config",
-        classmethod(lambda cls, redis=None: client),
+        classmethod(lambda cls, config=None, redis=None: client),
     )
 
     await garmin_weight_service.export_job(session_factory, redis=None)

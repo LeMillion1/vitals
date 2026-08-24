@@ -104,6 +104,12 @@ async def _bootstrap_legacy_identity(
             await bootstrap_legacy_resource_roots(
                 session,
                 subject_id=identity.subject_id,
+                # The one caller allowed to say it. This is the record
+                # ``VITALS_AUTH_USERNAME`` names, so the Garmin and Hevy values
+                # in ``.env`` are theirs; for anybody else those roots start
+                # with no credential at all, because the file describes the
+                # operator and not them.
+                adopt_environment_credentials=True,
             )
             # Durable delivery deliberately refuses the legacy/default module
             # fallback. Materialize the normalized exact-one value before any

@@ -728,6 +728,19 @@ async def test_sync_job_resolves_system_or_owner_actor(
 
     import vitals.integrations.garmin_client as client_module
 
+    # The job resolves this subject's own Garmin account before it builds a
+    # client, so a fake claiming ``is_configured`` no longer decides whether it
+    # runs — somebody has to have connected an account.
+    from vitals.services import provider_credentials_service
+
+    await provider_credentials_service.set_garmin_credentials(
+        db_session,
+        subject_id=subject.id,
+        email="owner@example.test",
+        password="secret",
+    )
+    await db_session.commit()
+
     monkeypatch.setattr(client_module, "GarminClient", _Client)
     await garmin_service.sync_job(
         session_factory,

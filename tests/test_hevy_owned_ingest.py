@@ -763,10 +763,19 @@ async def test_sync_job_resolves_system_and_named_owner_actor(
     monkeypatch,
 ):
     owner, subject, connection = await _roots(db_session, "owner")
+    # The job resolves this subject's own Hevy account before building a client,
+    # so somebody has to have connected one — a fake claiming ``is_configured``
+    # is no longer what decides.
+    from vitals.services import provider_credentials_service
+
+    await provider_credentials_service.set_hevy_credentials(
+        db_session, subject_id=subject.id, api_key="test-key"
+    )
+    await db_session.commit()
     client = FakeHevyClient([_payload("job-system")])
     monkeypatch.setattr(
         "vitals.integrations.hevy_client.HevyClient.from_config",
-        lambda: client,
+        lambda config=None: client,
     )
 
     await hevy_service.sync_job(session_factory)

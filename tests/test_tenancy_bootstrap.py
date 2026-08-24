@@ -60,6 +60,7 @@ async def test_bootstrap_creates_exact_legacy_roots_and_one_safe_audit(db_sessio
     result = await bootstrap_legacy_resource_roots(
         db_session,
         subject_id=subject.id,
+        adopt_environment_credentials=True,
     )
 
     rows = list(
@@ -84,6 +85,9 @@ async def test_bootstrap_creates_exact_legacy_roots_and_one_safe_audit(db_sessio
         assert row.subject_id == subject.id
         assert row.connection_type == _EXPECTED_TYPES[provider].value
         assert row.external_account_discriminator == LEGACY_ACCOUNT_DISCRIMINATOR
+        # ``adopt_environment_credentials=True`` below, so all four claim the
+        # environment. Without it Garmin and Hevy start with no ref at all —
+        # they describe a person, and ``.env`` describes the installation.
         assert row.credential_ref == f"legacy_env:{provider.value}"
         assert row.status == IntegrationConnectionStatus.LEGACY.value
         assert row.retired_at is None
@@ -208,7 +212,9 @@ async def test_bootstrap_persists_only_fixed_non_secret_sentinels(
     monkeypatch.setenv("VITALS_OPENROUTER_API_KEY", synthetic_secret)
     monkeypatch.setenv("VITALS_TELEGRAM_BOT_TOKEN", synthetic_secret)
 
-    await bootstrap_legacy_resource_roots(db_session, subject_id=subject.id)
+    await bootstrap_legacy_resource_roots(
+        db_session, subject_id=subject.id, adopt_environment_credentials=True
+    )
 
     rows = list(await db_session.scalars(select(IntegrationConnection)))
     audit = await db_session.scalar(select(AuditEvent))

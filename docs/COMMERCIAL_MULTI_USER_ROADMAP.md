@@ -59,14 +59,17 @@ know:**
    placeholder and needs no further work; it is what an empty field in a medical
    document is supposed to mean.
 
-**The `.env` plan** — `.env` should hold only what belongs to the installation
-(database, Redis, session secret, identity provider, AI gateway, endpoints); all
-of a person's settings belong in the database. Done: the timezone (was already a
-column, now read *and written* — `/settings/profile` had been writing
-`VITALS_TIMEZONE`, which nothing reads, so changing it did nothing), the
-proactive schedule, and (3) the profile, goals and nutrition targets. Remaining:
-(4) per-subject Garmin/Hevy credentials, which is what blocks fanning out the
-four provider-sync jobs.
+**The `.env` plan is done.** `.env` should hold only what belongs to the
+installation (database, Redis, session secret, identity provider, AI gateway,
+endpoints, and now the credential-vault key); all of a person's settings belong
+in the database. Delivered: the timezone (was already a column, now read *and*
+written — `/settings/profile` had been writing `VITALS_TIMEZONE`, which nothing
+reads, so changing it did nothing), the proactive schedule, (3) the profile,
+goals and nutrition targets, and (4) per-subject Garmin and Hevy credentials in
+`integration_credentials`, encrypted under `VITALS_CREDENTIAL_KEY`.
+
+What is left in `.env` about a person is the authentication that is still one
+username and one password hash, and that is PR-05's.
 
 ## Outcome
 
@@ -1229,10 +1232,36 @@ Landed already, because the scheduler could not wait:
   return `False` after its module left the registry. None of it was caught by a
   suite. All of it was visible on the page.
 
-Still not fanned out, and the reason is the whole of what is left here: four jobs
-sign in to one Garmin or Hevy account whose credentials are one set for the whole
-process. Running them per subject would write the operator's own watch data into
-everybody else's record — an outage turned into a disclosure.
+**Per-subject provider credentials landed**, which is what those four jobs were
+waiting on. `integration_credentials` holds one Fernet ciphertext per connection
+under the installation's `VITALS_CREDENTIAL_KEY`; `provider_credentials_service`
+resolves a connection into a `Config` carrying that account's credentials, its
+own token directory and the namespace its Redis keys hang off; and every
+construction of a Garmin or Hevy client goes through it.
+
+Three things are worth recording beyond the credential itself:
+
+- **The credential was the obvious half.** The cached token session, the login
+  breaker's counters, the `sync:last_success` marker and the disk token store
+  were flat process-wide keys. Shared, they mean one person's session resuming
+  as another's and one person's failed logins pausing everybody. All are
+  namespaced by connection, the installation owner included — an exception there
+  would have to be decided on every lookup from facts that are ambiguous on
+  exactly the installations that matter, and it costs the owner one login on the
+  first sync after the upgrade.
+- **`legacy_env:` was written on every subject's roots.** The tenancy bootstrap
+  did not know whose they were, so the ref said "my Garmin password is in
+  `.env`" for patients whose password is not in there — the operator's is. Only
+  the boot path reconciling `VITALS_AUTH_USERNAME` writes it now, and revision
+  `0060` cleared it from every Garmin and Hevy connection it was never about.
+- **Two jobs asked the wrong question first.** `garmin_service.sync_job` and
+  `hevy_service.sync_job` built a client, and so answered "is this configured?",
+  before anything had said whose record the run was for. Reordered.
+
+Still not fanned out: the four jobs run once, for the sole subject the resolver
+gives them. The credential blocker is gone, so what remains is the scheduler
+work — a per-connection dispatcher, per-connection locks, and failure alerts that
+name which account failed rather than which job.
 
 **The shape of the rest.** `.env` should hold only what belongs to the
 installation: the database and Redis, the session secret, the identity provider,
@@ -1559,6 +1588,7 @@ Additional gates:
 | 2026-08-24 | Retiring a field from a stored preference policy requires a data migration in the same revision. | `prefs._strict_object` compares a stored row's key set against the code's with `!=`, deliberately, because a preference that has drifted from the code is worth failing on. Removing `evening_time` from the code alone would have made every read raise on any installation that had ever saved its proactive settings. Revision `0059` rewrites the rows. |
 | 2026-08-24 | A settings control whose effect is currently zero comes off the card; its stored value stays. | Quiet hours, the daily message budget and the nudge switches all gate a send, and there is nothing to send with. The delivery engine still reads the stored policy and a first web push has to be governed by something, so the handler now overlays only the fields the form still posts — `Form(default)` would otherwise silently reset what the owner last chose. |
 | 2026-08-24 | The profile moves to the subject, and an unset field stays unset rather than taking a default. | `.env` held one age, sex, height, programme, goals and set of nutrition targets for however many patients an installation has. Two defects sat behind that, and only the first looked like one: the five fields were printed on every patient's report as though they were theirs, and the Navy formula computed every patient's body fat and lean mass from the installation owner's height and sex. The second is the reason for the rule about defaults — 190 cm, male, 18 is not a convenience for somebody who has said nothing, it is a claim about their body that a formula then turns into a number in a medical record. Nutrition targets are the deliberate exception: a target is a goal, not a fact about a body. |
+| 2026-08-24 | Provider credentials are encrypted per connection in the database, and every Redis key and token path around them is namespaced by connection — the installation owner included. | One Garmin account and one Hevy key in `.env` is the single-user shape that kept four jobs from running per subject. The credential is only half of it: the cached token session, the login breaker and the token store were flat keys, so two subjects would share a session and one person's failed logins would pause everybody. Exempting the owner from the namespace to save them a login was considered and rejected — it makes "which subject is the owner" a question every lookup has to answer, and the available answers (creation order, a discriminator the demo seeder also writes) are ambiguous on exactly the installations this matters on. The cost is one login on the first sync after the upgrade. The vault is the first encrypted-at-rest store here; `VITALS_CREDENTIAL_KEY` belongs to the installation, and losing it costs every stored credential and no health data. |
 
 ## Continuation protocol
 

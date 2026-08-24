@@ -482,8 +482,13 @@ async def test_pulse_swallows_a_throttled_login(db_session, *, garmin_owned_scop
 
 @pytest.mark.parametrize("hour, runs", [(3, False), (9, True), (23, True)])
 async def test_pulse_job_only_runs_in_active_hours(
-    session_factory, monkeypatch, hour, runs
+    session_factory, garmin_connected, monkeypatch, hour, runs
 ):
+    """``garmin_connected`` because "is Garmin configured" is now a question
+    about this record rather than about the process: the job resolves the
+    subject's own account before it builds a client, so a fake client claiming
+    ``is_configured`` is no longer what decides."""
+
     calls: list[str] = []
 
     class _Client:

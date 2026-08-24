@@ -236,6 +236,16 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         user_portable=False,
     ),
+    # Not ``user_portable`` and never will be: an export that carried this row
+    # would carry somebody's Garmin password out of the installation, and an
+    # import that accepted one would let a crafted file plant a credential
+    # against another subject's connection.
+    "integration_credentials": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL_CHILD,
+        subject=TargetColumn.REQUIRED,
+        connection=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "lab_markers": _SUBJECT,
     "lab_results": _SUBJECT,
     "legacy_openrouter_connection_bridges": OwnershipSpec(

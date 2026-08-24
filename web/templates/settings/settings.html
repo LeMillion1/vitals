@@ -253,6 +253,9 @@
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.hevy_description") }}
         </p>
+        {% if not credential_vault_available %}
+        <div class="v-alert warn">{{ t("settings.no_credential_key") }}</div>
+        {% endif %}
         <form action="/settings/hevy" method="POST" class="space-y-4">
             <div class="space-y-1.5">
                 <label for="s-hevy-key" class="v-label">
@@ -280,6 +283,9 @@
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.garmin_description") }}
         </p>
+        {% if not credential_vault_available %}
+        <div class="v-alert warn">{{ t("settings.no_credential_key") }}</div>
+        {% endif %}
         <form action="/settings/garmin" method="POST" class="space-y-4">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div class="space-y-1.5">

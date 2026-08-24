@@ -8,6 +8,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — a provider account that belongs to one patient
+
+`VITALS_GARMIN_EMAIL`, `VITALS_GARMIN_PASSWORD` and `VITALS_HEVY_API_KEY` are one
+watch and one workout account for the whole process. That is the single-user
+shape behind the last four scheduled jobs that could not be run per subject:
+doing so with those credentials would have written the operator's own watch data
+into everybody else's record, which turns an outage into a disclosure.
+
+**`integration_credentials`** (revision `0060`) is where a per-person credential
+goes. It holds a Fernet ciphertext of a small JSON object under
+`VITALS_CREDENTIAL_KEY` — the installation's key, which is the kind of thing
+`.env` is for — and nothing else: no email, no account id, no key suffix, for the
+same reason the connection's account discriminator is opaque. Its foreign key is
+composite on `(connection, subject)`, so a credential whose two owners disagree
+cannot exist. `key_version` has one value and exists so rotating the key is later
+a migration rather than an outage. This is the first encrypted-at-rest store
+here; everything else is hashed (passwords, which only need comparing) or
+plaintext in `.env` (installation-wide accounts).
+
+**The credential was the obvious half.** The quiet half is everything the Garmin
+client keeps beside it — the cached token session in Redis, the login breaker's
+counters, the `sync:last_success` marker, the token store on disk — all flat,
+process-wide keys. Two subjects sharing those means one person's session
+resuming as another's, and one person's three failed logins pausing everybody
+else's sync for six hours. Every one of them is namespaced by connection now,
+including the installation owner's: an exception there would have to be decided
+on every lookup from facts that are ambiguous on exactly the installations that
+matter. The cost is one credential login for the owner on the first sync after
+the upgrade, which is what happens whenever a token expires anyway.
+
+**`legacy_env:` now names the installation's own account and only it.** The
+tenancy bootstrap wrote that ref on *every* subject's roots without knowing whose
+they were — harmless while nothing resolved it, and a disclosure the moment
+something did. Only the boot path reconciling `VITALS_AUTH_USERNAME` writes it
+now, and the migration cleared it from every Garmin and Hevy connection it was
+never about. If that variable is unset when the migration runs, every such ref is
+cleared: the owner re-enters their credentials on the settings card, which is a
+form, and that is better than guessing which record the file describes.
+
+Every construction of a Garmin or Hevy client goes through the new resolver, so
+the two sync jobs, the pulse, the weight outbox, the two dashboards and the two
+"Sync now" buttons all act as the record's own account. Two of them had to be
+reordered to do it: they built the client — and asked "is this configured?" —
+before anything had said whose record the run was for.
+
+`/settings/garmin` and `/settings/hevy` store against the signed-in record and
+stop writing `.env`. The outbound-weight opt-in is gated on that record having an
+account, where before a patient with no Garmin passed the check on the strength
+of the operator's and their weight would have been pushed to somebody else's
+watch. A deployment with no `VITALS_CREDENTIAL_KEY` is told so on the card rather
+than accepting a password and failing on save.
+
+
 ### Changed — the profile belongs to a person, not to the installation
 
 Age, sex, height, the programme, the goals and the three nutrition targets lived

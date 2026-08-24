@@ -123,6 +123,20 @@ class Config:
     garmin_email: str = ""
     garmin_password: str = ""
     garmin_token_dir: str = DEFAULT_GARMIN_TOKEN_DIR
+
+    # Which account's keys this config's clients use. Empty is the installation
+    # owner's — the unsuffixed Redis keys and token directory an existing
+    # deployment already has, so upgrading costs no Garmin login. Every other
+    # subject gets their connection id here, and
+    # ``provider_credentials_service`` is the only thing that sets it: a client
+    # built from ``load_config()`` is the owner's, which is what every
+    # pre-commercial call site meant.
+    #
+    # It is on the config rather than a client argument because the tests pin
+    # ``GarminClient.from_config``'s signature, and because "which account am I"
+    # is exactly what a config is: threading it separately would let a caller
+    # pair one subject's password with another's session cache.
+    provider_key_namespace: str = ""
     # The poll schedule (full sync interval, light pulse, active hours) is NOT
     # here: it lives in app_settings via vitals/services/proactive/prefs.py, so
     # the settings card can change it without a container restart.
