@@ -225,6 +225,32 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
     "hrt_cycles": _SUBJECT,
     "hrt_doses": _SUBJECT,
     "hrt_side_effects": _SUBJECT,
+    # A conversation is the patient's, and every row in it names them: the
+    # thread so row security can see it, the participants and the messages
+    # because a child that inherited its subject implicitly could disagree with
+    # its parent, and the composite foreign keys exist to stop exactly that.
+    #
+    # Not ``user_portable``, and the reason is the third party. An export of one
+    # subject would carry what a doctor and a trainer wrote to them, which is
+    # not the patient's alone to hand out; an import would let a crafted file
+    # put words in a professional's mouth. What the patient may take with them
+    # is a question for the portability work, not a default.
+    "care_messages": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
+    "care_thread_participants": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
+    "care_threads": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "integration_connection_settings": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL_CHILD,
         subject=TargetColumn.INHERITED,

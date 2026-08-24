@@ -32,6 +32,22 @@
        have written about it comes after. #}
     {% include "care/_record.html" %}
 
+    <!-- ─── CONVERSATION ───────────────────────────────────────────────────── -->
+    {# A link rather than the conversation itself. The record is what a
+       professional opens this screen to read; a thread has its own page because
+       it is the one surface here the patient reads too, and mixing it into a
+       page built for a clinician would make it hard to tell which parts of this
+       screen they can see. #}
+    <div class="v-card p-6 flex flex-wrap items-center justify-between gap-3">
+        <div class="space-y-1">
+            <span class="v-text-label">{{ t("care.messages_title") }}</span>
+            <p class="v-text-micro" style="color: var(--muted)">{{ t("care.messages_description") }}</p>
+        </div>
+        <a href="/care/{{ care.subject_id }}/messages" class="v-btn text-xs whitespace-nowrap">
+            {{ t("care.threads_title") }}
+        </a>
+    </div>
+
     <!-- ─── NOTES ──────────────────────────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("care.notes_title")) }}

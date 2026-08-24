@@ -19,6 +19,7 @@ from vitals.enums import CareRelationshipStatus, ConsentStatus, Domain
 from vitals.models.identity import HealthSubject
 from vitals.models.professional import CareRelationship, ConsentGrant
 from vitals.services import care_service, invitation_service
+from vitals.services import care_thread_service as care_threads
 from vitals.services import digest_service, modules_service
 from vitals.services import professional_record_service as records
 from web.care_context import CareContext, principal_user_id, require_care_context
@@ -333,6 +334,141 @@ async def add_note(
     await db.commit()
     return RedirectResponse(
         url=f"/care/{care.subject_id}", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@router.get("/{subject_id}/messages", response_class=HTMLResponse)
+async def messages(
+    request: Request,
+    care: CareContext = Depends(require_care_context),
+    db: AsyncSession = Depends(get_session),
+    username: str = Depends(require_auth),
+):
+    """Every conversation about this patient that this professional is in.
+
+    Not every conversation about the patient. A thread is a room somebody was
+    let into, so a doctor sees the ones they were added to and not what a
+    trainer was asked separately — the patient is in both.
+    """
+
+    try:
+        threads = await care_threads.list_threads(db, context=care.access)
+    except care_threads.NotInTheConversation:
+        threads = []
+    return templates.TemplateResponse(
+        request,
+        "care/messages.html",
+        {
+            "username": username,
+            "care": care,
+            "threads": threads,
+            "open_thread": None,
+            "thread_messages": [],
+            "participants": [],
+            "may_send": care.may(
+                resource_key=care_threads.MESSAGE_OPERATION,
+                action=care_threads.SEND_ACTION,
+                resource_type=PolicyResourceType.OPERATION,
+            ),
+        },
+    )
+
+
+@router.get("/{subject_id}/messages/{thread_id}", response_class=HTMLResponse)
+async def thread(
+    request: Request,
+    thread_id: uuid.UUID,
+    care: CareContext = Depends(require_care_context),
+    db: AsyncSession = Depends(get_session),
+    username: str = Depends(require_auth),
+):
+    """One conversation, in full.
+
+    Everything said, including what was said before this reader joined. A thread
+    somebody can only see the tail of is one they cannot follow.
+    """
+
+    try:
+        opened, thread_messages, participants = await care_threads.read_thread(
+            db, context=care.access, thread_id=thread_id
+        )
+        threads = await care_threads.list_threads(db, context=care.access)
+    except (care_threads.NotInTheConversation, care_threads.ThreadNotFound):
+        # Absent, not yours, and no longer yours are one answer, exactly as the
+        # care context itself answers.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+
+    return templates.TemplateResponse(
+        request,
+        "care/messages.html",
+        {
+            "username": username,
+            "care": care,
+            "threads": threads,
+            "open_thread": opened,
+            "thread_messages": thread_messages,
+            "participants": participants,
+            "may_send": care.may(
+                resource_key=care_threads.MESSAGE_OPERATION,
+                action=care_threads.SEND_ACTION,
+                resource_type=PolicyResourceType.OPERATION,
+            ),
+        },
+    )
+
+
+@router.post("/{subject_id}/messages")
+async def open_conversation(
+    request: Request,
+    title: str = Form(""),
+    care: CareContext = Depends(require_care_context),
+    db: AsyncSession = Depends(get_session),
+):
+    """Start a conversation with this patient — the one named in the path."""
+
+    try:
+        opened = await care_threads.open_thread(
+            db, context=care.access, title=title
+        )
+    except care_threads.CareThreadValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except care_threads.CareThreadError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    await db.commit()
+    return RedirectResponse(
+        url=f"/care/{care.subject_id}/messages/{opened.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/{subject_id}/messages/{thread_id}")
+async def say(
+    request: Request,
+    thread_id: uuid.UUID,
+    body: str = Form(""),
+    care: CareContext = Depends(require_care_context),
+    db: AsyncSession = Depends(get_session),
+):
+    """Say something in one conversation about the patient named in the path."""
+
+    try:
+        await care_threads.send_message(
+            db, context=care.access, thread_id=thread_id, body=body
+        )
+    except care_threads.CareThreadValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except care_threads.CareThreadError:
+        # Consent changed, care ended, or the thread was closed between the page
+        # being rendered and this arriving.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    await db.commit()
+    return RedirectResponse(
+        url=f"/care/{care.subject_id}/messages/{thread_id}",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

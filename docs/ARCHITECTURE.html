@@ -438,11 +438,11 @@ flowchart LR
     web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>26 routers, server-rendered</span>"]
     mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
     api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
-    svc["<b>Domain services</b><br/><span style='font-size:11px'>98 modules — the only writers</span>"]
+    svc["<b>Domain services</b><br/><span style='font-size:11px'>99 modules — the only writers</span>"]
     sched["<b>Scheduler</b><br/><span style='font-size:11px'>14 jobs: sync, digest, nudge,<br/>reconcile, sweep</span>"]
   end
 
-  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>69 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
+  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>72 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
   redis[("<b>Redis</b><br/><span style='font-size:11px'>cache, rate limits,<br/>Garmin token, breaker</span>")]
   files[/"<b>Private files</b><br/><span style='font-size:11px'>photos, scans, PDFs<br/>opaque keys</span>"/]
 
@@ -477,7 +477,7 @@ flowchart LR
     <table>
       <thead><tr><th>Root</th><th>Question it answers</th><th>Absent means</th></tr></thead>
       <tbody>
-        <tr><td><code>subject_id</code></td><td>Whose health is this about?</td><td>Nothing — now mandatory on 46 tables</td></tr>
+        <tr><td><code>subject_id</code></td><td>Whose health is this about?</td><td>Nothing — now mandatory on 49 tables</td></tr>
         <tr><td><code>actor_user_id</code></td><td>Which human entered it?</td><td>A system or scheduled job did</td></tr>
         <tr><td><code>integration_connection_id</code></td><td>Which account did it arrive through?</td><td>Nobody's device — typed in by hand</td></tr>
         <tr><td><code>file_asset_id</code></td><td>Which private file is it a pointer to?</td><td>Not backed by a file</td></tr>
@@ -689,7 +689,7 @@ flowchart TB
   ctx["<b>1 · AccessContext</b><br/><span style='font-size:11px'>principal · subject · owner<br/>roles · live grants</span>"]
   pol{"<b>2 · Policy</b><br/><span style='font-size:11px'>is_allowed(context, request)</span>"}
   svc["<b>3 · Scoped service</b><br/><span style='font-size:11px'>subject_id is mandatory<br/>in every signature</span>"]
-  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 56 tables<br/>every one with a subject</span>"]
+  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 59 tables<br/>every one with a subject</span>"]
   rows[("rows")]
   deny["403<br/><span style='font-size:11px'>says nothing about<br/>whose record, or whether<br/>it exists</span>"]
 

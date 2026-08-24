@@ -25,8 +25,9 @@ pytestmark = pytest.mark.pre_ownership_contract
 def test_every_registered_table_has_exactly_one_ownership_contract():
     assert set(OWNERSHIP_REGISTRY) == set(Base.metadata.tables)
     # 70 until revision 0058 dropped ``signals`` and ``day_context``; 69 since
-    # 0060 added ``integration_credentials``.
-    assert len(OWNERSHIP_REGISTRY) == 69
+    # 0060 added ``integration_credentials``; 72 since 0061 added the care-team
+    # thread, its participants and its messages.
+    assert len(OWNERSHIP_REGISTRY) == 72
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -66,8 +67,11 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "ai_platform_quota_periods",
         "ai_subject_quota_periods",
         "audit_events",
+        "care_messages",
         "care_plans",
         "care_relationships",
+        "care_thread_participants",
+        "care_threads",
         "consent_grants",
         "consent_scopes",
         "file_assets",

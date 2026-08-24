@@ -1,0 +1,583 @@
+"""The patient-visible care-team thread, and the four rules that make it safe.
+
+**The subject is always in the room.** Every thread is created with its subject
+as a participant, and nothing here can take them out. That is the difference
+between this feature and a hidden clinical channel, and it is enforced rather
+than documented: :func:`remove_participant` refuses the subject's own row.
+
+**Being in the room is a row, and it is not enough.** A professional joins
+because somebody added them, and that row records the care they joined under.
+Whether they may still read or still send is asked of the policy on every
+single call — so a patient who pauses a consent stops the conversation without
+deleting it, and a patient who revokes one stops it permanently.
+
+**Reading and sending are separate permissions.** The consent carries
+``care_team.message`` as an operation with two actions: ``read`` for seeing the
+thread and ``message`` for writing into it. A patient who wants a doctor to be
+able to look back at what was said without being able to add to it can have
+exactly that, which is a narrowing worth being able to express.
+
+**Nothing is deleted.** A message is corrected in place, keeping its author and
+gaining an edit time; a participant who leaves keeps their row with a
+``removed_at``. Both for the reason a professional's note is never deleted: a
+clinical conversation somebody can make disappear is a worse record than one
+that stays, and the patient cannot review a history they cannot see.
+
+The subject's own access needs no consent at all — ``is_allowed`` short-circuits
+on self-ownership — which is what "patient-visible" means structurally rather
+than as a promise.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from vitals.access import (
+    AccessContext,
+    AccessRequest,
+    PolicyAction,
+    PolicyResourceType,
+    is_allowed,
+)
+from vitals.enums import CareRelationshipStatus, CareThreadStatus
+from vitals.models.care_thread import CareMessage, CareThread, CareThreadParticipant
+from vitals.models.identity import HealthSubject
+from vitals.models.professional import CareRelationship
+
+#: The operation key a consent carries for this feature. It matches what
+#: ``care_service.default_scopes`` writes, and a mismatch would silently make
+#: every message unauthorized — so both sides read this constant.
+MESSAGE_OPERATION = "care_team.message"
+
+#: Reading the thread and writing into it, separately revocable. ``MESSAGE`` had
+#: been in ``PolicyAction`` and in the ``consent_scopes`` check constraint since
+#: the vocabulary was laid down, with no caller; this is its first.
+READ_ACTION = PolicyAction.READ
+SEND_ACTION = PolicyAction.MESSAGE
+
+_MAX_BODY = 20000
+_MAX_TITLE = 200
+
+
+class CareThreadError(RuntimeError):
+    """Base class for care-team conversation failures."""
+
+
+class CareThreadValidationError(ValueError):
+    """A submitted value is not usable."""
+
+
+class NotInTheConversation(CareThreadError):
+    """This thread is not open to this account, for this action, right now.
+
+    One error for "you were never in it", "you were removed", "your consent was
+    paused" and "your consent does not cover sending". Told apart they map who
+    is being treated by whom and how far the patient has narrowed it, which is
+    the same reason the invitation refusals are uniform.
+    """
+
+
+class ThreadNotFound(CareThreadError):
+    """No such thread in this subject's scope."""
+
+
+class NotTheAuthor(CareThreadError):
+    """Only the person who said it may correct it."""
+
+
+def _text(value: object, field: str, *, limit: int) -> str:
+    if not isinstance(value, str):
+        raise CareThreadValidationError(f"{field} must be a string")
+    stripped = value.strip()
+    if not stripped:
+        raise CareThreadValidationError(f"{field} must not be blank")
+    if len(stripped) > limit:
+        raise CareThreadValidationError(
+            f"{field} must be at most {limit} characters"
+        )
+    return stripped
+
+
+async def _now(session: AsyncSession) -> datetime:
+    stamp = await session.scalar(select(func.now()))
+    if stamp is None:  # pragma: no cover - supported DBs always return now()
+        return datetime.now(timezone.utc)
+    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=timezone.utc)
+
+
+def _require_scope(context: AccessContext, *, action: PolicyAction) -> None:
+    """Ask the policy, on every call, rather than trust the participant row.
+
+    The row says somebody was let in. Whether they may act today is a different
+    question with a different answer, and the whole value of a patient-visible
+    channel is that the patient can change the second one without losing the
+    conversation.
+    """
+
+    if not is_allowed(
+        context,
+        AccessRequest(
+            subject_id=context.subject_id,
+            resource_type=PolicyResourceType.OPERATION,
+            resource_key=MESSAGE_OPERATION,
+            action=action,
+        ),
+    ):
+        raise NotInTheConversation("this conversation is not open to you for that")
+
+
+async def _subject_owner_id(
+    session: AsyncSession, subject_id: uuid.UUID
+) -> uuid.UUID:
+    owner_id = await session.scalar(
+        select(HealthSubject.owner_user_id).where(HealthSubject.id == subject_id)
+    )
+    if owner_id is None:
+        raise CareThreadValidationError("health subject does not exist")
+    return owner_id
+
+
+async def _live_relationship_or_none(
+    session: AsyncSession, *, context: AccessContext
+) -> CareRelationship | None:
+    """The care this person is speaking from, or ``None`` if they are the patient."""
+
+    owner_id = await _subject_owner_id(session, context.subject_id)
+    if owner_id == context.principal.user_id:
+        return None
+    relationship = await session.scalar(
+        select(CareRelationship).where(
+            CareRelationship.subject_id == context.subject_id,
+            CareRelationship.professional_user_id == context.principal.user_id,
+            CareRelationship.status == CareRelationshipStatus.ACTIVE.value,
+        )
+    )
+    if relationship is None:
+        raise NotInTheConversation("you are not currently in care for this record")
+    return relationship
+
+
+async def _thread(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    thread_id: uuid.UUID,
+    for_update: bool = False,
+) -> CareThread:
+    """One thread, inside this subject's scope.
+
+    The subject is part of the ``WHERE`` rather than checked afterwards: a
+    thread id from another patient matches no row, which is indistinguishable
+    from one that never existed.
+    """
+
+    statement = select(CareThread).where(
+        CareThread.id == thread_id,
+        CareThread.subject_id == context.subject_id,
+    )
+    if for_update:
+        statement = statement.with_for_update().execution_options(
+            populate_existing=True
+        )
+    thread = await session.scalar(statement)
+    if thread is None:
+        raise ThreadNotFound("no such conversation")
+    return thread
+
+
+async def _current_participation(
+    session: AsyncSession, *, thread_id: uuid.UUID, user_id: uuid.UUID
+) -> CareThreadParticipant | None:
+    return await session.scalar(
+        select(CareThreadParticipant).where(
+            CareThreadParticipant.thread_id == thread_id,
+            CareThreadParticipant.user_id == user_id,
+            CareThreadParticipant.removed_at.is_(None),
+        )
+    )
+
+
+async def _require_participation(
+    session: AsyncSession, *, thread_id: uuid.UUID, user_id: uuid.UUID
+) -> CareThreadParticipant:
+    participation = await _current_participation(
+        session, thread_id=thread_id, user_id=user_id
+    )
+    if participation is None:
+        raise NotInTheConversation("you are not in this conversation")
+    return participation
+
+
+async def open_thread(
+    session: AsyncSession, *, context: AccessContext, title: str
+) -> CareThread:
+    """Start a conversation about this patient, with this patient in it.
+
+    Either the patient or a professional in live care may start one. The subject
+    is added as a participant in the same flush as the thread itself, so a
+    thread they are not in does not exist even briefly. Never commits.
+    """
+
+    clean_title = _text(title, "title", limit=_MAX_TITLE)
+    _require_scope(context, action=SEND_ACTION)
+    relationship = await _live_relationship_or_none(session, context=context)
+    owner_id = await _subject_owner_id(session, context.subject_id)
+
+    thread = CareThread(
+        subject_id=context.subject_id,
+        title=clean_title,
+        opened_by_user_id=context.principal.user_id,
+        status=CareThreadStatus.OPEN.value,
+    )
+    session.add(thread)
+    await session.flush()
+
+    # The patient, always and first.
+    session.add(
+        CareThreadParticipant(
+            thread_id=thread.id,
+            subject_id=context.subject_id,
+            user_id=owner_id,
+            relationship_id=None,
+        )
+    )
+    if relationship is not None:
+        session.add(
+            CareThreadParticipant(
+                thread_id=thread.id,
+                subject_id=context.subject_id,
+                user_id=context.principal.user_id,
+                relationship_id=relationship.id,
+            )
+        )
+    await session.flush()
+    return thread
+
+
+async def add_participant(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    thread_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> CareThreadParticipant:
+    """Let one more professional into an existing conversation.
+
+    They need what everybody in the room needs: an active care relationship with
+    this patient. Their own consent still decides what they may do once they are
+    in — being added is not being authorized, and this is the one place where
+    the two could be confused.
+
+    Rejoining somebody who left reuses their row rather than adding a second, so
+    "who is in the room" stays a single answer per person.
+    """
+
+    _require_scope(context, action=SEND_ACTION)
+    thread = await _thread(session, context=context, thread_id=thread_id)
+    if thread.status != CareThreadStatus.OPEN.value:
+        raise NotInTheConversation("this conversation is closed")
+    await _require_participation(
+        session, thread_id=thread.id, user_id=context.principal.user_id
+    )
+
+    owner_id = await _subject_owner_id(session, context.subject_id)
+    if user_id == owner_id:
+        raise CareThreadValidationError(
+            "the patient is already in every conversation about them"
+        )
+
+    relationship = await session.scalar(
+        select(CareRelationship).where(
+            CareRelationship.subject_id == context.subject_id,
+            CareRelationship.professional_user_id == user_id,
+            CareRelationship.status == CareRelationshipStatus.ACTIVE.value,
+        )
+    )
+    if relationship is None:
+        raise NotInTheConversation(
+            "that account is not currently in care for this record"
+        )
+
+    existing = await session.scalar(
+        select(CareThreadParticipant)
+        .where(
+            CareThreadParticipant.thread_id == thread.id,
+            CareThreadParticipant.user_id == user_id,
+        )
+        .with_for_update()
+    )
+    if existing is not None:
+        existing.removed_at = None
+        existing.relationship_id = relationship.id
+        await session.flush()
+        return existing
+
+    participant = CareThreadParticipant(
+        thread_id=thread.id,
+        subject_id=context.subject_id,
+        user_id=user_id,
+        relationship_id=relationship.id,
+    )
+    session.add(participant)
+    await session.flush()
+    return participant
+
+
+async def remove_participant(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    thread_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> CareThreadParticipant:
+    """Take somebody out of the room, keeping the record that they were in it.
+
+    The patient cannot be removed, by anybody including themselves. A thread
+    about somebody that they cannot read is the thing this feature exists not to
+    be, and a rule enforced here is worth more than one written down.
+    """
+
+    _require_scope(context, action=SEND_ACTION)
+    thread = await _thread(session, context=context, thread_id=thread_id)
+    await _require_participation(
+        session, thread_id=thread.id, user_id=context.principal.user_id
+    )
+
+    owner_id = await _subject_owner_id(session, context.subject_id)
+    if user_id == owner_id:
+        raise CareThreadValidationError(
+            "the patient cannot be removed from a conversation about them"
+        )
+
+    participation = await _require_participation(
+        session, thread_id=thread.id, user_id=user_id
+    )
+    participation.removed_at = await _now(session)
+    await session.flush()
+    return participation
+
+
+async def send_message(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    thread_id: uuid.UUID,
+    body: str,
+) -> CareMessage:
+    """Say something. Never commits."""
+
+    clean = _text(body, "body", limit=_MAX_BODY)
+    _require_scope(context, action=SEND_ACTION)
+    thread = await _thread(
+        session, context=context, thread_id=thread_id, for_update=True
+    )
+    if thread.status != CareThreadStatus.OPEN.value:
+        raise NotInTheConversation("this conversation is closed")
+    await _require_participation(
+        session, thread_id=thread.id, user_id=context.principal.user_id
+    )
+    # Live care is re-checked here as well as at the policy: a relationship that
+    # ended leaves the consent rows behind for a moment, and "may message" must
+    # not outlive "is in care".
+    await _live_relationship_or_none(session, context=context)
+
+    message = CareMessage(
+        thread_id=thread.id,
+        subject_id=context.subject_id,
+        actor_user_id=context.principal.user_id,
+        body=clean,
+    )
+    session.add(message)
+    # So a roster ordered by activity is ordered by what actually happened.
+    thread.updated_at = await _now(session)
+    await session.flush()
+    return message
+
+
+async def revise_message(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    message_id: uuid.UUID,
+    body: str,
+) -> CareMessage:
+    """Correct what you said, keeping that you said it and that it changed."""
+
+    clean = _text(body, "body", limit=_MAX_BODY)
+    _require_scope(context, action=SEND_ACTION)
+
+    message = await session.scalar(
+        select(CareMessage)
+        .where(
+            CareMessage.id == message_id,
+            CareMessage.subject_id == context.subject_id,
+            # The author condition is in the ``WHERE``, so somebody else's
+            # message is indistinguishable from one that does not exist.
+            CareMessage.actor_user_id == context.principal.user_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if message is None:
+        raise NotTheAuthor("no message of yours with that id in this record")
+
+    await _require_participation(
+        session, thread_id=message.thread_id, user_id=context.principal.user_id
+    )
+    message.body = clean
+    message.edited_at = await _now(session)
+    await session.flush()
+    return message
+
+
+async def list_threads(
+    session: AsyncSession, *, context: AccessContext
+) -> list[CareThread]:
+    """Every conversation about this patient that this account is in.
+
+    The patient sees all of them, because they are in all of them. A
+    professional sees the ones they were added to — not every conversation about
+    the patient, which would let one professional read what another was asked
+    privately.
+    """
+
+    _require_scope(context, action=READ_ACTION)
+    return list(
+        await session.scalars(
+            select(CareThread)
+            .join(
+                CareThreadParticipant,
+                CareThreadParticipant.thread_id == CareThread.id,
+            )
+            .where(
+                CareThread.subject_id == context.subject_id,
+                CareThreadParticipant.user_id == context.principal.user_id,
+                CareThreadParticipant.removed_at.is_(None),
+            )
+            .order_by(CareThread.updated_at.desc())
+        )
+    )
+
+
+async def read_thread(
+    session: AsyncSession, *, context: AccessContext, thread_id: uuid.UUID
+) -> tuple[CareThread, list[CareMessage], list[CareThreadParticipant]]:
+    """One conversation: what it is, what was said, and who was in the room.
+
+    Everything said, including before this reader joined. A thread somebody can
+    only see the tail of is a conversation they cannot follow, and the patient —
+    who is in every thread from the start — is the reader this is really for.
+    """
+
+    _require_scope(context, action=READ_ACTION)
+    thread = await _thread(session, context=context, thread_id=thread_id)
+    await _require_participation(
+        session, thread_id=thread.id, user_id=context.principal.user_id
+    )
+
+    messages = list(
+        await session.scalars(
+            select(CareMessage)
+            .where(CareMessage.thread_id == thread.id)
+            .order_by(CareMessage.created_at, CareMessage.id)
+        )
+    )
+    participants = list(
+        await session.scalars(
+            select(CareThreadParticipant)
+            .where(CareThreadParticipant.thread_id == thread.id)
+            .order_by(CareThreadParticipant.joined_at)
+        )
+    )
+    return thread, messages, participants
+
+
+async def close_thread(
+    session: AsyncSession, *, context: AccessContext, thread_id: uuid.UUID
+) -> CareThread:
+    """Stop the conversation without losing it.
+
+    Closed rather than deleted, and reopenable: what was said stays readable to
+    everybody who was in the room, which is the whole shape of this feature.
+    """
+
+    _require_scope(context, action=SEND_ACTION)
+    thread = await _thread(
+        session, context=context, thread_id=thread_id, for_update=True
+    )
+    await _require_participation(
+        session, thread_id=thread.id, user_id=context.principal.user_id
+    )
+    thread.status = CareThreadStatus.CLOSED.value
+    await session.flush()
+    return thread
+
+
+async def reopen_thread(
+    session: AsyncSession, *, context: AccessContext, thread_id: uuid.UUID
+) -> CareThread:
+    _require_scope(context, action=SEND_ACTION)
+    thread = await _thread(
+        session, context=context, thread_id=thread_id, for_update=True
+    )
+    await _require_participation(
+        session, thread_id=thread.id, user_id=context.principal.user_id
+    )
+    thread.status = CareThreadStatus.OPEN.value
+    await session.flush()
+    return thread
+
+
+async def unread_marker(
+    session: AsyncSession, *, context: AccessContext
+) -> int:
+    """How many conversations this account is in that are still open.
+
+    Not an unread count — nothing tracks reads yet, and inventing a per-reader
+    marker to put a number on a nav item would be storing state to decorate a
+    screen. An open-thread count is a true thing that is useful for the same
+    place.
+    """
+
+    _require_scope(context, action=READ_ACTION)
+    total = await session.scalar(
+        select(func.count())
+        .select_from(CareThread)
+        .join(
+            CareThreadParticipant,
+            CareThreadParticipant.thread_id == CareThread.id,
+        )
+        .where(
+            CareThread.subject_id == context.subject_id,
+            CareThread.status == CareThreadStatus.OPEN.value,
+            CareThreadParticipant.user_id == context.principal.user_id,
+            CareThreadParticipant.removed_at.is_(None),
+        )
+    )
+    return int(total or 0)
+
+
+__all__ = [
+    "CareThreadError",
+    "CareThreadValidationError",
+    "MESSAGE_OPERATION",
+    "NotInTheConversation",
+    "NotTheAuthor",
+    "READ_ACTION",
+    "SEND_ACTION",
+    "ThreadNotFound",
+    "add_participant",
+    "close_thread",
+    "list_threads",
+    "open_thread",
+    "read_thread",
+    "remove_participant",
+    "reopen_thread",
+    "revise_message",
+    "send_message",
+    "unread_marker",
+]

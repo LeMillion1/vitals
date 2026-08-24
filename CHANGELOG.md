@@ -8,6 +8,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — the care-team conversation, with the patient in the room
+
+The safe first communication feature, and the shape carries the decision. A
+thread belongs to a health subject; the subject is a participant from the moment
+it exists and cannot be removed by anybody, including themselves; every message
+in it is one they can read. A hidden doctor-to-trainer channel is a different
+product with a different privacy and legal answer, and this schema cannot
+express one — there is no thread without a subject and no participant list the
+subject is absent from.
+
+**Being in the room is a row, and it is not permission.** A professional joins
+because somebody added them, and that row records the care relationship they
+joined under — so a conversation read back a year later says which relationship
+each person was speaking from. Whether they may still read or send is asked of
+the policy on every call, so a paused consent stops the conversation without
+deleting it and a revoked one stops it permanently, while the patient keeps every
+word.
+
+**Reading and sending are separately revocable.** `care_team.message` is an
+operation with two actions: `read` for seeing the thread, `message` for writing
+into it. A patient who wants a doctor to be able to look back at what was said
+without adding to it can have exactly that. `PolicyAction.MESSAGE` and the
+`'message'` action in the `consent_scopes` check constraint had been in the
+vocabulary since it was laid down, with no caller; this is the first.
+
+**Nothing is deleted.** A message is corrected in place, keeping its author and
+gaining an edit time, and only its author may correct it. A participant who
+leaves keeps their row with a `removed_at`. A thread is closed rather than
+removed, and reopens. All for the reason a professional's note is never deleted:
+a clinical conversation somebody can make disappear is a worse record than one
+that stays, and the patient cannot review a history they cannot see.
+
+Revision `0061` adds three tables, each carrying its own `subject_id` with a
+composite foreign key back to `(thread, subject)` — so a message filed under
+somebody else's thread, which would be invisible to its own patient and visible
+to another, cannot exist.
+
+The professional reaches it from the patient's record page; the patient reaches
+the *same screens* from `/messages`, which resolves their record from who they
+are. Deliberately the same screens: a separate patient-facing view of a clinical
+conversation is a place for the two to drift apart, and the argument for a
+patient-visible thread is that they cannot.
+
+**Not done, and stated rather than implied:** private attachments. The download
+route resolves its subject through the sole-owner adapter, so a professional
+opening a patient's file gets a 404 for a reason that has nothing to do with
+permission — fixing that is its own change with its own authorization story.
+There is also no notification: the transport was removed with Telegram and web
+push has not landed, so a message waits on the screen.
+
+
 ### Fixed — five tests that could not run on the database that ships
 
 The fast suite is SQLite and the integration suite is PostgreSQL, and five tests

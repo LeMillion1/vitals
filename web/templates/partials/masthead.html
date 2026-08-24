@@ -153,6 +153,10 @@
             <a href="/care" class="mh-rail-foot-link {% if current_path.startswith('/care') %}is-active{% endif %}">{{ t('care.roster_heading') }}</a>
             {% endif %}
             {% if request.state.has_own_record %}
+            {# The patient's door into the conversations about their own record.
+               Offered only to somebody who has one: a professional reaches the
+               same screens through the patient they are about, from /care. #}
+            <a href="/messages" class="mh-rail-foot-link {% if current_path.startswith('/messages') %}is-active{% endif %}">{{ t('care.messages_title') }}</a>
             <a href="/share" class="mh-rail-foot-link {% if current_path.startswith('/share') %}is-active{% endif %}">{{ t('share.heading') }}</a>
             <a href="/settings" class="mh-rail-foot-link {% if current_path.startswith('/settings') %}is-active{% endif %}">{{ t('nav.settings') }}</a>
             {% endif %}

@@ -23,6 +23,11 @@ from vitals.models.tenancy import (
     PlatformIntegrationConnection,
 )
 from vitals.models.credentials import IntegrationCredential
+from vitals.models.care_thread import (
+    CareMessage,
+    CareThread,
+    CareThreadParticipant,
+)
 from vitals.models.ai import (
     AIInvocation,
     AIPlatformQuotaPeriod,
@@ -135,6 +140,9 @@ __all__ = [
     "ConsentGrant",
     "ConsentScope",
     "AuditEvent",
+    "CareMessage",
+    "CareThread",
+    "CareThreadParticipant",
     "IntegrationConnection",
     "IntegrationCredential",
     "PlatformIntegrationConnection",

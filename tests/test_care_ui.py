@@ -389,3 +389,96 @@ async def test_a_domain_the_patient_withheld_is_named_rather_than_missing(
     # The number is gone, and the fact that it was withheld is not.
     assert "61,5" not in page.text and "61.5" not in page.text
     assert "Not shared with you" in page.text or "Не открыто вам" in page.text
+
+
+# ── The care-team conversation ───────────────────────────────────────────────
+
+
+async def test_a_stale_tab_talks_to_the_patient_it_was_looking_at(
+    doctor_client, db_session
+):
+    """The same property the note form has, on the surface the patient reads.
+
+    A doctor with two patients open in two tabs is the ordinary case, and a
+    message that lands on whoever is "selected" would put one person's words in
+    another's conversation — where, unlike a note, the wrong patient would then
+    read it.
+    """
+
+    from sqlalchemy import select
+
+    from vitals.models.care_thread import CareMessage
+
+    client, _doctor, (_owner_a, subject_a), (_owner_b, subject_b) = doctor_client
+
+    opened = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Bloods"},
+        follow_redirects=False,
+    )
+    assert opened.status_code == 303
+    thread_id = opened.headers["location"].rsplit("/", 1)[1]
+
+    said = await client.post(
+        f"/care/{subject_a.id}/messages/{thread_id}",
+        data={"body": "Please fast for twelve hours."},
+        follow_redirects=False,
+    )
+    assert said.status_code == 303
+
+    rows = list(await db_session.scalars(select(CareMessage)))
+    assert [row.subject_id for row in rows] == [subject_a.id]
+    assert subject_b.id not in {row.subject_id for row in rows}
+
+
+async def test_another_patients_thread_is_not_reachable_by_its_id(
+    doctor_client, db_session
+):
+    client, _doctor, (_owner_a, subject_a), (_owner_b, subject_b) = doctor_client
+
+    opened = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Bloods"},
+        follow_redirects=False,
+    )
+    thread_id = opened.headers["location"].rsplit("/", 1)[1]
+
+    # The same thread id, under the other patient in the path.
+    wrong = await client.get(f"/care/{subject_b.id}/messages/{thread_id}")
+    assert wrong.status_code == 404
+
+
+async def test_the_patient_reaches_their_own_conversations_without_an_id(
+    client, db_session, legacy_owner_roots
+):
+    """``/messages`` is the patient's door; the subject comes from who they are."""
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client.cookies.set(SESSION_COOKIE, create_session("tester"))
+    response = await client.get("/messages", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == (
+        f"/care/{legacy_owner_roots.subject_id}/messages"
+    )
+
+
+async def test_an_account_with_no_record_is_told_so_at_the_patients_door(
+    client, db_session, legacy_owner_roots
+):
+    """A doctor's door into a conversation is the patient it is about."""
+
+    doctor = await _user(db_session, "messages-no-record")
+    await db_session.commit()
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client.cookies.set(SESSION_COOKIE, create_session("messages-no-record"))
+    response = await client.get(
+        "/messages", headers={"Accept": "text/html"}, follow_redirects=False
+    )
+    assert response.status_code == 409
+    assert "нет собственной медицинской записи" in response.text
+    del doctor

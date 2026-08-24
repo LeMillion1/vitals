@@ -693,6 +693,7 @@ from web.routers.weight import router as weight_router  # noqa: E402
 from web.routers.files import router as files_router  # noqa: E402
 from web.routers.care import router as care_router  # noqa: E402
 from web.routers.consents import router as consents_router  # noqa: E402
+from web.routers.messages import router as messages_router  # noqa: E402
 from web.routers.glp1 import router as glp1_router  # noqa: E402
 from web.routers.supplements import router as supplements_router  # noqa: E402
 from web.routers.hrt import router as hrt_router  # noqa: E402
@@ -730,6 +731,11 @@ app.include_router(care_router)
 # The patient's side of the same pair. Registered before the settings router
 # so /settings/care is matched by its own routes rather than swallowed.
 app.include_router(consents_router)
+# One redirect, so the patient reaches the conversations about their own record
+# without needing a subject id they have no way to know. The screens themselves
+# are the professional's — deliberately the same ones, because they are the same
+# rooms.
+app.include_router(messages_router)
 app.include_router(garmin_router)
 app.include_router(labs_router)
 app.include_router(reports_router)

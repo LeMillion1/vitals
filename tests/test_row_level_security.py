@@ -64,6 +64,7 @@ _POLICY_REVISIONS = (
     "0056_care_relationships_and_consent",
     "0057_professional_notes_and_care_plans",
     "0060_per_subject_provider_credentials",
+    "0061_care_team_threads_and_messages",
 )
 
 

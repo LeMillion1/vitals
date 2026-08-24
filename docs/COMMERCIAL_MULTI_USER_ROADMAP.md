@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0060` — 60 revisions |
-| Schema | 69 tables; 56 carry `subject_id` and are covered by an RLS policy; 46 have it `NOT NULL` |
+| Alembic head | `0061` — 61 revisions |
+| Schema | 72 tables; 59 carry `subject_id` and are covered by an RLS policy; 49 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4380 fast passed / 168 skipped |
+| Suites | 4406 fast passed / 168 skipped |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -1458,9 +1458,55 @@ During a bounded compatibility window, route an explicitly negotiated older
 protocol revision through the same authorization services and audit stream;
 never silently downgrade `2026-07-28` requests.
 
-### PR 11 — Care-team messaging
+### PR 11 — Care-team messaging — **landed, minus attachments**
 
-Scope:
+Delivered, as three tables and one service:
+
+- `care_threads`, `care_thread_participants` and `care_messages` (revision
+  `0061`). Each child carries its own `subject_id` with a composite foreign key
+  back to `(thread, subject)` — a message filed under somebody else's thread
+  would be invisible to its own patient and visible to another, and the
+  constraint is why it cannot exist.
+- **The subject is a participant from the moment a thread exists, and cannot be
+  removed by anybody including themselves.** That is enforced in
+  `remove_participant` rather than documented, and it is the difference between
+  this feature and the hidden clinical channel the decision log rules out. The
+  patient's own access needs no consent at all — `is_allowed` short-circuits on
+  self-ownership — so "patient-visible" is structural rather than a promise.
+- **Being in the room is a row, and it is not permission.** A participant row
+  says somebody was let in and names the care relationship they joined under;
+  whether they may act today is asked of the policy on every call. A paused
+  consent stops the conversation without deleting it, and the patient keeps
+  every word of it.
+- **Reading and sending are separately revocable.** `care_team.message` is an
+  operation with two actions — `read` and `message` — so a patient can let a
+  doctor look back at what was said without being able to add to it.
+  `PolicyAction.MESSAGE` and the `'message'` action in the `consent_scopes`
+  check constraint had been in the vocabulary since it was laid down with no
+  caller; this is the first.
+- **Nothing is deleted.** A message is corrected in place by its author, keeping
+  authorship and gaining an edit time; a participant who leaves keeps their row;
+  a thread is closed rather than removed, and reopens.
+- One set of screens. The professional reaches them from the patient's record;
+  the patient reaches the same ones from `/messages`, which resolves their
+  record from who they are. A separate patient-facing view of a clinical
+  conversation is a place for the two to drift apart, and the argument for a
+  patient-visible thread is that they cannot.
+
+**Not done:** private attachments, and the reason is a real one rather than
+scope. `GET /files/{opaque_key}` resolves its subject through the sole-owner
+adapter, so a professional opening a patient's attachment gets a 404 that has
+nothing to do with permission. Giving that route a policy-aware branch — or
+hanging the download off `/care/{subject_id}/…` where the subject travels in the
+path — is its own change with its own authorization story.
+
+**No notification either**, which is PR-09's remaining gap rather than this
+one's: the transport went with Telegram and web push has not landed, so a
+message waits on the screen. The scope item about previews containing no PHI has
+nothing to be about yet, and `AuditEvent`'s metadata allowlist already makes a
+body impossible to put in one.
+
+Original scope:
 
 - add subject-owned threads, explicit participants, messages, and private
   attachments;
@@ -1614,7 +1660,10 @@ Additional gates:
 - [x] Add verified professionals, relationships, and consent — PR-07, with the
   professional UX in PR-08 (minus the inbox).
 - [ ] Replace MCP/external auth with subject-scoped revocable grants.
-- [ ] Add the patient-visible care-team thread.
+- [x] Add the patient-visible care-team thread — PR-11, minus private
+  attachments: the file download route resolves its subject through the
+  sole-owner adapter, so a professional opening a patient's attachment gets a
+  404 that is not about permission.
 - [ ] Ship the controlled support console and audit UX.
 - [ ] Complete commercial security/legal/operations review.
 - [ ] Open registration.
@@ -1644,6 +1693,7 @@ Additional gates:
 | 2026-08-24 | The profile moves to the subject, and an unset field stays unset rather than taking a default. | `.env` held one age, sex, height, programme, goals and set of nutrition targets for however many patients an installation has. Two defects sat behind that, and only the first looked like one: the five fields were printed on every patient's report as though they were theirs, and the Navy formula computed every patient's body fat and lean mass from the installation owner's height and sex. The second is the reason for the rule about defaults — 190 cm, male, 18 is not a convenience for somebody who has said nothing, it is a claim about their body that a formula then turns into a number in a medical record. Nutrition targets are the deliberate exception: a target is a goal, not a fact about a body. |
 | 2026-08-24 | Provider credentials are encrypted per connection in the database, and every Redis key and token path around them is namespaced by connection — the installation owner included. | One Garmin account and one Hevy key in `.env` is the single-user shape that kept four jobs from running per subject. The credential is only half of it: the cached token session, the login breaker and the token store were flat keys, so two subjects would share a session and one person's failed logins would pause everybody. Exempting the owner from the namespace to save them a login was considered and rejected — it makes "which subject is the owner" a question every lookup has to answer, and the available answers (creation order, a discriminator the demo seeder also writes) are ambiguous on exactly the installations this matters on. The cost is one login on the first sync after the upgrade. The vault is the first encrypted-at-rest store here; `VITALS_CREDENTIAL_KEY` belongs to the installation, and losing it costs every stored credential and no health data. |
 | 2026-08-24 | The provider jobs fan out per *connection*, and a job failure is filed against the record it happened to. | Per connection rather than per subject because a subject who has not connected a watch has nothing for those four jobs to do; enumerating them would be four scheduled no-ops a day per person, and a failure alert for each would be an alert about nothing. The outcome recording moved for a sharper reason: the shared runner recorded one outcome per *tick* through a resolver asking for the sole subject, which was right by accident on a one-person installation and, on a two-person one, a refusal the handler swallowed — so a failing sync raised no alert at all while `/health` stayed green. `record_subject_job_outcome` takes a mandatory subject; the runner keeps only the platform-family jobs, which have no record to be about. |
+| 2026-08-24 | The care-team conversation is one set of screens, read by the patient and the professional alike, and reading it is revocable separately from writing into it. | A separate patient-facing view of a clinical conversation is a place for the two to drift apart, and the whole argument for a patient-visible thread is that they cannot — so the patient reaches the professional's screens rather than a rendering of them. The two consent actions came from asking what a patient would actually want to narrow: "stop writing to me but you may still look back at what was said" is a real request, and one action could not express it. Participation is a stored row rather than derived from having an active relationship, because deriving it would let a doctor taken on last week silently join a conversation that predates them, and make a doctor whose care ended vanish from a history the patient can still read. |
 | 2026-08-24 | Revision `0005` was edited after having been applied, to stop it seeding five unowned rows. | The alternative was a product that cannot be installed. `alembic upgrade head` is the container's start command; on an empty database revision `0049` refused because those five `skincare_products` rows can never get an owner — identity bootstrap runs after migrations. A later revision cannot fix it, because `0049` comes first and is what fails, and a conditional cannot either, because the ownership columns do not exist yet at `0005`. Removing an insert is a no-op for anyone who already ran the revision; the only behaviour that changes is the broken one. The general rule stands, and the exception is written into the migration's own docstring rather than a commit message. |
 
 ## Continuation protocol

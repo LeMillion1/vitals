@@ -78,6 +78,22 @@ AUTHORED_ACTIONS: tuple[PolicyAction, ...] = (
     PolicyAction.UPDATE,
 )
 
+#: Talking to the patient, as an operation rather than an artifact. The two
+#: actions are separately revocable on purpose: a patient who wants a doctor to
+#: be able to look back at what was said without being able to add to it can
+#: withdraw ``message`` and keep ``read``, and that is a narrowing worth being
+#: able to express. Withdrawing both closes the conversation to them without
+#: deleting it.
+#:
+#: It is in the default set because a care team that cannot talk to the patient
+#: is not what anybody invites one for. The patient can pass their own scopes
+#: and leave it out.
+MESSAGE_OPERATION: str = "care_team.message"
+MESSAGE_ACTIONS: tuple[PolicyAction, ...] = (
+    PolicyAction.READ,
+    PolicyAction.MESSAGE,
+)
+
 #: Every domain that describes the patient, and the same set whichever kind of
 #: professional it is. The separation between a doctor and a trainer is not what
 #: each may look at — it is that they are two different people with two
@@ -171,7 +187,15 @@ def default_scopes(kind: ProfessionalKind | str) -> frozenset[AccessScope]:
         for artifact in AUTHORED_ARTIFACTS
         for action in AUTHORED_ACTIONS
     }
-    return frozenset(facts | authored)
+    conversation = {
+        AccessScope(
+            resource_type=PolicyResourceType.OPERATION,
+            resource_key=MESSAGE_OPERATION,
+            action=action,
+        )
+        for action in MESSAGE_ACTIONS
+    }
+    return frozenset(facts | authored | conversation)
 
 
 async def _relationship_of_patient(

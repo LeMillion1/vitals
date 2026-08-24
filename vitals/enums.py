@@ -136,6 +136,18 @@ class CarePlanStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class CareThreadStatus(StrEnum):
+    """Whether a care-team conversation is still being had.
+
+    A closed thread is read-only and stays where it is. Deleting one would take
+    away a history the patient can currently read, which is the opposite of what
+    a patient-visible channel is for.
+    """
+
+    OPEN = "open"
+    CLOSED = "closed"
+
+
 class SupportScopeResourceType(StrEnum):
     """Kind of resource named by an explicit support-access scope."""
 
