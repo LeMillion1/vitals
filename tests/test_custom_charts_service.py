@@ -4,7 +4,6 @@ tests/test_modules_service.py in structure."""
 from __future__ import annotations
 
 import json
-import logging
 
 import pytest
 
@@ -132,7 +131,9 @@ async def test_get_chart_by_id(db_session, legacy_owner_roots):
     assert fetched == created
 
 
-async def test_malformed_value_falls_back(db_session, legacy_owner_roots, caplog):
+async def test_malformed_value_falls_back(
+    db_session, legacy_owner_roots, monkeypatch
+):
     db_session.add(
         SubjectSetting(
             subject_id=legacy_owner_roots.subject_id,
@@ -142,11 +143,22 @@ async def test_malformed_value_falls_back(db_session, legacy_owner_roots, caplog
     )
     await db_session.commit()
 
-    with caplog.at_level(logging.WARNING):
-        charts = await svc.list_charts(db_session, redis=None, subject_id=legacy_owner_roots.subject_id)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        svc.logger,
+        "warning",
+        lambda message, *args, **_kwargs: warnings.append(
+            message % args if args else message
+        ),
+    )
+    charts = await svc.list_charts(
+        db_session,
+        redis=None,
+        subject_id=legacy_owner_roots.subject_id,
+    )
 
     assert charts == []
-    assert any("not an array" in r.getMessage() for r in caplog.records)
+    assert any("not an array" in warning for warning in warnings)
 
 
 async def test_malformed_entries_dropped(db_session, legacy_owner_roots):

@@ -7,7 +7,6 @@ empty/corrupt config, Core always-on, Optional isolation, and Redis caching.
 from __future__ import annotations
 
 import json
-import logging
 
 import pytest
 
@@ -150,7 +149,9 @@ async def test_unknown_keys_dropped(db_session, legacy_owner_roots):
     assert set(state) == set(DEFAULT_STATE)
 
 
-async def test_malformed_value_falls_back(db_session, caplog, legacy_owner_roots):
+async def test_malformed_value_falls_back(
+    db_session, monkeypatch, legacy_owner_roots
+):
     """A non-object value → safe defaults, and the fallback is LOGGED."""
     await db_session.merge(
         SubjectSetting(
@@ -161,15 +162,22 @@ async def test_malformed_value_falls_back(db_session, caplog, legacy_owner_roots
     )
     await db_session.commit()
 
-    with caplog.at_level(logging.WARNING):
-        state = await modules_service.get_enabled_modules(
-            db_session,
-            redis=None,
-            subject_id=legacy_owner_roots.subject_id,
-        )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        modules_service.logger,
+        "warning",
+        lambda message, *args, **_kwargs: warnings.append(
+            message % args if args else message
+        ),
+    )
+    state = await modules_service.get_enabled_modules(
+        db_session,
+        redis=None,
+        subject_id=legacy_owner_roots.subject_id,
+    )
 
     assert state == DEFAULT_STATE
-    assert any("not an object" in r.message or "not an object" in r.getMessage() for r in caplog.records)
+    assert any("not an object" in warning for warning in warnings)
 
 
 async def test_redis_cache_is_read_through(db_session, redis, legacy_owner_roots):
