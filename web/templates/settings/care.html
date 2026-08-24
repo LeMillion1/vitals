@@ -98,9 +98,7 @@
             {% if p.consent_status and (p.guidance or p.messages) %}
             <div class="v-text-micro" style="color: var(--muted)">
                 {{ t("consents.also_allows") }}:
-                {% if p.guidance %}{{ t("consents.allow_guidance") }}{% endif %}
-                {% if p.guidance and p.messages %}, {% endif %}
-                {% if p.messages %}{{ t("consents.allow_messages") }}{% endif %}
+                {% if p.guidance %}{{ t("consents.allow_guidance") }}{% if p.messages %}, {% endif %}{% endif %}{% if p.messages %}{{ t("consents.allow_messages") }}{% endif %}
             </div>
             {% endif %}
 

@@ -417,6 +417,10 @@ async def test_the_page_says_what_each_person_can_see(in_care, db_session):
         "All record sections" in response.text
         or "Все разделы записи" in response.text
     )
+    assert (
+        "Professional notes and care plans, Shared conversations" in response.text
+        or "Записи специалиста и планы, Общие разговоры" in response.text
+    )
     assert "nav.milestones" not in response.text
 
 
