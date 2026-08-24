@@ -357,15 +357,36 @@ def gated(module_key: str):
 
 @mcp.tool()
 async def get_user_profile() -> dict:
-    """Returns the user's physical profile, active goals, and program overview."""
-    cfg = load_config()
+    """Returns the user's physical profile, active goals, and program overview.
+
+    Every field here used to come from ``.env``, which describes the
+    installation rather than a person — so this tool answered with the owner's
+    body no matter whose record the caller was scoped to. It reads the subject's
+    own row now, and the timezone comes from ``health_subjects`` for the same
+    reason: a profile assembled from process-wide values is a profile about
+    nobody.
+    """
+    from vitals.services import health_profile_service
+    from vitals.models.identity import HealthSubject
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        scope = await _mcp_v1_conflict_scope(session)
+        profile = await health_profile_service.get_profile(
+            session, subject_id=scope.subject_id
+        )
+        timezone = await session.scalar(
+            select(HealthSubject.timezone).where(
+                HealthSubject.id == scope.subject_id
+            )
+        )
     return {
-        "height_cm": cfg.height_cm,
-        "sex": cfg.sex,
-        "age": cfg.user_age,
-        "timezone": str(cfg.timezone),
-        "goals": cfg.user_goals,
-        "program": cfg.user_program,
+        "height_cm": profile.height_cm,
+        "sex": profile.sex,
+        "age": profile.age,
+        "timezone": str(timezone or load_config().timezone),
+        "goals": list(profile.goals),
+        "program": profile.program,
     }
 
 
@@ -1001,7 +1022,6 @@ async def get_nutrition_summary(
     from vitals.services import nutrition_service
     from vitals.utils.timeutils import today_local
 
-    cfg = load_config()
     session_factory = get_session_factory()
     today = today_local()
 
@@ -1014,7 +1034,6 @@ async def get_nutrition_summary(
             return await nutrition_service.daily_summary(
                 session,
                 start,
-                cfg,
                 subject_id=scope.subject_id,
             )
     else:
@@ -1024,7 +1043,6 @@ async def get_nutrition_summary(
                 session,
                 start,
                 end,
-                cfg,
                 subject_id=scope.subject_id,
             )
 

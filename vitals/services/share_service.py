@@ -630,9 +630,8 @@ async def build_snapshot(
             "composing a report requires the subject it is about"
         )
 
-    from vitals.config import load_config
     from vitals.i18n import current_lang
-    from vitals.services import digest_service
+    from vitals.services import digest_service, health_profile_service
 
     chosen = resolve_domains(domains, enabled)
     start, end = clamp_window(period_start, period_end)
@@ -647,7 +646,9 @@ async def build_snapshot(
         max_period_days=max(PERIOD_CHOICES),
     )
     stats = ctx.get("period_stats") or {}
-    cfg = load_config()
+    subject_profile = await health_profile_service.get_profile(
+        session, subject_id=owner._identity.subject_id
+    )
 
     blocks: dict[str, Any] = {}
     for domain in chosen:
@@ -675,10 +676,13 @@ async def build_snapshot(
             "end": end.isoformat(),
             "days": (end - start).days + 1,
         },
+        # Whose body this document is about, from their own row rather than
+        # from ``.env`` — which described the installation owner and was being
+        # printed on every patient's doctor's report.
         "profile": {
-            "age": cfg.user_age,
-            "sex": cfg.sex,
-            "height_cm": cfg.height_cm,
+            "age": subject_profile.age,
+            "sex": subject_profile.sex,
+            "height_cm": subject_profile.height_cm,
         },
         # What the document actually holds, not what was ticked. An empty domain
         # draws no section, so a contents line naming one sends a doctor looking

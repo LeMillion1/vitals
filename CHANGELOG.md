@@ -8,6 +8,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — the profile belongs to a person, not to the installation
+
+Age, sex, height, the programme, the goals and the three nutrition targets lived
+in `.env`, which names nobody: one set of them for however many patients an
+installation holds. Two defects came out of that fact, and only one of them
+looked like a defect.
+
+**The visible half** was the report. Those five fields were printed on every
+patient's weekly digest, doctor's report and share link as though they were
+theirs. They were omitted outright for a while, which was a placeholder rather
+than an answer — it cost the owner five fields and told nobody anything.
+
+**The quiet half** was the Navy formula, which takes a height and a sex. Every
+patient's body-fat percentage and lean body mass were computed from the
+installation owner's geometry, cached for the process. A wrong number in a
+medical record reads exactly like a right one.
+
+They are a subject-scoped setting now (`health_profile_service`), and every
+reader takes a subject: the report assembler, the share snapshot, the Navy
+estimate, the nutrition goals and their progress bars, the protein nudge, and
+the MCP `get_user_profile` tool and `vitals://profile` resource — that last pair
+answered with the owner's body regardless of which record the caller was scoped
+to.
+
+**Absent is not a default.** A subject who has never filled the card in gets
+nulls rather than 190 cm, male, 18. The estimate is skipped instead of computed
+from half a profile, the report omits what it does not know, and the form
+renders empty boxes instead of pre-filling somebody else's numbers — including a
+new blank option on the sex select, without which the first save on that card
+would have quietly stored "male". The three nutrition targets are the deliberate
+exception: a target is a goal rather than a fact about a body, so a sane default
+is honest where inventing a height is not.
+
+`.env` is adopted once, at startup, onto the legacy owner's record — while that
+owner is still the only subject, which is the one state in which an
+unattributed profile is unambiguously somebody's. It never overwrites, so a
+corrected height survives the next deploy. `Config` keeps the eight fields as an
+adoption source with a note not to add a reader.
+
+`/settings/profile` writes the record and stops writing `.env`. That also fixes
+the timezone field, which had been writing `VITALS_TIMEZONE` since the
+per-subject clock landed — the one place nothing reads any more. Changing your
+timezone in Settings did nothing at all; it now updates
+`health_subjects.timezone`, and an unknown zone is refused rather than stored,
+because stored it would raise on every later request that asks what day it is.
+
+
 ### Fixed — a shared installation can save its notification settings
 
 Everything the sole-subject retirement covered so far walks `GET`. `POST` was

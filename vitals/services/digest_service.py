@@ -47,7 +47,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.milestones import DOMAIN, WeeklyDigest
 from vitals.models.tenancy import IntegrationConnection
 from vitals.ownership import WriteIdentity
-from vitals.services import ai_gateway_service
+from vitals.services import ai_gateway_service, health_profile_service
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.utils.timeutils import today_local
 
@@ -754,48 +754,24 @@ HOW TO WRITE:
 
 
 # ── Context assembly ──────────────────────────────────────────────────────────
-async def _config_profile_if_it_describes(
-    session: AsyncSession, *, subject_id: uuid.UUID, cfg: Any
+async def _subject_profile(
+    session: AsyncSession, *, subject_id: uuid.UUID
 ) -> dict[str, Any]:
-    """The age, sex, height, programme and goals — but only if they are theirs.
+    """The age, sex, height, programme and goals of *this* person.
 
-    These five live in ``.env``, which is a single-user artifact: there is one
-    set of them for the whole process, and nothing in them names a subject. In a
-    one-person installation that is unambiguous, and they are that person's.
-
-    With two people it describes at most one of them and cannot say which, so
-    including it put the installation owner's age, sex, height and treatment
-    programme into every other patient's weekly digest, doctor's report and
-    share link — attributed to them, in a document written to be read by a
-    clinician. Omitting it costs the owner five fields in their own report.
-    Getting it wrong costs somebody else a medical document about a body that is
-    not theirs.
-
-    The profile becomes subject-scoped state in PR-09, and this goes with it.
+    These five used to come from ``.env``, which names nobody: one set for the
+    whole process, put into every patient's weekly digest, doctor's report and
+    share link as though it were theirs. They were omitted outright for a while,
+    which cost the owner five fields and was a placeholder rather than an
+    answer. They are subject-scoped state now, and a subject who has not filled
+    them in gets nulls — the same shape, meaning "not said" rather than
+    "somebody else's".
     """
 
-    del subject_id  # the check is about the installation, not about this person
-    with session.no_autoflush:
-        subject_ids = list(
-            await session.scalars(
-                select(HealthSubject.id).order_by(HealthSubject.id).limit(2)
-            )
-        )
-    if len(subject_ids) != 1:
-        return {
-            "age": None,
-            "sex": None,
-            "height_cm": None,
-            "program": None,
-            "goals": None,
-        }
-    return {
-        "age": cfg.user_age,
-        "sex": cfg.sex,
-        "height_cm": cfg.height_cm,
-        "program": cfg.user_program,
-        "goals": cfg.user_goals,
-    }
+    profile = await health_profile_service.get_profile(
+        session, subject_id=subject_id
+    )
+    return profile.as_report_profile()
 
 
 async def assemble_context(
@@ -859,9 +835,6 @@ async def assemble_context(
         module_key = _DOMAIN_MODULE.get(domain)
         return bool(module_key and module_on(module_key))
 
-    from vitals.config import load_config
-    cfg = load_config()
-
     ctx: dict[str, Any] = {
         "schema_version": CONTEXT_SCHEMA_VERSION,
         "date": today.isoformat(),  # Keep for backward compatibility
@@ -877,9 +850,7 @@ async def assemble_context(
             "previous_end": prev_end.isoformat(),
         },
         "coverage": {},
-        "user_profile": await _config_profile_if_it_describes(
-            session, subject_id=subject_id, cfg=cfg
-        ),
+        "user_profile": await _subject_profile(session, subject_id=subject_id),
     }
 
     from vitals.services import weight_service
@@ -1630,7 +1601,9 @@ async def assemble_context(
         meals_after_21 = sum(
             bool(m.eaten_at and m.eaten_at.hour >= 21) for m in nutrition_meals
         )
-        goals = nutrition_service.get_goals(cfg)
+        goals = await nutrition_service.get_goals(
+            session, subject_id=subject_id
+        )
         ctx["nutrition"] = {
             "avg_calories_per_day": _mean(
                 totals["calories"] for totals in current_totals

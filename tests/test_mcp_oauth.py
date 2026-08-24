@@ -555,11 +555,6 @@ async def test_mcp_read_only_tools_execution(
         get_lab_results,
     )
 
-    # Test get_user_profile
-    profile = await get_user_profile()
-    assert profile["height_cm"] == 190.0
-    assert profile["sex"] == "male"
-
     # Override session dependencies so tools use the test database session
     # Note: get_session_factory in web.routers.mcp gets session_factory.
     # To mock it in tests, we patch get_session_factory to return our test session_factory fixture.
@@ -568,6 +563,13 @@ async def test_mcp_read_only_tools_execution(
     mcp_router.get_session_factory = lambda: session_factory
 
     try:
+        # Test get_user_profile. Inside the patched factory now, not above it:
+        # the profile is read from the subject's own record rather than from
+        # ``.env``, so this tool needs a database like every other one here.
+        profile = await get_user_profile()
+        assert profile["height_cm"] == 190.0
+        assert profile["sex"] == "male"
+
         # Test get_weight_logs tool
         weights_data = await get_weight_logs(start_date="2026-06-10", end_date="2026-06-20")
         assert len(weights_data["weights"]) == 1

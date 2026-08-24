@@ -109,11 +109,10 @@ async def _recovery_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
 
 async def _nutrition_row(session: AsyncSession, subject_id) -> Optional[StatRow]:
     """Today's intake against the ceiling, protein beside it."""
-    from vitals.config import load_config
     from vitals.services import nutrition_service
 
     summary = await nutrition_service.daily_summary(
-        session, today_local(), load_config(), subject_id=subject_id
+        session, today_local(), subject_id=subject_id
     )
     if not summary["meal_count"]:
         return None

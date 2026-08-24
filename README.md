@@ -669,6 +669,12 @@ curl -s http://127.0.0.1:8000/health
 <details>
 <summary><strong>Профиль пользователя</strong></summary>
 
+Читаются **один раз, при первом старте** после обновления: значения переносятся в
+запись владельца (`health_profile_service.adopt_installation_profile`), и дальше
+профиль живёт в базе и правится на странице настроек без перезапуска. Переменные
+описывают инсталляцию, а не человека — при двух пациентах они не могут сказать,
+о ком речь, поэтому ни один рантайм-читатель их больше не открывает.
+
 | Переменная | Описание | Дефолт |
 | :--- | :--- | :--- |
 | `VITALS_HEIGHT_CM` | Рост (см) | `190` |
@@ -684,7 +690,7 @@ curl -s http://127.0.0.1:8000/health
 
 | Переменная | Описание | Дефолт |
 | :--- | :--- | :--- |
-| `VITALS_NUTRITION_PROTEIN_TARGET_G` | Суточный белок (г) | `150` |
+| `VITALS_NUTRITION_PROTEIN_TARGET_G` | Суточный белок (г) — как и профиль выше, переносится в запись при первом старте | `150` |
 | `VITALS_NUTRITION_CALORIES_MIN` | Минимум ккал | `1300` |
 | `VITALS_NUTRITION_CALORIES_MAX` | Максимум ккал | `1700` |
 </details>
@@ -1410,6 +1416,13 @@ Two-factor sign-in has no variable: it is off by default and switched on in the 
 <details>
 <summary><strong>User Profile</strong></summary>
 
+Read **once, on the first start** after the upgrade: the values are copied onto
+the owner's own record (`health_profile_service.adopt_installation_profile`), and
+from then on the profile lives in the database and is edited on the settings page
+without a restart. These variables describe the installation rather than a
+person — with two patients they cannot say which one they are about — so no
+runtime reader opens them any more.
+
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `VITALS_HEIGHT_CM` | Height (cm) | `190` |
@@ -1425,7 +1438,7 @@ Two-factor sign-in has no variable: it is off by default and switched on in the 
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `VITALS_NUTRITION_PROTEIN_TARGET_G` | Daily protein target (g) | `150` |
+| `VITALS_NUTRITION_PROTEIN_TARGET_G` | Daily protein target (g) — adopted onto the record at first start, like the profile above | `150` |
 | `VITALS_NUTRITION_CALORIES_MIN` | Minimum daily kcal | `1300` |
 | `VITALS_NUTRITION_CALORIES_MAX` | Maximum daily kcal | `1700` |
 </details>

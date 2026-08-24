@@ -28,7 +28,6 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.config import load_config
 from vitals.enums import Domain, MilestoneStatus
 from vitals.services import conflict_engine
 from vitals.utils.timeutils import today_local
@@ -182,11 +181,9 @@ async def external_summary(session: AsyncSession = Depends(get_session)) -> dict
         actor_username=get_web_config().auth_username,
         evaluation_date=today_local(),
     )
-    cfg = load_config()
     nutrition_today = await nutrition_service.daily_summary(
         session,
         today_local(),
-        cfg,
         subject_id=scope.subject_id,
     )
 

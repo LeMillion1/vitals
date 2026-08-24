@@ -204,17 +204,22 @@ async def test_an_account_without_a_record_is_told_that_and_not_something_else(
     assert not wrong_answer, "; ".join(wrong_answer)
 
 
-async def test_the_env_profile_is_not_attributed_to_another_patient(
+async def test_each_patients_report_describes_that_patient(
     db_session, legacy_owner_roots, second_person
 ):
-    """Age, sex, height, programme and goals live in .env, and .env names nobody.
+    """Age, sex, height, programme and goals used to live in .env, which names
+    nobody.
 
     One set of them for the whole process, and in a one-person installation that
     is unambiguous. With two people it describes at most one and cannot say
     which — and it was being written into every patient's weekly digest,
-    doctor's report and share link as though it were theirs. A medical document
-    about a body that is not the patient's is worse than one missing five
-    fields.
+    doctor's report and share link as though it were theirs. For a while they
+    were omitted from everybody's, which was a placeholder: it cost the owner
+    five fields and answered nothing.
+
+    They are on the subject's own row now. The owner's report has them back; the
+    other patient's says nothing about a body nobody has described, which is
+    what a blank field in a medical document is supposed to mean.
     """
 
     from sqlalchemy import select
@@ -228,14 +233,18 @@ async def test_the_env_profile_is_not_attributed_to_another_patient(
     )
     assert other_subject_id is not None
 
-    for subject_id in (other_subject_id, legacy_owner_roots.subject_id):
-        context = await digest_service.assemble_context(
-            db_session, subject_id=subject_id
-        )
-        profile = context["user_profile"]
-        assert profile["age"] is None
-        assert profile["height_cm"] is None
-        assert profile["program"] is None
+    owner = await digest_service.assemble_context(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    )
+    assert owner["user_profile"]["height_cm"] is not None
+    assert owner["user_profile"]["age"] is not None
+
+    other = await digest_service.assemble_context(
+        db_session, subject_id=other_subject_id
+    )
+    assert other["user_profile"]["age"] is None
+    assert other["user_profile"]["height_cm"] is None
+    assert other["user_profile"]["program"] is None
 
 
 async def test_an_account_without_a_record_is_offered_no_personal_section(
@@ -329,21 +338,26 @@ NOT_SWEPT = {
     "/oauth/token",
     "/oauth/authorize/approve",
     "/alerts/resolve-all",  # takes no body and resolves the sweep's own alerts
-    # These five write ``.env`` — installation configuration, not a record. An
-    # empty body is accepted by every one of them, so sweeping them blanks the
-    # Garmin credentials, the Hevy key, the MCP token and the profile for
-    # whatever runs next. Found exactly that way: the first version of this
-    # sweep left ``test_garmin_sync_not_configured_redirects`` failing several
-    # hundred tests later, and passing on its own.
-    "/settings/garmin",
-    "/settings/hevy",
-    "/settings/mcp",
-    "/settings/profile",
-    "/settings/password",
-    "/settings/2fa/start",
-    "/settings/2fa/enable",
-    "/settings/2fa/disable",
 }
+
+
+@pytest.fixture(autouse=True)
+def _writes_land_in_a_throwaway_env(tmp_path, monkeypatch):
+    """Several settings routes persist into ``.env``, which is the developer's.
+
+    ``env_writer`` resolves the repository's own file unless
+    ``VITALS_ENV_FILE`` says otherwise, and most of the suite does not say
+    otherwise — so a sweep that posts to ``/settings/garmin`` with an empty body
+    rewrites real credentials. Found that way: the first version of this file
+    left ``test_garmin_sync_not_configured_redirects`` failing several hundred
+    tests later and passing on its own.
+
+    Redirecting the file is the structural fix. Naming the routes in the
+    exclusion list above was the first one, and it is the weaker kind — it
+    covers the routes somebody remembered.
+    """
+
+    monkeypatch.setenv("VITALS_ENV_FILE", str(tmp_path / "sweep.env"))
 
 
 def _write_routes(app) -> list[tuple[str, str]]:

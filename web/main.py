@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.services import health_profile_service
 from vitals.services.access_resolution import AccessDeniedError
 from vitals.services.alerts_service import AlertLegacyBridgeError
 from vitals.services.legacy_ownership import (
@@ -130,6 +131,15 @@ async def _bootstrap_legacy_identity(
             preference_bundle = await prefs.get_exact_one_preferences_bundle(
                 session,
                 scope=preference_scope,
+            )
+            # Age, sex, height, programme and goals move out of ``.env`` into
+            # this owner's own row. Adopted here rather than on first read for
+            # the reason every other step in this block exists: while the
+            # installation is one person, the unattributed value is
+            # unambiguously theirs, and afterwards nothing can say whose it was.
+            await health_profile_service.adopt_installation_profile(
+                session,
+                subject_id=identity.subject_id,
             )
             await session.commit()
             return preference_bundle

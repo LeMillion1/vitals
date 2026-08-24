@@ -44,7 +44,7 @@ page needs the same edit:
 | migration count | `migrations/versions/` | 59, head `0059` |
 | RLS table count | revisions `0050` + `0051`, asserted in `tests/test_row_level_security.py` | 55 |
 | platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 6 |
-| routers, service modules | `web/routers/`, `vitals/services/` | 26 and 93 |
+| routers, service modules | `web/routers/`, `vitals/services/` | 26 and 94 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own

@@ -94,7 +94,6 @@ async def _protein_short(session: AsyncSession, ctx: dict) -> bool:
     dinner can fix it. Requires at least *something* logged: an empty log is a
     day he didn't track, and nagging about that is a different (unwanted) product.
     """
-    from vitals.config import load_config
     from vitals.services import nutrition_service
 
     if not 16 <= ctx["now"].hour < 21:
@@ -112,7 +111,10 @@ async def _protein_short(session: AsyncSession, ctx: dict) -> bool:
     eaten = sum(m.protein_g or 0 for m in meals)
     if not eaten:
         return False
-    target = load_config().nutrition_protein_target_g
+    goals = await nutrition_service.get_goals(
+        session, subject_id=ownership.subject_id
+    )
+    target = goals["protein_target_g"]
     ctx["protein_eaten"] = eaten
     ctx["protein_target"] = target
     return target - eaten >= PROTEIN_MIN_GAP_G

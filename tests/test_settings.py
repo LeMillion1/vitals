@@ -127,8 +127,20 @@ async def test_settings_page_has_gear_icon(auth_client):
     assert 'href="/settings"' in r.text
 
 
-async def test_settings_save_profile(auth_client, tmp_path, monkeypatch):
-    """POST /settings/profile writes height and sex to the .env file."""
+async def test_settings_save_profile(
+    auth_client, db_session, legacy_owner_roots, tmp_path, monkeypatch
+):
+    """POST /settings/profile writes the person's record, and leaves .env alone.
+
+    It used to write ``.env``, which describes the installation and not anybody
+    in it — one height and one sex for however many patients the installation
+    holds. The environment is deliberately untouched now: it is what an
+    installation that has not upgraded yet adopts from at startup, and a second
+    answer that disagrees with the row is worse than a stale one nothing reads.
+    """
+
+    from vitals.services import health_profile_service
+
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_HEIGHT_CM=190\nVITALS_SEX=male\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
@@ -147,10 +159,17 @@ async def test_settings_save_profile(auth_client, tmp_path, monkeypatch):
     assert r.status_code == 303
     assert r.headers["location"] == "/settings?saved=profile"
 
-    content = env_file.read_text(encoding="utf-8")
-    assert "VITALS_HEIGHT_CM=185" in content
-    assert "VITALS_USER_AGE=30" in content
-    assert "VITALS_USER_PROGRAM=тест" in content
+    profile = await health_profile_service.get_profile(
+        db_session, subject_id=legacy_owner_roots.subject_id
+    )
+    assert profile.height_cm == 185
+    assert profile.age == 30
+    assert profile.program == "тест"
+    assert profile.goals == ("цель1", "цель2")
+
+    assert env_file.read_text(encoding="utf-8") == (
+        "VITALS_HEIGHT_CM=190\nVITALS_SEX=male\n"
+    )
 
 
 async def test_settings_save_ai_key(auth_client, tmp_path, monkeypatch):

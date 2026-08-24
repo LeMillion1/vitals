@@ -120,6 +120,10 @@
                 <div class="space-y-1.5">
                     <label for="s-sex" class="v-label">{{ t("settings.sex") }}</label>
                     <select id="s-sex" name="sex" class="v-select">
+                        {# Without this, a subject who has never said anything
+                           lands on the first option and stores "male" the next
+                           time they save something else on this card. #}
+                        <option value="" {% if not sex %}selected{% endif %}>{{ t("settings.sex_unset") }}</option>
                         <option value="male" {% if sex == 'male' %}selected{% endif %}>{{ t("settings.sex_male") }}</option>
                         <option value="female" {% if sex == 'female' %}selected{% endif %}>{{ t("settings.sex_female") }}</option>
                     </select>

@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.config import load_config
 from vitals.enums import Domain
 from vitals.services import alerts_service, conflict_engine, nutrition_service
 from vitals.services.conflict_engine import ConflictBlocked
@@ -47,7 +46,6 @@ async def nutrition_dashboard(
         actor_username=username,
         evaluation_date=selected_date,
     )
-    cfg = load_config()
     # This resolver proves there is exactly one subject, which is the only
     # state where pre-backfill NULL-subject rows may be shown safely.
     day_meals = await nutrition_service.list_meals_for_date(
@@ -58,7 +56,6 @@ async def nutrition_dashboard(
     summary = await nutrition_service.daily_summary(
         db,
         selected_date,
-        cfg,
         subject_id=conflict_context.identity.subject_id,
     )
     history = await nutrition_service.list_meals(
@@ -73,7 +70,9 @@ async def nutrition_dashboard(
         domain=Domain.NUTRITION,
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
-    goals = nutrition_service.get_goals(cfg)
+    goals = await nutrition_service.get_goals(
+        db, subject_id=conflict_context.identity.subject_id
+    )
 
     return templates.TemplateResponse(
         request,

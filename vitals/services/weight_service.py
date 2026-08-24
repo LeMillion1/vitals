@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING, Optional, Sequence
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.config import Config, load_config
 from vitals.enums import (
     AIInvocationPurpose,
     AIInvocationSource,
@@ -55,7 +54,12 @@ from vitals.models.weight import (
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset
 from vitals.ownership import WriteIdentity
-from vitals.services import alerts_service, conflict_engine, file_asset_service
+from vitals.services import (
+    alerts_service,
+    conflict_engine,
+    file_asset_service,
+    health_profile_service,
+)
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.services.analytics import exclude_ranges
 from vitals.services.analytics.navy import lean_body_mass_kg, navy_body_fat_pct
@@ -270,18 +274,29 @@ def _require_evaluation_date(
         )
 
 
-# Cached at first use. NOTE: height/sex changes via Settings only take effect after
-# a container restart (this cache + load_config() read env once) — unlike the login
-# password, which is applied live. That's acceptable: body geometry rarely changes.
-_config: Optional[Config] = None
+async def _body_config(
+    session: AsyncSession, *, subject_id: uuid.UUID
+) -> tuple[Optional[float], Optional[str]]:
+    """(height_cm, sex) for the Navy formula, for *this* body.
 
+    It read them from ``.env`` and cached the answer for the process, which
+    meant one height and one sex for every patient in the installation — so a
+    second person's body-fat percentage and lean body mass were computed from
+    the owner's geometry, and a wrong number in a medical record reads exactly
+    like a right one.
 
-def _body_config() -> tuple[float, str]:
-    """(height_cm, sex) for the Navy formula, from config (cached; see note above)."""
-    global _config
-    if _config is None:
-        _config = load_config()
-    return _config.height_cm, _config.sex
+    ``(None, None)`` when the subject has not filled in their profile, and the
+    caller skips the estimate rather than substituting somebody's default: an
+    unfilled profile means nobody has said, and the formula has no honest answer
+    from half of one.
+    """
+
+    profile = await health_profile_service.get_profile(
+        session, subject_id=subject_id
+    )
+    if not profile.describes_a_body:
+        return None, None
+    return profile.height_cm, profile.sex
 
 
 # A direct measurement — a manual entry or a body-composition scan (InBody/МедАсс)
@@ -1858,9 +1873,9 @@ async def _apply_body_measurement_values(
     note: Optional[str],
     subject_id: uuid.UUID,
 ) -> None:
-    height_cm, sex = _body_config()
+    height_cm, sex = await _body_config(session, subject_id=subject_id)
     body_fat_pct = None
-    if neck_cm and waist_cm:
+    if neck_cm and waist_cm and height_cm is not None and sex is not None:
         try:
             body_fat_pct = navy_body_fat_pct(
                 waist_cm=waist_cm,

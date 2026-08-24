@@ -136,9 +136,8 @@ async def test_daily_summary_totals_and_on_track(db_session, owner_write):
     )
     await db_session.commit()
 
-    cfg = _make_cfg()
     summary = await nutrition_service.daily_summary(
-        db_session, d, cfg, subject_id=owner_write.subject_id
+        db_session, d, subject_id=owner_write.subject_id
     )
 
     assert summary["meal_count"] == 3
@@ -157,9 +156,8 @@ async def test_daily_summary_under_target(db_session, owner_write):
     )
     await db_session.commit()
 
-    cfg = _make_cfg()
     summary = await nutrition_service.daily_summary(
-        db_session, d, cfg, subject_id=owner_write.subject_id
+        db_session, d, subject_id=owner_write.subject_id
     )
 
     assert summary["on_track"]["calories"] is False   # 500 < 1300
@@ -175,9 +173,8 @@ async def test_daily_summary_over_target(db_session, owner_write):
     )
     await db_session.commit()
 
-    cfg = _make_cfg()
     summary = await nutrition_service.daily_summary(
-        db_session, d, cfg, subject_id=owner_write.subject_id
+        db_session, d, subject_id=owner_write.subject_id
     )
 
     assert summary["on_track"]["calories"] is False   # 2000 > 1700
@@ -198,9 +195,8 @@ async def test_nutrition_summary_period(db_session, owner_write):
     )
     await db_session.commit()
 
-    cfg = _make_cfg()
     summary = await nutrition_service.nutrition_summary(
-        db_session, d1, d2, cfg, subject_id=owner_write.subject_id
+        db_session, d1, d2, subject_id=owner_write.subject_id
     )
 
     assert summary["meal_count"] == 2
@@ -212,9 +208,23 @@ async def test_nutrition_summary_period(db_session, owner_write):
     assert summary["per_day"][0]["calories"] == 1500
 
 
-async def test_goals_from_config(db_session, owner_write):
-    cfg = _make_cfg(nutrition_protein_target_g=180.0, nutrition_calories_min=1500, nutrition_calories_max=2000)
-    goals = nutrition_service.get_goals(cfg)
+async def test_goals_come_from_this_subjects_record(db_session, owner_write):
+    """They came from ``.env``, so every patient was measured against one set."""
+
+    from vitals.services import health_profile_service
+
+    await health_profile_service.set_profile(
+        db_session,
+        subject_id=owner_write.subject_id,
+        raw={
+            "protein_target_g": "180",
+            "calories_min": "1500",
+            "calories_max": "2000",
+        },
+    )
+    goals = await nutrition_service.get_goals(
+        db_session, subject_id=owner_write.subject_id
+    )
 
     assert goals["protein_target_g"] == 180.0
     assert goals["calories_min"] == 1500

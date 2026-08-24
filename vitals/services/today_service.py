@@ -19,7 +19,6 @@ from typing import Any, Optional, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.config import load_config
 from vitals.enums import DigestKind, Domain, Severity
 from vitals.i18n import decimal, t
 from vitals.utils.timeutils import now_local, today_local
@@ -129,7 +128,6 @@ async def build(
 
     em = enabled_modules or {}
     today = today_local()
-    cfg = load_config()
 
     ctx = await brief.build_context(
         session,
@@ -161,7 +159,7 @@ async def build(
     calories = None
     if em.get("nutrition"):
         summary = await nutrition_service.daily_summary(
-            session, today, cfg, subject_id=subject_id
+            session, today, subject_id=subject_id
         )
         calories = summary["totals"]["calories"]
         goals = summary["goals"]
@@ -199,13 +197,12 @@ async def build(
 
     if em.get("nutrition"):
         this_cal = await nutrition_service.nutrition_summary(
-            session, today - timedelta(days=6), today, cfg, subject_id=subject_id
+            session, today - timedelta(days=6), today, subject_id=subject_id
         )
         last_cal = await nutrition_service.nutrition_summary(
             session,
             today - timedelta(days=13),
             today - timedelta(days=7),
-            cfg,
             subject_id=subject_id,
         )
         if this_cal["days_with_logs"] and last_cal["days_with_logs"]:

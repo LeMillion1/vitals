@@ -64,8 +64,18 @@ class Config:
     redis_url: str
     timezone: str = DEFAULT_TIMEZONE
 
-    # Body-composition context (single user). Height feeds the Navy formula;
-    # sex gates the female formula for the open-source build.
+    # ── The profile: adoption source only ────────────────────────────────────
+    # These eight (height, sex, age, programme, goals, and the three nutrition
+    # targets) describe a person, and this object describes the installation.
+    # They are read exactly once now, by
+    # ``health_profile_service.adopt_installation_profile`` at startup, which
+    # copies them onto the legacy owner's health subject while that owner is
+    # still the only one — the single state in which an unattributed profile is
+    # unambiguously somebody's. Every runtime reader takes a subject.
+    #
+    # They stay here because an installation that has not upgraded yet still has
+    # them in its ``.env`` and that is where its owner's profile lives until the
+    # first boot after the upgrade. Do not add a reader.
     height_cm: float = 190.0
     sex: str = "male"
 
@@ -77,7 +87,7 @@ class Config:
     # always shown on the weight chart regardless of this setting.
     body_fat_source: str = "latest"
 
-    # User Profile settings (single user default based on Timur)
+    # Adoption source only — see the note on ``height_cm`` above.
     user_age: int = 18
     user_program: str = "рекомпозиция тела (снижение жира, сохраняя мышцы) на протоколе GLP-1, с силовыми тренировками и отслеживанием восстановления"
     user_goals: list[str] = field(default_factory=lambda: ["снижение жира", "сохранение мышц"])
@@ -98,7 +108,7 @@ class Config:
     # "use the digest model", which keeps the brief working before it's ever set.
     llm_model_brief: str = ""
 
-    # ── Nutrition goals ──────────────────────────────────────────────────────────
+    # ── Nutrition goals — adoption source only, as above ─────────────────────────
     nutrition_protein_target_g: float = 150.0
     nutrition_calories_min: int = 1300
     nutrition_calories_max: int = 1700

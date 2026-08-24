@@ -1,15 +1,23 @@
 """Settings panel: read and persist VITALS_* configuration via the web UI.
 
-GET  /settings          — render the settings page (prefilled from .env)
+GET  /settings          — render the settings page
 POST /settings/profile  — save profile block (height, sex, age, timezone, program, goals)
 POST /settings/ai       — save AI / OpenRouter block (api key, model slugs)
 POST /settings/hevy     — save Hevy API key
 POST /settings/garmin   — save Garmin credentials (email + password)
 POST /settings/password — change the login password (requires old password)
 
-All writes go to the .env file via ``web.services.env_writer``.  The app
-shows a banner asking the user to restart the container so the new values
+Most writes here go to the .env file via ``web.services.env_writer``, and the
+app shows a banner asking the user to restart the container so the new values
 are picked up by ``load_config()`` / ``get_web_config()``.
+
+**The profile block is the exception, and the direction of travel.** Age, sex,
+height, the programme, the goals, the nutrition targets and the timezone belong
+to a person rather than to the installation, so they are stored on the health
+subject and take effect immediately. ``.env`` should hold only what the
+installation owns — the database, Redis, the session secret, the identity
+provider, the AI gateway — and the remaining blocks above are what is left to
+move.
 
 Sensitive inputs (API keys, passwords) are always shown masked in the form.
 """
@@ -28,14 +36,18 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.config import load_config
 from vitals.i18n import t
+from vitals.models.identity import HealthSubject
 from vitals.integrations.garmin_client import login_breaker_state
 from vitals.services import (
     ai_gateway_service,
     data_portability_service,
     garmin_weight_service,
+    health_profile_service,
     language_service,
     modules_service,
     platform_ai_control_service,
@@ -90,6 +102,44 @@ _OPENROUTER_MODEL_RE = re.compile(
 def _masked(key: str) -> str:
     """Return a masked placeholder when the key has a value, else empty."""
     return _SENTINEL if read_key(key) else ""
+
+
+def _blank_if_none(value) -> str:
+    """An unset profile field renders as an empty box, not as a default.
+
+    The form used to be pre-filled with 190 cm, male, 18 — the installation's
+    values, which every reader saw as though the app already knew them. An empty
+    field is the honest rendering of nobody having said.
+    """
+
+    if value is None:
+        return ""
+    return _number(value)
+
+
+def _number(value) -> str:
+    """``80.0`` reads as ``80`` in an input box; ``80.5`` stays ``80.5``."""
+
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _is_known_timezone(zone: str) -> bool:
+    """Whether the IANA database has this zone.
+
+    Checked before it is stored rather than when a page reads it: an unknown
+    zone written here would raise on every later request that asks what day it
+    is for this person, which is most of them.
+    """
+
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        return False
+    return True
 
 
 def _is_sentinel(value: str) -> bool:
@@ -313,6 +363,14 @@ async def _page(
         db,
         actor_username=username,
     )
+    profile = await health_profile_service.get_profile(
+        db, subject_id=preference_scope.subject_id
+    )
+    subject_timezone_value = await db.scalar(
+        select(HealthSubject.timezone).where(
+            HealthSubject.id == preference_scope.subject_id
+        )
+    ) or load_config().timezone
     can_manage_openrouter = await platform_admin_service.is_active_platform_admin(
         db,
         actor_username=username,
@@ -362,13 +420,15 @@ async def _page(
         "error": error,
         "adjusted": adjusted,
         "deferred": deferred,
-        # Profile
-        "height_cm": read_key("VITALS_HEIGHT_CM") or "190",
-        "sex": read_key("VITALS_SEX") or "male",
-        "user_age": read_key("VITALS_USER_AGE") or "18",
-        "timezone": read_key("VITALS_TIMEZONE") or "Europe/Chisinau",
-        "user_program": read_key("VITALS_USER_PROGRAM"),
-        "user_goals": read_key("VITALS_USER_GOALS"),
+        # Profile — this person's row, not the installation's environment. An
+        # unfilled field renders empty rather than as somebody's default: a
+        # settings form pre-filled with 190 cm is a claim about the reader.
+        "height_cm": _blank_if_none(profile.height_cm),
+        "sex": profile.sex or "",
+        "user_age": _blank_if_none(profile.age),
+        "timezone": subject_timezone_value,
+        "user_program": profile.program or "",
+        "user_goals": ", ".join(profile.goals),
         # AI
         "can_manage_openrouter": can_manage_openrouter,
         "openrouter_api_key_set": (
@@ -414,10 +474,11 @@ async def _page(
         "mcp_client_secret_set": bool(read_key("VITALS_MCP_CLIENT_SECRET")),
         # Dashboard modules — registry + current state (set on request.state by
         # the global load_enabled_modules dependency).
-        # Nutrition goals
-        "nutrition_protein_target_g": read_key("VITALS_NUTRITION_PROTEIN_TARGET_G") or "150",
-        "nutrition_calories_min": read_key("VITALS_NUTRITION_CALORIES_MIN") or "1300",
-        "nutrition_calories_max": read_key("VITALS_NUTRITION_CALORIES_MAX") or "1700",
+        # Nutrition goals — a target keeps a default where a body measurement
+        # does not, so these are always a number.
+        "nutrition_protein_target_g": _number(profile.protein_target_g),
+        "nutrition_calories_min": str(profile.calories_min),
+        "nutrition_calories_max": str(profile.calories_max),
         # Dashboard modules — ``module_registry`` is a Jinja global (templating.py).
         "enabled_modules": getattr(request.state, "enabled_modules", {}) or {},
         # Proactive layer — DB-backed, unlike everything above.
@@ -465,41 +526,56 @@ async def settings_page(
 async def save_profile(
     request: Request,
     username: str = Depends(require_auth),
-    height_cm: str = Form("190"),
-    sex: str = Form("male"),
-    user_age: str = Form("18"),
-    timezone: str = Form("Europe/Chisinau"),
+    db: AsyncSession = Depends(get_session),
+    height_cm: str = Form(""),
+    sex: str = Form(""),
+    user_age: str = Form(""),
+    timezone: str = Form(""),
     user_program: str = Form(""),
     user_goals: str = Form(""),
     nutrition_protein_target_g: str = Form(""),
     nutrition_calories_min: str = Form(""),
     nutrition_calories_max: str = Form(""),
 ):
-    updates: dict[str, str] = {}
-    if height_cm.strip():
-        updates["VITALS_HEIGHT_CM"] = height_cm.strip()
-    if sex in ("male", "female"):
-        updates["VITALS_SEX"] = sex
-    if user_age.strip().isdigit():
-        updates["VITALS_USER_AGE"] = user_age.strip()
-    if timezone.strip():
-        updates["VITALS_TIMEZONE"] = timezone.strip()
-    if user_program.strip():
-        # Collapse newlines: this textarea is free text, but env_writer rejects
-        # \n/\r in values (an unescaped newline would break out of its KEY=value
-        # line in the .env file).
-        updates["VITALS_USER_PROGRAM"] = " ".join(user_program.split())
-    if user_goals.strip():
-        updates["VITALS_USER_GOALS"] = user_goals.strip()
-    if nutrition_protein_target_g.strip():
-        updates["VITALS_NUTRITION_PROTEIN_TARGET_G"] = nutrition_protein_target_g.strip()
-    if nutrition_calories_min.strip():
-        updates["VITALS_NUTRITION_CALORIES_MIN"] = nutrition_calories_min.strip()
-    if nutrition_calories_max.strip():
-        updates["VITALS_NUTRITION_CALORIES_MAX"] = nutrition_calories_max.strip()
+    """Save the profile to this person's record rather than to ``.env``.
 
-    if updates:
-        write_keys(updates)
+    Every field here used to be written into the installation's environment,
+    which describes nobody: one age, one sex, one height and one programme for
+    however many patients the installation holds. The two visible consequences
+    were a report that printed the owner's body on every patient's document,
+    and a Navy body-fat estimate computed from the owner's height for everybody.
+
+    ``VITALS_TIMEZONE`` went the same way and for a sharper reason: the day a
+    page shows has been read from ``health_subjects.timezone`` since the
+    per-subject clock landed, so this form was still writing the one place
+    nothing reads. Changing your timezone in Settings did nothing at all.
+
+    The old keys are left in ``.env`` untouched. They are what the startup
+    adoption reads on an installation that has not upgraded yet, and rewriting
+    them here would make the environment a second, disagreeing answer.
+    """
+
+    identity = await resolve_legacy_ownership_context(db, actor_username=username)
+    await health_profile_service.set_profile(
+        db,
+        subject_id=identity.subject_id,
+        raw={
+            "height_cm": height_cm,
+            "sex": sex,
+            "age": user_age,
+            "program": user_program,
+            "goals": user_goals,
+            "protein_target_g": nutrition_protein_target_g,
+            "calories_min": nutrition_calories_min,
+            "calories_max": nutrition_calories_max,
+        },
+    )
+    zone = timezone.strip()
+    if zone and _is_known_timezone(zone):
+        subject = await db.get(HealthSubject, identity.subject_id)
+        if subject is not None:
+            subject.timezone = zone
+    await db.commit()
     return _redirect("?saved=profile")
 
 

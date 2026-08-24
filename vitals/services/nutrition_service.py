@@ -12,11 +12,10 @@ from typing import Any, Optional, Sequence
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.config import Config
 from vitals.enums import Domain, Source
 from vitals.models.nutrition import DOMAIN, MealLog
 from vitals.ownership import WriteIdentity
-from vitals.services import conflict_engine
+from vitals.services import conflict_engine, health_profile_service
 from vitals.utils.timeutils import now_local, today_local
 
 
@@ -132,12 +131,22 @@ def _projected_day_total(
 
 # ── Goals helper ─────────────────────────────────────────────────────────────
 
-def get_goals(cfg: Config) -> dict[str, Any]:
-    return {
-        "protein_target_g": cfg.nutrition_protein_target_g,
-        "calories_min": cfg.nutrition_calories_min,
-        "calories_max": cfg.nutrition_calories_max,
-    }
+async def get_goals(
+    session: AsyncSession, *, subject_id: uuid.UUID
+) -> dict[str, Any]:
+    """This person's targets, not the installation's.
+
+    They came from ``.env``, which meant every patient's progress bar and every
+    "you are short on protein" line was measured against one person's numbers.
+    Unlike the body geometry beside them these keep a default when nobody has
+    said: a target is a goal rather than a fact about a body, and a sane
+    starting one is honest where inventing a height is not.
+    """
+
+    profile = await health_profile_service.get_profile(
+        session, subject_id=subject_id
+    )
+    return profile.as_nutrition_goals()
 
 
 # ── CRUD ─────────────────────────────────────────────────────────────────────
@@ -521,7 +530,6 @@ def _on_track(totals: dict[str, float], goals: dict[str, Any]) -> dict[str, bool
 async def daily_summary(
     session: AsyncSession,
     on_date: date_type,
-    cfg: Config,
     *,
     subject_id: uuid.UUID,
 ) -> dict[str, Any]:
@@ -531,7 +539,7 @@ async def daily_summary(
         subject_id=subject_id,
     )
     totals = _sum_macros(meals)
-    goals = get_goals(cfg)
+    goals = await get_goals(session, subject_id=subject_id)
     return {
         "date": on_date.isoformat(),
         "totals": totals,
@@ -545,7 +553,6 @@ async def nutrition_summary(
     session: AsyncSession,
     start: date_type,
     end: date_type,
-    cfg: Config,
     *,
     subject_id: uuid.UUID,
 ) -> dict[str, Any]:
@@ -556,7 +563,7 @@ async def nutrition_summary(
         subject_id=subject_id,
     )
     totals = _sum_macros(meals)
-    goals = get_goals(cfg)
+    goals = await get_goals(session, subject_id=subject_id)
 
     per_day: dict[date_type, list[MealLog]] = {}
     for m in meals:

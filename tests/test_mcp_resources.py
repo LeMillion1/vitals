@@ -21,10 +21,18 @@ def _use_test_factory(session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
 
 
-async def test_profile_resource_returns_profile():
+async def test_profile_resource_returns_profile(db_session, legacy_owner_roots):
+    """The roots are a fixture now because the profile has an owner.
+
+    It used to read ``.env`` and needed no database at all, which is the same
+    sentence as "it described the installation rather than whoever the caller
+    was scoped to".
+    """
+
     prof = await mcp_router.profile_resource()
     assert "height_cm" in prof
     assert "goals" in prof
+    assert prof["height_cm"] is not None
 
 
 async def test_latest_digest_resource_empty_then_populated(

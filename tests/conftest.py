@@ -413,6 +413,14 @@ async def legacy_owner_roots(db_session):
         db_session,
         scope=preference_scope,
     )
+    from vitals.services import health_profile_service
+
+    # The same adoption startup performs: the ``.env`` profile is this owner's
+    # while they are the only subject, and every other subject starts empty.
+    await health_profile_service.adopt_installation_profile(
+        db_session,
+        subject_id=identity.subject_id,
+    )
     await db_session.commit()
     return identity
 

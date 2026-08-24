@@ -51,20 +51,22 @@ know:**
    endpoint", which every caller already handles as an ordinary answer.
    `channels.resolve_legacy_bound_notifier` returns `None` and is the seam a
    per-subject push subscription plugs into.
-2. **The profile is omitted from reports, not attributed.** `VITALS_USER_AGE`,
-   `VITALS_SEX`, `VITALS_HEIGHT_CM`, `VITALS_USER_PROGRAM`, `VITALS_USER_GOALS`
-   and the nutrition targets are still installation-wide, so one person's profile
-   was being written into every patient's report. The placeholder in
-   `digest_service._config_profile_if_it_describes` leaves them out instead.
-   Moving them to subject-scoped state is item 3 of the `.env` plan below and the
-   thing that gives them back.
+2. **A new subject has no body on file, and that is the correct state.** The
+   profile moved out of `.env` into `health_profile_service`, so the report has
+   its five fields back for whoever filled them in — and a subject who has not
+   gets nulls rather than somebody's default. The Navy body-fat estimate is
+   skipped for them rather than computed from half a profile. That is not a
+   placeholder and needs no further work; it is what an empty field in a medical
+   document is supposed to mean.
 
 **The `.env` plan** — `.env` should hold only what belongs to the installation
 (database, Redis, session secret, identity provider, AI gateway, endpoints); all
 of a person's settings belong in the database. Done: the timezone (was already a
-column, now read), and the proactive schedule. Remaining: (3) the profile and
-goals above, and (4) per-subject Garmin/Hevy credentials, which is what blocks
-fanning out the four provider-sync jobs.
+column, now read *and written* — `/settings/profile` had been writing
+`VITALS_TIMEZONE`, which nothing reads, so changing it did nothing), the
+proactive schedule, and (3) the profile, goals and nutrition targets. Remaining:
+(4) per-subject Garmin/Hevy credentials, which is what blocks fanning out the
+four provider-sync jobs.
 
 ## Outcome
 
@@ -1235,12 +1237,23 @@ everybody else's record — an outage turned into a disclosure.
 **The shape of the rest.** `.env` should hold only what belongs to the
 installation: the database and Redis, the session secret, the identity provider,
 the AI gateway, endpoint addresses. Everything about a person belongs in the
-database — integration credentials, the profile (age, sex, height, programme,
-goals, and the nutrition targets), and the authentication that is still one
-username and one password hash. Two of those are already paid for: the timezone
-was there all along, and the profile is currently *omitted* from every report
-rather than attributed to the wrong person, which is a placeholder and not an
-answer.
+database. Three of those are paid for now — the timezone was there all along;
+the proactive schedule; and the profile, which is a subject-scoped setting with
+every reader taking a subject.
+
+The profile is worth recording as two defects rather than one, because only the
+first looked like a defect. The five fields were printed on every patient's
+report as though they were theirs, and were omitted for a while as a
+placeholder. The second was the Navy formula: it takes a height and a sex, so
+every patient's body-fat percentage and lean body mass were computed from the
+installation owner's geometry, cached for the process, and a wrong number in a
+medical record reads exactly like a right one. The rule that came out of it is
+that **absent is not a default** — the estimate is skipped rather than computed
+from half a profile, and the settings form renders empty boxes rather than
+pre-filling somebody else's numbers.
+
+What is left is integration credentials, and the authentication that is still
+one username and one password hash.
 
 Scope:
 
@@ -1545,6 +1558,7 @@ Additional gates:
 | 2026-08-24 | A feature removal includes its settings, in the same release. | Deleting a feature and deleting its knobs are two jobs and the suites only notice the first. What survived the removal above for two days: four `VITALS_TELEGRAM_*` variables nothing read; a week-template block whose inputs had stopped being passed, so `/settings` rendered a heading over an empty box and still answered 200; a module gate that could only return `False`; an AI prompt describing a context key that no longer exists. |
 | 2026-08-24 | Retiring a field from a stored preference policy requires a data migration in the same revision. | `prefs._strict_object` compares a stored row's key set against the code's with `!=`, deliberately, because a preference that has drifted from the code is worth failing on. Removing `evening_time` from the code alone would have made every read raise on any installation that had ever saved its proactive settings. Revision `0059` rewrites the rows. |
 | 2026-08-24 | A settings control whose effect is currently zero comes off the card; its stored value stays. | Quiet hours, the daily message budget and the nudge switches all gate a send, and there is nothing to send with. The delivery engine still reads the stored policy and a first web push has to be governed by something, so the handler now overlays only the fields the form still posts — `Form(default)` would otherwise silently reset what the owner last chose. |
+| 2026-08-24 | The profile moves to the subject, and an unset field stays unset rather than taking a default. | `.env` held one age, sex, height, programme, goals and set of nutrition targets for however many patients an installation has. Two defects sat behind that, and only the first looked like one: the five fields were printed on every patient's report as though they were theirs, and the Navy formula computed every patient's body fat and lean mass from the installation owner's height and sex. The second is the reason for the rule about defaults — 190 cm, male, 18 is not a convenience for somebody who has said nothing, it is a claim about their body that a formula then turns into a number in a medical record. Nutrition targets are the deliberate exception: a target is a goal, not a fact about a body. |
 
 ## Continuation protocol
 
