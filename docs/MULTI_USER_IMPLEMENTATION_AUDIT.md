@@ -231,6 +231,11 @@ Its Russian copy still contains typos, mobile controls are below the project's
 44 px target, and the registration back
 icon lacks an accessible name.
 
+The first live patient consent screen also rendered each shared domain three
+times because it exposed the underlying read/list/search scope rows, and used
+the missing `nav.milestones` key. It now collapses policy actions into one
+human record-section summary and uses the dedicated consent translations.
+
 The first shared UI run reported 25 passed and 10 failures after a revoked
 support-record navigation timed out; the remaining nine were cascading server
 timeouts. The exact HTTP flow was added as a three-second regression and passed,

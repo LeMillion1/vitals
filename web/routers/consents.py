@@ -49,6 +49,23 @@ from web.templating import templates
 router = APIRouter(prefix="/settings/care", tags=["consents"])
 
 
+def _shared_domains(scope_rows: set[tuple[str, str, str]]) -> list[str]:
+    """Collapse policy actions into the record sections a person chose.
+
+    A consent stores read, list and search as separate authorization facts.
+    Those are implementation details, not three copies of the same section on
+    the patient's screen. Following ``RECORD_SECTIONS`` also gives the summary
+    the same stable order as the form instead of an alphabetical accident.
+    """
+
+    granted = {
+        key
+        for resource_type, key, _action in scope_rows
+        if resource_type == PolicyResourceType.DOMAIN.value
+    }
+    return [domain.value for domain in RECORD_SECTIONS if domain.value in granted]
+
+
 def _selected_scopes(
     domains: list[str], *, allow_guidance: bool, allow_messages: bool
 ) -> frozenset[AccessScope]:
@@ -203,11 +220,7 @@ async def _render(
             "consent_status": row.consent_status,
             "version": row.version,
             "expires_at": row.expires_at,
-            "domains": sorted(
-                key
-                for resource_type, key, _action in scopes.get(row.consent_id, ())
-                if resource_type == PolicyResourceType.DOMAIN.value
-            ),
+            "domains": _shared_domains(scopes.get(row.consent_id, set())),
             "guidance": any(
                 resource_type == PolicyResourceType.ARTIFACT.value
                 for resource_type, _key, _action in scopes.get(row.consent_id, ())

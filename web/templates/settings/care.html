@@ -87,7 +87,11 @@
             {% if p.domains %}
             <div class="v-text-micro" style="color: var(--muted)">
                 {{ t("consents.sees") }}:
-                {% for domain in p.domains %}{{ t("nav." ~ domain) if t("nav." ~ domain) else domain }}{% if not loop.last %}, {% endif %}{% endfor %}
+                {% if p.domains|length == shareable_domains|length %}
+                {{ t("consents.all_sections") }}
+                {% else %}
+                {% for domain in p.domains %}{{ t("consents.domain." ~ domain) }}{% if not loop.last %}, {% endif %}{% endfor %}
+                {% endif %}
             </div>
             {% endif %}
 

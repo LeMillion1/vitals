@@ -23,6 +23,22 @@ from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.professional import ProfessionalInvitation, ProfessionalNote
 
 
+def test_policy_actions_collapse_to_one_visible_record_section():
+    from vitals.access import PolicyAction, PolicyResourceType
+    from web.routers.consents import _shared_domains
+
+    rows = {
+        (PolicyResourceType.DOMAIN.value, "labs", action.value)
+        for action in (
+            PolicyAction.READ,
+            PolicyAction.LIST,
+            PolicyAction.SEARCH,
+        )
+    }
+
+    assert _shared_domains(rows) == ["labs"]
+
+
 @asynccontextmanager
 async def _client_for(username: str):
     """A second, independent browser.
@@ -395,8 +411,13 @@ async def test_the_page_says_what_each_person_can_see(in_care, db_session):
     )
     assert response.status_code == 200
     assert "cc-incare" in response.text
-    # Every domain the consent actually carries, named on the page.
-    assert "labs" in response.text or "Анализы" in response.text
+    # The default is one human summary, not three copies of every domain for
+    # the internal read/list/search actions.
+    assert (
+        "All record sections" in response.text
+        or "Все разделы записи" in response.text
+    )
+    assert "nav.milestones" not in response.text
 
 
 async def test_a_stranger_cannot_withdraw_somebody_elses_consent(

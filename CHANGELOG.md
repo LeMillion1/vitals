@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — shared record sections are shown once
+
+The patient access screen no longer repeats every health section for the
+internal read, list, and search permissions behind it. A full grant is one
+plain “all record sections” summary; a narrowed grant uses the consent labels,
+including the translated goals label instead of leaking an i18n key.
+
 ### Fixed — the bundled identity provider no longer invites orphan sign-ups
 
 Fresh ZITADEL instances now start with public self-registration disabled.
