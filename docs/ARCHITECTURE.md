@@ -36,13 +36,13 @@ page needs the same edit:
 
 | The page says | Comes from | Today |
 | --- | --- | --- |
-| table count, ownership classes | `vitals/ownership.py` | 68 tables, 32 of them `subject_data` |
-| mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 45 |
+| table count, ownership classes | `vitals/ownership.py` | 69 tables, 32 of them `subject_data` |
+| mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 46 |
 | the backfill phases | `OWNERSHIP_BACKFILL_SEQUENCE` in `vitals/ownership_deploy.py` | 18 |
 | the domains | `vitals.enums.Domain` | 14 |
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 14 |
-| migration count | `migrations/versions/` | 59, head `0059` |
-| RLS table count | revisions `0050` + `0051`, asserted in `tests/test_row_level_security.py` | 55 |
+| migration count | `migrations/versions/` | 60, head `0060` |
+| RLS table count | revisions `0050` + `0051` + `0060`, asserted in `tests/test_row_level_security.py` | 56 |
 | platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 6 |
 | routers, service modules | `web/routers/`, `vitals/services/` | 26 and 94 |
 

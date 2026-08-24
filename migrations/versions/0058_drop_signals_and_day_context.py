@@ -65,6 +65,21 @@ def downgrade() -> None:
     Enough for an older binary to start and for its own migrations to reason
     about. The data is not recoverable from here and the docstring above says so
     rather than leaving it to be discovered.
+
+    **The shape has to be the one revision 0057 left**, not a readable
+    approximation of it, and the first version of this was the approximation.
+    Going down from head, revisions 0051, 0050, 0049, 0038 and 0037 each drop
+    indexes, constraints and columns from these two tables by name; anything
+    this does not put back stops the downgrade with "index ... does not exist",
+    halfway through, on a database somebody is using. The first attempt named
+    the raw link ``raw_payload_id`` (it is ``raw_id``), left out four indexes
+    and gave the foreign keys their default names, so the chain could not be
+    walked back past revision 0037 at all.
+
+    Nothing caught it because nothing had ever run it: the downgrade rehearsal
+    starts from a synthetic revision-0034 lake, and the one path that would have
+    reached here — a full ``upgrade head`` on an empty database, then back down
+    — failed earlier for an unrelated reason. Both are fixed together.
     """
 
     json_type = _json_type()
@@ -72,97 +87,168 @@ def downgrade() -> None:
     op.create_table(
         "day_context",
         sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")
+        ),
         sa.Column("date", sa.Date(), nullable=False),
-        sa.Column("domain", sa.String(length=32), nullable=False),
-        sa.Column("source", sa.String(length=32), nullable=False),
+        sa.Column(
+            "domain",
+            sa.String(length=32),
+            nullable=False,
+            server_default=sa.text("'signals'"),
+        ),
+        sa.Column(
+            "source",
+            sa.String(length=32),
+            nullable=False,
+            server_default=sa.text("'manual'"),
+        ),
         sa.Column("answers", json_type, nullable=False, server_default=sa.text("'{}'")),
         sa.Column("planned", json_type, nullable=True),
+        sa.Column("subject_id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("actor_user_id", sa.Uuid(as_uuid=True), nullable=True),
         sa.Column(
-            "subject_id",
-            sa.Uuid(as_uuid=True),
-            sa.ForeignKey("health_subjects.id", ondelete="RESTRICT"),
-            nullable=False,
+            "integration_connection_id", sa.Uuid(as_uuid=True), nullable=True
         ),
-        sa.Column(
-            "actor_user_id",
-            sa.Uuid(as_uuid=True),
-            sa.ForeignKey("users.id", ondelete="RESTRICT"),
-            nullable=True,
+        # Named explicitly: revision 0037's downgrade drops them by these names.
+        sa.ForeignKeyConstraint(
+            ["subject_id"],
+            ["health_subjects.id"],
+            name="fk_day_context_subject_id",
+            ondelete="RESTRICT",
         ),
-        sa.Column(
-            "integration_connection_id",
-            sa.Uuid(as_uuid=True),
-            sa.ForeignKey("integration_connections.id", ondelete="RESTRICT"),
-            nullable=True,
+        sa.ForeignKeyConstraint(
+            ["actor_user_id"],
+            ["users.id"],
+            name="fk_day_context_actor_user_id",
+            ondelete="RESTRICT",
         ),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["integration_connection_id"],
+            ["integration_connections.id"],
+            name="fk_day_context_integration_connection_id",
+            ondelete="RESTRICT",
+        ),
     )
-    op.create_index("ix_day_context_subject_date", "day_context", ["subject_id", "date"])
-    op.create_index(
-        "uq_day_context_subject_date",
-        "day_context",
-        ["subject_id", "date"],
-        unique=True,
-    )
-    op.create_index(
-        "ix_day_context_subject_domain_date",
-        "day_context",
-        ["subject_id", "domain", "date"],
-    )
+    for name, columns, unique in (
+        ("ix_day_context_actor_user_id", ["actor_user_id"], False),
+        ("ix_day_context_date", ["date"], False),
+        ("ix_day_context_domain", ["domain"], False),
+        ("ix_day_context_domain_date", ["domain", "date"], False),
+        (
+            "ix_day_context_integration_connection_id",
+            ["integration_connection_id"],
+            False,
+        ),
+        ("ix_day_context_subject_date", ["subject_id", "date"], False),
+        (
+            "ix_day_context_subject_domain_date",
+            ["subject_id", "domain", "date"],
+            False,
+        ),
+        ("ix_day_context_subject_id", ["subject_id"], False),
+        ("uq_day_context_subject_date", ["subject_id", "date"], True),
+    ):
+        op.create_index(name, "day_context", columns, unique=unique)
 
     op.create_table(
         "signals",
         sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")
+        ),
         sa.Column("date", sa.Date(), nullable=False),
-        sa.Column("at_time", sa.Time(), nullable=True),
-        sa.Column("domain", sa.String(length=32), nullable=False),
-        sa.Column("source", sa.String(length=32), nullable=False),
+        sa.Column(
+            "domain",
+            sa.String(length=32),
+            nullable=False,
+            server_default=sa.text("'signals'"),
+        ),
+        sa.Column(
+            "source",
+            sa.String(length=32),
+            nullable=False,
+            server_default=sa.text("'manual'"),
+        ),
         sa.Column("kind", sa.String(length=16), nullable=False),
         sa.Column("key", sa.String(length=64), nullable=False),
         sa.Column("value_num", sa.Float(), nullable=True),
         sa.Column("unit", sa.String(length=16), nullable=True),
         sa.Column("note", sa.Text(), nullable=True),
-        sa.Column("batch_id", sa.String(length=36), nullable=True),
+        sa.Column("at_time", sa.Time(), nullable=True),
+        # ``raw_id``, not ``raw_payload_id``: revision 0029 named it, nothing
+        # renamed it, and revision 0037's downgrade drops an index on it.
+        sa.Column("raw_id", sa.Integer(), nullable=True),
+        sa.Column("batch_id", sa.String(length=32), nullable=False),
         sa.Column(
             "misparse", sa.Boolean(), nullable=False, server_default=sa.text("false")
         ),
+        sa.Column("subject_id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("actor_user_id", sa.Uuid(as_uuid=True), nullable=True),
         sa.Column(
-            "subject_id",
-            sa.Uuid(as_uuid=True),
-            sa.ForeignKey("health_subjects.id", ondelete="RESTRICT"),
-            nullable=False,
+            "integration_connection_id", sa.Uuid(as_uuid=True), nullable=True
         ),
-        sa.Column(
-            "actor_user_id",
-            sa.Uuid(as_uuid=True),
-            sa.ForeignKey("users.id", ondelete="RESTRICT"),
-            nullable=True,
+        sa.ForeignKeyConstraint(
+            ["raw_id"],
+            ["raw_payloads.id"],
+            name="signals_raw_id_fkey",
+            ondelete="SET NULL",
         ),
-        sa.Column(
-            "integration_connection_id",
-            sa.Uuid(as_uuid=True),
-            sa.ForeignKey("integration_connections.id", ondelete="RESTRICT"),
-            nullable=True,
+        sa.ForeignKeyConstraint(
+            ["subject_id"],
+            ["health_subjects.id"],
+            name="fk_signals_subject_id",
+            ondelete="RESTRICT",
         ),
-        sa.Column(
-            "raw_payload_id",
-            sa.Integer(),
-            sa.ForeignKey("raw_payloads.id", ondelete="RESTRICT"),
-            nullable=True,
+        sa.ForeignKeyConstraint(
+            ["actor_user_id"],
+            ["users.id"],
+            name="fk_signals_actor_user_id",
+            ondelete="RESTRICT",
         ),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["integration_connection_id"],
+            ["integration_connections.id"],
+            name="fk_signals_integration_connection_id",
+            ondelete="RESTRICT",
+        ),
     )
-    op.create_index("ix_signals_subject_date", "signals", ["subject_id", "date"])
-    op.create_index("ix_signals_subject_key_date", "signals", ["subject_id", "key", "date"])
+    for name, columns in (
+        ("ix_signals_actor_user_id", ["actor_user_id"]),
+        ("ix_signals_batch", ["batch_id"]),
+        ("ix_signals_connection_batch", ["integration_connection_id", "batch_id"]),
+        ("ix_signals_date", ["date"]),
+        ("ix_signals_domain", ["domain"]),
+        ("ix_signals_domain_date", ["domain", "date"]),
+        ("ix_signals_integration_connection_id", ["integration_connection_id"]),
+        ("ix_signals_key_date", ["key", "date"]),
+        ("ix_signals_raw_id", ["raw_id"]),
+        ("ix_signals_subject_batch", ["subject_id", "batch_id"]),
+        ("ix_signals_subject_date", ["subject_id", "date"]),
+        ("ix_signals_subject_domain_date", ["subject_id", "domain", "date"]),
+        ("ix_signals_subject_id", ["subject_id"]),
+        ("ix_signals_subject_key_date", ["subject_id", "key", "date"]),
+    ):
+        op.create_index(name, "signals", columns)
 
     if _is_postgres():
+        # The predicate revisions 0050/0051 left, not revision 0037's: a
+        # downgrade that recreates the older one would leave these two tables
+        # invisible to the platform scope while every other table honoured it.
+        predicate = (
+            "(subject_id = NULLIF(current_setting('vitals.subject_id', true), '')::uuid"
+            " OR current_setting('vitals.platform_scope', true) = 'on')"
+        )
         for table in ("signals", "day_context"):
             op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
             op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
             op.execute(
                 f"CREATE POLICY rls_subject_isolation ON {table} "
-                "USING (subject_id = current_setting('vitals.subject_id', true)::uuid) "
-                "WITH CHECK (subject_id = current_setting('vitals.subject_id', true)::uuid)"
+                f"USING ({predicate}) WITH CHECK ({predicate})"
             )

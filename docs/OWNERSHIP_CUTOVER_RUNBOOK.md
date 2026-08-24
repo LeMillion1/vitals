@@ -1,6 +1,21 @@
 # Ownership Cutover Runbook
 
-Last reviewed: 2026-08-22
+Last reviewed: 2026-08-24
+
+## Not this, if the database is empty
+
+This whole document is about a lake that already holds somebody's history. A
+**new** installation needs none of it: `alembic upgrade head` reaches head on its
+own, which is what the container's start command already runs, and the first
+request bootstraps the owner.
+
+That was not true until 2026-08-24 — revision `0005` seeded five rows nobody
+could ever own, and revision `0049` refused over them, so a fresh deployment
+could not start at all. `tests/test_fresh_installation_migrations.py` now walks
+that path, because every rehearsal here starts from a synthetic revision-0034
+lake and none of them was ever it.
+
+## Upgrading an existing lake
 
 The upgrade that gives every row an owner is not a single `alembic upgrade head`.
 It is three parts in a fixed order, and the middle one is an application job, not

@@ -153,9 +153,13 @@ async def test_real_postgres_contract_refuses_an_unfinished_backfill(
             command.upgrade, alembic_config, PRE_OWNERSHIP_CONTRACT_REVISION
         )
 
-        # Revision 0005 seeds five global skincare products, so a freshly
-        # migrated lake is already behind; one unowned supplement on top makes
-        # the message cover two tables rather than one.
+        # Two unowned rows in two tables, so the message covers both rather
+        # than one. Revision 0005 used to supply the second set for free — it
+        # seeded five global skincare products — until that turned out to make
+        # a fresh installation unmigratable, because on an empty database no
+        # owner ever appears for them and this guard is what refuses. The seed
+        # is gone; the rows are inserted here, which is what this test was
+        # always about.
         async with engine.begin() as connection:
             await connection.execute(
                 sa.text(
@@ -163,12 +167,19 @@ async def test_real_postgres_contract_refuses_an_unfinished_backfill(
                     "VALUES ('iron', 'Iron', true, now())"
                 )
             )
+            await connection.execute(
+                sa.text(
+                    "INSERT INTO skincare_products "
+                    "(name, type, created_at, updated_at) "
+                    "VALUES ('Retinoid', 'retinoid', now(), now())"
+                )
+            )
 
         with pytest.raises(OwnershipBackfillIncompleteError) as caught:
             await asyncio.to_thread(command.upgrade, alembic_config, "head")
         message = str(caught.value)
         assert "supplements.subject_id: 1" in message
-        assert "skincare_products.subject_id: 5" in message
+        assert "skincare_products.subject_id: 1" in message
         assert "backfill" in message
 
         # The refusal is a refusal, not a partial application: nothing was

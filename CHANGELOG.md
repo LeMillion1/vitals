@@ -8,6 +8,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — a new installation could not be created
+
+The container's start command is `alembic upgrade head && uvicorn …`. On an
+empty PostgreSQL that failed, so the process never started and no new deployment
+could be stood up at all.
+
+Revision `0005` seeded five skincare products — one person's regimen, in
+Russian — into every new installation. Revision `0049` later made
+`skincare_products.subject_id` NOT NULL and refuses while any row has no owner.
+On an installation that already existed those five rows were the owner's and the
+Stage-3B backfill adopted them; on an empty database there is no owner to adopt
+them, because identity bootstrap is an application step that runs after
+migrations. The seed could not be removed by a later revision — `0049` comes
+first and is what fails — and could not be made conditional, because at that
+point in the chain the ownership columns do not exist yet, so nothing there can
+tell a fresh database from a historical replay.
+
+So `0005` was edited after having been applied, which this repository otherwise
+forbids, and its docstring says why at length. Deleting the insert is a no-op for
+any installation that already ran it. The only behaviour that changes is the one
+that was broken: **a fresh installation now starts with an empty skincare
+catalog**, which is also the more correct default — the ownership inventory has
+said for a while that this table is personal despite its "reference" label.
+
+Behind it was a second one, which only became reachable once the first was
+fixed. Revision `0058` dropped `signals` and `day_context`, and its `downgrade`
+recreated an approximation of them: the raw link named `raw_payload_id` instead
+of `raw_id`, four indexes missing, foreign keys left to their default names. On
+the way down from head, revisions `0051`, `0050`, `0049`, `0038` and `0037` each
+drop those objects by name, so the chain stopped at "index
+`ix_signals_connection_batch` does not exist" — halfway through, on a database
+somebody is using. The downgrade now reproduces exactly what revision `0057`
+left, including the row-security predicate `0050`/`0051` rewrote.
+
+Neither was visible to any test. The migration rehearsals all start from a
+synthetic revision-0034 lake with an owner already bootstrapped, which is the
+*upgrade* path; the fast suite builds its schema with `create_all` and never runs
+a migration. `tests/test_fresh_installation_migrations.py` walks the one path
+nobody exercised — the one every new deployment takes.
+
+
 ### Added — a provider account that belongs to one patient
 
 `VITALS_GARMIN_EMAIL`, `VITALS_GARMIN_PASSWORD` and `VITALS_HEVY_API_KEY` are one

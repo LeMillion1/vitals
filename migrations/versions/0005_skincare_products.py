@@ -1,9 +1,35 @@
-"""Add skincare_products catalog table and seed initial items
+"""Add the skincare_products table. The seed that came with it is gone.
 
 Revision ID: 0005
 Revises: 0004
 Create Date: 2026-06-22
 
+**This revision was edited after it had been applied, which the repository
+otherwise forbids, so the reason is here rather than in a commit message.**
+
+It used to insert five products — one person's regimen, in Russian — into every
+new installation. Revision ``0049`` later made ``skincare_products.subject_id``
+NOT NULL and refuses to proceed while any row has no owner. On an installation
+that already existed those five rows were the owner's and the Stage-3B backfill
+adopted them. On an **empty** database there is no owner to adopt them: identity
+bootstrap is an application step that runs after migrations, so the five rows
+could never get one, ``0049`` refused, and ``alembic upgrade head`` — which is
+the container's own start command — failed. A new installation could not be
+created at all.
+
+The seed could not be removed by a later revision, because ``0049`` comes first
+and is what fails. It could not be made conditional either: at this point in the
+chain the ownership columns do not exist yet, so nothing here can tell a fresh
+database from a historical replay.
+
+Deleting the insert is a no-op for every installation that has already run this
+revision — Alembic will not run it again, the rows stay, and the backfill has
+already given them an owner. The only behaviour that changes is the one that was
+broken: a fresh installation now starts with an empty skincare catalog, which is
+also the more correct default. ``docs/COMMERCIAL_OWNERSHIP_INVENTORY.md`` has
+said for a while that this table is personal despite its "reference" label —
+schedule and active state belong to a person — and shipping one person's
+regimen to everybody was always the wrong shape for it.
 """
 from typing import Sequence, Union
 import sqlalchemy as sa
@@ -31,75 +57,6 @@ def upgrade() -> None:
         sa.Column("schedule_days", sa.JSON(), nullable=False, server_default=sa.text("'[]'")),
         sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.PrimaryKeyConstraint("id"),
-    )
-
-    # Seed the initial products
-    products = sa.table(
-        "skincare_products",
-        sa.column("name", sa.String),
-        sa.column("type", sa.String),
-        sa.column("active_ingredient", sa.String),
-        sa.column("description", sa.Text),
-        sa.column("usage_instructions", sa.Text),
-        sa.column("default_time", sa.String),
-        sa.column("schedule_days", sa.JSON),
-        sa.column("active", sa.Boolean),
-    )
-
-    op.bulk_insert(
-        products,
-        [
-            {
-                "name": "Дифферин (Ретиноид)",
-                "type": "Ретиноид",
-                "active_ingredient": "Адапален 0.1%",
-                "description": "Регулирует дифференцировку клеток фолликулов, снижает образование микрокомедонов и выраженность воспалений.",
-                "usage_instructions": "Наносить тонким слоем на абсолютно сухую очищенную кожу. 5 раз в неделю (Пн, Ср, Чт, Пт, Вс).",
-                "default_time": "evening",
-                "schedule_days": [1, 3, 4, 5, 0],
-                "active": True,
-            },
-            {
-                "name": "Азелик (Азелаин)",
-                "type": "Азелаин",
-                "active_ingredient": "Азелаиновая кислота 15%",
-                "description": "Оказывает противомикробное и противовоспалительное действие, осветляет поствоспалительную пигментацию (ПВГ / PIH).",
-                "usage_instructions": "Используется совместно с ретиноидом. 5 раз в неделю (Пн, Ср, Чт, Пт, Вс).",
-                "default_time": "evening",
-                "schedule_days": [1, 3, 4, 5, 0],
-                "active": True,
-            },
-            {
-                "name": "Кислотный пилинг",
-                "type": "Кислотный пилинг",
-                "active_ingredient": "AHA/BHA кислоты",
-                "description": "Глубоко отшелушивает ороговевшие клетки, выравнивает рельеф, очищает поры и ускоряет регенерацию.",
-                "usage_instructions": "Нанести на 10-15 минут, смыть прохладной водой. Строго 2 раза в неделю, не совмещать с ретиноидами.",
-                "default_time": "evening",
-                "schedule_days": [2, 6],
-                "active": True,
-            },
-            {
-                "name": "Сыворотка + SPF",
-                "type": "Ниацинамид + SPF",
-                "active_ingredient": "Ниацинамид + Цинк / SPF 50+",
-                "description": "Регулирует себум, укрепляет защитный барьер кожи, блокирует ультрафиолет и защищает от пигментации.",
-                "usage_instructions": "Наносить утром. SPF обязателен при использовании ретиноидов и кислот круглый год.",
-                "default_time": "morning",
-                "schedule_days": [1, 2, 3, 4, 5, 6, 0],
-                "active": True,
-            },
-            {
-                "name": "Увлажняющий крем",
-                "type": "Увлажнение",
-                "active_ingredient": "Базовый крем",
-                "description": "Интенсивно увлажняет, восстанавливает гидролипидный барьер, предотвращает сухость, стянутость и шелушение.",
-                "usage_instructions": "Завершающий этап ухода. Наносить вечером через 15-20 минут после нанесения активных сывороток или ретиноидов.",
-                "default_time": "both",
-                "schedule_days": [1, 2, 3, 4, 5, 6, 0],
-                "active": True,
-            },
-        ],
     )
 
 
