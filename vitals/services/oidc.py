@@ -245,6 +245,27 @@ class OidcProvider:
             code_verifier=verifier,
         )
 
+    async def end_session_url(
+        self, *, post_logout_redirect_uri: str
+    ) -> str | None:
+        """Build the provider logout redirect advertised by discovery.
+
+        Providers that do not implement RP-initiated logout publish no endpoint;
+        callers still clear the local session and use their local fallback.
+        ``client_id`` is the standard way to bind a registered post-logout URI
+        when Vitals deliberately does not retain the raw ID token.
+        """
+
+        document = await self.metadata()
+        endpoint = document.get("end_session_endpoint")
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            return None
+
+        from urllib.parse import urlencode
+
+        separator = "&" if "?" in endpoint else "?"
+        return f"{endpoint}{separator}{urlencode({'client_id': self._settings.client_id, 'post_logout_redirect_uri': post_logout_redirect_uri})}"
+
     def check_response_issuer(self, response_issuer: str | None) -> None:
         """Refuse a callback that names a different issuer than we asked.
 

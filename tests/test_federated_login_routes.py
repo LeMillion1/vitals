@@ -43,6 +43,7 @@ class Provider:
                     "authorization_endpoint": f"{ISSUER}/authorize",
                     "token_endpoint": f"{ISSUER}/token",
                     "jwks_uri": f"{ISSUER}/keys",
+                    "end_session_endpoint": f"{ISSUER}/logout",
                     "code_challenge_methods_supported": ["S256"],
                     "id_token_signing_alg_values_supported": ["RS256"],
                 },
@@ -193,6 +194,30 @@ async def test_a_complete_login_binds_the_existing_owner_and_issues_a_session(
     assert claims is not None and claims.version == 2
     assert claims.user_id == legacy_owner_roots.user_id
     assert claims.subject_id == legacy_owner_roots.subject_id
+
+
+async def test_logout_ends_both_the_local_and_provider_sessions(
+    client, federated, db_session, legacy_owner_roots
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    state, _ = await _start(client, federated)
+    signed_in = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    assert signed_in.cookies.get(SESSION_COOKIE)
+
+    response = await client.post("/logout", follow_redirects=False)
+    assert response.status_code == 303
+    target = urlsplit(response.headers["location"])
+    assert f"{target.scheme}://{target.netloc}{target.path}" == f"{ISSUER}/logout"
+    assert parse_qs(target.query) == {
+        "client_id": [CLIENT_ID],
+        "post_logout_redirect_uri": ["https://vitals.example.test/"],
+    }
+    assert response.cookies.get(SESSION_COOKIE) in (None, "")
+    del db_session, legacy_owner_roots
 
 
 # ── Callbacks that must not produce a session ────────────────────────────────

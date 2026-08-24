@@ -10,7 +10,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -749,7 +749,33 @@ async def login_2fa(
 # Both templates already submit a form — masthead.html and more.html.
 @router.post("/logout")
 async def logout(request: Request):
-    response = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    target = "/login"
+    cfg = get_web_config()
+    claims = decode_session(request.cookies.get(SESSION_COOKIE))
+    if (
+        cfg.oidc_enabled
+        and claims is not None
+        and claims.auth_source == _OIDC_AUTH_SOURCE
+    ):
+        callback = urlsplit(cfg.oidc_redirect_url)
+        post_logout_redirect_uri = urlunsplit(
+            (callback.scheme, callback.netloc, "/", "", "")
+        )
+        from vitals.services.oidc import OidcError
+
+        try:
+            provider_target = await _provider().end_session_url(
+                post_logout_redirect_uri=post_logout_redirect_uri
+            )
+            if provider_target is not None:
+                target = provider_target
+        except OidcError as exc:
+            # Local logout is the fail-safe result. A provider outage must not
+            # keep the Vitals cookie alive merely because federated logout
+            # could not be completed.
+            logger.warning("provider logout unavailable: %s", exc)
+
+    response = RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
     clear_session_cookie(response)
     clear_pending_2fa_cookie(response)
     return response

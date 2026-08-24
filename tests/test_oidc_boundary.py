@@ -76,6 +76,7 @@ class FakeProvider:
             "authorization_endpoint": f"{ISSUER}/authorize",
             "token_endpoint": f"{ISSUER}/token",
             "jwks_uri": f"{ISSUER}/keys",
+            "end_session_endpoint": f"{ISSUER}/logout",
             "code_challenge_methods_supported": self.pkce_methods,
             "id_token_signing_alg_values_supported": self.signing_algorithms,
         }
@@ -152,6 +153,22 @@ def provider(monkeypatch):
         )
     )
     return subject, fake
+
+
+async def test_logout_url_uses_discovery_and_the_registered_client(provider):
+    from urllib.parse import parse_qs, urlsplit
+
+    oidc, _fake = provider
+    target = await oidc.end_session_url(
+        post_logout_redirect_uri="https://vitals.example.test/"
+    )
+    assert target is not None
+    parsed = urlsplit(target)
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == f"{ISSUER}/logout"
+    assert parse_qs(parsed.query) == {
+        "client_id": [CLIENT_ID],
+        "post_logout_redirect_uri": ["https://vitals.example.test/"],
+    }
 
 
 async def _login(subject, fake, **overrides):

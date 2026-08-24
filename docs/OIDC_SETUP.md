@@ -65,7 +65,9 @@ with authentication method **Code**, and:
   character; a trailing slash is a different URI.
 - **PKCE**: on. Vitals refuses a provider that does not offer S256, so this is
   not optional.
-- **Post-logout redirect**: your Vitals origin.
+- **Post-logout redirect**: your Vitals origin, including the trailing slash
+  (for example `https://vitals.example.com/`). Vitals sends this exact URI with
+  its client ID to the provider's discovered `end_session_endpoint`.
 
 Copy the **client ID** and **client secret**.
 
@@ -97,6 +99,10 @@ Restart the app. From this point:
 - The password and TOTP routes answer 404.
 - `authenticate()` refuses before it reads the stored hash, so the bcrypt value
   still sitting in the column is not a second way in.
+- Signing out clears the Vitals cookie and redirects through the provider's
+  logout endpoint, so returning to Vitals does not silently reuse the old IdP
+  browser session. If provider discovery is unavailable, local logout still
+  succeeds and the failure is logged.
 
 Log in. The first login whose subject matches `VITALS_OIDC_BOOTSTRAP_SUBJECT`
 binds your existing user to that provider identity, once, under the identity

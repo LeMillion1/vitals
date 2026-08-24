@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — signing out also ends the provider session
+
+Federated logout previously deleted only the Vitals cookie. The live OIDC
+session remained at the provider, so returning to the login page could sign the
+same person straight back in without asking. Vitals now follows the provider's
+discovered `end_session_endpoint`, binds the registered post-logout URI with
+its client ID, and still clears the local cookie if provider discovery is
+unavailable.
+
 ### Fixed — the OIDC runbook no longer leaves a known first administrator
 
 The pinned ZITADEL `v2.66.0` creates `zitadel-admin` with the publicly documented
