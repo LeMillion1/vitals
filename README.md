@@ -43,6 +43,10 @@
 
 Интерфейс полностью стандартизирован на единственной оболочке **Masthead** — издательском (editorial) дизайне с тёплой глубокой темой (`#1D1A21` / `#332F3C`), milk-white текстом, точечными акцентами цвета янтарного мёда (`#F5A623`) и высококлассной типографикой (Outfit/Bricolage Grotesque/Inter, без использования моноширинных шрифтов). Дизайн-система целиком описана в [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md).
 
+Проверенный статус многопользовательской миграции, расхождения документации и
+оставшиеся границы зафиксированы в
+[docs/MULTI_USER_IMPLEMENTATION_AUDIT.md](docs/MULTI_USER_IMPLEMENTATION_AUDIT.md).
+
 Главное отличие от фитнес-трекеров — **принцип максимального сохранения сырых данных**. Vitals — умный навигатор здоровья, который подсвечивает неочевидные взаимосвязи между сном, тренировками, медикаментами и весом, помогая принимать взвешенные решения. Не надзиратель — штурман.
 
 У Vitals есть **голос**: проактивный слой сам собирает утренний бриф и подсказки по условию, вместо того чтобы ждать, пока в дашборд зайдут. Транспорт сейчас один — сама страница `/reports`; пуши в PWA — следующий.
@@ -784,6 +788,10 @@ bash scripts/test_postgres.sh
 **Vitals** is a personal health dashboard and data lake designed for a single user. Built for long-term tracking of biomarkers, body recomposition, GLP-1 therapy, hormone replacement therapy (HRT / TRT) cycles, athletic performance, and AI-powered weekly analytical digests via OpenRouter LLMs.
 
 The interface standardizes entirely on a single UI shell — **Masthead** — featuring a warm dark plum-charcoal aesthetic (`#1D1A21` / `#332F3C`), milk-white typography, selective honey-amber (`#F5A623`) highlights, and editorial-grade typography (Outfit / Bricolage Grotesque / Inter, without a single monospace font). The full design system is documented in [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md).
+
+The verified multi-user migration status, documentation discrepancies, and
+remaining boundaries are recorded in
+[docs/MULTI_USER_IMPLEMENTATION_AUDIT.md](docs/MULTI_USER_IMPLEMENTATION_AUDIT.md).
 
 Unlike typical fitness trackers, Vitals prioritizes **preserving raw historical data**. It serves as a smart wellness navigator — uncovering correlations between sleep, workouts, supplements, and body composition. Not a watchdog — a co-pilot.
 
