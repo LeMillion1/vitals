@@ -165,6 +165,7 @@ async def test_the_form_action_names_the_patient(doctor_client):
     )
     assert response.status_code == 200
     assert f'action="/care/{subject_a.id}/note"' in response.text
+    assert f'action="/care/{subject_a.id}/plan"' in response.text
 
 
 async def test_a_revoked_consent_refuses_the_stale_tab(doctor_client, db_session):
@@ -235,6 +236,7 @@ async def test_the_roster_lists_both_patients(doctor_client):
     assert response.status_code == 200
     assert f"/care/{subject_a.id}" in response.text
     assert f"/care/{subject_b.id}" in response.text
+    assert "consent v" not in response.text
 
 
 async def test_a_paused_consent_is_shown_as_paused_rather_than_hidden(

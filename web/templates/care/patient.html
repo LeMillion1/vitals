@@ -41,6 +41,7 @@
        it is the one surface here the patient reads too, and mixing it into a
        page built for a clinician would make it hard to tell which parts of this
        screen they can see. #}
+    {% if may_read_messages %}
     <div class="v-card p-6 flex flex-wrap items-center justify-between gap-3">
         <div class="space-y-1">
             <span class="v-text-label">{{ t("care.messages_title") }}</span>
@@ -50,6 +51,7 @@
             {{ t("care.threads_title") }}
         </a>
     </div>
+    {% endif %}
 
     <!-- ─── NOTES ──────────────────────────────────────────────────────────── -->
     <div class="v-card p-6 space-y-4">
@@ -72,7 +74,7 @@
         <div class="space-y-3">
             {% for note in notes %}
             <div class="v-card-inset p-4 space-y-1">
-                <div class="v-text-micro" style="color: var(--faint)">
+                <div class="v-text-micro" style="color: var(--muted)">
                     {{ note.created_at | format_date }}
                 </div>
                 <p class="v-text-body" style="white-space: pre-wrap">{{ note.body }}</p>
@@ -88,6 +90,28 @@
     <div class="v-card p-6 space-y-4">
         {{ card_header(t("care.plans_title")) }}
 
+        {% if may_write_plan %}
+        <form action="/care/{{ care.subject_id }}/plan" method="POST" class="space-y-3">
+            <div>
+                <label for="care-plan-title" class="v-label">{{ t("care.plan_title_label") }}</label>
+                <input id="care-plan-title" name="title" type="text" maxlength="200"
+                       class="v-input" required placeholder="{{ t('care.plan_title_placeholder') }}">
+            </div>
+            <div>
+                <label for="care-plan-body" class="v-label">{{ t("care.plan_body_label") }}</label>
+                <textarea id="care-plan-body" name="body" rows="4" class="v-input" required
+                          placeholder="{{ t('care.plan_body_placeholder') }}"></textarea>
+            </div>
+            <div>
+                <label for="care-plan-start" class="v-label">{{ t("care.plan_start_label") }}</label>
+                <input id="care-plan-start" name="effective_from" type="date" class="v-input" required>
+            </div>
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn text-xs">{{ t("care.plan_submit") }}</button>
+            </div>
+        </form>
+        {% endif %}
+
         {% if plans %}
         <div class="space-y-3">
             {% for plan in plans %}
@@ -96,7 +120,7 @@
                     <span class="v-text-body font-semibold">{{ plan.title }}</span>
                     <span class="v-chip v-chip-sm">{{ t("care.plan_status." ~ plan.status) }}</span>
                 </div>
-                <div class="v-text-micro" style="color: var(--faint)">
+                <div class="v-text-micro" style="color: var(--muted)">
                     {{ plan.effective_from }}{% if plan.effective_to %} — {{ plan.effective_to }}{% endif %}
                 </div>
                 <p class="v-text-body" style="white-space: pre-wrap">{{ plan.body }}</p>

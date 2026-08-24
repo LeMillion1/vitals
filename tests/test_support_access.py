@@ -981,6 +981,8 @@ async def test_a_read_grant_cannot_write_a_note_through_the_record_screen(
     )
     assert page.status_code == 200
     assert f'action="/care/{legacy_owner_roots.subject_id}/note"' not in page.text
+    assert f'action="/care/{legacy_owner_roots.subject_id}/plan"' not in page.text
+    assert f'/care/{legacy_owner_roots.subject_id}/messages' not in page.text
 
     posted = await client.post(
         f"/care/{legacy_owner_roots.subject_id}/note",

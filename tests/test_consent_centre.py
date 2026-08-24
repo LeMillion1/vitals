@@ -189,7 +189,16 @@ async def test_accepting_establishes_care_and_opens_nothing(
     async with _client_for("cc-doctor") as doctor_client:
         response = await doctor_client.post(f"/care/accept/{token}")
         assert response.status_code == 303
-        assert response.headers["location"] == f"/care/{subject_id}"
+        assert response.headers["location"] == "/care?accepted=1"
+
+        waiting = await doctor_client.get(
+            response.headers["location"], headers={"Accept": "text/html"}
+        )
+        assert waiting.status_code == 200
+        assert (
+            "record stays closed" in waiting.text
+            or "запись останется закрытой" in waiting.text
+        )
 
         db_session.expire_all()
         holder = await db_session.scalar(

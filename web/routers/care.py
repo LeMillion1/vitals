@@ -69,7 +69,7 @@ async def accept_invitation(
             accepting_user_id=user_id,
             verified_email=verified_email,
         )
-        relationship = await relationships.establish_from_invitation(
+        await relationships.establish_from_invitation(
             db, invitation=invitation
         )
     except invitations.InvitationError:
@@ -83,7 +83,7 @@ async def accept_invitation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     await db.commit()
     return RedirectResponse(
-        url=f"/care/{relationship.subject_id}",
+        url="/care?accepted=1",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -117,6 +117,7 @@ async def _verified_email(
 @router.get("", response_class=HTMLResponse)
 async def roster(
     request: Request,
+    accepted: bool = False,
     db: AsyncSession = Depends(get_session),
     username: str = Depends(require_auth),
 ):
@@ -137,7 +138,6 @@ async def roster(
                 CareRelationship.status,
                 HealthSubject.display_name,
                 ConsentGrant.status.label("consent_status"),
-                ConsentGrant.version.label("consent_version"),
                 ConsentGrant.expires_at,
             )
             .join(HealthSubject, HealthSubject.id == CareRelationship.subject_id)
@@ -170,13 +170,14 @@ async def roster(
             ),
             "relationship_status": row.status,
             "consent_status": row.consent_status,
-            "consent_version": row.consent_version,
             "expires_at": row.expires_at,
         }
         for row in rows
     ]
     return templates.TemplateResponse(
-        request, "care/roster.html", {"patients": patients, "username": username}
+        request,
+        "care/roster.html",
+        {"patients": patients, "username": username, "accepted": accepted},
     )
 
 
@@ -295,6 +296,11 @@ async def patient(
         action=PolicyAction.READ,
         resource_type=PolicyResourceType.ARTIFACT,
     )
+    may_read_messages = care.may(
+        resource_key=care_threads.MESSAGE_OPERATION,
+        action=PolicyAction.READ,
+        resource_type=PolicyResourceType.OPERATION,
+    )
     notes = await records.list_notes(db, context=care.access) if may_read_notes else []
     plans = await records.list_plans(db, context=care.access) if may_read_plans else []
     visible, withheld = await _visible_record(db, care)
@@ -314,8 +320,14 @@ async def patient(
             "coverage": visible["coverage"],
             "period": visible["period"],
             "withheld_domains": withheld,
+            "may_read_messages": may_read_messages,
             "may_write_note": care.may(
                 resource_key=records.NOTE_ARTIFACT,
+                action=PolicyAction.CREATE,
+                resource_type=PolicyResourceType.ARTIFACT,
+            ),
+            "may_write_plan": care.may(
+                resource_key=records.PLAN_ARTIFACT,
                 action=PolicyAction.CREATE,
                 resource_type=PolicyResourceType.ARTIFACT,
             ),

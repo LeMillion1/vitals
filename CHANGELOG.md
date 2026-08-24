@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — care handoff now explains the next step
+
+Accepting a professional invitation now returns to the care list with a clear
+notice that the patient's separate sharing decision is still pending, instead
+of sending the professional into a record that correctly answers 404. Open
+patient rows are one large keyboard-accessible target and no longer expose an
+internal consent version. The patient screen only offers conversations when
+the grant permits them, and the already-supported care-plan draft flow now has
+a visible form.
+
 ### Fixed — support decisions require recent authentication
 
 Opening, answering, withdrawing, or revoking controlled support access used an

@@ -455,6 +455,12 @@ a.v-card:hover {
     transform: translateY(-2px);
 }
 
+a.v-card:focus-visible {
+    outline: none;
+    border-color: var(--accent-line);
+    box-shadow: var(--shadow), 0 0 0 3px var(--accent-soft);
+}
+
 /* ── Metrics ───────────────────────────────────────────────────────────── */
 .v-metric {
     background: var(--surface);
