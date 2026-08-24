@@ -231,6 +231,75 @@ async def test_get_data_overview_reports_counts_and_range(db_session, session_fa
     assert "garmin_intraday" in overview
 
 
+async def test_get_data_overview_count_only_domains_do_not_count_another_record(
+    db_session, session_factory, monkeypatch, owner_write
+):
+    """A count is still PHI: SQLite must isolate it without PostgreSQL RLS."""
+
+    from datetime import date
+
+    from vitals.enums import Domain, UserStatus
+    from vitals.models import DosePhase, GeneticVariant, Milestone, Supplement
+    from vitals.models.identity import HealthSubject, User
+
+    monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)
+
+    owner_subject_id = owner_write.identity.subject_id
+    other_user = User(
+        username="mcp-overview-other",
+        normalized_username="mcp-overview-other",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(other_user)
+    await db_session.flush()
+    other_subject = HealthSubject(
+        owner_user_id=other_user.id,
+        timezone="Asia/Almaty",
+    )
+    db_session.add(other_subject)
+    await db_session.flush()
+
+    def rows(subject_id, suffix):
+        return (
+            Supplement(
+                subject_id=subject_id,
+                name=f"Supplement {suffix}",
+                key=f"supplement-{suffix}",
+            ),
+            GeneticVariant(
+                subject_id=subject_id,
+                gene=f"GENE{suffix}",
+                rsid=f"rs-{suffix}",
+            ),
+            Milestone(
+                subject_id=subject_id,
+                name=f"Milestone {suffix}",
+                domain=Domain.WEIGHT.value,
+            ),
+            DosePhase(
+                subject_id=subject_id,
+                start_date=date(2026, 1, 1),
+                drug="semaglutide",
+                dose_mg=1.0,
+            ),
+        )
+
+    db_session.add_all((*rows(owner_subject_id, "mine"), *rows(other_subject.id, "theirs")))
+    await db_session.commit()
+
+    overview = await mcp_router.get_data_overview()
+
+    assert {
+        name: overview[name]["count"]
+        for name in ("supplements", "genetics", "milestones", "dose_phases")
+    } == {
+        "supplements": 1,
+        "genetics": 1,
+        "milestones": 1,
+        "dose_phases": 1,
+    }
+
+
 # ── get_garmin_metrics: intraday series ───────────────────────────────────────
 async def test_get_garmin_metrics_intraday_off_by_default(garmin_connection_id, legacy_owner_roots, db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_router, "get_session_factory", lambda: session_factory)

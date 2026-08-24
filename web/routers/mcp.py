@@ -3290,7 +3290,17 @@ async def get_data_overview() -> dict:
             overview[name] = entry
 
         for name, model in count_only:
-            count = (await session.execute(select(func.count()).select_from(model))).scalar_one()
+            # RLS is defence in depth, not the application query plan. SQLite
+            # is the fast path and has no row policies; an unscoped count here
+            # disclosed how many supplements, variants, goals and dose phases
+            # every other record held.
+            count = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(model)
+                    .where(model.subject_id == scope.subject_id)
+                )
+            ).scalar_one()
             overview[name] = {"count": count}
 
     return overview

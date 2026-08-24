@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — MCP overview counts no longer include other records
+
+The dated sections of `get_data_overview` filtered by the connector's resolved
+subject, but four count-only sections did not. PostgreSQL RLS hid the mistake in
+production; SQLite, used by the fast path and local development, returned the
+installation-wide totals for supplements, genetics, milestones and GLP-1 dose
+phases. Every count now carries the same explicit subject predicate, with a
+two-record regression that asserts the numbers rather than merely searching the
+serialized response for somebody else's label.
+
 ### Changed — care-team code now lives with the care-team domain
 
 The professional profile, invitation, relationship/consent, patient-record
