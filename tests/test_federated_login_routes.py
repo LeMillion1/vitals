@@ -493,3 +493,23 @@ def test_the_compose_file_keeps_the_provider_behind_a_profile():
         compose["services"]["vitals_idp_db"]["volumes"][0].split(":")[0]
         == "vitals_idp_pgdata"
     )
+
+
+def test_the_inactive_provider_profile_does_not_require_provider_secrets():
+    """Compose interpolates profiles before deciding which ones to start.
+
+    A required-value expression in an inactive service therefore breaks even
+    ``docker compose ps`` on installations that deliberately did not configure
+    an identity provider. Runtime validation remains the selected profile's
+    responsibility: Postgres and ZITADEL both refuse their empty secrets.
+    """
+
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "docker-compose.yml"
+    ).read_text()
+
+    for name in ("VITALS_IDP_MASTERKEY", "VITALS_IDP_DB_PASSWORD"):
+        assert f"${{{name}:?" not in source
+        assert f"${{{name}:-}}" in source

@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the optional identity-provider profile blocked ordinary Compose commands
+
+Compose interpolates every service before applying profiles. Required-value
+expressions on ZITADEL's secrets therefore made even `docker compose ps` and a
+plain `docker compose up` fail on installations that had deliberately not
+configured the optional `idp` profile. The inactive profile now accepts empty
+placeholders during interpolation; selecting it without real secrets still
+fails closed in PostgreSQL and ZITADEL themselves.
+
 ### Added — a connector token that names what it is for, and can be taken back
 
 The payload carried a username, a client id and a type. No audience, so a token

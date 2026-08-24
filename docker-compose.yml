@@ -82,7 +82,13 @@ services:
       --masterkeyFromEnv
       --tlsMode external
     environment:
-      ZITADEL_MASTERKEY: ${VITALS_IDP_MASTERKEY:?VITALS_IDP_MASTERKEY must be set — 32 characters}
+      # Compose interpolates every service before applying profiles. Keep these
+      # values empty when the optional profile is not selected so ordinary
+      # `docker compose up` does not demand IDP secrets. The IDP containers
+      # themselves still fail closed when the profile is selected without them:
+      # Postgres refuses an empty superuser password and ZITADEL refuses an
+      # empty master key.
+      ZITADEL_MASTERKEY: ${VITALS_IDP_MASTERKEY:-}
       ZITADEL_EXTERNALDOMAIN: ${VITALS_IDP_DOMAIN:-localhost}
       ZITADEL_EXTERNALPORT: ${VITALS_IDP_PORT:-8080}
       ZITADEL_EXTERNALSECURE: ${VITALS_IDP_SECURE:-false}
@@ -90,10 +96,10 @@ services:
       ZITADEL_DATABASE_POSTGRES_PORT: 5432
       ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
       ZITADEL_DATABASE_POSTGRES_USER_USERNAME: zitadel
-      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${VITALS_IDP_DB_PASSWORD:?VITALS_IDP_DB_PASSWORD must be set}
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${VITALS_IDP_DB_PASSWORD:-}
       ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
       ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: zitadel
-      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${VITALS_IDP_DB_PASSWORD:?VITALS_IDP_DB_PASSWORD must be set}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${VITALS_IDP_DB_PASSWORD:-}
       ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
     ports:
       # Same reasoning as the app: bound to loopback, because this is the door
@@ -111,7 +117,7 @@ services:
     profiles: ["idp"]
     environment:
       POSTGRES_USER: zitadel
-      POSTGRES_PASSWORD: ${VITALS_IDP_DB_PASSWORD:?VITALS_IDP_DB_PASSWORD must be set}
+      POSTGRES_PASSWORD: ${VITALS_IDP_DB_PASSWORD:-}
       POSTGRES_DB: zitadel
     volumes:
       - vitals_idp_pgdata:/var/lib/postgresql/data
