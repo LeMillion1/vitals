@@ -618,13 +618,14 @@ class FakeFlakyLLM:
 
 
 
-async def test_complete_text_warns_when_the_answer_is_cut_by_the_token_limit(caplog):
+async def test_complete_text_warns_when_the_answer_is_cut_by_the_token_limit(
+    monkeypatch,
+):
     """The SDK reports truncation only via finish_reason — without the log line a
     half-written digest is indistinguishable from a finished one."""
-    import logging
     from types import SimpleNamespace
 
-    from vitals.integrations.llm_client import LLMClient
+    from vitals.integrations import llm_client
 
     class FakeCompletions:
         async def create(self, **kw):
@@ -637,14 +638,21 @@ async def test_complete_text_warns_when_the_answer_is_cut_by_the_token_limit(cap
                 ]
             )
 
-    client = LLMClient()
+    client = llm_client.LLMClient()
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
 
-    with caplog.at_level(logging.WARNING, logger="vitals.integrations.llm_client"):
-        text = await client.complete_text("prompt", max_tokens=10)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        llm_client.logger,
+        "warning",
+        lambda message, *args, **_kwargs: warnings.append(
+            message % args if args else message
+        ),
+    )
+    text = await client.complete_text("prompt", max_tokens=10)
 
     assert text == "Питание и восстановление рабо"
-    assert any("truncated by max_tokens" in r.getMessage() for r in caplog.records)
+    assert any("truncated by max_tokens" in warning for warning in warnings)
 
 
 
