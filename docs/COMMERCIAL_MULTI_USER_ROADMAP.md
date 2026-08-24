@@ -38,9 +38,14 @@ expansion and backfill, PR-04 scoped services + policy engine + FORCE RLS, PR-06
 files/portability/settings, PR-07 professionals/relationships/consent, PR-08
 professional UX (minus the inbox).
 
-**The next gate is PR-05.** Registration is closed and `identity_bootstrap` is
-still the only place a `HealthSubject` is born, so `scripts/seed_care_demo.py` is
-the only way to get a second one. Everything below it in the sequence is unstarted.
+**PR-05 is complete.** Registration is closed by a decision rather than by
+absence — `registration_service` answers `disabled`, behind a deployment gate an
+administrator cannot flip — and a `HealthSubject` is born in one place,
+`account_provisioning_service`, which an operator reaches through
+`scripts/provision_account.py` and the demo seeder now goes through too. **The
+next gate is PR-09's scheduler work**: the credentials that blocked it have
+landed, so what is left is a per-connection dispatcher. PR-10 onward is
+unstarted.
 
 **Two things are deliberately unfinished and will look like bugs if you don't
 know:**
@@ -877,6 +882,30 @@ The MCP OAuth server is deliberately untouched — Vitals issues those tokens
 itself and PR-10 owns that surface; what changed for it is that a session
 version bump now invalidates the browser sessions beside it.
 
+**Registration and provisioning closed it.** The two remaining scope items had
+been left because nothing needed them yet, and that was the problem: closed was
+a property of there being nowhere for an account to come from.
+
+- `registration_service` holds `registration_mode` in `platform_settings` with
+  all four values from the scope above, `disabled` by default. Every other mode
+  is gated behind `VITALS_REGISTRATION_UNLOCKED`, deliberately an environment
+  variable: opening registration is a deployment decision that comes after a
+  security review, and a mode an administrator can flip from a screen is not
+  that. `invite_only` and `admin_approved` refuse with a message naming
+  themselves as unimplemented rather than falling through to `open`, which is
+  the shape of failure the module exists to prevent.
+- `account_provisioning_service` is the one place a `HealthSubject` is born
+  besides the legacy bootstrap. A subject needs four things — an owning account,
+  a role, the integration roots every provider path resolves through, and a
+  module map — and until now only the demo seeder assembled them, so the
+  application and the script had two different ideas of what a subject is and
+  the script's was the one anybody looked at. It never adopts `.env`'s provider
+  credentials.
+- `federated_login_service` consults the mode, and its refusal for a closed
+  installation is byte-identical to its refusal for an unknown identity.
+- `scripts/provision_account.py` is how an operator creates one today: no form,
+  no route, no token, and whoever runs it already has a shell on the host.
+
 Release gate: pin and inventory the IdP image, verify backup/restore and upgrade
 procedures, complete an AGPL/commercial-distribution review for ZITADEL, and keep
 Vitals coupled only through OIDC/OAuth metadata and claims. A provider-specific
@@ -1547,10 +1576,13 @@ Additional gates:
 - [x] Bootstrap current owner and introduce `AccessContext`.
 - [x] Backfill subject ownership across the lake.
 - [x] Pass cross-subject service isolation and PostgreSQL RLS gates.
-- [ ] Cut over OIDC authentication and per-user Vitals sessions/step-up state.
-  **PR-05, and the next gate.** Registration is still closed and
-  `identity_bootstrap` is still the only place a `HealthSubject` is born, so
-  `scripts/seed_care_demo.py` is the only way to make a second one.
+- [x] Cut over OIDC authentication and per-user Vitals sessions/step-up state —
+  PR-05. Registration is still closed, and closed by `registration_service`
+  rather than by there being nowhere for an account to come from: four modes,
+  `disabled` by default, and a deployment gate in front of the other three that
+  is an environment variable rather than a settings page. A `HealthSubject` is
+  born in `account_provisioning_service` and nowhere else; an operator reaches
+  it through `scripts/provision_account.py`.
 - [x] Isolate files, settings, portability — PR-06.
 - [~] Isolate connectors, scheduler, and messaging — PR-09, partly. The scheduler
   is fanned out per subject and runs on each subject's own clock; four

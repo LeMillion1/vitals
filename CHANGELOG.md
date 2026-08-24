@@ -8,6 +8,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — an installation can gain a second person, and a decision about whether it may
+
+Two facts that had been one. `identity_bootstrap` makes the installation's own
+owner out of `VITALS_AUTH_USERNAME`, and `scripts/seed_care_demo.py` made
+everybody else — which is why the professional features shipped in PR-07 and
+PR-08 have never had anybody to be about on a real installation, and why every
+shared-installation defect of the last few weeks was found by running that
+script rather than by using the product.
+
+It also meant that "registration is closed" was a property of there being
+nowhere for an account to come from, rather than a decision anything had made.
+That is true and fragile: the day something could create one, nothing would have
+stopped it.
+
+**`account_provisioning_service` is the one place a subject is born.** A subject
+is not one row — it needs an account that owns it, a member role, the
+integration roots every provider path resolves through, and a module map — and a
+subject missing any of those fails on the fourth page somebody visits rather
+than at creation. It never adopts the environment's Garmin or Hevy credentials:
+those are the installation owner's, and a new root that claimed them would hand
+one person's watch to everybody provisioned after them.
+
+**`registration_service` is the decision, and it answers `disabled`.** Four
+modes from the plan — `disabled`, `invite_only`, `admin_approved`, `open` — and
+two switches in front of them. `VITALS_REGISTRATION_UNLOCKED` is a deployment
+decision that comes after a security review, deliberately an environment
+variable rather than something an administrator can flip from a screen; the
+stored mode is the installation's own setting, configurable and reviewable ahead
+of the release that makes it mean anything. The two middle modes have no
+implementation and refuse with a message that says so, rather than falling
+through to the most permissive one.
+
+`federated_login_service` consults it: an unrecognised provider identity becomes
+an account only where the installation has said it wants one, and the refusal
+when it has not is byte-identical to "no such identity", so a stranger learns
+nothing about whether this installation is accepting people. A name somebody
+already holds is a refusal too — `newcomer-2` would hand a stranger a name
+implying a relationship to an existing account.
+
+`scripts/provision_account.py` is how an operator creates one today. It is
+deliberately not registration: no form, no route, no token, and whoever runs it
+already has a shell on the host. The demo seeder goes through the same service
+now, so a gap in provisioning shows up in the browser check rather than only
+after registration opens.
+
+
 ### Fixed — a new installation could not be created
 
 The container's start command is `alembic upgrade head && uvicorn …`. On an

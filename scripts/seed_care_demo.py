@@ -39,6 +39,12 @@ os.environ.setdefault(
     "$2b$04$V2PTdRXGL2bhQbX8frCBeuQp8X01Cj84UQCRKDsVNGAOU/siMDlha",
 )
 os.environ.setdefault("VITALS_TIMEZONE", "Europe/Chisinau")
+# Provider credentials are encrypted per subject, so the seeded patients need a
+# vault key to have accounts at all. A fixed development one: a generated key
+# would make the database this script writes unreadable by the next run of it.
+os.environ.setdefault(
+    "VITALS_CREDENTIAL_KEY", "c2VlZC1jYXJlLWRlbW8ta2V5LTMyLWJ5dGVzLWFhYWE="
+)
 
 from sqlalchemy.ext.asyncio import (  # noqa: E402
     AsyncSession,
@@ -57,14 +63,13 @@ from vitals.enums import (  # noqa: E402
 )
 from vitals.models.base import Base  # noqa: E402
 from vitals.models.identity import HealthSubject, User, UserRole  # noqa: E402
-from vitals.models.scoped_settings import SubjectSetting  # noqa: E402
 from vitals.models.labs import LabResult  # noqa: E402
 from vitals.models.nutrition import MealLog  # noqa: E402
 from vitals.models.supplements import Supplement  # noqa: E402
 from vitals.models.weight import WeightLog  # noqa: E402
-from vitals.services import modules_service, provider_credentials_service  # noqa: E402
-from vitals.services.tenancy_bootstrap import (  # noqa: E402
-    bootstrap_legacy_resource_roots,
+from vitals.services import (  # noqa: E402
+    account_provisioning_service,
+    provider_credentials_service,
 )
 from vitals.services import care_service, invitation_service  # noqa: E402
 from vitals.services import professional_service  # noqa: E402
@@ -125,9 +130,19 @@ async def _account(
 async def _patient(
     session: AsyncSession, username: str, display_name: str, *, seed: int = 0
 ) -> tuple[User, HealthSubject]:
-    user = await _account(session, username, email=f"{username}@example.test")
-    subject = HealthSubject(
-        owner_user_id=user.id,
+    """A patient, through the same call the product uses.
+
+    It used to assemble one here — account, subject, roots, module map — which
+    meant this script and the application had two different ideas of what a
+    subject needs, and the script's was the one anybody ever looked at. It goes
+    through ``account_provisioning_service`` now, so a gap in provisioning shows
+    up in the browser check rather than only after registration opens.
+    """
+
+    provisioned = await account_provisioning_service.provision_account(
+        session,
+        username=username,
+        email=f"{username}@example.test",
         display_name=display_name,
         # Not all in one zone, on purpose. A roster where everybody shares the
         # server's clock hides an entire class of defect: "today" came from
@@ -135,20 +150,14 @@ async def _patient(
         # on screen would ever disagree with it.
         timezone=_TIMEZONES[seed % len(_TIMEZONES)],
     )
-    session.add(subject)
-    await session.flush()
-    # Every subject needs its own integration roots. The app creates them only
-    # for the legacy sole owner, at startup, because that is still the only
-    # place a subject comes into existence — when registration lands it will
-    # have to do this too, and until then a seeded patient without them makes
-    # /settings, /garmin and /hevy refuse for a reason that has nothing to do
-    # with the migration.
-    #
-    # Without ``adopt_environment_credentials`` — which is the default, and
-    # which only the startup bootstrap of the ``.env`` owner may pass. A seeded
-    # patient's roots must not claim that their Garmin password is in the
-    # environment file, because the one in there is the operator's.
-    await bootstrap_legacy_resource_roots(session, subject_id=subject.id)
+    user = await session.get(User, provisioned.user_id)
+    # The dev hash, so the printed cookie is not the only way in on a machine
+    # that has not cut over to the identity provider yet. Provisioning leaves an
+    # account locked out of the password path, which is right in production and
+    # unhelpful here.
+    user.password_hash = _DEV_HASH
+    user.email_verified_at = now_utc()
+    subject = await session.get(HealthSubject, provisioned.subject_id)
     # A synthetic credential of their own, so the settings, Garmin and Hevy
     # cards render the connected state a real patient's would. Nothing here ever
     # reaches a provider: the demo seeds facts directly, and these strings would
@@ -163,17 +172,6 @@ async def _patient(
         session,
         subject_id=subject.id,
         api_key=f"demo-not-a-real-key-{seed}",
-    )
-    # Optional modules default to off, which is the right default for a fresh
-    # installation and the wrong one here: with them off, most of the pages this
-    # script exists to look at answer 404 and the browser check silently covers
-    # a handful of screens instead of the app.
-    session.add(
-        SubjectSetting(
-            subject_id=subject.id,
-            key=modules_service.SETTINGS_KEY,
-            value={key: True for key in modules_service.MODULE_REGISTRY},
-        )
     )
     await _seed_record(session, subject.id, seed=seed)
     return user, subject

@@ -598,6 +598,11 @@ async def federated_login_callback(
             subject=identity.subject,
             authenticated_at=identity.authenticated_at,
             bootstrap_subject=cfg.oidc_bootstrap_subject,
+            # Claims, not keys. They name an account this installation has
+            # already decided to create; ``registration_service`` is what makes
+            # that decision, and by default it does not.
+            email=identity.email,
+            preferred_username=identity.preferred_username,
         )
     except FederatedLoginError as exc:
         return _login_failed(request, f"no session for this identity: {exc}")

@@ -5,10 +5,17 @@ whether the person it describes may have a session here, which is a different
 question with a different answer: a perfectly valid login by somebody with no
 account is a refusal, not a new account.
 
-Provisioning is closed. An identity the provider vouches for is not an
-invitation, and treating it as one would mean anybody who can register with the
-provider can register here — which is exactly what a self-hosted health record
-must not do.
+Provisioning is closed, and closed by a decision rather than by absence.
+``registration_service`` is what says so, and it answers ``disabled`` unless the
+deployment has been cleared to open registration *and* an administrator has
+configured a mode — two switches, neither of which is on. An identity the
+provider vouches for is not an invitation, and treating it as one would mean
+anybody who can register with the provider can register here, which is exactly
+what a self-hosted health record must not do.
+
+Until this, "closed" was a property of there being nowhere for a new account to
+come from. That was true and it was fragile: the day something could create one,
+nothing would have stopped it.
 
 The one exception is the bootstrap. An installation that predates federated
 login already has an owner and no way to prove which provider identity is
@@ -118,6 +125,70 @@ async def _bootstrap_owner(
     return owner
 
 
+async def _provision_if_registration_is_open(
+    session: AsyncSession,
+    *,
+    issuer: str,
+    subject: str,
+    email: str | None,
+    preferred_username: str | None,
+    authenticated_at: datetime | None,
+) -> User | None:
+    """An account for a stranger, if this installation has said it wants one.
+
+    ``None`` rather than an exception when registration is closed, so the caller
+    can fall through to the one uniform refusal above. A closed door and an
+    unknown identity have to be indistinguishable from outside.
+
+    The username comes from the provider's ``preferred_username``, or from the
+    local part of the email, or from the opaque subject — in that order, and the
+    subject is the one that always works. It is a display and lookup name, not
+    an identity: the ``(issuer, sub)`` link created below is what proves who
+    this is, and it is what every later login matches on. So a collision on the
+    name is a collision to resolve, not a way to become somebody else.
+    """
+
+    from vitals.services import account_provisioning_service, registration_service
+
+    try:
+        await registration_service.require_open_registration(session)
+    except registration_service.RegistrationClosed:
+        return None
+
+    candidate = (preferred_username or "").strip()
+    if not candidate and email and "@" in email:
+        candidate = email.split("@", 1)[0].strip()
+    if not candidate:
+        candidate = f"user-{subject[:24]}"
+
+    try:
+        provisioned = await account_provisioning_service.provision_account(
+            session,
+            username=candidate,
+            email=email,
+        )
+    except account_provisioning_service.AccountAlreadyExists as exc:
+        # Somebody already holds this name and it is not this identity — the
+        # link lookup above would have found them otherwise. Refusing is right:
+        # picking ``candidate-2`` would hand a stranger an account whose name
+        # implies a relationship to an existing one.
+        raise UnknownFederatedIdentity(
+            "this provider identity has no account on this installation"
+        ) from exc
+
+    user = await session.get(User, provisioned.user_id)
+    await _link(
+        session,
+        user_id=user.id,
+        issuer=issuer,
+        subject=subject,
+        authenticated_at=authenticated_at,
+    )
+    user.last_login_at = datetime.now(timezone.utc)
+    await session.flush()
+    return user
+
+
 async def resolve_federated_user(
     session: AsyncSession,
     *,
@@ -125,11 +196,20 @@ async def resolve_federated_user(
     subject: str,
     authenticated_at: datetime | None = None,
     bootstrap_subject: str = "",
+    email: str | None = None,
+    preferred_username: str | None = None,
 ) -> User:
     """The local user this provider identity is, or a refusal.
 
-    Never creates an account for an unrecognised identity. The only way a link
+    Creates an account for an unrecognised identity only where
+    ``registration_service`` says the installation is accepting them, which by
+    default and by deployment gate it is not. Otherwise the only way a link
     appears is the operator-configured bootstrap, and that runs once.
+
+    ``email`` and ``preferred_username`` are claims, used for nothing but naming
+    a newly provisioned account. Neither is an identity key and neither is
+    matched against an existing user: a provider that lets somebody claim an
+    address later would otherwise be a way to take over a record.
     """
 
     if not issuer.strip() or not subject.strip():
@@ -153,9 +233,20 @@ async def resolve_federated_user(
             owner.last_login_at = datetime.now(timezone.utc)
             await session.flush()
             return owner
-        # Deliberately the same refusal whether the subject is unknown or the
-        # bootstrap has already run: a stranger learns nothing about whether
-        # this installation has an owner, or who.
+        provisioned = await _provision_if_registration_is_open(
+            session,
+            issuer=issuer,
+            subject=subject,
+            email=email,
+            preferred_username=preferred_username,
+            authenticated_at=authenticated_at,
+        )
+        if provisioned is not None:
+            return provisioned
+        # Deliberately the same refusal whether the subject is unknown, the
+        # bootstrap has already run, or registration is closed: a stranger
+        # learns nothing about whether this installation has an owner, who they
+        # are, or whether it is accepting new people.
         raise UnknownFederatedIdentity(
             "this provider identity has no account on this installation"
         )

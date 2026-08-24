@@ -135,6 +135,11 @@ class FederatedIdentity:
     #: Display only. Never a lookup key.
     email: str | None
     email_verified: bool
+    #: What the provider suggests calling this person. Display only, like the
+    #: email beside it: used to name a newly provisioned account and never to
+    #: find an existing one, because a name a provider lets somebody choose is
+    #: not a claim about who they are.
+    preferred_username: str | None = None
 
 
 def _b64url(raw: bytes) -> str:
@@ -464,6 +469,7 @@ def _identity_from_claims(
     amr = tuple(str(item) for item in methods) if methods else ()
 
     email = claims.get("email")
+    preferred_username = claims.get("preferred_username")
     return FederatedIdentity(
         issuer=issuer,
         subject=subject,
@@ -472,6 +478,11 @@ def _identity_from_claims(
         amr=amr,
         email=email if isinstance(email, str) and email.strip() else None,
         email_verified=bool(claims.get("email_verified")),
+        preferred_username=(
+            preferred_username
+            if isinstance(preferred_username, str) and preferred_username.strip()
+            else None
+        ),
     )
 
 
