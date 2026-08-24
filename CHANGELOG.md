@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — care-team code now lives with the care-team domain
+
+The professional profile, invitation, relationship/consent, patient-record
+projection and shared-thread services were five unrelated files in the flat
+`vitals/services/` directory. They now form `vitals.services.care` and are named
+after the concepts they own: `professionals`, `invitations`, `relationships`,
+`records` and `threads`. All callers move with them; no compatibility shims keep
+the obsolete module layout alive.
+
 ### Fixed — an operator-provisioned account can actually sign in
 
 `scripts/provision_account.py` created accounts without a local password and
@@ -1303,7 +1312,7 @@ this was reachable from the suite.
 ### Added — where a professional's contribution goes (PR-07)
 
 - `professional_notes` and `care_plans`, plus
-  `professional_record_service`. A doctor's reading of a lab panel is not the
+  `care.records`. A doctor's reading of a lab panel is not the
   lab panel: keeping them apart is partly about the record — a year later the
   two would be indistinguishable — and partly about permission, because a
   professional's thinking living inside the patient's measurements would mean a
@@ -1388,7 +1397,7 @@ this was reachable from the suite.
 
 ### Added — one link, one professional, one record (PR-07)
 
-- `professional_invitations` plus `invitation_service`: a patient offers one
+- `professional_invitations` plus `care.invitations`: a patient offers one
   professional a way into their record, as a token in a link. Most of the design
   is a list of things a link must not be.
 - **Not a bearer capability that outlives its purpose** — it expires (14 days by
@@ -1412,12 +1421,12 @@ this was reachable from the suite.
 - Revision `0055` adds the table with row security carrying both clauses.
   Accepting runs in the platform scope — the professional is not bound to this
   subject yet, and the token is what authorizes reading the row at all — so
-  `invitation_service.accept` joins the enumerated allowlist.
+  `care.invitations.accept` joins the enumerated allowlist.
 
 ### Added — a professional's claim, and an operator deciding about it (PR-07)
 
 - `professional_profiles` holds what somebody claims about themselves: a name, a
-  licence number, a kind. `professional_service` is the operator workflow that
+  licence number, a kind. `care.professionals` is the operator workflow that
   decides whether the claim checks out.
 - **None of it grants access to anything, and that is the design.** Verification
   answers a question about the world outside this installation — is this person

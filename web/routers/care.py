@@ -18,10 +18,9 @@ from vitals.access import PolicyAction, PolicyResourceType
 from vitals.enums import CareRelationshipStatus, ConsentStatus, Domain
 from vitals.models.identity import HealthSubject
 from vitals.models.professional import CareRelationship, ConsentGrant
-from vitals.services import care_service, invitation_service
-from vitals.services import care_thread_service as care_threads
 from vitals.services import digest_service, modules_service
-from vitals.services import professional_record_service as records
+from vitals.services.care import invitations, records, relationships
+from vitals.services.care import threads as care_threads
 from web.care_context import CareContext, principal_user_id, require_care_context
 from web.deps import get_session, require_auth
 from web.templating import templates
@@ -64,23 +63,23 @@ async def accept_invitation(
     user_id = await principal_user_id(request, db)
     verified_email = await _verified_email(request, db, user_id=user_id)
     try:
-        invitation = await invitation_service.accept(
+        invitation = await invitations.accept(
             db,
             token=token,
             accepting_user_id=user_id,
             verified_email=verified_email,
         )
-        relationship = await care_service.establish_from_invitation(
+        relationship = await relationships.establish_from_invitation(
             db, invitation=invitation
         )
-    except invitation_service.InvitationError:
+    except invitations.InvitationError:
         # Spent, expired, revoked, wrong address, never existed. One answer.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
-    except care_service.KindMismatch as exc:
+    except relationships.KindMismatch as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
-    except care_service.CareError:
+    except relationships.CareError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     await db.commit()
     return RedirectResponse(

@@ -8,6 +8,33 @@ paths, the conflict engine, the conversion timeline, and the cutover sequence.
 It is HTML rather than Markdown because the diagrams carry most of its meaning
 and are worth rendering rather than describing.
 
+## Source-code boundaries
+
+The diagrams describe runtime boundaries; the Python tree follows the same
+rule. Core code lives under `vitals/` and never imports FastAPI or `web/`.
+Delivery adapters live under `web/`, and scheduled jobs remain orchestration
+boundaries rather than alternative business-service implementations.
+
+Within `vitals/services/`, new code is grouped by bounded domain instead of
+adding another `<noun>_service.py` to the root. A package exposes concepts, not
+a service locator. The first extracted multi-user domain is:
+
+```text
+vitals/services/care/
+├── invitations.py     # patient offer and token lifecycle
+├── professionals.py   # professional claim and verification
+├── relationships.py   # relationship and consent lifecycle
+├── records.py         # professional projection and authored artifacts
+└── threads.py         # patient-visible care-team conversation
+```
+
+Callers import the concept they use, for example
+`from vitals.services.care import relationships`. The old flat module paths are
+removed rather than kept as permanent forwarding shims: internal imports are
+updated in the same commit, which prevents the obsolete structure from becoming
+a second supported API. Further domains should be extracted in bounded,
+behavior-preserving commits with their focused tests and the full fast suite.
+
 **How to open it.** The file is authored as an *artifact body* — no `<!doctype>`,
 `<html>`, `<head>` or `<body>` of its own — so publishing it as an artifact is
 the intended path, and the artifact host renders every `<pre class="mermaid">`

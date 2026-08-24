@@ -26,7 +26,7 @@ from vitals.enums import (
     UserStatus,
 )
 from vitals.models.identity import HealthSubject, User
-from vitals.services import invitation_service
+from vitals.services.care import invitations
 
 
 async def _user(session, slug: str, *, status=UserStatus.ACTIVE) -> User:
@@ -55,7 +55,7 @@ async def _patient(session, slug: str) -> tuple[User, HealthSubject]:
 
 async def _offer(session, *, slug: str, email="doctor@example.test", ttl=None):
     owner, subject = await _patient(session, slug)
-    issued = await invitation_service.invite(
+    issued = await invitations.invite(
         session,
         subject_id=subject.id,
         actor_user_id=owner.id,
@@ -87,7 +87,7 @@ async def test_two_invitations_never_share_a_token(db_session):
     owner, subject = await _patient(db_session, "inv-unique")
     tokens = set()
     for index in range(5):
-        issued = await invitation_service.invite(
+        issued = await invitations.invite(
             db_session,
             subject_id=subject.id,
             actor_user_id=owner.id,
@@ -104,8 +104,8 @@ async def test_only_the_owner_of_the_record_may_offer_it(db_session):
     _owner, subject = await _patient(db_session, "inv-owner")
     stranger = await _user(db_session, "inv-stranger")
 
-    with pytest.raises(invitation_service.NotTheSubjectOwner):
-        await invitation_service.invite(
+    with pytest.raises(invitations.NotTheSubjectOwner):
+        await invitations.invite(
             db_session,
             subject_id=subject.id,
             actor_user_id=stranger.id,
@@ -121,8 +121,8 @@ async def test_an_offer_needs_a_usable_address(db_session, email):
     owner, subject = await _patient(
         db_session, f"inv-email-{abs(hash(str(email))) % 9999}"
     )
-    with pytest.raises(invitation_service.InvitationValidationError):
-        await invitation_service.invite(
+    with pytest.raises(invitations.InvitationValidationError):
+        await invitations.invite(
             db_session,
             subject_id=subject.id,
             actor_user_id=owner.id,
@@ -139,10 +139,10 @@ def test_folding_an_address_stays_shallow():
     cannot accept.
     """
 
-    assert invitation_service.normalize_email("  Doctor@Example.TEST ") == (
+    assert invitations.normalize_email("  Doctor@Example.TEST ") == (
         "doctor@example.test"
     )
-    assert invitation_service.normalize_email("first.last+tag@example.test") == (
+    assert invitations.normalize_email("first.last+tag@example.test") == (
         "first.last+tag@example.test"
     )
 
@@ -154,7 +154,7 @@ async def test_the_addressed_person_can_accept_once(db_session):
     _owner, _subject, issued = await _offer(db_session, slug="inv-accept")
     doctor = await _user(db_session, "inv-accept-doctor")
 
-    accepted = await invitation_service.accept(
+    accepted = await invitations.accept(
         db_session,
         token=issued.token,
         accepting_user_id=doctor.id,
@@ -165,8 +165,8 @@ async def test_the_addressed_person_can_accept_once(db_session):
     assert accepted.accepted_at is not None
 
     # One-time. The second attempt is a refusal like any other.
-    with pytest.raises(invitation_service.InvitationRefused):
-        await invitation_service.accept(
+    with pytest.raises(invitations.InvitationRefused):
+        await invitations.accept(
             db_session,
             token=issued.token,
             accepting_user_id=doctor.id,
@@ -180,7 +180,7 @@ async def test_the_address_is_matched_however_it_was_typed(db_session):
     )
     doctor = await _user(db_session, "inv-fold-doctor")
 
-    accepted = await invitation_service.accept(
+    accepted = await invitations.accept(
         db_session,
         token=issued.token,
         accepting_user_id=doctor.id,
@@ -195,8 +195,8 @@ async def test_a_forwarded_link_does_not_work(db_session):
     _owner, _subject, issued = await _offer(db_session, slug="inv-forward")
     somebody_else = await _user(db_session, "inv-forward-other")
 
-    with pytest.raises(invitation_service.InvitationRefused):
-        await invitation_service.accept(
+    with pytest.raises(invitations.InvitationRefused):
+        await invitations.accept(
             db_session,
             token=issued.token,
             accepting_user_id=somebody_else.id,
@@ -210,8 +210,8 @@ async def test_an_unverified_address_is_not_an_address(db_session):
     _owner, _subject, issued = await _offer(db_session, slug="inv-unverified")
     doctor = await _user(db_session, "inv-unverified-doctor")
 
-    with pytest.raises(invitation_service.InvitationRefused):
-        await invitation_service.accept(
+    with pytest.raises(invitations.InvitationRefused):
+        await invitations.accept(
             db_session,
             token=issued.token,
             accepting_user_id=doctor.id,
@@ -251,8 +251,8 @@ async def test_an_expired_offer_is_refused_and_stops_claiming_to_be_open(db_sess
     _age_out(issued.invitation)
     await db_session.flush()
 
-    with pytest.raises(invitation_service.InvitationRefused):
-        await invitation_service.accept(
+    with pytest.raises(invitations.InvitationRefused):
+        await invitations.accept(
             db_session,
             token=issued.token,
             accepting_user_id=doctor.id,
@@ -267,8 +267,8 @@ async def test_a_suspended_account_cannot_accept(db_session):
         db_session, "inv-suspended-doctor", status=UserStatus.SUSPENDED
     )
 
-    with pytest.raises(invitation_service.InvitationRefused):
-        await invitation_service.accept(
+    with pytest.raises(invitations.InvitationRefused):
+        await invitations.accept(
             db_session,
             token=issued.token,
             accepting_user_id=doctor.id,
@@ -281,8 +281,8 @@ async def test_the_patient_cannot_be_their_own_professional(db_session):
 
     owner, _subject, issued = await _offer(db_session, slug="inv-self")
 
-    with pytest.raises(invitation_service.InvitationRefused):
-        await invitation_service.accept(
+    with pytest.raises(invitations.InvitationRefused):
+        await invitations.accept(
             db_session,
             token=issued.token,
             accepting_user_id=owner.id,
@@ -299,7 +299,7 @@ async def test_every_refusal_says_exactly_the_same_thing(db_session):
 
     _owner, _subject, issued = await _offer(db_session, slug="inv-uniform")
     doctor = await _user(db_session, "inv-uniform-doctor")
-    await invitation_service.accept(
+    await invitations.accept(
         db_session,
         token=issued.token,
         accepting_user_id=doctor.id,
@@ -320,8 +320,8 @@ async def test_every_refusal_says_exactly_the_same_thing(db_session):
         ("", "doctor@example.test"),                    # not a token at all
     )
     for token, email in attempts:
-        with pytest.raises(invitation_service.InvitationRefused) as caught:
-            await invitation_service.accept(
+        with pytest.raises(invitations.InvitationRefused) as caught:
+            await invitations.accept(
                 db_session,
                 token=token,
                 accepting_user_id=doctor.id,
@@ -338,14 +338,14 @@ async def test_the_owner_can_withdraw_an_offer_nobody_took_up(db_session):
     owner, _subject, issued = await _offer(db_session, slug="inv-revoke")
     doctor = await _user(db_session, "inv-revoke-doctor")
 
-    revoked = await invitation_service.revoke(
+    revoked = await invitations.revoke(
         db_session, invitation_id=issued.invitation.id, actor_user_id=owner.id
     )
     assert revoked.status == ProfessionalInvitationStatus.REVOKED.value
     assert revoked.revoked_at is not None
 
-    with pytest.raises(invitation_service.InvitationRefused):
-        await invitation_service.accept(
+    with pytest.raises(invitations.InvitationRefused):
+        await invitations.accept(
             db_session,
             token=issued.token,
             accepting_user_id=doctor.id,
@@ -355,10 +355,10 @@ async def test_the_owner_can_withdraw_an_offer_nobody_took_up(db_session):
 
 async def test_withdrawing_twice_is_the_same_as_withdrawing_once(db_session):
     owner, _subject, issued = await _offer(db_session, slug="inv-revoke-twice")
-    await invitation_service.revoke(
+    await invitations.revoke(
         db_session, invitation_id=issued.invitation.id, actor_user_id=owner.id
     )
-    again = await invitation_service.revoke(
+    again = await invitations.revoke(
         db_session, invitation_id=issued.invitation.id, actor_user_id=owner.id
     )
     assert again.status == ProfessionalInvitationStatus.REVOKED.value
@@ -369,15 +369,15 @@ async def test_an_accepted_offer_is_not_withdrawn_here(db_session):
 
     owner, _subject, issued = await _offer(db_session, slug="inv-revoke-accepted")
     doctor = await _user(db_session, "inv-revoke-accepted-doctor")
-    await invitation_service.accept(
+    await invitations.accept(
         db_session,
         token=issued.token,
         accepting_user_id=doctor.id,
         verified_email="doctor@example.test",
     )
 
-    with pytest.raises(invitation_service.InvitationError):
-        await invitation_service.revoke(
+    with pytest.raises(invitations.InvitationError):
+        await invitations.revoke(
             db_session, invitation_id=issued.invitation.id, actor_user_id=owner.id
         )
 
@@ -386,8 +386,8 @@ async def test_only_the_owner_withdraws(db_session):
     _owner, _subject, issued = await _offer(db_session, slug="inv-revoke-owner")
     stranger = await _user(db_session, "inv-revoke-stranger")
 
-    with pytest.raises(invitation_service.NotTheSubjectOwner):
-        await invitation_service.revoke(
+    with pytest.raises(invitations.NotTheSubjectOwner):
+        await invitations.revoke(
             db_session,
             invitation_id=issued.invitation.id,
             actor_user_id=stranger.id,
@@ -396,8 +396,8 @@ async def test_only_the_owner_withdraws(db_session):
 
 async def test_withdrawing_something_that_is_not_there(db_session):
     owner, _subject = await _patient(db_session, "inv-revoke-missing")
-    with pytest.raises(invitation_service.InvitationRefused):
-        await invitation_service.revoke(
+    with pytest.raises(invitations.InvitationRefused):
+        await invitations.revoke(
             db_session, invitation_id=uuid.uuid4(), actor_user_id=owner.id
         )
 
@@ -423,7 +423,7 @@ async def test_accepting_reaches_nothing_by_itself(db_session):
 
     _owner, subject, issued = await _offer(db_session, slug="inv-not-access")
     doctor = await _user(db_session, "inv-not-access-doctor")
-    await invitation_service.accept(
+    await invitations.accept(
         db_session,
         token=issued.token,
         accepting_user_id=doctor.id,

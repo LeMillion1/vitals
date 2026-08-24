@@ -41,7 +41,7 @@ from vitals.enums import CarePlanStatus, CareRelationshipStatus
 from vitals.models.professional import CarePlan, CareRelationship, ProfessionalNote
 
 #: The artifact keys these records are authorized under. They match the entries
-#: ``care_service.default_scopes`` writes into a consent, and a mismatch would
+#: ``relationships.default_scopes`` writes into a consent, and a mismatch would
 #: silently make every write unauthorized — so both sides read this pair.
 NOTE_ARTIFACT = "professional_note"
 PLAN_ARTIFACT = "care_plan"

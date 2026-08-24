@@ -1123,7 +1123,7 @@ Delivered:
   leads to exists for this reader.
 
 Not done: the professional inbox. Invitations are found by their link, and
-`invitation_service.accept` is explicit that **the token is what authorizes
+`care.invitations.accept` is explicit that **the token is what authorizes
 reading the row at all** — so a list by email is not a missing screen but a
 different security model, and one worth deciding on rather than implementing
 sideways.

@@ -26,11 +26,7 @@ from vitals.enums import (
     UserStatus,
 )
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.services import (
-    care_service,
-    invitation_service,
-    professional_record_service as records,
-)
+from vitals.services.care import invitations, records, relationships
 from vitals.services.access_resolution import resolve_access_context
 
 
@@ -62,23 +58,23 @@ async def _in_care_with_consent(session, slug: str, *, scopes=None):
     await session.flush()
 
     doctor = await _user(session, f"{slug}-doc", roles=(UserRoleName.DOCTOR,))
-    issued = await invitation_service.invite(
+    issued = await invitations.invite(
         session,
         subject_id=subject.id,
         actor_user_id=owner.id,
         kind=ProfessionalKind.DOCTOR,
         email=f"{slug}-doc@example.test",
     )
-    await invitation_service.accept(
+    await invitations.accept(
         session,
         token=issued.token,
         accepting_user_id=doctor.id,
         verified_email=f"{slug}-doc@example.test",
     )
-    relationship = await care_service.establish_from_invitation(
+    relationship = await relationships.establish_from_invitation(
         session, invitation=issued.invitation
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         session,
         relationship_id=relationship.id,
         actor_user_id=owner.id,
@@ -99,7 +95,7 @@ async def _context(session, user, subject):
 def test_the_artifact_keys_the_two_services_use_are_the_same():
     """A mismatch would make every write unauthorized and nothing would say so.
 
-    ``care_service`` writes these keys into a consent; this service asks the
+    ``relationships`` writes these keys into a consent; this service asks the
     policy about them. Nothing else connects the two, so the pair is asserted
     rather than assumed.
     """
@@ -107,7 +103,7 @@ def test_the_artifact_keys_the_two_services_use_are_the_same():
     granted = {
         scope.resource_key
         for kind in ProfessionalKind
-        for scope in care_service.default_scopes(kind)
+        for scope in relationships.default_scopes(kind)
         if scope.resource_type is PolicyResourceType.ARTIFACT
     }
     assert {records.NOTE_ARTIFACT, records.PLAN_ARTIFACT} <= granted
@@ -151,7 +147,7 @@ async def test_revoking_consent_stops_the_writing_too(db_session):
     owner, subject, doctor, relationship = await _in_care_with_consent(
         db_session, "rec-revoked"
     )
-    await care_service.revoke_consent(
+    await relationships.revoke_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
     context = await _context(db_session, doctor, subject)
@@ -186,7 +182,7 @@ async def test_ending_the_relationship_stops_the_writing(db_session):
     owner, subject, doctor, relationship = await _in_care_with_consent(
         db_session, "rec-ended"
     )
-    await care_service.end_relationship(
+    await relationships.end_relationship(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
     context = await _context(db_session, doctor, subject)
@@ -228,23 +224,23 @@ async def test_a_second_professional_cannot_edit_the_first_ones_note(db_session)
     )
 
     second = await _user(db_session, "rec-second-trainer", roles=(UserRoleName.TRAINER,))
-    issued = await invitation_service.invite(
+    issued = await invitations.invite(
         db_session,
         subject_id=subject.id,
         actor_user_id=owner.id,
         kind=ProfessionalKind.TRAINER,
         email="rec-second-trainer@example.test",
     )
-    await invitation_service.accept(
+    await invitations.accept(
         db_session,
         token=issued.token,
         accepting_user_id=second.id,
         verified_email="rec-second-trainer@example.test",
     )
-    second_relationship = await care_service.establish_from_invitation(
+    second_relationship = await relationships.establish_from_invitation(
         db_session, invitation=issued.invitation
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         db_session,
         relationship_id=second_relationship.id,
         actor_user_id=owner.id,

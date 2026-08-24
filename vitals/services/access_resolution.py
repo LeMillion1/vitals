@@ -151,7 +151,7 @@ async def resolve_access_context(
     relationship_grant = None
     support_grant = None
     if owner_user_id != principal.user_id:
-        from vitals.services.care_service import load_relationship_grant
+        from vitals.services.care.relationships import load_relationship_grant
 
         with session.no_autoflush:
             relationship_grant = await load_relationship_grant(

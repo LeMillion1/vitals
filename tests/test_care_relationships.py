@@ -35,7 +35,7 @@ from vitals.enums import (
     UserStatus,
 )
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.services import care_service, invitation_service
+from vitals.services.care import invitations, relationships
 from vitals.services.access_resolution import resolve_access_context
 
 
@@ -76,20 +76,20 @@ async def _in_care(session, slug: str, *, kind=ProfessionalKind.DOCTOR):
         else UserRoleName.TRAINER
     )
     professional = await _user(session, f"{slug}-pro", roles=(role,))
-    issued = await invitation_service.invite(
+    issued = await invitations.invite(
         session,
         subject_id=subject.id,
         actor_user_id=owner.id,
         kind=kind,
         email=f"{slug}-pro@example.test",
     )
-    await invitation_service.accept(
+    await invitations.accept(
         session,
         token=issued.token,
         accepting_user_id=professional.id,
         verified_email=f"{slug}-pro@example.test",
     )
-    relationship = await care_service.establish_from_invitation(
+    relationship = await relationships.establish_from_invitation(
         session, invitation=issued.invitation
     )
     return owner, subject, professional, relationship
@@ -133,8 +133,8 @@ async def test_consent_without_a_relationship_cannot_exist(db_session):
     """There is nothing to hang it on, which is the point of the shape."""
 
     owner, _subject = await _patient(db_session, "care-noreal")
-    with pytest.raises(care_service.RelationshipNotFound):
-        await care_service.grant_consent(
+    with pytest.raises(relationships.RelationshipNotFound):
+        await relationships.grant_consent(
             db_session, relationship_id=uuid.uuid4(), actor_user_id=owner.id
         )
 
@@ -143,7 +143,7 @@ async def test_both_together_open_exactly_what_was_agreed(db_session):
     owner, subject, professional, relationship = await _in_care(
         db_session, "care-both"
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
 
@@ -180,8 +180,8 @@ async def test_a_doctor_and_a_trainer_are_offered_the_same_record(db_session):
     already chose whom to invite.
     """
 
-    doctor_scopes = care_service.default_scopes(ProfessionalKind.DOCTOR)
-    trainer_scopes = care_service.default_scopes(ProfessionalKind.TRAINER)
+    doctor_scopes = relationships.default_scopes(ProfessionalKind.DOCTOR)
+    trainer_scopes = relationships.default_scopes(ProfessionalKind.TRAINER)
     assert doctor_scopes == trainer_scopes
 
     offered = {scope.resource_key for scope in doctor_scopes}
@@ -200,7 +200,7 @@ def test_a_domain_added_later_is_offered_without_anybody_remembering():
     rather than a reference to this list.
     """
 
-    assert set(care_service.DEFAULT_DOMAINS) == set(Domain) - {Domain.SYSTEM}
+    assert set(relationships.DEFAULT_DOMAINS) == set(Domain) - {Domain.SYSTEM}
 
 
 async def test_no_default_lets_a_professional_write_a_patients_facts(db_session):
@@ -220,7 +220,7 @@ async def test_no_default_lets_a_professional_write_a_patients_facts(db_session)
         PolicyAction.EXPORT,
     }
     for kind in ProfessionalKind:
-        scopes = care_service.default_scopes(kind)
+        scopes = relationships.default_scopes(kind)
         fact_actions = {
             scope.action
             for scope in scopes
@@ -244,7 +244,7 @@ async def test_a_trainer_sees_the_whole_record_too(db_session):
     owner, subject, professional, relationship = await _in_care(
         db_session, "care-kind", kind=ProfessionalKind.TRAINER
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
 
@@ -265,35 +265,35 @@ async def test_a_doctor_cannot_be_taken_on_as_a_trainer(db_session):
     statements about who these people are.
     """
 
-    from vitals.services import professional_service
+    from vitals.services.care import professionals
 
     owner, subject = await _patient(db_session, "care-mismatch")
     doctor = await _user(
         db_session, "care-mismatch-doc", roles=(UserRoleName.DOCTOR,)
     )
-    await professional_service.submit_profile(
+    await professionals.submit_profile(
         db_session,
         user_id=doctor.id,
         kind=ProfessionalKind.DOCTOR,
         display_name="Dr Synthetic",
     )
 
-    issued = await invitation_service.invite(
+    issued = await invitations.invite(
         db_session,
         subject_id=subject.id,
         actor_user_id=owner.id,
         kind=ProfessionalKind.TRAINER,
         email="care-mismatch-doc@example.test",
     )
-    await invitation_service.accept(
+    await invitations.accept(
         db_session,
         token=issued.token,
         accepting_user_id=doctor.id,
         verified_email="care-mismatch-doc@example.test",
     )
 
-    with pytest.raises(care_service.KindMismatch):
-        await care_service.establish_from_invitation(
+    with pytest.raises(relationships.KindMismatch):
+        await relationships.establish_from_invitation(
             db_session, invitation=issued.invitation
         )
 
@@ -317,7 +317,7 @@ async def test_the_patient_can_narrow_what_was_offered(db_session):
     owner, subject, professional, relationship = await _in_care(
         db_session, "care-narrow"
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         db_session,
         relationship_id=relationship.id,
         actor_user_id=owner.id,
@@ -341,8 +341,8 @@ async def test_the_patient_can_narrow_what_was_offered(db_session):
 
 async def test_a_consent_that_permits_nothing_is_a_revocation(db_session):
     owner, _subject, _pro, relationship = await _in_care(db_session, "care-empty")
-    with pytest.raises(care_service.CareValidationError, match="revoke"):
-        await care_service.grant_consent(
+    with pytest.raises(relationships.CareValidationError, match="revoke"):
+        await relationships.grant_consent(
             db_session,
             relationship_id=relationship.id,
             actor_user_id=owner.id,
@@ -377,12 +377,12 @@ async def test_narrowing_is_a_new_version_rather_than_an_edit(db_session):
         )
 
     owner, _subject, _pro, relationship = await _in_care(db_session, "care-version")
-    first = await care_service.grant_consent(
+    first = await relationships.grant_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
     first_id, first_scopes = first.id, await _scope_count(first.id)
 
-    second = await care_service.grant_consent(
+    second = await relationships.grant_consent(
         db_session,
         relationship_id=relationship.id,
         actor_user_id=owner.id,
@@ -425,12 +425,12 @@ async def test_a_pause_closes_access_and_resuming_reopens_it(db_session):
     owner, subject, professional, relationship = await _in_care(
         db_session, "care-pause"
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
     assert await _may(db_session, professional, subject)
 
-    await care_service.set_consent_paused(
+    await relationships.set_consent_paused(
         db_session,
         relationship_id=relationship.id,
         actor_user_id=owner.id,
@@ -438,7 +438,7 @@ async def test_a_pause_closes_access_and_resuming_reopens_it(db_session):
     )
     assert not await _may(db_session, professional, subject)
 
-    await care_service.set_consent_paused(
+    await relationships.set_consent_paused(
         db_session,
         relationship_id=relationship.id,
         actor_user_id=owner.id,
@@ -453,12 +453,12 @@ async def test_revocation_takes_effect_on_the_very_next_decision(db_session):
     owner, subject, professional, relationship = await _in_care(
         db_session, "care-revoke"
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
     assert await _may(db_session, professional, subject)
 
-    await care_service.revoke_consent(
+    await relationships.revoke_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
     assert not await _may(db_session, professional, subject)
@@ -466,14 +466,14 @@ async def test_revocation_takes_effect_on_the_very_next_decision(db_session):
 
 async def test_a_revocation_does_not_come_back(db_session):
     owner, _subject, _pro, relationship = await _in_care(db_session, "care-norevive")
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
-    await care_service.revoke_consent(
+    await relationships.revoke_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
-    with pytest.raises(care_service.ConsentNotFound):
-        await care_service.set_consent_paused(
+    with pytest.raises(relationships.ConsentNotFound):
+        await relationships.set_consent_paused(
             db_session,
             relationship_id=relationship.id,
             actor_user_id=owner.id,
@@ -489,10 +489,10 @@ async def test_ending_the_relationship_revokes_what_was_under_it(db_session):
     owner, subject, professional, relationship = await _in_care(
         db_session, "care-end"
     )
-    grant = await care_service.grant_consent(
+    grant = await relationships.grant_consent(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
-    await care_service.end_relationship(
+    await relationships.end_relationship(
         db_session, relationship_id=relationship.id, actor_user_id=owner.id
     )
 
@@ -508,7 +508,7 @@ async def test_either_party_may_end_it(db_session):
     _owner, _subject, professional, relationship = await _in_care(
         db_session, "care-end-pro"
     )
-    ended = await care_service.end_relationship(
+    ended = await relationships.end_relationship(
         db_session, relationship_id=relationship.id, actor_user_id=professional.id
     )
     assert ended.status == CareRelationshipStatus.ENDED.value
@@ -518,8 +518,8 @@ async def test_either_party_may_end_it(db_session):
 async def test_a_stranger_ends_nothing(db_session):
     _owner, _subject, _pro, relationship = await _in_care(db_session, "care-end-str")
     stranger = await _user(db_session, "care-end-stranger")
-    with pytest.raises(care_service.NotTheSubjectOwner):
-        await care_service.end_relationship(
+    with pytest.raises(relationships.NotTheSubjectOwner):
+        await relationships.end_relationship(
             db_session, relationship_id=relationship.id, actor_user_id=stranger.id
         )
 
@@ -536,14 +536,14 @@ async def test_only_the_patient_decides_what_is_shown(db_session):
         db_session, "care-consent-owner"
     )
     for actor in (professional.id, uuid.uuid4()):
-        with pytest.raises(care_service.RelationshipNotFound):
-            await care_service.grant_consent(
+        with pytest.raises(relationships.RelationshipNotFound):
+            await relationships.grant_consent(
                 db_session, relationship_id=relationship.id, actor_user_id=actor
             )
 
     # A relationship that genuinely is not there answers identically.
-    with pytest.raises(care_service.RelationshipNotFound):
-        await care_service.grant_consent(
+    with pytest.raises(relationships.RelationshipNotFound):
+        await relationships.grant_consent(
             db_session, relationship_id=uuid.uuid4(), actor_user_id=professional.id
         )
 
@@ -567,7 +567,7 @@ async def test_consent_lapses_rather_than_standing_forever(db_session):
     owner, subject, professional, relationship = await _in_care(
         db_session, "care-expiry"
     )
-    grant = await care_service.grant_consent(
+    grant = await relationships.grant_consent(
         db_session,
         relationship_id=relationship.id,
         actor_user_id=owner.id,
@@ -585,8 +585,8 @@ async def test_consent_lapses_rather_than_standing_forever(db_session):
 async def test_a_zero_or_negative_term_is_refused(db_session):
     owner, _subject, _pro, relationship = await _in_care(db_session, "care-ttl")
     for ttl in (timedelta(0), timedelta(days=-1), "a fortnight", None):
-        with pytest.raises(care_service.CareValidationError):
-            await care_service.grant_consent(
+        with pytest.raises(relationships.CareValidationError):
+            await relationships.grant_consent(
                 db_session,
                 relationship_id=relationship.id,
                 actor_user_id=owner.id,

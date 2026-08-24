@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 from vitals.enums import ProfessionalKind, UserRoleName, UserStatus
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.professional import ProfessionalNote
-from vitals.services import care_service, invitation_service
+from vitals.services.care import invitations, relationships
 
 
 async def _user(session, slug: str, *, roles=()) -> User:
@@ -57,24 +57,24 @@ async def _patient(session, slug: str) -> tuple[User, HealthSubject]:
 
 async def _take_into_care(session, *, owner, subject, professional, consent=True):
     email = f"{professional.username}@example.test"
-    issued = await invitation_service.invite(
+    issued = await invitations.invite(
         session,
         subject_id=subject.id,
         actor_user_id=owner.id,
         kind=ProfessionalKind.DOCTOR,
         email=email,
     )
-    await invitation_service.accept(
+    await invitations.accept(
         session,
         token=issued.token,
         accepting_user_id=professional.id,
         verified_email=email,
     )
-    relationship = await care_service.establish_from_invitation(
+    relationship = await relationships.establish_from_invitation(
         session, invitation=issued.invitation
     )
     if consent:
-        await care_service.grant_consent(
+        await relationships.grant_consent(
             session, relationship_id=relationship.id, actor_user_id=owner.id
         )
     return relationship
@@ -176,7 +176,7 @@ async def test_a_revoked_consent_refuses_the_stale_tab(doctor_client, db_session
     relationship_id = await db_session.scalar(
         select(CareRelationship.id).where(CareRelationship.subject_id == subject_a.id)
     )
-    await care_service.revoke_consent(
+    await relationships.revoke_consent(
         db_session, relationship_id=relationship_id, actor_user_id=owner_a.id
     )
     await db_session.commit()
@@ -248,7 +248,7 @@ async def test_a_paused_consent_is_shown_as_paused_rather_than_hidden(
     relationship_id = await db_session.scalar(
         select(CareRelationship.id).where(CareRelationship.subject_id == subject_a.id)
     )
-    await care_service.set_consent_paused(
+    await relationships.set_consent_paused(
         db_session,
         relationship_id=relationship_id,
         actor_user_id=owner_a.id,
@@ -368,15 +368,15 @@ async def test_a_domain_the_patient_withheld_is_named_rather_than_missing(
     # Everything the default grants, minus the weight domain.
     narrowed = frozenset(
         scope
-        for scope in care_service.default_scopes(ProfessionalKind.DOCTOR)
+        for scope in relationships.default_scopes(ProfessionalKind.DOCTOR)
         if not (
             scope.resource_type is PolicyResourceType.DOMAIN
             and scope.resource_key == Domain.WEIGHT.value
         )
     )
-    assert narrowed != care_service.default_scopes(ProfessionalKind.DOCTOR)
+    assert narrowed != relationships.default_scopes(ProfessionalKind.DOCTOR)
     del AccessScope, PolicyAction
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         db_session,
         relationship_id=relationship_id,
         actor_user_id=owner_a_id,

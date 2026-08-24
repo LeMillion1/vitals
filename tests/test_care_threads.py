@@ -25,8 +25,7 @@ from vitals.enums import (
 )
 from vitals.models.care_thread import CareThreadParticipant
 from vitals.models.identity import HealthSubject, User, UserRole
-from vitals.services import care_service, invitation_service
-from vitals.services import care_thread_service as threads
+from vitals.services.care import invitations, relationships, threads
 from vitals.services.access_resolution import resolve_access_context
 
 
@@ -57,23 +56,23 @@ async def _take_into_care(
             else UserRoleName.TRAINER,
         ),
     )
-    issued = await invitation_service.invite(
+    issued = await invitations.invite(
         session,
         subject_id=subject.id,
         actor_user_id=owner.id,
         kind=kind,
         email=f"{slug}@example.test",
     )
-    await invitation_service.accept(
+    await invitations.accept(
         session,
         token=issued.token,
         accepting_user_id=professional.id,
         verified_email=f"{slug}@example.test",
     )
-    relationship = await care_service.establish_from_invitation(
+    relationship = await relationships.establish_from_invitation(
         session, invitation=issued.invitation
     )
-    grant = await care_service.grant_consent(
+    grant = await relationships.grant_consent(
         session,
         relationship_id=relationship.id,
         actor_user_id=owner.id,
@@ -226,7 +225,7 @@ async def test_a_paused_consent_stops_the_conversation_without_deleting_it(
     )
     await db_session.commit()
 
-    await care_service.set_consent_paused(
+    await relationships.set_consent_paused(
         db_session,
         relationship_id=relationship.id,
         actor_user_id=owner.id,
@@ -358,7 +357,7 @@ async def test_another_patients_thread_id_finds_nothing(db_session):
 def _scopes_without(action: PolicyAction) -> frozenset[AccessScope]:
     return frozenset(
         scope
-        for scope in care_service.default_scopes(ProfessionalKind.DOCTOR)
+        for scope in relationships.default_scopes(ProfessionalKind.DOCTOR)
         if not (
             scope.resource_type is PolicyResourceType.OPERATION
             and scope.resource_key == threads.MESSAGE_OPERATION
@@ -385,10 +384,10 @@ async def test_a_consent_that_reads_but_does_not_send(db_session):
     await db_session.commit()
 
     # The patient narrows it: keep looking, stop writing.
-    await care_service.revoke_consent(
+    await relationships.revoke_consent(
         db_session, relationship_id=_rel.id, actor_user_id=owner.id
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         db_session,
         relationship_id=_rel.id,
         actor_user_id=owner.id,
@@ -425,7 +424,7 @@ async def test_a_consent_without_the_operation_at_all_opens_nothing(db_session):
 async def test_the_default_consent_carries_the_conversation(db_session):
     """A care team that cannot talk to the patient is not what one is invited for."""
 
-    scopes = care_service.default_scopes(ProfessionalKind.DOCTOR)
+    scopes = relationships.default_scopes(ProfessionalKind.DOCTOR)
     conversation = {
         scope.action
         for scope in scopes

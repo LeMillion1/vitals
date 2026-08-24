@@ -24,7 +24,7 @@ from vitals.enums import (
     UserStatus,
 )
 from vitals.models.identity import User, UserRole
-from vitals.services import professional_service
+from vitals.services.care import professionals
 
 
 async def _user(session, slug: str, *, roles=(), status=UserStatus.ACTIVE) -> User:
@@ -59,7 +59,7 @@ async def test_a_submitted_profile_lands_in_the_queue(db_session):
     """
 
     doctor = await _user(db_session, "prof-submit")
-    profile = await professional_service.submit_profile(
+    profile = await professionals.submit_profile(
         db_session,
         user_id=doctor.id,
         kind=ProfessionalKind.DOCTOR,
@@ -69,7 +69,7 @@ async def test_a_submitted_profile_lands_in_the_queue(db_session):
 
     assert profile.verification_status == ProfessionalVerificationStatus.PENDING.value
     assert profile.verified_at is None and profile.verified_by_user_id is None
-    assert [p.id for p in await professional_service.pending_queue(db_session)] == [
+    assert [p.id for p in await professionals.pending_queue(db_session)] == [
         profile.id
     ]
 
@@ -82,14 +82,14 @@ async def test_one_profile_per_account(db_session):
     """
 
     doctor = await _user(db_session, "prof-duplicate")
-    await professional_service.submit_profile(
+    await professionals.submit_profile(
         db_session,
         user_id=doctor.id,
         kind=ProfessionalKind.DOCTOR,
         display_name="Dr Synthetic",
     )
-    with pytest.raises(professional_service.ProfessionalConflictError):
-        await professional_service.submit_profile(
+    with pytest.raises(professionals.ProfessionalConflictError):
+        await professionals.submit_profile(
             db_session,
             user_id=doctor.id,
             kind=ProfessionalKind.TRAINER,
@@ -100,8 +100,8 @@ async def test_one_profile_per_account(db_session):
 @pytest.mark.parametrize("name", ["", "   ", None, 7, "x" * 201])
 async def test_a_profile_needs_a_usable_name(db_session, name):
     doctor = await _user(db_session, f"prof-name-{abs(hash(str(name))) % 9999}")
-    with pytest.raises(professional_service.ProfessionalValidationError):
-        await professional_service.submit_profile(
+    with pytest.raises(professionals.ProfessionalValidationError):
+        await professionals.submit_profile(
             db_session,
             user_id=doctor.id,
             kind=ProfessionalKind.DOCTOR,
@@ -111,8 +111,8 @@ async def test_a_profile_needs_a_usable_name(db_session, name):
 
 async def test_a_suspended_account_cannot_submit(db_session):
     doctor = await _user(db_session, "prof-suspended", status=UserStatus.SUSPENDED)
-    with pytest.raises(professional_service.ProfessionalNotFoundError):
-        await professional_service.submit_profile(
+    with pytest.raises(professionals.ProfessionalNotFoundError):
+        await professionals.submit_profile(
             db_session,
             user_id=doctor.id,
             kind=ProfessionalKind.DOCTOR,
@@ -128,14 +128,14 @@ async def test_verifying_records_who_decided_and_when(db_session):
 
     doctor = await _user(db_session, "prof-verify")
     operator = await _operator(db_session, "prof-verify-op")
-    profile = await professional_service.submit_profile(
+    profile = await professionals.submit_profile(
         db_session,
         user_id=doctor.id,
         kind=ProfessionalKind.DOCTOR,
         display_name="Dr Synthetic",
     )
 
-    decided = await professional_service.decide(
+    decided = await professionals.decide(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
@@ -144,7 +144,7 @@ async def test_verifying_records_who_decided_and_when(db_session):
     assert decided.verification_status == ProfessionalVerificationStatus.VERIFIED.value
     assert decided.verified_by_user_id == operator.id
     assert decided.verified_at is not None
-    assert await professional_service.is_verified(db_session, user_id=doctor.id)
+    assert await professionals.is_verified(db_session, user_id=doctor.id)
 
 
 @pytest.mark.parametrize(
@@ -159,22 +159,22 @@ async def test_a_refusal_has_to_say_why(db_session, status):
 
     doctor = await _user(db_session, f"prof-refuse-{status.value}")
     operator = await _operator(db_session, f"prof-refuse-op-{status.value}")
-    profile = await professional_service.submit_profile(
+    profile = await professionals.submit_profile(
         db_session,
         user_id=doctor.id,
         kind=ProfessionalKind.DOCTOR,
         display_name="Dr Synthetic",
     )
 
-    with pytest.raises(professional_service.ProfessionalValidationError):
-        await professional_service.decide(
+    with pytest.raises(professionals.ProfessionalValidationError):
+        await professionals.decide(
             db_session,
             profile_id=profile.id,
             reviewer_user_id=operator.id,
             status=status,
         )
 
-    decided = await professional_service.decide(
+    decided = await professionals.decide(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
@@ -183,7 +183,7 @@ async def test_a_refusal_has_to_say_why(db_session, status):
     )
     assert decided.verification_status == status.value
     assert decided.review_note
-    assert not await professional_service.is_verified(db_session, user_id=doctor.id)
+    assert not await professionals.is_verified(db_session, user_id=doctor.id)
 
 
 async def test_suspending_a_verified_profile_withdraws_the_stamp(db_session):
@@ -195,21 +195,21 @@ async def test_suspending_a_verified_profile_withdraws_the_stamp(db_session):
 
     doctor = await _user(db_session, "prof-lapse")
     operator = await _operator(db_session, "prof-lapse-op")
-    profile = await professional_service.submit_profile(
+    profile = await professionals.submit_profile(
         db_session,
         user_id=doctor.id,
         kind=ProfessionalKind.DOCTOR,
         display_name="Dr Synthetic",
     )
-    await professional_service.decide(
+    await professionals.decide(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
         status=ProfessionalVerificationStatus.VERIFIED,
     )
-    assert await professional_service.is_verified(db_session, user_id=doctor.id)
+    assert await professionals.is_verified(db_session, user_id=doctor.id)
 
-    suspended = await professional_service.decide(
+    suspended = await professionals.decide(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,
@@ -218,7 +218,7 @@ async def test_suspending_a_verified_profile_withdraws_the_stamp(db_session):
     )
     assert suspended.verified_at is None
     assert suspended.verified_by_user_id is None
-    assert not await professional_service.is_verified(db_session, user_id=doctor.id)
+    assert not await professionals.is_verified(db_session, user_id=doctor.id)
     # The profile is still there, still saying it was once approved.
     assert suspended.review_note
 
@@ -228,15 +228,15 @@ async def test_only_an_operator_decides(db_session):
 
     doctor = await _user(db_session, "prof-notop", roles=(UserRoleName.DOCTOR,))
     other = await _user(db_session, "prof-notop-other", roles=(UserRoleName.DOCTOR,))
-    profile = await professional_service.submit_profile(
+    profile = await professionals.submit_profile(
         db_session,
         user_id=doctor.id,
         kind=ProfessionalKind.DOCTOR,
         display_name="Dr Synthetic",
     )
 
-    with pytest.raises(professional_service.NotAReviewerError):
-        await professional_service.decide(
+    with pytest.raises(professionals.NotAReviewerError):
+        await professionals.decide(
             db_session,
             profile_id=profile.id,
             reviewer_user_id=other.id,
@@ -248,15 +248,15 @@ async def test_nobody_reviews_their_own_claim(db_session):
     """So that "an operator approved this" stays a statement about two people."""
 
     operator = await _operator(db_session, "prof-self")
-    profile = await professional_service.submit_profile(
+    profile = await professionals.submit_profile(
         db_session,
         user_id=operator.id,
         kind=ProfessionalKind.DOCTOR,
         display_name="Dr Operator",
     )
 
-    with pytest.raises(professional_service.NotAReviewerError):
-        await professional_service.decide(
+    with pytest.raises(professionals.NotAReviewerError):
+        await professionals.decide(
             db_session,
             profile_id=profile.id,
             reviewer_user_id=operator.id,
@@ -276,14 +276,14 @@ async def test_a_review_records_a_verdict_rather_than_a_shrug(db_session, status
 
     doctor = await _user(db_session, f"prof-shrug-{status.value}")
     operator = await _operator(db_session, f"prof-shrug-op-{status.value}")
-    profile = await professional_service.submit_profile(
+    profile = await professionals.submit_profile(
         db_session,
         user_id=doctor.id,
         kind=ProfessionalKind.DOCTOR,
         display_name="Dr Synthetic",
     )
-    with pytest.raises(professional_service.ProfessionalValidationError):
-        await professional_service.decide(
+    with pytest.raises(professionals.ProfessionalValidationError):
+        await professionals.decide(
             db_session,
             profile_id=profile.id,
             reviewer_user_id=operator.id,
@@ -293,8 +293,8 @@ async def test_a_review_records_a_verdict_rather_than_a_shrug(db_session, status
 
 async def test_deciding_about_a_profile_that_is_not_there(db_session):
     operator = await _operator(db_session, "prof-missing-op")
-    with pytest.raises(professional_service.ProfessionalNotFoundError):
-        await professional_service.decide(
+    with pytest.raises(professionals.ProfessionalNotFoundError):
+        await professionals.decide(
             db_session,
             profile_id=uuid.uuid4(),
             reviewer_user_id=operator.id,
@@ -324,13 +324,13 @@ async def test_a_verified_profile_reaches_nobodys_record(db_session):
 
     doctor = await _user(db_session, "prof-stranger", roles=(UserRoleName.DOCTOR,))
     operator = await _operator(db_session, "prof-stranger-op")
-    profile = await professional_service.submit_profile(
+    profile = await professionals.submit_profile(
         db_session,
         user_id=doctor.id,
         kind=ProfessionalKind.DOCTOR,
         display_name="Dr Synthetic",
     )
-    await professional_service.decide(
+    await professionals.decide(
         db_session,
         profile_id=profile.id,
         reviewer_user_id=operator.id,

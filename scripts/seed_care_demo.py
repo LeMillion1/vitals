@@ -72,8 +72,7 @@ from vitals.services import (  # noqa: E402
     account_provisioning_service,
     provider_credentials_service,
 )
-from vitals.services import care_service, invitation_service  # noqa: E402
-from vitals.services import professional_service  # noqa: E402
+from vitals.services.care import invitations, professionals, relationships  # noqa: E402
 from vitals.utils.timeutils import now_utc  # noqa: E402
 
 #: bcrypt("password") at cost 4 — a dev fixture, never a credential. The
@@ -190,16 +189,16 @@ async def _seed_conversation(session, *, owner, subject, professional) -> None:
     patient can reply.
     """
 
-    from vitals.services import care_thread_service
+    from vitals.services.care import threads
     from vitals.services.access_resolution import resolve_access_context
 
     doctor_context = await resolve_access_context(
         session, user_id=professional.id, subject_id=subject.id
     )
-    thread = await care_thread_service.open_thread(
+    thread = await threads.open_thread(
         session, context=doctor_context, title="Результаты анализов"
     )
-    await care_thread_service.send_message(
+    await threads.send_message(
         session,
         context=doctor_context,
         thread_id=thread.id,
@@ -208,7 +207,7 @@ async def _seed_conversation(session, *, owner, subject, professional) -> None:
     patient_context = await resolve_access_context(
         session, user_id=owner.id, subject_id=subject.id
     )
-    await care_thread_service.send_message(
+    await threads.send_message(
         session,
         context=patient_context,
         thread_id=thread.id,
@@ -325,7 +324,7 @@ async def _professional(
             else UserRoleName.TRAINER,
         ),
     )
-    await professional_service.submit_profile(
+    await professionals.submit_profile(
         session,
         user_id=user.id,
         kind=kind,
@@ -343,20 +342,20 @@ async def _take_into_care(
     professional: User,
     kind: ProfessionalKind,
 ):
-    issued = await invitation_service.invite(
+    issued = await invitations.invite(
         session,
         subject_id=subject.id,
         actor_user_id=owner.id,
         kind=kind,
         email=f"{professional.username}@example.test",
     )
-    await invitation_service.accept(
+    await invitations.accept(
         session,
         token=issued.token,
         accepting_user_id=professional.id,
         verified_email=f"{professional.username}@example.test",
     )
-    return await care_service.establish_from_invitation(
+    return await relationships.establish_from_invitation(
         session, invitation=issued.invitation
     )
 
@@ -413,7 +412,7 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
                 ProfessionalProfile.user_id == professional.id
             )
         )
-        await professional_service.decide(
+        await professionals.decide(
             session,
             profile_id=profile_id,
             reviewer_user_id=operator.id,
@@ -443,7 +442,7 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
             professional=doctor_a,
             kind=ProfessionalKind.DOCTOR,
         )
-        await care_service.grant_consent(
+        await relationships.grant_consent(
             session, relationship_id=relationship.id, actor_user_id=owner.id
         )
         if index == 0:
@@ -470,7 +469,7 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
         professional=trainer_a,
         kind=ProfessionalKind.TRAINER,
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         session, relationship_id=relationship.id, actor_user_id=owner.id
     )
 
@@ -483,10 +482,10 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
         professional=trainer_a,
         kind=ProfessionalKind.TRAINER,
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         session, relationship_id=relationship.id, actor_user_id=owner.id
     )
-    await care_service.set_consent_paused(
+    await relationships.set_consent_paused(
         session,
         relationship_id=relationship.id,
         actor_user_id=owner.id,
@@ -502,10 +501,10 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
         professional=trainer_b,
         kind=ProfessionalKind.TRAINER,
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         session, relationship_id=relationship.id, actor_user_id=owner.id
     )
-    await care_service.revoke_consent(
+    await relationships.revoke_consent(
         session, relationship_id=relationship.id, actor_user_id=owner.id
     )
 
@@ -518,16 +517,16 @@ async def build(session: AsyncSession) -> list[tuple[str, str]]:
         professional=doctor_a,
         kind=ProfessionalKind.DOCTOR,
     )
-    await care_service.grant_consent(
+    await relationships.grant_consent(
         session, relationship_id=relationship.id, actor_user_id=owner.id
     )
-    await care_service.end_relationship(
+    await relationships.end_relationship(
         session, relationship_id=relationship.id, actor_user_id=owner.id
     )
 
     # An offer nobody has taken up, for the pending list.
     owner, subject = patients[7]
-    await invitation_service.invite(
+    await invitations.invite(
         session,
         subject_id=subject.id,
         actor_user_id=owner.id,

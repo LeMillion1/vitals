@@ -727,7 +727,7 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         # The professional accepting an invitation is not bound to this subject
         # yet — that is what accepting is for — and the token is what authorizes
         # reading the row at all.
-        ("vitals/services/invitation_service.py", "accept"),
+        ("vitals/services/care/invitations.py", "accept"),
         # Housekeeping across every subject, with no person to act as.
         ("vitals/services/share_service.py", "purge_job"),
         ("vitals/services/ai_gateway_service.py", "reconciliation_job"),

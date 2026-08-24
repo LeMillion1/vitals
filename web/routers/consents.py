@@ -34,7 +34,7 @@ from vitals.models.professional import (
     ProfessionalInvitation,
     ProfessionalProfile,
 )
-from vitals.services import care_service, invitation_service
+from vitals.services.care import invitations, relationships
 from vitals.services.access_resolution import (
     AccessResolutionError,
     resolve_access_context,
@@ -195,14 +195,14 @@ async def invite(
 
     user_id, subject_id = await _own_subject(request, db)
     try:
-        result = await invitation_service.invite(
+        result = await invitations.invite(
             db,
             subject_id=subject_id,
             actor_user_id=user_id,
             kind=kind,
             email=email,
         )
-    except (invitation_service.InvitationValidationError, ValueError) as exc:
+    except (invitations.InvitationValidationError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
@@ -224,10 +224,10 @@ async def withdraw_invitation(
 ):
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await invitation_service.revoke(
+        await invitations.revoke(
             db, invitation_id=invitation_id, actor_user_id=user_id
         )
-    except invitation_service.InvitationError:
+    except invitations.InvitationError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     await db.commit()
     return _redirect()
@@ -249,13 +249,13 @@ async def pause(
 
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await care_service.set_consent_paused(
+        await relationships.set_consent_paused(
             db,
             relationship_id=relationship_id,
             actor_user_id=user_id,
             paused=not resume,
         )
-    except care_service.CareError:
+    except relationships.CareError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     await db.commit()
     return _redirect()
@@ -272,10 +272,10 @@ async def revoke(
 
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await care_service.revoke_consent(
+        await relationships.revoke_consent(
             db, relationship_id=relationship_id, actor_user_id=user_id
         )
-    except care_service.CareError:
+    except relationships.CareError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     await db.commit()
     return _redirect()
@@ -297,10 +297,10 @@ async def grant(
 
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await care_service.grant_consent(
+        await relationships.grant_consent(
             db, relationship_id=relationship_id, actor_user_id=user_id
         )
-    except care_service.CareError:
+    except relationships.CareError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     await db.commit()
     return _redirect()
@@ -317,10 +317,10 @@ async def end(
 
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await care_service.end_relationship(
+        await relationships.end_relationship(
             db, relationship_id=relationship_id, actor_user_id=user_id
         )
-    except care_service.CareError:
+    except relationships.CareError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     await db.commit()
     return _redirect()

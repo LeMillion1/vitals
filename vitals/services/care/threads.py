@@ -50,7 +50,7 @@ from vitals.models.identity import HealthSubject
 from vitals.models.professional import CareRelationship
 
 #: The operation key a consent carries for this feature. It matches what
-#: ``care_service.default_scopes`` writes, and a mismatch would silently make
+#: ``relationships.default_scopes`` writes, and a mismatch would silently make
 #: every message unauthorized — so both sides read this constant.
 MESSAGE_OPERATION = "care_team.message"
 
