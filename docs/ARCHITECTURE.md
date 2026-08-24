@@ -1,6 +1,6 @@
 # Architecture
 
-The architecture reference lives in [`ARCHITECTURE.html`](ARCHITECTURE.html) — a
+The visual architecture reference lives in [`ARCHITECTURE.html`](ARCHITECTURE.html) — a
 single self-contained page with eight diagrams: C4 context and containers, the
 ownership graph, the data lake's raw/fact/artifact lifecycle, the write and read
 paths, the conflict engine, the conversion timeline, and the cutover sequence.
@@ -69,9 +69,9 @@ page needs the same edit:
 | the domains | `vitals.enums.Domain` | 14 |
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 14, of which 11 fan out per record |
 | migration count | `migrations/versions/` | 64, head `0064` |
-| RLS table count | revisions `0050` + `0051` + `0060` + `0061` + `0062` + `0063`, asserted in `tests/test_row_level_security.py` | 62 |
+| RLS table count | revisions `0050` + `0051` + `0055` + `0056` + `0057` + `0060` + `0061` + `0062` + `0063`, asserted in `tests/test_row_level_security.py` | 62 |
 | platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 8 |
-| routers, service modules | `web/routers/`, `vitals/services/` | 28 and 103 |
+| routers, application-service modules | `web/routers/`, `vitals/services/` | 28 and 95 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own
