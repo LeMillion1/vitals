@@ -19,12 +19,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vitals.access import AccessScope, PolicyResourceType
 from vitals.services.legacy_ownership import NoPersonalRecordError
 from vitals.enums import (
     CareRelationshipStatus,
     ConsentStatus,
+    Domain,
     ProfessionalInvitationStatus,
     ProfessionalKind,
+    RECORD_SECTIONS,
 )
 from vitals.models.identity import User
 from vitals.models.professional import (
@@ -44,6 +47,53 @@ from web.deps import get_session, require_auth
 from web.templating import templates
 
 router = APIRouter(prefix="/settings/care", tags=["consents"])
+
+
+def _selected_scopes(
+    domains: list[str], *, allow_guidance: bool, allow_messages: bool
+) -> frozenset[AccessScope]:
+    """Translate the patient's form into exact policy vocabulary."""
+
+    try:
+        selected_domains = {Domain(value) for value in domains}
+    except ValueError as exc:
+        raise relationships.CareValidationError("unknown record section") from exc
+    if not selected_domains.issubset(RECORD_SECTIONS):
+        raise relationships.CareValidationError("unknown record section")
+
+    scopes = {
+        AccessScope(
+            resource_type=PolicyResourceType.DOMAIN,
+            resource_key=domain.value,
+            action=action,
+        )
+        for domain in selected_domains
+        for action in relationships.READ_ONLY_ACTIONS
+    }
+    if allow_guidance:
+        scopes.update(
+            AccessScope(
+                resource_type=PolicyResourceType.ARTIFACT,
+                resource_key=artifact,
+                action=action,
+            )
+            for artifact in relationships.AUTHORED_ARTIFACTS
+            for action in relationships.AUTHORED_ACTIONS
+        )
+    if allow_messages:
+        scopes.update(
+            AccessScope(
+                resource_type=PolicyResourceType.OPERATION,
+                resource_key=relationships.MESSAGE_OPERATION,
+                action=action,
+            )
+            for action in relationships.MESSAGE_ACTIONS
+        )
+    if not scopes:
+        raise relationships.CareValidationError(
+            "choose at least one record section or collaboration feature"
+        )
+    return frozenset(scopes)
 
 
 async def _own_subject(request: Request, db: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
@@ -129,15 +179,19 @@ async def _render(
 
     # One query for every live consent's domains rather than one per row.
     consent_ids = [row.consent_id for row in rows if row.consent_id is not None]
-    domains: dict[uuid.UUID, set[str]] = {}
+    scopes: dict[uuid.UUID, set[tuple[str, str, str]]] = {}
     if consent_ids:
         for scope in await db.execute(
-            select(ConsentScope.consent_grant_id, ConsentScope.resource_key).where(
-                ConsentScope.consent_grant_id.in_(consent_ids),
-                ConsentScope.resource_type == "domain",
-            )
+            select(
+                ConsentScope.consent_grant_id,
+                ConsentScope.resource_type,
+                ConsentScope.resource_key,
+                ConsentScope.action,
+            ).where(ConsentScope.consent_grant_id.in_(consent_ids))
         ):
-            domains.setdefault(scope.consent_grant_id, set()).add(scope.resource_key)
+            scopes.setdefault(scope.consent_grant_id, set()).add(
+                (scope.resource_type, scope.resource_key, scope.action)
+            )
 
     professionals = [
         {
@@ -149,7 +203,20 @@ async def _render(
             "consent_status": row.consent_status,
             "version": row.version,
             "expires_at": row.expires_at,
-            "domains": sorted(domains.get(row.consent_id, ())),
+            "domains": sorted(
+                key
+                for resource_type, key, _action in scopes.get(row.consent_id, ())
+                if resource_type == PolicyResourceType.DOMAIN.value
+            ),
+            "guidance": any(
+                resource_type == PolicyResourceType.ARTIFACT.value
+                for resource_type, _key, _action in scopes.get(row.consent_id, ())
+            ),
+            "messages": any(
+                resource_type == PolicyResourceType.OPERATION.value
+                and key == relationships.MESSAGE_OPERATION
+                for resource_type, key, _action in scopes.get(row.consent_id, ())
+            ),
         }
         for row in rows
     ]
@@ -176,6 +243,7 @@ async def _render(
             "professionals": professionals,
             "pending": pending,
             "kinds": [kind.value for kind in ProfessionalKind],
+            "shareable_domains": [domain.value for domain in RECORD_SECTIONS],
             # Shown once, straight from the request that created it. Never
             # read back from the database, because it is not in the database.
             "issued_link": issued_link,
@@ -285,6 +353,10 @@ async def revoke(
 async def grant(
     request: Request,
     relationship_id: uuid.UUID,
+    custom: str = Form(""),
+    domains: list[str] = Form(default=[]),
+    allow_guidance: str = Form(""),
+    allow_messages: str = Form(""),
     db: AsyncSession = Depends(get_session),
     _username: str = Depends(require_auth),
 ):
@@ -297,9 +369,25 @@ async def grant(
 
     user_id, _subject_id = await _own_subject(request, db)
     try:
-        await relationships.grant_consent(
-            db, relationship_id=relationship_id, actor_user_id=user_id
+        scopes = (
+            _selected_scopes(
+                domains,
+                allow_guidance=bool(allow_guidance),
+                allow_messages=bool(allow_messages),
+            )
+            if custom
+            else None
         )
+        await relationships.grant_consent(
+            db,
+            relationship_id=relationship_id,
+            actor_user_id=user_id,
+            scopes=scopes,
+        )
+    except relationships.CareValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     except relationships.CareError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
     await db.commit()

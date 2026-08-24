@@ -9,6 +9,37 @@
    page costs one request to re-fetch, which is the right trade. #}
 <div hx-history="false"></div>
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
+{% macro consent_form(p, submit_key) %}
+<form action="/settings/care/{{ p.relationship_id }}/grant" method="POST" class="space-y-4">
+    <input type="hidden" name="custom" value="1">
+    <fieldset class="space-y-2">
+        <legend class="v-label">{{ t("consents.sections_label") }}</legend>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
+            {% for domain in shareable_domains %}
+            <label class="min-h-11 flex items-center gap-2 v-text-body">
+                <input type="checkbox" name="domains" value="{{ domain }}"
+                       {% if not p.consent_status or domain in p.domains %}checked{% endif %}>
+                <span>{{ t("consents.domain." ~ domain) }}</span>
+            </label>
+            {% endfor %}
+        </div>
+    </fieldset>
+    <fieldset class="space-y-2">
+        <legend class="v-label">{{ t("consents.collaboration_label") }}</legend>
+        <label class="min-h-11 flex items-center gap-2 v-text-body">
+            <input type="checkbox" name="allow_guidance" value="1"
+                   {% if not p.consent_status or p.guidance %}checked{% endif %}>
+            <span>{{ t("consents.allow_guidance") }}</span>
+        </label>
+        <label class="min-h-11 flex items-center gap-2 v-text-body">
+            <input type="checkbox" name="allow_messages" value="1"
+                   {% if not p.consent_status or p.messages %}checked{% endif %}>
+            <span>{{ t("consents.allow_messages") }}</span>
+        </label>
+    </fieldset>
+    <button type="submit" class="v-btn text-xs">{{ t(submit_key) }}</button>
+</form>
+{% endmacro %}
 <div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
 
     {% call masthead_header('consents', t('consents.heading'), []) %}{% endcall %}
@@ -39,7 +70,7 @@
             <div class="flex flex-wrap items-center justify-between gap-3">
                 <div class="space-y-1">
                     <span class="v-text-body font-semibold">{{ p.name }}</span>
-                    <div class="v-text-micro" style="color: var(--faint)">
+                    <div class="v-text-micro" style="color: var(--muted)">
                         {{ t("care.kind." ~ p.kind) }}
                         {% if p.verified %}· {{ t("consents.verified") }}{% endif %}
                     </div>
@@ -60,6 +91,24 @@
             </div>
             {% endif %}
 
+            {% if p.consent_status and (p.guidance or p.messages) %}
+            <div class="v-text-micro" style="color: var(--muted)">
+                {{ t("consents.also_allows") }}:
+                {% if p.guidance %}{{ t("consents.allow_guidance") }}{% endif %}
+                {% if p.guidance and p.messages %}, {% endif %}
+                {% if p.messages %}{{ t("consents.allow_messages") }}{% endif %}
+            </div>
+            {% endif %}
+
+            {% if p.consent_status == 'active' %}
+            <details class="space-y-3">
+                <summary class="v-text-body font-semibold">{{ t("consents.change_scope") }}</summary>
+                {{ consent_form(p, "consents.save_scope") }}
+            </details>
+            {% elif not p.consent_status %}
+            {{ consent_form(p, "consents.grant") }}
+            {% endif %}
+
             <div class="flex flex-wrap gap-2">
                 {% if p.consent_status == 'active' %}
                 <form action="/settings/care/{{ p.relationship_id }}/pause" method="POST">
@@ -75,10 +124,6 @@
                 </form>
                 <form action="/settings/care/{{ p.relationship_id }}/revoke" method="POST">
                     <button type="submit" class="v-btn-ghost text-xs">{{ t("consents.revoke") }}</button>
-                </form>
-                {% else %}
-                <form action="/settings/care/{{ p.relationship_id }}/grant" method="POST">
-                    <button type="submit" class="v-btn text-xs">{{ t("consents.grant") }}</button>
                 </form>
                 {% endif %}
                 <form action="/settings/care/{{ p.relationship_id }}/end" method="POST">
@@ -98,7 +143,7 @@
         <div class="v-card-inset p-4 flex flex-wrap items-center justify-between gap-3">
             <div class="space-y-1">
                 <span class="v-text-body">{{ invitation.invited_email }}</span>
-                <div class="v-text-micro" style="color: var(--faint)">
+                <div class="v-text-micro" style="color: var(--muted)">
                     {{ t("care.kind." ~ invitation.kind) }}
                 </div>
             </div>

@@ -85,13 +85,15 @@ a current validation result.
   records, notes, plans at the service/route layer, and patient-visible care
   threads exist.
 - Accepting an invitation creates a relationship but no consent. That safety
-  decision is correct; the current redirect and lack of patient task/inbox make
-  the handoff confusing.
-- Consent stores granular resource/action scopes, while the patient screen only
-  offers a default grant. Plan creation/lifecycle routes exist, but the record
-  template exposes no plan form or lifecycle controls.
-- Message attachments, unread state, a professional inbox, authored note/plan
-  presentation, and a coherent plan UI remain unbuilt.
+  decision is correct. The professional now returns to the roster with an
+  explicit waiting-for-sharing notice rather than entering a closed record.
+- The patient screen now writes granular domain, authored-guidance, and message
+  scopes; changing the selection creates a new immutable consent version. Plan
+  creation is visible and notes/plans name their author, but plan lifecycle
+  controls are still absent.
+- A new conversation now takes its topic and first message together. Message
+  attachments, unread state, a professional inbox, and a patient notification
+  for accepted invitations remain unbuilt.
 
 ### Controlled support
 
@@ -234,19 +236,20 @@ and the isolated browser scenario passed in 11.98 seconds. The full 35-scenario
 suite must be rerun without concurrent PostgreSQL/full-suite load before the
 shared result can be classified as a product defect or a harness/load failure.
 
-The largest confirmed UX gaps are the invitation→consent dead end, default-only
-consent, missing plan controls, buried conversations without unread state,
-support expiry shown without time/countdown, scope-inappropriate support
-affordances, low-contrast `--faint` microcopy, and roster cards with little
+The largest remaining confirmed UX gaps are the missing invitation task/inbox,
+plan lifecycle controls, conversations without unread state, support expiry
+shown without time/countdown, low-contrast `--faint` microcopy outside the
+touched care screens, and roster cards without urgency or recent-activity
 prioritization.
 
 ## Architecture status and next moves
 
 The core does not import FastAPI or `web`, and the import-time graph is acyclic.
-The care domain now owns five related services, analytics moved out of the
-application-service layer, and RLS/transaction primitives moved to
-`vitals.persistence`. Static tests prevent core→web, services→operations,
-pure-analytics→I/O, flat-service growth, and import-time cycles.
+The care domain now owns five related services, authentication owns six protocol
+and credential boundaries, analytics moved out of the application-service
+layer, and RLS/transaction primitives moved to `vitals.persistence`. Static
+tests prevent core→web, services→operations, pure-analytics→I/O, flat-service
+growth, and import-time cycles.
 
 The next large correction is not a blind folder move. Eighteen ownership
 backfill programs contain about one third of service LOC, but live portability,

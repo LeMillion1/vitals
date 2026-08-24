@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — patients choose exactly what a professional may use
+
+The care-access screen now turns consent into a visible choice instead of one
+all-or-nothing button. Patients select record sections and independently allow
+professional notes/plans and shared conversations. Saving a change creates the
+next immutable consent version; existing integrations that call the grant route
+without the new form retain the documented default scope set.
+
 ### Fixed — professional guidance names its author
 
 Shared notes and care plans now show who wrote them. Their authors are loaded

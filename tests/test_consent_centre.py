@@ -233,6 +233,74 @@ async def test_an_unverified_address_does_not_accept(patient_client, db_session)
         assert response.status_code == 404
 
 
+async def test_the_patient_selects_exact_consent_scopes(patient_client, db_session):
+    """The visible form writes exact scopes, not an all-or-nothing preset."""
+
+    from vitals.models.professional import CareRelationship, ConsentScope
+    from vitals.utils.timeutils import now_utc
+
+    owner_client, _user_id, subject_id = patient_client
+    token = await _invited(owner_client, db_session, email="scoped@example.test")
+    doctor = await _user(
+        db_session,
+        "cc-scoped",
+        roles=(UserRoleName.DOCTOR,),
+        email="scoped@example.test",
+    )
+    doctor.email_verified_at = now_utc()
+    await db_session.commit()
+
+    async with _client_for("cc-scoped") as doctor_client:
+        accepted = await doctor_client.post(f"/care/accept/{token}")
+        assert accepted.status_code == 303
+        relationship_id = await db_session.scalar(select(CareRelationship.id))
+
+        empty = await owner_client.post(
+            f"/settings/care/{relationship_id}/grant",
+            data={"custom": "1"},
+        )
+        assert empty.status_code == 400
+
+        unknown = await owner_client.post(
+            f"/settings/care/{relationship_id}/grant",
+            data={"custom": "1", "domains": "not-a-record-section"},
+        )
+        assert unknown.status_code == 400
+
+        granted = await owner_client.post(
+            f"/settings/care/{relationship_id}/grant",
+            data={
+                "custom": "1",
+                "domains": "weight",
+                "allow_messages": "1",
+            },
+            follow_redirects=False,
+        )
+        assert granted.status_code == 303
+
+        rows = set(
+            await db_session.execute(
+                select(
+                    ConsentScope.resource_type,
+                    ConsentScope.resource_key,
+                    ConsentScope.action,
+                )
+            )
+        )
+        assert rows == {
+            ("domain", "weight", "read"),
+            ("domain", "weight", "list"),
+            ("domain", "weight", "search"),
+            ("operation", "care_team.message", "read"),
+            ("operation", "care_team.message", "message"),
+        }
+        assert (
+            await doctor_client.get(
+                f"/care/{subject_id}", headers={"Accept": "text/html"}
+            )
+        ).status_code == 200
+
+
 # ── Withdrawing ──────────────────────────────────────────────────────────────
 
 
