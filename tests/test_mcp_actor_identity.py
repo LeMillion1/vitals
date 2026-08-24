@@ -319,100 +319,101 @@ async def test_a_token_naming_nobody_at_all_is_refused(
         mcp_router._MCP_ACTOR.reset(restore)
 
 
-# ── The middleware is what puts it there ─────────────────────────────────────
+# ── The token verifier is what puts it there ─────────────────────────────────
 
 
-async def _run_middleware(token: str | None, client_id: str = "vitals-claude-connector"):
-    """Drive ``MCPAuthMiddleware`` over one request and report what it set.
-
-    The tests above set the actor by hand, which proves the tools read it and
-    proves nothing about the half that fills it in. This is that half: a real
-    signed token, the real middleware, and the value the inner application
-    actually sees.
-    """
-
-    seen: dict[str, object] = {}
-
-    async def _inner(scope, receive, send):
-        seen["actor"] = mcp_router._MCP_ACTOR.get()
-        await send(
-            {"type": "http.response.start", "status": 200, "headers": []}
-        )
-        await send({"type": "http.response.body", "body": b"", "more_body": False})
-
-    middleware = mcp_router.MCPAuthMiddleware(_inner, client_id=client_id)
-    headers = []
-    if token is not None:
-        headers.append((b"authorization", f"Bearer {token}".encode()))
-    statuses: list[int] = []
-
-    async def _send(message):
-        if message["type"] == "http.response.start":
-            statuses.append(message["status"])
-
-    async def _receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    await middleware(
-        {"type": "http", "method": "POST", "path": "/mcp/", "headers": headers},
-        _receive,
-        _send,
-    )
-    return statuses[0], seen.get("actor", "not-reached")
-
-
-def _token_for(username: str | None) -> str:
+def _token_for(username: str | None, *, client_id: str = "vitals-claude-connector") -> str:
     from web.auth import _get_mcp_serializer
 
-    payload = {"client_id": "vitals-claude-connector", "type": "mcp_access_token"}
+    payload = {"client_id": client_id, "type": "mcp_access_token"}
     if username is not None:
         payload["username"] = username
     return _get_mcp_serializer().dumps(payload)
 
 
-async def test_the_middleware_hands_the_tools_the_tokens_identity():
-    """The plumbing, end to end: a signed token in, an actor out."""
+async def _verify(token: str):
+    """What the SDK is told about one credential.
 
-    status, actor = await _run_middleware(_token_for("patient01"))
-    assert status == 200
-    assert actor == "patient01", f"the tools were handed {actor!r}"
-
-
-async def test_a_token_that_names_nobody_arrives_as_anonymous_not_as_absent():
-    """The distinction the whole fix rests on.
-
-    ``None`` means "no request happened" and resolves the environment owner.
-    A token that authenticated and named nobody must not be mistaken for that,
-    or every old connector silently keeps its old reach.
+    The tests above set the actor by hand, which proves the tools read the seam
+    and proves nothing about the half that fills it. This is that half: a real
+    signed token through the real verifier, and the ``AccessToken`` the SDK
+    would hand a tool.
     """
 
-    status, actor = await _run_middleware(_token_for(None))
-    assert status == 200
-    assert actor == mcp_router.ANONYMOUS_TOKEN
+    return await mcp_router._ConnectorTokenVerifier().verify_token(token)
 
 
-async def test_an_unsigned_or_foreign_token_never_reaches_the_tools():
-    for token in (None, "not-a-token", _token_for("patient01")[:-4]):
-        status, actor = await _run_middleware(token)
-        assert status == 401, f"{token!r} was let through"
-        assert actor == "not-reached"
+async def test_the_verifier_hands_the_sdk_the_tokens_identity():
+    """A signed token in, a subject out — which is what ``get_access_token``
+    then gives every tool."""
+
+    granted = await _verify(_token_for("patient01"))
+    assert granted is not None
+    assert granted.subject == "patient01"
+    assert granted.claims["username"] == "patient01"
+
+
+async def test_a_token_that_names_nobody_verifies_with_no_subject():
+    """The distinction the whole fix rests on.
+
+    An old token is a valid credential that identifies no one. It must verify —
+    breaking every existing connector on upgrade would be its own defect — and
+    it must arrive with ``subject`` empty, so ``_current_actor`` can report it
+    as anonymous rather than as "no request happened".
+    """
+
+    granted = await _verify(_token_for(None))
+    assert granted is not None
+    assert granted.subject is None
+    assert granted.claims == {}
+
+
+async def test_an_unsigned_or_tampered_token_verifies_as_nothing():
+    for token in ("", "not-a-token", _token_for("patient01")[:-4]):
+        assert await _verify(token) is None, f"{token!r} verified"
 
 
 async def test_a_token_for_another_client_is_refused():
     """The client id is part of what a token is for."""
 
-    status, _actor = await _run_middleware(
-        _token_for("patient01"), client_id="somebody-elses-connector"
-    )
-    assert status == 401
+    assert await _verify(_token_for("patient01", client_id="somebody-else")) is None
 
 
-async def test_the_actor_does_not_outlive_the_request():
-    """One request's identity must not become the next request's default.
+async def test_a_token_of_the_wrong_type_is_refused():
+    """A session cookie replayed as a connector token, and the reverse.
 
-    The middleware resets it in a ``finally``; a worker serving two connectors
-    in sequence is where that stops being theoretical.
+    They are signed with different salts, so this cannot happen by accident —
+    the type check is what makes it not happen on purpose either.
     """
 
-    await _run_middleware(_token_for("patient01"))
-    assert mcp_router._MCP_ACTOR.get() is None
+    from web.auth import _get_mcp_serializer
+
+    forged = _get_mcp_serializer().dumps(
+        {"username": "patient01", "client_id": "vitals-claude-connector",
+         "type": "web_session"}
+    )
+    assert await _verify(forged) is None
+
+
+async def test_the_verified_subject_is_what_the_tools_resolve_from():
+    """The two halves joined, without a running server.
+
+    ``_current_actor`` reads ``get_access_token()``; the verifier is what fills
+    it. Asserting they agree on the same token is what keeps the seam from
+    being two ideas about who is asking.
+    """
+
+    granted = await _verify(_token_for("patient01"))
+    assert granted is not None
+
+    import mcp.server.auth.middleware.auth_context as auth_context
+
+    # The SDK stores an ``AuthenticatedUser`` and reads ``.access_token`` off
+    # it, which is what its own middleware puts there after verification.
+    restore = auth_context.auth_context_var.set(
+        auth_context.AuthenticatedUser(granted)
+    )
+    try:
+        assert mcp_router._current_actor() == "patient01"
+    finally:
+        auth_context.auth_context_var.reset(restore)

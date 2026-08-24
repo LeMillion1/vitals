@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0063` — 63 revisions |
 | Schema | 75 tables; 62 carry `subject_id` and are covered by an RLS policy; 52 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4498 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
+| Suites | 4507 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -54,8 +54,13 @@ rather than as new machinery: `assemble_context` already
 took a mandatory subject and gated every optional domain, and seven contract
 tests now compose for one person beside another and search the serialized prompt
 for anything of theirs — including their name, which is asserted absent because
-that is how it would be lost. What remains is the wire-protocol migration to
-`2026-07-28`, pinned to an SDK release nobody here controls.
+that is how it would be lost. The wire-protocol migration is in too: `mcp==2.0.0`
+replaced FastMCP, the transport is stateless, authentication moved into the
+SDK's token verifier, and six tests drive the endpoint with the SDK's own
+client. What remains of PR-10 is the conformance detail — `server/discover`,
+explicit per-request version negotiation, `resultType` and private
+`cacheScope` — and the OAuth profile work: Client ID Metadata Documents, and
+treating metadata fetching as hostile SSRF input.
 
 **PR-12 is in, in its read-only half.** An administrator asks, the patient
 answers, and approving is the only thing that writes a `SupportAccessGrant` —

@@ -21,6 +21,11 @@ os.environ.setdefault("VITALS_HEIGHT_CM", "190")
 os.environ.setdefault("VITALS_SEX", "male")
 os.environ.setdefault("VITALS_SESSION_SECRET", "test-session-secret")
 os.environ.setdefault("VITALS_AUTH_USERNAME", "tester")
+# The name the ASGI transport calls this installation. The MCP endpoint
+# validates ``Host`` against an allowlist built from the public URL — DNS
+# rebinding protection the SDK enforces — so the suite has to say who it is
+# rather than be exempted from the check.
+os.environ.setdefault("VITALS_PUBLIC_URL", "http://test")
 # bcrypt hash of "password" (4 rounds — fast test cost).
 os.environ.setdefault(
     "VITALS_AUTH_PASSWORD_HASH",

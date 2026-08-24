@@ -50,6 +50,11 @@ ANONYMOUS_BY_DESIGN = {
     # The OAuth handshake Claude.ai runs before it holds any credential.
     ("GET", "/.well-known/oauth-authorization-server"),
     ("GET", "/.well-known/oauth-protected-resource"),
+    # The same document at the resource-specific path RFC 9728 §3.1 allows, and
+    # the one the SDK's 401 challenge points at. Open for the same reason as the
+    # line above: it is what a client reads *because* it has no credential yet,
+    # and it says only which authorization server issues tokens for /mcp.
+    ("GET", "/.well-known/oauth-protected-resource/mcp"),
     ("GET", "/oauth/authorize"),
     ("POST", "/oauth/authorize/approve"),
     ("POST", "/oauth/token"),

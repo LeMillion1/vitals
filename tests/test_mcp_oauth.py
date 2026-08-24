@@ -360,95 +360,15 @@ async def test_session_token_rejected_as_mcp_bearer(client):
     assert response.status_code == 401
 
 
-async def test_mcp_middleware_typeerror_returns_500_not_hang():
-    """A TypeError from the wrapped MCP app must produce a 500 JSON response, not a
-    silent no-response that leaves the client hanging."""
-    from web.routers.mcp import MCPAuthMiddleware
-
-    async def _raising_app(scope, receive, send):
-        raise TypeError("boom")
-
-    middleware = MCPAuthMiddleware(_raising_app, client_id="vitals-claude-connector")
-    token = _get_mcp_serializer().dumps({
-        "username": "tester",
-        "client_id": "vitals-claude-connector",
-        "type": "mcp_access_token",
-    })
-    scope = {
-        "type": "http",
-        "method": "POST",
-        "path": "/mcp/",
-        "headers": [(b"authorization", f"Bearer {token}".encode("utf-8"))],
-    }
-    sent: list[dict] = []
-
-    async def _receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def _send(message):
-        sent.append(message)
-
-    await middleware(scope, _receive, _send)
-
-    start = next(m for m in sent if m["type"] == "http.response.start")
-    assert start["status"] == 500
-    body = next(m for m in sent if m["type"] == "http.response.body")
-    assert b"Internal server error" in body["body"]
-
-
-async def test_mcp_middleware_drops_second_response_start():
-    """A streaming endpoint can emit a second ``http.response.start`` after the client
-    hangs up. Passing it through trips an assertion in the BaseHTTPMiddleware stack
-    from web/csrf.py and logs a traceback on every reconnect — swallow it."""
-    from web.routers.mcp import MCPAuthMiddleware
-
-    async def _streaming_app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"data: hi\n\n", "more_body": True})
-        # Client disconnected; the endpoint returns an empty Response().
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"", "more_body": False})
-
-    middleware = MCPAuthMiddleware(_streaming_app, client_id="vitals-claude-connector")
-    token = _get_mcp_serializer().dumps({
-        "username": "tester",
-        "client_id": "vitals-claude-connector",
-        "type": "mcp_access_token",
-    })
-    scope = {
-        "type": "http",
-        "method": "GET",
-        "path": "/mcp/",
-        "headers": [(b"authorization", f"Bearer {token}".encode("utf-8"))],
-    }
-    sent: list[dict] = []
-
-    async def _receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def _send(message):
-        sent.append(message)
-
-    await middleware(scope, _receive, _send)
-
-    assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]
-
-
-async def test_mcp_auth_middleware(client, redis):
-    """Test that MCP endpoints require a valid Bearer token and reject invalid/missing tokens."""
-    # GET /mcp/ without auth should return 401
-    r_unauth = await client.get("/mcp/")
-    assert r_unauth.status_code == 401
-
-    # POST /mcp/ without auth should return 401
-    r_unauth_post = await client.post("/mcp/", json={})
-    assert r_unauth_post.status_code == 401
-
-    # Test OPTIONS request passes without auth (CORS/Preflight support)
-    r_options = await client.options("/mcp/")
-    assert r_options.status_code == 200
-    # The happy path (valid token reaching the MCP app) needs a live session manager
-    # → test_mcp_initialize_over_streamable_http.
+# Two tests stood here, both about an ASGI wrapper this module no longer has.
+# ``MCPAuthMiddleware`` hand-rolled bearer validation in front of the MCP app and
+# these covered its edges: a ``TypeError`` from the wrapped app becoming a 500
+# rather than a hang, and a second ``http.response.start`` from a streaming
+# endpoint being swallowed. The SDK owns the transport now — its own
+# ``RequireAuthMiddleware`` validates the token and its own streamable-HTTP
+# manager owns the response lifecycle — so both tested a layer that is gone
+# rather than a behaviour that changed. What replaced them is
+# ``tests/test_mcp_actor_identity.py``, against the token verifier.
 
 
 async def test_mcp_initialize_over_streamable_http(client):
@@ -772,7 +692,17 @@ async def test_401_points_at_the_resource_metadata(client):
     assert response.status_code == 401
     challenge = response.headers["www-authenticate"]
     assert challenge.startswith("Bearer ")
-    assert 'resource_metadata="http://test/.well-known/oauth-protected-resource"' in challenge
+    # The resource-specific form (RFC 9728 §3.1), and built from the configured
+    # public URL rather than from ``request.base_url``. A token's audience is
+    # bound to this identifier and an inbound ``Host`` header is something an
+    # attacker chooses, so the name this installation answers to is configured
+    # rather than observed. ``web/routers/oauth.py`` serves both paths.
+    assert (
+        'resource_metadata="http://test/.well-known/oauth-protected-resource/mcp"'
+        in challenge
+    ), challenge
+    metadata = await client.get("/.well-known/oauth-protected-resource/mcp")
+    assert metadata.status_code == 200, "the 401 points at a document nobody serves"
 
 
 async def test_oauth_state_is_url_encoded(auth_client):

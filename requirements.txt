@@ -47,6 +47,15 @@ garminconnect==0.3.7
 PyMuPDF>=1.24,<2.0
 
 # ── Model Context Protocol (MCP) ─────────────────────────────────────────────
-fastmcp==3.4.5
+# The official SDK, pinned exactly. Its 2.0.0 release *is* protocol revision
+# 2026-07-28 — same day, and ``mcp.types.LATEST_PROTOCOL_VERSION`` says so — and
+# the wire contract is the thing a connector on the other side depends on, so it
+# is not a range. FastMCP 3.4.5 stood here and could not stay: it requires
+# ``mcp<2.0``, so this is a replacement rather than an upgrade.
+#
+# It brings ``httpx2`` alongside our ``httpx``. Separate distributions with
+# separate import names, so both live here without either being pinned by the
+# other's needs — the Hevy client keeps the httpx it was written against.
+mcp==2.0.0
 
 

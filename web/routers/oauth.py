@@ -90,12 +90,28 @@ async def oauth_metadata(request: Request):
 PROTECTED_RESOURCE_PATH = "/.well-known/oauth-protected-resource"
 
 
+#: RFC 9728 §3.1 also allows the resource's own path to be appended, and that is
+#: the form the SDK puts in its ``WWW-Authenticate`` challenge. Both are served:
+#: a client that follows the challenge and a client that guesses the bare
+#: well-known path get the same document instead of one of them getting a 404.
+PROTECTED_RESOURCE_FOR_MCP = f"{PROTECTED_RESOURCE_PATH}/mcp"
+
+
 @router.get(PROTECTED_RESOURCE_PATH)
+@router.get(PROTECTED_RESOURCE_FOR_MCP)
 async def oauth_protected_resource(request: Request):
     """Protected-resource metadata (RFC 9728) — tells a client that hit a 401 on
     /mcp/ which authorization server issues tokens for it, so discovery starts from
-    the resource instead of a guessed well-known path on the same host."""
-    base_url = str(request.base_url).rstrip("/")
+    the resource instead of a guessed well-known path on the same host.
+
+    ``resource`` and ``authorization_servers`` come from the configured public
+    URL rather than from ``request.base_url``. The MCP profile binds a token's
+    audience to this identifier, and one derived from an inbound ``Host`` header
+    is one an attacker chooses — the same reason the SDK is built with a fixed
+    issuer rather than a per-request one.
+    """
+
+    base_url = get_web_config().public_url.rstrip("/")
     return {
         "resource": f"{base_url}/mcp",
         "authorization_servers": [base_url],

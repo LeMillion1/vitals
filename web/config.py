@@ -47,6 +47,12 @@ class WebConfig:
     session_ttl: int = DEFAULT_SESSION_TTL
     cookie_secure: bool = True
     cookie_samesite: str = "lax"
+    #: Where this installation answers from, as a client would type it. The MCP
+    #: authorization profile wants a stable issuer and a stable resource
+    #: identifier — a request-derived one changes with whatever ``Host`` header
+    #: arrived, which is a thing an attacker controls and a thing a token
+    #: audience must not depend on.
+    public_url: str = "http://127.0.0.1:8000"
     mcp_client_id: str = "vitals-claude-connector"
     mcp_client_secret: str = ""
     mcp_redirect_hosts: tuple[str, ...] = DEFAULT_MCP_REDIRECT_HOSTS
@@ -121,6 +127,7 @@ def get_web_config() -> WebConfig:
         session_ttl=_env_pos_int("VITALS_SESSION_TTL", DEFAULT_SESSION_TTL),
         cookie_secure=_env_bool("VITALS_COOKIE_SECURE", True),
         cookie_samesite=os.getenv("VITALS_COOKIE_SAMESITE", "lax"),
+        public_url=os.getenv("VITALS_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/"),
         mcp_client_id=os.getenv("VITALS_MCP_CLIENT_ID", "vitals-claude-connector"),
         mcp_client_secret=os.getenv("VITALS_MCP_CLIENT_SECRET", ""),
         mcp_redirect_hosts=tuple(

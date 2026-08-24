@@ -8,6 +8,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — MCP moved to the official SDK and protocol 2026-07-28 (PR-10)
+
+`fastmcp==3.4.5` is replaced by `mcp==2.0.0`, the Tier-1 Python SDK, released
+on 2026-07-28 — the same day as the protocol revision it implements, and
+`mcp.types.LATEST_PROTOCOL_VERSION` says so. It is a replacement rather than an
+upgrade: FastMCP requires `mcp<2.0`, so the two cannot stand side by side.
+Pinned exactly, because the wire contract is what a connector on the other side
+depends on.
+
+**The transport is stateless**, which is the `2026-07-28` contract rather than a
+tuning knob: a request carries what it needs, there is no `Mcp-Session-Id` to
+hold, and nothing about having completed a handshake can be mistaken for having
+been authorized. A client now lists tools without calling `initialize` at all —
+the old transport answered "Missing session ID".
+
+**Authentication moved inside the SDK.** `MCPAuthMiddleware` — 144 lines of
+hand-rolled ASGI that read the Bearer header, checked the signature and the
+client id, and pushed the identity into a contextvar — is deleted. A
+`TokenVerifier` answers the same three questions and returns an `AccessToken`
+carrying subject, scopes and claims, which `get_access_token()` hands to every
+tool. That is where PR-10 wants the identity ("stable user `sub`, subject,
+audience, scopes"), and one authority on the door beats two that can drift.
+
+**The module filter moved into `list_tools`.** It was a FastMCP `on_list_tools`
+hook; the SDK's middleware only sees the wire, so keeping it there would have
+made the listing an in-process caller gets and the listing a connector gets two
+answers computed in two places.
+
+Two things had to become configuration rather than observation. `VITALS_PUBLIC_URL`
+names this installation, because a token's audience binds to that identifier and
+one derived from an inbound `Host` header is one an attacker chooses. And DNS
+rebinding protection is now on with an allowlist built from it — loopback is
+allowed on any port, which is not a hole: a rebinding attack needs a name whose
+resolution can be changed, and a literal address has none.
+
+`/.well-known/oauth-protected-resource/mcp` is served alongside the bare path.
+The SDK's 401 challenge points at the resource-specific form (RFC 9728 §3.1),
+and a challenge pointing at a document nobody serves is worse than no challenge.
+
+Two behaviours changed and are recorded rather than smoothed over. An
+unauthenticated `OPTIONS` on `/mcp/` is 401 where the hand-written wrapper
+answered 200 — that response carried no `access-control-allow-origin`, so it
+granted nothing, and the connector is server-side and never sends a preflight.
+And the protected-resource document now reports the configured URL rather than
+the requested one.
+
+Six wire-level tests arrive with it, which is the thing this codebase has never
+had: the endpoint driven by the SDK's own client. PR-10 asks for exactly that —
+*not only by calling decorated Python functions.* Every other MCP test calls a
+Python function, and a tool can be perfectly correct while the transport in
+front of it negotiates the wrong protocol.
+
+They run over an ASGI transport rather than a socket, which took three attempts
+to get honest. A server on a thread has an event loop of its own, the suite's
+engine is bound to the test's, and asyncpg does not survive being used across
+the two — the symptom was three tests passing every assertion and then erroring
+at teardown inside the fixture that closes the session, which is nowhere near
+the mistake. The socket was never the point: the client still negotiates a
+version, frames JSON-RPC, and reads real responses. Only the kernel is missing.
+
+222 MCP tests pass unchanged, because the SDK's `@server.tool()` returns the
+plain function the way FastMCP's did.
+
+
 ### Fixed — an MCP connector reached whoever `.env` named, not whoever asked
 
 The OAuth access token has carried the authorizing account's username since the

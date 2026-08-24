@@ -29,8 +29,10 @@ import uuid
 from datetime import date as date_type, timedelta
 from typing import Optional
 
-from fastmcp import FastMCP
-from fastmcp.server.middleware import Middleware
+from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.provider import AccessToken
+from mcp.server.auth.settings import AuthSettings
+from mcp.server.mcpserver import MCPServer
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
@@ -79,7 +81,113 @@ from web.deps import get_redis_client, get_session_factory
 
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("Vitals")
+class _ConnectorTokenVerifier:
+    """The SDK's authentication seam, holding the identity check this had.
+
+    ``MCPAuthMiddleware`` used to do this as raw ASGI: read the Bearer header,
+    validate the signature, check the client id. The SDK asks for the same
+    answer through a protocol, and gives it somewhere to live — an
+    ``AccessToken`` carries the subject, the scopes and the claims, and
+    ``get_access_token()`` hands it to a tool. That is the shape PR-10 asks for
+    ("stable user ``sub``, subject, audience, scopes"), and it is where the
+    identity seam belongs rather than in a contextvar this module set itself.
+    """
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        from itsdangerous import BadSignature, SignatureExpired
+
+        from web.auth import _get_mcp_serializer
+
+        client_id = get_web_config().mcp_client_id
+        try:
+            payload = _get_mcp_serializer().loads(token, max_age=_TOKEN_MAX_AGE)
+        except (SignatureExpired, BadSignature):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("type") != "mcp_access_token":
+            return None
+        if payload.get("client_id") != client_id:
+            return None
+
+        # The account that stood at the consent screen. A token minted before
+        # the identity was read carries none, and ``_mcp_actor_username``
+        # treats that as "names nobody" rather than as "no request happened".
+        claimed = payload.get("username")
+        named = claimed if isinstance(claimed, str) and claimed else None
+        return AccessToken(
+            token=token,
+            client_id=client_id,
+            scopes=["vitals:record"],
+            subject=named,
+            claims={"username": named} if named else {},
+        )
+
+
+#: One year, matched to what ``/oauth/token`` advertises in ``expires_in``.
+#: Enforced on every request rather than trusted from the payload.
+_TOKEN_MAX_AGE = 31536000
+
+
+class VitalsMCPServer(MCPServer):
+    """The server, with a switched-off module's tools left out of the listing.
+
+    Writes and ownership-sensitive reads already refuse a disabled module.
+    Hiding its tools as well saves the conversation budget and avoids inviting
+    the model into a domain the owner does not track.
+
+    In ``list_tools`` rather than in middleware, which is where the equivalent
+    FastMCP hook lived. A ``ServerMiddleware`` only sees the wire, so the
+    listing an in-process caller got and the listing a connector got would be
+    two different answers computed in two places — the exact shape this branch
+    keeps finding defects in. One method, both paths.
+
+    Resolved per call rather than latched at import, so a toggle in Settings
+    takes effect on the next request — and under the stateless transport there
+    is no reconnect to wait for. Fails open: if module state cannot be read, the
+    full surface is listed rather than an empty one, because a connector with no
+    tools looks broken and a connector with too many is merely untidy.
+    """
+
+    async def list_tools(self, *args, **kwargs):
+        tools = await super().list_tools(*args, **kwargs)
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                ownership = await _mcp_v1_legacy_owner(session)
+                enabled = await modules_service.get_enabled_modules(
+                    session,
+                    subject_id=ownership.subject_id,
+                )
+        except Exception:
+            logger.warning(
+                "mcp: module state unavailable; listing every tool", exc_info=True
+            )
+            return tools
+        return [
+            tool
+            for tool in tools
+            if enabled.get(TOOL_MODULES.get(tool.name, ""), True)
+        ]
+
+
+def _build_server() -> VitalsMCPServer:
+    cfg = get_web_config()
+    return VitalsMCPServer(
+        name="Vitals",
+        version=MCP_SERVER_VERSION,
+        token_verifier=_ConnectorTokenVerifier(),
+        auth=AuthSettings(
+            issuer_url=cfg.public_url,
+            resource_server_url=f"{cfg.public_url}/mcp",
+        ),
+    )
+
+
+#: Advertised in ``server/discover`` and in every result's ``_meta``.
+MCP_SERVER_VERSION = "2.0.0"
+
+mcp = _build_server()
 
 
 # Columns every row carries and no tool ever accepts back: bookkeeping the model
@@ -242,6 +350,33 @@ class McpActorUnresolved(RuntimeError):
     """A token that cannot say whose record it is for, where that matters."""
 
 
+def _current_actor() -> str | None:
+    """Who this request authenticated as, or ``None`` if there is no request.
+
+    The SDK's ``get_access_token()`` is the source now: its ``AccessToken``
+    carries the subject the token verifier put there. The contextvar remains as
+    an override for direct in-process callers and tests — nothing in a request
+    path sets it, and a request always has the access token to answer from.
+
+    A token that authenticated and named nobody comes back as
+    :data:`ANONYMOUS_TOKEN` rather than as ``None``: those two mean different
+    things and conflating them is what let an old credential keep the reach of
+    the ``.env`` owner.
+    """
+
+    override = _MCP_ACTOR.get()
+    if override is not None:
+        return override
+    try:
+        token = get_access_token()
+    except Exception:  # pragma: no cover - no request context at all
+        return None
+    if token is None:
+        return None
+    named = token.subject or (token.claims or {}).get("username")
+    return named if isinstance(named, str) and named else ANONYMOUS_TOKEN
+
+
 async def _require_live_account(session, username: str) -> None:
     """A token names an account; this is where that account has to still exist.
 
@@ -293,7 +428,7 @@ async def _mcp_actor_username(session=None) -> str:
 
     from vitals.models.identity import HealthSubject
 
-    actor = _MCP_ACTOR.get()
+    actor = _current_actor()
     if actor is not None and actor != ANONYMOUS_TOKEN:
         await _require_live_account(session, actor)
         return actor
@@ -4084,34 +4219,8 @@ TOOL_MODULES.update({
 })
 
 
-class ModuleVisibilityMiddleware(Middleware):
-    """Hide a switched-off module's tools from ``tools/list``.
-
-    Writes and ownership-sensitive reads refuse disabled modules. Hiding every
-    classified tool also saves the conversation budget and avoids inviting the
-    model into a domain the owner does not track. Resolved per request rather than
-    latched at import, so flipping a toggle in Settings takes effect on the next
-    reconnect without a restart. Fails open: if module state cannot be read, the
-    full surface is listed rather than an empty one.
-    """
-
-    async def on_list_tools(self, context, call_next):
-        tools = await call_next(context)
-        try:
-            session_factory = get_session_factory()
-            async with session_factory() as session:
-                ownership = await _mcp_v1_legacy_owner(session)
-                enabled = await modules_service.get_enabled_modules(
-                    session,
-                    subject_id=ownership.subject_id,
-                )
-        except Exception:
-            logger.warning("mcp: module state unavailable; listing every tool", exc_info=True)
-            return tools
-        return [t for t in tools if enabled.get(TOOL_MODULES.get(t.name, ""), True)]
-
-
-mcp.add_middleware(ModuleVisibilityMiddleware())
+# Kept as documentation of where this used to live. The filter is in
+# ``VitalsMCPServer.list_tools`` now — see the class for why.
 
 
 def _www_authenticate(scope) -> bytes:
@@ -4130,162 +4239,61 @@ def _www_authenticate(scope) -> bytes:
     return f'Bearer resource_metadata="{url}"'.encode("utf-8")
 
 
-class MCPAuthMiddleware:
-    """ASGI middleware that intercepts all requests to the MCP application
-
-    and validates the signed Bearer access token in the Authorization header.
-    """
-    def __init__(self, app, client_id: str):
-        self.app = app
-        self.client_id = client_id
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        if scope.get("method") == "OPTIONS":
-            # No access-control-allow-origin: the actual MCP responses carry no CORS
-            # headers, so a wildcard here grants nothing. Claude.ai's connector is
-            # server-side (not a browser), so it never sends a preflight anyway.
-            await send({
-                "type": "http.response.start",
-                "status": 200,
-                "headers": [
-                    (b"access-control-allow-methods", b"GET, POST, DELETE, OPTIONS"),
-                    (b"access-control-allow-headers", b"Authorization, Content-Type"),
-                    (b"content-length", b"0"),
-                ]
-            })
-            await send({
-                "type": "http.response.body",
-                "body": b"",
-                "more_body": False
-            })
-            return
-
-        # Check Authorization header
-        headers = dict(scope.get("headers", []))
-        auth_header = headers.get(b"authorization", b"").decode("utf-8")
-
-        # Bearer header ONLY. We deliberately do not accept the token via a query
-        # param (?token=/?access_token=): query strings leak into reverse-proxy
-        # access logs, browser history and Referer headers, and this token is
-        # long-lived. Claude.ai's connector sends the Authorization header.
-        token = None
-        if auth_header.lower().startswith("bearer "):
-            token = auth_header[7:]
-
-        authenticated = False
-        actor = None
-        if token:
-            from web.auth import _get_mcp_serializer
-            from itsdangerous import SignatureExpired, BadSignature
-            serializer = _get_mcp_serializer()
-            try:
-                # Validate access token with 1 year TTL limit
-                payload = serializer.loads(token, max_age=31536000)
-                if (
-                    isinstance(payload, dict)
-                    and payload.get("type") == "mcp_access_token"
-                    and payload.get("client_id") == self.client_id
-                ):
-                    authenticated = True
-                    # The account that stood at the consent screen. OAuth has
-                    # recorded it since it was built and nothing has ever read
-                    # it, so whose record came back did not depend on whose
-                    # token asked.
-                    claimed = payload.get("username")
-                    actor = (
-                        claimed
-                        if isinstance(claimed, str) and claimed
-                        else ANONYMOUS_TOKEN
-                    )
-            except (SignatureExpired, BadSignature):
-                pass
-
-
-
-        if not authenticated:
-            response_body = b'{"detail":"Unauthorized. Invalid or missing MCP access token."}'
-            await send({
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(response_body)).encode("utf-8")),
-                    (b"www-authenticate", _www_authenticate(scope)),
-                ]
-            })
-            await send({
-                "type": "http.response.body",
-                "body": response_body,
-                "more_body": False
-            })
-            return
-
-        # Track whether the downstream app already began the response, so on a
-        # mid-stream failure we don't try to start a second one (that would raise).
-        response_started = False
-        response_done = False
-
-        async def _send(message):
-            nonlocal response_started, response_done
-            if response_done:
-                return
-            if message["type"] == "http.response.start":
-                if response_started:
-                    # A streaming endpoint can emit a second response start after
-                    # the stream is over (e.g. an empty Response() once the client
-                    # hangs up). Forwarding it trips an assertion inside the
-                    # BaseHTTPMiddleware wrappers from web/csrf.py and logs a
-                    # traceback on every connector reconnect. Drop it and anything
-                    # after it — the response is finished either way.
-                    response_done = True
-                    return
-                response_started = True
-            await send(message)
-
-        try:
-            # The tools read this rather than the environment. Reset in
-            # ``finally`` so one request's identity cannot outlive it into the
-            # next request served by the same worker.
-            restore = _MCP_ACTOR.set(actor)
-            try:
-                await self.app(scope, receive, _send)
-            finally:
-                _MCP_ACTOR.reset(restore)
-        except TypeError:
-            logger.exception("MCP app raised TypeError handling %s", scope.get("path"))
-            if not response_started:
-                body = b'{"detail":"Internal server error in MCP handler."}'
-                await send({
-                    "type": "http.response.start",
-                    "status": 500,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"content-length", str(len(body)).encode("utf-8")),
-                    ],
-                })
-                await send({
-                    "type": "http.response.body",
-                    "body": body,
-                    "more_body": False,
-                })
+# ``MCPAuthMiddleware`` stood here: an ASGI wrapper that read the Bearer header,
+# validated the signature and the client id, and pushed the identity into a
+# contextvar. All three answers now come from the SDK — ``_ConnectorTokenVerifier``
+# above is asked for them, and ``get_access_token()`` hands the result to a tool.
+# Keeping the wrapper as well would put two authorities on the same door, and the
+# one that drifts is always the copy.
 
 
 def get_mcp_app() -> tuple[object, object]:
-    """Wraps the FastMCP Starlette app with Bearer authorization middleware.
+    """The streamable-HTTP application, and the lifespan a mount will not run.
 
-    Returns ``(app, lifespan)``. Streamable HTTP builds its session manager inside
-    the lifespan, and ``app.mount()`` does not run a sub-app's lifespan — so the
-    caller must enter it explicitly or every request fails with "manager not
-    initialized". See web/main.py.
+    Returns ``(app, lifespan)``. ``app.mount()`` does not run a sub-app's
+    lifespan, so the caller enters it explicitly — see web/main.py.
+
+    ``stateless_http=True`` is the ``2026-07-28`` contract rather than a tuning
+    knob: a request carries everything it needs, there is no ``Mcp-Session-Id``
+    to hold, and no handshake whose completion could be mistaken for
+    authorization. Bearer validation happens inside the SDK now, through the
+    token verifier the server was built with, so there is no ASGI wrapper left
+    to keep in step with it.
+
+    ``path="/"`` so mounting on ``/mcp`` lands the endpoint on ``/mcp/`` rather
+    than ``/mcp/mcp``.
     """
-    from web.config import get_web_config
-    cfg = get_web_config()
-    # Streamable HTTP (the SSE transport is deprecated in the MCP spec since
-    # 2025-03). path="/" so that mounting on /mcp lands the endpoint on /mcp/
-    # rather than /mcp/mcp — the library's own default path would be appended.
-    raw_app = mcp.http_app(transport="http", path="/")
-    return MCPAuthMiddleware(raw_app, client_id=cfg.mcp_client_id), raw_app.router.lifespan_context
+
+    from urllib.parse import urlparse
+
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    # DNS-rebinding protection, configured rather than defaulted. The SDK
+    # validates ``Host`` against an allowlist, and its default is the loopback
+    # address it was told to bind — which is not the name a client uses once
+    # this sits behind a proxy. The public URL is the name, so it is the
+    # allowlist; the loopback pair stays for a local run and for health checks
+    # that reach the container directly.
+    public = urlparse(get_web_config().public_url)
+    hosts = {public.netloc}
+    # Loopback on any port. Not a hole: a rebinding attack needs a *name* whose
+    # resolution an attacker can change, and a literal address has none — while
+    # pinning a port here would mean a developer's ``PORT=8010`` looked like an
+    # attack. ``localhost`` is a name, so it keeps its ports.
+    hosts.update({"127.0.0.1:*", "127.0.0.1", "[::1]:*", "localhost:8000",
+                  "localhost:8010", "localhost"})
+    hosts.discard("")
+
+    app = mcp.streamable_http_app(
+        streamable_http_path="/",
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=sorted(hosts),
+            allowed_origins=sorted(
+                f"{scheme}://{host}"
+                for scheme in ("http", "https")
+                for host in hosts
+            ),
+        ),
+    )
+    return app, app.router.lifespan_context
