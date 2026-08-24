@@ -121,6 +121,7 @@ class _ConnectorTokenVerifier:
                 token=token,
                 expected_client_id=cfg.mcp_client_id,
                 expected_audience=mcp_token_service.audience_for(cfg.public_url),
+                expected_issuer=cfg.public_url,
                 signed_at=signed_at,
             )
             if verified is None:

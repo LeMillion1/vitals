@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — MCP issuer binding is now enforced
+
+Registry-backed connector tokens already carried both audience and issuer, but
+verification checked only the audience. A token with a valid shared signing
+secret could therefore name another issuer—or omit either installation-binding
+claim—and still pass. Verification now requires exact `aud` and `iss` values
+for current tokens while retaining the explicit adoption path for older tokens
+that predate the registry.
+
 ### Changed — care handoff now explains the next step
 
 Accepting a professional invitation now returns to the care list with a clear

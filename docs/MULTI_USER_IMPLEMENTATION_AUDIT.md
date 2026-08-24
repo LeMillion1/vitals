@@ -129,8 +129,8 @@ a current validation result.
   live for 365 days, bind to an account/client/audience, and expose the broad
   `vitals:record` scope. They do not bind a health subject, relationship,
   consent version, resource domains, or actions.
-- `mcp_token_service.verify()` does not currently validate the token's `iss`
-  claim. This remains a security-hardening item.
+- MCP access tokens now validate both `aud` and `iss`; registry-backed tokens
+  cannot omit either installation-binding claim.
 
 ## Documentation file verdicts
 

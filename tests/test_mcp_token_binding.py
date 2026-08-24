@@ -48,6 +48,7 @@ async def _verify(session, payload, *, token: str = "signed-value", **overrides)
         token=token,
         expected_client_id=overrides.pop("expected_client_id", CLIENT),
         expected_audience=overrides.pop("expected_audience", AUDIENCE),
+        expected_issuer=overrides.pop("expected_issuer", ISSUER),
         **overrides,
     )
 
@@ -93,6 +94,23 @@ async def test_a_token_for_another_client_is_refused(db_session, legacy_owner_ro
     assert (
         await _verify(db_session, payload, expected_client_id="somebody-else") is None
     )
+
+
+async def test_a_token_from_another_issuer_is_refused(
+    db_session, legacy_owner_roots
+):
+    payload, _record = await _issue(db_session)
+    payload["iss"] = "https://restored-copy.example.test"
+    assert await _verify(db_session, payload) is None
+
+
+@pytest.mark.parametrize("claim", ["aud", "iss"])
+async def test_a_registry_token_cannot_drop_its_installation_binding(
+    db_session, legacy_owner_roots, claim
+):
+    payload, _record = await _issue(db_session)
+    del payload[claim]
+    assert await _verify(db_session, payload) is None
 
 
 async def test_the_audience_is_the_resource_not_the_origin():

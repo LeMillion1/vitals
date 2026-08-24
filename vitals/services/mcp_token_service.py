@@ -169,6 +169,7 @@ async def verify(
     token: str,
     expected_client_id: str,
     expected_audience: str,
+    expected_issuer: str,
     signed_at: datetime | None = None,
 ) -> VerifiedToken | None:
     """Everything about a presented token except its signature.
@@ -194,12 +195,21 @@ async def verify(
         username = ""
 
     audience = payload.get("aud")
+    issuer = payload.get("iss")
     raw_jti = payload.get("jti")
 
-    if audience is not None and audience != expected_audience:
-        # Minted for a different resource. Refused by the audience rather than
-        # by whether this installation happens to share a signing secret with
-        # the one that issued it.
+    if raw_jti is None:
+        # Pre-registry credentials had neither binding claim. Preserve that
+        # documented adoption path, but never adopt a token that does name a
+        # different installation or resource.
+        if audience is not None and audience != expected_audience:
+            return None
+        if issuer is not None and issuer != expected_issuer:
+            return None
+    elif audience != expected_audience or issuer != expected_issuer:
+        # Registry-backed tokens are issued with both claims. Missing is not a
+        # legacy shape here: accepting it would let a valid signed payload shed
+        # precisely the installation binding these claims exist to provide.
         return None
 
     now = await _now(session)
