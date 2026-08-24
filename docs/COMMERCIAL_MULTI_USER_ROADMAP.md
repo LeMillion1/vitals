@@ -952,6 +952,12 @@ a property of there being nowhere for an account to come from.
   installation is byte-identical to its refusal for an unknown identity.
 - `scripts/provision_account.py` is how an operator creates one today: no form,
   no route, no token, and whoever runs it already has a shell on the host.
+- `scripts/registration_mode.py` reads and sets the stored mode, and is the only
+  caller of `set_stored_mode`. Until it existed the mode had been described,
+  gated and left without a handle: an installation could be unlocked and still
+  had no way off `disabled`. It prints stored *and* effective, because those
+  differ whenever the deployment gate is unset and "I set it to open and nothing
+  happened" is otherwise a puzzle whose answer is one environment variable.
 
 Release gate: pin and inventory the IdP image, verify backup/restore and upgrade
 procedures, complete an AGPL/commercial-distribution review for ZITADEL, and keep
