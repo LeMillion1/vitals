@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import Domain
+from vitals.services.legacy_ownership import NoPersonalRecordError
 from vitals.services import support_access_service as support
 from vitals.services.access_resolution import (
     AccessResolutionError,
@@ -52,13 +53,22 @@ async def _admin_id(request: Request, db: AsyncSession) -> uuid.UUID:
 
 
 async def _own_subject(request: Request, db: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
+    """This account and the record it owns.
+
+    Raises ``NoPersonalRecordError`` rather than a bare 409, which is the
+    difference between the branded refusal page — with a way out of it — and one
+    unstyled sentence. This page is about *my* record, and a doctor or a trainer
+    keeps none; they are the accounts most likely to arrive here from a link
+    somewhere, and the registered handler sends whoever holds patients to their
+    roster instead of stranding them.
+    """
+
     user_id = await principal_user_id(request, db)
     try:
         access = await resolve_access_context(db, user_id=user_id, subject_id=None)
     except AccessResolutionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This account has no health record of its own.",
+        raise NoPersonalRecordError(
+            "this account keeps no health record of its own"
         ) from exc
     return user_id, access.subject_id
 

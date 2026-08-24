@@ -919,3 +919,31 @@ async def test_the_console_link_is_not_offered_to_anybody_else(
     page = await client.get("/weight", headers={"Accept": "text/html"})
     assert "/settings/platform/support" not in page.text
     del legacy_owner_roots
+
+
+async def test_a_professional_reaching_the_access_page_is_not_stranded(
+    client, db_session, legacy_owner_roots
+):
+    """``/settings/access`` is about *my* record, and a professional keeps none.
+
+    It raised a bare ``HTTPException(409)``, which is one unstyled sentence on a
+    white page — the exact defect fixed for every other personal page earlier
+    this branch, reintroduced here because this router resolves its own subject.
+    ``NoPersonalRecordError`` is what the registered handler understands: it
+    redirects somebody who holds patients to their roster and gives anybody else
+    the refusal page, which has a way out of it.
+    """
+
+    from vitals.enums import ProfessionalKind
+
+    doctor = await _user(db_session, "access-page-doctor", roles=(UserRoleName.DOCTOR,))
+    await db_session.commit()
+
+    _sign_in(client, "access-page-doctor")
+    response = await client.get(
+        "/settings/access", headers={"Accept": "text/html"}, follow_redirects=False
+    )
+    assert response.status_code == 409
+    assert "<html" in response.text.lower(), "the refusal is not a rendered page"
+    assert 'href="/' in response.text, "the refusal offers nowhere to go"
+    del doctor, ProfessionalKind, legacy_owner_roots
