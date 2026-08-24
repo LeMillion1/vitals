@@ -389,7 +389,9 @@ async def test_parent_appended_after_stage3b_requires_exact_live_actor(db_sessio
 
 
 @pytest.mark.asyncio
-async def test_foreign_child_subject_fails_closed(db_session):
+async def test_foreign_child_subject_fails_closed(
+    db_session, unenforced_legacy_write
+):
     owner, subject = await _scope(db_session)
     foreign_owner = User(
         username="foreign",
@@ -407,8 +409,11 @@ async def test_foreign_child_subject_fails_closed(db_session):
     cycle, _template = await _parents(
         db_session, owner=owner, subject=subject
     )
-    db_session.add(_cycle_item(cycle, subject_id=foreign_subject.id))
-    await db_session.flush()
+    # Revision 0046 prevents this mismatch on every new PostgreSQL write. The
+    # backfill still has to reject a row that predates that constraint, so seed
+    # it through the suite's explicit historical-data boundary.
+    async with unenforced_legacy_write(db_session):
+        db_session.add(_cycle_item(cycle, subject_id=foreign_subject.id))
     # Exact-one identity validation fails before the row can be considered.
     with pytest.raises(HrtChildOwnershipBackfillIdentityError) as exc_info:
         await preflight_hrt_child_ownership_backfill(db_session)
