@@ -170,7 +170,7 @@ is:
 
 ## Revoking a session
 
-`session_service.revoke_all_sessions` bumps the user's `session_version`. The
+`authentication.sessions.revoke_all_sessions` bumps the user's `session_version`. The
 shared web authentication boundary compares every federated cookie with that
 live row, so every session the account holds stops at its next request rather
 than waiting for cookie expiry. A cookie issued a minute ago and one issued last

@@ -1,7 +1,7 @@
 """Whether this installation may make an account, and by whose decision.
 
 Registration has been closed since the commercial work started, and closed by
-absence: ``federated_login_service`` refuses an unrecognised identity because
+absence: ``authentication.federation`` refuses an unrecognised identity because
 nothing anywhere could create one. That was the right state and a poor
 mechanism — "closed" was a property of there being no code, so opening it later
 means writing the decision at the same time as the door, which is how a door

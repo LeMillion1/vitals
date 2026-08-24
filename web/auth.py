@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import t
-from vitals.services import twofa_service
+from vitals.services.authentication import legacy_two_factor as twofa_service
 from vitals.utils.passwords import verify_password, verify_password_dummy
 from web.config import (
     OIDC_HANDOFF_COOKIE,
@@ -500,7 +500,7 @@ def _provider():
     """
 
     global _provider_cache
-    from vitals.services.oidc import OidcProvider, OidcSettings
+    from vitals.services.authentication.oidc import OidcProvider, OidcSettings
 
     cfg = get_web_config()
     key = (cfg.oidc_issuer, cfg.oidc_client_id, cfg.oidc_redirect_url)
@@ -552,7 +552,7 @@ async def federated_login_start(
     if not step_up and read_session(request.cookies.get(SESSION_COOKIE)) is not None:
         return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
 
-    from vitals.services.oidc import OidcError
+    from vitals.services.authentication.oidc import OidcError
 
     try:
         login = await _provider().begin_login(prompt="login" if step_up else None)
@@ -610,11 +610,11 @@ async def federated_login_callback(
     if not secrets.compare_digest(state, handoff["state"]):
         return _login_failed(request, "callback state does not match this browser's")
 
-    from vitals.services.federated_login_service import (
+    from vitals.services.authentication.federation import (
         FederatedLoginError,
         resolve_federated_user,
     )
-    from vitals.services.oidc import OidcError
+    from vitals.services.authentication.oidc import OidcError
 
     provider = _provider()
     try:
@@ -798,7 +798,7 @@ async def logout(request: Request):
         post_logout_redirect_uri = urlunsplit(
             (callback.scheme, callback.netloc, "/", "", "")
         )
-        from vitals.services.oidc import OidcError
+        from vitals.services.authentication.oidc import OidcError
 
         try:
             provider_target = await _provider().end_session_url(

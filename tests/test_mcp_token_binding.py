@@ -21,7 +21,7 @@ import pytest
 
 from vitals.enums import UserStatus
 from vitals.models.identity import McpAccessToken, User
-from vitals.services import mcp_token_service as tokens
+from vitals.services.authentication import mcp_tokens as tokens
 
 CLIENT = "vitals-claude-connector"
 AUDIENCE = "http://test/mcp"

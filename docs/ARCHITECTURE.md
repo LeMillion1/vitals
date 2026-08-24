@@ -17,7 +17,7 @@ boundaries rather than alternative business-service implementations.
 
 Within `vitals/services/`, new code is grouped by bounded domain instead of
 adding another `<noun>_service.py` to the root. A package exposes concepts, not
-a service locator. The first extracted multi-user domain is:
+a service locator. The extracted multi-user and authentication boundaries are:
 
 ```text
 vitals/services/care/
@@ -26,13 +26,23 @@ vitals/services/care/
 ├── relationships.py   # relationship and consent lifecycle
 ├── records.py         # professional projection and authored artifacts
 └── threads.py         # patient-visible care-team conversation
+
+vitals/services/authentication/
+├── federation.py      # provider identity to local account
+├── oidc.py            # protocol verification boundary
+├── sessions.py        # local session revocation
+├── oauth_clients.py   # remote client metadata and SSRF boundary
+├── mcp_tokens.py      # connector credential lifecycle
+└── legacy_two_factor.py # local-password cutover path only
 ```
 
 Callers import the concept they use, for example
 `from vitals.services.care import relationships`. The old flat module paths are
 removed rather than kept as permanent forwarding shims: internal imports are
 updated in the same commit, which prevents the obsolete structure from becoming
-a second supported API. Further domains should be extracted in bounded,
+a second supported API. Pure computation lives in `vitals/analytics/`, and
+persistence primitives live in `vitals/persistence/`; neither is an application
+service. Further domains should be extracted in bounded,
 behavior-preserving commits with their focused tests and the full fast suite.
 
 **How to open it.** The file is authored as an *artifact body* — no `<!doctype>`,

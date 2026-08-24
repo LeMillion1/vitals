@@ -141,7 +141,7 @@ async def resolve_client(client_id: str, redirect_uri: Optional[str], cfg):
     Two shapes, and which one applies is decided by the client id itself.
 
     A **Client ID Metadata Document** — an https URL — is fetched and believed
-    only after :mod:`vitals.services.oauth_client_metadata_service` has checked
+    only after :mod:`vitals.services.authentication.oauth_clients` has checked
     it, and the callback must be one the document declares, exactly. That is the
     profile's replacement for Dynamic Client Registration, and it is strictly
     tighter than what stood here: a document names its redirect URIs in full,
@@ -158,7 +158,7 @@ async def resolve_client(client_id: str, redirect_uri: Optional[str], cfg):
     than two of each.
     """
 
-    from vitals.services import oauth_client_metadata_service as client_metadata
+    from vitals.services.authentication import oauth_clients as client_metadata
 
     if client_metadata.looks_like_a_metadata_url(client_id):
         try:
@@ -439,12 +439,12 @@ async def oauth_token(
     # connector can be disconnected from Settings without touching anybody
     # else's — which is what rotating VITALS_SESSION_SECRET used to mean, since
     # it invalidates every MCP token *and* every web session at once.
-    from vitals.services import mcp_token_service
+    from vitals.services.authentication import mcp_tokens
 
     cfg = get_web_config()
-    audience = mcp_token_service.audience_for(cfg.public_url)
+    audience = mcp_tokens.audience_for(cfg.public_url)
     try:
-        token_payload, _record = await mcp_token_service.issue(
+        token_payload, _record = await mcp_tokens.issue(
             db,
             username=code_data["username"],
             client_id=client_id,
@@ -452,7 +452,7 @@ async def oauth_token(
             issuer=cfg.public_url.rstrip("/"),
             client_name=code_data.get("client_name"),
         )
-    except mcp_token_service.McpTokenError:
+    except mcp_tokens.McpTokenError:
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_grant",
@@ -466,5 +466,5 @@ async def oauth_token(
     return {
         "access_token": access_token,
         "token_type": "Bearer",
-        "expires_in": int(mcp_token_service.TOKEN_LIFETIME.total_seconds()),
+        "expires_in": int(mcp_tokens.TOKEN_LIFETIME.total_seconds()),
     }

@@ -51,7 +51,7 @@ class AccountProvisioningError(Exception):
 class AccountAlreadyExists(AccountProvisioningError):
     """That username is taken.
 
-    Deliberately distinct from the refusals in ``federated_login_service``,
+    Deliberately distinct from the refusals in ``authentication.federation``,
     which are uniform on purpose so a stranger learns nothing. This one is only
     ever seen by somebody who is already authorised to create accounts, and for
     them "taken" is the useful answer.

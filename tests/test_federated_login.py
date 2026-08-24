@@ -18,7 +18,7 @@ import pytest
 
 from vitals.enums import UserStatus
 from vitals.models.identity import User, UserFederatedIdentity
-from vitals.services.federated_login_service import (
+from vitals.services.authentication.federation import (
     BootstrapRefused,
     FederatedLoginError,
     InactiveAccount,
@@ -259,7 +259,7 @@ async def test_no_bootstrap_configured_means_no_binding(db_session):
 
 
 async def test_a_linked_account_signs_in(db_session):
-    from vitals.services.federated_login_service import link_identity
+    from vitals.services.authentication.federation import link_identity
 
     account = await _user(db_session, "dr-ivanova")
     await link_identity(
@@ -279,7 +279,7 @@ async def test_a_linked_account_signs_in(db_session):
 async def test_linking_does_not_open_the_door_for_anybody_else(db_session):
     """One link is one person, not an installation that now accepts strangers."""
 
-    from vitals.services.federated_login_service import link_identity
+    from vitals.services.authentication.federation import link_identity
 
     await _user(db_session, "dr-petrova")
     await link_identity(
@@ -300,7 +300,7 @@ async def test_an_identity_already_linked_is_not_moved_to_another_account(db_ses
     """Moving a link is how one person's identity comes to open another
     person's record. If it is ever wanted it gets its own name."""
 
-    from vitals.services.federated_login_service import (
+    from vitals.services.authentication.federation import (
         IdentityAlreadyLinked,
         link_identity,
     )
@@ -329,7 +329,7 @@ async def test_an_identity_already_linked_is_not_moved_to_another_account(db_ses
 async def test_the_same_person_may_be_reachable_through_two_providers(db_session):
     """The table is one-to-many on purpose: a second issuer is a row."""
 
-    from vitals.services.federated_login_service import link_identity
+    from vitals.services.authentication.federation import link_identity
 
     account = await _user(db_session, "two-providers")
     await link_identity(
@@ -351,7 +351,7 @@ async def test_the_same_person_may_be_reachable_through_two_providers(db_session
 
 
 async def test_a_suspended_account_cannot_be_linked(db_session):
-    from vitals.services.federated_login_service import link_identity
+    from vitals.services.authentication.federation import link_identity
 
     await _user(db_session, "suspended-account", status=UserStatus.SUSPENDED)
 
@@ -365,7 +365,7 @@ async def test_a_suspended_account_cannot_be_linked(db_session):
 
 
 async def test_linking_a_name_no_account_has_is_refused(db_session):
-    from vitals.services.federated_login_service import NoSuchAccount, link_identity
+    from vitals.services.authentication.federation import NoSuchAccount, link_identity
 
     with pytest.raises(NoSuchAccount):
         await link_identity(
@@ -377,7 +377,7 @@ async def test_linking_a_name_no_account_has_is_refused(db_session):
     "issuer,subject", [("", "sub"), (ISSUER, ""), ("   ", "sub"), (ISSUER, "  ")]
 )
 async def test_a_link_needs_both_halves_of_the_identity(db_session, issuer, subject):
-    from vitals.services.federated_login_service import link_identity
+    from vitals.services.authentication.federation import link_identity
 
     await _user(db_session, f"half-{len(issuer)}-{len(subject)}")
     with pytest.raises(FederatedLoginError):
@@ -396,7 +396,7 @@ async def test_a_link_needs_both_halves_of_the_identity(db_session, issuer, subj
 async def test_a_link_does_not_silently_rewrite_provider_identity(
     db_session, issuer, subject
 ):
-    from vitals.services.federated_login_service import link_identity
+    from vitals.services.authentication.federation import link_identity
 
     await _user(db_session, "exact-provider-identity")
     with pytest.raises(FederatedLoginError):
@@ -409,7 +409,7 @@ async def test_a_link_does_not_silently_rewrite_provider_identity(
 
 
 async def test_an_invalid_account_name_is_an_operator_facing_refusal(db_session):
-    from vitals.services.federated_login_service import NoSuchAccount, link_identity
+    from vitals.services.authentication.federation import NoSuchAccount, link_identity
 
     with pytest.raises(NoSuchAccount):
         await link_identity(

@@ -12,7 +12,8 @@ import time
 import pytest
 
 from vitals.models.app_settings import AppSetting
-from vitals.services import data_portability_service, twofa_service
+from vitals.services import data_portability_service
+from vitals.services.authentication import legacy_two_factor as twofa_service
 from vitals.services.data_portability_service import _is_secret_setting_key
 from web.config import PENDING_2FA_COOKIE, SESSION_COOKIE
 

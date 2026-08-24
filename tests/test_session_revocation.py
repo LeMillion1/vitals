@@ -17,7 +17,7 @@ import pytest
 
 from vitals.enums import UserStatus
 from vitals.models.identity import User
-from vitals.services.session_service import (
+from vitals.services.authentication.sessions import (
     LiveSession,
     SessionRejected,
     confirm_session,

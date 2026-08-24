@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — authentication code now has one boundary
+
+OIDC verification, provider identity binding, session revocation, OAuth client
+metadata, MCP credentials, and the legacy local TOTP path now live together in
+`vitals.services.authentication`. Their filenames describe the concepts they
+own instead of adding six more `*_service.py` modules to the flat service root;
+all internal callers moved atomically and the old paths are not retained as a
+second API.
+
 ### Fixed — MCP issuer binding is now enforced
 
 Registry-backed connector tokens already carried both audience and issuer, but
@@ -798,7 +807,7 @@ of the release that makes it mean anything. The two middle modes have no
 implementation and refuse with a message that says so, rather than falling
 through to the most permissive one.
 
-`federated_login_service` consults it: an unrecognised provider identity becomes
+`authentication.federation` consults it: an unrecognised provider identity becomes
 an account only where the installation has said it wants one, and the refusal
 when it has not is byte-identical to "no such identity", so a stranger learns
 nothing about whether this installation is accepting people. A name somebody
@@ -1672,7 +1681,7 @@ this was reachable from the suite.
 
 ### Added — federated authentication (PR-05)
 
-- **Vitals stops authenticating anybody.** `vitals/services/oidc.py` verifies
+- **Vitals stops authenticating anybody.** `vitals/services/authentication/oidc.py` verifies
   what a provider hands back: the issuer verbatim in the discovery document, the
   token and the authorization response (RFC 9207); the audience and `azp`; the
   nonce; the state; PKCE with S256 only; token times; and `auth_time` when an
@@ -1683,7 +1692,7 @@ this was reachable from the suite.
   provider may let somebody claim an address later, and matching on it would
   hand over the whole record.
 - Session cookies gain a version 2 carrying the local user id, the session
-  version and the provider's `auth_time`. `session_service` confirms each
+  version and the provider's `auth_time`. `authentication.sessions` confirms each
   against the account on every request, so bumping one row revokes every session
   that account holds — with no server-side store to grow and go stale.
 - Provisioning is closed: a valid login by somebody with no account is a
@@ -2864,7 +2873,7 @@ this was reachable from the suite.
 ### Added — Optional two-factor sign-in (TOTP)
 
 - **Two-step login** (`web/auth.py`) — with 2FA on, a correct password no longer completes anything: it hands the browser a short-lived pending handle that grants no access, and the session is minted only at `/login/2fa` after a valid code. The handle is signed with its own salt (`vitals-2fa`), alongside the session and MCP salts, so it can never be presented where a real session is expected. The code field auto-submits at six digits.
-- **Codes are stdlib** (`vitals/services/twofa_service.py`) — RFC 6238 is an HMAC-SHA1 over a 30-second counter plus dynamic truncation, so there is no authenticator library. ±1 step for clock drift, constant-time compare per candidate step, and the matched step is burned in Redis so the same six digits can't be replayed by whoever read them over your shoulder. Conformance is pinned against the published RFC test vectors.
+- **Codes are stdlib** (`vitals/services/authentication/legacy_two_factor.py`) — RFC 6238 is an HMAC-SHA1 over a 30-second counter plus dynamic truncation, so there is no authenticator library. ±1 step for clock drift, constant-time compare per candidate step, and the matched step is burned in Redis so the same six digits can't be replayed by whoever read them over your shoulder. Conformance is pinned against the published RFC test vectors.
 - **Enrolment in Settings**, off by default — a QR (inline SVG, `segno`) for a second device, the key in text with a copy button, and an `otpauth://` link for an authenticator on the machine showing the page. A freshly minted secret is stored **unconfirmed** and grants nothing until a code from it is typed back, so a key that never reached the app can't lock the owner out. Turning 2FA off requires a current code — otherwise a stolen session cookie could switch off the very factor that makes the cookie insufficient.
 - **Backup symmetry** (`vitals/services/data_portability_service.py`) — the exporter already dropped `app_settings` keys that look like a credential; the importer now mirrors that rule and neither deletes nor accepts them. Without the mirror, restoring any legitimate backup silently switched 2FA off (the file never carries the key, and the restore wipes before it reloads), and an uploaded file could plant a chosen secret without presenting a code.
 - No new environment variable and no migration: the state is one row in `app_settings`, and the key name keeps it out of every downloaded backup. Restoring onto a fresh server therefore leaves 2FA off — deliberately, and it fails toward "the password still works" rather than locking the owner out.

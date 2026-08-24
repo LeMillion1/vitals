@@ -17,7 +17,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from vitals.services import oauth_client_metadata_service as client_metadata
+from vitals.services.authentication import oauth_clients as client_metadata
 
 DOCUMENT_URL = "https://apps.example.test/connector.json"
 

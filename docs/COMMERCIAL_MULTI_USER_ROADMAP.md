@@ -915,11 +915,11 @@ Delivered, in four pieces, with two decisions taken against this plan:
   ever being live at once. `authenticate()` refuses before it reaches the stored
   hash, so a bcrypt value surviving in the column is not a second way in.
 
-What landed: the OIDC boundary (`vitals/services/oidc.py`) with every check in
+What landed: the OIDC boundary (`vitals/services/authentication/oidc.py`) with every check in
 one place because nothing downstream re-validates a login; revocable sessions
 carrying the user id, session version and the provider's `auth_time`
-(`session_service`); closed provisioning with a single operator-driven binding
-for the pre-cutover owner (`federated_login_service`); and the two routes
+(`authentication.sessions`); closed provisioning with a single operator-driven binding
+for the pre-cutover owner (`authentication.federation`); and the two routes
 themselves, whose handoff cookie carries state, nonce and verifier under its own
 serializer salt and is cleared on every path out.
 
@@ -948,7 +948,7 @@ a property of there being nowhere for an account to come from.
   application and the script had two different ideas of what a subject is and
   the script's was the one anybody looked at. It never adopts `.env`'s provider
   credentials.
-- `federated_login_service` consults the mode, and its refusal for a closed
+- `authentication.federation` consults the mode, and its refusal for a closed
   installation is byte-identical to its refusal for an unknown identity.
 - `scripts/provision_account.py` is how an operator creates one today: no form,
   no route, no token, and whoever runs it already has a shell on the host.

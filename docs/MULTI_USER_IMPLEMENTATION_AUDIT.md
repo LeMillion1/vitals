@@ -44,8 +44,8 @@ The earlier documentation overstated completion in four important areas:
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
 | Domain enum | 14 health domains | Verified |
 | Web routers | 28 modules under `web/routers` | Verified |
-| Application services | 95 tracked non-`__init__` modules after the care, analytics, and persistence moves | Verified |
-| Flat service debt | 83 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
+| Application services | 95 tracked non-`__init__` modules after the care, authentication, analytics, and persistence moves | Verified |
+| Flat service debt | 77 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
 | Commercial Git history | 220 commits after base `c91456a`; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
@@ -207,10 +207,9 @@ operator work that local tests cannot prove.
 
 ### `ARCHITECTURE.md` — mostly current method, incomplete generated sources
 
-Its reproducible-counter idea is right. The RLS source list omits revisions
-0055–0057, and its assertion that the HTML is kept synchronized is false. It now
-documents the first bounded-context moves, but the live flat-service debt is
-still substantial.
+Its reproducible-counter idea is right. The RLS source list and HTML counters
+were synchronized during this audit. It now documents the first bounded-context
+moves, but the live flat-service debt is still substantial.
 
 ### `ARCHITECTURE.html` — synchronized during this audit
 

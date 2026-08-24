@@ -474,7 +474,7 @@ async def test_after_the_cutover_the_settings_page_stops_offering_sign_in(
     """
 
     from vitals.models.app_settings import AppSetting
-    from vitals.services import twofa_service
+    from vitals.services.authentication import legacy_two_factor as twofa_service
 
     # A pre-cutover enrolment nobody ever finished.
     db_session.add(

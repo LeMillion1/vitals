@@ -20,7 +20,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from vitals.services.oidc import (
+from vitals.services.authentication.oidc import (
     OidcConfigurationError,
     OidcDiscoveryError,
     OidcProtocolError,
@@ -232,7 +232,7 @@ def test_the_pkce_challenge_is_the_hash_of_the_verifier_not_the_verifier():
 def test_every_login_request_is_unique():
     """Reused state or nonce would let one login's callback complete another."""
 
-    from vitals.services.oidc import new_pkce_pair as pair
+    from vitals.services.authentication.oidc import new_pkce_pair as pair
 
     verifiers = {pair()[0] for _ in range(50)}
     assert len(verifiers) == 50

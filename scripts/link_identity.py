@@ -39,7 +39,7 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 )
 
 import vitals.models  # noqa: E402,F401  -- register the metadata graph
-from vitals.services import federated_login_service  # noqa: E402
+from vitals.services.authentication import federation  # noqa: E402
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -71,13 +71,13 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         async with factory() as session:
             try:
-                link = await federated_login_service.link_identity(
+                link = await federation.link_identity(
                     session,
                     username=args.username,
                     issuer=args.issuer,
                     subject=args.subject,
                 )
-            except federated_login_service.FederatedLoginError as exc:
+            except federation.FederatedLoginError as exc:
                 await session.rollback()
                 print(str(exc), file=sys.stderr)
                 return 1

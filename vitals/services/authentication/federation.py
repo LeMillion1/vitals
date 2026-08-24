@@ -1,6 +1,6 @@
 """Turning a validated provider login into a local user, or refusing to.
 
-:mod:`vitals.services.oidc` decides whether a token is genuine. This decides
+:mod:`vitals.services.authentication.oidc` decides whether a token is genuine. This decides
 whether the person it describes may have a session here, which is a different
 question with a different answer: a perfectly valid login by somebody with no
 account is a refusal, not a new account.

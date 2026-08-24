@@ -111,7 +111,10 @@ async def require_auth(
     if claims.user_id is not None:
         from datetime import datetime, timezone
 
-        from vitals.services.session_service import SessionRejected, confirm_session
+        from vitals.services.authentication.sessions import (
+            SessionRejected,
+            confirm_session,
+        )
 
         authenticated_at = (
             datetime.fromtimestamp(claims.authenticated_at, tz=timezone.utc)

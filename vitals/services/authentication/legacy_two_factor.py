@@ -1,4 +1,10 @@
-"""Two-factor authentication (TOTP, RFC 6238) — off by default, switched on from
+"""Legacy installation-wide two-factor authentication (TOTP, RFC 6238).
+
+This boundary is used only while local password authentication remains active.
+Federated deployments delegate account-specific second factors to their identity
+provider.
+
+It is off by default and switched on from
 Settings.
 
 Single user, so there is no per-account table: the secret and whether enrolment

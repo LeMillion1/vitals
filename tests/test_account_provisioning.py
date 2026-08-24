@@ -255,7 +255,7 @@ async def test_a_stranger_with_a_valid_login_gets_no_account(
 ):
     """A valid provider login by somebody with no account is a refusal."""
 
-    from vitals.services import federated_login_service
+    from vitals.services.authentication import federation as federated_login_service
 
     with pytest.raises(federated_login_service.UnknownFederatedIdentity):
         await federated_login_service.resolve_federated_user(
@@ -284,7 +284,7 @@ async def test_an_open_installation_provisions_and_links_in_one_go(
     """
 
     from vitals.models.identity import UserFederatedIdentity
-    from vitals.services import federated_login_service
+    from vitals.services.authentication import federation as federated_login_service
 
     monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
     await registration_service.set_stored_mode(
@@ -319,7 +319,7 @@ async def test_an_open_installation_still_refuses_a_name_somebody_holds(
 ):
     """Picking ``newcomer-2`` would hand a stranger a name implying a relationship."""
 
-    from vitals.services import federated_login_service
+    from vitals.services.authentication import federation as federated_login_service
 
     monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
     await registration_service.set_stored_mode(
@@ -342,7 +342,7 @@ async def test_an_open_installation_still_refuses_a_name_somebody_holds(
 async def test_the_name_falls_back_to_the_subject_when_the_provider_offers_nothing(
     db_session, legacy_owner_roots, monkeypatch
 ):
-    from vitals.services import federated_login_service
+    from vitals.services.authentication import federation as federated_login_service
 
     monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
     await registration_service.set_stored_mode(

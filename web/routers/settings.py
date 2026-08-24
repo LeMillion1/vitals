@@ -54,8 +54,8 @@ from vitals.services import (
     platform_ai_control_service,
     platform_admin_service,
     provider_credentials_service,
-    twofa_service,
 )
+from vitals.services.authentication import legacy_two_factor as twofa_service
 from vitals.services.modules_service import ModuleToggleError
 from vitals.access import PolicyAction, PolicyResourceType
 from web.config import get_web_config
@@ -672,7 +672,7 @@ async def _connector_rows(db: AsyncSession, *, actor_username: str) -> list[dict
 
     from datetime import datetime, timezone as _timezone
 
-    from vitals.services import mcp_token_service
+    from vitals.services.authentication import mcp_tokens
     from vitals.services.identity_service import normalize_username
     from vitals.models.identity import User
 
@@ -684,12 +684,12 @@ async def _connector_rows(db: AsyncSession, *, actor_username: str) -> list[dict
         return []
 
     now = datetime.now(_timezone.utc)
-    rows = await mcp_token_service.list_for_user(db, user_id=user_id)
+    rows = await mcp_tokens.list_for_user(db, user_id=user_id)
     listed = []
     for row in rows:
         if row.revoked_at is not None:
             state = "revoked"
-        elif mcp_token_service.is_live(row, at=now):
+        elif mcp_tokens.is_live(row, at=now):
             state = "active"
         else:
             # Lapsed rather than disconnected: nobody stopped it, the clock did,
@@ -722,7 +722,7 @@ async def revoke_connector(
     """
 
     from vitals.models.identity import User
-    from vitals.services import mcp_token_service
+    from vitals.services.authentication import mcp_tokens
     from vitals.services.identity_service import normalize_username
 
     lookup = normalize_username(username).lookup_key
@@ -732,8 +732,8 @@ async def revoke_connector(
     if user_id is None:
         return _redirect("?error=mcp_tokens")
     try:
-        await mcp_token_service.revoke(db, user_id=user_id, jti=connector_id)
-    except mcp_token_service.McpTokenError:
+        await mcp_tokens.revoke(db, user_id=user_id, jti=connector_id)
+    except mcp_tokens.McpTokenError:
         await db.rollback()
         return _redirect("?error=mcp_tokens")
     await db.commit()

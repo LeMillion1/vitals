@@ -96,7 +96,7 @@ class _ConnectorTokenVerifier:
     async def verify_token(self, token: str) -> AccessToken | None:
         from itsdangerous import BadSignature, SignatureExpired
 
-        from vitals.services import mcp_token_service
+        from vitals.services.authentication import mcp_tokens
         from web.auth import _get_mcp_serializer
 
         cfg = get_web_config()
@@ -115,12 +115,12 @@ class _ConnectorTokenVerifier:
         # asked of the database, on every request, because each of those can
         # become false while a valid signature stays valid.
         async with get_session_factory()() as session:
-            verified = await mcp_token_service.verify(
+            verified = await mcp_tokens.verify(
                 session,
                 payload=payload,
                 token=token,
                 expected_client_id=cfg.mcp_client_id,
-                expected_audience=mcp_token_service.audience_for(cfg.public_url),
+                expected_audience=mcp_tokens.audience_for(cfg.public_url),
                 expected_issuer=cfg.public_url,
                 signed_at=signed_at,
             )
