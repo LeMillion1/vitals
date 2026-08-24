@@ -55,6 +55,7 @@ from web.deps import (
     load_enabled_modules,
     load_language,
     load_nav_status,
+    load_support_banner,
     load_subject_timezone,
     require_module,
 )
@@ -324,6 +325,9 @@ app = FastAPI(
         Depends(load_enabled_modules),
         # After load_enabled_modules — it reads the resolved module map.
         Depends(load_nav_status),
+        # Last: it is the only one whose absence changes nothing else on the
+        # page, and the only one a patient is entitled to see on every page.
+        Depends(load_support_banner),
     ],
 )
 
@@ -817,6 +821,10 @@ from web.routers.files import router as files_router  # noqa: E402
 from web.routers.care import router as care_router  # noqa: E402
 from web.routers.consents import router as consents_router  # noqa: E402
 from web.routers.messages import router as messages_router  # noqa: E402
+from web.routers.support_access import (  # noqa: E402
+    admin_router as support_admin_router,
+    patient_router as support_patient_router,
+)
 from web.routers.glp1 import router as glp1_router  # noqa: E402
 from web.routers.supplements import router as supplements_router  # noqa: E402
 from web.routers.hrt import router as hrt_router  # noqa: E402
@@ -859,6 +867,11 @@ app.include_router(consents_router)
 # are the professional's — deliberately the same ones, because they are the same
 # rooms.
 app.include_router(messages_router)
+# Both sides of a support grant. Registered before the settings router for
+# the reason the consents router is: /settings/platform/support and
+# /settings/access must be matched by their own routes rather than swallowed.
+app.include_router(support_admin_router)
+app.include_router(support_patient_router)
 app.include_router(garmin_router)
 app.include_router(labs_router)
 app.include_router(reports_router)

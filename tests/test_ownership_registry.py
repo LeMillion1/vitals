@@ -26,8 +26,9 @@ def test_every_registered_table_has_exactly_one_ownership_contract():
     assert set(OWNERSHIP_REGISTRY) == set(Base.metadata.tables)
     # 70 until revision 0058 dropped ``signals`` and ``day_context``; 69 since
     # 0060 added ``integration_credentials``; 72 since 0061 added the care-team
-    # thread, its participants and its messages.
-    assert len(OWNERSHIP_REGISTRY) == 72
+    # thread, its participants and its messages; 74 since 0062 added the support
+    # access request and its scopes.
+    assert len(OWNERSHIP_REGISTRY) == 74
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -91,6 +92,8 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "shared_reports",
         "subject_settings",
         "support_access_grants",
+        "support_access_request_scopes",
+        "support_access_requests",
         "support_access_scopes",
         "user_federated_identities",
         "user_roles",

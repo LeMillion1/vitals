@@ -293,6 +293,51 @@ async def load_nav_status(
         logger.exception("nav status load failed; hiding the status card")
 
 
+async def load_support_banner(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    """Global dependency: whether somebody from support can open this record.
+
+    A grant is time-limited, scoped and approved, and none of that is worth much
+    if the person whose record it is has to go looking for a settings page to
+    find out it is live. The roadmap calls for a persistent banner and this is
+    it: on every page, for as long as the access lasts, and gone by itself when
+    it lapses.
+
+    Chrome, so it is document-requests-only and fail-safe by exactly the rules
+    ``load_nav_status`` documents above — an account with no record of its own
+    simply draws no banner, and any error draws none rather than raising.
+    """
+
+    request.state.support_banner = None
+    accept = request.headers.get("accept", "")
+    if request.method != "GET":
+        return
+    if accept and "text/html" not in accept and "*/*" not in accept:
+        return
+    try:
+        scope = await get_request_chrome_scope(request, db)
+        if scope is None:
+            return
+        from vitals.services import support_access_service
+        from vitals.services.access_resolution import resolve_access_context
+
+        context = await resolve_access_context(
+            db, user_id=scope.user_id, subject_id=scope.subject_id
+        )
+        grant = await support_access_service.live_grant_for(db, context=context)
+        if grant is not None:
+            # Only the two facts the banner shows. A live ORM row on
+            # ``request.state`` is one a template could lazy-load from.
+            request.state.support_banner = {
+                "grant_id": str(grant.id),
+                "expires_at": grant.expires_at,
+            }
+    except Exception:
+        logger.exception("support banner load failed; hiding the banner")
+
+
 async def load_language(
     request: Request,
     db: AsyncSession = Depends(get_session),

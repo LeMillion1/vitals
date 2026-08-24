@@ -65,6 +65,7 @@ _POLICY_REVISIONS = (
     "0057_professional_notes_and_care_plans",
     "0060_per_subject_provider_credentials",
     "0061_care_team_threads_and_messages",
+    "0062_support_access_requests",
 )
 
 
@@ -705,7 +706,7 @@ def test_the_rewrite_reaches_every_policy_the_two_revisions_installed():
 
 
 def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
-    """The list is the review surface. A sixth caller has to be added here first.
+    """The list is the review surface. A new caller has to be added here first.
 
     Row security is worth having only while the ways past it are countable.
     Each of these is subject-less for a reason that is about the work itself:
@@ -730,6 +731,17 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         ("vitals/services/share_service.py", "purge_job"),
         ("vitals/services/ai_gateway_service.py", "reconciliation_job"),
         ("vitals/services/proactive/delivery.py", "delivery_reconciliation_job"),
+        # An administrator's own console: their live grants and unanswered asks
+        # span every record that answered one, so there is no single subject to
+        # bind and binding one would answer a different question. Both queries
+        # name this admin, and both return frozen values rather than rows, so
+        # nothing reachable under the open scope leaves the function.
+        ("vitals/services/support_access_service.py", "console_for_admin"),
+        # The list of records an ask may name. Same list ``/settings/platform/ai``
+        # already shows an administrator, and for the same reason: choosing whose
+        # record to investigate must be a choice from an auditable list, not a
+        # free-text search that finds a patient by name.
+        ("vitals/services/support_access_service.py", "reachable_subjects"),
     }
 
     def _enclosing(tree):

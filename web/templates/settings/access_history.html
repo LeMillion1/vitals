@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("support.patient_title") }}{% endblock %}
+
+{% block content %}
+{# hx-history="false", for the reason /settings/care carries it: htmx caches a
+   snapshot of every boosted page in localStorage, and a snapshot of this one is
+   a list of who has been reading somebody's medical record. #}
+<div hx-history="false"></div>
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+
+    {% call masthead_header('consents', t('support.patient_heading'), []) %}{% endcall %}
+    <p class="v-text-body max-w-2xl" style="color: var(--muted)">
+        {{ t("support.patient_description") }}
+    </p>
+
+    {% if decided %}<div class="v-alert info">{{ t("support.decided_" ~ decided) }}</div>{% endif %}
+    {% if error %}<div class="v-alert warn">{{ t("support.error_refused") }}</div>{% endif %}
+
+    {# Whatever is live goes at the top and is loud. Somebody reading this page
+       is usually here to answer exactly one question, and it is this one. #}
+    {% if live %}
+    <div class="v-alert warn flex flex-wrap items-center justify-between gap-3">
+        <span>
+            <strong>{{ t("support.live_now") }}</strong>
+            · {{ t("support.until") }} {{ live.expires_at | format_date }}
+        </span>
+        <form action="/settings/access/grant/{{ live.id }}/revoke" method="POST">
+            <button type="submit" class="v-btn text-xs">{{ t("support.revoke") }}</button>
+        </form>
+    </div>
+    {% endif %}
+
+    <!-- ─── WHAT WAS ASKED ─────────────────────────────────────────────────── -->
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("support.history_title")) }}
+
+        {% if not history %}
+        {# The empty state is the answer, not a placeholder: "nobody has asked"
+           is what a patient came here hoping to read. #}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.history_empty") }}</p>
+        {% else %}
+        {% for row in history %}
+        <div class="v-card-inset p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <span class="v-text-body">
+                    <strong>{{ row.requested_by.username }}</strong>
+                    · {{ t("support.status_" ~ row.status) }}
+                </span>
+                <span class="v-text-micro" style="color: var(--faint)">
+                    {{ row.created_at | format_date }}
+                </span>
+            </div>
+
+            {# The administrator's own sentence, verbatim. An approval asked for
+               without a reason the patient can read is not informed. #}
+            <p class="v-text-body" style="white-space: pre-wrap">{{ row.reason }}</p>
+
+            <p class="v-text-micro" style="color: var(--faint)">
+                {{ t("support.asked_for") }}:
+                {% for scope in row.scopes %}{{ t("enum.domain." ~ scope.resource_key) }}{% if not loop.last %}, {% endif %}{% endfor %}
+                · {{ t("support.for_hours", hours=(row.requested_ttl_seconds // 3600)) }}
+                {% if row.ticket_reference %} · {{ row.ticket_reference }}{% endif %}
+            </p>
+
+            {% if row.status == 'pending' %}
+            <div class="flex flex-wrap gap-3">
+                <form action="/settings/access/{{ row.id }}/approve" method="POST">
+                    <button type="submit" class="v-btn text-xs">{{ t("support.approve") }}</button>
+                </form>
+                <form action="/settings/access/{{ row.id }}/decline" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("support.decline") }}</button>
+                </form>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

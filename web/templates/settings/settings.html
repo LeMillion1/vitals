@@ -181,6 +181,23 @@
         </form>
     </div>
 
+    <!-- ─── WHO CAN OPEN THIS RECORD ──────────────────────────────────────── -->
+    {# Always here, not only once somebody has asked. A page that appears the
+       first time support requests access is a page nobody knows to look for,
+       and "has anybody been reading my record" is a question worth being able
+       to ask on a quiet day and get *no* for. #}
+    <div class="v-card v-setting-row p-6 space-y-5">
+        {{ card_header(t("support.patient_heading")) }}
+        <p class="v-text-body" style="color: var(--muted)">
+            {{ t("support.patient_description") }}
+        </p>
+        <div class="flex justify-end">
+            <a href="/settings/access" class="v-btn-ghost text-xs">
+                {{ t("support.history_title") }}
+            </a>
+        </div>
+    </div>
+
     <!-- ─── AI / OPENROUTER ────────────────────────────────────────────────── -->
     {% if can_manage_openrouter %}
     <div class="v-card v-setting-row p-6 space-y-5">
@@ -188,7 +205,10 @@
         <p class="v-text-body" style="color: var(--muted)">
             {{ t("settings.ai_description") }}
         </p>
-        <div class="flex justify-end">
+        <div class="flex flex-wrap justify-end gap-3">
+            <a href="/settings/platform/support" class="v-btn-ghost text-xs">
+                {{ t("support.console_heading") }}
+            </a>
             <a href="/settings/platform/ai" class="v-btn-ghost text-xs">
                 {{ t("settings.platform_ai.manage") }}
             </a>

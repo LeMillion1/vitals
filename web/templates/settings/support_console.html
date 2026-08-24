@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("support.console_title") }}{% endblock %}
+
+{% block content %}
+<div hx-history="false"></div>
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+
+    {% call masthead_header('settings', t('support.console_heading'), []) %}{% endcall %}
+    <p class="v-text-body max-w-2xl" style="color: var(--muted)">
+        {{ t("support.console_description") }}
+    </p>
+
+    {% if asked %}<div class="v-alert info">{{ t("support.console_" ~ asked) }}</div>{% endif %}
+    {% if error %}<div class="v-alert warn">{{ t("support.error_refused") }}</div>{% endif %}
+
+    <!-- ─── WHAT IS OPEN RIGHT NOW ─────────────────────────────────────────── -->
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("support.live_title")) }}
+
+        {% if not grants %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.live_empty") }}</p>
+        {% else %}
+        {% for grant in grants %}
+        <div class="v-card-inset p-4 flex flex-wrap items-center justify-between gap-3">
+            <span class="v-text-body">
+                <strong>{{ grant.subject_display_name }}</strong>
+                · {{ t("support.mode_" ~ grant.mode) }}
+                · {{ t("support.until") }} {{ grant.expires_at | format_date }}
+            </span>
+            <div class="flex gap-3">
+                <a href="/care/{{ grant.subject_id }}" class="v-btn-ghost text-xs">{{ t("support.open_record") }}</a>
+                <form action="/settings/platform/support/grant/{{ grant.grant_id }}/revoke" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("support.hand_back") }}</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+
+    <!-- ─── WHAT IS STILL WAITING FOR AN ANSWER ────────────────────────────── -->
+    {% if requests %}
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("support.waiting_title")) }}
+        {% for row in requests %}
+        <div class="v-card-inset p-4 space-y-2">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <span class="v-text-body"><strong>{{ row.subject_display_name }}</strong></span>
+                <form action="/settings/platform/support/{{ row.request_id }}/withdraw" method="POST">
+                    <button type="submit" class="v-btn-ghost text-xs">{{ t("support.withdraw") }}</button>
+                </form>
+            </div>
+            <p class="v-text-micro" style="color: var(--faint)">
+                {% for key in row.scope_keys %}{{ t("enum.domain." ~ key) }}{% if not loop.last %}, {% endif %}{% endfor %}
+                · {{ t("support.lapses") }} {{ row.expires_at | format_date }}
+            </p>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- ─── ASK ────────────────────────────────────────────────────────────── -->
+    <div class="v-card p-6 space-y-4">
+        {{ card_header(t("support.ask_title")) }}
+
+        {# The patient reads every field of this form. That is why the reason is
+           required and free text while the record is a list rather than a
+           search box: choosing whose record to investigate has to be a choice
+           somebody can audit, not a name somebody typed. #}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.ask_hint") }}</p>
+
+        {% if not subjects %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("support.ask_nobody") }}</p>
+        {% else %}
+        <form action="/settings/platform/support/request" method="POST" class="space-y-4">
+            <div>
+                <label for="support-subject" class="v-label">{{ t("support.field_record") }}</label>
+                <select id="support-subject" name="subject_id" class="v-input" required>
+                    {% for subject_id, display_name in subjects %}
+                    <option value="{{ subject_id }}">{{ display_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div>
+                <label for="support-reason" class="v-label">{{ t("support.field_reason") }}</label>
+                <textarea id="support-reason" name="reason" rows="3" class="v-input" required
+                          maxlength="2000" placeholder="{{ t('support.field_reason_hint') }}"></textarea>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label for="support-hours" class="v-label">{{ t("support.field_hours") }}</label>
+                    <input id="support-hours" name="hours" type="number" inputmode="numeric"
+                           step="1" class="v-input" min="1" max="{{ max_hours }}"
+                           value="{{ default_hours }}" required>
+                </div>
+                <div>
+                    <label for="support-ticket" class="v-label">{{ t("support.field_ticket") }}</label>
+                    <input id="support-ticket" name="ticket_reference" type="text"
+                           class="v-input" maxlength="120">
+                </div>
+            </div>
+
+            <fieldset class="space-y-2">
+                <legend class="v-label">{{ t("support.field_domains") }}</legend>
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {% for domain in domains %}
+                    <label class="v-text-body flex items-center gap-2">
+                        <input type="checkbox" name="domains" value="{{ domain }}">
+                        {{ t("enum.domain." ~ domain) }}
+                    </label>
+                    {% endfor %}
+                </div>
+            </fieldset>
+
+            <div class="flex justify-end">
+                <button type="submit" class="v-btn text-xs">{{ t("support.ask_submit") }}</button>
+            </div>
+        </form>
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

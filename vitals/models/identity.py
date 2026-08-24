@@ -26,6 +26,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -42,6 +43,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from vitals.enums import (
     AuditOutcome,
     SupportAccessMode,
+    SupportAccessRequestStatus,
     SupportAccessStatus,
     SupportScopeResourceType,
     UserRoleName,
@@ -453,6 +455,206 @@ class SupportAccessScope(Base):
 
     grant: Mapped[SupportAccessGrant] = relationship(
         back_populates="scopes", foreign_keys=[grant_id]
+    )
+
+
+class SupportAccessRequest(Base):
+    """An ask for support access, which is not access.
+
+    It exists because ``support_access_grants`` cannot hold one. That table's
+    constraints say a row there was approved by somebody other than its
+    grantee and expires strictly after that approval — there is no state of it
+    meaning "nobody has agreed yet", and inventing one would cost exactly those
+    two guarantees. So the ask is its own record, and approving it is what
+    writes a grant.
+
+    **The person who decides is the subject's owner.** An admin asks; nobody on
+    the platform side can answer for the patient. The pair of columns says which
+    is which, and the constraint below keeps a decision from being recorded
+    without a decider or a time.
+
+    Declined and withdrawn rows are kept rather than deleted. "Support asked to
+    read my record in March and I said no" is a thing a patient is entitled to
+    find later, and a table that only remembers the yeses cannot answer it.
+    """
+
+    __tablename__ = "support_access_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "id", "subject_id", name="uq_support_access_requests_id_subject"
+        ),
+        CheckConstraint(
+            f"status IN ({_values(SupportAccessRequestStatus)})",
+            name="ck_support_access_requests_status",
+        ),
+        CheckConstraint(
+            f"mode IN ({_values(SupportAccessMode)})",
+            name="ck_support_access_requests_mode",
+        ),
+        CheckConstraint(
+            "length(trim(reason)) > 0 AND length(reason) <= 2000",
+            name="ck_support_access_requests_reason",
+        ),
+        CheckConstraint(
+            "ticket_reference IS NULL OR "
+            "(length(trim(ticket_reference)) > 0 AND length(ticket_reference) <= 120)",
+            name="ck_support_access_requests_ticket_reference",
+        ),
+        CheckConstraint(
+            "requested_ttl_seconds > 0 AND requested_ttl_seconds <= 86400",
+            name="ck_support_access_requests_ttl_bounds",
+        ),
+        # A decision has a decider and a time, or the row is still pending.
+        # Without this a request could read "declined" with nobody having
+        # declined it, which is the one thing an access history must not do.
+        CheckConstraint(
+            "(status = 'pending' AND decided_at IS NULL "
+            "AND decided_by_user_id IS NULL) OR "
+            "(status <> 'pending' AND decided_at IS NOT NULL "
+            "AND decided_by_user_id IS NOT NULL)",
+            name="ck_support_access_requests_decision_state",
+        ),
+        # Only an approval names a grant, and an approval always does.
+        CheckConstraint(
+            "(status = 'approved') = (granted_id IS NOT NULL)",
+            name="ck_support_access_requests_grant_link",
+        ),
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_support_access_requests_positive_window",
+        ),
+        Index(
+            "ix_support_access_requests_subject_status",
+            "subject_id",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_support_access_requests_requester_status",
+            "requested_by_user_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("health_subjects.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    requested_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=SupportAccessRequestStatus.PENDING.value,
+    )
+    #: Why, in the admin's own words. Shown to the patient verbatim: an approval
+    #: asked for without a reason is not informed consent to anything.
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    ticket_reference: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    #: How long the grant should last if approved. Asked for up front so the
+    #: patient approves a bounded thing rather than an open door somebody sizes
+    #: afterwards. One day is the ceiling the constraint enforces.
+    requested_ttl_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: When the *ask* stops being answerable. An unanswered request is not a
+    #: pending obligation forever.
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    decided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decided_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    granted_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("support_access_grants.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    requested_by: Mapped[User] = relationship(foreign_keys=[requested_by_user_id])
+    decided_by: Mapped[Optional[User]] = relationship(
+        foreign_keys=[decided_by_user_id]
+    )
+    granted: Mapped[Optional[SupportAccessGrant]] = relationship(
+        foreign_keys=[granted_id]
+    )
+    scopes: Mapped[list["SupportAccessRequestScope"]] = relationship(
+        back_populates="request",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class SupportAccessRequestScope(Base):
+    """One resource/action pair an ask names, in the same vocabulary a grant uses.
+
+    Enumerated for the same reason the grant's scopes are: the patient is being
+    asked to agree to something specific, and "everything" is not something a
+    person can weigh. The wildcard ban is repeated here rather than left to the
+    grant, because the screen the patient reads is built from *these* rows.
+    """
+
+    __tablename__ = "support_access_request_scopes"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["request_id", "subject_id"],
+            ["support_access_requests.id", "support_access_requests.subject_id"],
+            name="fk_support_access_request_scopes_request_subject",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "request_id",
+            "resource_type",
+            "resource_key",
+            "action",
+            name="uq_support_access_request_scopes_request_resource_action",
+        ),
+        CheckConstraint(
+            f"resource_type IN ({_values(SupportScopeResourceType)})",
+            name="ck_support_access_request_scopes_resource_type",
+        ),
+        CheckConstraint(
+            f"action IN ({_values(SupportAccessMode)})",
+            name="ck_support_access_request_scopes_action",
+        ),
+        CheckConstraint(
+            "length(trim(resource_key)) > 0",
+            name="ck_support_access_request_scopes_resource_key_not_blank",
+        ),
+        CheckConstraint(
+            "resource_key NOT LIKE '%*%'",
+            name="ck_support_access_request_scopes_no_wildcard",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    request_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    #: Carried so row security has a column on the row it is policing, and made
+    #: unable to drift from its parent by the composite key above.
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("health_subjects.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    resource_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    resource_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+    request: Mapped[SupportAccessRequest] = relationship(
+        back_populates="scopes", foreign_keys=[request_id]
     )
 
 

@@ -48,6 +48,25 @@ class SupportAccessStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class SupportAccessRequestStatus(StrEnum):
+    """Lifecycle of an *ask* for support access, which is not access.
+
+    Separate from :class:`SupportAccessStatus` because the two describe
+    different objects. A row in ``support_access_grants`` is authorization that
+    somebody already approved — its constraints say so: an approver who is not
+    the grantee, and an expiry strictly after the approval. There is no state of
+    that row meaning "nobody has agreed yet", and adding one would cost exactly
+    those two guarantees. So the ask lives in its own table and ends by
+    producing a grant, or by not producing one.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    DECLINED = "declined"
+    WITHDRAWN = "withdrawn"
+    EXPIRED = "expired"
+
+
 class ProfessionalKind(StrEnum):
     """What a professional is, from the patient's point of view.
 

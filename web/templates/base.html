@@ -470,6 +470,20 @@
          the AI digest must be copyable. -->
     <main class="flex-1 min-w-0 w-full overflow-y-auto">
         <!-- System Alerts Container -->
+        {# Somebody from platform support can open this record right now. Shown
+           on every page for as long as that lasts, and gone by itself when it
+           does: a grant the person whose record it is has to go hunting through
+           settings to discover is not meaningfully consented to. #}
+        {% if request.state.support_banner %}
+        <div class="flex-none px-6 pt-5 max-w-6xl mx-auto w-full">
+            <div class="v-alert warn flex flex-wrap items-center justify-between gap-3">
+                <span>{{ t("support.live_now") }} · {{ t("support.until") }}
+                    {{ request.state.support_banner.expires_at | format_date }}</span>
+                <a href="/settings/access" class="v-btn-ghost text-xs">{{ t("support.revoke") }}</a>
+            </div>
+        </div>
+        {% endif %}
+
         {% if alerts %}
         <div id="alerts-container" class="flex-none px-6 pt-5 max-w-6xl mx-auto w-full space-y-2">
             {% if alerts|length > 1 %}

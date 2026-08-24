@@ -400,6 +400,16 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         user_portable=False,
     ),
+    "support_access_requests": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
+    "support_access_request_scopes": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL_CHILD,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "support_access_scopes": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL_CHILD,
         subject=TargetColumn.INHERITED,

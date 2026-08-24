@@ -149,6 +149,7 @@ async def resolve_access_context(
     # that can only ever answer "no" — and, worse, a place for a stray row to
     # start meaning something about a person who already has full access.
     relationship_grant = None
+    support_grant = None
     if owner_user_id != principal.user_id:
         from vitals.services.care_service import load_relationship_grant
 
@@ -160,12 +161,31 @@ async def resolve_access_context(
                 evaluated_at=decided_at,
             )
 
+        # Only for an actual superadmin, and only for somebody else's record.
+        # This module's docstring has promised support grants were read here
+        # since it was written, and until now they were not: the policy engine
+        # understood them, nothing ever handed it one, and an approved grant
+        # authorized exactly nothing. Gated on the role so an ordinary
+        # professional's request does not pay for a query that can only ever
+        # answer "no".
+        if UserRoleName.PLATFORM_SUPERADMIN in principal.roles:
+            from vitals.services.support_access_service import load_support_grant
+
+            with session.no_autoflush:
+                support_grant = await load_support_grant(
+                    session,
+                    subject_id=resolved_subject_id,
+                    admin_user_id=principal.user_id,
+                    evaluated_at=decided_at,
+                )
+
     return AccessContext(
         principal=principal,
         subject_id=resolved_subject_id,
         subject_owner_user_id=owner_user_id,
         evaluated_at=decided_at,
         relationship_grant=relationship_grant,
+        support_grant=support_grant,
     )
 
 
