@@ -28,8 +28,9 @@ The earlier documentation overstated completion in four important areas:
    specific gaps.
 3. The ownership inventory calls itself exhaustive but omits 12 of 76 live
    tables. The machine registry is exhaustive; the prose table is not.
-4. `ARCHITECTURE.html` is a historical snapshot presented as a live reference.
-   Its schema, migration, router, service, RLS, and roadmap counters are stale.
+4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
+   Its schema, migration, router, service, RLS, ownership-class, and roadmap
+   counters were synchronized during this audit.
 
 ## Reproducible current facts
 
@@ -184,16 +185,16 @@ tense statements about global keys, FastMCP v1, exact-one scheduling, opaque
 asset URLs, and unscoped charts/reports are stale. Treat it as a versioned
 cutover dossier, never as runtime status.
 
-### `OWNERSHIP_CUTOVER_RUNBOOK.md` — correct order, incomplete operation
+### `OWNERSHIP_CUTOVER_RUNBOOK.md` — corrected during this audit
 
 The 18-phase order, checkpoint model, 0049 non-null guard, 0050+ FORCE RLS, and
-fresh-install migration path are real. Two operational claims need correction:
-
-- FastAPI lifespan, not “the first request”, bootstraps the owner.
-- After `alembic upgrade 0048`, the normal image command immediately upgrades
-  to head before starting Uvicorn. The runbook gives no safe one-off command to
-  start the application at 0048 for root materialization. A rehearsal on the
-  real production lake is not proved by a text-order test.
+fresh-install migration path are real. The runbook now says FastAPI lifespan,
+not “the first request”, performs normal bootstrap and no longer tells an
+operator to start current runtime code on the intermediate 0048 schema. The
+bounded `scripts/bootstrap_ownership_roots.py` command creates only the owner,
+resource roots and checked-in catalogs, commits once, and exits without the
+scheduler or external integrations. A rehearsal on the real production lake is
+still not proved by a local text-order test.
 
 ### `OIDC_SETUP.md` — corrected during this audit
 
@@ -211,14 +212,12 @@ Its reproducible-counter idea is right. The RLS source list omits revisions
 documents the first bounded-context moves, but the live flat-service debt is
 still substantial.
 
-### `ARCHITECTURE.html` — stale snapshot
+### `ARCHITECTURE.html` — synchronized during this audit
 
-Displayed claims include 62 or 72 tables instead of 76, 53 migrations instead
-of 64, 15 domains instead of 14, 26 routers instead of 28, 59 RLS tables instead
-of 62, and PR-05/PR-07 states that predate their implementations. Its ownership
-class table contains only eight of the current classes. Generate its counters
-from code or remove them; hand-maintained duplicate numbers have repeatedly
-drifted.
+The displayed schema, migration, domain, router, application-service, RLS,
+ownership-class, PR-05, and PR-07 facts now match the current registries. They
+remain hand-maintained duplicates; generating them from code is still safer
+than relying on future reviewers to update every copy.
 
 ### `DESIGN_SYSTEM.md` — strongest live document
 

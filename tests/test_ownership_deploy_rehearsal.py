@@ -398,3 +398,28 @@ def test_the_runbook_lists_the_phases_in_the_sequence_order():
     assert listed == [step.script for step in OWNERSHIP_BACKFILL_SEQUENCE]
     for step in OWNERSHIP_BACKFILL_SEQUENCE:
         assert step.phase in runbook, step.phase
+
+    bootstrap_script = REPOSITORY_ROOT / "scripts" / "bootstrap_ownership_roots.py"
+    assert bootstrap_script.is_file()
+    assert "scripts/bootstrap_ownership_roots.py" in runbook
+    assert "docker compose run --rm --no-deps" in runbook
+
+
+async def test_the_bounded_root_bootstrap_is_idempotent(
+    db_session, legacy_owner_roots
+):
+    from scripts.bootstrap_ownership_roots import bootstrap
+    from vitals.models.identity import HealthSubject, User
+
+    user = await db_session.get(User, legacy_owner_roots.user_id)
+    subject = await db_session.get(HealthSubject, legacy_owner_roots.subject_id)
+    assert user is not None and user.password_hash
+    assert subject is not None
+
+    await bootstrap(
+        db_session,
+        username=user.username,
+        password_hash=user.password_hash,
+        timezone=subject.timezone,
+    )
+    await db_session.commit()

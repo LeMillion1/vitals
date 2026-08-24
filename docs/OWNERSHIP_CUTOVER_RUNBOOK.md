@@ -6,8 +6,8 @@ Last reviewed: 2026-08-24
 
 This whole document is about a lake that already holds somebody's history. A
 **new** installation needs none of it: `alembic upgrade head` reaches head on its
-own, which is what the container's start command already runs, and the first
-request bootstraps the owner.
+own, which is what the container's start command already runs, and FastAPI
+lifespan bootstraps the owner before the first request is served.
 
 That was not true until 2026-08-24 — revision `0005` seeded five rows nobody
 could ever own, and revision `0049` refused over them, so a fresh deployment
@@ -37,14 +37,30 @@ executed and not merely written down.
 alembic upgrade 0048
 ```
 
-Every ownership column exists and is still nullable. The application runs
-normally here; this is a safe place to stop.
+Every ownership column exists and is still nullable. This is a safe place to
+stop, but do not start the current application image on this intermediate
+schema: its normal command immediately runs `alembic upgrade head`, and current
+runtime code may query tables added after 0048.
 
 ## 2. Bootstrap the roots, then run the phases in order
 
-Startup materializes the legacy owner, the resource roots, and the checked-in
-HRT and conflict catalogs. The phases classify rows against those, so they must
-exist first.
+Materialize the legacy owner, the resource roots, and the checked-in HRT and
+conflict catalogs with the bounded bootstrap command. The phases classify rows
+against those, so they must exist first.
+
+From the host checkout:
+
+```bash
+docker compose up -d vitals_db vitals_redis
+docker compose run --rm --no-deps --entrypoint python vitals_app \
+  scripts/bootstrap_ownership_roots.py
+```
+
+The command performs database work only, commits once, prints
+`{"status":"completed","revision":"0048"}`, and exits. It does not run the
+scheduler or call Garmin, Hevy, OpenRouter, Telegram, or another external
+service. Do not replace it with the normal container command: that command
+upgrades to head before Uvicorn starts.
 
 Each command is resumable and reports one line of JSON. A phase is done when its
 `status` is `completed`; re-running a completed phase is a no-op. Run them in
