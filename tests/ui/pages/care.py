@@ -54,12 +54,14 @@ class ConversationsPage(Page):
     NAME = "conversations"
 
     TITLE = 'input[name="title"]'
+    FIRST_MESSAGE = 'textarea[name="body"]'
     START = 'button:has-text("Start")'
 
-    def start_a_thread(self, title: str) -> "ConversationPage":
+    def start_a_thread(self, title: str, first_message: str) -> "ConversationPage":
         self.page.fill(self.TITLE, title)
+        self.page.fill(self.FIRST_MESSAGE, first_message)
         self._act(self.START)
-        return self.open_thread(title)
+        return self._become(ConversationPage)
 
     def open_thread(self, title: str) -> "ConversationPage":
         self._act(f'a:has-text("{title}")')

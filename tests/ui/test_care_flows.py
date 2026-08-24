@@ -16,9 +16,9 @@ def test_a_doctor_and_a_patient_hold_a_conversation(sign_in):
     """
 
     title = "Ferritin follow-up"
+    first_message = "Ferritin is below range. Repeat fasting in two weeks."
     doctor = sign_in("dr-ivanov")
-    thread = doctor.conversations_about("timur").start_a_thread(title)
-    thread.say("Ferritin is below range. Repeat fasting in two weeks.")
+    doctor.conversations_about("timur").start_a_thread(title, first_message)
 
     patient = sign_in("timur")
     mine = patient.my_conversations()
