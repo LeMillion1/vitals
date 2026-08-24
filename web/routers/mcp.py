@@ -21,6 +21,7 @@ Response conventions (a stable contract the model can rely on):
 """
 from __future__ import annotations
 
+import contextvars
 import functools
 import importlib
 import logging
@@ -204,6 +205,127 @@ async def _module_enabled(session, key: str) -> bool:
     return bool(state.get(key))
 
 
+#: Who the connector is acting as, for the duration of one MCP request.
+#:
+#: Set by :class:`MCPAuthMiddleware` from the access token, which has carried the
+#: authorizing account's username since OAuth was built and — until now — threw
+#: it away. Every tool below resolved the ``.env`` owner instead, so the answer
+#: to "whose record is this" did not depend on whose token asked. On a
+#: single-user installation those are the same person. On a shared one, a token
+#: any signed-in account can obtain through the ordinary consent screen read and
+#: wrote somebody else's record.
+#:
+#: A ``ContextVar`` rather than an argument because the alternative is threading
+#: a parameter through sixty tool signatures and a decorator; the token is
+#: request state, and this is the shape request state takes in an ASGI app.
+#: Three states, and the middle one is the point.
+#:
+#: ``None`` — no request at all: a direct in-process call, the scheduler, a
+#: test. Resolves the ``.env`` owner by name, exactly as before, which is not a
+#: guess: ``.env`` names an account and the resolver returns *that account's*
+#: record.
+#:
+#: :data:`ANONYMOUS_TOKEN` — a request arrived with a credential that does not
+#: say who it is for. Old tokens are like this. Honoured only while the
+#: installation holds one subject; refused once there is a choice.
+#:
+#: A username — the account that stood at the consent screen.
+_MCP_ACTOR: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "vitals_mcp_actor", default=None
+)
+
+#: A token that authenticated and named nobody.
+ANONYMOUS_TOKEN = "\x00anonymous-connector-token"
+
+
+class McpActorUnresolved(RuntimeError):
+    """A token that cannot say whose record it is for, where that matters."""
+
+
+async def _require_live_account(session, username: str) -> None:
+    """A token names an account; this is where that account has to still exist.
+
+    ``resolve_legacy_ownership_context`` matches the name and does not read
+    ``status``, so without this a suspended person's connector would keep
+    working for the rest of the token's year. The check is here rather than in
+    the middleware because here there is a session — one the caller already
+    opened, and one a test can substitute.
+    """
+
+    from vitals.enums import UserStatus
+    from vitals.models.identity import User
+    from vitals.services.identity_service import normalize_username
+
+    async def _alive(active_session) -> bool:
+        normalized = normalize_username(username).lookup_key
+        return (
+            await active_session.scalar(
+                select(User.id)
+                .where(
+                    User.normalized_username == normalized,
+                    User.status == UserStatus.ACTIVE.value,
+                )
+                .limit(1)
+            )
+        ) is not None
+
+    if session is None:
+        async with get_session_factory()() as opened:
+            live = await _alive(opened)
+    else:
+        live = await _alive(session)
+    if not live:
+        raise McpActorUnresolved(
+            "this connector token names an account that is no longer active"
+        )
+
+
+async def _mcp_actor_username(session=None) -> str:
+    """The account this request is acting as.
+
+    The token's identity when there is one. When there is not — a legacy token
+    minted before this, or a direct in-process call — the ``.env`` owner, but
+    *only* while the installation holds exactly one subject. That is the same
+    fail-closed rule the rest of this migration uses, and it is the whole safety
+    property here: a credential that cannot say whose record it means is
+    honoured only where there is no choice to make.
+    """
+
+    from vitals.models.identity import HealthSubject
+
+    actor = _MCP_ACTOR.get()
+    if actor is not None and actor != ANONYMOUS_TOKEN:
+        await _require_live_account(session, actor)
+        return actor
+    if actor is None:
+        # No request: a direct call, a scheduled job, a test. Unchanged, and
+        # deliberately not narrowed — the environment names an account and the
+        # resolver returns that account's own record, which is a fact about one
+        # person rather than an assumption about how many there are.
+        return get_web_config().auth_username
+
+
+    if session is None:
+        # The two sync tools hold a factory rather than a session. Counting
+        # subjects is a read of its own and must not join whatever transaction
+        # the caller is about to start.
+        async with get_session_factory()() as counting:
+            subject_ids = tuple(
+                await counting.scalars(select(HealthSubject.id).limit(2))
+            )
+    else:
+        subject_ids = tuple(
+            await session.scalars(select(HealthSubject.id).limit(2))
+        )
+    if len(subject_ids) > 1:
+        raise McpActorUnresolved(
+            "this connector token does not say whose record it is for, and this "
+            "installation holds more than one. Reconnect the connector to mint a "
+            "token that names its record."
+        )
+    return get_web_config().auth_username
+
+
 async def _mcp_v1_legacy_owner(session):
     """Resolve the configured single owner for one legacy MCP v1 operation.
 
@@ -213,7 +335,7 @@ async def _mcp_v1_legacy_owner(session):
     """
     return await resolve_legacy_ownership_context(
         session,
-        actor_username=get_web_config().auth_username,
+        actor_username=await _mcp_actor_username(session),
     )
 
 
@@ -222,7 +344,7 @@ async def _mcp_v1_legacy_alert_owner(session):
 
     return await resolve_legacy_ownership_context(
         session,
-        actor_username=get_web_config().auth_username,
+        actor_username=await _mcp_actor_username(session),
         required_connections=tuple(IntegrationProvider),
     )
 
@@ -232,7 +354,7 @@ async def _mcp_v1_conflict_scope(session) -> conflict_engine.ConflictScope:
 
     return await conflict_engine.resolve_legacy_conflict_scope(
         session,
-        actor_username=get_web_config().auth_username,
+        actor_username=await _mcp_actor_username(session),
         evaluation_date=today_local(),
     )
 
@@ -257,7 +379,7 @@ async def _mcp_v1_composition_scope(session) -> conflict_engine.ConflictScope:
     # WeeklyDigest root before export/overview can serialize or count it.
     await digest_service.prepare_digest_owner(
         session,
-        actor_username=get_web_config().auth_username,
+        actor_username=await _mcp_actor_username(session),
     )
     return scope
 
@@ -271,7 +393,7 @@ async def _mcp_v1_conflict_write_context(
 
     return await conflict_engine.resolve_legacy_conflict_write_context(
         session,
-        actor_username=get_web_config().auth_username,
+        actor_username=await _mcp_actor_username(session),
         evaluation_date=evaluation_date or today_local(),
     )
 
@@ -291,7 +413,7 @@ async def _mcp_v1_weight_write(
     )
     export_context = await garmin_weight_service.resolve_optional_legacy_export_context(
         session,
-        actor_username=get_web_config().auth_username,
+        actor_username=await _mcp_actor_username(session),
     )
     prepared = await weight_service.prepare_weight_write(
         session,
@@ -840,7 +962,7 @@ async def get_weekly_digests(limit: int = 5) -> list[dict]:
     async with session_factory() as session:
         owner = await digest_service.prepare_digest_owner(
             session,
-            actor_username=get_web_config().auth_username,
+            actor_username=await _mcp_actor_username(session),
         )
         # Through the service, so this stays weekly-only: the same table now also
         # holds the daily briefs.
@@ -3613,7 +3735,7 @@ async def generate_digest_now(period_days: int = 7) -> dict:
         try:
             prepared = await digest_service.prepare_digest(
                 session,
-                actor_username=get_web_config().auth_username,
+                actor_username=await _mcp_actor_username(session),
                 invocation_source=AIInvocationSource.MCP,
                 period_days=period_days,
             )
@@ -3621,7 +3743,7 @@ async def generate_digest_now(period_days: int = 7) -> dict:
             if prepared.existing_artifact_id is not None:
                 owner = await digest_service.prepare_digest_owner(
                     session,
-                    actor_username=get_web_config().auth_username,
+                    actor_username=await _mcp_actor_username(session),
                 )
                 row = await digest_service.existing_digest_for_prepared(
                     session,
@@ -3786,11 +3908,11 @@ async def get_proactive_state(limit: int = 10) -> dict:
     async with session_factory() as session:
         ownership = await channels.resolve_legacy_channel_ownership(
             session,
-            actor_username=get_web_config().auth_username,
+            actor_username=await _mcp_actor_username(session),
         )
         preference_scope = await prefs.resolve_legacy_preferences_scope(
             session,
-            actor_username=get_web_config().auth_username,
+            actor_username=await _mcp_actor_username(session),
         )
         sent = list(
             reversed(
@@ -3810,7 +3932,7 @@ async def get_proactive_state(limit: int = 10) -> dict:
                 await prefs.get_preferences_bundle(
                     session,
                     scope=preference_scope,
-                    actor_username=get_web_config().auth_username,
+                    actor_username=await _mcp_actor_username(session),
                 )
             ).as_flat_dict(),
             "recent_notifications": [serialize_row(n) for n in sent],
@@ -3865,7 +3987,7 @@ async def sync_garmin(days: int = 2) -> dict:
         get_session_factory(),
         get_redis_client(),
         days=max(1, min(int(days), 30)),
-        actor_username=get_web_config().auth_username,
+        actor_username=await _mcp_actor_username(),
     )
     if summary is None:
         return {"error": "Garmin is not configured — no credentials in settings"}
@@ -3889,7 +4011,7 @@ async def sync_hevy() -> dict:
         summary = await hevy_service.sync_now_for_actor(
             get_session_factory(),
             get_redis_client(),
-            actor_username=get_web_config().auth_username,
+            actor_username=await _mcp_actor_username(),
         )
     except (HevyNotConfigured, HevyAPIError) as e:
         return {"error": f"Hevy sync failed: {e}"}
@@ -3916,7 +4038,7 @@ async def latest_digest_resource() -> dict:
     async with session_factory() as session:
         owner = await digest_service.prepare_digest_owner(
             session,
-            actor_username=get_web_config().auth_username,
+            actor_username=await _mcp_actor_username(session),
         )
         row = await digest_service.latest_digest(
             session,
@@ -4055,6 +4177,7 @@ class MCPAuthMiddleware:
             token = auth_header[7:]
 
         authenticated = False
+        actor = None
         if token:
             from web.auth import _get_mcp_serializer
             from itsdangerous import SignatureExpired, BadSignature
@@ -4068,8 +4191,20 @@ class MCPAuthMiddleware:
                     and payload.get("client_id") == self.client_id
                 ):
                     authenticated = True
+                    # The account that stood at the consent screen. OAuth has
+                    # recorded it since it was built and nothing has ever read
+                    # it, so whose record came back did not depend on whose
+                    # token asked.
+                    claimed = payload.get("username")
+                    actor = (
+                        claimed
+                        if isinstance(claimed, str) and claimed
+                        else ANONYMOUS_TOKEN
+                    )
             except (SignatureExpired, BadSignature):
                 pass
+
+
 
         if not authenticated:
             response_body = b'{"detail":"Unauthorized. Invalid or missing MCP access token."}'
@@ -4112,7 +4247,14 @@ class MCPAuthMiddleware:
             await send(message)
 
         try:
-            await self.app(scope, receive, _send)
+            # The tools read this rather than the environment. Reset in
+            # ``finally`` so one request's identity cannot outlive it into the
+            # next request served by the same worker.
+            restore = _MCP_ACTOR.set(actor)
+            try:
+                await self.app(scope, receive, _send)
+            finally:
+                _MCP_ACTOR.reset(restore)
         except TypeError:
             logger.exception("MCP app raised TypeError handling %s", scope.get("path"))
             if not response_started:

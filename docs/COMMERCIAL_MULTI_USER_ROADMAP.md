@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0063` — 63 revisions |
 | Schema | 75 tables; 62 carry `subject_id` and are covered by an RLS policy; 52 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4490 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
+| Suites | 4498 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -44,8 +44,13 @@ access.
 **The next gate is PR-10**, and it has started at the end that does not wait
 on an external SDK. Its external API now authenticates against per-subject
 credentials rather than one installation-wide string that resolved to the `.env`
-owner — the last such read on a data path. LLM context isolation is
-in as well, as proof rather than as new machinery: `assemble_context` already
+owner — the last such read on a data path. Its authorization gate is in too, which is the
+half the roadmap deliberately separates: the connector token has always carried
+the authorizing account and the tools always ignored it, so a token any
+signed-in account could obtain read and wrote the `.env` owner's record. One
+seam — a request-scoped actor the six `_mcp_v1_*` helpers ask — now decides
+whose record a call reaches. LLM context isolation is in as well, as proof
+rather than as new machinery: `assemble_context` already
 took a mandatory subject and gated every optional domain, and seven contract
 tests now compose for one person beside another and search the serialized prompt
 for anything of theirs — including their name, which is asserted absent because

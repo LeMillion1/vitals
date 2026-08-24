@@ -1111,7 +1111,23 @@ async def test_hrt_foreign_cycle_item_is_not_materialized_before_rejection(
     db_session.add_all(
         [cycle, _hrt_probe_rule(legacy_owner_roots.subject_id)]
     )
-    await db_session.commit()
+
+    # The state this exercises is one PostgreSQL will not store.
+    # ``fk_hrt_cycle_items_cycle_subject`` is a composite key over
+    # ``(cycle_id, subject_id)``, so an item whose subject differs from its
+    # cycle's cannot be written at all — a stronger guarantee than the reader
+    # refusing to materialize it, and the one production has. SQLite does not
+    # enforce the composite key, which is why the row can be built there and why
+    # the refusal below is what the fast path exercises. Asserting it both ways
+    # is the point: unreachable on the database that ships, still refused on the
+    # one the suite runs.
+    from sqlalchemy.exc import IntegrityError
+
+    try:
+        await db_session.commit()
+    except IntegrityError:
+        await db_session.rollback()
+        return
     foreign_item_id = foreign_item.id
     db_session.expunge_all()
     conflict_registrations.register_all_resolvers()

@@ -8,6 +8,64 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — an MCP connector reached whoever `.env` named, not whoever asked
+
+The OAuth access token has carried the authorizing account's username since the
+flow was written. The middleware read the signature and the client id and threw
+the username away. Every one of the sixty tools then resolved its subject
+through `resolve_legacy_ownership_context(actor_username=get_web_config()
+.auth_username)` — the `.env` owner — so **the answer to "whose record is this"
+did not depend on the credential at all**.
+
+On a single-user machine those are the same person, which is why it went
+unnoticed. On a shared installation any signed-in account could walk the
+ordinary consent screen, obtain a connector token, and read *and write* somebody
+else's medical record. The tools' own docstrings said what they were —
+"attribution plus a fail-closed single-subject compatibility gate; it is not
+MCP v2 subject authorization" — and that gate stopped being fail-closed the
+moment the resolver was given a name to match.
+
+The fix is one seam rather than sixty edits. `MCPAuthMiddleware` puts the
+token's identity into a `ContextVar`; `_mcp_actor_username` reads it; the six
+`_mcp_v1_*` helpers every tool already funnels through ask that instead of the
+environment. Three states, and the middle one is the point:
+
+- **a username** — the account that stood at the consent screen;
+- **an anonymous token** — a credential that authenticated and named nobody, as
+  every token minted before this does. Honoured while the installation holds one
+  subject, refused once there is a choice to make;
+- **nothing at all** — no request: a direct call, a job, a test. Unchanged, and
+  deliberately not narrowed, because `.env` names an account and the resolver
+  returns that account's own record — a fact about one person rather than an
+  assumption about how many exist.
+
+`resolve_legacy_ownership_context` matches a username and never reads `status`,
+so a suspended person's connector would have kept working for the rest of the
+token's year. It is checked explicitly now, in the seam rather than the
+middleware — that is where a session already exists, and where a test can
+substitute one.
+
+Thirteen tests, including the one PR-10 names: *token A cannot select subject
+B, even with a known row ID or direct tool call.* Eight drive the tools with an
+actor set; five drive the middleware itself with a real signed token, because
+the first eight prove the tools read the seam and prove nothing about the half
+that fills it. Verified by reverting the seam on purpose — six of the eight
+fail.
+
+One PostgreSQL-only failure fell out of the run and was pre-existing:
+`test_hrt_foreign_cycle_item_is_not_materialized_before_rejection` builds an
+item whose subject differs from its cycle's, and
+`fk_hrt_cycle_items_cycle_subject` is a composite key that will not store one.
+The same shape as the five in `fdc7253`, fixed the same way: the database
+refusing is the stronger guarantee, so the test now asserts both — unreachable
+on the database that ships, still refused by the reader on the one the fast
+suite runs.
+
+This is PR-10's authorization gate, which the roadmap separates from its
+protocol gate for exactly this reason: the wire migration to `2026-07-28` waits
+on an external SDK, and none of the above did.
+
+
 ### Added — the LLM boundary is proven, not just built (PR-10, in part)
 
 `assemble_context` is what the weekly digest, the daily brief, the doctor's
