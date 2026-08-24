@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0063` — 63 revisions |
 | Schema | 75 tables; 62 carry `subject_id` and are covered by an RLS policy; 52 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4514 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
+| Suites | 4548 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -60,8 +60,12 @@ SDK's token verifier, and six tests drive the endpoint with the SDK's own
 client. The conformance detail is done and mostly
 turned out to be the SDK's: `server/discover`, per-request version negotiation,
 `resultType`, server identity in `_meta` and private `cacheScope` all hold, with
-tests. What remains of PR-10 is the OAuth profile work — Client ID Metadata
-Documents, and treating metadata fetching as hostile SSRF input. Revision `0062` adds the ask as its own table because the grant's
+tests. The OAuth profile is in as well: client
+metadata documents replace Dynamic Client Registration, their fetching is
+treated as hostile input, and the authorization response carries `iss`. What
+remains of PR-10 is token binding — an `aud`/`jti` in the connector token and a
+revocation store, so an issued credential can be withdrawn without rotating the
+signing secret. Revision `0062` adds the ask as its own table because the grant's
 constraints, correctly, cannot express a pending one. `repair`, `export`,
 operational dashboards, retention controls and the break-glass path are named
 and not built; each needs its own review and the roadmap already sequences them

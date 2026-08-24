@@ -72,10 +72,22 @@ def verify_pkce(code_verifier: str, code_challenge: str, method: Optional[str]) 
 
 @router.get("/.well-known/oauth-authorization-server")
 async def oauth_metadata(request: Request):
-    """Exposes the authorization server discovery document."""
-    base_url = str(request.base_url).rstrip("/")
+    """Exposes the authorization server discovery document.
+
+    ``issuer`` comes from the configured public URL, not from
+    ``request.base_url``. It has to be the same string the authorization
+    response puts in ``iss`` — a client validates one against the other, and two
+    values derived differently disagree the moment this sits behind a proxy.
+    """
+
+    base_url = get_web_config().public_url.rstrip("/")
+    del request
     return {
         "issuer": base_url,
+        # RFC 9207: says the authorization response carries ``iss``, so a client
+        # knows to validate it rather than ignoring a parameter it did not
+        # expect.
+        "authorization_response_iss_parameter_supported": True,
         "authorization_endpoint": f"{base_url}/oauth/authorize",
         "token_endpoint": f"{base_url}/oauth/token",
         "response_types_supported": ["code"],
@@ -121,6 +133,55 @@ async def oauth_protected_resource(request: Request):
 
 # ── Authorization Consent View ────────────────────────────────────────────────
 
+async def resolve_client(client_id: str, redirect_uri: Optional[str], cfg):
+    """Who this client is, and whether that callback belongs to it.
+
+    Two shapes, and which one applies is decided by the client id itself.
+
+    A **Client ID Metadata Document** — an https URL — is fetched and believed
+    only after :mod:`vitals.services.oauth_client_metadata_service` has checked
+    it, and the callback must be one the document declares, exactly. That is the
+    profile's replacement for Dynamic Client Registration, and it is strictly
+    tighter than what stood here: a document names its redirect URIs in full,
+    where the configured allowlist could only ever name hosts.
+
+    A **plain identifier** is the pre-registered connector this installation was
+    built around, matched against ``VITALS_MCP_CLIENT_ID`` with the host
+    allowlist deciding the callback. Kept because Claude.ai's connector uses it
+    today, and breaking a working connection to adopt a newer identifier would
+    be a change nobody asked for.
+
+    Returns ``(client_name, None)`` on success and ``(None, error_key)`` on
+    refusal, so the caller renders one consent page and one error page rather
+    than two of each.
+    """
+
+    from vitals.services import oauth_client_metadata_service as client_metadata
+
+    if client_metadata.looks_like_a_metadata_url(client_id):
+        try:
+            metadata = await client_metadata.fetch(client_id)
+        except client_metadata.ClientMetadataError:
+            # Deliberately one answer for every failure — unreachable, private
+            # address, mismatched id, malformed body. A caller that could tell
+            # those apart could use this endpoint to probe the network it runs
+            # in, one client id at a time.
+            logger.warning("client metadata document refused", exc_info=True)
+            return None, "oauth.error.invalid_client"
+        if not redirect_uri or not metadata.allows(redirect_uri):
+            return None, "oauth.error.invalid_redirect"
+        return metadata.client_name or client_id, None
+
+    if client_id != cfg.mcp_client_id:
+        return None, "oauth.error.invalid_client"
+    if not redirect_allowed(redirect_uri, cfg):
+        return None, "oauth.error.invalid_redirect"
+    # No name: this client brought no document, so it has made no claim about
+    # what it is called, and inventing one for the consent screen would be
+    # putting words in its mouth.
+    return None, None
+
+
 @router.get("/oauth/authorize", response_class=HTMLResponse)
 async def oauth_authorize(
     request: Request,
@@ -136,12 +197,6 @@ async def oauth_authorize(
     cfg = get_web_config()
 
     from vitals.i18n import t
-    if client_id != cfg.mcp_client_id:
-        return templates.TemplateResponse(
-            request,
-            "oauth_authorize.html",
-            {"error": t("oauth.error.invalid_client"), "client_id": client_id, "redirect_uri": redirect_uri},
-        )
 
     if response_type != "code":
         return templates.TemplateResponse(
@@ -150,11 +205,12 @@ async def oauth_authorize(
             {"error": t("oauth.error.unsupported_response"), "client_id": client_id, "redirect_uri": redirect_uri},
         )
 
-    if not redirect_allowed(redirect_uri, cfg):
+    client_name, refusal = await resolve_client(client_id, redirect_uri, cfg)
+    if refusal is not None:
         return templates.TemplateResponse(
             request,
             "oauth_authorize.html",
-            {"error": t("oauth.error.invalid_redirect"), "client_id": client_id, "redirect_uri": redirect_uri},
+            {"error": t(refusal), "client_id": client_id, "redirect_uri": redirect_uri},
         )
 
     if not _pkce_requested(code_challenge, code_challenge_method):
@@ -186,6 +242,11 @@ async def oauth_authorize(
         "oauth_authorize.html",
         {
             "client_id": client_id,
+            # What the client calls itself, when it brought a document saying
+            # so. The person at this screen is deciding whether to hand over
+            # their record; "Kitchen Dashboard" is a better basis for that than
+            # a URL they have to parse in their head.
+            "client_name": client_name,
             "redirect_uri": redirect_uri,
             "redirect_domain": urlsplit(redirect_uri).netloc,
             "state": state,
@@ -212,10 +273,14 @@ async def oauth_approve(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     cfg = get_web_config()
-    if client_id != cfg.mcp_client_id:
+    # Re-resolved here rather than trusted from the consent page: this endpoint
+    # is reachable on its own, and the form it reads is one the caller controls
+    # entirely. A metadata document checked when the page rendered proves
+    # nothing about the client id that arrives in this POST.
+    _name, refusal = await resolve_client(client_id, redirect_uri, cfg)
+    if refusal == "oauth.error.invalid_client":
         raise HTTPException(status_code=400, detail="Invalid client_id")
-
-    if not redirect_allowed(redirect_uri, cfg):
+    if refusal is not None:
         raise HTTPException(status_code=400, detail="redirect_uri not allowed")
 
     # Re-checked here, not just on the consent page: this endpoint is reachable
@@ -239,7 +304,12 @@ async def oauth_approve(
 
     # Redirect back to Claude's callback URL. Params are urlencoded so a state
     # value carrying '&'/'=' can't break out and inject extra query parameters.
-    params = {"code": code}
+    # ``iss`` (RFC 9207). A client talking to several authorization servers at
+    # once cannot otherwise tell which one answered, and an attacker who can put
+    # a response in front of it relies on exactly that: a code minted by their
+    # server, redeemed at yours. The MCP profile requires the client to validate
+    # it, which it can only do if we send it.
+    params = {"code": code, "iss": cfg.public_url}
     if state:
         params["state"] = state
     separator = "&" if "?" in redirect_uri else "?"

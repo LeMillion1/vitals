@@ -297,6 +297,14 @@
             <p class="subtitle">
                 {{ t("oauth.subtitle") | safe }}
             </p>
+            {# What the client calls itself, when it identified by a metadata
+               document that says so. The person here is deciding whether to
+               hand over their medical record; a name is a better basis for
+               that than a URL they have to parse in their head. Absent for the
+               pre-registered connector, which has no document and no claim. #}
+            {% if client_name %}
+            <p class="redirect-target"><strong>{{ client_name }}</strong></p>
+            {% endif %}
             {% if redirect_domain %}
             <p class="redirect-target">{{ t("oauth.redirect_target", domain=redirect_domain) | safe }}</p>
             {% endif %}

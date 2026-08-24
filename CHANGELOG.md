@@ -8,6 +8,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — the MCP OAuth profile: client metadata documents, fetched as hostile input
+
+A client can identify itself by an HTTPS URL now instead of by a pre-registered
+id. The URL *is* the `client_id` and resolves to a JSON document declaring the
+client's name and its redirect URIs. That is the profile's replacement for
+Dynamic Client Registration, which it deprecates, and it is strictly tighter
+than what stood here: a document names its callbacks in full, where the
+configured allowlist could only ever name hosts. Same host, different path — an
+authorization code delivered somewhere the client never declared — is the case
+the old check could not make.
+
+**The URL comes from whoever is authorizing, so fetching it is SSRF by
+construction**, aimed from inside whatever network the installation runs in.
+Every guard is load-bearing rather than defensive style: HTTPS only; the
+destination checked *after* DNS resolution and against every address a name
+returns, because `internal.example.com` pointing at `10.0.0.5` is the entire
+trick and a hostname says nothing about it; no redirects at all, since following
+one means validating a second destination and public-redirects-to-private is the
+second half of the same trick; bounded time and body; and the document's own
+`client_id` must equal the URL it came from, without which a client could name
+somebody else's document as its identity and inherit their redirect URIs.
+
+Every failure answers the same way. A caller who could tell a private address
+from an unreachable host from a malformed body could map the network this runs
+in, one client id at a time.
+
+Documents are cached for five minutes — an authorization flow fetches this on
+every attempt — and not longer, so a client whose redirect URIs change, or whose
+document is taken over, stops being believed without anything being restarted.
+
+`/oauth/authorize/approve` re-resolves the client rather than trusting the form
+it reads: that endpoint is reachable on its own, and a document checked while
+the consent page rendered proves nothing about the client id in the POST.
+
+**The authorization response carries `iss`** (RFC 9207), and discovery
+advertises that it does. A client talking to several authorization servers
+cannot otherwise tell which one answered, and an attacker who can put a response
+in front of it relies on exactly that. The issuer in the discovery document now
+comes from the configured public URL rather than from `request.base_url` — it
+has to be the same string the response puts in `iss`, and two values derived
+differently disagree the moment this sits behind a proxy.
+
+The consent screen shows what the client calls itself. The person there is
+deciding whether to hand over their medical record, and a name is a better basis
+for that than a URL they have to parse in their head. The pre-registered
+connector gets no name: it brought no document, so it has made no claim, and
+inventing one would be putting words in its mouth.
+
+Both shapes are accepted. Claude.ai's connector uses a plain client id today and
+breaking a working connection to adopt a newer identifier would be a change
+nobody asked for.
+
+
 ### Fixed — the LLM export read every person's record (PR-10)
 
 `data_portability_service.export_llm` had twenty-two selects and not one subject
