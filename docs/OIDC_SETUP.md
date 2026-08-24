@@ -2,9 +2,12 @@
 
 Last reviewed: 2026-08-23
 
-Vitals stops authenticating anybody once `VITALS_OIDC_ISSUER` is set. Until then
-the password login works exactly as it always did, and none of the OIDC routes
-exist — they answer 404. Setting that one variable is the cutover.
+Vitals stops authenticating passwords once the complete OIDC group is set:
+`VITALS_OIDC_ISSUER`, `VITALS_OIDC_CLIENT_ID`,
+`VITALS_OIDC_CLIENT_SECRET`, and `VITALS_OIDC_REDIRECT_URL`. Until then the
+password login works exactly as it always did and the OIDC routes answer 404.
+Setting only part of the group fails application startup; it never silently
+leaves the password door open.
 
 That is deliberate. It means the switch happens when there is somewhere to
 switch *to*, rather than on the deploy that ships the code. Follow the order
@@ -17,9 +20,27 @@ done properly.
 
 ## Before you start
 
-You need four values from the provider, and one of them can only be read after
-you have logged into it once. Work through this with the provider running and
-Vitals still on password login.
+Before the provider's first start, generate three independent secrets and put
+them in `.env`:
+
+```bash
+# Exactly 32 characters. Back it up: changing it later loses access to data
+# ZITADEL encrypted with it.
+python -c "import secrets; print(secrets.token_hex(16))"
+# Database password.
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+# First administrator password; the prefix guarantees the required classes.
+python -c "import secrets; print('Aa1!'+secrets.token_urlsafe(24))"
+```
+
+Store the results as `VITALS_IDP_MASTERKEY`, `VITALS_IDP_DB_PASSWORD`, and
+`VITALS_IDP_ADMIN_PASSWORD`. These are required only when the `idp` profile is
+selected; its preflight refuses to start with a missing value or a master key
+whose length is not 32 characters.
+
+You then need four OIDC values from the provider, and the owner subject can only
+be read after you have logged into it once. Work through this with the provider
+running and Vitals still on password login.
 
 ```bash
 docker compose --profile idp up -d
@@ -27,8 +48,12 @@ docker compose --profile idp up -d
 
 ZITADEL comes up on `127.0.0.1:8080`, bound to loopback for the same reason the
 app is: this is the door to the health record and belongs behind the same VPN.
-Its first-run console output includes the initial admin credentials — capture
-them, they are printed once.
+Sign in with `zitadel-admin@zitadel.<external-domain>` and the value of
+`VITALS_IDP_ADMIN_PASSWORD`, then complete the required password change. The
+pinned image's upstream default is publicly known; the Compose preflight and
+explicit first-instance password exist to ensure it is never used. Changing a
+`FIRSTINSTANCE` value after `vitals_idp_pgdata` has been created does not update
+the existing administrator.
 
 ## 1. Create the application in ZITADEL
 
@@ -140,23 +165,9 @@ working together.
 
 ## The licence question
 
-ZITADEL is AGPLv3. Running it beside Vitals over OIDC does not make Vitals
-AGPL: separate processes, a standard protocol, no linking — the same reasoning
-by which an AGPL database beside an application does not infect the
-application.
-
-Three things do change the analysis, and none of them is "ran it in compose":
-
-1. **Modifying ZITADEL** and letting people reach the modified version over a
-   network. Then you publish your ZITADEL changes — not Vitals.
-2. **Distributing it** as part of a product you ship. A compose file pulling a
-   public image is weaker than shipping a combined artifact, but it is still
-   distribution territory and wants a lawyer rather than this paragraph.
-3. **Linking its code** into your own binary. Not applicable to a Python
-   application talking OIDC to a Go service.
-
-ZITADEL sells a commercial licence, which is the usual answer to (2). Keycloak
-under Apache 2.0 is the alternative with none of this, at the cost of a JVM and
-noticeably more memory.
-
-This is not legal advice.
+The image is pinned to ZITADEL `v2.66.0`, whose exact tagged source carries the
+[Apache License 2.0](https://github.com/zitadel/zitadel/blob/v2.66.0/LICENSE).
+The previous version of this runbook incorrectly described that tag as AGPLv3.
+Do not copy either statement forward when changing the image: inspect the
+licence and notices on the exact replacement tag, then review distribution and
+attribution obligations for that version. This is not legal advice.

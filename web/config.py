@@ -38,6 +38,13 @@ DEFAULT_MCP_REDIRECT_HOSTS: tuple[str, ...] = (
     "oauth-redirect.googleusercontent.com", # Gemini Spark connected apps
 )
 
+OIDC_REQUIRED_ENV: tuple[str, ...] = (
+    "VITALS_OIDC_ISSUER",
+    "VITALS_OIDC_CLIENT_ID",
+    "VITALS_OIDC_CLIENT_SECRET",
+    "VITALS_OIDC_REDIRECT_URL",
+)
+
 
 @dataclass(frozen=True)
 class WebConfig:
@@ -63,10 +70,10 @@ class WebConfig:
     external_api_token: str = ""
 
     # ── OpenID Connect ───────────────────────────────────────────────────
-    # Empty issuer means the provider is not configured yet and the
-    # pre-cutover login still works. Setting it is the cutover: from that
-    # point the password path refuses, so the switch happens when there is
-    # somewhere to switch *to* rather than on the deploy that ships this code.
+    # An entirely empty provider configuration means the pre-cutover login still
+    # works. The four required values are validated as one group below: a
+    # partial cutover fails startup instead of silently leaving password auth
+    # enabled or redirecting to a provider the app cannot finish talking to.
     oidc_issuer: str = ""
     oidc_client_id: str = ""
     oidc_client_secret: str = ""
@@ -120,6 +127,16 @@ def get_web_config() -> WebConfig:
 
     password_hash = os.getenv("VITALS_AUTH_PASSWORD_HASH", "")
 
+    oidc_values = {name: os.getenv(name, "").strip() for name in OIDC_REQUIRED_ENV}
+    if any(oidc_values.values()) and not all(oidc_values.values()):
+        missing = ", ".join(
+            name for name, value in oidc_values.items() if not value
+        )
+        raise RuntimeError(
+            "OIDC configuration is incomplete; set all required values or "
+            f"unset all of them. Missing: {missing}"
+        )
+
     return WebConfig(
         session_secret=session_secret,
         auth_username=username,
@@ -134,10 +151,9 @@ def get_web_config() -> WebConfig:
             h.lower() for h in _env_csv("VITALS_MCP_REDIRECT_HOSTS", DEFAULT_MCP_REDIRECT_HOSTS)
         ),
         external_api_token=os.getenv("VITALS_EXTERNAL_API_TOKEN", ""),
-        oidc_issuer=os.getenv("VITALS_OIDC_ISSUER", "").strip(),
-        oidc_client_id=os.getenv("VITALS_OIDC_CLIENT_ID", "").strip(),
-        oidc_client_secret=os.getenv("VITALS_OIDC_CLIENT_SECRET", ""),
-        oidc_redirect_url=os.getenv("VITALS_OIDC_REDIRECT_URL", "").strip(),
+        oidc_issuer=oidc_values["VITALS_OIDC_ISSUER"],
+        oidc_client_id=oidc_values["VITALS_OIDC_CLIENT_ID"],
+        oidc_client_secret=oidc_values["VITALS_OIDC_CLIENT_SECRET"],
+        oidc_redirect_url=oidc_values["VITALS_OIDC_REDIRECT_URL"],
         oidc_bootstrap_subject=os.getenv("VITALS_OIDC_BOOTSTRAP_SUBJECT", "").strip(),
     )
-

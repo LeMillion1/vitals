@@ -62,19 +62,43 @@ services:
   #
   #     docker compose --profile idp up -d
   #
-  # Vitals does not authenticate anybody once VITALS_OIDC_ISSUER is set, so
-  # bringing this up is the cutover. Read docs/OIDC_SETUP.md before you do:
-  # there is an order to it, and the last step is irreversible in the sense
-  # that the password login stops existing.
+  # Starting the provider is preparation, not the cutover. Vitals switches only
+  # after its complete OIDC application group is configured. Read
+  # docs/OIDC_SETUP.md before either step.
   #
-  # ZITADEL is AGPLv3. Running it beside Vitals over OIDC does not make Vitals
-  # AGPL — separate processes, standard protocol, no linking — but shipping a
-  # bundle to somebody else is a different question. See the same document.
+  # The pinned ZITADEL v2.66.0 tag is Apache-2.0. Re-check the exact tag's
+  # licence before upgrading; a later release may use different terms.
+  vitals_idp_config_check:
+    image: postgres:15-alpine
+    profiles: ["idp"]
+    environment:
+      VITALS_IDP_MASTERKEY: ${VITALS_IDP_MASTERKEY:-}
+      VITALS_IDP_DB_PASSWORD: ${VITALS_IDP_DB_PASSWORD:-}
+      VITALS_IDP_ADMIN_PASSWORD: ${VITALS_IDP_ADMIN_PASSWORD:-}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        [ "$${#VITALS_IDP_MASTERKEY}" -eq 32 ] || {
+          echo "VITALS_IDP_MASTERKEY must contain exactly 32 characters" >&2
+          exit 1
+        }
+        [ -n "$${VITALS_IDP_DB_PASSWORD}" ] || {
+          echo "VITALS_IDP_DB_PASSWORD must be set" >&2
+          exit 1
+        }
+        [ -n "$${VITALS_IDP_ADMIN_PASSWORD}" ] || {
+          echo "VITALS_IDP_ADMIN_PASSWORD must be set" >&2
+          exit 1
+        }
+    restart: "no"
+
   vitals_idp:
     image: ghcr.io/zitadel/zitadel:v2.66.0
     container_name: vitals_idp
     profiles: ["idp"]
     depends_on:
+      vitals_idp_config_check:
+        condition: service_completed_successfully
       vitals_idp_db:
         condition: service_healthy
     command: >
@@ -85,10 +109,11 @@ services:
       # Compose interpolates every service before applying profiles. Keep these
       # values empty when the optional profile is not selected so ordinary
       # `docker compose up` does not demand IDP secrets. The IDP containers
-      # themselves still fail closed when the profile is selected without them:
-      # Postgres refuses an empty superuser password and ZITADEL refuses an
-      # empty master key.
+      # themselves are guarded by the profile's runtime preflight above.
       ZITADEL_MASTERKEY: ${VITALS_IDP_MASTERKEY:-}
+      # v2.66.0 otherwise creates a first administrator with a known default.
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD: ${VITALS_IDP_ADMIN_PASSWORD:-}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "true"
       ZITADEL_EXTERNALDOMAIN: ${VITALS_IDP_DOMAIN:-localhost}
       ZITADEL_EXTERNALPORT: ${VITALS_IDP_PORT:-8080}
       ZITADEL_EXTERNALSECURE: ${VITALS_IDP_SECURE:-false}
@@ -115,6 +140,9 @@ services:
     image: postgres:15-alpine
     container_name: vitals_idp_db
     profiles: ["idp"]
+    depends_on:
+      vitals_idp_config_check:
+        condition: service_completed_successfully
     environment:
       POSTGRES_USER: zitadel
       POSTGRES_PASSWORD: ${VITALS_IDP_DB_PASSWORD:-}

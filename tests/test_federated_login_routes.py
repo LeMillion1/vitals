@@ -469,6 +469,26 @@ def test_the_setup_document_names_the_variables_the_code_actually_reads():
         assert name in document, f"{name} is read but nothing documents it"
 
 
+@pytest.mark.parametrize(
+    "only_name",
+    (
+        "VITALS_OIDC_ISSUER",
+        "VITALS_OIDC_CLIENT_ID",
+        "VITALS_OIDC_CLIENT_SECRET",
+        "VITALS_OIDC_REDIRECT_URL",
+    ),
+)
+def test_a_partial_oidc_cutover_fails_closed(monkeypatch, only_name):
+    from web.config import OIDC_REQUIRED_ENV, get_web_config
+
+    for name in OIDC_REQUIRED_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(only_name, "configured")
+
+    with pytest.raises(RuntimeError, match="OIDC configuration is incomplete"):
+        get_web_config()
+
+
 def test_the_compose_file_keeps_the_provider_behind_a_profile():
     """Bringing the provider up is the cutover, so it must be a decision.
 
@@ -483,8 +503,13 @@ def test_the_compose_file_keeps_the_provider_behind_a_profile():
     compose = yaml.safe_load(
         (Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text()
     )
-    for name in ("vitals_idp", "vitals_idp_db"):
+    for name in ("vitals_idp_config_check", "vitals_idp", "vitals_idp_db"):
         assert compose["services"][name]["profiles"] == ["idp"], name
+
+    for name in ("vitals_idp", "vitals_idp_db"):
+        assert compose["services"][name]["depends_on"][
+            "vitals_idp_config_check"
+        ]["condition"] == "service_completed_successfully"
 
     # Its own volume, so restoring the health store and restoring the identity
     # store are separate decisions.
@@ -510,6 +535,28 @@ def test_the_inactive_provider_profile_does_not_require_provider_secrets():
         Path(__file__).resolve().parent.parent / "docker-compose.yml"
     ).read_text()
 
-    for name in ("VITALS_IDP_MASTERKEY", "VITALS_IDP_DB_PASSWORD"):
+    for name in (
+        "VITALS_IDP_MASTERKEY",
+        "VITALS_IDP_DB_PASSWORD",
+        "VITALS_IDP_ADMIN_PASSWORD",
+    ):
         assert f"${{{name}:?" not in source
         assert f"${{{name}:-}}" in source
+
+
+def test_the_provider_profile_replaces_the_known_first_admin_password():
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    source = (root / "docker-compose.yml").read_text()
+    compose = yaml.safe_load(source)
+    environment = compose["services"]["vitals_idp"]["environment"]
+
+    assert environment["ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD"] == (
+        "${VITALS_IDP_ADMIN_PASSWORD:-}"
+    )
+    assert "Password1!" not in source
+    for document in (root / ".env.example", root / "docs" / "OIDC_SETUP.md"):
+        assert "VITALS_IDP_ADMIN_PASSWORD" in document.read_text()

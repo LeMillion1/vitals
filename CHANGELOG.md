@@ -8,6 +8,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — the OIDC runbook no longer leaves a known first administrator
+
+The pinned ZITADEL `v2.66.0` creates `zitadel-admin` with the publicly documented
+default `Password1!` unless its first-instance settings override it. Compose did
+not. The optional profile now has a preflight that requires a 32-character
+master key, a database password, and an operator-chosen first administrator
+password before either IDP container starts. The runbook and `.env.example`
+name and generate all three, and the administrator is forced to change the
+password on first login.
+
+Partial OIDC application configuration now fails startup rather than quietly
+keeping password authentication enabled. The runbook also corrects the pinned
+tag's licence from AGPLv3 to Apache 2.0 and instructs operators to re-check the
+exact tag before any image upgrade.
+
 ### Fixed — MCP overview counts no longer include other records
 
 The dated sections of `get_data_overview` filtered by the connector's resolved
