@@ -8,6 +8,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — the LLM boundary is proven, not just built (PR-10, in part)
+
+`assemble_context` is what the weekly digest, the daily brief, the doctor's
+report and the MCP composition tool all reason over, and `build_prompt`
+serializes it whole into what an external model receives. Its subject has been
+mandatory since it was written and every read inside it is scoped — the boundary
+was there. The proof was not, and a boundary nobody re-checks is one a single
+new query can step around: adding an unscoped `select` to a 3000-line assembler
+is a two-line mistake no existing test would have noticed.
+
+Seven contract tests now seed a second person with values that could not belong
+to the first — `999.9`, `SENTINEL-MEAL-DO-NOT-LEAK` — compose for the first, and
+search the serialized prompt for any of them. Absurd values on purpose: a leak
+of plausible numbers is invisible in a diff.
+
+They hold four things. Nothing of another person's reaches the model, in either
+language. A module the person switched off contributes nothing, which is a
+promise about what *leaves* rather than only about what renders. The window
+bounds it, so a note from a year before and a result dated after the period both
+stay out. And the prompt names nobody: age, sex, height, programme and goals
+cross, while display name, username and row ids do not — asserted as an absence,
+because that is how it would be lost, to somebody adding a name so the narrative
+can say "Timur has been sleeping badly".
+
+Two of the seven exist to keep the other five honest. One composes for the
+second person and requires their sentinels to appear, so the isolation
+assertions cannot pass on an empty context; another requires the sentinels to be
+present with every module on before switching two off. Verified by breaking it
+on purpose: a deliberate leak fails three of the seven.
+
+
 ### Changed — the external API token names a record (PR-10, in part)
 
 `VITALS_EXTERNAL_API_TOKEN` was one string for the whole installation, and the

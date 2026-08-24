@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0063` — 63 revisions |
 | Schema | 75 tables; 62 carry `subject_id` and are covered by an RLS policy; 52 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4483 fast passed / 168 skipped; 33 browser scenarios; 2011 on PostgreSQL |
+| Suites | 4490 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -44,11 +44,13 @@ access.
 **The next gate is PR-10**, and it has started at the end that does not wait
 on an external SDK. Its external API now authenticates against per-subject
 credentials rather than one installation-wide string that resolved to the `.env`
-owner — the last such read on a data path. What remains there is the wire-protocol
-migration to `2026-07-28`, which is pinned to an SDK release nobody here
-controls, and LLM context isolation, which is not: `assemble_context` already
-takes a mandatory subject and gates every optional domain, so what is missing is
-the proof rather than the boundary.
+owner — the last such read on a data path. LLM context isolation is
+in as well, as proof rather than as new machinery: `assemble_context` already
+took a mandatory subject and gated every optional domain, and seven contract
+tests now compose for one person beside another and search the serialized prompt
+for anything of theirs — including their name, which is asserted absent because
+that is how it would be lost. What remains is the wire-protocol migration to
+`2026-07-28`, pinned to an SDK release nobody here controls.
 
 **PR-12 is in, in its read-only half.** An administrator asks, the patient
 answers, and approving is the only thing that writes a `SupportAccessGrant` —
