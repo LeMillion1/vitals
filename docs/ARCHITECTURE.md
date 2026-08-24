@@ -40,11 +40,11 @@ page needs the same edit:
 | mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 46 |
 | the backfill phases | `OWNERSHIP_BACKFILL_SEQUENCE` in `vitals/ownership_deploy.py` | 18 |
 | the domains | `vitals.enums.Domain` | 14 |
-| the scheduled jobs | `vitals/scheduler/jobs.py` | 14 |
+| the scheduled jobs | `vitals/scheduler/jobs.py` | 14, of which 11 fan out per record |
 | migration count | `migrations/versions/` | 60, head `0060` |
 | RLS table count | revisions `0050` + `0051` + `0060`, asserted in `tests/test_row_level_security.py` | 56 |
 | platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 6 |
-| routers, service modules | `web/routers/`, `vitals/services/` | 26 and 94 |
+| routers, service modules | `web/routers/`, `vitals/services/` | 26 and 98 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own

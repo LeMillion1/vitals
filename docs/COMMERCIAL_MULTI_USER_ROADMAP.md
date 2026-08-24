@@ -30,13 +30,14 @@ than trusting them if this date has gone stale.
 | Alembic head | `0060` — 60 revisions |
 | Schema | 69 tables; 56 carry `subject_id` and are covered by an RLS policy; 46 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4334 fast passed / 167 skipped; 166 integration passed |
-| Domains / scheduled jobs | 14 and 14 |
+| Suites | 4380 fast passed / 168 skipped |
+| Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
-expansion and backfill, PR-04 scoped services + policy engine + FORCE RLS, PR-06
+expansion and backfill, PR-04 scoped services + policy engine + FORCE RLS,
+PR-05 OIDC, provisioning and the registration decision, PR-06
 files/portability/settings, PR-07 professionals/relationships/consent, PR-08
-professional UX (minus the inbox).
+professional UX (minus the inbox), PR-09 minus its notification transport.
 
 **PR-05 is complete.** Registration is closed by a decision rather than by
 absence — `registration_service` answers `disabled`, behind a deployment gate an
@@ -1656,3 +1657,11 @@ At the start of a new implementation session:
 4. Select exactly one next PR, mark it in progress, and keep registration closed.
 5. Update the decision log when a security boundary or migration shape changes.
 6. End with focused/full/PostgreSQL validation results and the precise next gate.
+7. **Open a browser on the seeded shared installation.** `scripts/seed_care_demo.py`
+   builds one and prints a session cookie per account;
+   `tests/test_shared_installation_pages.py` walks the same ground, and the
+   difference between them keeps being where the defects are. Four separate ones
+   this month were found in the first minute of clicking and were invisible to
+   several thousand passing tests: the app refusing to start, every page
+   answering 409, Save on the notification card answering 409, and the patient's
+   consent page answering a bare 404 to a doctor.
