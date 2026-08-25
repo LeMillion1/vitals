@@ -6,7 +6,7 @@ question with a different answer: a perfectly valid login by somebody with no
 account is a refusal, not a new account.
 
 Provisioning is closed, and closed by a decision rather than by absence.
-``registration_service`` is what says so, and it answers ``disabled`` unless the
+``authentication.registration`` is what says so, and it answers ``disabled`` unless the
 deployment has been cleared to open registration *and* an administrator has
 configured a mode — two switches, neither of which is on. An identity the
 provider vouches for is not an invitation, and treating it as one would mean
@@ -282,11 +282,11 @@ async def _provision_if_registration_is_open(
     name is a collision to resolve, not a way to become somebody else.
     """
 
-    from vitals.services import account_provisioning_service, registration_service
+    from vitals.services.authentication import provisioning, registration
 
     try:
-        await registration_service.require_open_registration(session)
-    except registration_service.RegistrationClosed:
+        await registration.require_open_registration(session)
+    except registration.RegistrationClosed:
         return None
 
     candidate = (preferred_username or "").strip()
@@ -296,7 +296,7 @@ async def _provision_if_registration_is_open(
         candidate = f"user-{subject[:24]}"
 
     try:
-        provisioned = await account_provisioning_service.provision_account(
+        provisioned = await provisioning.provision_account(
             session,
             username=candidate,
             # The provider's display claim may name the account, but only a
@@ -305,7 +305,7 @@ async def _provision_if_registration_is_open(
             # remain a uniform login refusal.
             email=None,
         )
-    except account_provisioning_service.AccountAlreadyExists as exc:
+    except provisioning.AccountAlreadyExists as exc:
         # Somebody already holds this name and it is not this identity — the
         # link lookup above would have found them otherwise. Refusing is right:
         # picking ``candidate-2`` would hand a stranger an account whose name
@@ -347,7 +347,7 @@ async def resolve_federated_user(
     """The local user this provider identity is, or a refusal.
 
     Creates an account for an unrecognised identity only where
-    ``registration_service`` says the installation is accepting them, which by
+    ``authentication.registration`` says the installation is accepting them, which by
     default and by deployment gate it is not. Otherwise the only way a link
     appears is the operator-configured bootstrap, and that runs once.
 

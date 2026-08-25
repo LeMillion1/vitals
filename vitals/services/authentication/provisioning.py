@@ -14,7 +14,7 @@ somebody visits. Collecting them here is the difference between "registration is
 a form" and "registration is a form plus four things somebody has to remember".
 
 **Nothing here decides whether an account *may* be created.** That is
-``registration_service``'s question and it answers ``disabled`` by default. This
+``authentication.registration``'s question and it answers ``disabled`` by default. This
 is what happens once something has said yes: an operator running the CLI, the
 demo seeder, and — when registration opens — the federated login path.
 

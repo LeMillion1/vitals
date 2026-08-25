@@ -46,7 +46,9 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 
 import vitals.models  # noqa: E402,F401  -- register the metadata graph
 from vitals.enums import UserRoleName  # noqa: E402
-from vitals.services import account_provisioning_service  # noqa: E402
+from vitals.services.authentication import (  # noqa: E402
+    provisioning as account_provisioning_service,
+)
 from vitals.utils.timeutils import DEFAULT_TIMEZONE  # noqa: E402
 
 _ROLES = (

@@ -636,7 +636,7 @@ async def federated_login_callback(
             authenticated_at=identity.authenticated_at,
             bootstrap_subject=cfg.oidc_bootstrap_subject,
             # Claims, not keys. They name an account this installation has
-            # already decided to create; ``registration_service`` is what makes
+            # already decided to create; ``authentication.registration`` makes
             # that decision, and by default it does not.
             email=identity.email,
             email_verified=identity.email_verified,

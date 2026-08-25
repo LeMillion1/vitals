@@ -68,9 +68,9 @@ from vitals.models.nutrition import MealLog  # noqa: E402
 from vitals.models.supplements import Supplement  # noqa: E402
 from vitals.services import labs_service  # noqa: E402
 from vitals.models.weight import WeightLog  # noqa: E402
-from vitals.services import (  # noqa: E402
-    account_provisioning_service,
-    provider_credentials_service,
+from vitals.services import provider_credentials_service  # noqa: E402
+from vitals.services.authentication import (  # noqa: E402
+    provisioning as account_provisioning_service,
 )
 from vitals.services.care import invitations, professionals, relationships  # noqa: E402
 from vitals.utils.timeutils import now_utc  # noqa: E402
@@ -135,7 +135,7 @@ async def _patient(
     It used to assemble one here — account, subject, roots, module map — which
     meant this script and the application had two different ideas of what a
     subject needs, and the script's was the one anybody ever looked at. It goes
-    through ``account_provisioning_service`` now, so a gap in provisioning shows
+    through ``authentication.provisioning`` now, so a gap in provisioning shows
     up in the browser check rather than only after registration opens.
     """
 

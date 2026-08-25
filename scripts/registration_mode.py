@@ -1,6 +1,6 @@
 """Read or set how this installation makes accounts, from a shell on the machine.
 
-``registration_service`` has said since it was written that the decision to open
+``authentication.registration`` has said since it was written that the decision to open
 registration is a deployment decision rather than a settings screen — and then
 nothing anywhere called ``set_stored_mode``. The door was described, gated and
 left without a handle: an installation could be unlocked with
@@ -39,7 +39,9 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 )
 
 import vitals.models  # noqa: E402,F401  -- register the metadata graph
-from vitals.services import registration_service  # noqa: E402
+from vitals.services.authentication import (  # noqa: E402
+    registration as registration_service,
+)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -1,6 +1,6 @@
 """The operator's handle on registration.
 
-``registration_service`` has always said that opening registration is a
+``authentication.registration`` has always said that opening registration is a
 deployment decision rather than a settings screen. What it did not have was
 anything that could make the decision: no caller of ``set_stored_mode``
 existed, so an installation that had been cleared and unlocked still had no way
@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import vitals.models  # noqa: F401  -- register the metadata graph
 from scripts import registration_mode as cli
 from vitals.models.base import Base
-from vitals.services import registration_service
+from vitals.services.authentication import registration as registration_service
 
 
 @pytest.fixture

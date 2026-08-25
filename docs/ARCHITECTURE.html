@@ -434,14 +434,14 @@ flowchart TB
 flowchart LR
   subgraph proc ["FastAPI process"]
     direction TB
-    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>29 routers, server-rendered</span>"]
+    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>30 routers, server-rendered</span>"]
     mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
     api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
     svc["<b>Application services</b><br/><span style='font-size:11px'>100 tracked modules · bounded-context migration active</span>"]
     sched["<b>Scheduler</b><br/><span style='font-size:11px'>15 jobs: sync, digest, nudge,<br/>dispatch, reconcile, sweep</span>"]
   end
 
-  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>80 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
+  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>81 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
   redis[("<b>Redis</b><br/><span style='font-size:11px'>cache, rate limits,<br/>Garmin token, breaker</span>")]
   files[/"<b>Private files</b><br/><span style='font-size:11px'>photos, scans, PDFs<br/>opaque keys</span>"/]
 

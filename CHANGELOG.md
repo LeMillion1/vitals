@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — registration now lives with authentication
+
+The deployment-gated registration decision and the single account/health-record
+provisioning boundary now live under `vitals.services.authentication` beside
+federated identity resolution. Their old flat service modules were removed,
+all callers moved together without compatibility shims, and the guarded flat
+service debt dropped from 77 modules to 75 without changing admission behavior.
+
 ### Added — operators can complete professional review in the browser
 
 Platform superadmins now have a dedicated responsive professional-review queue

@@ -32,7 +32,7 @@ the others remain useful provenance for the remediations named below:
    specific gaps.
 3. The ownership inventory called itself exhaustive but originally omitted 12
    of 76 live tables. It now includes the subsequently added MCP scope table and
-   matches all 80 machine-registry entries.
+   matches all 81 machine-registry entries.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
    Its schema, migration, router, service, RLS, ownership-class, and roadmap
    counters were synchronized during this audit.
@@ -41,17 +41,17 @@ the others remain useful provenance for the remediations named below:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0070 (head)`; 70 files in `migrations/versions` | Verified |
-| SQLAlchemy tables | `len(Base.metadata.tables)` → 80 | Verified |
-| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 80 | Verified and exhaustive in code |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0071 (head)`; 71 files in `migrations/versions` | Verified |
+| SQLAlchemy tables | `len(Base.metadata.tables)` → 81 | Verified |
+| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 81 | Verified and exhaustive in code |
 | Subject-scoped tables | 66 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
 | Required subject columns | 55 of the 66 `subject_id` columns are non-null | Verified |
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
 | Domain enum | 14 health domains | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
-| Web routers | 29 modules under `web/routers` | Verified |
+| Web routers | 30 modules under `web/routers` | Verified |
 | Application services | 100 tracked non-`__init__` modules after the care, authentication, analytics, persistence, and notification moves | Verified |
-| Flat service debt | 77 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
+| Flat service debt | 75 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
 | Commercial Git history | 247 commits after base `c91456a`; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
@@ -167,7 +167,7 @@ current state.
 
 The following roadmap targets are not shipped: invitation inbox,
 multi-subject full backup, support repair/export
-and break-glass, registration modes, lab
+and break-glass, `invite_only` and `admin_approved` registration workflows, lab
 marker collision migration, private-byte relocation outside static storage, and
 final legacy configuration contraction.
 
@@ -180,7 +180,8 @@ machine registry is the source of truth and is complete.
 The prose inventory previously listed only 64 live and two dropped tables. It
 now includes the missing identity, professional-care, support-request, and
 credential rows, the MCP scope child, the care attachment row, and the web-push
-subscription and care-push-delivery rows and matches all 80 live tables in the
+subscription, care-push-delivery, and professional-review rows and matches all
+81 live tables in the
 machine registry.
 
 The historical Stage 3/4/5 narrative should be archived separately from a

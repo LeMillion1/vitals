@@ -18,7 +18,10 @@ from vitals.enums import UserRoleName
 from vitals.models.identity import HealthSubject, User, UserRole
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import account_provisioning_service, registration_service
+from vitals.services.authentication import (
+    provisioning as account_provisioning_service,
+    registration as registration_service,
+)
 
 
 # ── Provisioning ─────────────────────────────────────────────────────────────

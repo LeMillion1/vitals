@@ -942,7 +942,7 @@ version bump now invalidates the browser sessions beside it.
 been left because nothing needed them yet, and that was the problem: closed was
 a property of there being nowhere for an account to come from.
 
-- `registration_service` holds `registration_mode` in `platform_settings` with
+- `authentication.registration` holds `registration_mode` in `platform_settings` with
   all four values from the scope above, `disabled` by default. Every other mode
   is gated behind `VITALS_REGISTRATION_UNLOCKED`, deliberately an environment
   variable: opening registration is a deployment decision that comes after a
@@ -950,7 +950,7 @@ a property of there being nowhere for an account to come from.
   that. `invite_only` and `admin_approved` refuse with a message naming
   themselves as unimplemented rather than falling through to `open`, which is
   the shape of failure the module exists to prevent.
-- `account_provisioning_service` is the one place a `HealthSubject` is born
+- `authentication.provisioning` is the one place a `HealthSubject` is born
   besides the legacy bootstrap. A subject needs four things — an owning account,
   a role, the integration roots every provider path resolves through, and a
   module map — and until now only the demo seeder assembled them, so the
@@ -1732,11 +1732,12 @@ Additional gates:
 - [x] Backfill subject ownership across the lake.
 - [x] Pass cross-subject service isolation and PostgreSQL RLS gates.
 - [x] Cut over OIDC authentication and per-user Vitals sessions/step-up state —
-  PR-05. Registration is still closed, and closed by `registration_service`
+  PR-05. Registration is still closed, and closed by
+  `authentication.registration`
   rather than by there being nowhere for an account to come from: four modes,
   `disabled` by default, and a deployment gate in front of the other three that
   is an environment variable rather than a settings page. A `HealthSubject` is
-  born in `account_provisioning_service` and nowhere else; an operator reaches
+  born in `authentication.provisioning` and nowhere else; an operator reaches
   it through `scripts/provision_account.py`.
 - [x] Isolate files, settings, portability — PR-06.
 - [x] Isolate connectors, scheduler, and messaging — PR-09 care dispatch and
