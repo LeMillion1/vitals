@@ -13,7 +13,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Daily briefs and nudges now treat a completely absent notification preference
 bundle as an ordinary pre-configuration state. They skip without network work
 or dashboard failure alerts, while malformed and partially stored bundles still
-fail closed.
+fail closed. The frozen environment-backed Telegram transport also becomes a
+safe no-channel result once an installation has more than one subject, instead
+of producing permanent scheduler alerts.
 
 ### Fixed — parallel Compose projects stay isolated
 

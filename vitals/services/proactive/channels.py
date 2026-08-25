@@ -34,6 +34,7 @@ from vitals.enums import (
 from vitals.models.tenancy import IntegrationConnection
 from vitals.services.legacy_ownership import (
     LegacyOwnershipContext,
+    LegacySubjectResolutionError,
     resolve_legacy_ownership_context,
 )
 from vitals.services.proactive.ownership import ProactiveOwnershipContext
@@ -215,11 +216,18 @@ async def build_legacy_bound_notifier(
 
     if not isinstance(ownership, ProactiveOwnershipContext):
         raise TypeError("ownership must be a ProactiveOwnershipContext")
-    resolved = await resolve_legacy_ownership_context(
-        session,
-        actor_username=None,
-        required_connections=(IntegrationProvider.TELEGRAM,),
-    )
+    try:
+        resolved = await resolve_legacy_ownership_context(
+            session,
+            actor_username=None,
+            required_connections=(IntegrationProvider.TELEGRAM,),
+        )
+    except LegacySubjectResolutionError:
+        # The environment-backed Telegram recipient is a frozen single-user
+        # compatibility transport. Once another subject exists it is no longer
+        # an endpoint we can prove belongs to this record, so it becomes the
+        # same safe answer as an unconfigured channel: no send capability.
+        return None
     expected_connection_id = resolved.connection_id(IntegrationProvider.TELEGRAM)
     if (
         resolved.subject_id != ownership.subject_id
@@ -333,5 +341,4 @@ async def resolve_legacy_channel_ownership(
         required_connections=(IntegrationProvider.TELEGRAM,),
     )
     return ownership_from_legacy(ownership)
-
 

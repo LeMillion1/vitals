@@ -101,7 +101,7 @@ async def test_unconfigured_subject_proactive_jobs_are_clean_noops(
     """
 
     from vitals.services import garmin_service
-    from vitals.services.proactive import brief, nudges
+    from vitals.services.proactive import brief, channels, nudges
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     provisioned = await account_provisioning_service.provision_account(
@@ -123,6 +123,16 @@ async def test_unconfigured_subject_proactive_jobs_are_clean_noops(
 
     await brief.brief_job(session_factory, subject_id=provisioned.subject_id)
     await nudges.nudges_job(session_factory, subject_id=provisioned.subject_id)
+
+    async with session_factory() as session:
+        owner_channel = await channels.resolve_subject_channel_ownership(
+            session,
+            subject_id=legacy_owner_roots.subject_id,
+        )
+        assert (
+            await channels.build_legacy_bound_notifier(session, owner_channel)
+            is None
+        )
 
 
 async def test_compatibility_whitespace_display_name_uses_username_fallback(
