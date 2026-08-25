@@ -28,6 +28,10 @@ vitals/services/care/
 └── threads.py         # patient-visible care-team conversation
 
 vitals/services/authentication/
+├── admission/
+│   ├── invitations.py # email-bound one-time account admission
+│   ├── requests.py    # federated request and operator decision
+│   └── retention.py   # bounded expiry and applicant-PII scrubbing
 ├── federation.py      # provider identity to local account
 ├── registration.py    # deployment-gated admission decision
 ├── provisioning.py    # account and optional health-record creation
@@ -84,8 +88,8 @@ page needs the same edit:
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 15, of which 11 fan out per record |
 | migration count | `migrations/versions/` | 72, head `0072` |
 | RLS table count | revisions `0050` + `0051` + `0055` + `0056` + `0057` + `0060` + `0061` + `0062` + `0063` + `0065` + `0067` + `0069`, asserted in `tests/test_row_level_security.py` | 66 |
-| platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 9 |
-| routers, tracked application-service modules | `web/routers/`, `vitals/services/` | 30 and 100 |
+| platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 10 |
+| routers, tracked application-service modules | `web/routers/`, `vitals/services/` | 30 and 104 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own

@@ -50,10 +50,10 @@ the others remain useful provenance for the remediations named below:
 | Domain enum | 14 health domains | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 30 modules under `web/routers` | Verified |
-| Application services | 100 tracked non-`__init__` modules after the care, authentication, analytics, persistence, and notification moves | Verified |
+| Application services | 104 tracked non-`__init__` modules after the care, authentication, admission, analytics, persistence, and notification moves | Verified |
 | Flat service debt | 75 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
-| Commercial Git history | 247 commits after base `c91456a`; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
+| Commercial Git history | 273 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. Only a command executed against the current tree is recorded as
@@ -71,9 +71,11 @@ a current validation result.
 - Every federated protected request now checks the live active account and
   session version. Suspending an account or calling `revoke_all_sessions` closes
   the next request.
-- Registration remains closed. Revision `0072` supplies constrained,
-  purge-ready invitation and approval-request state, but the
-  `invite_only` and `admin_approved` workflows are not implemented behavior.
+- Registration remains unavailable end to end. Revision `0072` supplies
+  constrained, purge-ready invitation and approval-request state, and
+  `authentication.admission` now implements their transactional domain
+  lifecycles. OIDC handoff, browser/operator routes, delivery, and scheduled
+  retention are not wired yet, so neither mode is user-reachable behavior.
 
 ### Data isolation
 
@@ -167,10 +169,10 @@ commit. Keep this document as target/decision history and use this audit for the
 current state.
 
 The following roadmap targets are not shipped: invitation inbox,
-multi-subject full backup, support repair/export
-and break-glass, `invite_only` and `admin_approved` registration workflows, lab
-marker collision migration, private-byte relocation outside static storage, and
-final legacy configuration contraction.
+multi-subject full backup, support repair/export and break-glass, end-to-end
+`invite_only` and `admin_approved` registration surfaces, lab marker collision
+migration, private-byte relocation outside static storage, and final legacy
+configuration contraction.
 
 ### `COMMERCIAL_OWNERSHIP_INVENTORY.md` — strong rationale, now exhaustive
 

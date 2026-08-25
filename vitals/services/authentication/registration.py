@@ -21,16 +21,18 @@ Four modes, from the plan:
 ``open``
     Anybody who can authenticate with the identity provider gets an account.
 
-**Only the first is reachable.** ``VITALS_REGISTRATION_UNLOCKED`` gates the other
-three, and it is an environment variable rather than a stored setting on
-purpose: the release plan makes opening registration a deployment decision that
-comes after a security review, and a mode somebody can flip from a settings page
-is not that. Until it is set, ``effective_mode`` answers ``disabled`` no matter
-what is stored — so the stored value can be configured, reviewed and tested
-ahead of the release that makes it mean anything.
+``VITALS_REGISTRATION_UNLOCKED`` gates the three account-creating modes, and it
+is an environment variable rather than a stored setting on purpose: the release
+plan makes opening registration a deployment decision that comes after a
+security review, and a mode somebody can flip from a settings page is not that.
+Until it is set, ``effective_mode`` answers ``disabled`` no matter what is
+stored — so the stored value can be configured, reviewed and tested ahead of
+the release that makes it mean anything.
 
-The two middle modes have no implementation yet and say so: they resolve to a
-refusal that names itself, rather than falling through to ``open``.
+The invitation and approval state machines live in ``authentication.admission``.
+This module remains the shared policy decision: generic federation may enter
+only ``open`` mode, while each middle mode must present its own proof and use
+its dedicated admission service. They never fall through to ``open``.
 """
 from __future__ import annotations
 
@@ -70,9 +72,9 @@ class RegistrationClosed(RegistrationError):
     """This installation does not create accounts by this route.
 
     One exception type for every reason — the mode is ``disabled``, the
-    deployment gate is off, the mode is one that has no implementation — because
-    the difference matters to an operator reading a log and to nobody standing
-    at the door. The message carries it; the answer does not.
+    deployment gate is off, or this entry point lacks the mode-specific proof —
+    because the difference matters to an operator reading a log and to nobody
+    standing at the door. The message carries it; the answer does not.
     """
 
 
@@ -200,11 +202,10 @@ async def set_stored_mode(
 async def require_open_registration(session: AsyncSession) -> RegistrationMode:
     """Raise unless an unrecognised identity may become an account right now.
 
-    The only mode that currently returns is ``open``, and it is unreachable
-    without the deployment gate. ``invite_only`` and ``admin_approved`` refuse
-    with their own message rather than being quietly treated as ``open``: a
-    half-built mode that behaves like the most permissive one is the failure
-    this module exists to prevent.
+    The only mode this generic entry point returns is ``open``, and it is
+    unreachable without the deployment gate. ``invite_only`` and
+    ``admin_approved`` require their dedicated admission proof and refuse here
+    rather than being quietly treated as ``open``.
     """
 
     mode = await effective_mode(session)
@@ -218,8 +219,8 @@ async def require_open_registration(session: AsyncSession) -> RegistrationMode:
             )
         raise RegistrationClosed("registration is closed by installation setting")
     raise RegistrationClosed(
-        f"registration mode {mode.value!r} is configured but not implemented; "
-        "no account is created"
+        f"registration mode {mode.value!r} requires its dedicated admission "
+        "flow; open registration creates no account"
     )
 
 

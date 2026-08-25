@@ -731,6 +731,14 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         # yet — that is what accepting is for — and the token is what authorizes
         # reading the row at all.
         ("vitals/services/care/invitations.py", "accept"),
+        # An admitted member has no subject-bound session yet. This helper is
+        # reached only after an already locked, single-use invitation/request
+        # proof has passed, and uses the scope only to materialize that one new
+        # account and subject graph; it is not a cross-subject reader.
+        (
+            "vitals/services/authentication/admission/_shared.py",
+            "provision_and_link",
+        ),
         # Housekeeping across every subject, with no person to act as.
         ("vitals/services/share_service.py", "purge_job"),
         ("vitals/services/ai_gateway_service.py", "reconciliation_job"),

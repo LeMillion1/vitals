@@ -8,6 +8,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — registration admission decisions are transactional
+
+The invitation and administrator-approval modes now have dedicated domain
+services without making either mode reachable from the browser yet. A shared
+identity-governance lock serializes mode changes, token consumption, request
+decisions, and account linking; row locks make every terminal transition
+single-winner. Expiry checks use the database statement clock after lock waits,
+so a transaction begun before a deadline cannot act after it. Invitations
+return the bearer once and persist only its digest,
+bind the provider's strictly verified email to a server-selected member,
+doctor, or trainer account, and preserve the inviter as role provenance.
+Approval requests accept only a member account shape, never merge by email, and
+retain an accountable decision without treating the stored email snapshot as a
+fresh login proof. Bounded expiry and retention services scrub terminal tokens,
+applicant PII, free text, and user references while retaining opaque outcomes.
+The code is grouped under `authentication/admission/` and leaves transaction
+commit ownership to OIDC, operator, or scheduled-job boundaries.
+
 ### Added — registration admission has a fail-closed schema
 
 Revision `0072` adds expiring, purge-ready invitation and operator-approval records

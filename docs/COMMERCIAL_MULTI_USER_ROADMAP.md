@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0070` — 70 revisions |
-| Schema | 80 tables; 66 carry `subject_id` and are covered by an RLS policy; 55 have it `NOT NULL` |
+| Alembic head | `0072` — 72 revisions |
+| Schema | 83 tables; 66 carry `subject_id` and are covered by an RLS policy; 55 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,754 fast passed / 171 skipped / 35 UI deselected; 87 focused worker/push/i18n/design/security tests; migration plus 74 current PostgreSQL dispatcher/outbox/RLS/scheduler tests |
+| Suites | 4,929 fast passed / 182 skipped / 35 UI deselected; 93 focused admission/RLS/auth/architecture tests; migration cycle plus 72 focused PostgreSQL admission/RLS tests |
 | Domains / scheduled jobs | 14 and 15, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -947,9 +947,16 @@ a property of there being nowhere for an account to come from.
   is gated behind `VITALS_REGISTRATION_UNLOCKED`, deliberately an environment
   variable: opening registration is a deployment decision that comes after a
   security review, and a mode an administrator can flip from a screen is not
-  that. `invite_only` and `admin_approved` refuse with a message naming
-  themselves as unimplemented rather than falling through to `open`, which is
-  the shape of failure the module exists to prevent.
+  that. Generic federation refuses `invite_only` and `admin_approved` rather
+  than falling through to `open`; those modes require their own proof.
+- `authentication.admission` now owns those proofs and decisions as three
+  bounded modules: one-time email-bound invitations, exact federated-identity
+  approval requests, and expiry/PII-retention maintenance. They serialize
+  identity writes through the shared governance lock, create only the
+  server-selected account shape, retain no plaintext bearer token, and never
+  commit on behalf of the caller. This is the domain boundary, not the release:
+  OIDC handoff, operator/browser surfaces, invitation delivery, and scheduled
+  maintenance still need to be connected before either mode is usable.
 - `authentication.provisioning` is the one place a `HealthSubject` is born
   besides the legacy bootstrap. A subject needs four things — an owning account,
   a role, the integration roots every provider path resolves through, and a

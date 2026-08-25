@@ -305,10 +305,10 @@ async def test_a_stored_mode_means_nothing_without_the_deployment_gate(
         await registration_service.require_open_registration(db_session)
 
 
-async def test_a_half_built_mode_refuses_rather_than_behaving_like_open(
+async def test_proof_bound_mode_refuses_generic_open_admission(
     db_session, monkeypatch
 ):
-    """The failure this module exists to prevent."""
+    """A mode-specific proof may never fall through to generic open admission."""
 
     monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
     for mode in (
@@ -319,7 +319,7 @@ async def test_a_half_built_mode_refuses_rather_than_behaving_like_open(
         await db_session.commit()
         with pytest.raises(registration_service.RegistrationClosed) as caught:
             await registration_service.require_open_registration(db_session)
-        assert "not implemented" in str(caught.value)
+        assert "requires its dedicated admission flow" in str(caught.value)
 
 
 async def test_a_stored_value_this_build_does_not_understand_reads_as_closed(

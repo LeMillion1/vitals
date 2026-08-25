@@ -103,11 +103,10 @@ async def test_a_mode_that_is_not_one_of_the_four_is_refused_before_the_database
     )
 
 
-async def test_a_half_built_mode_can_be_stored_and_still_refuses_at_the_door(
+async def test_proof_bound_mode_can_be_stored_and_refuses_generic_admission(
     an_installation, monkeypatch
 ):
-    """Storing ``invite_only`` is not the same as it working, and the refusal
-    names itself rather than falling through to ``open``."""
+    """Storing ``invite_only`` does not let generic federation bypass its proof."""
 
     monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
     assert await cli._run(cli._parse_args(["--set", "invite_only"])) == 0
@@ -120,7 +119,7 @@ async def test_a_half_built_mode_can_be_stored_and_still_refuses_at_the_door(
                 await registration_service.require_open_registration(session)
     finally:
         await engine.dispose()
-    assert "not implemented" in str(refusal.value)
+    assert "requires its dedicated admission flow" in str(refusal.value)
 
 
 async def test_without_a_database_url_it_refuses_rather_than_guessing(
