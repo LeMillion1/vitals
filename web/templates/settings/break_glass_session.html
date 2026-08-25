@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("break_glass.session_title") }}{% endblock %}
+
+{% block content %}
+<div hx-history="false"></div>
+{% from "partials/masthead.html" import masthead_header, card_header with context %}
+<div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+    {% call masthead_header('settings', t('break_glass.session_heading'), []) %}{% endcall %}
+    <div class="v-alert block">{{ t("break_glass.session_warning") }}</div>
+    {% if saved %}<div class="v-alert info">{{ t("break_glass.saved_" ~ saved) }}</div>{% endif %}
+    {% if error %}<div class="v-alert warn">{{ t("break_glass.error_refused") }}</div>{% endif %}
+
+    <div class="v-card p-6 space-y-4" data-break-glass-session="{{ session.status }}">
+        {{ card_header(t("break_glass.status_" ~ session.status)) }}
+        <div class="v-card-inset p-4 space-y-3">
+            <p class="v-text-body"><strong>{{ session.holder_username }}</strong></p>
+            <p class="v-text-body" style="white-space: pre-wrap">{{ session.reason }}</p>
+            <p class="v-text-micro" style="color: var(--muted)">
+                {{ t("break_glass.scopes") }}:
+                {% for key in session.domain_keys %}{{ t("enum.domain." ~ key) }}{% if not loop.last %}, {% endif %}{% endfor %}
+            </p>
+            <p class="v-text-micro" style="color: var(--faint)">
+                {{ t("break_glass.approvals", count=session.approval_count) }} ·
+                {{ t("break_glass.approval_deadline") }} {{ session.approval_deadline | format_datetime }} ·
+                {{ t("break_glass.minutes", count=session.requested_ttl_minutes) }}
+                {% if session.incident_reference %} · {{ session.incident_reference }}{% endif %}
+            </p>
+            {% if session.expires_at %}
+            <p class="v-text-micro" style="color: var(--muted)">{{ t("support.until") }} {{ session.expires_at | format_datetime }}</p>
+            {% endif %}
+        </div>
+
+        <div class="flex flex-wrap justify-end gap-3">
+            {% if session.status == 'pending' and not session.viewer_is_holder %}
+            <form action="/settings/platform/break-glass/{{ session.subject_id }}/session/{{ session.session_id }}/approve" method="POST">
+                <button type="submit" class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("break_glass.approve") }}</button>
+            </form>
+            {% endif %}
+            {% if session.status == 'active' and session.viewer_is_holder %}
+            <a href="/settings/platform/break-glass/{{ session.subject_id }}/session/{{ session.session_id }}/record"
+               class="v-btn inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("break_glass.open_record") }}</a>
+            {% endif %}
+            {% if session.viewer_is_holder and session.status in ['pending', 'active'] %}
+            <form action="/settings/platform/break-glass/{{ session.subject_id }}/session/{{ session.session_id }}/revoke" method="POST">
+                <button type="submit" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("break_glass.release") }}</button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+    <a href="/settings/platform/break-glass" class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("break_glass.back") }}</a>
+</div>
+{% endblock %}

@@ -195,7 +195,11 @@
     {% endif %}
   {% endfor %}
 
-  {% if care.is_support and record_restricted %}
+  {% if break_glass is defined and break_glass and record_restricted %}
+  <p class="v-text-micro" style="color: var(--faint)">
+    {{ t("break_glass.record_exact_scopes") }}
+  </p>
+  {% elif care.is_support and record_restricted %}
   {# A support grant must not reveal the names of enabled modules outside its
      scope. Even naming a hidden health category would disclose patient data. #}
   <p class="v-text-micro" style="color: var(--faint)">

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("break_glass.record_title") }}{% endblock %}
+
+{% block content %}
+<div hx-history="false"></div>
+{% from "partials/masthead.html" import masthead_header with context %}
+<div class="v-page px-6 py-7 max-w-5xl mx-auto space-y-6" data-break-glass-record>
+    {% call masthead_header('settings', t('break_glass.record_heading'), []) %}{% endcall %}
+    <div class="v-alert block">
+        {{ t("break_glass.record_warning", expires=(authorization.expires_at | format_datetime)) }}
+    </div>
+    {% include "care/_record.html" %}
+    <div class="flex justify-end">
+        <a href="/settings/platform/break-glass/{{ authorization.subject_id }}/session/{{ authorization.session_id }}"
+           class="v-btn-ghost inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("break_glass.back") }}</a>
+    </div>
+</div>
+{% endblock %}

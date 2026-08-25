@@ -208,6 +208,7 @@ privacy, and legal decision permits it.
 | `AIInvocation` | Subject-owned paid-operation ledger linking S, optional A/system origin, exact platform gateway, purpose/model/config version, idempotency, lifecycle, bounded usage, and cost. It stores no prompt, completion, document bytes, or medical values. |
 | `FileAsset` | Private stored object with subject, owner/uploader, purpose, content metadata, and access policy. |
 | `SupportAccessGrant` | Time-limited, reasoned, scoped support authorization for one superadmin and one subject. |
+| `BreakGlassSession` | Separately governed emergency read capability for one holder, one exact subject, explicit reviewed domains, two other superadmin approvals, and a maximum 60-minute window. |
 | `AuditEvent` | Append-only record of sensitive reads, writes, exports, consent changes, overrides, and support activity. |
 | `CareThread` / `CareMessage` | Subject-scoped, explicitly joined, patient-visible communication with private attachments. |
 
@@ -264,6 +265,19 @@ A support investigation must create a `SupportAccessGrant` with:
   every write;
 - for repair, before/after identifiers and a bounded diff, never copied PHI in
   ordinary application logs.
+
+The emergency exception is now a distinct `BreakGlassSession`, not a mode or
+flag on that grant. The initiating active superadmin holds the capability; two
+distinct other active superadmins must approve within 15 minutes. Activation
+starts an explicitly chosen 15-, 30-, or 60-minute read-only window for one
+exact subject and reviewed record domains only. The dedicated projection does
+not query notes, care threads or plans, files, raw payloads, exports, repairs,
+writes, or MCP, and it never unions professional or ordinary support authority.
+Each record open requires recent authentication and revalidates the three active
+accounts, exact selectors, approval receipt, expiry, module gate, and scope.
+Pending and active sessions are visible to the patient in global chrome and
+durable history, either can be revoked immediately, and audit envelopes contain
+no request text or health data.
 
 The last active superadmin cannot remove or suspend itself. Superadmin accounts
 are never shared and cannot mint a global MCP token. Debug MCP access, if ever
@@ -1776,8 +1790,10 @@ Additional gates:
   404 that is not about permission.
 - [x] Ship the controlled support console and audit UX — exact read grants, a
       separately patient-approved one-shot personal export, and the first
-      separately reviewed reversible repair are live; broader repair,
-      operational dashboards and the break-glass path remain unbuilt.
+      separately reviewed reversible repair are live. The independent
+      three-account break-glass path is also implemented with exact selectors,
+      a fixed read-only projection, patient transparency and revocation;
+      broader repair and operational dashboards remain unbuilt.
 - [ ] Complete commercial security/legal/operations review.
 - [ ] Open registration.
 - [ ] Run the final contract migration.

@@ -475,6 +475,15 @@
            on every page for as long as that lasts, and gone by itself when it
            does: a grant the person whose record it is has to go hunting through
            settings to discover is not meaningfully consented to. #}
+        {% if request.state.break_glass_banner and request.url.path != '/settings/access' %}
+        <div class="flex-none px-6 pt-5 max-w-6xl mx-auto w-full" data-break-glass-banner>
+            <div class="v-alert block flex flex-wrap items-center justify-between gap-3">
+                <span>{{ t("break_glass.open_banner", count=request.state.break_glass_banner.total_count, pending=request.state.break_glass_banner.pending_count, active=request.state.break_glass_banner.active_count) }}</span>
+                <a href="/settings/access" class="v-btn-ghost text-xs">{{ t("support.manage_access") }}</a>
+            </div>
+        </div>
+        {% endif %}
+
         {% if request.state.support_banner and request.url.path != '/settings/access' %}
         <div class="flex-none px-6 pt-5 max-w-6xl mx-auto w-full" data-support-banner>
             <div class="v-alert warn flex flex-wrap items-center justify-between gap-3">

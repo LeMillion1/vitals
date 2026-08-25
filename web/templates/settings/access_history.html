@@ -81,6 +81,42 @@
     {% if decided %}<div class="v-alert info">{{ t("support.decided_" ~ decided) }}</div>{% endif %}
     {% if error %}<div class="v-alert warn">{{ t("support.error_refused") }}</div>{% endif %}
 
+    <div class="v-card p-6 space-y-4" data-break-glass-history>
+        {{ card_header(t("break_glass.patient_history_title")) }}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("break_glass.patient_history_hint") }}</p>
+        {% if not emergency_history %}
+        <p class="v-text-body" style="color: var(--muted)" data-break-glass-empty>{{ t("break_glass.patient_history_empty") }}</p>
+        {% else %}
+        <div class="space-y-3">
+        {% for item in emergency_history %}
+        <div class="v-card-inset p-4 space-y-3" data-break-glass-session="{{ item.status }}">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+                <strong class="v-text-body">{{ item.holder_username }}</strong>
+                <span class="v-text-label" style="color: {% if item.status == 'active' %}var(--bad){% else %}var(--muted){% endif %}">
+                    {{ t("break_glass.status_" ~ item.status) }}
+                </span>
+            </div>
+            <p class="v-text-body" style="white-space: pre-wrap">{{ item.reason }}</p>
+            <p class="v-text-micro" style="color: var(--muted)">
+                {{ t("break_glass.scopes") }}:
+                {% for key in item.domain_keys %}{{ t("enum.domain." ~ key) }}{% if not loop.last %}, {% endif %}{% endfor %}
+            </p>
+            <p class="v-text-micro" style="color: var(--faint)">
+                {{ item.initiated_at | format_datetime }} · {{ t("break_glass.approvals", count=item.approval_count) }}
+                {% if item.expires_at %} · {{ t("support.until") }} {{ item.expires_at | format_datetime }}{% endif %}
+                {% if item.incident_reference %} · {{ item.incident_reference }}{% endif %}
+            </p>
+            {% if item.status in ['pending', 'active'] %}
+            <form action="/settings/access/break-glass/{{ item.session_id }}/revoke" method="POST" class="flex justify-end">
+                <button type="submit" class="v-btn-danger inline-flex min-h-11 items-center justify-center px-4 py-3 text-xs">{{ t("break_glass.patient_revoke") }}</button>
+            </form>
+            {% endif %}
+        </div>
+        {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+
     {# Whatever is live goes at the top and is loud. Somebody reading this page
        is usually here to answer exactly one question, and it is this one. #}
     {% if live_grants %}

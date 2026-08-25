@@ -32,6 +32,7 @@ from vitals.services.access_resolution import (
     require_access,
     resolve_access_context,
 )
+from vitals.services.emergency import access as emergency_access
 from vitals.services.legacy_ownership import NoPersonalRecordError
 from vitals.services.conflict_engine import ConflictBlocked
 from vitals.utils.timeutils import today_local
@@ -532,6 +533,9 @@ async def access_history(
     repairs = await support.repair_actions_for_subject(db, context=context)
     opened = await support.record_opened_history(db, subject_id=subject_id)
     live_grants = await support.live_grants_for(db, context=context)
+    emergency_history = await emergency_access.list_for_subject(
+        db, owner_user_id=_user_id, subject_id=subject_id
+    )
     return templates.TemplateResponse(
         request,
         "settings/access_history.html",
@@ -544,6 +548,7 @@ async def access_history(
             "opened_has_more": opened.has_more,
             "live_grants": live_grants,
             "repair_actions": repairs,
+            "emergency_history": emergency_history,
             "decided": decided,
             "error": error,
         },

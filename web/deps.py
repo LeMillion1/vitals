@@ -415,6 +415,7 @@ async def load_support_banner(
     """
 
     request.state.support_banner = None
+    request.state.break_glass_banner = None
     accept = request.headers.get("accept", "")
     if request.method != "GET":
         return
@@ -437,6 +438,17 @@ async def load_support_banner(
             # subject-protected management page rather than entering every page.
             request.state.support_banner = {
                 "active_count": len(grants),
+            }
+        from vitals.services.emergency import access as emergency_access
+
+        emergency_state = await emergency_access.open_counts_for_subject(
+            db, subject_id=scope.subject_id
+        )
+        if emergency_state.total_count:
+            request.state.break_glass_banner = {
+                "pending_count": emergency_state.pending_count,
+                "active_count": emergency_state.active_count,
+                "total_count": emergency_state.total_count,
             }
     except Exception:
         logger.exception("support banner load failed; hiding the banner")

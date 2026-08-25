@@ -67,6 +67,20 @@ with an explicit reason, approver, expiry, mode, and concrete scope. This is how
 maintainers can investigate and repair production issues without creating an
 invisible global medical-record bypass.
 
+Break-glass is a separate emergency capability, not a support-grant flag or an
+extension of professional consent. One active platform superadmin names one
+exact subject, chooses only reviewed record-summary domains, and requests a
+15-, 30-, or 60-minute read window. Two distinct other active superadmins must
+approve within 15 minutes before the window starts. Every open rechecks all
+three accounts and exact selectors behind recent authentication. The dedicated
+projection selects only reviewed summary columns: it cannot read notes, care
+messages or plans, raw payloads, files, exports, repair operations, writes, or
+MCP surfaces, and it never unions ordinary support or professional scopes.
+Patients see live requests and openings in the global banner, retain the full
+history on the access page, and may revoke a pending or active session. Audit
+events retain opaque IDs, fixed reason codes, scope identifiers, counts, and
+timestamps, but no request reason, ticket text, medical value, note, or payload.
+
 Support export is a separate exceptional scope, never an upgrade of record-read
 access. It names one versioned subject-portability operation, requires a fresh
 patient approval, expires after two hours, and is consumed atomically with its

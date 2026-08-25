@@ -7,6 +7,10 @@
 {% from "partials/masthead.html" import masthead_header, card_header with context %}
 {% from "partials/support_access.html" import scope_labels with context %}
 <div class="v-page px-6 py-7 max-w-4xl mx-auto space-y-6">
+    <div class="v-alert warn flex flex-wrap items-center justify-between gap-3">
+        <span>{{ t("break_glass.support_console_notice") }}</span>
+        <a href="/settings/platform/break-glass" class="v-btn-ghost text-xs">{{ t("break_glass.open_console") }}</a>
+    </div>
 
     {% call masthead_header('settings', t('support.console_heading'), []) %}{% endcall %}
     <p class="v-text-body max-w-2xl" style="color: var(--muted)">

@@ -34,8 +34,10 @@ def test_every_registered_table_has_exactly_one_ownership_contract():
     # encrypted, account-owned browser push subscriptions; 80 since 0069 added
     # the subject-isolated care-message push outbox; 81 since 0071 added the
     # immutable professional-review decision history; 83 since 0072 added the
-    # invitation and operator-approval admission records.
-    assert len(OWNERSHIP_REGISTRY) == 84
+    # invitation and operator-approval admission records; 84 since 0076 added
+    # the support repair row; 87 since 0078 added the separately governed
+    # emergency session, scopes and approvals.
+    assert len(OWNERSHIP_REGISTRY) == 87
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -75,6 +77,9 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "ai_platform_quota_periods",
         "ai_subject_quota_periods",
         "audit_events",
+        "break_glass_approvals",
+        "break_glass_scopes",
+        "break_glass_sessions",
         "care_messages",
         "care_message_attachments",
         "care_push_deliveries",

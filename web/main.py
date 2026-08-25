@@ -938,6 +938,10 @@ from web.routers.support_access import (  # noqa: E402
     admin_router as support_admin_router,
     patient_router as support_patient_router,
 )
+from web.routers.break_glass import (  # noqa: E402
+    admin_router as break_glass_admin_router,
+    patient_router as break_glass_patient_router,
+)
 from web.routers.professional_reviews import (  # noqa: E402
     router as professional_reviews_router,
 )
@@ -994,10 +998,12 @@ app.include_router(web_push_router)
 # the reason the consents router is: the platform support/professional paths and
 # /settings/access must be matched by their own routes rather than swallowed.
 app.include_router(support_admin_router)
+app.include_router(break_glass_admin_router)
 app.include_router(professional_reviews_router)
 app.include_router(registration_router)
 app.include_router(registration_operator_router)
 app.include_router(support_patient_router)
+app.include_router(break_glass_patient_router)
 app.include_router(garmin_router)
 app.include_router(labs_router)
 app.include_router(reports_router)

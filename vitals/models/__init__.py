@@ -54,6 +54,11 @@ from vitals.models.weight import (
     NoiseMarker,
 )
 from vitals.models.support_repair import SupportRepairAction
+from vitals.models.break_glass import (
+    BreakGlassApproval,
+    BreakGlassScope,
+    BreakGlassSession,
+)
 
 # Body composition — InBody / МедАсс (BIA) scans.
 from vitals.models.body_scan import BodyScan, BodyScanMetric
@@ -173,6 +178,9 @@ __all__ = [
     "WeightLog",
     "BodyMeasurement",
     "SupportRepairAction",
+    "BreakGlassApproval",
+    "BreakGlassScope",
+    "BreakGlassSession",
     "ProgressPhoto",
     "NoiseMarker",
     "BodyScan",

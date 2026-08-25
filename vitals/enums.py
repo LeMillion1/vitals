@@ -112,6 +112,15 @@ class SupportRepairStatus(StrEnum):
     REVERTED = "reverted"
 
 
+class BreakGlassStatus(StrEnum):
+    """Lifecycle stored for one independently approved emergency session."""
+
+    PENDING = "pending"
+    ACTIVE = "active"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
 class ProfessionalKind(StrEnum):
     """What a professional is, from the patient's point of view.
 

@@ -71,6 +71,7 @@ _POLICY_REVISIONS = (
     "0067_care_message_attachments",
     "0069_subject_isolated_care_push_outbox",
     "0076_support_repair_actions",
+    "0078_break_glass_sessions",
 )
 
 

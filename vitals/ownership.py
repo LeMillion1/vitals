@@ -467,6 +467,21 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         user_portable=False,
     ),
+    "break_glass_sessions": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
+    "break_glass_scopes": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL_CHILD,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
+    "break_glass_approvals": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL_CHILD,
+        subject=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "support_access_scopes": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL_CHILD,
         subject=TargetColumn.INHERITED,

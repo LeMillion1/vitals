@@ -8,6 +8,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — three-account emergency read access
+
+Vitals now has a separately governed break-glass path for an urgent, exact
+patient record. One active platform superadmin initiates it and two distinct
+other active superadmins must approve within 15 minutes. The holder chooses an
+explicit reviewed set of summary domains and a 15-, 30-, or 60-minute read-only
+window; the path never reuses or widens an ordinary support grant, professional
+consent, or MCP credential.
+
+The emergency projection is isolated from the ordinary care assembler and uses
+eleven explicit, column-minimal loaders. It never queries files, raw payloads,
+notes, care conversations or plans, exports, repairs, or write surfaces. Every
+open requires recent authentication and rechecks the exact holder, subject,
+session, approvals, account status, expiry, and domain set. Patients see both
+pending requests and active openings in a persistent banner, always have a
+discoverable emergency-history section, and can revoke either state. Lifecycle
+and read audit events remain PHI-free.
+
 ### Fixed — portability v1 rejects every other format version
 
 Full and personal restores now require the metadata version to be the exact
