@@ -361,7 +361,31 @@ async def client(db_session, redis):
     await db_session.commit()
 
     async def _get_session():
-        yield db_session
+        """Reuse the fixture connection while preserving one request per scope.
+
+        Production ``get_session`` commits or rolls back and closes its session
+        after every request. This fixture intentionally reuses ``db_session`` so
+        tests can inspect writes, but it must still end the transaction and its
+        remembered RLS binding here; otherwise a second HTTP request for another
+        patient looks like an illegal mid-request subject switch.
+        """
+
+        from vitals.persistence import rls
+
+        # The override is the same AsyncSession object for the whole test,
+        # unlike production's fresh object per request. Clear the previous
+        # request's remembered boundary before dependency resolution starts.
+        db_session.info.pop(rls._SUBJECT_KEY, None)
+        db_session.info.pop(rls._PLATFORM_KEY, None)
+        try:
+            yield db_session
+            await db_session.commit()
+        except Exception:
+            await db_session.rollback()
+            raise
+        finally:
+            db_session.info.pop(rls._SUBJECT_KEY, None)
+            db_session.info.pop(rls._PLATFORM_KEY, None)
 
     async def _get_redis():
         return redis
