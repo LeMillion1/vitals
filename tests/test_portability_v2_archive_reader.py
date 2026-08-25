@@ -20,7 +20,11 @@ from vitals.services.portability.archive_reader import (
     ArchiveReadError,
     ArchiveReaderLimits,
     inspection,
+    iter_validated_table_rows,
     open_validated_encrypted_archive,
+    open_validated_resource,
+    open_validated_table,
+    validated_record_manifest,
 )
 from vitals.services.portability.crypto import EncryptingWriter
 from vitals.services.portability.resources import ResourceLocations
@@ -273,6 +277,41 @@ def test_valid_encrypted_roundtrip_inspection_and_anonymous_spool(tmp_path):
         assert not handle.closed
 
     assert handle is not None and handle.closed
+
+
+def test_validated_member_api_exposes_only_declared_members_inside_context(tmp_path):
+    plaintext, resource_body = _plain_archive(tmp_path)
+    encrypted = _encrypt(plaintext)
+
+    with open_validated_encrypted_archive(
+        io.BytesIO(encrypted), passphrase=_PASSPHRASE
+    ) as validated:
+        with open_validated_table(validated, "weight_logs") as table:
+            assert json.loads(table.readline())["ref"] == "r000000000001"
+        record = validated_record_manifest(validated)
+        assert record["ref"] == _RECORD_REF
+        with pytest.raises(TypeError):
+            record["ref"] = "mutated"  # type: ignore[index]
+        rows = list(iter_validated_table_rows(validated, "weight_logs"))
+        assert rows[0]["ref"] == "r000000000001"
+        with pytest.raises(TypeError):
+            rows[0]["ref"] = "mutated"  # type: ignore[index]
+        digest = hashlib.sha256(resource_body).hexdigest()
+        with open_validated_resource(validated, digest) as resource:
+            assert resource.read() == resource_body
+        with pytest.raises(ArchiveReadError) as unknown_table:
+            with open_validated_table(validated, "raw_payloads"):
+                pytest.fail("an undeclared table was opened")
+        assert unknown_table.value.code == "validated_table_unknown"
+        with pytest.raises(ArchiveReadError) as unknown_resource:
+            with open_validated_resource(validated, "0" * 64):
+                pytest.fail("an undeclared resource was opened")
+        assert unknown_resource.value.code == "validated_resource_unknown"
+
+    with pytest.raises(ArchiveReadError) as closed:
+        with open_validated_table(validated, "weight_logs"):
+            pytest.fail("a table was opened after the reader context closed")
+    assert closed.value.code == "archive_context_closed"
 
 
 @pytest.mark.parametrize("passphrase", ["wrong password value", _PASSPHRASE])

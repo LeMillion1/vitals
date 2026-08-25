@@ -25,6 +25,7 @@ import zipfile
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, BinaryIO, Final, Iterator
 
 from vitals.services.portability import contract
@@ -197,6 +198,10 @@ class ValidatedArchive:
     connection_count: int
     resource_count: int
     plaintext_bytes: int
+    _record_manifest: Mapping[str, Any] = field(repr=False, compare=False)
+    _limits: ArchiveReaderLimits = field(repr=False, compare=False)
+    _table_names: frozenset[str] = field(repr=False, compare=False)
+    _resource_digests: frozenset[str] = field(repr=False, compare=False)
     _zip_file: zipfile.ZipFile = field(repr=False, compare=False)
     _plaintext_spool: BinaryIO = field(repr=False, compare=False)
 
@@ -280,6 +285,14 @@ def _canonical_json(value: object) -> bytes:
         ).encode("utf-8")
     except (TypeError, ValueError, UnicodeError):
         raise _error("json_invalid", "archive JSON is invalid") from None
+
+
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    return value
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1034,6 +1047,12 @@ def _validate_inner_archive(
             connection_count=totals["connections"],
             resource_count=totals["resources"],
             plaintext_bytes=plaintext_bytes,
+            _record_manifest=_freeze_json(record),
+            _limits=limits,
+            _table_names=frozenset(table.name for table in tables),
+            _resource_digests=frozenset(
+                resource.sha256_hex for resource in resources
+            ),
             _zip_file=archive,
             _plaintext_spool=spool,
         )
@@ -1110,6 +1129,97 @@ def inspection(archive: ValidatedArchive) -> ArchiveInspection:
     )
 
 
+def _open_validated_member(
+    archive: ValidatedArchive,
+    path: str,
+) -> BinaryIO:
+    if not isinstance(archive, ValidatedArchive):
+        raise TypeError("archive must be a ValidatedArchive")
+    if archive._plaintext_spool.closed or archive._zip_file.fp is None:
+        raise _error(
+            "archive_context_closed",
+            "validated archive members are only available inside the reader context",
+        )
+    try:
+        return archive._zip_file.open(path, mode="r")
+    except (KeyError, RuntimeError, ValueError, zipfile.BadZipFile):
+        raise _error(
+            "validated_member_unavailable",
+            "validated archive member is unavailable",
+        ) from None
+
+
+@contextmanager
+def open_validated_table(
+    archive: ValidatedArchive,
+    table_name: str,
+) -> Iterator[BinaryIO]:
+    """Open one declared, already validated JSONL table inside its context."""
+
+    if type(table_name) is not str or table_name not in archive._table_names:
+        raise _error("validated_table_unknown", "table is not declared in the record")
+    source = _open_validated_member(
+        archive,
+        f"records/{archive.record_ref}/tables/{table_name}.jsonl",
+    )
+    try:
+        yield source
+    finally:
+        source.close()
+
+
+@contextmanager
+def open_validated_resource(
+    archive: ValidatedArchive,
+    sha256_hex: str,
+) -> Iterator[BinaryIO]:
+    """Open one declared, already validated content-addressed resource."""
+
+    if type(sha256_hex) is not str or sha256_hex not in archive._resource_digests:
+        raise _error(
+            "validated_resource_unknown",
+            "resource digest is not declared in the record",
+        )
+    source = _open_validated_member(archive, f"objects/sha256/{sha256_hex}")
+    try:
+        yield source
+    finally:
+        source.close()
+
+
+def validated_record_manifest(archive: ValidatedArchive) -> Mapping[str, Any]:
+    """Return the recursively immutable manifest for the one validated record."""
+
+    if not isinstance(archive, ValidatedArchive):
+        raise TypeError("archive must be a ValidatedArchive")
+    return archive._record_manifest
+
+
+def iter_validated_table_rows(
+    archive: ValidatedArchive,
+    table_name: str,
+) -> Iterator[Mapping[str, Any]]:
+    """Yield immutable canonical rows from one declared table inside the context."""
+
+    if not isinstance(archive, ValidatedArchive):
+        raise TypeError("archive must be a ValidatedArchive")
+    budget = _JsonBudget(
+        remaining_nodes=archive._limits.max_json_nodes,
+        max_depth=archive._limits.max_json_depth,
+    )
+    with open_validated_table(archive, table_name) as source:
+        while True:
+            line = source.readline(archive._limits.max_row_bytes + 1)
+            if not line:
+                break
+            if len(line) > archive._limits.max_row_bytes or not line.endswith(b"\n"):
+                raise _error("row_bytes_exceeded", "JSONL row exceeds a hard limit")
+            value = _parse_canonical_json(line[:-1], budget=budget)
+            if not isinstance(value, Mapping):  # already guaranteed by inspection
+                raise _error("row_invalid", "JSONL row is no longer an object")
+            yield _freeze_json(value)
+
+
 __all__ = [
     "ArchiveInspection",
     "ArchiveReadError",
@@ -1117,5 +1227,9 @@ __all__ = [
     "DEFAULT_READER_LIMITS",
     "ValidatedArchive",
     "inspection",
+    "iter_validated_table_rows",
+    "open_validated_resource",
+    "open_validated_table",
     "open_validated_encrypted_archive",
+    "validated_record_manifest",
 ]
