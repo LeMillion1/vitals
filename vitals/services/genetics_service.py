@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Final, Optional, Sequence
 
 from sqlalchemy import (
+    case,
     func,
     or_,
     select,
@@ -71,6 +72,14 @@ class VcfIngestSummary:
     raw: RawPayload | None
     imported: int
     markers: int
+
+
+@dataclass(frozen=True, slots=True)
+class BoundedVariantPage:
+    """A provenance-validated, bounded genetics projection."""
+
+    rows: tuple[GeneticVariant, ...]
+    truncated: bool
 
 
 def _require_scoped_prepared_write(
@@ -268,6 +277,53 @@ async def list_variants(
                 raw_rsid_cache=raw_rsid_cache,
             )
     return rows
+
+
+async def bounded_variants(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    limit: int = MAX_LIST_LIMIT,
+) -> BoundedVariantPage:
+    """Validate only the bounded page that an authorized care screen renders."""
+
+    _validate_limit(limit)
+    if limit is None:  # Kept explicit for type checkers; validation allows None.
+        raise GeneticsValidationError("bounded genetics reads require a limit")
+    if not isinstance(subject_id, uuid.UUID):
+        raise GeneticsValidationError("subject_id must be a UUID")
+    await _reject_partial_legacy_rows(session, gene=None, rsid=None)
+    stmt = (
+        select(GeneticVariant)
+        .where(_subject_scope(subject_id))
+        .order_by(
+            func.lower(GeneticVariant.gene),
+            case((GeneticVariant.rsid.is_(None), 1), else_=0),
+            func.lower(GeneticVariant.rsid),
+            GeneticVariant.id,
+        )
+        .limit(limit + 1)
+        .execution_options(populate_existing=True)
+    )
+    candidates = list(await session.scalars(stmt))
+    rows = candidates[:limit]
+    raw_rsid_cache: dict[int, frozenset[str]] = {}
+    raw_cache: dict[int, RawPayload] = {}
+    owner_user_id = await _subject_owner_user_id(session, subject_id)
+    for row in rows:
+        await _validate_variant_graph(
+            session,
+            row=row,
+            subject_id=subject_id,
+            for_update=False,
+            raw_rsid_cache=raw_rsid_cache,
+            raw_cache=raw_cache,
+            owner_user_id=owner_user_id,
+        )
+    return BoundedVariantPage(
+        rows=tuple(rows),
+        truncated=len(candidates) > limit,
+    )
 
 
 async def get_variant(
@@ -510,10 +566,13 @@ async def _validate_variant_graph(
     subject_id: uuid.UUID,
     for_update: bool,
     raw_rsid_cache: dict[int, frozenset[str]] | None = None,
+    raw_cache: dict[int, RawPayload] | None = None,
+    owner_user_id: uuid.UUID | None = None,
 ) -> None:
     if row.domain != DOMAIN:
         raise GeneticsOwnershipError("genetic variant has an invalid domain")
-    owner_user_id = await _subject_owner_user_id(session, subject_id)
+    if owner_user_id is None:
+        owner_user_id = await _subject_owner_user_id(session, subject_id)
     row_is_legacy = _variant_is_fully_unowned(row)
     if row.subject_id == subject_id:
         if row.actor_user_id != owner_user_id and row.actor_user_id is not None:
@@ -531,7 +590,11 @@ async def _validate_variant_graph(
         return
     if row.raw_payload_id is None:
         raise GeneticsRawProvenanceError("VCF genetics fact has no raw provenance")
-    raw = await _load_raw(session, row.raw_payload_id, for_update=for_update)
+    raw = raw_cache.get(row.raw_payload_id) if raw_cache is not None else None
+    if raw is None:
+        raw = await _load_raw(session, row.raw_payload_id, for_update=for_update)
+        if raw_cache is not None:
+            raw_cache[row.raw_payload_id] = raw
     _validate_raw_shape(raw)
     _validate_raw_origin_rsid(
         row,

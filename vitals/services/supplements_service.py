@@ -173,6 +173,7 @@ async def list_supplements(
     *,
     subject_id: uuid.UUID,
     active_only: bool = False,
+    limit: int | None = None,
 ) -> Sequence[Supplement]:
     """Return one person's regimen. A regimen without a person is not a thing."""
 
@@ -180,6 +181,10 @@ async def list_supplements(
     if active_only:
         stmt = stmt.where(Supplement.active.is_(True))
     stmt = stmt.order_by(Supplement.active.desc(), Supplement.name)
+    if limit is not None:
+        if limit < 1:
+            raise ValueError("supplement limit must be positive")
+        stmt = stmt.limit(limit)
     result = await session.execute(stmt)
     return result.scalars().all()
 

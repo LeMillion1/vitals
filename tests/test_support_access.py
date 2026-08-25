@@ -1260,9 +1260,16 @@ async def test_a_granted_record_opens_and_shows_only_what_was_granted(
     # Named as support, not as a professional: a banner reading "(Doctor)" over
     # a support session tells the patient something untrue about who is here.
     assert "care.kind" not in page.text
-    # And the withheld line names a grant rather than a consent, because those
-    # are different documents and this is the privacy line of the page.
-    assert "support grant" in page.text or "поддержке" in page.text
+    # Support learns only that this opening is restricted. Naming an enabled
+    # but ungranted section would itself disclose something about the patient.
+    assert (
+        "Sections approved for this opening" in page.text
+        or "Разделы, разрешённые для этого открытия" in page.text
+    )
+    assert '<div class="mh-eyebrow">Labs</div>' not in page.text
+    assert '<div class="mh-eyebrow">Анализы</div>' not in page.text
+    assert '<div class="mh-eyebrow">Nutrition</div>' not in page.text
+    assert '<div class="mh-eyebrow">Питание</div>' not in page.text
 
 
 async def test_each_support_record_response_commits_one_phi_free_read_event(

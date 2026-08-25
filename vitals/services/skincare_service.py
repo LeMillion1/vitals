@@ -420,11 +420,16 @@ async def list_products(
     *,
     subject_id: uuid.UUID,
     active_only: bool = False,
+    limit: int | None = None,
 ) -> Sequence[SkincareProduct]:
     stmt = select(SkincareProduct).where(_subject_scope(SkincareProduct, subject_id))
     if active_only:
         stmt = stmt.where(SkincareProduct.active.is_(True))
     stmt = stmt.order_by(SkincareProduct.active.desc(), SkincareProduct.name)
+    if limit is not None:
+        if limit < 1:
+            raise ValueError("skincare product limit must be positive")
+        stmt = stmt.limit(limit)
     result = await session.execute(stmt)
     return result.scalars().all()
 

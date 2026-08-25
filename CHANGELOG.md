@@ -22,6 +22,14 @@ support-disclosure check, while the operational audit envelope remains free of
 health-category names and medical values. The full digest assembler keeps its
 existing behavior for weekly reports, proactive briefs, shares, and MCP.
 
+Care summaries now use the patient's timezone and bounded, deterministic
+queries. Weight reads only the rendered date/value columns and never linked raw
+JSON or notes; lab summaries choose the latest row per marker before evaluating
+alerts; unknown nutrition macros stay unknown rather than becoming measured
+zeroes; and large Weight, HRT, GLP-1, supplement, skincare, lab, and genetics
+sets report honest truncation. Support also sees only a neutral limited-opening
+notice, never the names of enabled modules outside the approved grant.
+
 ### Fixed — every live support grant is visible
 
 The patient's access centre now lists every simultaneous live support grant

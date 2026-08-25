@@ -358,16 +358,17 @@ async def active_dose_phase(
     """The phase covering ``on_date`` (today by default): start <= date and
     (end is null or date <= end). The newest matching phase wins."""
     day = on_date or today_local()
-    phases = await list_dose_phases(
-        session,
-        subject_id=subject_id,
+    return await session.scalar(
+        select(DosePhase)
+        .where(
+            DosePhase.domain == DOMAIN,
+            _subject_scope(DosePhase, subject_id),
+            DosePhase.start_date <= day,
+            or_(DosePhase.end_date.is_(None), DosePhase.end_date >= day),
+        )
+        .order_by(DosePhase.start_date.desc(), DosePhase.id.desc())
+        .limit(1)
     )
-    match: Optional[DosePhase] = None
-    for p in phases:
-        if p.start_date <= day and (p.end_date is None or day <= p.end_date):
-            if match is None or p.start_date >= match.start_date:
-                match = p
-    return match
 
 
 async def legacy_unowned_present(session: AsyncSession) -> bool:

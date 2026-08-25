@@ -133,6 +133,41 @@ async def test_active_cycle_covers_today(db_session, owner_write):
     assert active is not None and active.kind == "course"
 
 
+async def test_care_active_cycle_bounds_compounds_without_loading_schedules(
+    db_session, owner_write
+):
+    await hrt_catalog.sync_catalog(db_session)
+    cycle = await hrt_cycle_service.add_cycle(
+        db_session,
+        kind="course",
+        start_date=ANCHOR,
+        identity=owner_write.identity,
+        prepared_conflict_write=await owner_write.write(),
+    )
+    for compound_key in ("testosterone_enanthate", "nandrolone_decanoate"):
+        await hrt_cycle_service.add_cycle_item(
+            db_session,
+            cycle.id,
+            compound_key=compound_key,
+            schedule=[{"dose": 100, "interval_days": 7}],
+            identity=owner_write.identity,
+            prepared_conflict_write=await owner_write.write(),
+        )
+    await db_session.commit()
+
+    summary = await hrt_cycle_service.care_active_cycle(
+        db_session,
+        subject_id=owner_write.subject_id,
+        on_date=ANCHOR,
+        item_limit=1,
+    )
+
+    assert summary is not None
+    assert summary.start_date == ANCHOR
+    assert len(summary.compounds) == 1
+    assert summary.compounds_truncated is True
+
+
 async def test_add_item_and_planned_administrations(db_session, owner_write):
     await hrt_catalog.sync_catalog(db_session)
     await db_session.commit()

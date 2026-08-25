@@ -1527,6 +1527,7 @@ async def latest_scan(
     session: AsyncSession,
     *,
     subject_id: uuid.UUID,
+    before_or_on: date_type | None = None,
 ) -> Optional[BodyScan]:
     stmt = (
         select(BodyScan)
@@ -1540,6 +1541,8 @@ async def latest_scan(
             subject_id=subject_id,
         )
         stmt = stmt.where(_subject_scope(BodyScan, subject_id))
+    if before_or_on is not None:
+        stmt = stmt.where(BodyScan.date <= before_or_on)
     row = (await session.execute(stmt)).scalars().first()
     if row is not None:
         await _validate_persisted_scan(

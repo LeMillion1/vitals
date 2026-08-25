@@ -29,10 +29,11 @@ import base64
 import logging
 import math
 import uuid
+from dataclasses import dataclass
 from datetime import date as date_type, timedelta
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.enums import (
@@ -1226,6 +1227,88 @@ async def list_results(
     stmt = stmt.order_by(LabResult.date.desc(), LabResult.id.desc()).limit(limit)
     result = await session.execute(stmt)
     return result.scalars().all()
+
+
+@dataclass(frozen=True, slots=True)
+class BoundedLatestLabResults:
+    """Latest result per marker with an honest marker-cap signal."""
+
+    rows: tuple[LabResult, ...]
+    truncated: bool
+
+
+async def bounded_latest_results_by_marker(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    end: date_type,
+    marker_limit: int = 200,
+) -> BoundedLatestLabResults:
+    """Return one newest row per marker; busy markers cannot displace others."""
+
+    if not 1 <= marker_limit <= 500:
+        raise ValueError("care lab marker_limit must be between 1 and 500")
+    filters = (
+        _subject_scope(LabResult, subject_id),
+        LabResult.date <= end,
+    )
+    scope = conflict_engine.ConflictScope(
+        subject_id=subject_id,
+        evaluation_date=end,
+    )
+    exact_raw, fully_unowned_raw = conflict_engine.raw_payload_scope_conditions(
+        scope
+    )
+    allowed_linked_raw = or_(
+        exact_raw,
+        and_(fully_unowned_raw, LabResult.source == Source.LAB_PARSER.value),
+    )
+    invalid = await session.scalar(
+        select(1)
+        .select_from(LabResult)
+        .outerjoin(RawPayload, LabResult.raw_payload_id == RawPayload.id)
+        .where(
+            *filters,
+            LabResult.raw_payload_id.is_not(None),
+            allowed_linked_raw.is_not(True),
+        )
+        .limit(1)
+    )
+    if invalid is not None:
+        raise conflict_engine.ConflictRawOwnershipError(
+            "lab result links to foreign or partial raw provenance"
+        )
+
+    ranked = (
+        select(
+            LabResult.id.label("result_id"),
+            func.row_number()
+            .over(
+                partition_by=LabResult.marker,
+                order_by=(LabResult.date.desc(), LabResult.id.desc()),
+            )
+            .label("marker_rank"),
+        )
+        .outerjoin(RawPayload, LabResult.raw_payload_id == RawPayload.id)
+        .where(
+            *filters,
+            or_(LabResult.raw_payload_id.is_(None), allowed_linked_raw),
+        )
+        .subquery()
+    )
+    rows = list(
+        await session.scalars(
+            select(LabResult)
+            .join(ranked, LabResult.id == ranked.c.result_id)
+            .where(ranked.c.marker_rank == 1)
+            .order_by(LabResult.marker, LabResult.id)
+            .limit(marker_limit + 1)
+        )
+    )
+    return BoundedLatestLabResults(
+        rows=tuple(rows[:marker_limit]),
+        truncated=len(rows) > marker_limit,
+    )
 
 
 async def marker_history(

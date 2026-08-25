@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import uuid
+from dataclasses import dataclass
 from datetime import date as date_type, timedelta
 from typing import Optional, Sequence
 
@@ -35,6 +36,16 @@ from vitals.utils.timeutils import today_local
 # unboundedly — no real protocol produces this many shots in one segment.
 _MAX_ADMIN_PER_SEGMENT = 100_000
 _VALID_UNITS = frozenset(unit.value for unit in DoseUnit)
+
+
+@dataclass(frozen=True, slots=True)
+class CareActiveCycle:
+    """Bounded HRT fields rendered on the care record."""
+
+    name: str | None
+    start_date: date_type
+    compounds: tuple[str, ...]
+    compounds_truncated: bool
 
 
 def _normalized_unit(value: str | None, *, default: str) -> str:
@@ -409,14 +420,87 @@ async def active_cycle(
     ordered by start date then id, so a same-day supersede picks the one created
     last."""
     day = on_date or today_local()
-    cycles = await list_cycles(
-        session,
-        subject_id=subject_id,
+    cycle = await session.scalar(
+        select(HrtCycle)
+        .where(
+            HrtCycle.domain == DOMAIN,
+            _subject_scope(HrtCycle, subject_id),
+            HrtCycle.start_date <= day,
+            or_(HrtCycle.end_date.is_(None), HrtCycle.end_date >= day),
+        )
+        .order_by(HrtCycle.start_date.desc(), HrtCycle.id.desc())
+        .limit(1)
+        .execution_options(populate_existing=True)
     )
-    for cycle in cycles:
-        if cycle.start_date <= day and (cycle.end_date is None or day <= cycle.end_date):
-            return cycle
-    return None
+    if cycle is not None:
+        _validate_cycle_graph(
+            cycle,
+            cycle.items,
+            subject_id=subject_id,
+        )
+    return cycle
+
+
+async def care_active_cycle(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    on_date: date_type,
+    item_limit: int = 50,
+) -> CareActiveCycle | None:
+    """Return one active-cycle summary without loading schedule JSON or notes."""
+
+    if not 1 <= item_limit <= 100:
+        raise ValueError("care HRT item_limit must be between 1 and 100")
+    cycle = (
+        await session.execute(
+            select(HrtCycle.id, HrtCycle.name, HrtCycle.start_date)
+            .where(
+                HrtCycle.domain == DOMAIN,
+                _subject_scope(HrtCycle, subject_id),
+                HrtCycle.start_date <= on_date,
+                or_(HrtCycle.end_date.is_(None), HrtCycle.end_date >= on_date),
+            )
+            .order_by(HrtCycle.start_date.desc(), HrtCycle.id.desc())
+            .limit(1)
+        )
+    ).one_or_none()
+    if cycle is None:
+        return None
+    invalid_item = await session.scalar(
+        select(HrtCycleItem.id)
+        .where(
+            HrtCycleItem.cycle_id == cycle.id,
+            or_(
+                HrtCycleItem.subject_id.is_(None),
+                HrtCycleItem.subject_id != subject_id,
+            ),
+        )
+        .limit(1)
+    )
+    if invalid_item is not None:
+        raise conflict_engine.ConflictScopeError(
+            "HRT cycle contains an item outside the requested subject scope"
+        )
+    compounds = list(
+        (
+            await session.execute(
+                select(HrtCycleItem.compound_key)
+                .where(
+                    HrtCycleItem.cycle_id == cycle.id,
+                    HrtCycleItem.subject_id == subject_id,
+                )
+                .order_by(HrtCycleItem.id)
+                .limit(item_limit + 1)
+            )
+        ).scalars()
+    )
+    return CareActiveCycle(
+        name=cycle.name,
+        start_date=cycle.start_date,
+        compounds=tuple(compounds[:item_limit]),
+        compounds_truncated=len(compounds) > item_limit,
+    )
 
 
 async def add_cycle(

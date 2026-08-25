@@ -1602,6 +1602,120 @@ async def list_active_weights(
     return rows
 
 
+@dataclass(frozen=True, slots=True)
+class CareWeightPoint:
+    """The only Weight columns disclosed to the care-record analytics."""
+
+    date: date_type
+    weight_kg: float
+
+
+@dataclass(frozen=True, slots=True)
+class CareNoiseRange:
+    """The only noise-marker columns needed by care-record analytics."""
+
+    start_date: date_type
+    end_date: date_type | None
+
+
+@dataclass(frozen=True, slots=True)
+class CareWeightHistory:
+    """Bounded, metadata-only Weight history for an authorized care screen.
+
+    The ordinary dashboard read validates every external provenance graph and
+    may materialize complete cross-domain raw payloads.  A Weight-only care
+    grant must not do that: this projection proves the normalized rows belong
+    to the subject in one bulk check and never selects ``RawPayload.payload``.
+    """
+
+    rows: tuple[CareWeightPoint, ...]
+    noise_markers: tuple[CareNoiseRange, ...]
+    history_truncated: bool
+    noise_truncated: bool
+
+
+async def care_weight_history(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    end: date_type,
+    history_limit: int = 400,
+    noise_limit: int = 100,
+) -> CareWeightHistory:
+    """Return recent active weights without reading linked raw payload bytes."""
+
+    if not 1 <= history_limit <= 1000:
+        raise ValueError("care Weight history_limit must be between 1 and 1000")
+    if not 1 <= noise_limit <= 500:
+        raise ValueError("care Weight noise_limit must be between 1 and 500")
+
+    filters = (
+        WeightLog.superseded.is_(False),
+        WeightLog.domain == DOMAIN,
+        WeightLog.date <= end,
+    )
+    await _assert_weight_scope_integrity(
+        session,
+        subject_id=subject_id,
+        evaluation_date=end,
+        filters=filters,
+    )
+    scope = _weight_scope_condition(
+        subject_id=subject_id,
+        evaluation_date=end,
+    )
+    newest = list(
+        (
+            await session.execute(
+                select(WeightLog.date, WeightLog.weight_kg)
+                .where(scope, *filters)
+                .order_by(WeightLog.date.desc(), WeightLog.id.desc())
+                .limit(history_limit + 1)
+            )
+        ).all()
+    )
+    history_truncated = len(newest) > history_limit
+    rows = tuple(
+        CareWeightPoint(date=row.date, weight_kg=row.weight_kg)
+        for row in reversed(newest[:history_limit])
+    )
+
+    marker_start = rows[0].date if rows else end
+    marker_filters = (
+        or_(NoiseMarker.end_date.is_(None), NoiseMarker.end_date >= marker_start),
+        NoiseMarker.start_date <= end,
+    )
+    await _assert_noise_marker_scope_integrity(
+        session,
+        subject_id=subject_id,
+        filters=marker_filters,
+    )
+    marker_rows = list(
+        (
+            await session.execute(
+                select(NoiseMarker.start_date, NoiseMarker.end_date)
+                .where(
+                    NoiseMarker.domain == DOMAIN,
+                    _noise_marker_scope_condition(subject_id=subject_id),
+                    *marker_filters,
+                )
+                .order_by(NoiseMarker.start_date, NoiseMarker.id)
+                .limit(noise_limit + 1)
+            )
+        ).all()
+    )
+    noise_truncated = len(marker_rows) > noise_limit
+    return CareWeightHistory(
+        rows=rows,
+        noise_markers=tuple(
+            CareNoiseRange(start_date=row.start_date, end_date=row.end_date)
+            for row in marker_rows[:noise_limit]
+        ),
+        history_truncated=history_truncated,
+        noise_truncated=noise_truncated,
+    )
+
+
 async def list_weight_notes(
     session: AsyncSession,
     *,

@@ -35,6 +35,16 @@ from vitals.access import (
 )
 from vitals.enums import Domain
 from vitals.services import digest_service
+from vitals.utils.timeutils import subject_timezone
+
+
+_WEIGHT_HISTORY_LIMIT = 400
+_WEIGHT_NOISE_LIMIT = 100
+_LAB_MARKER_LIMIT = 200
+_CATALOG_LIMIT = 100
+_SKINCARE_OBSERVATION_LIMIT = 200
+_GENETICS_LIMIT = 100
+_HRT_ITEM_LIMIT = 50
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +76,7 @@ class RecordProjection:
     period: Mapping[str, Any]
     withheld_domains: tuple[str, ...]
     loaded_domains: tuple[str, ...]
+    restricted: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +84,9 @@ class _LoadedSection:
     value: Any
     row_count: int
     dates: tuple[date_type, ...] = ()
+    truncated: bool = False
+    current_rows: int | None = None
+    coverage_extra: Mapping[str, Any] | None = None
 
 
 Loader = Callable[
@@ -90,20 +104,27 @@ def _coverage(
 ) -> dict[str, Any]:
     dates = loaded.dates
     latest = max(dates) if dates else None
-    return {
+    value = {
         "module": section.module,
         "enabled": True,
         "status": "available" if loaded.row_count else "empty",
         "rows": loaded.row_count,
-        "current_rows": sum(window.period_start <= day <= window.period_end for day in dates),
+        "current_rows": (
+            loaded.current_rows
+            if loaded.current_rows is not None
+            else sum(window.period_start <= day <= window.period_end for day in dates)
+        ),
         "previous_rows": sum(
             window.previous_start <= day <= window.previous_end for day in dates
         ),
         "first_date": min(dates).isoformat() if dates else None,
         "last_date": latest.isoformat() if latest else None,
         "freshness_days": (window.period_end - latest).days if latest else None,
-        "truncated": False,
+        "truncated": loaded.truncated,
     }
+    if loaded.coverage_extra:
+        value.update(loaded.coverage_extra)
+    return value
 
 
 def _may_read(context: AccessContext, domain: Domain) -> bool:
@@ -123,23 +144,20 @@ async def _load_weight(
 ) -> _LoadedSection:
     from vitals.services import weight_service
 
-    rows = list(
-        await weight_service.list_active_weights(
-            session,
-            subject_id=subject_id,
-            end=window.period_end,
-        )
-    )
-    markers = await weight_service.list_noise_markers(
+    history = await weight_service.care_weight_history(
         session,
         subject_id=subject_id,
         end=window.period_end,
+        history_limit=_WEIGHT_HISTORY_LIMIT,
+        noise_limit=_WEIGHT_NOISE_LIMIT,
     )
+    rows = list(history.rows)
+    markers = history.noise_markers
     points = [(row.date, row.weight_kg) for row in rows]
     ranges = [(marker.start_date, marker.end_date) for marker in markers]
-    clean_points = exclude_ranges(points, ranges)
+    clean_points = [] if history.noise_truncated else exclude_ranges(points, ranges)
     moving_average = rolling_mean_by_date(clean_points, window_days=7)
-    trend = fit_trend(points, exclude=ranges)
+    trend = None if history.noise_truncated else fit_trend(points, exclude=ranges)
     latest = rows[-1] if rows else None
     latest_ma = moving_average[-1] if moving_average else None
     return _LoadedSection(
@@ -153,6 +171,12 @@ async def _load_weight(
         },
         row_count=len(rows),
         dates=tuple(row.date for row in rows),
+        truncated=history.history_truncated or history.noise_truncated,
+        coverage_extra={
+            "history_limit": _WEIGHT_HISTORY_LIMIT,
+            "noise_limit": _WEIGHT_NOISE_LIMIT,
+            "noise_truncated": history.noise_truncated,
+        },
     )
 
 
@@ -161,17 +185,13 @@ async def _load_labs(
 ) -> _LoadedSection:
     from vitals.services import labs_service
 
-    rows = list(
-        await labs_service.list_results(
-            session,
-            end=window.period_end,
-            limit=200,
-            subject_id=subject_id,
-        )
+    page = await labs_service.bounded_latest_results_by_marker(
+        session,
+        end=window.period_end,
+        marker_limit=_LAB_MARKER_LIMIT,
+        subject_id=subject_id,
     )
-    latest_by_marker: dict[str, Any] = {}
-    for row in rows:
-        latest_by_marker.setdefault(row.marker, row)
+    rows = list(page.rows)
     flagged = [
         {
             "marker": row.marker,
@@ -182,7 +202,7 @@ async def _load_labs(
             "ref_low": row.ref_low,
             "ref_high": row.ref_high,
         }
-        for row in latest_by_marker.values()
+        for row in rows
         if labs_service.is_out_of_range(row.flag)
         and 0 <= (window.period_end - row.date).days <= 14
     ]
@@ -190,19 +210,20 @@ async def _load_labs(
         value={"out_of_range": flagged},
         row_count=len(rows),
         dates=tuple(row.date for row in rows),
+        truncated=page.truncated,
+        coverage_extra={"marker_limit": _LAB_MARKER_LIMIT},
     )
 
 
 async def _load_body_comp(
     session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
 ) -> _LoadedSection:
-    from vitals.models.body_scan import BodyScan
+    from vitals.services import body_scan_service
 
-    row = await session.scalar(
-        select(BodyScan)
-        .where(BodyScan.subject_id == subject_id, BodyScan.date <= window.period_end)
-        .order_by(BodyScan.date.desc(), BodyScan.id.desc())
-        .limit(1)
+    row = await body_scan_service.latest_scan(
+        session,
+        subject_id=subject_id,
+        before_or_on=window.period_end,
     )
     return _LoadedSection(
         value={"date": row.date.isoformat(), "device": row.device} if row else None,
@@ -214,29 +235,52 @@ async def _load_body_comp(
 async def _load_nutrition(
     session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
 ) -> _LoadedSection:
-    from vitals.services import nutrition_service
+    from vitals.models.nutrition import MealLog
 
-    meals = list(
-        await nutrition_service.list_meals(
-            session,
-            start=window.period_start,
-            end=window.period_end,
-            subject_id=subject_id,
+    daily = (
+        await session.execute(
+            select(
+                MealLog.date,
+                func.count(MealLog.id),
+                func.sum(MealLog.calories),
+                func.sum(MealLog.protein_g),
+                func.count(MealLog.calories),
+                func.count(MealLog.protein_g),
+            )
+            .where(
+                MealLog.subject_id == subject_id,
+                MealLog.domain == Domain.NUTRITION.value,
+                MealLog.date >= window.period_start,
+                MealLog.date <= window.period_end,
+            )
+            .group_by(MealLog.date)
+            .order_by(MealLog.date)
         )
-    )
-    by_day: dict[date_type, list[Any]] = {}
-    for meal in meals:
-        by_day.setdefault(meal.date, []).append(meal)
-    calories = [sum(meal.calories or 0 for meal in day) for day in by_day.values()]
-    protein = [sum(meal.protein_g or 0 for meal in day) for day in by_day.values()]
+    ).all()
+    calories = [row[2] for row in daily]
+    protein = [row[3] for row in daily]
+    meal_count = sum(int(row[1]) for row in daily)
+    calorie_samples = sum(int(row[4]) for row in daily)
+    protein_samples = sum(int(row[5]) for row in daily)
     return _LoadedSection(
         value={
             "avg_calories_per_day": _mean(calories),
             "avg_protein_per_day_g": _mean(protein),
-            "days_with_logs": len(by_day),
+            "days_with_logs": len(daily),
+            "metric_samples": {
+                "calories": calorie_samples,
+                "protein_g": protein_samples,
+            },
         },
-        row_count=len(meals),
-        dates=tuple(meal.date for meal in meals),
+        row_count=meal_count,
+        dates=tuple(row[0] for row in daily),
+        current_rows=meal_count,
+        coverage_extra={
+            "metric_samples": {
+                "calories": calorie_samples,
+                "protein_g": protein_samples,
+            }
+        },
     )
 
 
@@ -245,8 +289,11 @@ async def _load_hrt(
 ) -> _LoadedSection:
     from vitals.services import hrt_cycle_service
 
-    cycle = await hrt_cycle_service.active_cycle(
-        session, on_date=window.period_end, subject_id=subject_id
+    cycle = await hrt_cycle_service.care_active_cycle(
+        session,
+        on_date=window.period_end,
+        subject_id=subject_id,
+        item_limit=_HRT_ITEM_LIMIT,
     )
     value = None
     if cycle is not None:
@@ -254,13 +301,15 @@ async def _load_hrt(
             "cycle": {
                 "name": cycle.name,
                 "start_date": cycle.start_date.isoformat(),
-                "compounds": [item.compound_key for item in cycle.items],
+                "compounds": list(cycle.compounds),
             }
         }
     return _LoadedSection(
         value=value,
         row_count=int(cycle is not None),
         dates=(cycle.start_date,) if cycle else (),
+        truncated=bool(cycle and cycle.compounds_truncated),
+        coverage_extra={"compound_limit": _HRT_ITEM_LIMIT},
     )
 
 
@@ -287,37 +336,48 @@ async def _load_supplements(
 
     rows = list(
         await supplements_service.list_supplements(
-            session, subject_id=subject_id, active_only=True
+            session,
+            subject_id=subject_id,
+            active_only=True,
+            limit=_CATALOG_LIMIT + 1,
         )
     )
+    truncated = len(rows) > _CATALOG_LIMIT
+    rows = rows[:_CATALOG_LIMIT]
     return _LoadedSection(
         value=[{"name": row.name, "dose": row.dose} for row in rows] or None,
         row_count=len(rows),
+        truncated=truncated,
+        coverage_extra={"catalog_limit": _CATALOG_LIMIT},
     )
 
 
 async def _load_skincare(
     session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
 ) -> _LoadedSection:
-    from vitals.models.skincare import SkincareObservation
     from vitals.services import skincare_service
 
     products = list(
         await skincare_service.list_products(
-            session, subject_id=subject_id, active_only=True
+            session,
+            subject_id=subject_id,
+            active_only=True,
+            limit=_CATALOG_LIMIT + 1,
         )
     )
     observations = list(
-        await session.scalars(
-            select(SkincareObservation)
-            .where(
-                SkincareObservation.subject_id == subject_id,
-                SkincareObservation.date >= window.period_start,
-                SkincareObservation.date <= window.period_end,
-            )
-            .order_by(SkincareObservation.date, SkincareObservation.id)
+        await skincare_service.list_observations(
+            session,
+            subject_id=subject_id,
+            start=window.period_start,
+            end=window.period_end,
+            limit=_SKINCARE_OBSERVATION_LIMIT + 1,
         )
     )
+    products_truncated = len(products) > _CATALOG_LIMIT
+    observations_truncated = len(observations) > _SKINCARE_OBSERVATION_LIMIT
+    products = products[:_CATALOG_LIMIT]
+    observations = observations[:_SKINCARE_OBSERVATION_LIMIT]
     return _LoadedSection(
         value={
             "active_products": len(products),
@@ -332,6 +392,13 @@ async def _load_skincare(
         },
         row_count=len(products) + len(observations),
         dates=tuple(row.date for row in observations),
+        truncated=products_truncated or observations_truncated,
+        coverage_extra={
+            "catalog_limit": _CATALOG_LIMIT,
+            "observation_limit": _SKINCARE_OBSERVATION_LIMIT,
+            "products_truncated": products_truncated,
+            "observations_truncated": observations_truncated,
+        },
     )
 
 
@@ -339,19 +406,19 @@ async def _load_genetics(
     session: AsyncSession, subject_id: uuid.UUID, window: digest_service.ReportWindow
 ) -> _LoadedSection:
     del window
-    from vitals.models.genetics import GeneticVariant
+    from vitals.services import genetics_service
 
-    rows = list(
-        await session.scalars(
-            select(GeneticVariant)
-            .where(GeneticVariant.subject_id == subject_id)
-            .order_by(GeneticVariant.gene, GeneticVariant.rsid)
-            .limit(200)
-        )
+    page = await genetics_service.bounded_variants(
+        session,
+        subject_id=subject_id,
+        limit=_GENETICS_LIMIT,
     )
+    rows = page.rows
     return _LoadedSection(
         value=[{"marker": row.marker, "gene": row.gene} for row in rows] or None,
         row_count=len(rows),
+        truncated=page.truncated,
+        coverage_extra={"variant_limit": _GENETICS_LIMIT},
     )
 
 
@@ -443,22 +510,30 @@ async def assemble_record_projection(
     *,
     context: AccessContext,
     enabled_modules: Mapping[str, bool],
+    subject_timezone_name: str,
     on_date: date_type | None = None,
     period_days: int = 7,
 ) -> RecordProjection:
     """Read only domains allowed by both policy and module configuration."""
 
-    window = digest_service.report_window(on_date=on_date, period_days=period_days)
+    with subject_timezone(subject_timezone_name):
+        window = digest_service.report_window(
+            on_date=on_date,
+            period_days=period_days,
+        )
     record: dict[str, Any] = {}
     coverage: dict[str, Mapping[str, Any]] = {}
     withheld: list[str] = []
     loaded_domains: list[str] = []
+    restricted = False
 
     for section in SECTIONS:
         enabled = bool(enabled_modules.get(section.module, False))
         allowed = _may_read(context, section.domain)
         if enabled and not allowed:
-            withheld.append(section.domain.value)
+            restricted = True
+            if context.support_grant is None:
+                withheld.append(section.domain.value)
         if not enabled or not allowed:
             continue
 
@@ -483,6 +558,7 @@ async def assemble_record_projection(
         },
         withheld_domains=tuple(withheld),
         loaded_domains=tuple(loaded_domains),
+        restricted=restricted,
     )
 
 

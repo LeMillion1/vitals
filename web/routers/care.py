@@ -357,6 +357,7 @@ async def _visible_record(
         db,
         context=care.access,
         enabled_modules=enabled,
+        subject_timezone_name=care.subject_timezone,
     )
 
 
@@ -414,6 +415,7 @@ async def patient(
             "coverage": visible.coverage,
             "period": visible.period,
             "withheld_domains": visible.withheld_domains,
+            "record_restricted": visible.restricted,
             "may_read_messages": may_read_messages,
             "may_write_note": care.may(
                 resource_key=records.NOTE_ARTIFACT,

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from freezegun import freeze_time
 from sqlalchemy import event
 
 from vitals.access import (
@@ -15,10 +18,23 @@ from vitals.access import (
     PolicyResourceType,
     Principal,
     RelationshipGrant,
+    SupportGrant,
 )
-from vitals.enums import Domain, UserRoleName
+from vitals.enums import (
+    Domain,
+    Source,
+    SupportAccessMode,
+    SupportAccessStatus,
+    UserRoleName,
+)
+from vitals.models.genetics import GeneticVariant
+from vitals.models.labs import LabResult
+from vitals.models.nutrition import MealLog
+from vitals.models.raw_payload import RawPayload
+from vitals.models.weight import WeightLog
 from vitals.services import modules_service
 from vitals.services.care import record_projection
+from vitals.services import genetics_service, labs_service, weight_service
 
 
 def _professional_context(*domains: Domain) -> AccessContext:
@@ -63,6 +79,38 @@ def _owner_context() -> AccessContext:
     )
 
 
+def _support_context(*domains: Domain) -> AccessContext:
+    now = datetime.now(timezone.utc)
+    admin_id = uuid.uuid4()
+    subject_id = uuid.uuid4()
+    scopes = frozenset(
+        AccessScope(
+            resource_type=PolicyResourceType.DOMAIN,
+            resource_key=domain.value,
+            action=PolicyAction.READ,
+        )
+        for domain in domains
+    )
+    return AccessContext(
+        principal=Principal(
+            user_id=admin_id,
+            roles=frozenset({UserRoleName.PLATFORM_SUPERADMIN}),
+        ),
+        subject_id=subject_id,
+        subject_owner_user_id=uuid.uuid4(),
+        evaluated_at=now,
+        support_grant=SupportGrant(
+            grant_id=uuid.uuid4(),
+            granted_to_user_id=admin_id,
+            subject_id=subject_id,
+            mode=SupportAccessMode.READ,
+            status=SupportAccessStatus.ACTIVE,
+            expires_at=now + timedelta(minutes=30),
+            scopes=scopes,
+        ),
+    )
+
+
 async def _record_sql(db_session, operation):
     statements: list[str] = []
 
@@ -88,6 +136,7 @@ async def test_labs_only_consent_never_queries_other_record_domains(db_session):
             db_session,
             context=context,
             enabled_modules=enabled,
+            subject_timezone_name="UTC",
         ),
     )
     sql = "\n".join(statements)
@@ -127,6 +176,7 @@ async def test_disabled_core_and_optional_modules_are_not_queried(db_session):
             db_session,
             context=context,
             enabled_modules=enabled,
+            subject_timezone_name="UTC",
         ),
     )
     sql = "\n".join(statements)
@@ -161,6 +211,7 @@ async def test_weight_consent_does_not_read_body_composition_tables(db_session):
             db_session,
             context=context,
             enabled_modules=enabled,
+            subject_timezone_name="UTC",
         ),
     )
     sql = "\n".join(statements)
@@ -196,8 +247,293 @@ async def test_each_record_card_uses_only_its_authorized_loader(
         db_session,
         context=context,
         enabled_modules=enabled,
+        subject_timezone_name="UTC",
     )
 
     assert called == [section.key]
     assert projection.loaded_domains == (section.domain.value,)
     assert set(projection.record) == {section.key}
+
+
+async def test_support_projection_does_not_name_ungranted_enabled_modules(db_session):
+    context = _support_context(Domain.LABS)
+    enabled = {key: True for key in modules_service.MODULE_REGISTRY}
+
+    projection = await record_projection.assemble_record_projection(
+        db_session,
+        context=context,
+        enabled_modules=enabled,
+        subject_timezone_name="UTC",
+    )
+
+    assert projection.restricted is True
+    assert projection.withheld_domains == ()
+    assert projection.loaded_domains == (Domain.LABS.value,)
+    template = (
+        Path(__file__).parents[1] / "web/templates/care/_record.html"
+    ).read_text()
+    assert "care.is_support and record_restricted" in template
+    assert "care.record_withheld_support" not in template
+
+
+async def test_record_window_uses_target_subject_timezone(db_session):
+    context = _owner_context()
+    enabled = {key: False for key in modules_service.MODULE_REGISTRY}
+
+    with freeze_time("2026-01-01 00:30:00+00:00"):
+        projection = await record_projection.assemble_record_projection(
+            db_session,
+            context=context,
+            enabled_modules=enabled,
+            subject_timezone_name="America/Los_Angeles",
+        )
+
+    assert projection.period["report_date"] == "2025-12-31"
+    assert projection.period["period_end"] == "2025-12-30"
+
+
+async def test_weight_care_history_is_bounded_without_selecting_raw_payload_json(
+    db_session, legacy_owner_roots
+):
+    raw = RawPayload(
+        subject_id=legacy_owner_roots.subject_id,
+        actor_user_id=None,
+        domain=Domain.WEIGHT.value,
+        source=Source.MANUAL.value,
+        payload={"ungranted_sleep_bytes": "synthetic-sentinel"},
+    )
+    db_session.add(raw)
+    await db_session.flush()
+    for offset in range(4):
+        db_session.add(
+            WeightLog(
+                subject_id=legacy_owner_roots.subject_id,
+                actor_user_id=None,
+                date=date(2026, 1, 1) + timedelta(days=offset),
+                domain=Domain.WEIGHT.value,
+                source=Source.MANUAL.value,
+                weight_kg=80 - offset,
+                raw_payload_id=raw.id if offset == 3 else None,
+                superseded=False,
+            )
+        )
+    await db_session.flush()
+
+    history, statements = await _record_sql(
+        db_session,
+        lambda: weight_service.care_weight_history(
+            db_session,
+            subject_id=legacy_owner_roots.subject_id,
+            end=date(2026, 1, 10),
+            history_limit=2,
+            noise_limit=2,
+        ),
+    )
+
+    assert [row.date for row in history.rows] == [date(2026, 1, 3), date(2026, 1, 4)]
+    assert history.history_truncated is True
+    selected_sql = "\n".join(statement for statement in statements if "select" in statement)
+    assert "raw_payloads.payload" not in selected_sql
+    assert len(statements) <= 8
+
+
+async def test_labs_latest_per_marker_is_not_displaced_and_reports_truncation(
+    db_session, legacy_owner_roots
+):
+    subject_id = legacy_owner_roots.subject_id
+    db_session.add_all(
+        [
+            LabResult(
+                subject_id=subject_id,
+                date=date(2026, 1, 1),
+                domain=Domain.LABS.value,
+                source=Source.MANUAL.value,
+                marker="A",
+                value=9,
+                flag="high",
+            ),
+            LabResult(
+                subject_id=subject_id,
+                date=date(2026, 1, 2),
+                domain=Domain.LABS.value,
+                source=Source.MANUAL.value,
+                marker="A",
+                value=5,
+                flag="normal",
+            ),
+            LabResult(
+                subject_id=subject_id,
+                date=date(2026, 1, 2),
+                domain=Domain.LABS.value,
+                source=Source.MANUAL.value,
+                marker="B",
+                value=11,
+                flag="high",
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    full = await labs_service.bounded_latest_results_by_marker(
+        db_session,
+        subject_id=subject_id,
+        end=date(2026, 1, 3),
+        marker_limit=2,
+    )
+    bounded = await labs_service.bounded_latest_results_by_marker(
+        db_session,
+        subject_id=subject_id,
+        end=date(2026, 1, 3),
+        marker_limit=1,
+    )
+
+    assert [(row.marker, row.flag) for row in full.rows] == [
+        ("A", "normal"),
+        ("B", "high"),
+    ]
+    assert full.truncated is False
+    assert bounded.truncated is True
+
+
+async def test_nutrition_unknown_macro_stays_unknown_with_sample_counts(
+    db_session, legacy_owner_roots
+):
+    subject_id = legacy_owner_roots.subject_id
+    db_session.add(
+        MealLog(
+            subject_id=subject_id,
+            date=date(2026, 1, 2),
+            domain=Domain.NUTRITION.value,
+            source=Source.MANUAL.value,
+            name="Synthetic meal",
+            calories=500,
+            protein_g=None,
+        )
+    )
+    await db_session.flush()
+    context = AccessContext(
+        principal=Principal(user_id=legacy_owner_roots.user_id),
+        subject_id=subject_id,
+        subject_owner_user_id=legacy_owner_roots.user_id,
+        evaluated_at=datetime.now(timezone.utc),
+    )
+    enabled = {key: False for key in modules_service.MODULE_REGISTRY}
+    enabled["nutrition"] = True
+
+    projection = await record_projection.assemble_record_projection(
+        db_session,
+        context=context,
+        enabled_modules=enabled,
+        subject_timezone_name="UTC",
+        on_date=date(2026, 1, 3),
+    )
+
+    nutrition = projection.record["nutrition"]
+    assert nutrition["avg_calories_per_day"] == 500
+    assert nutrition["avg_protein_per_day_g"] is None
+    assert nutrition["metric_samples"] == {"calories": 1, "protein_g": 0}
+
+
+async def test_bounded_genetics_order_is_deterministic_with_null_rsid(
+    db_session, legacy_owner_roots
+):
+    subject_id = legacy_owner_roots.subject_id
+    db_session.add_all(
+        [
+            GeneticVariant(
+                subject_id=subject_id,
+                domain=Domain.GENETICS.value,
+                source=Source.MANUAL.value,
+                gene="GENE",
+                rsid=None,
+                marker="without_rsid",
+            ),
+            GeneticVariant(
+                subject_id=subject_id,
+                domain=Domain.GENETICS.value,
+                source=Source.MANUAL.value,
+                gene="GENE",
+                rsid="rs2",
+                marker="with_rsid",
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    page = await genetics_service.bounded_variants(
+        db_session,
+        subject_id=subject_id,
+        limit=2,
+    )
+
+    assert [row.marker for row in page.rows] == ["with_rsid", "without_rsid"]
+    assert page.truncated is False
+
+
+async def test_genetics_bounded_validation_caches_shared_raw_parse(
+    db_session, monkeypatch
+):
+    subject_id = uuid.uuid4()
+    owner_user_id = uuid.uuid4()
+    payload = {
+        "filename": "synthetic.vcf",
+        "variants": [
+            ["rs1", "A", "G", "A/G"],
+            ["rs2", "C", "T", "C/T"],
+        ],
+        "truncated": False,
+    }
+    raw = SimpleNamespace(
+        id=7,
+        subject_id=subject_id,
+        actor_user_id=owner_user_id,
+        integration_connection_id=None,
+        file_asset_id=None,
+        domain=Domain.GENETICS.value,
+        source=Source.VCF_IMPORT.value,
+        external_id=genetics_service._vcf_external_id(payload),
+        payload=payload,
+    )
+    rows = [
+        SimpleNamespace(
+            subject_id=subject_id,
+            actor_user_id=owner_user_id,
+            domain=Domain.GENETICS.value,
+            source=Source.VCF_IMPORT.value,
+            raw_payload_id=7,
+            rsid=rsid,
+        )
+        for rsid in ("rs1", "rs2")
+    ]
+    raw_loads = 0
+    raw_parses = 0
+    original_parse = genetics_service._raw_normalization_variants
+
+    async def load_raw(_session, _raw_payload_id, *, for_update):
+        nonlocal raw_loads
+        assert for_update is False
+        raw_loads += 1
+        return raw
+
+    def parse_raw(value):
+        nonlocal raw_parses
+        raw_parses += 1
+        return original_parse(value)
+
+    monkeypatch.setattr(genetics_service, "_load_raw", load_raw)
+    monkeypatch.setattr(genetics_service, "_raw_normalization_variants", parse_raw)
+    raw_cache = {}
+    raw_rsid_cache = {}
+    for row in rows:
+        await genetics_service._validate_variant_graph(
+            db_session,
+            row=row,
+            subject_id=subject_id,
+            for_update=False,
+            raw_cache=raw_cache,
+            raw_rsid_cache=raw_rsid_cache,
+            owner_user_id=owner_user_id,
+        )
+
+    assert raw_loads == 1
+    assert raw_parses == 1

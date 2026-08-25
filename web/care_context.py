@@ -64,6 +64,7 @@ class CareContext:
     access: AccessContext
     subject_id: uuid.UUID
     subject_display_name: str
+    subject_timezone: str
     relationship_id: uuid.UUID
     kind: ProfessionalKind
     consent_version: int
@@ -159,9 +160,16 @@ async def resolve_care_context(
     except AccessResolutionError:
         raise _MISSING from None
 
-    display_name = await session.scalar(
-        select(HealthSubject.display_name).where(HealthSubject.id == subject_id)
-    )
+    subject = (
+        await session.execute(
+            select(HealthSubject.display_name, HealthSubject.timezone).where(
+                HealthSubject.id == subject_id
+            )
+        )
+    ).one_or_none()
+    if subject is None:
+        raise _MISSING
+    display_name, timezone_name = subject
 
     if access.subject_owner_user_id == user_id:
         # The patient's own record. There is no relationship to name and there
@@ -170,6 +178,7 @@ async def resolve_care_context(
             access=access,
             subject_id=subject_id,
             subject_display_name=display_name or "",
+            subject_timezone=timezone_name,
             relationship_id=uuid.UUID(int=0),
             kind=ProfessionalKind.DOCTOR,
             consent_version=0,
@@ -188,6 +197,7 @@ async def resolve_care_context(
             access=access,
             subject_id=subject_id,
             subject_display_name=display_name or "",
+            subject_timezone=timezone_name,
             relationship_id=uuid.UUID(int=0),
             #: A placeholder: the column is not nullable and support is not a
             #: professional kind. ``is_support`` is what the screens read.
@@ -220,6 +230,7 @@ async def resolve_care_context(
         access=access,
         subject_id=subject_id,
         subject_display_name=display_name or "",
+        subject_timezone=timezone_name,
         relationship_id=grant.relationship_id,
         kind=ProfessionalKind(relationship_kind),
         consent_version=grant.consent_version,

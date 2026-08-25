@@ -140,7 +140,17 @@ a current validation result.
 - The care record uses a dedicated strict projection instead of assembling a
   full digest and filtering its output. Only domains allowed by the live
   relationship consent or support grant and enabled by the patient reach their
-  loaders; negative SQL tests cover withheld core and optional tables.
+  loaders; negative SQL tests cover withheld core and optional tables. Its
+  report window follows the patient's timezone, every collection is bounded,
+  truncation is explicit, Weight never selects raw JSON or notes, and latest
+  lab results are ranked per marker before the alert view is assembled.
+  Support receives only a neutral restricted-opening notice and cannot infer
+  the names of enabled but ungranted modules.
+- Body-composition and genetics still use their deep provenance validators.
+  They therefore may inspect raw data inside the already granted domain to
+  prove the normalized fact, although the projection renders only a bounded
+  summary and genetics caches each shared VCF parse. Metadata-only validators
+  remain a worthwhile performance hardening, not an authorization gap.
 - Repair, exceptional export, two-person break-glass approval, operational
   dashboards, and retention tooling remain deliberately refused or absent.
 - Every simultaneous live support grant is now visible and independently
@@ -310,9 +320,8 @@ the OS buffer filled, the server blocked while handling a request. The fixture
 now writes its synthetic server log to the run's temporary directory, and the
 complete suite passes: 35 scenarios in 93.49 seconds.
 
-The largest remaining confirmed UX gaps are support expiry shown without time/countdown,
-low-contrast `--faint` microcopy outside the touched care screens, and roster
-states beyond conversation urgency.
+The largest remaining confirmed UX gaps are low-contrast `--faint` microcopy
+outside the touched care screens and roster states beyond conversation urgency.
 
 ## Architecture status and next moves
 
@@ -497,6 +506,14 @@ i18n, design, static, router, and mobile tests. Tailwind rebuilt without a
 generated CSS change, focused Ruff and diff checks passed, and the unchanged
 full fast gate remained at 4,981 passed (183 skipped, 35 UI deselected). All
 four recent-auth review forms now use full browser POST navigation.
+
+The strict care-projection hardening then passed 217 focused domain tests (six
+skipped) and 415 support/i18n/design/static/mobile contracts. A separate
+care/support selection passed 105 tests (three PostgreSQL-only skips). Ruff and
+diff checks passed, and Tailwind rebuilt through the pinned local Node 24
+runtime without a generated CSS change. PostgreSQL and Compose are rerun at the
+combined controlled-support gate below rather than claimed by this query-only
+slice.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

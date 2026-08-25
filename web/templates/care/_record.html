@@ -89,7 +89,7 @@
         </li>
         {% endfor %}
       </ul>
-      {% else %}
+      {% elif not (coverage.get("labs") or {}).get("truncated") %}
       <p class="v-text-body" style="color: var(--muted)">{{ t("care.record_labs_in_range") }}</p>
       {% endif %}
     {% endcall %}
@@ -105,7 +105,7 @@
 
     {% call section("nutrition", t("care.record_nutrition")) %}
       {% set n = record.nutrition or {} %}
-      {% if n.avg_calories_per_day is not none %}
+      {% if n.avg_calories_per_day is not none or n.avg_protein_per_day_g is not none %}
       <p class="v-text-body">
         {{ t("care.record_nutrition_avg",
               kcal=(n.avg_calories_per_day | format_number),
@@ -195,14 +195,20 @@
     {% endif %}
   {% endfor %}
 
-  {% if withheld_domains %}
+  {% if care.is_support and record_restricted %}
+  {# A support grant must not reveal the names of enabled modules outside its
+     scope. Even naming a hidden health category would disclose patient data. #}
+  <p class="v-text-micro" style="color: var(--faint)">
+    {{ t("support.opened_scopes") }}
+  </p>
+  {% elif withheld_domains %}
   {# Two sentences for the same fact, because the fact has two sources. A
      professional is outside a *consent* the patient granted for care; platform
      support is outside a *grant* the patient approved for one investigation.
      Telling a support engineer they are outside somebody's consent names the
      wrong document, on the one line of this page that is about privacy. #}
   <p class="v-text-micro" style="color: var(--faint)">
-    {{ t("care.record_withheld_support" if care.is_support else "care.record_withheld",
+    {{ t("care.record_withheld",
           domains=(withheld_domains | map("format_domain") | join(", "))) }}
   </p>
   {% endif %}
