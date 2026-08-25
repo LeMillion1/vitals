@@ -19,6 +19,7 @@ from vitals.models.identity import (
     User,
     UserRole,
 )
+from vitals.models.registration import RegistrationInvitation, RegistrationRequest
 from vitals.models.tenancy import (
     FileAsset,
     IntegrationConnection,
@@ -139,6 +140,8 @@ __all__ = [
     "McpAccessTokenScope",
     "SupportAccessGrant",
     "SupportAccessScope",
+    "RegistrationInvitation",
+    "RegistrationRequest",
     "ProfessionalProfile",
     "ProfessionalReviewDecision",
     "ProfessionalInvitation",

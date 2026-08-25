@@ -33,8 +33,9 @@ def test_every_registered_table_has_exactly_one_ownership_contract():
     # private files to patient-visible care messages; 79 since 0068 added
     # encrypted, account-owned browser push subscriptions; 80 since 0069 added
     # the subject-isolated care-message push outbox; 81 since 0071 added the
-    # immutable professional-review decision history.
-    assert len(OWNERSHIP_REGISTRY) == 81
+    # immutable professional-review decision history; 83 since 0072 added the
+    # invitation and operator-approval admission records.
+    assert len(OWNERSHIP_REGISTRY) == 83
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -101,6 +102,8 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "mcp_access_token_scopes",
         "professional_profiles",
         "professional_review_decisions",
+        "registration_invitations",
+        "registration_requests",
         "shared_reports",
         "subject_settings",
         "support_access_grants",

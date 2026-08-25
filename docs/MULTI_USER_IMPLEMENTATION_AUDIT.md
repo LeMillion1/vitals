@@ -32,7 +32,7 @@ the others remain useful provenance for the remediations named below:
    specific gaps.
 3. The ownership inventory called itself exhaustive but originally omitted 12
    of 76 live tables. It now includes the subsequently added MCP scope table and
-   matches all 81 machine-registry entries.
+   matches all 83 machine-registry entries.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
    Its schema, migration, router, service, RLS, ownership-class, and roadmap
    counters were synchronized during this audit.
@@ -41,9 +41,9 @@ the others remain useful provenance for the remediations named below:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0071 (head)`; 71 files in `migrations/versions` | Verified |
-| SQLAlchemy tables | `len(Base.metadata.tables)` → 81 | Verified |
-| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 81 | Verified and exhaustive in code |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0072 (head)`; 72 files in `migrations/versions` | Verified |
+| SQLAlchemy tables | `len(Base.metadata.tables)` → 83 | Verified |
+| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 83 | Verified and exhaustive in code |
 | Subject-scoped tables | 66 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
 | Required subject columns | 55 of the 66 `subject_id` columns are non-null | Verified |
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
@@ -71,8 +71,9 @@ a current validation result.
 - Every federated protected request now checks the live active account and
   session version. Suspending an account or calling `revoke_all_sessions` closes
   the next request.
-- Registration remains closed. `invite_only` and `admin_approved` registration
-  modes are target design, not implemented behavior.
+- Registration remains closed. Revision `0072` supplies constrained,
+  purge-ready invitation and approval-request state, but the
+  `invite_only` and `admin_approved` workflows are not implemented behavior.
 
 ### Data isolation
 
@@ -181,7 +182,7 @@ The prose inventory previously listed only 64 live and two dropped tables. It
 now includes the missing identity, professional-care, support-request, and
 credential rows, the MCP scope child, the care attachment row, and the web-push
 subscription, care-push-delivery, and professional-review rows and matches all
-81 live tables in the
+83 live tables in the
 machine registry.
 
 The historical Stage 3/4/5 narrative should be archived separately from a

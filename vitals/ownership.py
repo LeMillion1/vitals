@@ -326,6 +326,12 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         OwnershipClass.PLATFORM_CONTROL,
         user_portable=False,
     ),
+    # Installation-wide queue of unknown provider identities. The row never
+    # belongs to a health subject or an ordinary user's portability archive.
+    "registration_requests": OwnershipSpec(
+        OwnershipClass.PLATFORM_CONTROL,
+        user_portable=False,
+    ),
     "progress_photos": OwnershipSpec(
         OwnershipClass.SUBJECT_DATA,
         subject=TargetColumn.REQUIRED,
@@ -366,6 +372,13 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         OwnershipClass.ACCOUNT_CONTROL,
         subject=TargetColumn.NONE,
         actor=TargetColumn.NONE,
+        user_portable=False,
+    ),
+    # An account-admission credential and its issuer/consumer history. Its
+    # terminal lifecycle supports an explicit privacy scrub; it is never
+    # exported as ordinary user data.
+    "registration_invitations": OwnershipSpec(
+        OwnershipClass.ACCOUNT_CONTROL,
         user_portable=False,
     ),
     # The patient's offer, so it is the patient's row — which puts it inside

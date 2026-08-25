@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — registration admission has a fail-closed schema
+
+Revision `0072` adds expiring, purge-ready invitation and operator-approval records
+without opening either registration mode. Invitations store only a lowercase
+SHA-256 token digest, bind one non-privileged account kind to a normalized
+address, and enforce one live invitation for that address. Approval requests
+key each live request to the exact provider issuer/subject pair while retaining
+terminal attempts as separate history, and require an accountable, internally
+consistent outcome. Both lifecycles expire, constrain every state and timestamp
+in the database, and support terminal purging of applicant identity, contact,
+free-text, and user links while retaining only the opaque outcome.
+
 ### Fixed — public account admission is validated and auditable
 
 Account provisioning now applies the shared Unicode/email normalization rules

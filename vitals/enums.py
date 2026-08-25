@@ -32,6 +32,32 @@ class UserRoleName(StrEnum):
     PLATFORM_SUPERADMIN = "platform_superadmin"
 
 
+class RegistrationAccountKind(StrEnum):
+    """Non-privileged account shape requested during public admission."""
+
+    MEMBER = "member"
+    DOCTOR = "doctor"
+    TRAINER = "trainer"
+
+
+class RegistrationInvitationStatus(StrEnum):
+    """Lifecycle of one account-admission invitation."""
+
+    PENDING = "pending"
+    CONSUMED = "consumed"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
+class RegistrationRequestStatus(StrEnum):
+    """Lifecycle of one operator-reviewed account-admission request."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
 class SupportAccessMode(StrEnum):
     """Maximum purpose approved for one time-limited support grant."""
 

@@ -347,8 +347,8 @@ tbody tr:hover td { background: var(--surface-2); }
   <h1>Vitals Architecture</h1>
   <p class="standfirst">A self-hosted health-data service — fourteen domains, five external integration modules and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires an explicit consent or support grant.</p>
   <div class="meta">
-    <span><b>80</b> tables</span>
-    <span><b>70</b> migrations</span>
+    <span><b>83</b> tables</span>
+    <span><b>72</b> migrations</span>
     <span><b>14</b> domains</span>
     <span><b>100</b> application services</span>
     <span><b>66</b> RLS tables</span>
@@ -441,7 +441,7 @@ flowchart LR
     sched["<b>Scheduler</b><br/><span style='font-size:11px'>15 jobs: sync, digest, nudge,<br/>dispatch, reconcile, sweep</span>"]
   end
 
-  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>81 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
+  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>83 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
   redis[("<b>Redis</b><br/><span style='font-size:11px'>cache, rate limits,<br/>Garmin token, breaker</span>")]
   files[/"<b>Private files</b><br/><span style='font-size:11px'>photos, scans, PDFs<br/>opaque keys</span>"/]
 
@@ -549,12 +549,12 @@ erDiagram
       <thead><tr><th>Class</th><th>Count</th><th>Meaning</th></tr></thead>
       <tbody>
         <tr><td><code>subject_data</code></td><td>32</td><td>The record itself. Subject mandatory.</td></tr>
-        <tr><td><code>subject_control</code></td><td>17</td><td>Subject-owned settings, grants and integration roots.</td></tr>
-        <tr><td><code>account_control</code></td><td>7</td><td>Users, roles and account credentials.</td></tr>
+        <tr><td><code>subject_control</code></td><td>19</td><td>Subject-owned settings, grants and integration roots.</td></tr>
+        <tr><td><code>account_control</code></td><td>10</td><td>Users, roles and account credentials.</td></tr>
         <tr><td><code>subject_child</code></td><td>5</td><td>Inherits its subject from a parent row.</td></tr>
-        <tr><td><code>subject_control_child</code></td><td>5</td><td>Control-plane child rows with explicit subject ownership.</td></tr>
+        <tr><td><code>subject_control_child</code></td><td>6</td><td>Control-plane child rows with explicit subject ownership.</td></tr>
         <tr><td><code>mixed_catalog</code></td><td>2</td><td>Curated rows belong to nobody; custom rows to one subject.</td></tr>
-        <tr><td><code>platform_control</code></td><td>2</td><td>The installation's own configuration and controls.</td></tr>
+        <tr><td><code>platform_control</code></td><td>3</td><td>The installation's own configuration and controls.</td></tr>
         <tr><td><code>mixed_catalog_child</code></td><td>1</td><td>Child rows under a mixed curated/custom catalog.</td></tr>
         <tr><td><code>platform_control_child</code></td><td>1</td><td>Children of installation-level controls.</td></tr>
         <tr><td><code>platform_journal</code></td><td>1</td><td>Append-only audit events.</td></tr>
