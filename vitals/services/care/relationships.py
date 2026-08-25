@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from vitals.access import AccessScope, PolicyAction, PolicyResourceType, RelationshipGrant
 from vitals.enums import (
@@ -38,6 +38,7 @@ from vitals.enums import (
     ProfessionalKind,
 )
 from vitals.models.identity import HealthSubject
+from vitals.models.care_thread import CareMessage, CareThreadParticipant
 from vitals.models.professional import (
     CareRelationship,
     ConsentGrant,
@@ -153,6 +154,8 @@ class CareRosterEntry:
     consent_expires_at: datetime | None
     open: bool
     consent_expired: bool
+    unread_threads: int
+    last_message_at: datetime | None
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -226,6 +229,46 @@ async def list_professional_roster(
     """
 
     evaluated_at = await _now(session)
+    participation = aliased(CareThreadParticipant)
+    unread_message = aliased(CareMessage)
+    latest_participation = aliased(CareThreadParticipant)
+    latest_message = aliased(CareMessage)
+    has_unread = (
+        select(unread_message.id)
+        .where(
+            unread_message.thread_id == participation.thread_id,
+            unread_message.actor_user_id != professional_user_id,
+            unread_message.created_at > participation.last_read_at,
+        )
+        .correlate(participation)
+        .exists()
+    )
+    unread_threads = (
+        select(func.count(participation.id))
+        .where(
+            participation.relationship_id == CareRelationship.id,
+            participation.user_id == professional_user_id,
+            participation.removed_at.is_(None),
+            has_unread,
+        )
+        .correlate(CareRelationship)
+        .scalar_subquery()
+    )
+    last_message_at = (
+        select(func.max(latest_message.created_at))
+        .select_from(latest_participation)
+        .join(
+            latest_message,
+            latest_message.thread_id == latest_participation.thread_id,
+        )
+        .where(
+            latest_participation.relationship_id == CareRelationship.id,
+            latest_participation.user_id == professional_user_id,
+            latest_participation.removed_at.is_(None),
+        )
+        .correlate(CareRelationship)
+        .scalar_subquery()
+    )
     rows = (
         await session.execute(
             select(
@@ -236,6 +279,8 @@ async def list_professional_roster(
                 HealthSubject.display_name,
                 ConsentGrant.status.label("consent_status"),
                 ConsentGrant.expires_at,
+                unread_threads.label("unread_threads"),
+                last_message_at.label("last_message_at"),
             )
             .join(HealthSubject, HealthSubject.id == CareRelationship.subject_id)
             .outerjoin(
@@ -256,7 +301,13 @@ async def list_professional_roster(
     roster: list[CareRosterEntry] = []
     for row in rows:
         expires_at = _as_utc(row.expires_at) if row.expires_at else None
+        message_at = _as_utc(row.last_message_at) if row.last_message_at else None
         expired = expires_at is not None and expires_at <= evaluated_at
+        is_open = (
+            row.status == CareRelationshipStatus.ACTIVE.value
+            and row.consent_status == ConsentStatus.ACTIVE.value
+            and not expired
+        )
         roster.append(
             CareRosterEntry(
                 relationship_id=row.id,
@@ -266,14 +317,23 @@ async def list_professional_roster(
                 relationship_status=row.status,
                 consent_status=row.consent_status,
                 consent_expires_at=expires_at,
-                open=(
-                    row.status == CareRelationshipStatus.ACTIVE.value
-                    and row.consent_status == ConsentStatus.ACTIVE.value
-                    and not expired
-                ),
+                open=is_open,
                 consent_expired=expired,
+                # A closed record may retain conversation history, but it is
+                # not actionable work while the professional cannot enter it.
+                unread_threads=int(row.unread_threads or 0) if is_open else 0,
+                last_message_at=message_at if is_open else None,
             )
         )
+    # One deterministic work queue: actionable records first, then unread work,
+    # then recent contact. A display name is only the final stable tiebreak.
+    roster.sort(key=lambda item: (item.display_name.casefold(), str(item.subject_id)))
+    roster.sort(
+        key=lambda item: item.last_message_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    roster.sort(key=lambda item: item.unread_threads, reverse=True)
+    roster.sort(key=lambda item: item.open, reverse=True)
     return roster
 
 

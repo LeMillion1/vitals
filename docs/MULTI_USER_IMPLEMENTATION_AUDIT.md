@@ -100,9 +100,10 @@ a current validation result.
   name their author.
 - A new conversation now takes its topic and first message together. Each
   participant has an independent read cursor, and only newer messages from
-  somebody else count as unread. Message attachments, a cross-patient
-  professional inbox, and a patient notification for accepted invitations
-  remain unbuilt.
+  somebody else count as unread. The professional roster is the cross-patient
+  inbox: unread records come first with a direct conversation action and recent
+  message date. Message attachments and a patient notification for accepted
+  invitations remain unbuilt.
 
 ### Controlled support
 
@@ -273,10 +274,10 @@ the OS buffer filled, the server blocked while handling a request. The fixture
 now writes its synthetic server log to the run's temporary directory, and the
 complete suite passes: 35 scenarios in 93.49 seconds.
 
-The largest remaining confirmed UX gaps are the missing invitation task/inbox,
+The largest remaining confirmed UX gaps are the missing invitation task,
 support expiry shown without time/countdown,
 low-contrast `--faint` microcopy outside the touched care screens, and roster
-cards without urgency or recent-activity prioritization.
+states beyond conversation urgency.
 
 ## Architecture status and next moves
 
@@ -327,6 +328,12 @@ The follow-up consent-expiry repair passed 64 focused care/i18n tests, 479
 care/UI/auth/design tests, and the full 4,638-test fast suite (168 skipped, 35
 deselected). Its roster state was inspected at desktop and 390 px phone widths
 with no horizontal overflow or browser console errors.
+
+The cross-patient inbox then passed 85 focused care tests, 492 care/UI/design
+contracts, 80 PostgreSQL care/RLS tests after the full migration cycle, and the
+full 4,639-test fast suite (168 skipped, 35 deselected). Its unread-first roster
+was inspected at desktop and 390 px phone widths with no horizontal overflow or
+browser console errors.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

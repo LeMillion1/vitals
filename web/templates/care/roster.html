@@ -33,16 +33,26 @@
            empty list — "gone" and "on hold" are different things to tell them. #}
         {% for p in patients %}
         {% if p.open %}
-        <a href="/care/{{ p.subject_id }}"
-           class="v-card p-5 flex flex-wrap items-center justify-between gap-4">
-            <div class="space-y-1">
+        <div class="v-card p-5 flex flex-wrap items-center justify-between gap-4">
+            <a href="/care/{{ p.subject_id }}" class="min-w-0 flex-1 p-2 -m-2">
                 <span class="v-text-body font-semibold">{{ p.display_name }}</span>
                 <div class="v-text-micro" style="color: var(--muted)">{{ t("care.kind." ~ p.kind) }}</div>
-            </div>
+                {% if p.last_message_at %}
+                <div class="v-text-micro" style="color: var(--muted)">
+                    {{ t("care.roster_last_message", date=(p.last_message_at | format_date)) }}
+                </div>
+                {% endif %}
+            </a>
             <div class="flex items-center gap-2">
+                {% if p.unread_threads %}
+                <a href="/care/{{ p.subject_id }}/messages" class="v-btn-ghost text-xs">
+                    {{ t("care.roster_unread", count=p.unread_threads) }}
+                </a>
+                {% else %}
                 <span class="v-chip v-chip-sm good">{{ t("care.state.open") }}</span>
+                {% endif %}
             </div>
-        </a>
+        </div>
         {% else %}
         <div class="v-card p-5 flex flex-wrap items-center justify-between gap-4">
             <div class="space-y-1">

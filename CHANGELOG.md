@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — one professional inbox across every patient
+
+The patient roster is now a work queue: records with unread conversations come
+first, link straight to their conversation list, and show the most recent
+message date. Records without new work remain one click from the health record.
+
 ### Fixed — expired care consent no longer looks open
 
 The professional roster now labels an expired consent explicitly and removes

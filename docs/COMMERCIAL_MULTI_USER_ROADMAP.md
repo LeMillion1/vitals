@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0066` — 66 revisions |
 | Schema | 77 tables; 64 carry `subject_id` and are covered by an RLS policy; 53 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,638 fast passed / 168 skipped; 479 focused care/UI/auth/design tests; migration plus 54 focused PostgreSQL care/RLS tests |
+| Suites | 4,639 fast passed / 168 skipped; 492 focused care/UI/design tests; migration plus 80 focused PostgreSQL care/RLS tests |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -1069,7 +1069,7 @@ Tests:
 Rollback: relationship/grant rows may remain dormant; disabling the feature
 removes all professional access without changing patient ownership.
 
-### PR 08 — Professional UX and explicit patient context — **landed, minus the inbox**
+### PR 08 — Professional UX and explicit patient context — **landed**
 
 Delivered:
 

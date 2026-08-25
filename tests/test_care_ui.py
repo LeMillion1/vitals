@@ -314,6 +314,44 @@ async def test_the_roster_lists_both_patients(doctor_client):
     assert "consent v" not in response.text
 
 
+async def test_the_roster_puts_unread_patient_conversations_first(doctor_client):
+    client, doctor, (_owner_a, subject_a), (owner_b, subject_b) = doctor_client
+    opened_a = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Routine", "body": "How are you?"},
+        follow_redirects=False,
+    )
+    assert opened_a.status_code == 303
+    opened_b = await client.post(
+        f"/care/{subject_b.id}/messages",
+        data={"title": "Knee", "body": "How is it today?"},
+        follow_redirects=False,
+    )
+    assert opened_b.status_code == 303
+    thread_b = opened_b.headers["location"].rsplit("/", 1)[1]
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client.cookies.set(SESSION_COOKIE, create_session(owner_b.username))
+    replied = await client.post(
+        f"/care/{subject_b.id}/messages/{thread_b}",
+        data={"body": "It hurts when I run."},
+        follow_redirects=False,
+    )
+    assert replied.status_code == 303
+
+    client.cookies.set(SESSION_COOKIE, create_session(doctor.username))
+    roster = await client.get("/care", headers={"Accept": "text/html"})
+    assert roster.status_code == 200
+    assert f'href="/care/{subject_b.id}/messages"' in roster.text
+    assert "New: 1" in roster.text or "Новых: 1" in roster.text
+    assert "Last message:" in roster.text or "Последнее сообщение:" in roster.text
+    assert roster.text.index(subject_b.display_name) < roster.text.index(
+        subject_a.display_name
+    )
+
+
 async def test_a_professional_keeps_phone_navigation_and_logout(client, db_session):
     doctor = await _user(
         db_session, "mobile-doctor", roles=(UserRoleName.DOCTOR,)
