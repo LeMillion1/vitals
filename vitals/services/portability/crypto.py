@@ -6,7 +6,8 @@ import os
 import struct
 import tempfile
 import unicodedata
-from typing import BinaryIO
+from types import TracebackType
+from typing import BinaryIO, Self
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
@@ -23,6 +24,144 @@ _INVALID_ARCHIVE = "invalid portability archive"
 
 class PortabilityCryptoError(ValueError):
     """A passphrase, archive, cap or output boundary failed closed."""
+
+
+class EncryptingWriter:
+    """Push plaintext into one authenticated v2 container.
+
+    This is the bridge for producers such as ``zipfile.ZipFile`` that write to
+    a binary sink instead of exposing a readable source. The caller must use
+    the context manager or call :meth:`finish`; aborting deliberately omits the
+    GCM tag so a partial destination can never authenticate as an archive.
+    """
+
+    def __init__(self, destination: BinaryIO, *, passphrase: str) -> None:
+        password = _passphrase_bytes(passphrase)
+        salt = os.urandom(contract.SALT_BYTES)
+        nonce = os.urandom(contract.NONCE_BYTES)
+        header = contract.build_header(salt=salt, nonce=nonce)
+        prefix = contract.prelude(header)
+        aad = prefix + header
+        initial_size = len(aad) + contract.TAG_BYTES
+        if initial_size > contract.MAX_ENCRYPTED_BYTES:
+            raise PortabilityCryptoError("encrypted archive exceeds the hard limit")
+
+        self._destination = destination
+        self._key = _derive_key(passphrase=password, salt=salt)
+        self._plaintext_size = 0
+        self._encrypted_size = len(aad)
+        self._finished = False
+        self._aborted = False
+        try:
+            self._encryptor = Cipher(
+                algorithms.AES(bytes(self._key)), modes.GCM(nonce)
+            ).encryptor()
+            self._encryptor.authenticate_additional_data(aad)
+            _write(destination, aad)
+        except BaseException:
+            self.abort()
+            raise
+
+    @property
+    def plaintext_size(self) -> int:
+        return self._plaintext_size
+
+    @property
+    def encrypted_size(self) -> int:
+        """Bytes successfully written so far, including a final tag if finished."""
+
+        return self._encrypted_size
+
+    @property
+    def closed(self) -> bool:
+        return self._finished or self._aborted
+
+    def writable(self) -> bool:
+        return not self.closed
+
+    def seekable(self) -> bool:
+        return False
+
+    def write(self, body: bytes | bytearray | memoryview) -> int:
+        if self.closed:
+            raise PortabilityCryptoError("encrypting writer is closed")
+        if not isinstance(body, bytes | bytearray | memoryview):
+            self.abort()
+            raise TypeError("archive plaintext is not binary")
+        plaintext = bytes(body)
+        if not plaintext:
+            return 0
+        next_plaintext_size = self._plaintext_size + len(plaintext)
+        next_encrypted_size = self._encrypted_size + len(plaintext)
+        if next_plaintext_size > contract.MAX_PLAINTEXT_BYTES:
+            self.abort()
+            raise PortabilityCryptoError("plaintext exceeds the hard limit")
+        if next_encrypted_size + contract.TAG_BYTES > contract.MAX_ENCRYPTED_BYTES:
+            self.abort()
+            raise PortabilityCryptoError("encrypted archive exceeds the hard limit")
+        try:
+            ciphertext = self._encryptor.update(plaintext)
+            _write(self._destination, ciphertext)
+        except BaseException:
+            self.abort()
+            raise
+        self._plaintext_size = next_plaintext_size
+        self._encrypted_size += len(ciphertext)
+        return len(plaintext)
+
+    def flush(self) -> None:
+        if self.closed:
+            return
+        flush = getattr(self._destination, "flush", None)
+        if flush is not None:
+            flush()
+
+    def finish(self) -> int:
+        """Finalize authentication exactly once and return the encrypted size."""
+
+        if self._finished:
+            return self._encrypted_size
+        if self._aborted:
+            raise PortabilityCryptoError("encrypting writer is closed")
+        try:
+            final = self._encryptor.finalize()
+            tag = self._encryptor.tag
+            if self._encrypted_size + len(final) + len(tag) > contract.MAX_ENCRYPTED_BYTES:
+                raise PortabilityCryptoError("encrypted archive exceeds the hard limit")
+            _write(self._destination, final)
+            _write(self._destination, tag)
+            self._encrypted_size += len(final) + len(tag)
+            self._finished = True
+            return self._encrypted_size
+        except BaseException:
+            self.abort()
+            raise
+        finally:
+            if self._finished:
+                _clear(self._key)
+
+    def abort(self) -> None:
+        """Make the partial output permanently unauthenticatable."""
+
+        if not self._finished and not self._aborted:
+            self._aborted = True
+            _clear(self._key)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        del exc_value, traceback
+        if exc_type is None:
+            self.finish()
+        else:
+            self.abort()
+        return False
 
 
 def _passphrase_bytes(passphrase: str) -> bytes:
@@ -134,35 +273,11 @@ def encrypt_stream(
     """
 
     chunk_size = _chunk_size(chunk_size)
-    password = _passphrase_bytes(passphrase)
-    salt = os.urandom(contract.SALT_BYTES)
-    nonce = os.urandom(contract.NONCE_BYTES)
-    header = contract.build_header(salt=salt, nonce=nonce)
-    prefix = contract.prelude(header)
-    aad = prefix + header
-    encrypted_size = len(aad) + contract.TAG_BYTES
-    if encrypted_size > contract.MAX_ENCRYPTED_BYTES:
-        raise PortabilityCryptoError("encrypted archive exceeds the hard limit")
-
-    key = _derive_key(passphrase=password, salt=salt)
-    try:
-        encryptor = Cipher(algorithms.AES(bytes(key)), modes.GCM(nonce)).encryptor()
-        encryptor.authenticate_additional_data(aad)
-        _write(destination, aad)
-        plaintext_size = 0
+    writer = EncryptingWriter(destination, passphrase=passphrase)
+    with writer:
         while chunk := _read(source, chunk_size):
-            plaintext_size += len(chunk)
-            encrypted_size += len(chunk)
-            if plaintext_size > contract.MAX_PLAINTEXT_BYTES:
-                raise PortabilityCryptoError("plaintext exceeds the hard limit")
-            if encrypted_size > contract.MAX_ENCRYPTED_BYTES:
-                raise PortabilityCryptoError("encrypted archive exceeds the hard limit")
-            _write(destination, encryptor.update(chunk))
-        _write(destination, encryptor.finalize())
-        _write(destination, encryptor.tag)
-        return encrypted_size
-    finally:
-        _clear(key)
+            writer.write(chunk)
+    return writer.encrypted_size
 
 
 def decrypt_stream(
@@ -246,6 +361,7 @@ def decrypt_stream(
 
 __all__ = [
     "DEFAULT_CHUNK_BYTES",
+    "EncryptingWriter",
     "MAX_CHUNK_BYTES",
     "MAX_PASSPHRASE_BYTES",
     "MIN_PASSPHRASE_BYTES",
