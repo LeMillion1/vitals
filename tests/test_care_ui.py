@@ -1015,6 +1015,44 @@ async def test_the_conversation_page_renders_what_was_said(
     assert "Начать разговор" not in page.text
 
 
+async def test_the_patient_conversation_uses_the_owners_perspective(doctor_client):
+    """The shared screen speaks to its reader instead of calling them a patient."""
+
+    client, _doctor, (owner_a, subject_a), _b = doctor_client
+    opened = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Check-in", "body": "How are you feeling?"},
+        follow_redirects=False,
+    )
+    thread_id = opened.headers["location"].rsplit("/", 1)[1]
+
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+
+    client.cookies.set(SESSION_COOKIE, create_session(owner_a.username))
+    replied = await client.post(
+        f"/care/{subject_a.id}/messages/{thread_id}",
+        data={"body": "Much better."},
+        follow_redirects=False,
+    )
+    assert replied.status_code == 303
+
+    page = await client.get(
+        f"/care/{subject_a.id}/messages/{thread_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert page.status_code == 200
+    assert "Care team" in page.text or "Команда помощи" in page.text
+    assert (
+        "Write to your care team" in page.text
+        or "Напишите своей команде помощи" in page.text
+    )
+    assert "Write to the patient" not in page.text
+    assert "Напишите пациенту" not in page.text
+    assert 'data-message-own="true"' in page.text
+    assert 'data-message-own="false"' in page.text
+
+
 async def test_the_conversation_list_renders(doctor_client):
     client, _doctor, (_owner_a, subject_a), _b = doctor_client
 

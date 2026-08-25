@@ -214,6 +214,7 @@
 {% endif %}
 {% if section == 'settings' %}{% set rb.cat = 'nav.settings' %}{% set rb.num = module_rubrics|length + 1 %}{% endif %}
 {% if section == 'care' %}{% set rb.cat = 'care.roster_heading' %}{% set rb.num = module_rubrics|length + 2 %}{% endif %}
+{% if section == 'care_self' %}{% set rb.cat = 'care.team_heading' %}{% set rb.num = module_rubrics|length + 2 %}{% endif %}
 {% if section == 'consents' %}{% set rb.cat = 'consents.heading' %}{% set rb.num = module_rubrics|length + 3 %}{% endif %}
 <div class="mh-head">
     <div class="mh-bar">

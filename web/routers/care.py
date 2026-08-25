@@ -598,6 +598,7 @@ async def thread(
             "open_thread": opened,
             "thread_messages": thread_messages,
             "participants": participants,
+            "viewer_user_id": care.access.principal.user_id,
             "conversation_names": names,
             "active_participant_names": [
                 names[person.user_id]

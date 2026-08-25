@@ -26,9 +26,11 @@
         <a href="/care/{{ care.subject_id }}" class="v-btn-ghost text-xs">{{ t("care.back_to_record") }}</a>
     </div>
 
-    {% call masthead_header('care', t("care.messages_title"), []) %}{% endcall %}
+    {% call masthead_header('care_self' if care.is_owner else 'care', t("care.messages_title"), []) %}{% endcall %}
 
-    <p class="v-text-body" style="color: var(--muted)">{{ t("care.messages_description") }}</p>
+    <p class="v-text-body" style="color: var(--muted)">
+        {{ t("care.messages_description_owner" if care.is_owner else "care.messages_description") }}
+    </p>
 
     {% if not open_thread %}
     {% include "partials/web_push_card.html" %}
@@ -81,7 +83,7 @@
                 <label for="thread-first-message" class="v-label">{{ t("care.message_label") }}</label>
                 <textarea id="thread-first-message" name="body" rows="4" maxlength="20000"
                           class="v-input" required
-                          placeholder="{{ t('care.message_placeholder') }}"></textarea>
+                          placeholder="{{ t('care.message_placeholder_owner' if care.is_owner else 'care.message_placeholder') }}"></textarea>
                 <details class="v-card-inset p-3">
                     <summary class="v-btn-ghost cursor-pointer">{{ t("care.attachment_add") }}</summary>
                     <label class="v-file-drop cursor-pointer mt-3">
@@ -122,9 +124,12 @@
         {% if thread_messages %}
         <div class="space-y-3">
             {% for message in thread_messages %}
-            <div class="v-card-inset p-4 space-y-1">
+            {% set is_own_message = message.actor_user_id == viewer_user_id %}
+            <div class="v-card-inset p-4 space-y-1 {% if is_own_message %}ml-8{% else %}mr-8{% endif %}"
+                 data-message-own="{{ 'true' if is_own_message else 'false' }}"{% if is_own_message %}
+                 style="background: var(--surface-2)"{% endif %}>
                 <div class="v-text-micro" style="color: var(--muted)">
-                    {{ conversation_names.get(message.actor_user_id, message.author.username) }} · {{ message.created_at | format_date }}
+                    {% if is_own_message %}{{ t("care.message_you") }}{% else %}{{ conversation_names.get(message.actor_user_id, message.author.username) }}{% endif %} · {{ message.created_at | format_date }}
                     {% if message.edited_at %} · {{ t("care.message_edited") }}{% endif %}
                 </div>
                 <p class="v-text-body" style="white-space: pre-wrap">{{ message.body }}</p>
@@ -146,7 +151,7 @@
               method="POST" enctype="multipart/form-data" class="space-y-3">
             <label for="message-body" class="v-label">{{ t("care.message_label") }}</label>
             <textarea id="message-body" name="body" rows="4" class="v-input" required
-                      placeholder="{{ t('care.message_placeholder') }}"></textarea>
+                      placeholder="{{ t('care.message_placeholder_owner' if care.is_owner else 'care.message_placeholder') }}"></textarea>
             <details class="v-card-inset p-3">
                 <summary class="v-btn-ghost cursor-pointer">{{ t("care.attachment_add") }}</summary>
                 <label class="v-file-drop cursor-pointer mt-3">
