@@ -32,6 +32,13 @@ OIDC_HANDOFF_TTL = 600
 REGISTRATION_ADMISSION_COOKIE = "vitals_registration_admission"
 REGISTRATION_ADMISSION_TTL = 600
 
+# An administrator-approved applicant reaches the OIDC callback with provider
+# query parameters that must not remain in browser history. The callback
+# redirects to a clean status URL and carries only this signed request UUID and
+# bounded public state for the short handoff.
+REGISTRATION_REQUEST_COOKIE = "vitals_registration_request"
+REGISTRATION_REQUEST_TTL = 600
+
 # Callback hosts of the AI clients allowed to connect to the MCP server. Matched
 # by host rather than by full URL on purpose: Claude and ChatGPT each use one
 # fixed callback path, but Google mints a per-user one

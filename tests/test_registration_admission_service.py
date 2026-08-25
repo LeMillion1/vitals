@@ -754,6 +754,7 @@ async def test_approve_provisions_one_member_graph_with_human_role_provenance(
         db_session,
         request_id=request.id,
         reviewer_user_id=reviewer.id,
+        expected_issuer=ISSUER,
     )
 
     role = await db_session.scalar(
@@ -795,6 +796,7 @@ async def test_approval_refuses_saved_email_collision_without_merging(
             db_session,
             request_id=request.id,
             reviewer_user_id=reviewer.id,
+            expected_issuer=ISSUER,
         )
 
     assert request.status == RegistrationRequestStatus.PENDING.value
@@ -805,6 +807,63 @@ async def test_approval_refuses_saved_email_collision_without_merging(
             UserFederatedIdentity.subject == "request-collision"
         )
     ) == 0
+
+
+async def test_approval_refuses_request_from_previous_identity_provider(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    request = await _request(db_session, monkeypatch, suffix="old-provider")
+    reviewer = await _admin(db_session, "old-provider-reviewer")
+
+    with pytest.raises(admission.AdmissionStateError):
+        await admission.approve_request(
+            db_session,
+            request_id=request.id,
+            reviewer_user_id=reviewer.id,
+            expected_issuer="https://replacement-idp.example.test",
+        )
+
+    assert request.status == RegistrationRequestStatus.PENDING.value
+    assert request.provisioned_user_id is None
+    assert await db_session.scalar(
+        select(func.count()).select_from(UserFederatedIdentity)
+    ) == 0
+
+
+async def test_unicode_identity_claims_render_and_approve_without_crashing(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    issuer = "https://münchen-idp.example.test"
+    await _mode(
+        db_session,
+        monkeypatch,
+        registration_policy.RegistrationMode.ADMIN_APPROVED,
+    )
+    request = await _submit_request(
+        db_session,
+        issuer=issuer,
+        subject="unicode-identity-subject",
+        verified_email="Üser@Example.Test",
+    )
+    reviewer = await _admin(db_session, "unicode-claim-reviewer")
+
+    console = await admission.registration_console(
+        db_session,
+        actor_user_id=reviewer.id,
+        current_oidc_issuer=issuer,
+    )
+    assert console.requests[0].provider_current is True
+    assert console.requests[0].masked_email == "ü***@example.test"
+
+    result = await admission.approve_request(
+        db_session,
+        request_id=request.id,
+        reviewer_user_id=reviewer.id,
+        expected_issuer=issuer,
+    )
+
+    assert request.status == RegistrationRequestStatus.APPROVED.value
+    assert result.user.id == request.provisioned_user_id
 
 
 async def test_reject_records_bounded_reason_without_creating_identity(
@@ -840,6 +899,7 @@ async def test_request_decisions_require_an_active_platform_admin(
                 db_session,
                 request_id=request.id,
                 reviewer_user_id=outsider.id,
+                expected_issuer=ISSUER,
             )
         else:
             await admission.reject_request(
@@ -859,7 +919,10 @@ async def test_request_terminal_decisions_are_strict(
     reviewer = await _admin(db_session, f"strict-reviewer-{first}")
     if first == "approve":
         await admission.approve_request(
-            db_session, request_id=request.id, reviewer_user_id=reviewer.id
+            db_session,
+            request_id=request.id,
+            reviewer_user_id=reviewer.id,
+            expected_issuer=ISSUER,
         )
     else:
         await admission.reject_request(
@@ -876,6 +939,7 @@ async def test_request_terminal_decisions_are_strict(
                     db_session,
                     request_id=request.id,
                     reviewer_user_id=reviewer.id,
+                    expected_issuer=ISSUER,
                 )
             else:
                 await admission.reject_request(
@@ -975,6 +1039,7 @@ async def test_stale_operator_actions_record_expiry_before_refusing(
                     db_session,
                     request_id=resource_id,
                     reviewer_user_id=reviewer.id,
+                    expected_issuer=ISSUER,
                 )
             else:
                 await admission.reject_request(
@@ -1341,6 +1406,7 @@ async def test_postgres_request_decisions_have_one_terminal_winner(
                         session,
                         request_id=request_id,
                         reviewer_user_id=reviewer_id,
+                        expected_issuer=ISSUER,
                     )
                 else:
                     await admission.reject_request(
@@ -1477,6 +1543,7 @@ async def test_postgres_expiry_uses_time_after_transaction_wait(
                     session,
                     request_id=request.id,
                     reviewer_user_id=reviewer_id,
+                    expected_issuer=ISSUER,
                 )
         assert not in_platform_scope(session)
 

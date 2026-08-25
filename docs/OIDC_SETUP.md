@@ -169,6 +169,31 @@ audit payload, or OIDC handoff cookie. The shared scheduler expires overdue
 proofs hourly and scrubs terminal applicant PII after 90 days. Its platform
 failure alert and `/health` heartbeat make a stopped retention loop visible.
 
+## Adding a member by administrator approval
+
+Use the same deployment gate with the approval mode:
+
+```bash
+export VITALS_REGISTRATION_UNLOCKED=1
+python scripts/registration_mode.py --set admin_approved
+```
+
+An unknown person may now complete the normal provider login. Vitals requires
+the provider's exact verified address, creates one expiring member request, and
+redirects through a one-time signed handle to a clean standalone waiting page
+with an opaque reference. OAuth callback parameters are not retained in the
+address bar, and the handle is cleared before any later login. Vitals does not
+create a user, health record, role, or browser session at this point.
+
+A freshly authenticated platform superadmin reviews the masked queue at
+`/settings/platform/registration`. Approving a request atomically creates the
+member account and provider binding; the person signs in again afterward.
+Approval is refused if the deployment gate or mode closes, OIDC becomes
+unavailable, or the configured issuer changed. Requests from a previous issuer
+remain visible only so an operator can reject them with a private decision
+note. Rejection is also available after closure, so stale applicant PII need
+not remain pending until expiry.
+
 Creating a local account and deciding which provider identity may enter it are
 two explicit operator actions. Run both from a shell with
 `VITALS_DATABASE_URL` set:

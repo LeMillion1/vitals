@@ -34,6 +34,7 @@ from vitals.services.authentication.admission._shared import (
 )
 from vitals.services.authentication.admission.console import (
     InvitationConsoleEntry,
+    RequestConsoleEntry,
     RegistrationConsole,
     registration_console,
 )
@@ -74,6 +75,7 @@ __all__ = [
     "AdmissionValidationError",
     "IssuedInvitation",
     "InvitationConsoleEntry",
+    "RequestConsoleEntry",
     "RegistrationConsole",
     "RetentionResult",
     "approve_request",

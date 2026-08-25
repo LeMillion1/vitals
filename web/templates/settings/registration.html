@@ -13,8 +13,8 @@
         {{ t("registration.operator.description") }}
     </p>
 
-    {% if decided %}<div class="v-alert good">{{ t("registration.operator.decided_" ~ decided) }}</div>{% endif %}
-    {% if error %}<div class="v-alert warn">{{ t("registration.operator.error_" ~ error) }}</div>{% endif %}
+    {% if decided %}<div class="v-alert good" role="status">{{ t("registration.operator.decided_" ~ decided) }}</div>{% endif %}
+    {% if error %}<div class="v-alert warn" role="alert">{{ t("registration.operator.error_" ~ error) }}</div>{% endif %}
 
     <section class="v-card p-6 space-y-4">
         {{ card_header(t("registration.operator.door_title")) }}
@@ -32,10 +32,58 @@
         <div class="v-alert info">{{ t("registration.operator.deployment_locked") }}</div>
         {% elif not oidc_enabled %}
         <div class="v-alert warn">{{ t("registration.operator.oidc_required") }}</div>
-        {% elif console.effective_mode.value != 'invite_only' %}
-        <div class="v-alert info">{{ t("registration.operator.invite_mode_required") }}</div>
+        {% elif console.effective_mode.value not in ['invite_only', 'admin_approved'] %}
+        <div class="v-alert info">{{ t("registration.operator.mode_without_admission_queue") }}</div>
         {% endif %}
     </section>
+
+    {% if console.total_live_requests or console.effective_mode.value == 'admin_approved' %}
+    <section class="v-card p-6 space-y-4">
+        {{ card_header(t("registration.operator.requests_title"), console.total_live_requests) }}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("registration.operator.requests_hint") }}</p>
+        {% if console.request_page_count > 1 %}
+        <p class="v-text-micro" style="color: var(--muted)">{{ t("registration.operator.requests_page", page=console.request_page, pages=console.request_page_count) }}</p>
+        {% endif %}
+        {% if not console.requests %}
+        <p class="v-text-body" style="color: var(--muted)">{{ t("registration.operator.requests_empty") }}</p>
+        {% elif not can_approve %}
+        <div class="v-alert info">{{ t("registration.operator.approval_mode_required") }}</div>
+        {% endif %}
+        {% for row in console.requests %}
+        <article class="v-card-inset p-4 space-y-4">
+            <div>
+                <h2 class="v-heading-3">{{ t("registration.operator.request_applicant") }} · {{ row.masked_email }}</h2>
+                <p class="v-text-micro mt-1" style="color: var(--muted)">{{ row.masked_email }} · {{ t("registration.operator.kind_" ~ row.account_kind) }} · {{ t("registration.operator.expires") }} {{ row.expires_at | format_date }}</p>
+                <p id="request-reference-{{ row.request_id }}" class="v-text-micro mt-1" style="color: var(--faint)">{{ t("registration.operator.reference") }} {{ row.reference }}</p>
+            </div>
+            {% if not row.provider_current %}<div class="v-alert info">{{ t("registration.operator.previous_provider") }}</div>{% endif %}
+            <div class="grid gap-4 md:grid-cols-2">
+                {% if can_approve and row.provider_current %}
+                <form action="/settings/platform/registration/requests/{{ row.request_id }}/approve" method="POST" hx-boost="false">
+                    <button type="submit" class="v-btn-ghost" aria-describedby="request-reference-{{ row.request_id }}">{{ t("registration.operator.approve_request") }}</button>
+                </form>
+                {% endif %}
+                <form action="/settings/platform/registration/requests/{{ row.request_id }}/reject" method="POST" hx-boost="false">
+                    <details class="v-card-inset p-3">
+                        <summary class="v-label" aria-describedby="request-reference-{{ row.request_id }}">{{ t("registration.operator.reject_request") }}</summary>
+                        <div class="mt-3 space-y-3">
+                            <label for="request-reason-{{ row.request_id }}" class="v-label">{{ t("registration.operator.rejection_reason") }}</label>
+                            <textarea id="request-reason-{{ row.request_id }}" name="reason" maxlength="2000" required class="v-textarea" rows="2"></textarea>
+                            <button type="submit" class="v-btn-danger inline-flex items-center justify-center min-h-11 px-4 py-3" aria-describedby="request-reference-{{ row.request_id }}">{{ t("registration.operator.confirm_rejection") }}</button>
+                        </div>
+                    </details>
+                </form>
+            </div>
+        </article>
+        {% endfor %}
+        {% if console.request_has_previous or console.request_has_next %}
+        <nav class="flex flex-wrap justify-between gap-3" aria-label="{{ t('registration.operator.requests_pagination') }}">
+            {% if console.request_has_previous %}<a href="/settings/platform/registration?page={{ console.page }}&request_page={{ console.request_page - 1 }}" class="v-btn-ghost">{{ t("registration.operator.previous") }}</a>{% else %}<span></span>{% endif %}
+            {% if console.request_has_next %}<a href="/settings/platform/registration?page={{ console.page }}&request_page={{ console.request_page + 1 }}" class="v-btn-ghost">{{ t("registration.operator.next") }}</a>{% endif %}
+        </nav>
+        {% endif %}
+    </section>
+    {% endif %}
 
     {% if can_issue %}
     <section class="v-card p-6 space-y-4">
@@ -87,8 +135,8 @@
         {% endfor %}
         {% if console.has_previous or console.has_next %}
         <nav class="flex flex-wrap justify-between gap-3" aria-label="{{ t('registration.operator.pagination') }}">
-            {% if console.has_previous %}<a href="/settings/platform/registration?page={{ console.page - 1 }}" class="v-btn-ghost">{{ t("registration.operator.previous") }}</a>{% else %}<span></span>{% endif %}
-            {% if console.has_next %}<a href="/settings/platform/registration?page={{ console.page + 1 }}" class="v-btn-ghost">{{ t("registration.operator.next") }}</a>{% endif %}
+            {% if console.has_previous %}<a href="/settings/platform/registration?page={{ console.page - 1 }}&request_page={{ console.request_page }}" class="v-btn-ghost">{{ t("registration.operator.previous") }}</a>{% else %}<span></span>{% endif %}
+            {% if console.has_next %}<a href="/settings/platform/registration?page={{ console.page + 1 }}&request_page={{ console.request_page }}" class="v-btn-ghost">{{ t("registration.operator.next") }}</a>{% endif %}
         </nav>
         {% endif %}
     </section>

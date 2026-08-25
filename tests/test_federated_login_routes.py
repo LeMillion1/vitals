@@ -23,6 +23,7 @@ from web.config import (
     OIDC_HANDOFF_COOKIE,
     PENDING_2FA_COOKIE,
     REGISTRATION_ADMISSION_COOKIE,
+    REGISTRATION_REQUEST_COOKIE,
     SESSION_COOKIE,
 )
 
@@ -158,6 +159,29 @@ async def _account_invitation(db_session, legacy_owner_roots, monkeypatch, *, em
     )
     await db_session.commit()
     return issued
+
+
+async def _enable_admin_approval(db_session, monkeypatch) -> None:
+    from vitals.services.authentication import registration
+
+    monkeypatch.setenv(registration.REGISTRATION_UNLOCK_ENV, "1")
+    await registration.set_stored_mode(
+        db_session,
+        registration.RegistrationMode.ADMIN_APPROVED,
+    )
+    await db_session.commit()
+
+
+async def _open_request_status(client, callback, *, expected_status: int):
+    """Follow the clean signed handoff without preserving OAuth parameters."""
+
+    assert callback.status_code == 303
+    assert callback.headers["location"] == "/auth/registration-request"
+    assert "no-store" in callback.headers["cache-control"]
+    assert callback.cookies.get(REGISTRATION_REQUEST_COOKIE)
+    page = await client.get(callback.headers["location"], follow_redirects=False)
+    assert page.status_code == expected_status
+    return page
 
 
 # ── Starting ─────────────────────────────────────────────────────────────────
@@ -1209,6 +1233,359 @@ async def test_a_token_for_an_unknown_identity_is_refused(
     )
     assert response.status_code == 401
     assert not response.cookies.get(SESSION_COOKIE)
+
+
+async def test_admin_approved_login_creates_only_one_waiting_request(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.models.identity import User, UserFederatedIdentity
+    from vitals.models.registration import RegistrationRequest
+    from web.auth import create_session
+
+    await _enable_admin_approval(db_session, monkeypatch)
+    claims = {
+        "sub": "approval-applicant",
+        "email": "Private.Applicant@example.test",
+        "email_verified": True,
+        "preferred_username": "untrusted-public-name",
+    }
+    federated.pending_claims = claims
+    state, _ = await _start(client, federated)
+
+    response = await client.get(
+        f"/auth/callback?code=c&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    page = await _open_request_status(client, response, expected_status=202)
+    assert "no-store" in page.headers["cache-control"]
+    assert page.headers["referrer-policy"] == "no-referrer"
+    assert "default-src 'none'" in page.headers["content-security-policy"]
+    assert "script-src 'nonce-" in page.headers["content-security-policy"]
+    assert "noindex" in page.headers["x-robots-tag"]
+    assert "htmx-history-cache" in page.text
+    assert page.cookies.get(REGISTRATION_REQUEST_COOKIE) in (None, "")
+    assert not response.cookies.get(SESSION_COOKIE)
+    row = await db_session.scalar(select(RegistrationRequest))
+    assert row is not None and str(row.id) in page.text
+    for private in (
+        "Private.Applicant@example.test",
+        "approval-applicant",
+        "untrusted-public-name",
+        ISSUER,
+    ):
+        assert private not in page.text
+    assert await db_session.scalar(select(func.count()).select_from(User)) == 1
+    assert await db_session.scalar(
+        select(func.count()).select_from(UserFederatedIdentity)
+    ) == 0
+
+    fresh_session = create_session("fresh-session-after-status")
+    client.cookies.set(SESSION_COOKIE, fresh_session)
+    spent = await client.get(
+        "/auth/registration-request",
+        follow_redirects=False,
+    )
+    assert spent.status_code == 401
+    assert client.cookies.get(SESSION_COOKIE) == fresh_session
+    client.cookies.delete(SESSION_COOKIE)
+
+    federated.pending_claims = claims
+    state, _ = await _start(client, federated)
+    repeated = await client.get(
+        f"/auth/callback?code=c2&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    repeated_page = await _open_request_status(
+        client,
+        repeated,
+        expected_status=202,
+    )
+    assert str(row.id) in repeated_page.text
+    assert await db_session.scalar(
+        select(func.count()).select_from(RegistrationRequest)
+    ) == 1
+
+
+async def test_admin_approval_deployment_gate_cannot_be_bypassed_by_callback(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.models.registration import RegistrationRequest
+    from vitals.services.authentication import registration
+
+    await _enable_admin_approval(db_session, monkeypatch)
+    monkeypatch.delenv(registration.REGISTRATION_UNLOCK_ENV)
+    federated.pending_claims = {
+        "sub": "locked-admin-approval-applicant",
+        "email": "locked@example.test",
+        "email_verified": True,
+    }
+    state, _ = await _start(client, federated)
+
+    response = await client.get(
+        f"/auth/callback?code=c&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 401
+    assert not response.cookies.get(SESSION_COOKIE)
+    assert await db_session.scalar(
+        select(func.count()).select_from(RegistrationRequest)
+    ) == 0
+
+
+async def test_request_is_not_acknowledged_before_its_commit(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.models.registration import RegistrationRequest
+
+    await _enable_admin_approval(db_session, monkeypatch)
+    federated.pending_claims = {
+        "sub": "commit-failure-applicant",
+        "email": "commit-failure@example.test",
+        "email_verified": True,
+    }
+    state, _ = await _start(client, federated)
+    real_commit = db_session.commit
+
+    async def fail_commit():
+        raise RuntimeError("synthetic commit failure")
+
+    monkeypatch.setattr(db_session, "commit", fail_commit)
+    with pytest.raises(RuntimeError, match="synthetic commit failure"):
+        await client.get(
+            f"/auth/callback?code=c&state={state}&iss={ISSUER}",
+            follow_redirects=False,
+        )
+    await db_session.rollback()
+    monkeypatch.setattr(db_session, "commit", real_commit)
+    assert await db_session.scalar(
+        select(func.count()).select_from(RegistrationRequest)
+    ) == 0
+
+
+async def test_registration_request_status_requires_its_signed_handoff(client):
+    client.cookies.set(REGISTRATION_REQUEST_COOKIE, "not-a-signed-status")
+
+    response = await client.get(
+        "/auth/registration-request",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 401
+    assert response.cookies.get(REGISTRATION_REQUEST_COOKIE) in (None, "")
+
+
+async def test_rejected_applicant_sees_closed_state_without_review_details(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import select
+
+    from vitals.models.identity import User
+    from vitals.models.registration import RegistrationRequest
+    from vitals.services.authentication import admission
+
+    await _enable_admin_approval(db_session, monkeypatch)
+    claims = {
+        "sub": "rejected-applicant",
+        "email": "rejected@example.test",
+        "email_verified": True,
+    }
+    federated.pending_claims = claims
+    state, _ = await _start(client, federated)
+    waiting = await client.get(
+        f"/auth/callback?code=c&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    assert waiting.status_code == 303
+    assert waiting.headers["location"] == "/auth/registration-request"
+    assert waiting.cookies.get(REGISTRATION_REQUEST_COOKIE)
+    request_row = await db_session.scalar(select(RegistrationRequest))
+    reviewer = await db_session.get(User, legacy_owner_roots.user_id)
+    private_reason = "Internal review detail that must stay private."
+    await admission.reject_request(
+        db_session,
+        request_id=request_row.id,
+        reviewer_user_id=reviewer.id,
+        reason=private_reason,
+    )
+    await db_session.commit()
+
+    federated.pending_claims = claims
+    state, _ = await _start(client, federated)
+    closed = await client.get(
+        f"/auth/callback?code=c2&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    closed_page = await _open_request_status(client, closed, expected_status=200)
+    assert str(request_row.id) in closed_page.text
+    assert private_reason not in closed_page.text
+    assert claims["email"] not in closed_page.text
+    assert claims["sub"] not in closed_page.text
+    assert not closed.cookies.get(SESSION_COOKIE)
+
+
+async def test_stale_invitation_callback_never_falls_back_to_account_request(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.models.registration import RegistrationRequest
+    from vitals.services.authentication import registration
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="stale-invitation@example.test",
+    )
+    exchange = await client.post(
+        "/register/invite/exchange",
+        json={"token": issued.token},
+        headers=_EXCHANGE_HEADERS,
+    )
+    assert exchange.status_code == 200
+    federated.pending_claims.update(
+        {
+            "sub": "stale-invitation-subject",
+            "email": "stale-invitation@example.test",
+            "email_verified": True,
+        }
+    )
+    state, _ = await _start(client, federated)
+    await registration.set_stored_mode(
+        db_session,
+        registration.RegistrationMode.ADMIN_APPROVED,
+    )
+    await db_session.commit()
+
+    response = await client.get(
+        f"/auth/callback?code=c&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 401
+    assert not response.cookies.get(SESSION_COOKIE)
+    assert await db_session.scalar(
+        select(func.count()).select_from(RegistrationRequest)
+    ) == 0
+
+
+async def test_approved_request_becomes_a_normal_member_login(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import select
+
+    from vitals.models.identity import HealthSubject, User, UserFederatedIdentity
+    from vitals.models.registration import RegistrationRequest
+    from vitals.services.authentication import admission
+
+    await _enable_admin_approval(db_session, monkeypatch)
+    claims = {
+        "sub": "approved-applicant",
+        "email": "approved-applicant@example.test",
+        "email_verified": True,
+        "preferred_username": "approved-applicant",
+    }
+    federated.pending_claims = claims
+    state, _ = await _start(client, federated)
+    waiting = await client.get(
+        f"/auth/callback?code=c&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    await _open_request_status(client, waiting, expected_status=202)
+    request_row = await db_session.scalar(select(RegistrationRequest))
+    reviewer = await db_session.get(User, legacy_owner_roots.user_id)
+    await admission.approve_request(
+        db_session,
+        request_id=request_row.id,
+        reviewer_user_id=reviewer.id,
+        expected_issuer=ISSUER,
+    )
+    await db_session.commit()
+
+    federated.pending_claims = claims
+    state, _ = await _start(client, federated)
+    assert client.cookies.get(REGISTRATION_REQUEST_COOKIE) is None
+    admitted = await client.get(
+        f"/auth/callback?code=c2&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    assert admitted.status_code == 303
+    assert admitted.cookies.get(SESSION_COOKIE)
+    spent_status = await client.get(
+        "/auth/registration-request",
+        follow_redirects=False,
+    )
+    assert spent_status.status_code == 401
+    assert client.cookies.get(SESSION_COOKIE) == admitted.cookies.get(SESSION_COOKIE)
+    link = await db_session.scalar(
+        select(UserFederatedIdentity).where(
+            UserFederatedIdentity.subject == "approved-applicant"
+        )
+    )
+    assert link is not None
+    assert await db_session.scalar(
+        select(HealthSubject.id).where(HealthSubject.owner_user_id == link.user_id)
+    ) is not None
+
+
+async def test_step_up_and_failed_bootstrap_never_submit_account_requests(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.enums import UserStatus
+    from vitals.models.identity import User
+    from vitals.models.registration import RegistrationRequest
+
+    await _enable_admin_approval(db_session, monkeypatch)
+    federated.pending_claims = {
+        "sub": "step-up-stranger",
+        "email": "step-up@example.test",
+        "email_verified": True,
+    }
+    started = await client.get("/auth/start?step_up=true", follow_redirects=False)
+    from urllib.parse import parse_qs, urlsplit
+
+    query = parse_qs(urlsplit(started.headers["location"]).query)
+    federated.pending_claims["nonce"] = query["nonce"][0]
+    step_up = await client.get(
+        f"/auth/callback?code=c&state={query['state'][0]}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    assert step_up.status_code == 401
+
+    db_session.add(
+        User(
+            username="second-bootstrap-user",
+            normalized_username="second-bootstrap-user",
+            password_hash="$synthetic-hash",
+            status=UserStatus.ACTIVE.value,
+        )
+    )
+    await db_session.commit()
+    federated.pending_claims = {
+        "sub": OWNER_SUBJECT,
+        "email": "bootstrap@example.test",
+        "email_verified": True,
+    }
+    state, _ = await _start(client, federated)
+    bootstrap = await client.get(
+        f"/auth/callback?code=c2&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    assert bootstrap.status_code == 401
+    assert await db_session.scalar(
+        select(func.count()).select_from(RegistrationRequest)
+    ) == 0
 
 
 async def test_every_refusal_renders_the_same_page(

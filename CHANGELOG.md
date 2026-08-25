@@ -8,6 +8,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — administrators can approve member account requests
+
+The deployment-gated `admin_approved` mode now has a complete browser path.
+An unknown federated identity with a strictly verified address creates or
+refreshes one bounded member request without receiving a session, user, health
+record, or role. The applicant sees only a pending or closed state and an
+opaque reference; rejection reasons and provider claims never leave the
+operator boundary. The callback commits before acknowledgement, then spends a
+one-time signed handoff at a clean status URL so OAuth code/state parameters do
+not remain in browser history or survive into a later login session.
+
+Platform superadmins review a paginated, masked queue on the Registration
+screen. Approval requires recent authentication, the live approval mode, and
+the exact currently configured identity-provider issuer, then atomically
+creates the member graph and immutable federated link. Requests from a previous
+provider can only be rejected. Closing the deployment gate prevents callback
+submission and approval while still allowing accountable rejection. Bootstrap,
+step-up, invitation, disabled, and open-mode callbacks cannot fall through into
+this path.
+
 ### Fixed — professional review step-up uses normal browser navigation
 
 Verify, reject, suspend, and reinstate forms now opt out of the global HTMX

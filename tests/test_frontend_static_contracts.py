@@ -184,6 +184,13 @@ def test_the_oidc_failure_page_has_one_working_way_out():
     assert 'name="password"' not in failure
 
 
+def test_registration_request_status_drops_shared_browser_history_storage():
+    status = _template("registration_request_status.html")
+    assert "htmx-history-cache" in status
+    assert "vitals_diag" in status
+    assert "localStorage.removeItem" in status
+
+
 def test_the_diagnostics_buffer_does_not_record_which_patients_were_opened():
     """It exists to diagnose render stalls, and a subject id does not help it.
 

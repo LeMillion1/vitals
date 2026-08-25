@@ -957,9 +957,14 @@ a property of there being nowhere for an account to come from.
   commit on behalf of the caller. The `invite_only` path now connects this
   boundary to a fragment-scrubbing OIDC handoff and a recent-auth operator
   screen that issues, copies, lists in redacted form, and revokes invitations.
+  The `admin_approved` path now turns an unknown, provider-verified identity
+  into one bounded member request without creating an account or session. The
+  same operator screen lists only masked requests; recent-auth approval
+  rechecks the live mode and current issuer before atomically provisioning the
+  member graph, while rejection remains available after closure for queue
+  cleanup. Old-provider requests cannot be approved.
   Hourly scheduler maintenance now expires overdue proofs and scrubs terminal
-  applicant PII after 90 days without starving either admission table. The
-  `admin_approved` browser flow remains the unfinished registration path.
+  applicant PII after 90 days without starving either admission table.
 - `authentication.provisioning` is the one place a `HealthSubject` is born
   besides the legacy bootstrap. A subject needs four things — an owning account,
   a role, the integration roots every provider path resolves through, and a

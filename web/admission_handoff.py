@@ -1,9 +1,12 @@
-"""Short-lived browser proof for an account invitation already presented.
+"""Short-lived browser proofs for account-admission handoffs.
 
 The invitation bearer arrives in the URL fragment, which browsers do not send
 to the server. A same-origin exchange validates it and replaces it with this
 signed handle containing only an opaque database UUID. Cookies are signed, not
-encrypted, so no token, address, provider claim, or account kind belongs here.
+encrypted, so no token, address, provider claim, account kind, or decision
+detail belongs here. Administrator-approved requests use a separate salt and
+cookie carrying only an opaque UUID and public state so OAuth query parameters
+do not remain in browser history.
 """
 
 from __future__ import annotations
@@ -16,12 +19,17 @@ from itsdangerous import BadData, URLSafeTimedSerializer
 from web.config import (
     REGISTRATION_ADMISSION_COOKIE,
     REGISTRATION_ADMISSION_TTL,
+    REGISTRATION_REQUEST_COOKIE,
+    REGISTRATION_REQUEST_TTL,
     get_web_config,
 )
 
 _VERSION = 1
 _TYPE = "registration_invitation"
 _KEYS = frozenset({"v", "type", "invitation_id"})
+_REQUEST_TYPE = "registration_request_status"
+_REQUEST_KEYS = frozenset({"v", "type", "request_id", "state"})
+_REQUEST_STATES = frozenset({"pending", "closed"})
 
 
 def _serializer() -> URLSafeTimedSerializer:
@@ -90,9 +98,88 @@ def clear_invitation_claim_cookie(response: Response) -> None:
     )
 
 
+def _request_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(
+        get_web_config().session_secret,
+        salt="vitals-registration-request-status",
+    )
+
+
+def create_request_status_claim(request_id: uuid.UUID, *, state: str) -> str:
+    """Seal the non-secret state carried across the callback redirect."""
+
+    if not isinstance(request_id, uuid.UUID) or request_id.int == 0:
+        raise ValueError("request_id must be a non-zero UUID")
+    if state not in _REQUEST_STATES:
+        raise ValueError("request state is invalid")
+    return _request_serializer().dumps(
+        {
+            "v": _VERSION,
+            "type": _REQUEST_TYPE,
+            "request_id": str(request_id),
+            "state": state,
+        }
+    )
+
+
+def read_request_status_claim(token: str | None) -> tuple[uuid.UUID, str] | None:
+    """Read one unexpired status handoff without consulting applicant input."""
+
+    if not isinstance(token, str) or not token:
+        return None
+    try:
+        payload = _request_serializer().loads(
+            token,
+            max_age=REGISTRATION_REQUEST_TTL,
+        )
+    except BadData:
+        return None
+    if not isinstance(payload, dict) or set(payload) != _REQUEST_KEYS:
+        return None
+    if type(payload["v"]) is not int or payload["v"] != _VERSION:
+        return None
+    if payload["type"] != _REQUEST_TYPE or payload["state"] not in _REQUEST_STATES:
+        return None
+    try:
+        request_id = uuid.UUID(payload["request_id"])
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if request_id.int == 0:
+        return None
+    return request_id, payload["state"]
+
+
+def set_request_status_cookie(response: Response, token: str) -> None:
+    cfg = get_web_config()
+    response.set_cookie(
+        key=REGISTRATION_REQUEST_COOKIE,
+        value=token,
+        max_age=REGISTRATION_REQUEST_TTL,
+        path="/auth/registration-request",
+        secure=cfg.cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def clear_request_status_cookie(response: Response) -> None:
+    cfg = get_web_config()
+    response.delete_cookie(
+        key=REGISTRATION_REQUEST_COOKIE,
+        path="/auth/registration-request",
+        secure=cfg.cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+
+
 __all__ = [
     "clear_invitation_claim_cookie",
+    "clear_request_status_cookie",
     "create_invitation_claim",
+    "create_request_status_claim",
     "read_invitation_claim",
+    "read_request_status_claim",
     "set_invitation_claim_cookie",
+    "set_request_status_cookie",
 ]

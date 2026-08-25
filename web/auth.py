@@ -25,6 +25,7 @@ from web.config import (
     PENDING_2FA_COOKIE,
     PENDING_2FA_TTL,
     REGISTRATION_ADMISSION_COOKIE,
+    REGISTRATION_REQUEST_COOKIE,
     SESSION_COOKIE,
     get_web_config,
 )
@@ -512,6 +513,83 @@ def authenticate(username: str, password: str) -> bool:
 
 _provider_cache: tuple[tuple[str, str, str], object] | None = None
 
+_REGISTRATION_REQUEST_CSP = (
+    "default-src 'none'; "
+    "script-src 'nonce-{nonce}'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "font-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'"
+)
+
+
+def _registration_request_response(
+    request: Request,
+    *,
+    state: str,
+    reference: uuid.UUID,
+) -> Response:
+    """Show one non-enumerable applicant state without granting a session."""
+
+    csp_nonce = secrets.token_urlsafe(24)
+    response = templates.TemplateResponse(
+        request,
+        "registration_request_status.html",
+        {
+            "request_state": state,
+            "request_reference": str(reference),
+            "csp_nonce": csp_nonce,
+        },
+        status_code=(
+            status.HTTP_202_ACCEPTED if state == "pending" else status.HTTP_200_OK
+        ),
+        headers={
+            "Content-Security-Policy": _REGISTRATION_REQUEST_CSP.format(
+                nonce=csp_nonce
+            ),
+            "Referrer-Policy": "no-referrer",
+            "X-Robots-Tag": "noindex, nofollow, noarchive",
+            "Cache-Control": "no-store",
+        },
+    )
+    clear_session_cookie(response)
+    clear_pending_2fa_cookie(response)
+    clear_oidc_handoff_cookie(response)
+    from web.admission_handoff import clear_invitation_claim_cookie
+    from web.admission_handoff import clear_request_status_cookie
+
+    clear_invitation_claim_cookie(response)
+    clear_request_status_cookie(response)
+    return response
+
+
+def _registration_request_redirect(*, state: str, reference: uuid.UUID) -> Response:
+    """Spend the OAuth query at a clean URL using an opaque signed handoff."""
+
+    from web.admission_handoff import (
+        clear_invitation_claim_cookie,
+        clear_request_status_cookie,
+        create_request_status_claim,
+        set_request_status_cookie,
+    )
+
+    response = RedirectResponse(
+        url="/auth/registration-request",
+        status_code=status.HTTP_303_SEE_OTHER,
+        headers={"Cache-Control": "no-store"},
+    )
+    clear_session_cookie(response)
+    clear_pending_2fa_cookie(response)
+    clear_oidc_handoff_cookie(response)
+    clear_invitation_claim_cookie(response)
+    clear_request_status_cookie(response)
+    set_request_status_cookie(
+        response,
+        create_request_status_claim(reference, state=state),
+    )
+    return response
+
 
 def _provider():
     """The configured provider, kept between requests.
@@ -568,7 +646,43 @@ def _login_failed(
         status_code=status.HTTP_401_UNAUTHORIZED,
     )
     clear_oidc_handoff_cookie(response)
+    from web.admission_handoff import clear_request_status_cookie
+
+    clear_request_status_cookie(response)
     return response
+
+
+@router.get("/auth/registration-request", response_class=HTMLResponse)
+async def registration_request_status(
+    request: Request,
+    _rl: None = Depends(
+        login_rate_limit(
+            limit=30,
+            window=300,
+            bucket="registration_request_status",
+        )
+    ),
+):
+    """Render one signed applicant state after removing OAuth query secrets."""
+
+    from web.admission_handoff import (
+        clear_request_status_cookie,
+        read_request_status_claim,
+    )
+
+    claim = read_request_status_claim(
+        request.cookies.get(REGISTRATION_REQUEST_COOKIE)
+    )
+    if claim is None:
+        response = _login_failed(request, "registration request status expired")
+        clear_request_status_cookie(response)
+        return response
+    request_id, request_state = claim
+    return _registration_request_response(
+        request,
+        state=request_state,
+        reference=request_id,
+    )
 
 
 @router.get("/auth/start")
@@ -598,7 +712,11 @@ async def federated_login_start(
         and invitation_id is None
         and read_session(request.cookies.get(SESSION_COOKIE)) is not None
     ):
-        return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+        response = RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+        from web.admission_handoff import clear_request_status_cookie
+
+        clear_request_status_cookie(response)
+        return response
 
     try:
         login = await _provider().begin_login(
@@ -615,6 +733,9 @@ async def federated_login_start(
     response = RedirectResponse(
         url=login.authorization_url, status_code=status.HTTP_303_SEE_OTHER
     )
+    from web.admission_handoff import clear_request_status_cookie
+
+    clear_request_status_cookie(response)
     set_oidc_handoff_cookie(
         response,
         create_oidc_handoff(
@@ -696,7 +817,9 @@ async def federated_login_callback(
             return response
 
     from vitals.services.authentication.federation import (
+        BootstrapRefused,
         FederatedLoginError,
+        UnknownFederatedIdentity,
         resolve_existing_federated_user,
         resolve_federated_user,
     )
@@ -721,19 +844,69 @@ async def federated_login_callback(
 
     try:
         if invitation_id is None or identity.subject == cfg.oidc_bootstrap_subject:
-            user = await resolve_federated_user(
-                db,
-                issuer=identity.issuer,
-                subject=identity.subject,
-                authenticated_at=identity.authenticated_at,
-                bootstrap_subject=cfg.oidc_bootstrap_subject,
-                # Claims, not keys. They name an account this installation has
-                # already decided to create; ``authentication.registration``
-                # makes that decision, and by default it does not.
-                email=identity.email,
-                email_verified=identity.email_verified,
-                preferred_username=identity.preferred_username,
-            )
+            try:
+                user = await resolve_federated_user(
+                    db,
+                    issuer=identity.issuer,
+                    subject=identity.subject,
+                    authenticated_at=identity.authenticated_at,
+                    bootstrap_subject=cfg.oidc_bootstrap_subject,
+                    # Claims, not keys. They name an account this installation has
+                    # already decided to create; ``authentication.registration``
+                    # makes that decision, and by default it does not.
+                    email=identity.email,
+                    email_verified=identity.email_verified,
+                    preferred_username=identity.preferred_username,
+                )
+            except BootstrapRefused:
+                # This subclass must never become a public registration request:
+                # doing so would reveal and bypass a failed bootstrap ceremony.
+                raise
+            except UnknownFederatedIdentity:
+                if handoff["max_age_seconds"] is not None:
+                    # A step-up proves a known account again; it is never a
+                    # registration entry point if the provider returns another
+                    # identity from a parallel or switched browser session.
+                    raise
+                from vitals.enums import RegistrationRequestStatus
+
+                try:
+                    row = await admission.submit_request(
+                        db,
+                        issuer=identity.issuer,
+                        subject=identity.subject,
+                        verified_email=identity.email,
+                        email_verified=identity.email_verified,
+                        preferred_username=identity.preferred_username,
+                    )
+                except admission.AdmissionRefused as submission_error:
+                    row = await admission.get_request(
+                        db,
+                        issuer=identity.issuer,
+                        subject=identity.subject,
+                    )
+                    if row is None:
+                        raise submission_error
+                if row.status == RegistrationRequestStatus.PENDING.value:
+                    request_state = "pending"
+                elif row.status in {
+                    RegistrationRequestStatus.REJECTED.value,
+                    RegistrationRequestStatus.EXPIRED.value,
+                }:
+                    request_state = "closed"
+                else:
+                    raise admission.AdmissionStateError(
+                        "approved registration request has no federated identity"
+                    )
+                # This callback is the transaction boundary. Persist the proof
+                # before telling the browser it exists; dependency teardown may
+                # run after response transmission and cannot safely acknowledge
+                # an admission row whose commit could still fail.
+                await db.commit()
+                return _registration_request_redirect(
+                    state=request_state,
+                    reference=row.id,
+                )
         else:
             user = await resolve_existing_federated_user(
                 db,
@@ -797,6 +970,9 @@ async def federated_login_callback(
     )
     set_session_cookie(response, token)
     clear_oidc_handoff_cookie(response)
+    from web.admission_handoff import clear_request_status_cookie
+
+    clear_request_status_cookie(response)
     if invitation_id is not None:
         from web.admission_handoff import clear_invitation_claim_cookie
 

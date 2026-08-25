@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="{{ request.state.lang if request.state is defined else 'en' }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <title>{{ t("registration.request.page_title") }}</title>
+    <link rel="stylesheet" href="/static/fonts.css">
+    <link rel="stylesheet" href="/static/tailwind.css">
+    <link rel="stylesheet" href="/static/vitals.css">
+    <link rel="stylesheet" href="/static/vitals-masthead.css">
+    <script nonce="{{ csp_nonce }}">
+        try {
+            localStorage.removeItem('htmx-history-cache');
+            localStorage.removeItem('vitals_diag');
+        } catch (e) { }
+    </script>
+</head>
+<body class="ui-masthead">
+    <main class="v-page px-6 py-7 max-w-2xl mx-auto">
+        <section class="v-card p-6 space-y-5" aria-labelledby="request-heading">
+            <div>
+                <div class="v-eyebrow">Vitals</div>
+                <h1 id="request-heading" class="v-heading-1 mt-2">{{ t("registration.request." ~ request_state ~ "_heading") }}</h1>
+            </div>
+            <p class="v-text-body" style="color: var(--muted)">{{ t("registration.request." ~ request_state ~ "_body") }}</p>
+            <div class="v-card-inset p-4">
+                <div class="v-label">{{ t("registration.request.reference") }}</div>
+                <div class="v-text-body mt-1 break-all">{{ request_reference }}</div>
+            </div>
+            <a href="/auth/start" class="v-btn">{{ t("registration.request.check_again") }}</a>
+        </section>
+    </main>
+</body>
+</html>

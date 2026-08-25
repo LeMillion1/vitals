@@ -53,7 +53,7 @@ the others remain useful provenance for the remediations named below:
 | Application services | 105 tracked non-`__init__` modules after the care, authentication, admission, analytics, persistence, and notification moves | Verified |
 | Flat service debt | 75 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
-| Commercial Git history | 278 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
+| Commercial Git history | 279 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. Only a command executed against the current tree is recorded as
@@ -71,17 +71,19 @@ a current validation result.
 - Every federated protected request now checks the live active account and
   session version. Suspending an account or calling `revoke_all_sessions` closes
   the next request.
-- Open and administrator-approved registration remain unavailable end to end.
-  Revision `0072` supplies
+- Open registration remains a separate deployment-gated direct-provisioning
+  path. Revision `0072` supplies
   constrained, purge-ready invitation and approval-request state, and
   `authentication.admission` implements their transactional domain lifecycles.
   The `invite_only` recipient now has a fragment-scrubbing browser exchange and
   fresh OIDC callback that atomically consumes the exact invitation. A protected
   operator screen shows redacted live invitations, returns a configured-origin
-  link once, and revokes links even after closure. Hourly maintenance expires
-  overdue proofs and scrubs terminal applicant PII after 90 days. The
-  `admin_approved` browser/operator flow is still absent; `invite_only` is the
-  only non-closed mode with a complete interactive path.
+  link once, and revokes links even after closure. `admin_approved` now accepts
+  only a verified unknown identity as a bounded member request, creates no
+  session or account before a recent-auth superadmin decision, and exposes only
+  a masked paginated queue. Approval rechecks the live mode and exact current
+  issuer; old-provider requests remain reject-only. Hourly maintenance expires
+  overdue proofs and scrubs terminal applicant PII after 90 days.
 
 ### Data isolation
 
@@ -175,10 +177,9 @@ commit. Keep this document as target/decision history and use this audit for the
 current state.
 
 The following roadmap targets are not shipped: invitation inbox,
-multi-subject full backup, support repair/export and break-glass, end-to-end
-`invite_only` operator issuance/delivery and the `admin_approved` registration
-surface, lab marker collision migration, private-byte relocation outside static
-storage, and final legacy configuration contraction.
+multi-subject full backup, support repair/export and break-glass, lab marker
+collision migration, private-byte relocation outside static storage, and final
+legacy configuration contraction.
 
 ### `COMMERCIAL_OWNERSHIP_INVENTORY.md` — strong rationale, now exhaustive
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import secrets
 import unicodedata
 import uuid
 from datetime import timedelta
@@ -214,6 +213,7 @@ async def approve_request(
     *,
     request_id: uuid.UUID,
     reviewer_user_id: uuid.UUID,
+    expected_issuer: str,
     username: str | None = None,
 ) -> AdmissionResult:
     """Approve exactly one pending request and atomically provision its member."""
@@ -250,10 +250,16 @@ async def approve_request(
         or row.account_kind != RegistrationAccountKind.MEMBER.value
     ):
         raise AdmissionStateError("registration request is incomplete")
+    try:
+        trusted_issuer, _subject = clean_identity_pair(expected_issuer, row.subject)
+    except AdmissionValidationError as exc:
+        raise AdmissionStateError("configured identity provider is invalid") from exc
+    if row.issuer != trusted_issuer:
+        raise AdmissionStateError(
+            "registration request belongs to a different identity provider"
+        )
     mailbox = validate_verified_email(row.verified_email, email_verified=True)
-    if not secrets.compare_digest(
-        mailbox.lookup_key, row.normalized_verified_email
-    ):
+    if mailbox.lookup_key != row.normalized_verified_email:
         raise AdmissionStateError("registration request email snapshot is inconsistent")
 
     result = await provision_and_link(

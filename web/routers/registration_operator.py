@@ -62,19 +62,22 @@ async def registration_console(
     decided: str | None = None,
     error: str | None = None,
     page: int = 1,
+    request_page: int = 1,
 ):
     operator_id = await _operator_id(request, db)
+    cfg = get_web_config()
     try:
         console = await admission.registration_console(
             db,
             actor_user_id=operator_id,
             page=page,
+            request_page=request_page,
+            current_oidc_issuer=cfg.oidc_issuer if cfg.oidc_enabled else None,
         )
     except admission.AdmissionForbidden as exc:
         raise _forbidden(exc) from exc
     except admission.AdmissionValidationError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
-    cfg = get_web_config()
     return templates.TemplateResponse(
         request,
         "settings/registration.html",
@@ -85,6 +88,10 @@ async def registration_console(
             "can_issue": (
                 cfg.oidc_enabled
                 and console.effective_mode is RegistrationMode.INVITE_ONLY
+            ),
+            "can_approve": (
+                cfg.oidc_enabled
+                and console.effective_mode is RegistrationMode.ADMIN_APPROVED
             ),
             "account_kinds": tuple(RegistrationAccountKind),
             "decided": decided,
@@ -186,6 +193,60 @@ async def revoke_invitation(
         return _back(error="refused")
     await db.commit()
     return _back(decided="revoked")
+
+
+@router.post("/requests/{request_id}/approve")
+async def approve_registration_request(
+    request: Request,
+    request_id: uuid.UUID,
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    operator_id = await _operator_id(request, db)
+    cfg = get_web_config()
+    if not cfg.oidc_enabled:
+        return _back(error="request_refused")
+    try:
+        await admission.approve_request(
+            db,
+            request_id=request_id,
+            reviewer_user_id=operator_id,
+            expected_issuer=cfg.oidc_issuer,
+        )
+    except admission.AdmissionForbidden as exc:
+        await db.rollback()
+        raise _forbidden(exc) from exc
+    except (admission.AdmissionError, admission.AdmissionValidationError):
+        await db.rollback()
+        return _back(error="request_refused")
+    await db.commit()
+    return _back(decided="approved")
+
+
+@router.post("/requests/{request_id}/reject")
+async def reject_registration_request(
+    request: Request,
+    request_id: uuid.UUID,
+    reason: str = Form(""),
+    _username: str = Depends(require_recent_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    operator_id = await _operator_id(request, db)
+    try:
+        await admission.reject_request(
+            db,
+            request_id=request_id,
+            reviewer_user_id=operator_id,
+            reason=reason,
+        )
+    except admission.AdmissionForbidden as exc:
+        await db.rollback()
+        raise _forbidden(exc) from exc
+    except (admission.AdmissionError, admission.AdmissionValidationError):
+        await db.rollback()
+        return _back(error="request_refused")
+    await db.commit()
+    return _back(decided="rejected")
 
 
 __all__ = ["router"]

@@ -35,6 +35,9 @@ ANONYMOUS_BY_DESIGN = {
     # rate-limited by IP because it is the pre-auth entry point.
     ("GET", "/auth/start"),
     ("GET", "/auth/callback"),
+    # Signed, opaque status handoff after the callback removes OAuth query
+    # parameters from browser history; it grants no account or session.
+    ("GET", "/auth/registration-request"),
     # The invitation bearer stays in the URL fragment and is exchanged once by
     # a same-origin POST for a signed, opaque browser claim before OIDC starts.
     # Neither route accepts a session because creating one is their purpose.
