@@ -8,6 +8,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — account invitations have a safe OIDC recipient handoff
+
+An issued `invite_only` bearer can now travel in a URL fragment, be removed
+before any other script runs, and be exchanged by a strict same-origin request
+for a ten-minute signed cookie containing only an opaque invitation UUID. The
+standalone landing page uses a nonce-bound CSP, no referrer, no cache, and stops
+without sending the bearer if browser history cannot be scrubbed. A successful
+exchange also ends every previous local session and pending authentication
+handle on the device before forcing a fresh provider login with `prompt=login`
+and bounded `max_age`.
+
+The callback revalidates the same signed browser claim, current registration
+mode, pending/revoked/consumed state, database-clock expiry, and the provider's
+exact verified email under the identity-governance lock. It creates one member,
+doctor, or trainer account atomically, never falls through to open registration,
+and rolls back partial graphs on a uniform refusal. Existing linked and bootstrap
+identities sign in normally without spending somebody else's invitation. This
+ships the recipient boundary; supported operator issue/revoke/delivery UI and
+scheduled retention remain separate unfinished work.
+
 ### Added — registration admission decisions are transactional
 
 The invitation and administrator-approval modes now have dedicated domain

@@ -434,7 +434,7 @@ flowchart TB
 flowchart LR
   subgraph proc ["FastAPI process"]
     direction TB
-    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>30 routers, server-rendered</span>"]
+    web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>31 routers, server-rendered</span>"]
     mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
     api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
     svc["<b>Application services</b><br/><span style='font-size:11px'>104 tracked modules · bounded-context migration active</span>"]
@@ -822,7 +822,7 @@ flowchart LR
       <div class="n">PR-05</div>
       <div>
         <h4>OIDC authentication and local sessions<span class="state done">merged</span></h4>
-        <p>OIDC Authorization Code + PKCE, immutable provider identities, revocable application sessions, upstream logout and recent-authentication step-up are implemented. Account provisioning remains a separate local decision.</p>
+        <p>OIDC Authorization Code + PKCE, immutable provider identities, revocable application sessions, upstream logout and recent-authentication step-up are implemented. The safe invitation-recipient handoff is merged; supported operator admission and delivery remain active work.</p>
       </div>
     </div>
     <div class="stage">

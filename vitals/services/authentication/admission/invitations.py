@@ -38,6 +38,7 @@ from vitals.services.authentication.admission._shared import (
 from vitals.services.authentication.registration import RegistrationMode
 from vitals.services.identity_service import (
     IdentityValidationError,
+    NormalizedEmail,
     acquire_identity_governance_lock,
     normalize_email,
 )
@@ -180,28 +181,18 @@ async def revoke_invitation(
     return row
 
 
-async def consume_invitation(
-    session: AsyncSession,
-    *,
-    token: str,
-    issuer: str,
-    subject: str,
-    verified_email: str,
-    email_verified: bool,
-    preferred_username: str | None = None,
-    authenticated_at: datetime | None = None,
-) -> AdmissionResult:
-    """Consume one current, address-bound invitation and atomically link OIDC."""
+async def claim_invitation(session: AsyncSession, *, token: str) -> uuid.UUID:
+    """Exchange a bearer once for its opaque invitation id.
+
+    The caller may put that id in a short-lived, signed browser handoff. The id
+    is not authority by itself: final consumption still requires the signed
+    handoff and rechecks mode, pending state, expiry, and the provider's verified
+    address under the same lock. The emailed link remains retryable until final
+    consumption so link scanners or a lost Set-Cookie response cannot strand a
+    valid invitation.
+    """
 
     token = presented_token(token)
-    try:
-        issuer, subject = clean_identity_pair(issuer, subject)
-    except AdmissionValidationError as exc:
-        raise AdmissionRefused("this admission proof does not open an account") from exc
-    mailbox = validate_verified_email(
-        verified_email, email_verified=email_verified
-    )
-
     await acquire_identity_governance_lock(session)
     await require_mode(session, RegistrationMode.INVITE_ONLY)
     row = await session.scalar(
@@ -209,6 +200,34 @@ async def consume_invitation(
         .where(RegistrationInvitation.token_digest == token_digest(token))
         .with_for_update()
     )
+    if row is None or row.status != RegistrationInvitationStatus.PENDING.value:
+        raise AdmissionRefused("this admission proof does not open an account")
+    now = await database_now(session)
+    if now >= as_utc(row.expires_at):
+        expire_invitation(row, now=now)
+        audit(
+            session,
+            event_type="registration.invitation.expired",
+            resource_type="registration_invitation",
+            resource_id=row.id,
+            result_code="expired_on_claim",
+            changed_fields=("status",),
+        )
+        await session.flush()
+        raise AdmissionRefused("this admission proof does not open an account")
+    return row.id
+
+
+async def _consume_row(
+    session: AsyncSession,
+    *,
+    row: RegistrationInvitation | None,
+    issuer: str,
+    subject: str,
+    mailbox: NormalizedEmail,
+    preferred_username: str | None,
+    authenticated_at: datetime | None,
+) -> AdmissionResult:
     if row is None or row.status != RegistrationInvitationStatus.PENDING.value:
         raise AdmissionRefused("this admission proof does not open an account")
     now = await database_now(session)
@@ -259,4 +278,91 @@ async def consume_invitation(
     return result
 
 
-__all__ = ["consume_invitation", "issue_invitation", "revoke_invitation"]
+async def consume_invitation(
+    session: AsyncSession,
+    *,
+    token: str,
+    issuer: str,
+    subject: str,
+    verified_email: str,
+    email_verified: bool,
+    preferred_username: str | None = None,
+    authenticated_at: datetime | None = None,
+) -> AdmissionResult:
+    """Consume one current, address-bound invitation and atomically link OIDC."""
+
+    token = presented_token(token)
+    try:
+        issuer, subject = clean_identity_pair(issuer, subject)
+    except AdmissionValidationError as exc:
+        raise AdmissionRefused("this admission proof does not open an account") from exc
+    mailbox = validate_verified_email(
+        verified_email, email_verified=email_verified
+    )
+
+    await acquire_identity_governance_lock(session)
+    await require_mode(session, RegistrationMode.INVITE_ONLY)
+    row = await session.scalar(
+        select(RegistrationInvitation)
+        .where(RegistrationInvitation.token_digest == token_digest(token))
+        .with_for_update()
+    )
+    return await _consume_row(
+        session,
+        row=row,
+        issuer=issuer,
+        subject=subject,
+        mailbox=mailbox,
+        preferred_username=preferred_username,
+        authenticated_at=authenticated_at,
+    )
+
+
+async def consume_invitation_claim(
+    session: AsyncSession,
+    *,
+    invitation_id: uuid.UUID,
+    issuer: str,
+    subject: str,
+    verified_email: str,
+    email_verified: bool,
+    preferred_username: str | None = None,
+    authenticated_at: datetime | None = None,
+) -> AdmissionResult:
+    """Consume the invitation named by a signed browser handoff."""
+
+    if not isinstance(invitation_id, uuid.UUID) or invitation_id.int == 0:
+        raise AdmissionRefused("this admission proof does not open an account")
+    try:
+        issuer, subject = clean_identity_pair(issuer, subject)
+    except AdmissionValidationError as exc:
+        raise AdmissionRefused("this admission proof does not open an account") from exc
+    mailbox = validate_verified_email(
+        verified_email, email_verified=email_verified
+    )
+
+    await acquire_identity_governance_lock(session)
+    await require_mode(session, RegistrationMode.INVITE_ONLY)
+    row = await session.scalar(
+        select(RegistrationInvitation)
+        .where(RegistrationInvitation.id == invitation_id)
+        .with_for_update()
+    )
+    return await _consume_row(
+        session,
+        row=row,
+        issuer=issuer,
+        subject=subject,
+        mailbox=mailbox,
+        preferred_username=preferred_username,
+        authenticated_at=authenticated_at,
+    )
+
+
+__all__ = [
+    "claim_invitation",
+    "consume_invitation",
+    "consume_invitation_claim",
+    "issue_invitation",
+    "revoke_invitation",
+]

@@ -49,11 +49,11 @@ the others remain useful provenance for the remediations named below:
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
 | Domain enum | 14 health domains | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
-| Web routers | 30 modules under `web/routers` | Verified |
+| Web routers | 31 modules under `web/routers` | Verified |
 | Application services | 104 tracked non-`__init__` modules after the care, authentication, admission, analytics, persistence, and notification moves | Verified |
 | Flat service debt | 75 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
-| Commercial Git history | 273 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
+| Commercial Git history | 275 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
 Historical pass counts in roadmap prose and HTML are not evidence for the
 current commit. Only a command executed against the current tree is recorded as
@@ -73,9 +73,12 @@ a current validation result.
   the next request.
 - Registration remains unavailable end to end. Revision `0072` supplies
   constrained, purge-ready invitation and approval-request state, and
-  `authentication.admission` now implements their transactional domain
-  lifecycles. OIDC handoff, browser/operator routes, delivery, and scheduled
-  retention are not wired yet, so neither mode is user-reachable behavior.
+  `authentication.admission` implements their transactional domain lifecycles.
+  The `invite_only` recipient now has a fragment-scrubbing browser exchange and
+  fresh OIDC callback that atomically consumes the exact invitation. Supported
+  operator issue/revoke/delivery controls and scheduled retention are not wired,
+  and the `admin_approved` browser/operator flow is still absent, so neither mode
+  is ready to enable operationally.
 
 ### Data isolation
 
@@ -170,9 +173,9 @@ current state.
 
 The following roadmap targets are not shipped: invitation inbox,
 multi-subject full backup, support repair/export and break-glass, end-to-end
-`invite_only` and `admin_approved` registration surfaces, lab marker collision
-migration, private-byte relocation outside static storage, and final legacy
-configuration contraction.
+`invite_only` operator issuance/delivery and the `admin_approved` registration
+surface, lab marker collision migration, private-byte relocation outside static
+storage, and final legacy configuration contraction.
 
 ### `COMMERCIAL_OWNERSHIP_INVENTORY.md` — strong rationale, now exhaustive
 
@@ -420,6 +423,22 @@ focused tests, and the full fast suite advanced to 4,754 passed (171 skipped,
 reported PostgreSQL, Redis, and the scheduler healthy. A live browser confirmed
 that `/sw.js` was active at root scope, controlled the page, emitted no console
 warning, and did not change the existing notification-permission state.
+
+The `invite_only` recipient handoff then passed 599 focused OIDC, admission,
+anonymous-surface, i18n, design, static, router, mobile, and web tests (nine
+PostgreSQL-only skips). PostgreSQL 15 completed `head → 0034 → head` and all 160
+selected admission/federation/RLS tests, including concurrent raw-bearer and
+signed-claim consumption. The full fast suite passed 4,954 tests (183 skipped,
+35 UI deselected), full Ruff passed, and Tailwind rebuilt from the selected Node
+runtime. Compose rebuilt the application at revision `0072`; `/health` reported
+the database, Redis, and scheduler healthy, and Alembic reported `0072 (head)`.
+A live browser followed a synthetic `#token=...` link from another document,
+removed the fragment, left the bearer absent from both URL and HTML, exchanged
+it, and reached the ZITADEL fresh login; focused route tests separately proved
+that the exchange clears old local authentication handles. A separate executable
+JS failure harness forced `history.replaceState` to throw and observed zero
+exchange requests. Synthetic invitations were then
+revoked through the domain service and the test stack returned to `disabled`.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

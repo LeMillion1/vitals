@@ -241,6 +241,11 @@ _EN: dict[str, str] = {
     "login.twofa_submit": "Confirm",
     "login.twofa_back": "Back to sign-in",
     "login.error.bad_code": "Wrong code.",
+    "registration.invite.page_title": "Invitation — Vitals",
+    "registration.invite.heading": "You’re invited to Vitals",
+    "registration.invite.checking": "Checking your invitation…",
+    "registration.invite.invalid": "This invitation is invalid or no longer available.",
+    "registration.invite.javascript": "Enable JavaScript to continue with this invitation.",
 
     # ── Weight ────────────────────────────────────────────────────────────
     "weight.page_title": "Weight — Vitals",
@@ -2104,6 +2109,11 @@ _RU: dict[str, str] = {
     "login.twofa_submit": "Подтвердить",
     "login.twofa_back": "Назад ко входу",
     "login.error.bad_code": "Код не подошёл.",
+    "registration.invite.page_title": "Приглашение — Vitals",
+    "registration.invite.heading": "Вас пригласили в Vitals",
+    "registration.invite.checking": "Проверяем приглашение…",
+    "registration.invite.invalid": "Приглашение недействительно или уже недоступно.",
+    "registration.invite.javascript": "Включите JavaScript, чтобы продолжить по приглашению.",
 
     # ── Weight ────────────────────────────────────────────────────────────
     "weight.page_title": "Вес — Vitals",

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="{{ request.state.lang if request.state is defined else 'en' }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex,nofollow,noarchive">
+    <title>{{ t("registration.invite.page_title") }}</title>
+    <script nonce="{{ csp_nonce }}">
+        (function () {
+            var invalidMessage = {{ t("registration.invite.invalid")|tojson }};
+            var fragment = window.location.hash;
+
+            // This is deliberately the page's first executable code. Remove
+            // the bearer before loading any application or third-party script.
+            var scrubbed = false;
+            try {
+                history.replaceState(history.state, '', '/register/invite');
+                scrubbed = window.location.hash === '';
+            } catch (e) {
+                scrubbed = false;
+            }
+
+            function refused() {
+                function render() {
+                    var statusNode = document.querySelector('[data-invite-status]');
+                    if (!statusNode) return;
+                    statusNode.textContent = invalidMessage;
+                    statusNode.classList.add('lg-error');
+                    statusNode.setAttribute('role', 'alert');
+                }
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', render, {once: true});
+                } else {
+                    render();
+                }
+            }
+
+            if (!scrubbed) {
+                fragment = '';
+                refused();
+                return;
+            }
+
+            var params = new URLSearchParams(fragment.slice(1));
+            fragment = '';
+            var tokens = params.getAll('token');
+            var keys = Array.from(params.keys());
+            if (tokens.length !== 1 || keys.length !== 1 || keys[0] !== 'token') {
+                refused();
+                return;
+            }
+
+            var body = JSON.stringify({token: tokens[0]});
+            tokens = [];
+            params = null;
+            var exchange = fetch('/register/invite/exchange', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {'Content-Type': 'application/json'},
+                body: body
+            });
+            body = '';
+            exchange.then(function (response) {
+                if (!response.ok) throw new Error('refused');
+                return response.json();
+            }).then(function (payload) {
+                if (!payload || payload.ok !== true) throw new Error('refused');
+                window.location.replace('/auth/start');
+            }).catch(function () {
+                refused();
+            });
+        })();
+    </script>
+    <link rel="stylesheet" href="/static/fonts.css">
+    <link rel="stylesheet" href="/static/tailwind.css">
+    <link rel="stylesheet" href="/static/vitals.css">
+    <link rel="stylesheet" href="/static/vitals-masthead.css">
+</head>
+<body class="ui-masthead">
+    {% include "partials/login_styles.html" %}
+    <main>
+        <div class="lg-wrap">
+            <div class="lg-mark">Vitals</div>
+
+            <section class="lg-form animate-float-up" aria-labelledby="invite-title">
+                <h1 id="invite-title" class="lg-title">{{ t("registration.invite.heading") }}</h1>
+                <div class="lg-foot">
+                    <p class="lg-copy" data-invite-status aria-live="polite">
+                        {{ t("registration.invite.checking") }}
+                    </p>
+                    <noscript>
+                        <p class="lg-error" role="alert">{{ t("registration.invite.javascript") }}</p>
+                    </noscript>
+                </div>
+            </section>
+        </div>
+    </main>
+</body>
+</html>

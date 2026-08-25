@@ -138,6 +138,26 @@ only because a machine talking to itself cannot be intercepted.
 
 ## Adding another person while registration is closed
 
+The recipient half of `invite_only` is implemented, but this release does not
+yet expose supported operator issue, revoke, or delivery controls. Do not enable
+that mode operationally until those controls and scheduled retention land. Its
+fixed link contract is:
+
+```text
+https://vitals.example.com/register/invite#token=<invitation bearer>
+```
+
+The nonce-authorized scrubber removes the fragment before any other application
+script or stylesheet loads. Vitals exchanges it for an opaque, short-lived
+HttpOnly browser claim, clears any previous local session on that device, and
+forces a fresh provider login. Exchange is deliberately retryable until the
+first successful callback, so a link scanner or lost cookie response cannot
+strand the invite; final consumption is single-winner. Account creation still
+requires the invitation to remain pending in `invite_only` mode and the provider
+to return the exact invited address with `email_verified: true`. Neither the
+bearer nor an email address belongs in a path, query parameter, application log,
+audit payload, or OIDC handoff cookie.
+
 Creating a local account and deciding which provider identity may enter it are
 two explicit operator actions. Run both from a shell with
 `VITALS_DATABASE_URL` set:

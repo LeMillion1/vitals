@@ -1,8 +1,4 @@
-"""Single-user authentication logic, session cookie management, and auth router.
-
-Uses itsdangerous timed serialization for signed session cookies, matching
-the single-user configuration loaded from web/config.py.
-"""
+"""Browser authentication, signed-session management, and auth routes."""
 from __future__ import annotations
 
 import logging
@@ -28,6 +24,7 @@ from web.config import (
     OIDC_HANDOFF_TTL,
     PENDING_2FA_COOKIE,
     PENDING_2FA_TTL,
+    REGISTRATION_ADMISSION_COOKIE,
     SESSION_COOKIE,
     get_web_config,
 )
@@ -172,9 +169,14 @@ def create_oidc_handoff(
     code_verifier: str,
     next_url: str,
     max_age_seconds: int | None = None,
+    invitation_id: uuid.UUID | None = None,
 ) -> str:
     """Seal what the callback will need, for the browser to carry there."""
 
+    if invitation_id is not None and (
+        not isinstance(invitation_id, uuid.UUID) or invitation_id.int == 0
+    ):
+        raise ValueError("invitation_id must be a non-zero UUID")
     return _get_oidc_handoff_serializer().dumps(
         {
             "state": state,
@@ -182,6 +184,12 @@ def create_oidc_handoff(
             "code_verifier": code_verifier,
             "next": next_url,
             "max_age_seconds": max_age_seconds,
+            "admission_type": (
+                "registration_invitation" if invitation_id is not None else None
+            ),
+            "invitation_id": (
+                str(invitation_id) if invitation_id is not None else None
+            ),
         }
     )
 
@@ -206,6 +214,8 @@ def read_oidc_handoff(token: str | None) -> dict | None:
         "code_verifier",
         "next",
         "max_age_seconds",
+        "admission_type",
+        "invitation_id",
     }:
         return None
     for key in ("state", "nonce", "code_verifier"):
@@ -219,6 +229,20 @@ def read_oidc_handoff(token: str | None) -> dict | None:
         type(max_age_seconds) is not int or max_age_seconds <= 0
     ):
         return None
+    invitation_id = payload["invitation_id"]
+    admission_type = payload["admission_type"]
+    if (invitation_id is None) != (admission_type is None):
+        return None
+    if admission_type is not None and admission_type != "registration_invitation":
+        return None
+    if invitation_id is not None:
+        try:
+            invitation_id = uuid.UUID(invitation_id)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if invitation_id.int == 0:
+            return None
+    payload["invitation_id"] = invitation_id
     return payload
 
 
@@ -558,13 +582,29 @@ async def federated_login_start(
     cfg = get_web_config()
     if not cfg.oidc_enabled:
         raise HTTPException(status_code=404)
-    if not step_up and read_session(request.cookies.get(SESSION_COOKIE)) is not None:
-        return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
 
     from vitals.services.authentication.oidc import OidcError
+    from web.admission_handoff import read_invitation_claim
+
+    invitation_id = (
+        None
+        if step_up
+        else read_invitation_claim(
+            request.cookies.get(REGISTRATION_ADMISSION_COOKIE)
+        )
+    )
+    if (
+        not step_up
+        and invitation_id is None
+        and read_session(request.cookies.get(SESSION_COOKIE)) is not None
+    ):
+        return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
 
     try:
-        login = await _provider().begin_login(prompt="login" if step_up else None)
+        login = await _provider().begin_login(
+            prompt="login" if step_up or invitation_id is not None else None,
+            max_age_seconds=900 if step_up or invitation_id is not None else None,
+        )
     except OidcError as exc:
         return _login_failed(
             request,
@@ -582,7 +622,8 @@ async def federated_login_start(
             nonce=login.nonce,
             code_verifier=login.code_verifier,
             next_url=safe_next(next),
-            max_age_seconds=900 if step_up else None,
+            max_age_seconds=900 if step_up or invitation_id is not None else None,
+            invitation_id=invitation_id,
         ),
     )
     return response
@@ -635,10 +676,31 @@ async def federated_login_callback(
             next_url=handoff["next"],
         )
 
+    invitation_id = handoff["invitation_id"]
+    if invitation_id is not None:
+        from web.admission_handoff import (
+            clear_invitation_claim_cookie,
+            read_invitation_claim,
+        )
+
+        browser_claim = read_invitation_claim(
+            request.cookies.get(REGISTRATION_ADMISSION_COOKIE)
+        )
+        if browser_claim != invitation_id:
+            response = _login_failed(
+                request,
+                "callback invitation claim does not match this browser's",
+                next_url=handoff["next"],
+            )
+            clear_invitation_claim_cookie(response)
+            return response
+
     from vitals.services.authentication.federation import (
         FederatedLoginError,
+        resolve_existing_federated_user,
         resolve_federated_user,
     )
+    from vitals.services.authentication import admission
     from vitals.services.authentication.oidc import OidcError
 
     provider = _provider()
@@ -658,20 +720,47 @@ async def federated_login_callback(
         )
 
     try:
-        user = await resolve_federated_user(
-            db,
-            issuer=identity.issuer,
-            subject=identity.subject,
-            authenticated_at=identity.authenticated_at,
-            bootstrap_subject=cfg.oidc_bootstrap_subject,
-            # Claims, not keys. They name an account this installation has
-            # already decided to create; ``authentication.registration`` makes
-            # that decision, and by default it does not.
-            email=identity.email,
-            email_verified=identity.email_verified,
-            preferred_username=identity.preferred_username,
-        )
-    except FederatedLoginError as exc:
+        if invitation_id is None or identity.subject == cfg.oidc_bootstrap_subject:
+            user = await resolve_federated_user(
+                db,
+                issuer=identity.issuer,
+                subject=identity.subject,
+                authenticated_at=identity.authenticated_at,
+                bootstrap_subject=cfg.oidc_bootstrap_subject,
+                # Claims, not keys. They name an account this installation has
+                # already decided to create; ``authentication.registration``
+                # makes that decision, and by default it does not.
+                email=identity.email,
+                email_verified=identity.email_verified,
+                preferred_username=identity.preferred_username,
+            )
+        else:
+            user = await resolve_existing_federated_user(
+                db,
+                issuer=identity.issuer,
+                subject=identity.subject,
+                authenticated_at=identity.authenticated_at,
+                email=identity.email,
+                email_verified=identity.email_verified,
+            )
+            if user is None:
+                user = (
+                    await admission.consume_invitation_claim(
+                        db,
+                        invitation_id=invitation_id,
+                        issuer=identity.issuer,
+                        subject=identity.subject,
+                        authenticated_at=identity.authenticated_at,
+                        verified_email=identity.email,
+                        email_verified=identity.email_verified,
+                        preferred_username=identity.preferred_username,
+                    )
+                ).user
+    except (
+        FederatedLoginError,
+        admission.AdmissionError,
+        admission.AdmissionValidationError,
+    ) as exc:
         # The dependency commits a normally returned response.  Resolution may
         # already have linked a bootstrap identity or provisioned rows before a
         # later claim (for example a verified-email collision) refuses the
@@ -708,6 +797,10 @@ async def federated_login_callback(
     )
     set_session_cookie(response, token)
     clear_oidc_handoff_cookie(response)
+    if invitation_id is not None:
+        from web.admission_handoff import clear_invitation_claim_cookie
+
+        clear_invitation_claim_cookie(response)
     return response
 
 

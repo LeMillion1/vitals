@@ -74,6 +74,20 @@ bare-username cookies remain accepted only for their configured lifetime. The
 current version marker prepares the later database-session cutover; it does not
 yet make legacy cookies individually revocable.
 
+Account-invitation bearers use a separate browser boundary. The emailed link
+places the bearer in `#token=...`, so it is not sent in the HTTP request, proxy
+path, query string, or referrer. A standalone no-cache/no-referrer page runs one
+nonce-authorized script, removes the fragment before loading styles, and fails
+closed without exchanging the token if browser history cannot be scrubbed. A
+strict same-origin JSON request replaces the bearer with a ten-minute,
+HttpOnly, `SameSite=Lax`, `/auth`-scoped signed cookie containing only the
+invitation UUID; the database stores only the bearer's SHA-256 digest. A valid
+exchange clears any prior Vitals session and pending login handles on the device.
+The OIDC callback forces a fresh provider login and rechecks the current mode,
+row state, expiry, and exact verified email under the identity-governance lock.
+The UUID and signed cookie are not sufficient on their own, and neither contains
+an address, account kind, provider claim, role, credential, or health data.
+
 The legacy password bridge writes `.env` and PostgreSQL as one logical change,
 but no filesystem/database transaction can make them physically atomic. An
 ordinary commit error or request cancellation restores the previous environment
@@ -96,7 +110,8 @@ mounted behind it next.
 What remains reachable without a session is listed and enforced in
 `tests/test_anonymous_surface.py`, which fails if a new route joins that set
 without a stated reason. Today it is the login and OAuth handshakes, `/health`,
-the Bearer-token external summary, and the published doctor document.
+the account-invitation landing/exchange, the Bearer-token external summary, and
+the published doctor document.
 
 The authenticated account-notification API stores only the current browser's
 Web Push subscription. A subscription belongs to an account/device, not to a

@@ -400,6 +400,42 @@ async def _finish_linked_login(
     return user
 
 
+async def resolve_existing_federated_user(
+    session: AsyncSession,
+    *,
+    issuer: str,
+    subject: str,
+    authenticated_at: datetime | None = None,
+    email: str | None = None,
+    email_verified: bool = False,
+) -> User | None:
+    """Resolve only a link that already exists, never bootstrap or register.
+
+    Invitation orchestration uses this before creating an account: a person who
+    already has one may sign in normally, but an unknown identity carrying an
+    invitation must use that exact proof and may never fall through to open
+    registration if the installation mode changes during the OIDC round trip.
+    """
+
+    if not issuer.strip() or not subject.strip():
+        raise FederatedLoginError("a federated login needs both an issuer and a subject")
+    link = await session.scalar(
+        select(UserFederatedIdentity).where(
+            UserFederatedIdentity.issuer == issuer,
+            UserFederatedIdentity.subject == subject,
+        )
+    )
+    if link is None:
+        return None
+    return await _finish_linked_login(
+        session,
+        link=link,
+        authenticated_at=authenticated_at,
+        email=email,
+        email_verified=email_verified,
+    )
+
+
 async def resolve_federated_user(
     session: AsyncSession,
     *,
@@ -484,5 +520,6 @@ __all__ = [
     "FederatedLoginError",
     "InactiveAccount",
     "UnknownFederatedIdentity",
+    "resolve_existing_federated_user",
     "resolve_federated_user",
 ]

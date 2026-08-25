@@ -32,7 +32,9 @@ from vitals.services.authentication.admission._shared import (
     RetentionResult,
 )
 from vitals.services.authentication.admission.invitations import (
+    claim_invitation,
     consume_invitation,
+    consume_invitation_claim,
     issue_invitation,
     revoke_invitation,
 )
@@ -65,7 +67,9 @@ __all__ = [
     "IssuedInvitation",
     "RetentionResult",
     "approve_request",
+    "claim_invitation",
     "consume_invitation",
+    "consume_invitation_claim",
     "expire_due",
     "get_request",
     "issue_invitation",

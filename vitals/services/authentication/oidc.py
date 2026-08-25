@@ -212,7 +212,12 @@ class OidcProvider:
         self._key_set = None
         return document
 
-    async def begin_login(self, *, prompt: str | None = None) -> LoginRequest:
+    async def begin_login(
+        self,
+        *,
+        prompt: str | None = None,
+        max_age_seconds: int | None = None,
+    ) -> LoginRequest:
         """Build the authorization request, and the secrets that bind it."""
 
         document = await self.metadata()
@@ -234,6 +239,10 @@ class OidcProvider:
         }
         if prompt:
             parameters["prompt"] = prompt
+        if max_age_seconds is not None:
+            if type(max_age_seconds) is not int or max_age_seconds <= 0:
+                raise OidcConfigurationError("max_age must be a positive integer")
+            parameters["max_age"] = str(max_age_seconds)
 
         separator = "&" if "?" in document["authorization_endpoint"] else "?"
         return LoginRequest(

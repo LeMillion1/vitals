@@ -26,6 +26,12 @@ PENDING_2FA_TTL = 300  # 5 minutes to reach for the phone and type the code
 OIDC_HANDOFF_COOKIE = "vitals_oidc"
 OIDC_HANDOFF_TTL = 600
 
+# A raw account-invitation bearer is exchanged before OIDC starts. The browser
+# carries only this signed, opaque invitation id through the provider round
+# trip; the bearer itself never enters a path, query, referrer, or cookie.
+REGISTRATION_ADMISSION_COOKIE = "vitals_registration_admission"
+REGISTRATION_ADMISSION_TTL = 600
+
 # Callback hosts of the AI clients allowed to connect to the MCP server. Matched
 # by host rather than by full URL on purpose: Claude and ChatGPT each use one
 # fixed callback path, but Google mints a per-user one

@@ -19,7 +19,12 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.utils import to_base64url_uint
 
-from web.config import OIDC_HANDOFF_COOKIE, SESSION_COOKIE
+from web.config import (
+    OIDC_HANDOFF_COOKIE,
+    PENDING_2FA_COOKIE,
+    REGISTRATION_ADMISSION_COOKIE,
+    SESSION_COOKIE,
+)
 
 ISSUER = "https://idp.example.test"
 CLIENT_ID = "vitals-test"
@@ -134,6 +139,27 @@ async def _start(client, provider) -> tuple[str, str]:
     return query["state"][0], response.cookies[OIDC_HANDOFF_COOKIE]
 
 
+async def _account_invitation(db_session, legacy_owner_roots, monkeypatch, *, email):
+    from vitals.enums import RegistrationAccountKind
+    from vitals.models.identity import User
+    from vitals.services.authentication import admission, registration
+
+    monkeypatch.setenv(registration.REGISTRATION_UNLOCK_ENV, "1")
+    await registration.set_stored_mode(
+        db_session,
+        registration.RegistrationMode.INVITE_ONLY,
+    )
+    owner = await db_session.get(User, legacy_owner_roots.user_id)
+    issued = await admission.issue_invitation(
+        db_session,
+        actor_user_id=owner.id,
+        email=email,
+        account_kind=RegistrationAccountKind.MEMBER,
+    )
+    await db_session.commit()
+    return issued
+
+
 # ── Starting ─────────────────────────────────────────────────────────────────
 
 async def test_start_sends_the_browser_to_the_provider_with_pkce(
@@ -231,6 +257,776 @@ async def test_the_handoff_cookie_never_carries_the_verifier_in_the_clear(
 async def test_start_is_absent_when_no_provider_is_configured(client):
     assert (await client.get("/auth/start")).status_code == 404
     assert (await client.get("/auth/callback?code=c&state=s")).status_code == 404
+
+
+# ── Invitation handoff ──────────────────────────────────────────────────────
+
+_EXCHANGE_HEADERS = {
+    "Origin": "http://test",
+    "Sec-Fetch-Site": "same-origin",
+}
+
+
+async def test_invitation_landing_scrubs_before_any_other_script(
+    client, federated
+):
+    response = await client.get("/register/invite#raw-secret")
+
+    assert response.status_code == 200
+    assert "raw-secret" not in response.text
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["x-robots-tag"] == "noindex, nofollow, noarchive"
+    csp = response.headers["content-security-policy"]
+    assert "default-src 'none'" in csp
+    assert "connect-src 'self'" in csp
+    assert "script-src 'nonce-" in csp
+    assert "unsafe-inline" not in csp.split("style-src", 1)[0]
+    assert "cloudflare" not in csp
+    source = response.text
+    nonce = source.split('<script nonce="', 1)[1].split('"', 1)[0]
+    assert f"script-src 'nonce-{nonce}'" in csp
+    assert source.index("history.replaceState") < source.index("fetch(")
+    assert source.index("if (!scrubbed)") < source.index("fetch(")
+    assert source.count("<script") == 1
+    assert "base.html" not in source
+    assert "app.js" not in source
+
+
+async def test_invitation_exchange_requires_a_same_origin_browser(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="origin-bound@example.test",
+    )
+    attempts = (
+        {},
+        {"Origin": "http://test", "Sec-Fetch-Site": "same-site"},
+        {"Origin": "https://attacker.example", "Sec-Fetch-Site": "cross-site"},
+    )
+    for index, headers in enumerate(attempts):
+        response = await client.post(
+            "/register/invite/exchange",
+            json={"token": issued.token},
+            headers=headers,
+        )
+        assert response.status_code == 403
+        if index < 2:
+            assert response.json() == {"ok": False}
+        else:
+            # The global CSRF middleware rejects an explicitly cross-site
+            # request before the route's stricter same-origin contract runs.
+            assert response.content == b"Cross-site request refused."
+        assert REGISTRATION_ADMISSION_COOKIE not in response.cookies
+
+
+async def test_invitation_exchange_mints_only_an_opaque_short_lived_cookie(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from web.admission_handoff import read_invitation_claim
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="cookie-proof@example.test",
+    )
+    response = await client.post(
+        "/register/invite/exchange",
+        json={"token": issued.token},
+        headers=_EXCHANGE_HEADERS,
+    )
+
+    assert response.status_code == 200
+    claim = response.cookies[REGISTRATION_ADMISSION_COOKIE]
+    assert read_invitation_claim(claim) == issued.invitation.id
+    cookie_header = response.headers["set-cookie"]
+    assert "HttpOnly" in cookie_header
+    assert "SameSite=lax" in cookie_header
+    assert "Path=/auth" in cookie_header
+    assert "Max-Age=600" in cookie_header
+    for private in (
+        issued.token,
+        issued.invitation.token_digest,
+        "cookie-proof@example.test",
+    ):
+        assert private not in cookie_header
+        assert private not in response.text
+
+
+async def test_invitation_exchange_ends_every_previous_local_login_handle(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from web.auth import (
+        create_oidc_handoff,
+        create_pending_2fa,
+        create_session,
+    )
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="shared-device@example.test",
+    )
+    client.cookies.set(
+        SESSION_COOKIE,
+        create_session("previous-person"),
+        domain="test.local",
+        path="/",
+    )
+    client.cookies.set(
+        PENDING_2FA_COOKIE,
+        create_pending_2fa("previous-person"),
+        domain="test.local",
+        path="/",
+    )
+    client.cookies.set(
+        OIDC_HANDOFF_COOKIE,
+        create_oidc_handoff(
+            state="old-state",
+            nonce="old-nonce",
+            code_verifier="old-verifier",
+            next_url="/",
+        ),
+        domain="test.local",
+        path="/",
+    )
+
+    response = await client.post(
+        "/register/invite/exchange",
+        json={"token": issued.token},
+        headers=_EXCHANGE_HEADERS,
+    )
+
+    assert response.status_code == 200
+    set_cookie = response.headers.get_list("set-cookie")
+    assert any(value.startswith(f"{SESSION_COOKIE}=") for value in set_cookie)
+    assert any(value.startswith(f"{PENDING_2FA_COOKIE}=") for value in set_cookie)
+    assert any(value.startswith(f"{OIDC_HANDOFF_COOKIE}=") for value in set_cookie)
+    assert client.cookies.get(SESSION_COOKIE) is None
+    assert client.cookies.get(PENDING_2FA_COOKIE) is None
+    assert client.cookies.get(OIDC_HANDOFF_COOKIE) is None
+
+    # Cancelling the fresh provider ceremony cannot reveal the previous
+    # person's health data again.
+    state, _ = await _start(client, federated)
+    refused = await client.get(
+        f"/auth/callback?error=access_denied&state={state}",
+        follow_redirects=False,
+    )
+    assert refused.status_code == 401
+    protected = await client.get("/today", follow_redirects=False)
+    assert protected.status_code in {302, 303, 401}
+    if protected.status_code in {302, 303}:
+        assert protected.headers["location"].startswith("/login")
+
+
+def test_invitation_claim_codec_rejects_tampering_extension_and_expiry(monkeypatch):
+    from itsdangerous import TimestampSigner, URLSafeTimedSerializer
+
+    from web.admission_handoff import (
+        create_invitation_claim,
+        read_invitation_claim,
+    )
+    from web.config import REGISTRATION_ADMISSION_TTL, get_web_config
+
+    invitation_id = uuid.uuid4()
+    claim = create_invitation_claim(invitation_id)
+    replacement = "a" if claim[-1] != "a" else "b"
+    assert read_invitation_claim(claim[:-1] + replacement) is None
+
+    serializer = URLSafeTimedSerializer(
+        get_web_config().session_secret,
+        salt="vitals-registration-admission",
+    )
+    extended = serializer.dumps(
+        {
+            "v": 1,
+            "type": "registration_invitation",
+            "invitation_id": str(invitation_id),
+            "email": "must-not-be-accepted@example.test",
+        }
+    )
+    assert read_invitation_claim(extended) is None
+
+    get_timestamp = TimestampSigner.get_timestamp
+    monkeypatch.setattr(
+        TimestampSigner,
+        "get_timestamp",
+        lambda self: get_timestamp(self) + REGISTRATION_ADMISSION_TTL + 1,
+    )
+    assert read_invitation_claim(claim) is None
+
+
+async def test_invitation_exchange_refusals_are_uniform_and_bounded(
+    client, federated
+):
+    responses = []
+    for body in (
+        {"token": "not-issued"},
+        {"token": " x "},
+        {"token": "x" * 513},
+        {"token": False},
+        {"wrong": "shape"},
+    ):
+        responses.append(
+            await client.post(
+                "/register/invite/exchange",
+                json=body,
+                headers=_EXCHANGE_HEADERS,
+            )
+        )
+    assert {(response.status_code, response.content) for response in responses} == {
+        (401, b'{"ok":false}')
+    }
+
+    oversized = await client.post(
+        "/register/invite/exchange",
+        content=b"x" * 1025,
+        headers={**_EXCHANGE_HEADERS, "Content-Type": "application/json"},
+    )
+    assert oversized.status_code == 413
+
+
+async def test_invitation_forces_fresh_provider_login_even_with_a_local_session(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    from web.auth import create_session, read_oidc_handoff
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="fresh-login@example.test",
+    )
+    exchange = await client.post(
+        "/register/invite/exchange",
+        json={"token": issued.token},
+        headers=_EXCHANGE_HEADERS,
+    )
+    assert exchange.status_code == 200
+    client.cookies.set(SESSION_COOKIE, create_session("tester"))
+
+    response = await client.get("/auth/start", follow_redirects=False)
+    assert response.status_code == 303
+    query = parse_qs(urlsplit(response.headers["location"]).query)
+    assert query["prompt"] == ["login"]
+    assert query["max_age"] == ["900"]
+    handoff = read_oidc_handoff(response.cookies[OIDC_HANDOFF_COOKIE])
+    assert handoff["admission_type"] == "registration_invitation"
+    assert handoff["invitation_id"] == issued.invitation.id
+    assert issued.token not in response.headers["location"]
+    assert issued.token not in response.cookies[OIDC_HANDOFF_COOKIE]
+
+
+async def test_step_up_ignores_an_invitation_claim(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    from web.auth import read_oidc_handoff
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="step-up-isolated@example.test",
+    )
+    assert (
+        await client.post(
+            "/register/invite/exchange",
+            json={"token": issued.token},
+            headers=_EXCHANGE_HEADERS,
+        )
+    ).status_code == 200
+
+    response = await client.get(
+        "/auth/start?step_up=true&next=/settings/access",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    query = parse_qs(urlsplit(response.headers["location"]).query)
+    assert query["prompt"] == ["login"]
+    assert query["max_age"] == ["900"]
+    handoff = read_oidc_handoff(response.cookies[OIDC_HANDOFF_COOKIE])
+    assert handoff["admission_type"] is None
+    assert handoff["invitation_id"] is None
+    assert client.cookies.get(REGISTRATION_ADMISSION_COOKIE)
+
+
+async def test_invitation_handoff_creates_one_member_and_session(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import select
+
+    from vitals.enums import RegistrationInvitationStatus, UserRoleName
+    from vitals.models.identity import HealthSubject, UserFederatedIdentity, UserRole
+    from vitals.models.registration import RegistrationInvitation
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="new-member@example.test",
+    )
+    invitation_id = issued.invitation.id
+    exchange = await client.post(
+        "/register/invite/exchange",
+        json={"token": issued.token},
+        headers=_EXCHANGE_HEADERS,
+    )
+    assert exchange.status_code == 200
+    federated.pending_claims.update(
+        {
+            "sub": "invited-member-subject",
+            "email": "NEW-MEMBER@example.test",
+            "email_verified": True,
+            "preferred_username": "invited-member",
+        }
+    )
+    state, _handoff = await _start(client, federated)
+
+    response = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.cookies.get(SESSION_COOKIE)
+    assert response.cookies.get(OIDC_HANDOFF_COOKIE) in (None, "")
+    assert response.cookies.get(REGISTRATION_ADMISSION_COOKIE) in (None, "")
+    db_session.expire_all()
+    invitation = await db_session.get(RegistrationInvitation, invitation_id)
+    assert invitation.status == RegistrationInvitationStatus.CONSUMED.value
+    link = await db_session.scalar(
+        select(UserFederatedIdentity).where(
+            UserFederatedIdentity.subject == "invited-member-subject"
+        )
+    )
+    role = await db_session.scalar(
+        select(UserRole).where(UserRole.user_id == link.user_id)
+    )
+    record = await db_session.scalar(
+        select(HealthSubject).where(HealthSubject.owner_user_id == link.user_id)
+    )
+    assert role.role == UserRoleName.MEMBER.value
+    assert record is not None
+
+
+async def test_linked_identity_signs_in_without_consuming_an_invitation(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from vitals.enums import RegistrationInvitationStatus
+    from vitals.models.registration import RegistrationInvitation
+
+    # First bind the configured bootstrap identity normally.
+    state, _ = await _start(client, federated)
+    first = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="unused-linked-invite@example.test",
+    )
+    invitation_id = issued.invitation.id
+    assert (
+        await client.post(
+            "/register/invite/exchange",
+            json={"token": issued.token},
+            headers=_EXCHANGE_HEADERS,
+        )
+    ).status_code == 200
+    state, _ = await _start(client, federated)
+
+    response = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.cookies.get(SESSION_COOKIE)
+    db_session.expire_all()
+    invitation = await db_session.get(RegistrationInvitation, invitation_id)
+    assert invitation.status == RegistrationInvitationStatus.PENDING.value
+
+
+async def test_bootstrap_identity_does_not_consume_or_duplicate_an_invitation(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.enums import RegistrationInvitationStatus
+    from vitals.models.identity import User, UserFederatedIdentity
+    from vitals.models.registration import RegistrationInvitation
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="unused-bootstrap-invite@example.test",
+    )
+    invitation_id = issued.invitation.id
+    assert (
+        await client.post(
+            "/register/invite/exchange",
+            json={"token": issued.token},
+            headers=_EXCHANGE_HEADERS,
+        )
+    ).status_code == 200
+    state, _ = await _start(client, federated)
+
+    response = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    db_session.expire_all()
+    invitation = await db_session.get(RegistrationInvitation, invitation_id)
+    assert invitation.status == RegistrationInvitationStatus.PENDING.value
+    assert await db_session.scalar(select(func.count()).select_from(User)) == 1
+    link = await db_session.scalar(
+        select(UserFederatedIdentity).where(
+            UserFederatedIdentity.subject == OWNER_SUBJECT
+        )
+    )
+    assert link.user_id == legacy_owner_roots.user_id
+
+
+async def test_invitation_mode_closure_after_exchange_refuses_without_graph(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.enums import RegistrationInvitationStatus
+    from vitals.models.identity import UserFederatedIdentity
+    from vitals.models.registration import RegistrationInvitation
+    from vitals.services.authentication import registration
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="closed-during-oidc@example.test",
+    )
+    invitation_id = issued.invitation.id
+    assert (
+        await client.post(
+            "/register/invite/exchange",
+            json={"token": issued.token},
+            headers=_EXCHANGE_HEADERS,
+        )
+    ).status_code == 200
+    await registration.set_stored_mode(
+        db_session,
+        registration.RegistrationMode.DISABLED,
+    )
+    await db_session.commit()
+    federated.pending_claims.update(
+        {
+            "sub": "closed-during-oidc-subject",
+            "email": "closed-during-oidc@example.test",
+            "email_verified": True,
+        }
+    )
+    state, _ = await _start(client, federated)
+
+    response = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 401
+    assert not response.cookies.get(SESSION_COOKIE)
+    assert client.cookies.get(REGISTRATION_ADMISSION_COOKIE)
+    db_session.expire_all()
+    invitation = await db_session.get(RegistrationInvitation, invitation_id)
+    assert invitation.status == RegistrationInvitationStatus.PENDING.value
+    assert await db_session.scalar(
+        select(func.count()).select_from(UserFederatedIdentity).where(
+            UserFederatedIdentity.subject == "closed-during-oidc-subject"
+        )
+    ) == 0
+
+
+async def test_invitation_revocation_after_exchange_refuses_without_graph(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.models.identity import User, UserFederatedIdentity
+    from vitals.services.authentication import admission
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="revoked-during-oidc@example.test",
+    )
+    assert (
+        await client.post(
+            "/register/invite/exchange",
+            json={"token": issued.token},
+            headers=_EXCHANGE_HEADERS,
+        )
+    ).status_code == 200
+    owner = await db_session.get(User, legacy_owner_roots.user_id)
+    await admission.revoke_invitation(
+        db_session,
+        invitation_id=issued.invitation.id,
+        actor_user_id=owner.id,
+    )
+    await db_session.commit()
+    federated.pending_claims.update(
+        {
+            "sub": "revoked-during-oidc-subject",
+            "email": "revoked-during-oidc@example.test",
+            "email_verified": True,
+        }
+    )
+    state, _ = await _start(client, federated)
+
+    response = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 401
+    assert await db_session.scalar(
+        select(func.count()).select_from(UserFederatedIdentity).where(
+            UserFederatedIdentity.subject == "revoked-during-oidc-subject"
+        )
+    ) == 0
+
+
+async def test_spent_invitation_claim_cannot_open_a_second_identity(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.models.identity import UserFederatedIdentity
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="one-account-only@example.test",
+    )
+    exchange = await client.post(
+        "/register/invite/exchange",
+        json={"token": issued.token},
+        headers=_EXCHANGE_HEADERS,
+    )
+    saved_claim = exchange.cookies[REGISTRATION_ADMISSION_COOKIE]
+    federated.pending_claims.update(
+        {
+            "sub": "first-invited-subject",
+            "email": "one-account-only@example.test",
+            "email_verified": True,
+        }
+    )
+    state, _ = await _start(client, federated)
+    first = await client.get(
+        f"/auth/callback?code=first-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+    # The test dependency shares one session; production commits at each HTTP
+    # boundary, so make the first successful callback durable before replay.
+    await db_session.commit()
+
+    client.cookies.clear()
+    client.cookies.set(
+        REGISTRATION_ADMISSION_COOKIE,
+        saved_claim,
+        domain="test.local",
+        path="/auth",
+    )
+    federated.pending_claims.update(
+        {
+            "sub": "second-invited-subject",
+            "email": "one-account-only@example.test",
+            "email_verified": True,
+        }
+    )
+    state, _ = await _start(client, federated)
+    replay = await client.get(
+        f"/auth/callback?code=second-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert replay.status_code == 401
+    assert await db_session.scalar(
+        select(func.count()).select_from(UserFederatedIdentity).where(
+            UserFederatedIdentity.subject.in_(
+                {"first-invited-subject", "second-invited-subject"}
+            )
+        )
+    ) == 1
+
+
+async def test_admission_refusal_rolls_back_a_partially_flushed_identity(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    from sqlalchemy import func, select
+
+    from vitals.models.identity import UserFederatedIdentity
+    from vitals.services.authentication import admission
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="rollback-admission@example.test",
+    )
+    assert (
+        await client.post(
+            "/register/invite/exchange",
+            json={"token": issued.token},
+            headers=_EXCHANGE_HEADERS,
+        )
+    ).status_code == 200
+    federated.pending_claims.update(
+        {
+            "sub": "partially-flushed-subject",
+            "email": "rollback-admission@example.test",
+            "email_verified": True,
+        }
+    )
+
+    async def refuse_after_flush(session, **_kwargs):
+        session.add(
+            UserFederatedIdentity(
+                user_id=legacy_owner_roots.user_id,
+                issuer=ISSUER,
+                subject="partially-flushed-subject",
+            )
+        )
+        await session.flush()
+        raise admission.AdmissionRefused(
+            "this admission proof does not open an account"
+        )
+
+    monkeypatch.setattr(admission, "consume_invitation_claim", refuse_after_flush)
+    state, _ = await _start(client, federated)
+    response = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 401
+    assert await db_session.scalar(
+        select(func.count()).select_from(UserFederatedIdentity).where(
+            UserFederatedIdentity.subject == "partially-flushed-subject"
+        )
+    ) == 0
+
+
+async def test_callback_requires_the_same_signed_invitation_claim(
+    client, federated, db_session, legacy_owner_roots, monkeypatch
+):
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="browser-bound@example.test",
+    )
+    assert (
+        await client.post(
+            "/register/invite/exchange",
+            json={"token": issued.token},
+            headers=_EXCHANGE_HEADERS,
+        )
+    ).status_code == 200
+    federated.pending_claims.update(
+        {
+            "sub": "browser-bound-subject",
+            "email": "browser-bound@example.test",
+            "email_verified": True,
+        }
+    )
+    state, _ = await _start(client, federated)
+    client.cookies.delete(REGISTRATION_ADMISSION_COOKIE)
+    client.cookies.set(
+        REGISTRATION_ADMISSION_COOKIE,
+        "not-a-signed-claim",
+        path="/auth",
+    )
+
+    response = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 401
+    assert not response.cookies.get(SESSION_COOKIE)
+    assert response.cookies.get(REGISTRATION_ADMISSION_COOKIE) in (None, "")
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"email": "wrong@example.test", "email_verified": True},
+        {"email": "bound@example.test", "email_verified": False},
+    ],
+)
+async def test_invitation_callback_refuses_wrong_or_unverified_address_without_graph(
+    client,
+    federated,
+    db_session,
+    legacy_owner_roots,
+    monkeypatch,
+    claims,
+):
+    from sqlalchemy import func, select
+
+    from vitals.enums import RegistrationInvitationStatus
+    from vitals.models.identity import UserFederatedIdentity
+    from vitals.models.registration import RegistrationInvitation
+
+    issued = await _account_invitation(
+        db_session,
+        legacy_owner_roots,
+        monkeypatch,
+        email="bound@example.test",
+    )
+    invitation_id = issued.invitation.id
+    assert (
+        await client.post(
+            "/register/invite/exchange",
+            json={"token": issued.token},
+            headers=_EXCHANGE_HEADERS,
+        )
+    ).status_code == 200
+    federated.pending_claims.update({"sub": "refused-invite-subject", **claims})
+    state, _ = await _start(client, federated)
+
+    response = await client.get(
+        f"/auth/callback?code=the-code&state={state}&iss={ISSUER}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 401
+    assert not response.cookies.get(SESSION_COOKIE)
+    db_session.expire_all()
+    invitation = await db_session.get(RegistrationInvitation, invitation_id)
+    assert invitation.status == RegistrationInvitationStatus.PENDING.value
+    assert await db_session.scalar(
+        select(func.count()).select_from(UserFederatedIdentity).where(
+            UserFederatedIdentity.subject == "refused-invite-subject"
+        )
+    ) == 0
 
 
 # ── Completing ───────────────────────────────────────────────────────────────

@@ -178,6 +178,46 @@ async def test_issue_stores_only_the_token_digest_and_redacted_audit(
         assert secret not in envelope
 
 
+async def test_claim_exchanges_a_live_bearer_for_only_its_opaque_id(
+    db_session, monkeypatch
+):
+    _actor, issued = await _issued(db_session, monkeypatch, slug="browser-claim")
+
+    first = await admission.claim_invitation(db_session, token=issued.token)
+    second = await admission.claim_invitation(db_session, token=issued.token)
+
+    assert first == second == issued.invitation.id
+    assert issued.invitation.status == RegistrationInvitationStatus.PENDING.value
+    assert issued.invitation.token_digest is not None
+    assert await db_session.scalar(
+        select(func.count()).select_from(UserFederatedIdentity)
+    ) == 0
+
+
+async def test_claim_refuses_unknown_spent_and_wrong_mode_uniformly(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    _actor, issued = await _issued(db_session, monkeypatch, slug="claim-uniform")
+    await _consume_invitation(
+        db_session,
+        token=issued.token,
+        issuer=ISSUER,
+        subject="claim-uniform",
+        verified_email="claim-uniform@example.test",
+    )
+
+    messages = set()
+    for token in (issued.token, "not-issued"):
+        with pytest.raises(admission.AdmissionRefused) as caught:
+            await admission.claim_invitation(db_session, token=token)
+        messages.add(str(caught.value))
+    await _mode(db_session, monkeypatch, registration_policy.RegistrationMode.DISABLED)
+    with pytest.raises(admission.AdmissionRefused) as caught:
+        await admission.claim_invitation(db_session, token="not-issued")
+    messages.add(str(caught.value))
+    assert len(messages) == 1
+
+
 @pytest.mark.parametrize(
     "ttl",
     [
@@ -1046,25 +1086,38 @@ def _factory(db_session) -> async_sessionmaker[AsyncSession]:
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("proof_kind", ["bearer", "signed_claim"])
 async def test_postgres_double_consume_creates_exactly_one_account_graph(
-    db_session, legacy_owner_roots, monkeypatch
+    db_session, legacy_owner_roots, monkeypatch, proof_kind
 ):
     if db_session.bind.dialect.name != "postgresql":
         pytest.skip("PostgreSQL row/advisory-lock semantics")
-    _actor, issued = await _issued(db_session, monkeypatch, slug="race-consume")
+    slug = f"race-consume-{proof_kind}"
+    _actor, issued = await _issued(db_session, monkeypatch, slug=slug)
+    invitation_id = issued.invitation.id
     await db_session.commit()
     factory = _factory(db_session)
 
     async def worker(index: int):
         async with factory() as session:
             try:
-                result = await _consume_invitation(
-                    session,
-                    token=issued.token,
-                    issuer=ISSUER,
-                    subject=f"race-consume-{index}",
-                    verified_email="race-consume@example.test",
-                )
+                if proof_kind == "bearer":
+                    result = await _consume_invitation(
+                        session,
+                        token=issued.token,
+                        issuer=ISSUER,
+                        subject=f"{slug}-{index}",
+                        verified_email=f"{slug}@example.test",
+                    )
+                else:
+                    result = await admission.consume_invitation_claim(
+                        session,
+                        invitation_id=invitation_id,
+                        issuer=ISSUER,
+                        subject=f"{slug}-{index}",
+                        verified_email=f"{slug}@example.test",
+                        email_verified=True,
+                    )
                 await session.commit()
                 return result
             except admission.AdmissionRefused as exc:
@@ -1080,7 +1133,7 @@ async def test_postgres_double_consume_creates_exactly_one_account_graph(
         assert await verify.scalar(select(func.count()).select_from(UserFederatedIdentity)) == 1
         assert await verify.scalar(
             select(func.count()).select_from(User).where(
-                User.normalized_email == "race-consume@example.test"
+                User.normalized_email == f"{slug}@example.test"
             )
         ) == 1
 
