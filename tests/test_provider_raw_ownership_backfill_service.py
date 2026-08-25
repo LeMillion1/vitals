@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -46,7 +46,6 @@ from vitals.services.raw_ownership_backfill_service import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
-from vitals.utils.timeutils import now_utc
 
 
 # Every test here writes or inspects a row with no owner, which is the whole
@@ -92,6 +91,7 @@ def _checkpoint(
     snapshot_rows: int = 0,
 ) -> OwnershipBackfillCheckpoint:
     completed = status == "completed"
+    timestamp = datetime(2020, 1, 1, tzinfo=timezone.utc)
     return OwnershipBackfillCheckpoint(
         phase_key=phase,
         subject_id=subject_id,
@@ -105,7 +105,13 @@ def _checkpoint(
         data_checksum_before=EMPTY_SHA256,
         data_checksum_after=EMPTY_SHA256,
         ownership_checksum_after=EMPTY_SHA256,
-        completed_at=now_utc() if completed else None,
+        # These are prerequisite fixtures, not a test of server defaults. Give
+        # all lifecycle fields one stable historical timestamp so SQLite's
+        # second-precision CURRENT_TIMESTAMP cannot land before an application
+        # timestamp near the next-second boundary on insert or later update.
+        started_at=timestamp,
+        updated_at=timestamp,
+        completed_at=timestamp if completed else None,
     )
 
 
