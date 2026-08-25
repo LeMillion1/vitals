@@ -1016,7 +1016,10 @@ async def test_each_support_record_response_commits_one_phi_free_read_event(
     event = events[-1]
     from vitals.persistence.rls import bound_subject
 
-    assert bound_subject(db_session) == legacy_owner_roots.subject_id
+    # The test client reuses one AsyncSession so the test can inspect writes,
+    # but its request dependency clears the transaction-local subject exactly
+    # as production does when a request-scoped session closes.
+    assert bound_subject(db_session) is None
     assert event.actor_user_id == admin.id
     assert event.support_access_grant_id == grant.id
     assert event.resource_type == "health_record"

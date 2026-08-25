@@ -837,6 +837,8 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
     )
     db_session.add(legacy)
     await db_session.commit()
+    legacy_id = legacy.id
+    asset_id = asset.id
     expected_asset_state = (
         asset.subject_id,
         asset.uploaded_by_user_id,
@@ -859,14 +861,14 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
 
     assert await weight_service.delete_progress_photo(
         db_session,
-        legacy.id,
+        legacy_id,
         identity=owner_write.identity,
         prepared_conflict_write=await owner_write.write(),
     ) is None
 
     assert await weight_service.delete_progress_photo(
         db_session,
-        legacy.id,
+        legacy_id,
         identity=identity,
         prepared_conflict_write=await _prepared(
         db_session,
@@ -882,7 +884,7 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
                 ProgressPhoto.actor_user_id,
                 ProgressPhoto.file_asset_id,
                 ProgressPhoto.file_key,
-            ).where(ProgressPhoto.id == legacy.id)
+            ).where(ProgressPhoto.id == legacy_id)
         )
     ).one()
     persisted_asset_state = (
@@ -896,7 +898,7 @@ async def test_fully_null_legacy_photo_with_same_key_asset_fails_closed(
                 FileAsset.status,
                 FileAsset.deleted_at,
                 FileAsset.purged_at,
-            ).where(FileAsset.id == asset.id)
+            ).where(FileAsset.id == asset_id)
         )
     ).one()
     assert persisted_photo_roots == (None, None, None, file_key)

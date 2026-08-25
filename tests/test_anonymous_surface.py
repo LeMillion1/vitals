@@ -199,13 +199,14 @@ async def test_the_owner_gets_the_file_by_its_opaque_key(auth_client, an_owned_a
 
 async def test_a_download_needs_a_session(client, an_owned_asset):
     """No session, no file — whoever holds the link included."""
-    r = await client.get(f"/files/{an_owned_asset.opaque_key}")
+    opaque_key = an_owned_asset.opaque_key
+    r = await client.get(f"/files/{opaque_key}")
     assert r.status_code == 401
     assert b"lab sheet bytes" not in r.content
 
     # Typed into a browser it lands on the login form, like any other page.
     r = await client.get(
-        f"/files/{an_owned_asset.opaque_key}", headers={"Accept": "text/html"}
+        f"/files/{opaque_key}", headers={"Accept": "text/html"}
     )
     assert r.status_code == 302
     assert r.headers["location"].startswith("/login")
