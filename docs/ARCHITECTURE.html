@@ -348,9 +348,9 @@ tbody tr:hover td { background: var(--surface-2); }
   <p class="standfirst">A self-hosted health-data service — fourteen domains, five external integration modules and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires an explicit consent or support grant.</p>
   <div class="meta">
     <span><b>80</b> tables</span>
-    <span><b>69</b> migrations</span>
+    <span><b>70</b> migrations</span>
     <span><b>14</b> domains</span>
-    <span><b>99</b> application services</span>
+    <span><b>100</b> application services</span>
     <span><b>66</b> RLS tables</span>
     <span>Reviewed <b>2026-08-25</b></span>
   </div>
@@ -425,7 +425,7 @@ flowchart TB
 <section id="containers">
   <p class="eyebrow">C4 · Level 2</p>
   <h2>Containers</h2>
-  <p>One FastAPI process serves the web UI, the MCP endpoint and the external read API. An APScheduler loop inside it runs fourteen jobs. Everything durable is in PostgreSQL; Redis holds only what can be lost without consequence.</p>
+  <p>One FastAPI process serves the web UI, the MCP endpoint and the external read API. An APScheduler loop inside it runs fifteen jobs. Everything durable is in PostgreSQL; Redis holds only what can be lost without consequence.</p>
 
   <figure>
     <div class="diagram">
@@ -437,8 +437,8 @@ flowchart LR
     web["<b>Web + HTMX UI</b><br/><span style='font-size:11px'>29 routers, server-rendered</span>"]
     mcpsrv["<b>MCP server</b><br/><span style='font-size:11px'>tools, resources, prompts</span>"]
     api["<b>External read API</b><br/><span style='font-size:11px'>summary for other surfaces</span>"]
-    svc["<b>Application services</b><br/><span style='font-size:11px'>99 tracked modules · bounded-context migration active</span>"]
-    sched["<b>Scheduler</b><br/><span style='font-size:11px'>14 jobs: sync, digest, nudge,<br/>reconcile, sweep</span>"]
+    svc["<b>Application services</b><br/><span style='font-size:11px'>100 tracked modules · bounded-context migration active</span>"]
+    sched["<b>Scheduler</b><br/><span style='font-size:11px'>15 jobs: sync, digest, nudge,<br/>dispatch, reconcile, sweep</span>"]
   end
 
   pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>80 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
@@ -721,12 +721,12 @@ flowchart TB
   <p><code>FORCE</code> is the operative word: PostgreSQL exempts a table's owner from its own policies, and the application connects as the owner. Roles that must see across subjects — the migration runner, the ownership backfill jobs, the platform control plane — are exempt by role attribute. That is deliberate: a backfill that could not see an unstamped row could not stamp it.</p>
 
   <h3>Work that belongs to nobody in particular</h3>
-  <p>Not every transaction is somebody's. A doctor opening a shared report has no account here and is not meant to need one — the token in the URL is the authorization, and the application checks it before reading anything. Three scheduled jobs are the same shape: the share purge, the AI invocation reconciler and the delivery reconciler each sweep across every subject with no person to act as.</p>
+  <p>Not every transaction is somebody's. A doctor opening a shared report has no account here and is not meant to need one — the token in the URL is the authorization, and the application checks it before reading anything. Four scheduled jobs are the same shape: the share purge, the AI invocation reconciler, the historical delivery reconciler, and the care-push dispatcher each sweep across every subject with no person to act as.</p>
   <p>Under the subject comparison alone, installation-wide jobs see nothing and report success. The RLS contract therefore admits a second explicit scope, <code>vitals.platform_scope</code>, alongside the subject policies. A contract test enumerates every application caller allowed to enter it.</p>
 
   <div class="invariant">
     <span class="tag">Narrow by construction</span>
-    <p>Transaction-local like the subject binding, so a scope that reads across everybody cannot ride a pooled connection into the next request. Asked for by name through <code>enter_platform_scope</code>, never drifted into. Opened only by the exact string <code>on</code>, so a stray or truncated value closes. And all five call sites are enumerated by a contract test — a sixth is something a reviewer reads, not something that accumulates.</p>
+    <p>Transaction-local like the subject binding, so a scope that reads across everybody cannot ride a pooled connection into the next request. Asked for by name through <code>enter_platform_scope</code>, never drifted into. Opened only by the exact string <code>on</code>, so a stray or truncated value closes. And all nine call sites are enumerated by a contract test — a tenth is something a reviewer reads, not something that accumulates.</p>
   </div>
 
   <p>The line that keeps it honest: this is for work that <em>has</em> no subject, not work that failed to find one. A path that merely forgot to resolve its subject should see nothing — that is the boundary working — and its fix is to bind, never to declare itself the installation.</p>

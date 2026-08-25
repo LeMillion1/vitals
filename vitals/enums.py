@@ -192,6 +192,7 @@ class CarePushDeliveryErrorCode(StrEnum):
     SUBSCRIPTION_REVOKED = "subscription_revoked"
     STALE_PENDING = "stale_pending"
     PROVIDER_GONE = "provider_gone"
+    PROVIDER_REJECTED = "provider_rejected"
     TRANSPORT_ERROR = "transport_error"
     INVALID_RESPONSE = "invalid_response"
     STALE_DISPATCH = "stale_dispatch"

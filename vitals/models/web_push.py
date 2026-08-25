@@ -177,14 +177,14 @@ class CarePushDelivery(Base):
             "'internal_error')) OR "
             "(status = 'cancelled' AND error_code IN "
             "('access_revoked', 'account_inactive', 'subscription_revoked', "
-            "'stale_pending', 'provider_gone')) OR "
+            "'stale_pending', 'provider_gone', 'provider_rejected')) OR "
             "(status NOT IN ('ambiguous', 'cancelled') AND error_code IS NULL)",
             name="ck_care_push_deliveries_error_state",
         ),
         CheckConstraint(
-            "error_code <> 'provider_gone' OR "
+            "error_code NOT IN ('provider_gone', 'provider_rejected') OR "
             "(lease_token IS NOT NULL AND dispatch_started_at IS NOT NULL)",
-            name="ck_care_push_deliveries_provider_gone_after_dispatch",
+            name="ck_care_push_deliveries_provider_outcome_after_dispatch",
         ),
         CheckConstraint(
             "error_code <> 'stale_pending' OR "

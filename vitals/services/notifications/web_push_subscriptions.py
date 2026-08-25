@@ -14,7 +14,10 @@ contact internal services.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -58,6 +61,27 @@ class CorruptWebPushSubscription(WebPushSubscriptionError):
 
 
 SubscriptionSecret = WebPushTarget
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionGeneration:
+    """Opaque identity of one encrypted credential generation."""
+
+    key_version: int = field(repr=False)
+    ciphertext_fingerprint: bytes = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchSubscription:
+    """One decrypted target plus its opaque generation.
+
+    Re-enrolling the same browser produces fresh authenticated ciphertext.  The
+    fingerprint lets finalization avoid applying a late provider result to
+    credentials that were refreshed after the claim committed.
+    """
+
+    target: SubscriptionSecret = field(repr=False)
+    generation: SubscriptionGeneration = field(repr=False)
 
 
 def _require_uuid(value: Any, *, field: str) -> uuid.UUID:
@@ -212,6 +236,138 @@ async def load_secret(
         return None
 
 
+async def load_for_dispatch(
+    session: AsyncSession,
+    *,
+    subscription_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> DispatchSubscription | None:
+    """Lock and decrypt an active exact-account target for a dispatcher.
+
+    Unlike the account-facing loader, an unavailable installation vault is not
+    collapsed into absence: cancelling a valid outbox row because the process
+    temporarily lacks its credential key would destroy the only truthful retry
+    opportunity before any provider call was made.
+    """
+
+    subscription_id = _require_uuid(subscription_id, field="subscription_id")
+    user_id = _require_uuid(user_id, field="user_id")
+    row = await session.scalar(
+        select(WebPushSubscription)
+        .where(
+            WebPushSubscription.id == subscription_id,
+            WebPushSubscription.user_id == user_id,
+            WebPushSubscription.revoked_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if row is None or row.ciphertext is None:
+        return None
+    ciphertext = bytes(row.ciphertext)
+    return DispatchSubscription(
+        target=_decrypt(ciphertext),
+        generation=SubscriptionGeneration(
+            key_version=row.key_version,
+            ciphertext_fingerprint=hashlib.sha256(ciphertext).digest(),
+        ),
+    )
+
+
+def _matches_dispatch(
+    row: WebPushSubscription, generation: SubscriptionGeneration
+) -> bool:
+    if row.revoked_at is not None or row.ciphertext is None:
+        return False
+    return row.key_version == generation.key_version and hmac.compare_digest(
+        hashlib.sha256(bytes(row.ciphertext)).digest(),
+        generation.ciphertext_fingerprint,
+    )
+
+
+async def revoke_if_dispatch_matches(
+    session: AsyncSession,
+    *,
+    subscription_id: uuid.UUID,
+    user_id: uuid.UUID,
+    generation: SubscriptionGeneration,
+    revoked_at: datetime,
+) -> bool:
+    """Erase only the exact credential generation that the provider rejected."""
+
+    subscription_id = _require_uuid(subscription_id, field="subscription_id")
+    user_id = _require_uuid(user_id, field="user_id")
+    row = await session.scalar(
+        select(WebPushSubscription)
+        .where(
+            WebPushSubscription.id == subscription_id,
+            WebPushSubscription.user_id == user_id,
+        )
+        .with_for_update()
+    )
+    if row is None or not _matches_dispatch(row, generation):
+        return False
+    row.revoked_at = revoked_at
+    row.last_success_at = None
+    row.ciphertext = None
+    await session.flush()
+    return True
+
+
+async def record_success_if_dispatch_matches(
+    session: AsyncSession,
+    *,
+    subscription_id: uuid.UUID,
+    user_id: uuid.UUID,
+    generation: SubscriptionGeneration,
+    succeeded_at: datetime,
+) -> bool:
+    """Record success only for the credential generation that was contacted."""
+
+    subscription_id = _require_uuid(subscription_id, field="subscription_id")
+    user_id = _require_uuid(user_id, field="user_id")
+    row = await session.scalar(
+        select(WebPushSubscription)
+        .where(
+            WebPushSubscription.id == subscription_id,
+            WebPushSubscription.user_id == user_id,
+        )
+        .with_for_update()
+    )
+    if row is None or not _matches_dispatch(row, generation):
+        return False
+    row.last_success_at = succeeded_at
+    await session.flush()
+    return True
+
+
+async def revoke_by_id(
+    session: AsyncSession,
+    *,
+    subscription_id: uuid.UUID,
+    user_id: uuid.UUID,
+    revoked_at: datetime | None = None,
+) -> bool:
+    """Revoke an exact account-owned row without exposing its endpoint."""
+
+    subscription_id = _require_uuid(subscription_id, field="subscription_id")
+    user_id = _require_uuid(user_id, field="user_id")
+    row = await session.scalar(
+        select(WebPushSubscription)
+        .where(
+            WebPushSubscription.id == subscription_id,
+            WebPushSubscription.user_id == user_id,
+        )
+        .with_for_update()
+    )
+    if row is None or row.revoked_at is not None:
+        return False
+    row.revoked_at = revoked_at or now_utc()
+    row.last_success_at = None
+    row.ciphertext = None
+    await session.flush()
+    return True
+
+
 async def revoke_endpoint(
     session: AsyncSession,
     *,
@@ -290,18 +446,24 @@ async def revoke_all(session: AsyncSession, *, user_id: uuid.UUID) -> int:
 
 __all__ = [
     "CorruptWebPushSubscription",
+    "DispatchSubscription",
     "InvalidWebPushSubscription",
     "MAX_ENDPOINT_LENGTH",
     "MAX_KEY_LENGTH",
     "SubscriptionBelongsToAnotherAccount",
+    "SubscriptionGeneration",
     "SubscriptionSecret",
     "TooManyWebPushSubscriptions",
     "WebPushSubscriptionError",
     "endpoint_is_active",
     "endpoint_hash",
     "load_secret",
+    "load_for_dispatch",
+    "record_success_if_dispatch_matches",
     "register",
     "revoke_all",
+    "revoke_by_id",
     "revoke_endpoint",
+    "revoke_if_dispatch_matches",
     "validate_subscription",
 ]

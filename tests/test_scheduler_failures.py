@@ -290,6 +290,7 @@ def test_job_failure_family_registry_is_complete_and_matches_alert_keys():
         "share_purge",
         "ai_invocation_reconcile",
         "notification_delivery_reconcile",
+        "care_push_dispatch",
     }
     for job_id in (
         "ai_invocation_reconcile",
@@ -302,6 +303,11 @@ def test_job_failure_family_registry_is_complete_and_matches_alert_keys():
             reconciliation.failure_family
             is scheduler_mod.JobFailureFamily.PLATFORM
         )
+    care_push = scheduler_mod._registry["care_push_dispatch"]
+    assert care_push.trigger == "interval"
+    assert care_push.trigger_kwargs == {"seconds": 15}
+    assert care_push.lock_ttl == 180
+    assert care_push.failure_family is scheduler_mod.JobFailureFamily.PLATFORM
 
 
 # ── The keepalive itself ─────────────────────────────────────────────────────

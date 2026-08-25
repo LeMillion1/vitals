@@ -110,7 +110,13 @@ consent before delivery. The Web Push transport exposes only a fixed,
 versioned care-message wakeup: it has no API for message text, names, filenames,
 record identifiers, or caller-supplied URLs. Provider bodies and raw dependency
 exceptions are discarded rather than logged or stored, and the transport never
-retries an uncertain send.
+retries an uncertain send. Immediately before claiming a delivery, the shared
+scheduler rechecks the active account, exact participant relationship,
+professional role, current versioned read consent, and exact encrypted device
+generation. The claim commits before network I/O; every provider or uncertain
+outcome is terminal, so a crash cannot manufacture a duplicate send. A late
+`404/410` erases ciphertext only when that same credential generation is still
+active, never a browser subscription refreshed while the request was in flight.
 
 ## Revoking Claude.ai Access
 

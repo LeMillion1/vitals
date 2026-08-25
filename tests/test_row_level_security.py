@@ -735,6 +735,7 @@ def test_only_a_named_list_of_callers_may_enter_the_platform_scope():
         ("vitals/services/share_service.py", "purge_job"),
         ("vitals/services/ai_gateway_service.py", "reconciliation_job"),
         ("vitals/services/proactive/delivery.py", "delivery_reconciliation_job"),
+        ("vitals/services/notifications/care_push_dispatcher.py", "dispatch_job"),
         # An administrator's own console: their live grants and unanswered asks
         # span every record that answered one, so there is no single subject to
         # bind and binding one would answer a different question. Both queries

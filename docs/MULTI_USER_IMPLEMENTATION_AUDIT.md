@@ -41,7 +41,7 @@ the others remain useful provenance for the remediations named below:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0069 (head)`; 69 files in `migrations/versions` | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0070 (head)`; 70 files in `migrations/versions` | Verified |
 | SQLAlchemy tables | `len(Base.metadata.tables)` → 80 | Verified |
 | Ownership registry | `len(OWNERSHIP_REGISTRY)` → 80 | Verified and exhaustive in code |
 | Subject-scoped tables | 66 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
@@ -50,7 +50,7 @@ the others remain useful provenance for the remediations named below:
 | Domain enum | 14 health domains | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 29 modules under `web/routers` | Verified |
-| Application services | 99 tracked non-`__init__` modules after the care, authentication, analytics, persistence, and notification moves | Verified |
+| Application services | 100 tracked non-`__init__` modules after the care, authentication, analytics, persistence, and notification moves | Verified |
 | Flat service debt | 77 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
 | Commercial Git history | 247 commits after base `c91456a`; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
@@ -165,10 +165,10 @@ verifiable GitHub pull request: the commercial history has only one merge
 commit. Keep this document as target/decision history and use this audit for the
 current state.
 
-The following roadmap targets are not shipped: the consent-rechecked care
-dispatcher and service-worker notification content (encrypted account/device
-subscriptions landed in `0068`; explicit enrollment, the subject-isolated
-outbox, and a fixed PHI-free transport boundary have since landed),
+The following roadmap targets are not shipped: service-worker notification
+content (encrypted account/device subscriptions landed in `0068`; explicit
+enrollment, the subject-isolated outbox, a fixed PHI-free transport boundary,
+and consent-rechecked at-most-once server dispatch have since landed),
 invitation inbox, multi-subject full backup, support repair/export
 and break-glass, registration modes, lab
 marker collision migration, private-byte relocation outside static storage, and
@@ -396,8 +396,21 @@ image installed the exact `pywebpush 2.4.0` dependency, imported the adapter,
 and completed real ECE encryption plus VAPID signing against a fake in-container
 session; the captured request contained no plaintext and had redirects disabled,
 while the raw provider body remained unread and its response was closed. The
-temporary verification image was removed. The transport still has no dispatcher
-or scheduler call site and made no real provider request.
+temporary verification image was removed. It made no real provider request.
+
+The consent-rechecking care dispatcher on revision `0070` then added a bounded
+15-second shared-scheduler job. Claims lock with `SKIP LOCKED`, match a
+professional's exact participant relationship and current role/consent, commit
+before network I/O, and terminalize every trustworthy or uncertain outcome
+without retry. Provider-gone cleanup compares the encrypted subscription
+generation, so a late response cannot erase a browser that re-enrolled while
+the request was in flight. Claims are HMAC-sealed, one-shot capabilities that
+activate only after their exact outer transaction commits; savepoint commits
+cannot release a credential to the network. The final dispatcher file passed
+24 fast tests (one PostgreSQL-only skip), the full fast suite passed 4,751 tests
+(171 skipped, 35 UI deselected), and PostgreSQL 15 completed the real
+`head → 0034 → head` cycle plus 74 dispatcher/outbox/RLS/scheduler tests.
+Service-worker rendering remains separate.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

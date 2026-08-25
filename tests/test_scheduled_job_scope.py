@@ -72,6 +72,7 @@ ACTS_FOR_THE_INSTALLATION = {
     "share_purge": "expired shares, across every subject",
     "ai_invocation_reconcile": "stale provider reservations, across every subject",
     "notification_delivery_reconcile": "stalled deliveries, across every subject",
+    "care_push_dispatch": "generic care wakeups, across every subject",
 }
 
 

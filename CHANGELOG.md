@@ -8,6 +8,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — care wakeups are dispatched at most once after fresh consent checks
+
+Revision `0070` and the shared scheduler complete the server-side care-push
+path. A bounded platform job locks pending rows with `SKIP LOCKED`, then checks
+the active account, exact conversation participant and relationship,
+professional role, current versioned read consent, and exact encrypted device
+generation in one transaction. The claim commits before network I/O. Accepted,
+gone, rejected, ambiguous, protocol, and transport outcomes are terminal and
+never return to pending; a crashed or cancelled attempt becomes stale and
+ambiguous instead of being sent twice. A provider `404/410` erases credentials
+only if the browser has not re-enrolled since the attempt began. The payload is
+still the fixed PHI-free care wakeup. Service-worker notification rendering is
+the remaining separate UI step.
+
 ### Added — Web Push transport has one PHI-free operation
 
 Vitals now pins and verifies the async `pywebpush` protocol boundary for care
@@ -18,8 +32,8 @@ leaves the process. Provider response bodies and dependency exception strings
 are discarded; trustworthy provider responses normalize to accepted, gone,
 rejected, or ambiguous plus the HTTP status, while a missing trustworthy
 response becomes a sanitized transport exception. The client never retries,
-while disabled configuration still exposes no enrollment or call path. No
-scheduler or dispatcher calls this transport yet.
+while disabled configuration still exposes no enrollment or call path. The
+consent-rechecking care dispatcher is now its only call site.
 
 ### Added — care messages create a subject-isolated push outbox
 
@@ -31,8 +45,8 @@ and devices enrolled later receive no historical claim. Composite foreign keys,
 a unique message/recipient/device triple, and FORCE RLS prevent cross-subject,
 cross-account, and duplicate rows. The outbox deliberately stores no rendered
 notification, message text, name, filename, endpoint, or provider response.
-Server-side dispatch remains disabled until its separate, consent-rechecking
-implementation lands; the transport has no call site yet.
+Server-side dispatch now rechecks every claim; service-worker rendering remains
+separate, so the outbox still carries no presentation content.
 
 ### Added — care notifications are an explicit per-device choice
 
@@ -42,8 +56,9 @@ only after an explicit click, exposes only the installation's public VAPID key,
 and never lists device endpoints or account/patient identifiers. The control
 detects unsupported and denied browsers, shared-browser ownership conflicts,
 device limits, and VAPID key rotation; an existing subscription remains
-removable even after browser permission is denied. Notification content and
-server-side delivery remain disabled until the separate dispatcher lands.
+removable even after browser permission is denied. Notification content remains
+disabled until the separate service-worker step; server-side delivery now uses
+only the fixed generic wakeup.
 
 ### Fixed — the PWA worker controls the application, not only static files
 
@@ -792,8 +807,10 @@ static mount. The download hangs from the subject/thread path and rechecks live
 read consent and participation on every request, so pausing consent stops the
 next professional download while the patient keeps their record. Revision
 `0068` stores device subscriptions, `0069` adds the subject-isolated outbox, and
-the PHI-free transport boundary is ready. No dispatcher calls it yet, so new
-work is still signalled by the in-app unread count.
+`0070` adds definitive provider rejection semantics. The PHI-free transport is
+now called by a consent-rechecking, at-most-once scheduler job. New work remains
+visible through the durable in-app unread count even when a wakeup is missed;
+service-worker notification rendering follows separately.
 
 
 ### Fixed — six defects a browser found and the suites could not

@@ -64,6 +64,7 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
     from vitals.services.proactive.brief import brief_job, last_attempt_hour
     from vitals.services.proactive.nudges import nudges_job
     from vitals.services.proactive.delivery import delivery_reconciliation_job
+    from vitals.services.notifications.care_push_dispatcher import dispatch_job
     from vitals.services.raw_payload_service import sweep_pending_job as raw_payload_sweep_job
     from vitals.services.share_service import purge_job as share_purge_job
     from vitals.services.ai_gateway_service import (
@@ -152,6 +153,17 @@ def register_all_jobs(settings: Optional[dict[str, Any]] = None) -> None:
         minutes=15,
     )
 
+    # Consent-rechecked generic care wakeups. The common scheduler runner owns
+    # the Redis lock; the service owns only bounded database claims and performs
+    # provider I/O after their transaction has committed.
+    register_job(
+        "care_push_dispatch",
+        dispatch_job,
+        trigger="interval",
+        failure_family=JobFailureFamily.PLATFORM,
+        seconds=15,
+        lock_ttl=180,
+    )
 
     # Hevy sync — every 6h. No-ops when Hevy isn't configured.
     register_job(
