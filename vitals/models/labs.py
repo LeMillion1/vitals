@@ -16,10 +16,12 @@ Two tables, ``domain='labs'``:
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import date as date_type
-from typing import Optional
+from typing import Any, Optional
 
-from sqlalchemy import Date, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, Date, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vitals.enums import Domain
@@ -31,6 +33,30 @@ from vitals.models.ownership_mixins import (
 )
 
 DOMAIN = Domain.LABS.value
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _fallback_marker_key(context: Any) -> str:
+    """Compatibility default for ORM-built fixtures and internal seed rows.
+
+    Live writers pass the alias-aware key explicitly.  This conservative default
+    keeps direct ORM construction valid without teaching the model the service's
+    reviewed synonym catalog.
+    """
+
+    value = str(context.get_current_parameters().get("marker") or "")
+    cleaned = _WHITESPACE.sub(" ", unicodedata.normalize("NFKC", value).strip())
+    return cleaned.casefold().replace("ё", "е")
+
+
+def _fallback_original_marker(context: Any) -> str:
+    return str(context.get_current_parameters().get("marker") or "")
+
+
+def _fallback_normalized_name(context: Any) -> str:
+    value = str(context.get_current_parameters().get("name") or "")
+    cleaned = _WHITESPACE.sub(" ", unicodedata.normalize("NFKC", value).strip())
+    return cleaned.casefold().replace("ё", "е")
 
 
 class LabResult(
@@ -54,10 +80,25 @@ class LabResult(
         Index(
             "ix_lab_results_subject_marker_date", "subject_id", "marker", "date"
         ),
+        Index(
+            "ix_lab_results_subject_marker_key_date",
+            "subject_id",
+            "marker_key",
+            "date",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     marker: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Stable identity is deliberately separate from presentation.  ``marker``
+    # is the canonical display spelling; ``marker_original`` preserves exactly
+    # which spelling entered this normalized fact so the cutover is reversible.
+    marker_key: Mapped[str] = mapped_column(
+        String(256), nullable=False, default=_fallback_marker_key
+    )
+    marker_original: Mapped[str] = mapped_column(
+        String(128), nullable=False, default=_fallback_original_marker
+    )
     value: Mapped[float] = mapped_column(Float, nullable=False)
     unit: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # Reference range snapshot as reported on this result (a lab's range can
@@ -83,11 +124,29 @@ class LabMarker(Base, RequiredSubjectOwnershipMixin, OriginActorMixin, Timestamp
         # A marker's reference range and deferral are personal, so the name is
         # unique inside one record, not across the installation.
         Index("uq_lab_markers_subject_name", "subject_id", "name", unique=True),
+        Index("ix_lab_markers_subject_normalized_name", "subject_id", "normalized_name"),
+        Index(
+            "uq_lab_markers_subject_normalized_canonical",
+            "subject_id",
+            "normalized_name",
+            unique=True,
+            postgresql_where=text("is_canonical = true"),
+            sqlite_where=text("is_canonical = 1"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     domain: Mapped[str] = mapped_column(String(32), nullable=False, server_default=DOMAIN)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(
+        String(256), nullable=False, default=_fallback_normalized_name
+    )
+    # Collision losers stay as complete, exportable aliases.  Keeping them in
+    # the protected source table retains every personal catalog setting and its
+    # actor/timestamps while exactly one row drives live behavior.
+    is_canonical: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
     category: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     unit: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     ref_low: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

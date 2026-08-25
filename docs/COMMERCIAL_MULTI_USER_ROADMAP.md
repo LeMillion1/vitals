@@ -86,18 +86,14 @@ subject, so the unqualified delete only ever runs where there is exactly one
 record for it to replace. What is missing is the multi-subject backup format,
 not a guard.
 
-**One defect is named and not fixed.** `labs_service.normalize_marker`
-promises to standardize casing, and does so only for the 62 names in
-`MARKER_ALIASES`; everything else falls through to "upper-case the first
-character, keep the rest". So `TSH`, `tsh` and `tSh` are three markers — three
-rows in Latest values, three charts, three histories — and the lab form takes
-free text, so a person reaches this by typing. It is not fixed here because the
-fix re-keys stored clinical data: changing the fallback splits every existing
-installation's history at the moment of the change unless a migration re-keys
-the rows first, and re-keying makes two spellings collide under
-`uq_lab_markers_subject_name`, which needs a merge policy rather than a rename.
-Normalizer, migration and collision policy are one piece of work, not a
-one-line fix.
+**The lab-marker collision is migrated, not hidden on read.** Revision `0077`
+adds a conservative subject-scoped identity key, retains every colliding catalog
+row, chooses one deterministic canonical row, and stores each result's original
+input separately from its canonical display. Histories, latest values, charts,
+alerts, digests, care summaries, HRT reminders, portability, web selection, and
+MCP deduplication now group by that key. The real PostgreSQL migration has passed
+upgrade, downgrade, and repeat-upgrade gates; punctuation and medically
+meaningful suffixes remain distinct by design.
 
 **Two behaviours will look like bugs if you don't know they were chosen:**
 

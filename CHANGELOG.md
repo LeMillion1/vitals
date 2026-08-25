@@ -8,6 +8,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — one subject-scoped identity for each lab marker
+
+Lab names now have a conservative, subject-scoped identity key, so casing,
+Unicode-width, whitespace, `ё`/`е`, and reviewed synonym variants such as
+`TSH`, `tSh`, and `tsh` share one catalog entry, history, chart, alert, digest,
+care view, and MCP deduplication boundary. Punctuation and medically meaningful
+suffixes are deliberately not folded.
+
+Revision `0077` retains every colliding catalog row, selects one deterministic
+canonical display row per subject, and preserves each result's original input
+alongside its canonical display and key. Alert references and old portability
+archives are upgraded without discarding spellings; the downgrade restores the
+previous result names. Results without a historical catalog receive the same
+deterministic presentation on migration and import.
+
 ### Fixed — verified medical-file upload and delivery
 
 Labs, body scans, progress photos, and care attachments now derive a canonical

@@ -174,6 +174,7 @@ from vitals.services.lab_result_ownership_backfill_service import (
     preflight_lab_result_ownership_backfill,
     reset_lab_result_ownership_backfill_for_portability_v1_restore,
 )
+from vitals.services.labs_service import normalize_marker_key
 from vitals.services.weight_log_ownership_backfill_service import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_TABLES,
     WeightLogOwnershipBackfillError,
@@ -191,6 +192,118 @@ KIND_LLM = "llm_export"
 # it contains any of these substrings — forward-looking guard for token rows.
 _SECRET_KEY_MARKERS = ("token", "secret", "password", "api_key", "apikey", "credential")
 _POSTGRES_INTEGER_MAX = 2_147_483_647
+
+
+def _upgrade_lab_marker_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade older v1 lab rows to the canonical-key shape without losing text.
+
+    Backup v1 is schema-evolving and older archives predate marker keys.  Work on
+    shallow row copies so validation/import never mutates the caller's object.
+    A subject export contains one record, and full-v1 is already restricted to
+    one subject, so grouping by key here cannot cross a tenant boundary.
+    """
+
+    marker_rows = payload.get("lab_markers")
+    result_rows = payload.get("lab_results")
+    if not marker_rows and not result_rows:
+        return payload
+
+    upgraded = dict(payload)
+    markers = [dict(row) for row in (marker_rows or [])]
+    results = [dict(row) for row in (result_rows or [])]
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in markers:
+        name = row.get("name")
+        if not isinstance(name, str) or not normalize_marker_key(name):
+            raise _contract_error("import.error.generic", exc="invalid lab marker name")
+        key = row.get("normalized_name") or normalize_marker_key(name)
+        if not isinstance(key, str) or key != normalize_marker_key(name):
+            raise _contract_error(
+                "import.error.generic", exc="invalid lab marker normalized key"
+            )
+        row["normalized_name"] = key
+        groups[key].append(row)
+
+    for result in results:
+        marker = result.get("marker")
+        if not isinstance(marker, str) or not normalize_marker_key(marker):
+            raise _contract_error("import.error.generic", exc="invalid lab result marker")
+        key = result.get("marker_key") or normalize_marker_key(marker)
+        if not isinstance(key, str) or key != normalize_marker_key(
+            result.get("marker_original", marker)
+        ):
+            raise _contract_error("import.error.generic", exc="invalid lab result key")
+
+    canonical_names: dict[str, str] = {}
+    for key, rows in groups.items():
+        explicit = [row for row in rows if row.get("is_canonical") is True]
+        if any(
+            "is_canonical" in row and not isinstance(row["is_canonical"], bool)
+            for row in rows
+        ) or len(explicit) > 1:
+            raise _contract_error(
+                "import.error.generic", exc="ambiguous canonical lab marker"
+            )
+        if explicit:
+            winner = explicit[0]
+        else:
+            winner = max(
+                rows,
+                key=lambda row: (
+                    str(row.get("updated_at") or ""),
+                    -(
+                        row["id"]
+                        if isinstance(row.get("id"), int)
+                        and not isinstance(row.get("id"), bool)
+                        else 0
+                    ),
+                ),
+            )
+        for row in rows:
+            row["is_canonical"] = row is winner
+        canonical_names[key] = str(winner["name"])
+
+    # Migration 0077 walks historical results by primary key and lets the first
+    # spelling establish presentation when no catalog row exists.  Archives can
+    # arrive in any JSON list order, so repeat that rule explicitly here: lowest
+    # integer id first, with archive order as the deterministic fallback for an
+    # older/non-standard row whose id has not reached structural validation yet.
+    ordered_results = sorted(
+        enumerate(results),
+        key=lambda item: (
+            item[1].get("id")
+            if isinstance(item[1].get("id"), int)
+            and not isinstance(item[1].get("id"), bool)
+            else _POSTGRES_INTEGER_MAX + 1,
+            item[0],
+        ),
+    )
+    for _, row in ordered_results:
+        marker = row["marker"]
+        key = row.get("marker_key") or normalize_marker_key(marker)
+        canonical_names.setdefault(key, marker)
+
+    for row in results:
+        marker = row.get("marker")
+        if not isinstance(marker, str) or not normalize_marker_key(marker):
+            raise _contract_error("import.error.generic", exc="invalid lab result marker")
+        original = row.get("marker_original", marker)
+        key = row.get("marker_key") or normalize_marker_key(marker)
+        if (
+            not isinstance(original, str)
+            or not isinstance(key, str)
+            or key != normalize_marker_key(original)
+        ):
+            raise _contract_error(
+                "import.error.generic", exc="unresolved lab marker identity"
+            )
+        row["marker_original"] = original
+        row["marker_key"] = key
+        row["marker"] = canonical_names.get(key, marker)
+
+    upgraded["lab_markers"] = markers
+    upgraded["lab_results"] = results
+    return upgraded
 
 # Cross-surface ownership and private-resource plumbing.  These fields are set by
 # trusted tenant/storage boundaries, not transported by v1 backups, generic MCP
@@ -1188,6 +1301,7 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     audit trail.
     """
     _validate_payload(payload)
+    payload = _upgrade_lab_marker_identity(payload)
     raw_high_watermark, raw_snapshot_rows = _raw_replacement_snapshot_bounds(
         payload
     )
@@ -1723,6 +1837,7 @@ async def import_subject(
     """
 
     _validate_subject_payload(payload)
+    payload = _upgrade_lab_marker_identity(payload)
     if subject_id is None:
         raise _contract_error("portability.error.v1_missing_subject")
 

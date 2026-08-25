@@ -28,6 +28,8 @@ from __future__ import annotations
 import base64
 import logging
 import math
+import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import date as date_type, timedelta
@@ -257,17 +259,53 @@ MARKER_ALIASES = {
     "25-он витамин d, ихла, суммарный (кальциферол)": "25-ОН витамин D",
 }
 
+_MARKER_WHITESPACE = re.compile(r"\s+")
+
+
+def _clean_marker_name(name: str) -> str:
+    """Conservatively clean presentation text without changing punctuation."""
+
+    return _MARKER_WHITESPACE.sub(" ", unicodedata.normalize("NFKC", name).strip())
+
+
+def _marker_comparison_key(name: str) -> str:
+    return _clean_marker_name(name).casefold().replace("ё", "е")
+
+
 def normalize_marker(name: str) -> str:
     """Standardize spelling, casing and known synonym names of a marker."""
-    cleaned = name.strip()
+    cleaned = _clean_marker_name(name)
     if not cleaned:
         return ""
-    # Normalize ё -> е for spelling consistency
-    lowered = cleaned.lower().replace("ё", "е")
+    lowered = _marker_comparison_key(cleaned)
     if lowered in MARKER_ALIASES:
         return MARKER_ALIASES[lowered]
     # Fallback: capitalize first character, keep the rest
     return cleaned[0].upper() + cleaned[1:]
+
+
+def normalize_marker_key(name: str) -> str:
+    """Return the stable identity for a marker inside one health record.
+
+    The key intentionally does not fold punctuation or medically meaningful
+    suffixes.  Known synonyms are first resolved through the existing reviewed
+    alias map; every other name receives only Unicode, whitespace and casing
+    normalization.
+    """
+
+    display = normalize_marker(name)
+    return _marker_comparison_key(display) if display else ""
+
+
+def _validated_marker_identity(name: str) -> tuple[str, str, str]:
+    original = name
+    display = normalize_marker(name)
+    key = normalize_marker_key(display)
+    if not display:
+        raise ValueError("marker is required")
+    if len(original) > 128 or len(display) > 128 or len(key) > 256:
+        raise ValueError("marker is too long")
+    return original, display, key
 
 
 # ── Marker catalog ────────────────────────────────────────────────────────────
@@ -277,8 +315,13 @@ async def get_marker(
     *,
     subject_id: uuid.UUID,
 ) -> Optional[LabMarker]:
-    name = normalize_marker(name)
-    stmt = select(LabMarker).where(LabMarker.name == name)
+    key = normalize_marker_key(name)
+    if not key:
+        return None
+    stmt = select(LabMarker).where(
+        LabMarker.normalized_name == key,
+        LabMarker.is_canonical.is_(True),
+    )
     stmt = stmt.where(_subject_scope(LabMarker, subject_id))
     result = await session.execute(stmt)
     return result.scalars().first()
@@ -290,13 +333,37 @@ async def _marker_for_update(
     *,
     subject_id: uuid.UUID,
 ) -> LabMarker | None:
-    name = normalize_marker(name)
-    stmt = select(LabMarker).where(LabMarker.name == name)
+    key = normalize_marker_key(name)
+    if not key:
+        return None
+    stmt = select(LabMarker).where(
+        LabMarker.normalized_name == key,
+        LabMarker.is_canonical.is_(True),
+    )
     stmt = stmt.where(_subject_scope(LabMarker, subject_id))
     marker = await session.scalar(
         stmt.with_for_update().execution_options(populate_existing=True)
     )
     return marker
+
+
+async def _existing_marker_display(
+    session: AsyncSession,
+    *,
+    marker_key: str,
+    subject_id: uuid.UUID,
+) -> str | None:
+    """Recover the stable display for old portable facts lacking a catalog row."""
+
+    return await session.scalar(
+        select(LabResult.marker)
+        .where(
+            LabResult.subject_id == subject_id,
+            LabResult.marker_key == marker_key,
+        )
+        .order_by(LabResult.id)
+        .limit(1)
+    )
 
 
 def _apply_marker_defaults(
@@ -333,11 +400,14 @@ async def _ensure_marker(
         subject_id=identity.subject_id,
     )
     if marker is None:
+        _original, display, key = _validated_marker_identity(name)
         marker = LabMarker(
             subject_id=identity.subject_id,
             actor_user_id=identity.actor_user_id,
             domain=DOMAIN,
-            name=normalize_marker(name),
+            name=display,
+            normalized_name=key,
+            is_canonical=True,
         )
         session.add(marker)
     _apply_marker_defaults(
@@ -355,7 +425,7 @@ async def list_markers(
     *,
     subject_id: uuid.UUID,
 ) -> Sequence[LabMarker]:
-    stmt = select(LabMarker)
+    stmt = select(LabMarker).where(LabMarker.is_canonical.is_(True))
     stmt = stmt.where(_subject_scope(LabMarker, subject_id))
     result = await session.execute(stmt.order_by(LabMarker.name))
     return result.scalars().all()
@@ -382,9 +452,7 @@ async def ensure_marker_catalog_entry(
         identity=identity,
         prepared=prepared_conflict_write,
     )
-    normalized = normalize_marker(name)
-    if not normalized:
-        raise ValueError("marker is required")
+    _original, normalized, normalized_key = _validated_marker_identity(name)
     if retest_interval_days is not None and retest_interval_days < 1:
         raise ValueError("retest_interval_days must be positive")
     row = await _marker_for_update(
@@ -400,6 +468,8 @@ async def ensure_marker_catalog_entry(
             actor_user_id=identity.actor_user_id,
             domain=DOMAIN,
             name=normalized,
+            normalized_name=normalized_key,
+            is_canonical=True,
             category=category,
             retest_interval_days=retest_interval_days,
         )
@@ -443,7 +513,6 @@ async def defer_retest(
             "subject_id does not match prepared lab write identity"
         )
     subject_id = identity.subject_id
-    marker = normalize_marker(marker)
     row = await _marker_for_update(
         session,
         marker,
@@ -459,7 +528,7 @@ async def defer_retest(
         session,
         context=alerts_service.HealthAlertContext(identity),
         alert_key=RETEST_DUE_KEY,
-        marker=marker,
+        marker=row.name,
         keep_entity=None,
         legacy_bridge=_alert_bridge(context),
     )
@@ -947,15 +1016,25 @@ async def add_result(
             require_mcp_roots=source == Source.MCP.value,
             allow_historical_parser_raw=allow_historical_parser_raw,
         )
-    marker = normalize_marker(marker)
-    if not marker:
-        raise ValueError("marker is required")
+    marker_original, marker_display, marker_key = _validated_marker_identity(marker)
     if value is None or not math.isfinite(value) or abs(value) > _VALUE_ABS_MAX:
-        raise ValueError(f"implausible lab value for {marker}: {value!r}")
+        raise ValueError(f"implausible lab value for {marker_display}: {value!r}")
     catalog = await _marker_for_update(
         session,
-        marker,
+        marker_key,
         subject_id=identity.subject_id,
+    )
+    marker = (
+        catalog.name
+        if catalog is not None
+        else (
+            await _existing_marker_display(
+                session,
+                marker_key=marker_key,
+                subject_id=identity.subject_id,
+            )
+            or marker_display
+        )
     )
     eff_low = ref_low if ref_low is not None else (catalog.ref_low if catalog else None)
     eff_high = ref_high if ref_high is not None else (catalog.ref_high if catalog else None)
@@ -982,6 +1061,8 @@ async def add_result(
             actor_user_id=identity.actor_user_id,
             domain=DOMAIN,
             name=marker,
+            normalized_name=marker_key,
+            is_canonical=True,
         )
         session.add(catalog)
     _apply_marker_defaults(
@@ -998,6 +1079,8 @@ async def add_result(
         domain=DOMAIN,
         source=source,
         marker=marker,
+        marker_key=marker_key,
+        marker_original=marker_original,
         value=value,
         unit=unit or catalog.unit,
         ref_low=eff_low,
@@ -1051,11 +1134,12 @@ async def update_result(
         return None
 
     next_marker = row.marker
+    next_marker_key = row.marker_key
+    next_marker_original = row.marker_original
     if marker is not None:
-        normalized = normalize_marker(marker)
-        if not normalized:
-            raise ValueError("marker is required")
-        next_marker = normalized
+        next_marker_original, next_marker, next_marker_key = (
+            _validated_marker_identity(marker)
+        )
     next_value = row.value
     if value is not None:
         if not math.isfinite(value) or abs(value) > _VALUE_ABS_MAX:
@@ -1069,9 +1153,20 @@ async def update_result(
     next_high = ref_high if ref_high is not None else row.ref_high
     catalog = await _marker_for_update(
         session,
-        next_marker,
+        next_marker_key,
         subject_id=identity.subject_id,
     )
+    if catalog is not None:
+        next_marker = catalog.name
+    else:
+        next_marker = (
+            await _existing_marker_display(
+                session,
+                marker_key=next_marker_key,
+                subject_id=identity.subject_id,
+            )
+            or next_marker
+        )
     if next_low is None and catalog is not None:
         next_low = catalog.ref_low
     if next_high is None and catalog is not None:
@@ -1101,6 +1196,8 @@ async def update_result(
             actor_user_id=identity.actor_user_id,
             domain=DOMAIN,
             name=next_marker,
+            normalized_name=next_marker_key,
+            is_canonical=True,
         )
         session.add(catalog)
     _apply_marker_defaults(
@@ -1112,6 +1209,8 @@ async def update_result(
 
     row.date = next_date
     row.marker = next_marker
+    row.marker_key = next_marker_key
+    row.marker_original = next_marker_original
     row.value = next_value
     row.unit = next_unit or catalog.unit
     row.ref_low = next_low
@@ -1177,8 +1276,8 @@ async def list_results(
     report about a past window is not filled by results drawn after it."""
     filters = [_subject_scope(LabResult, subject_id)]
     if marker is not None:
-        marker = normalize_marker(marker)
-        filters.append(LabResult.marker == marker)
+        marker_key = normalize_marker_key(marker)
+        filters.append(LabResult.marker_key == marker_key)
     if start is not None:
         filters.append(LabResult.date >= start)
     if end is not None:
@@ -1284,7 +1383,7 @@ async def bounded_latest_results_by_marker(
             LabResult.id.label("result_id"),
             func.row_number()
             .over(
-                partition_by=LabResult.marker,
+                partition_by=LabResult.marker_key,
                 order_by=(LabResult.date.desc(), LabResult.id.desc()),
             )
             .label("marker_rank"),
@@ -1301,7 +1400,7 @@ async def bounded_latest_results_by_marker(
             select(LabResult)
             .join(ranked, LabResult.id == ranked.c.result_id)
             .where(ranked.c.marker_rank == 1)
-            .order_by(LabResult.marker, LabResult.id)
+            .order_by(LabResult.marker_key, LabResult.id)
             .limit(marker_limit + 1)
         )
     )
@@ -1351,7 +1450,7 @@ async def latest_per_marker(
     )
     seen: dict[str, LabResult] = {}
     for r in rows:
-        seen.setdefault(r.marker, r)
+        seen.setdefault(r.marker_key, r)
     return list(seen.values())
 
 
@@ -1439,7 +1538,7 @@ async def resolve_latest_scoped(
     )
     latest_by_marker: dict[str, LabResult] = {}
     for row in rows:
-        latest_by_marker.setdefault(row.marker, row)
+        latest_by_marker.setdefault(row.marker_key, row)
     latest = list(latest_by_marker.values())
     return [
         _proposed_result(
@@ -1536,7 +1635,7 @@ async def refresh_alerts(
             .execution_options(populate_existing=True)
         )
     )
-    list(
+    locked_markers = list(
         await session.scalars(
             select(LabMarker)
             .where(marker_scope)
@@ -1552,14 +1651,19 @@ async def refresh_alerts(
         subject_id=subject_id,
     )
     markers = {
-        m.name: m
+        m.normalized_name: m
         for m in await list_markers(
             session,
             subject_id=subject_id,
         )
     }
+    alias_names_by_key: dict[str, set[str]] = {}
+    for marker_row in locked_markers:
+        alias_names_by_key.setdefault(marker_row.normalized_name, set()).add(
+            marker_row.name
+        )
 
-    latest_by_name = {row.marker: row for row in latest}
+    latest_by_name = {row.marker_key: row for row in latest}
     names = sorted(set(markers) | set(latest_by_name))
     alert_context = _system_alert_context(context)
     bridge = _alert_bridge(context)
@@ -1606,13 +1710,16 @@ async def refresh_alerts(
             legacy_bridge=bridge,
         )
 
-    for marker_name in names:
-        r = latest_by_name.get(marker_name)
+    for marker_key in names:
+        r = latest_by_name.get(marker_key)
+        marker_row = markers.get(marker_key)
+        marker_name = marker_row.name if marker_row is not None else r.marker
         entity = f"{marker_name}:{r.id}" if r is not None else None
-        await resolve_superseded(OUT_OF_RANGE_KEY, marker_name, entity)
+        for alias_name in alias_names_by_key.get(marker_key, {marker_name}):
+            await resolve_superseded(OUT_OF_RANGE_KEY, alias_name, entity)
         if r is not None and is_out_of_range(r.flag):
             if not await was_dismissed(OUT_OF_RANGE_KEY, entity):
-                tier = markers.get(marker_name).tier if markers.get(marker_name) else 2
+                tier = marker_row.tier if marker_row is not None else 2
                 critical = _is_critical(r.flag) or tier == 1
                 severity = Severity.WARN if critical else Severity.INFO
                 await raise_derived(
@@ -1630,17 +1737,17 @@ async def refresh_alerts(
         elif entity is not None:
             await resolve_current(OUT_OF_RANGE_KEY, entity)
 
-        marker_row = markers.get(marker_name)
         has_schedule = (
             r is not None
             and marker_row is not None
             and marker_row.retest_interval_days is not None
         )
-        await resolve_superseded(
-            RETEST_DUE_KEY,
-            marker_name,
-            entity if has_schedule else None,
-        )
+        for alias_name in alias_names_by_key.get(marker_key, {marker_name}):
+            await resolve_superseded(
+                RETEST_DUE_KEY,
+                alias_name,
+                entity if has_schedule else None,
+            )
         if not has_schedule:
             continue
         assert r is not None and marker_row is not None and entity is not None
@@ -2448,9 +2555,10 @@ async def _result_exists(
     *,
     subject_id: uuid.UUID,
 ) -> bool:
+    marker_key = normalize_marker_key(marker)
     stmt = select(LabResult.id).where(
         LabResult.date == on_date,
-        LabResult.marker == marker,
+        LabResult.marker_key == marker_key,
         LabResult.value == value,
     )
     if subject_id is not None:

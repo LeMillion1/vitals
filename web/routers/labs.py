@@ -104,7 +104,32 @@ async def labs_dashboard(
         legacy_bridge=alerts_service.LegacyAlertBridge.FULLY_UNOWNED,
     )
 
-    selected = marker or (latest[0].marker if latest else None)
+    selected_marker = (
+        await labs_service.get_marker(
+            db,
+            marker,
+            subject_id=conflict_context.identity.subject_id,
+        )
+        if marker
+        else None
+    )
+    selected = (
+        selected_marker.name
+        if selected_marker is not None
+        else (
+            next(
+                (
+                    row.marker
+                    for row in latest
+                    if marker
+                    and row.marker_key == labs_service.normalize_marker_key(marker)
+                ),
+                marker,
+            )
+            if marker
+            else (latest[0].marker if latest else None)
+        )
+    )
     history = (
         await labs_service.marker_history(
             db,
@@ -164,7 +189,7 @@ async def add_result(
         evaluation_date=on_date,
     )
     try:
-        await labs_service.add_result(
+        row = await labs_service.add_result(
             db,
             on_date=on_date,
             marker=marker.strip(),
@@ -198,7 +223,7 @@ async def add_result(
         # surface that as a 400 rather than fall through to a 500.
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     await db.commit()
-    return _redirect(request, marker=marker.strip(), added=1)
+    return _redirect(request, marker=row.marker, added=1)
 
 
 class LabMarkerIn(BaseModel):

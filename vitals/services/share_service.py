@@ -778,10 +778,10 @@ async def _labs_block(
     )
     by_marker: dict[str, list] = {}
     for r in rows:
-        by_marker.setdefault(r.marker, []).append(r)
+        by_marker.setdefault(r.marker_key, []).append(r)
 
     markers = []
-    for marker, history in by_marker.items():
+    for _marker_key, history in by_marker.items():
         current = next((r for r in history if r.date >= start), None)
         if current is None:
             continue
@@ -790,7 +790,7 @@ async def _labs_block(
         earlier = [r for r in history if r.date < current.date][:2]
         markers.append(
             {
-                "marker": marker,
+                "marker": current.marker,
                 "value": current.value,
                 "unit": current.unit,
                 "flag": current.flag,

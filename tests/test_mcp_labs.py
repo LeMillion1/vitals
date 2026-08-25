@@ -70,7 +70,12 @@ async def test_log_lab_results_batch_creates_and_dedupes(db_session, session_fac
     assert len(stored) == 2
 
     # Retrying the exact same report is a safe no-op (dedup on date+marker+value).
-    res2 = await mcp_router.log_lab_results(**payload)
+    variant_retry = dict(payload)
+    variant_retry["results"] = [
+        {**item, "marker": item["marker"].swapcase()}
+        for item in payload["results"]
+    ]
+    res2 = await mcp_router.log_lab_results(**variant_retry)
     assert res2 == {"created": 0, "skipped": 2, "results": []}
     stored2 = await mcp_router.get_lab_results(start_date="2026-06-10", end_date="2026-06-10")
     assert len(stored2) == 2

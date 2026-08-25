@@ -1418,7 +1418,7 @@ async def assemble_context(
             LabResult.id.label("id"),
             func.row_number()
             .over(
-                partition_by=LabResult.marker,
+                partition_by=LabResult.marker_key,
                 order_by=(LabResult.date.desc(), LabResult.id.desc()),
             )
             .label("history_rank"),
@@ -1462,13 +1462,16 @@ async def assemble_context(
     labs_truncated = total_lab_rows_as_of > len(lab_rows)
     marker_rows: dict[str, list[Any]] = {}
     for row in lab_rows:
-        marker_rows.setdefault(row.marker, []).append(row)
+        marker_rows.setdefault(row.marker_key, []).append(row)
     marker_catalog = {
-        row.name: row
+        row.normalized_name: row
         for row in (
             await session.execute(
             select(LabMarker)
-            .where(LabMarker.subject_id == subject_id)
+            .where(
+                LabMarker.subject_id == subject_id,
+                LabMarker.is_canonical.is_(True),
+            )
             .order_by(LabMarker.name)
         )
         ).scalars().all()
@@ -1478,9 +1481,10 @@ async def assemble_context(
         row for row in lab_rows if period_start <= row.date <= period_end
     ]
     retest_rows = []
-    for marker, rows in marker_rows.items():
+    for marker_key, rows in marker_rows.items():
         latest = rows[0]
-        catalog = marker_catalog.get(marker)
+        catalog = marker_catalog.get(marker_key)
+        marker = catalog.name if catalog is not None else latest.marker
         interval = catalog.retest_interval_days if catalog else None
         next_retest = latest.date + timedelta(days=interval) if interval else None
         deferred = bool(
@@ -1541,7 +1545,11 @@ async def assemble_context(
         or None,
         "trends": [
             {
-                "marker": marker,
+                "marker": (
+                    marker_catalog[marker_key].name
+                    if marker_key in marker_catalog
+                    else rows[0].marker
+                ),
                 "unit": rows[0].unit,
                 "ref_low": rows[0].ref_low,
                 "ref_high": rows[0].ref_high,
@@ -1554,7 +1562,7 @@ async def assemble_context(
                     for row in reversed(rows[:_LAB_HISTORY_PER_MARKER])
                 ],
             }
-            for marker, rows in marker_rows.items()
+            for marker_key, rows in marker_rows.items()
             if len(rows) >= 2
         ]
         or None,

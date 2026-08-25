@@ -272,14 +272,14 @@ async def _latest_panel_result_date(
     on_date: date_type,
     context: conflict_engine.ConflictWriteContext | None,
 ) -> Optional[date_type]:
-    names = [labs_service.normalize_marker(n) for n in HORMONE_PANEL]
+    keys = {labs_service.normalize_marker_key(n) for n in HORMONE_PANEL}
     rows = await labs_service.list_results(
         session,
         end=on_date,
         limit=1_000_000,
         subject_id=context.identity.subject_id,
     )
-    return max((row.date for row in rows if row.marker in names), default=None)
+    return max((row.date for row in rows if row.marker_key in keys), default=None)
 
 
 async def refresh_labs_due(
