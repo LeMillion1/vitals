@@ -479,6 +479,14 @@ async def test_settings_save_mcp(auth_client, tmp_path, monkeypatch):
     env_file = tmp_path / "test.env"
     env_file.write_text("VITALS_MCP_CLIENT_ID=\nVITALS_MCP_CLIENT_SECRET=\n", encoding="utf-8")
     monkeypatch.setenv("VITALS_ENV_FILE", str(env_file))
+    # The route deliberately mutates os.environ so the new connector settings
+    # work immediately. Register both keys with monkeypatch first so its undo
+    # restores (or removes) them instead of leaking state into later tests.
+    monkeypatch.setenv("VITALS_MCP_CLIENT_ID", os.getenv("VITALS_MCP_CLIENT_ID", ""))
+    monkeypatch.setenv(
+        "VITALS_MCP_CLIENT_SECRET",
+        os.getenv("VITALS_MCP_CLIENT_SECRET", ""),
+    )
 
     r = await auth_client.post(
         "/settings/mcp",
@@ -885,4 +893,3 @@ async def test_settings_save_proactive_no_adjusted_flag_in_range(auth_client):
     )
     assert r.status_code == 303
     assert r.headers["location"] == "/settings?saved=proactive"
-
