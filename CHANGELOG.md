@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — federated sign-in failures keep a working retry
+
+OIDC failures now render a dedicated anonymous screen with one safe retry back
+through the identity provider. The screen never offers the removed password
+form, preserves only a validated local destination, clears browser history state
+left by a previous session, and carries matching English and Russian copy.
+
 ### Changed — registration now lives with authentication
 
 The deployment-gated registration decision and the single account/health-record

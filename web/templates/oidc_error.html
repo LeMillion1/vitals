@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}{{ t("login.oidc_error.page_title") }}{% endblock %}
+
+{% block content %}
+{# An OIDC refusal is still an anonymous page on a potentially shared device.
+   Clear the same session-shaped browser state as the legacy login page. #}
+<script>
+    (function () {
+        try {
+            localStorage.removeItem('htmx-history-cache');
+            localStorage.removeItem('vitals_diag');
+        } catch (e) { }
+    })();
+</script>
+{% include "partials/login_styles.html" %}
+
+<div class="lg-wrap">
+    <div class="lg-mark">Vitals</div>
+
+    <section class="lg-form animate-float-up" aria-labelledby="oidc-error-title">
+        <h1 id="oidc-error-title" class="lg-title">{{ t("login.oidc_error.heading") }}</h1>
+
+        <div class="lg-foot">
+            <p class="lg-error" role="alert">{{ error }}</p>
+            <a class="v-btn lg-submit" href="{{ retry_url }}" data-oidc-retry>
+                {{ t("login.oidc_error.retry") }}
+            </a>
+        </div>
+    </section>
+</div>
+{% endblock %}

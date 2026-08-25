@@ -445,6 +445,11 @@ async def test_every_refusal_renders_the_same_page(
 
     # The strong property: byte-identical, so there is nothing to compare.
     assert bodies[0] == bodies[1]
+    # The OIDC cutover removed the password endpoint. A refusal must therefore
+    # offer one working OIDC retry instead of the legacy form whose POST is 404.
+    assert 'action="/login"' not in bodies[0]
+    assert 'name="password"' not in bodies[0]
+    assert bodies[0].count("data-oidc-retry") == 1
     # And the specific things that must never appear, whichever check refused.
     for body in bodies:
         for leak in (
@@ -456,6 +461,47 @@ async def test_every_refusal_renders_the_same_page(
             "different issuer",
         ):
             assert leak not in body, leak
+
+
+@pytest.mark.parametrize(
+    ("next_url", "retry_target", "must_not_leak"),
+    [
+        ("/labs?tab=latest", "/auth/start?next=%2Flabs%3Ftab%3Dlatest", None),
+        ("https://attacker.example/steal", "/auth/start?next=%2F", "attacker.example"),
+    ],
+)
+async def test_a_refusal_retries_only_to_a_safe_local_destination(
+    client,
+    federated,
+    next_url,
+    retry_target,
+    must_not_leak,
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    started = await client.get(
+        "/auth/start",
+        params={"next": next_url},
+        follow_redirects=False,
+    )
+    query = parse_qs(urlsplit(started.headers["location"]).query)
+    federated.pending_claims["nonce"] = query["nonce"][0]
+
+    refused = await client.get(
+        "/auth/callback",
+        params={
+            "code": "c",
+            "state": query["state"][0],
+            "iss": "https://attacker.example.test",
+        },
+        follow_redirects=False,
+    )
+
+    assert refused.status_code == 401
+    assert f'href="{retry_target}"' in refused.text
+    assert refused.text.count("data-oidc-retry") == 1
+    if must_not_leak is not None:
+        assert must_not_leak not in refused.text
 
 
 # ── The cutover ──────────────────────────────────────────────────────────────

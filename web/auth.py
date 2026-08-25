@@ -519,7 +519,12 @@ def _provider():
     return provider
 
 
-def _login_failed(request: Request, reason: str):
+def _login_failed(
+    request: Request,
+    reason: str,
+    *,
+    next_url: str | None = None,
+):
     """One page for every way a login can fail.
 
     The reason is logged and never rendered. "No such account", "your account
@@ -528,10 +533,14 @@ def _login_failed(request: Request, reason: str):
     """
 
     logger.warning("federated login refused: %s", reason)
+    destination = safe_next(next_url)
     response = templates.TemplateResponse(
         request,
-        "login.html",
-        {"error": t("login.error.federated"), "next": "/"},
+        "oidc_error.html",
+        {
+            "error": t("login.error.federated"),
+            "retry_url": f"/auth/start?next={quote(destination, safe='')}",
+        },
         status_code=status.HTTP_401_UNAUTHORIZED,
     )
     clear_oidc_handoff_cookie(response)
@@ -557,7 +566,11 @@ async def federated_login_start(
     try:
         login = await _provider().begin_login(prompt="login" if step_up else None)
     except OidcError as exc:
-        return _login_failed(request, f"could not begin a login: {exc}")
+        return _login_failed(
+            request,
+            f"could not begin a login: {exc}",
+            next_url=next,
+        )
 
     response = RedirectResponse(
         url=login.authorization_url, status_code=status.HTTP_303_SEE_OTHER
@@ -601,14 +614,26 @@ async def federated_login_callback(
 
     if error:
         # The provider declined. Its error code says why and is for the log.
-        return _login_failed(request, f"provider returned an error: {error}")
+        return _login_failed(
+            request,
+            f"provider returned an error: {error}",
+            next_url=handoff["next"],
+        )
     if not code or not state:
-        return _login_failed(request, "callback arrived without a code and state")
+        return _login_failed(
+            request,
+            "callback arrived without a code and state",
+            next_url=handoff["next"],
+        )
 
     # Constant-time, because an attacker who can measure how far the comparison
     # got can recover the state a character at a time and forge a callback.
     if not secrets.compare_digest(state, handoff["state"]):
-        return _login_failed(request, "callback state does not match this browser's")
+        return _login_failed(
+            request,
+            "callback state does not match this browser's",
+            next_url=handoff["next"],
+        )
 
     from vitals.services.authentication.federation import (
         FederatedLoginError,
@@ -626,7 +651,11 @@ async def federated_login_callback(
             max_age_seconds=handoff["max_age_seconds"],
         )
     except OidcError as exc:
-        return _login_failed(request, f"token rejected: {exc}")
+        return _login_failed(
+            request,
+            f"token rejected: {exc}",
+            next_url=handoff["next"],
+        )
 
     try:
         user = await resolve_federated_user(
@@ -648,7 +677,11 @@ async def federated_login_callback(
         # later claim (for example a verified-email collision) refuses the
         # login, so make the uniform refusal an equally uniform rollback.
         await db.rollback()
-        return _login_failed(request, f"no session for this identity: {exc}")
+        return _login_failed(
+            request,
+            f"no session for this identity: {exc}",
+            next_url=handoff["next"],
+        )
 
     # Queried rather than reached through ``user.owned_subject``: that
     # relationship lazy-loads, which outside a greenlet context raises instead

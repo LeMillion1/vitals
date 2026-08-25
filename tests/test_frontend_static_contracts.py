@@ -172,6 +172,18 @@ def test_the_login_page_drops_what_the_last_session_left():
     assert "localStorage.removeItem" in login
 
 
+def test_the_oidc_failure_page_has_one_working_way_out():
+    """The password routes are absent after cutover, including on failures."""
+
+    failure = _template("oidc_error.html")
+    assert "htmx-history-cache" in failure
+    assert "vitals_diag" in failure
+    assert failure.count("data-oidc-retry") == 1
+    assert 'href="{{ retry_url }}"' in failure
+    assert "<form" not in failure
+    assert 'name="password"' not in failure
+
+
 def test_the_diagnostics_buffer_does_not_record_which_patients_were_opened():
     """It exists to diagnose render stalls, and a subject id does not help it.
 
