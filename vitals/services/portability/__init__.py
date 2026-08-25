@@ -1,14 +1,7 @@
 """Versioned data-portability archive primitives.
 
-The package deliberately has no web or persistence dependencies.  Delivery
-boundaries decide authorization and storage; these modules only define and
-protect the on-wire archive.
+The package deliberately has no web or persistence dependencies. Delivery
+boundaries decide authorization and storage; the child modules define and
+protect the on-wire archive. Import those modules explicitly so the package
+root never creates a parent/child import cycle.
 """
-
-from vitals.services.portability.crypto import (
-    PortabilityCryptoError,
-    decrypt_stream,
-    encrypt_stream,
-)
-
-__all__ = ["PortabilityCryptoError", "decrypt_stream", "encrypt_stream"]
