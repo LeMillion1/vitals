@@ -347,10 +347,10 @@ tbody tr:hover td { background: var(--surface-2); }
   <h1>Vitals Architecture</h1>
   <p class="standfirst">A self-hosted health-data service — fourteen domains, three external integrations and one data lake — where every medical fact belongs to a named health subject and cross-subject access requires an explicit consent or support grant.</p>
   <div class="meta">
-    <span><b>76</b> tables</span>
-    <span><b>64</b> migrations</span>
+    <span><b>77</b> tables</span>
+    <span><b>65</b> migrations</span>
     <span><b>14</b> domains</span>
-    <span><b>95</b> application services</span>
+    <span><b>96</b> application services</span>
     <span><b>62</b> RLS tables</span>
     <span>Reviewed <b>2026-08-25</b></span>
   </div>
@@ -441,7 +441,7 @@ flowchart LR
     sched["<b>Scheduler</b><br/><span style='font-size:11px'>14 jobs: sync, digest, nudge,<br/>reconcile, sweep</span>"]
   end
 
-  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>76 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
+  pg[("<b>PostgreSQL 15</b><br/><span style='font-size:11px'>77 tables · JSONB lake<br/>scoped keys · FORCE RLS</span>")]
   redis[("<b>Redis</b><br/><span style='font-size:11px'>cache, rate limits,<br/>Garmin token, breaker</span>")]
   files[/"<b>Private files</b><br/><span style='font-size:11px'>photos, scans, PDFs<br/>opaque keys</span>"/]
 
@@ -693,7 +693,7 @@ flowchart TB
   ctx["<b>1 · AccessContext</b><br/><span style='font-size:11px'>principal · subject · owner<br/>roles · live grants</span>"]
   pol{"<b>2 · Policy</b><br/><span style='font-size:11px'>is_allowed(context, request)</span>"}
   svc["<b>3 · Scoped service</b><br/><span style='font-size:11px'>subject_id is mandatory<br/>in every signature</span>"]
-  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 62 tables<br/>every one with a subject</span>"]
+  rls["<b>4 · Row-level security</b><br/><span style='font-size:11px'>FORCE RLS on 64 tables<br/>every one with a subject</span>"]
   rows[("rows")]
   deny["403<br/><span style='font-size:11px'>says nothing about<br/>whose record, or whether<br/>it exists</span>"]
 

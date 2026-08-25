@@ -2,7 +2,7 @@
 
 Status: active design and implementation plan
 
-Last reviewed: 2026-08-24
+Last reviewed: 2026-08-25
 
 Current implementation branch: `commercial/main`
 
@@ -19,7 +19,7 @@ already exist upstream. New commercial work therefore starts from the current
 upstream head. The fork's `master` branch is not force-updated or otherwise
 rewritten.
 
-## Where this stands today (2026-08-24)
+## Where this stands today (2026-08-25)
 
 The numbers and states below are measured, not remembered. Re-derive them rather
 than trusting them if this date has gone stale.
@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0064` — 64 revisions |
-| Schema | 76 tables; 62 carry `subject_id` and are covered by an RLS policy; 52 have it `NOT NULL` |
+| Alembic head | `0065` — 65 revisions |
+| Schema | 77 tables; 64 carry `subject_id` and are covered by an RLS policy; 53 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4561 fast passed / 168 skipped; 35 browser scenarios; 2011 on PostgreSQL |
+| Suites | 4,634 fast passed / 168 skipped; 518 focused UI/OAuth tests; migration plus 53 focused PostgreSQL tests |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -41,15 +41,16 @@ professional UX (minus the inbox), PR-09 minus its notification transport,
 PR-11 care-team messaging (minus private attachments), PR-12's read-only support
 access, PR-10.
 
-**The next gate is PR-10**, and it has started at the end that does not wait
-on an external SDK. Its external API now authenticates against per-subject
+**PR-10 is complete.** Its external API authenticates against per-subject
 credentials rather than one installation-wide string that resolved to the `.env`
-owner — the last such read on a data path. Its authorization gate is in too, which is the
-half the roadmap deliberately separates: the connector token has always carried
-the authorizing account and the tools always ignored it, so a token any
-signed-in account could obtain read and wrote the `.env` owner's record. One
-seam — a request-scoped actor the six `_mcp_v1_*` helpers ask — now decides
-whose record a call reaches. LLM context isolation is in as well, as proof
+owner — the last such read on a data path. Revision `0065` binds every new MCP
+credential to one health subject, the authorizing account, an optional care
+relationship, the exact consent version, and concrete resource/action rows.
+Every one of the 69 tools is classified and the listing and direct-call paths
+enforce the same capabilities. A doctor or trainer chooses one currently
+authorized patient on the OAuth screen; token exchange rechecks the live
+relationship and consent, and later revocation or consent change stops the next
+request. LLM context isolation is in as well, as proof
 rather than as new machinery: `assemble_context` already
 took a mandatory subject and gated every optional domain, and seven contract
 tests now compose for one person beside another and search the serialized prompt
@@ -65,7 +66,7 @@ metadata documents replace Dynamic Client Registration, their fetching is
 treated as hostile input, and the authorization response carries `iss`. Token binding is in as well: the
 connector token carries `sub`, `aud`, `iss` and `jti`, and revision `0064` gives
 it a revocation store, so one connector can be disconnected without rotating the
-signing secret and signing the whole installation out. **PR-10 is complete.** Revision `0062` adds the ask as its own table because the grant's
+signing secret and signing the whole installation out. Revision `0062` adds the ask as its own table because the grant's
 constraints, correctly, cannot express a pending one. `repair`, `export`,
 operational dashboards, retention controls and the break-glass path are named
 and not built; each needs its own review and the roadmap already sequences them
@@ -1715,7 +1716,9 @@ Additional gates:
   every send resolves to "no endpoint".
 - [x] Add verified professionals, relationships, and consent — PR-07, with the
   professional UX in PR-08 (minus the inbox).
-- [ ] Replace MCP/external auth with subject-scoped revocable grants.
+- [x] Replace MCP/external auth with subject-scoped revocable grants — the
+  external dashboard remains owner-issued by design; MCP professional grants
+  bind one patient, relationship, consent version, and exact capabilities.
 - [x] Add the patient-visible care-team thread — PR-11, minus private
   attachments: the file download route resolves its subject through the
   sole-owner adapter, so a professional opening a patient's attachment gets a

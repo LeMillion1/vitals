@@ -12,22 +12,27 @@ read during the audit.
 
 The conversion is substantial and real, but not finished. Vitals now has local
 users and additive roles, one owned health subject per patient account,
-subject-scoped facts, 62 PostgreSQL RLS tables, professional relationships and
+subject-scoped facts, 64 PostgreSQL RLS tables, professional relationships and
 consent, care-team conversations, OIDC login, revocable browser sessions,
 per-subject integrations, and controlled read-only support access.
 
-The earlier documentation overstated completion in four important areas:
+The earlier documentation overstated completion in four important areas. The
+first finding was closed after the audit by commits `f2ea770` and `7523d26`;
+the others remain useful provenance for the remediations named below:
 
-1. PR-10 protocol compatibility shipped, but its target authorization model did
-   not. MCP credentials remain long-lived account credentials without a health
-   subject, domain/action scopes, relationship, or consent version.
+1. PR-10 protocol compatibility originally shipped without its target
+   authorization model. Revision `0065` now binds connector credentials to one
+   health subject, exact resource/action scopes, and—when a professional acts—a
+   live relationship and immutable consent version. OAuth approval also makes
+   the professional choose one currently authorized patient.
 2. The OIDC and support claims were ahead of the routes. Partial OIDC config,
    the known first administrator password, local-only logout, unenforced browser
    session versions, and support actions without step-up were found in this
    audit. Commits `b6e3e91`, `7ff5271`, `c159b5d`, and `84a0631` close those
    specific gaps.
 3. The ownership inventory called itself exhaustive but originally omitted 12
-   of 76 live tables. The prose table now matches the machine registry.
+   of 76 live tables. It now includes the subsequently added MCP scope table and
+   matches all 77 machine-registry entries.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
    Its schema, migration, router, service, RLS, ownership-class, and roadmap
    counters were synchronized during this audit.
@@ -36,15 +41,15 @@ The earlier documentation overstated completion in four important areas:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0064 (head)`; 64 files in `migrations/versions` | Verified |
-| SQLAlchemy tables | `len(Base.metadata.tables)` → 76 | Verified |
-| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 76 | Verified and exhaustive in code |
-| Subject-scoped tables | 62 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
-| Required subject columns | 52 of the 62 `subject_id` columns are non-null | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0065 (head)`; 65 files in `migrations/versions` | Verified |
+| SQLAlchemy tables | `len(Base.metadata.tables)` → 77 | Verified |
+| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 77 | Verified and exhaustive in code |
+| Subject-scoped tables | 64 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
+| Required subject columns | 53 of the 64 `subject_id` columns are non-null | Verified |
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
 | Domain enum | 14 health domains | Verified |
 | Web routers | 28 modules under `web/routers` | Verified |
-| Application services | 95 tracked non-`__init__` modules after the care, authentication, analytics, and persistence moves | Verified |
+| Application services | 96 tracked non-`__init__` modules after the care, authentication, analytics, and persistence moves | Verified |
 | Flat service debt | 77 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
 | Browser scenarios | 35 scenarios selected by `pytest tests/ui -m ui` | Verified collection |
 | Commercial Git history | 247 commits after base `c91456a`; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
@@ -70,7 +75,7 @@ a current validation result.
 
 ### Data isolation
 
-- 62 tables are subject-scoped and covered by FORCE RLS in PostgreSQL.
+- 64 tables are subject-scoped and covered by FORCE RLS in PostgreSQL.
 - The application binds `vitals.subject_id` transaction-locally; unbound or
   wrong-subject sessions fail closed in PostgreSQL tests.
 - Natural keys, raw payloads, normalized facts, integrations, settings, files,
@@ -127,10 +132,12 @@ a current validation result.
   client metadata documents, SSRF controls, token `jti` revocation records,
   per-subject external API credentials, and subject-bounded tool execution are
   real.
-- The intended professional authorization grant is not real yet. MCP tokens
-  live for 365 days, bind to an account/client/audience, and expose the broad
-  `vitals:record` scope. They do not bind a health subject, relationship,
-  consent version, resource domains, or actions.
+- MCP tokens live for at most 365 days and bind to one account, client,
+  audience, issuer, health subject, and a frozen set of concrete
+  resource/action scopes. Professional tokens additionally bind the live care
+  relationship, consent row, and consent version; each request rechecks them.
+  All 69 tools have an explicit capability classification, and tool discovery
+  and direct invocation enforce the same decision.
 - MCP access tokens now validate both `aud` and `iss`; registry-backed tokens
   cannot omit either installation-binding claim.
 
@@ -140,15 +147,16 @@ a current validation result.
 
 The architectural principles and phased threat model are valuable. PR-01–09,
 PR-11 without attachments, and PR-12 read mode broadly correspond to real code.
-PR-10 is internally labelled merged, next, and complete while its own checklist
-leaves the central grant conversion unchecked. “Merged PR” means a logical
-phase, not a verifiable GitHub pull request: the commercial history has only one
-merge commit. Keep this document as target/decision history and move current
-status to this audit.
+PR-10 previously called itself merged, next, and complete while its central
+grant checkbox was still open. That contradiction is now resolved by the
+`0065` credential cutover. “Merged PR” still means a logical phase, not a
+verifiable GitHub pull request: the commercial history has only one merge
+commit. Keep this document as target/decision history and use this audit for the
+current state.
 
 The following roadmap targets are not shipped: notifications/web push, care
 attachments, invitation inbox, multi-subject full backup, support repair/export
-and break-glass, scoped professional MCP/PAT grants, registration modes, lab
+and break-glass, registration modes, lab
 marker collision migration, private-byte relocation outside static storage, and
 final legacy configuration contraction.
 
@@ -159,8 +167,9 @@ reasoning, composite-FK rules, and historical cutover analysis are strong. The
 machine registry is the source of truth and is complete.
 
 The prose inventory previously listed only 64 live and two dropped tables. It
-now includes the twelve missing identity, professional-care, support-request,
-and credential rows and matches all 76 live tables in the machine registry.
+now includes the missing identity, professional-care, support-request, and
+credential rows plus the MCP scope child and matches all 77 live tables in the
+machine registry.
 
 The historical Stage 3/4/5 narrative should be archived separately from a
 generated current registry table.
@@ -287,6 +296,21 @@ the 2,000–4,000-line monoliths under characterization tests. Delivery adapters
 application-service APIs stabilize.
 
 ## Evidence executed during the audit
+
+Post-audit credential cutover validation on `7523d26`:
+
+- 227 focused MCP tests passed for the subject/scope/consent token cutover;
+- migration `0065` upgraded, downgraded, and upgraded again on PostgreSQL; 53
+  focused PostgreSQL RLS/MCP tests passed;
+- 518 focused OAuth, i18n, design, static, router, and mobile tests passed;
+- the full fast suite passed 4,634 tests, skipped 168, and deselected 35;
+- Tailwind rebuilt, `ruff check .` and `git diff --check` passed;
+- Compose rebuilt at head and `/health` returned 200; the OAuth patient picker
+  was inspected at 1440×900 and 390×844 with no browser console errors.
+
+The entries below are the original audit-baseline runs on `0064`; they remain
+historical evidence rather than claims that those exact commands were rerun
+after `0065`:
 
 - focused ownership/runbook contracts: 12 passed;
 - design/static/mobile contracts: 313 passed;

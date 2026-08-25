@@ -17,7 +17,7 @@ The original table-by-table inventory contains the 55 tables present at the
 Stage-0 expansion. The post-foundation and later identity/care tables below keep
 the prose inventory aligned with the machine-readable registry.
 
-**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 76 live tables today.** Revision
+**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 77 live tables today.** Revision
 `0058` also dropped two historical tables: `signals` and `day_context`. Their rows below are
 kept, struck through, at their original numbers — the numbering is referenced
 from the Stage-3 narrative further down, and renumbering would silently
@@ -193,9 +193,9 @@ silently reassigned or deleted.
 
 ### Later identity, professional-care, and credential additions
 
-These twelve live tables arrived after the earlier prose additions. Together
+These thirteen live tables arrived after the earlier prose additions. Together
 with the sections above they make this hand-reviewed inventory exhaustive for
-the same 76 live tables as `OWNERSHIP_REGISTRY`.
+the same 77 live tables as `OWNERSHIP_REGISTRY`.
 
 | Table | Ownership | Contract |
 | --- | --- | --- |
@@ -208,7 +208,8 @@ the same 76 live tables as `OWNERSHIP_REGISTRY`.
 | `professional_notes` / `ProfessionalNote` | Required S and author A | Immutable clinical-history row tied to the relationship under which it was written. Only its author may revise it; there is no delete path. Not ordinary-user portable because it is also the professional's authored record. |
 | `care_plans` / `CarePlan` | Required S and author A | Relationship-bound authored plan with draft/active/archived lifecycle and a valid effective range. Archived plans remain history and are not deleted or ordinary-user portable. |
 | `external_api_tokens` / `ExternalApiToken` | Required S control state | Bearer secret is stored only as a SHA-256 hash and binds one external client to one subject. Issuer, expiry, coarse last use, and revocation history remain; no role or installation-global fallback grants access. |
-| `mcp_access_tokens` / `McpAccessToken` | Account control plane | Revocable connector `jti` bound to one account, client, audience, issuer claim, and positive expiry. It carries no S: subject selection is resolved at the request boundary, not duplicated in the credential row. |
+| `mcp_access_tokens` / `McpAccessToken` | Account control plane with optional S only for pre-cutover adoption | Revocable connector `jti` bound to one account, client, audience, issuer, one health subject, and positive expiry. New rows require S. Professional rows additionally retain the relationship, consent row, and consent version; nullable S exists only so a pre-`0065` signed credential can be adopted and then replaced without inventing a patient. |
+| `mcp_access_token_scopes` / `McpAccessTokenScope` | Required S child of a connector credential | Frozen exact `(resource_type, resource_key, action)` capabilities for one token. Wildcards are forbidden, S is repeated for RLS and protected by a composite FK to the parent token, and adding a tool or domain never silently widens an issued credential. |
 | `support_access_requests` / `SupportAccessRequest` | Required S control state | A reasoned, expiring ask is distinct from a grant. The requesting admin cannot approve it; decision actor/time and the optional resulting grant are constrained and retained. |
 | `support_access_request_scopes` / `SupportAccessRequestScope` | Required S child of request | Exact non-wildcard resource/action rows shown to the patient before a decision. A composite FK prevents the child S from drifting from its request. |
 

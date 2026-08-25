@@ -32,6 +32,7 @@ vitals/services/authentication/
 ├── oidc.py            # protocol verification boundary
 ├── sessions.py        # local session revocation
 ├── oauth_clients.py   # remote client metadata and SSRF boundary
+├── connector_authorization.py # one OAuth account-to-subject choice
 ├── mcp_tokens.py      # connector credential lifecycle
 └── legacy_two_factor.py # local-password cutover path only
 ```
@@ -73,15 +74,15 @@ page needs the same edit:
 
 | The page says | Comes from | Today |
 | --- | --- | --- |
-| table count, ownership classes | `vitals/ownership.py` | 76 tables, 32 of them `subject_data` |
-| mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 52 |
+| table count, ownership classes | `vitals/ownership.py` | 77 tables, 32 of them `subject_data` |
+| mandatory-subject table count | `subject_id` NOT NULL in `Base.metadata` | 53 |
 | the backfill phases | `OWNERSHIP_BACKFILL_SEQUENCE` in `vitals/ownership_deploy.py` | 18 |
 | the domains | `vitals.enums.Domain` | 14 |
 | the scheduled jobs | `vitals/scheduler/jobs.py` | 14, of which 11 fan out per record |
-| migration count | `migrations/versions/` | 64, head `0064` |
-| RLS table count | revisions `0050` + `0051` + `0055` + `0056` + `0057` + `0060` + `0061` + `0062` + `0063`, asserted in `tests/test_row_level_security.py` | 62 |
+| migration count | `migrations/versions/` | 65, head `0065` |
+| RLS table count | revisions `0050` + `0051` + `0055` + `0056` + `0057` + `0060` + `0061` + `0062` + `0063` + `0065`, asserted in `tests/test_row_level_security.py` | 64 |
 | platform-scope call sites | the permitted list in `tests/test_row_level_security.py` | 8 |
-| routers, application-service modules | `web/routers/`, `vitals/services/` | 28 and 95 |
+| routers, application-service modules | `web/routers/`, `vitals/services/` | 28 and 96 |
 
 The **39 columns** the timeline attributes to revision `0049` is deliberately
 *not* in that table: it is the length of that revision's own
