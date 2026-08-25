@@ -10,7 +10,6 @@ router turns ``ConflictBlocked`` into a 409 + violations payload.
 """
 from __future__ import annotations
 
-import re
 import uuid
 from typing import Optional, Sequence
 
@@ -21,34 +20,7 @@ from vitals.enums import Domain, Source
 from vitals.models.supplements import DOMAIN, Supplement
 from vitals.ownership import WriteIdentity
 from vitals.services import conflict_engine
-
-
-_TRANSLIT = {
-    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
-    "ж": "zh", "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m",
-    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
-    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
-    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
-}
-
-
-def _transliterate(text: str) -> str:
-    """Cyrillic -> Latin, character by character. Non-Cyrillic characters pass
-    through unchanged so mixed RU/EN names transliterate only the RU part."""
-    return "".join(_TRANSLIT.get(ch, ch) for ch in text)
-
-
-def slugify(name: str) -> str:
-    """Stable conflict-match slug from a display name (ascii-ish, lowercase).
-
-    Transliterates Cyrillic first so a Russian name (e.g. "Железо") yields a
-    real, stable, non-empty slug ("zhelezo") instead of collapsing to the
-    fallback "supplement" — the ascii-only regex used to strip Cyrillic
-    entirely, silently breaking conflict-rule matching for RU-named rows."""
-    s = name.strip().lower()
-    s = _transliterate(s)
-    s = re.sub(r"[^a-z0-9]+", "_", s)
-    return s.strip("_") or "supplement"
+from vitals.utils.identifiers import slugify as slugify
 
 
 # Coarse timing slots a supplement's free-text `timing` field is parsed into.
@@ -213,9 +185,7 @@ async def add_supplement(
     if key:
         resolved_key = key
     else:
-        # Deferred import: conflict_catalog imports this module (slugify is its
-        # dictionary-miss fallback), so importing it back at module level here
-        # would be circular.
+        # Keep catalog/YAML loading out of paths that supply an explicit key.
         from vitals.services import conflict_catalog
 
         resolved_key = conflict_catalog.normalize_ingredient(name)
@@ -278,9 +248,7 @@ async def update_supplement(
     if key:
         resolved_key = key
     else:
-        # Deferred import: conflict_catalog imports this module (slugify is its
-        # dictionary-miss fallback), so importing it back at module level here
-        # would be circular.
+        # Keep catalog/YAML loading out of paths that supply an explicit key.
         from vitals.services import conflict_catalog
 
         resolved_key = conflict_catalog.normalize_ingredient(name)

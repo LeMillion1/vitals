@@ -18,6 +18,7 @@ from vitals.models.conflict_rule import ConflictRule
 from vitals.models.identity import HealthSubject, User
 from vitals.services import conflict_catalog
 from vitals.services.supplements_service import slugify
+from vitals.utils.identifiers import slugify as shared_slugify
 
 
 # ── Dictionary hits (RU/EN aliases -> canonical key) ────────────────────────
@@ -89,6 +90,11 @@ def test_slugify_transliterates_cyrillic():
 def test_slugify_ascii_unchanged():
     assert slugify("Iron (ferrous bisglycinate)") == "iron_ferrous_bisglycinate"
     assert slugify("  Vitamin D3 ") == "vitamin_d3"
+
+
+def test_catalog_and_service_share_dependency_neutral_slugify():
+    assert conflict_catalog.slugify is shared_slugify
+    assert slugify is shared_slugify
 
 
 # ── Curated rule catalog: load/validate + idempotent sync (Phase 3.3) ───────

@@ -7,8 +7,7 @@ Two independent responsibilities that both read from ``vitals/data/*.yaml``
     EN, any casing) into the stable ``key`` conflict_rules match on, via the
     alias dictionary in ``ingredients.yaml``, falling back to a transliterating
     slug for anything not in the dictionary (so a Cyrillic name never silently
-    collapses to the useless ``"supplement"`` slug — see
-    ``supplements_service.slugify``).
+    collapses to the useless ``"supplement"`` slug).
   * :func:`sync_catalog` — idempotent upsert of ``conflict_rules.yaml`` into the
     ``conflict_rules`` table (added in Phase 3 alongside the migration that
     gives rows a stable ``code``).
@@ -27,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vitals.enums import Domain, Evidence, RuleType, Severity
 from vitals.models.conflict_rule import ConflictRule
 from vitals.services.identity_service import acquire_identity_governance_lock
+from vitals.utils.identifiers import slugify
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ def normalize_ingredient(name: str) -> str:
 
     Whole-word/phrase match against ``ingredients.yaml`` (space-padded
     substring, so ``"Fe"`` matches the standalone word but not inside
-    "coffee"). Falls back to :func:`supplements_service.slugify` — still
+    "coffee"). Falls back to :func:`vitals.utils.identifiers.slugify` — still
     stable and unique, just not linked to any curated rule — when nothing in
     the dictionary matches."""
     cleaned = _normalize_text(name)
@@ -91,8 +91,6 @@ def normalize_ingredient(name: str) -> str:
         for alias, key in alias_pairs:
             if f" {alias} " in padded:
                 return key
-
-    from vitals.services.supplements_service import slugify
 
     return slugify(name or "")
 

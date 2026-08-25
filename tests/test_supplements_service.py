@@ -13,6 +13,7 @@ from vitals.services import (
     supplements_service,
 )
 from vitals.services.conflict_engine import ConflictBlocked
+from vitals.utils.identifiers import slugify
 from vitals.utils.timeutils import today_local
 
 # No module-level asyncio mark: async DB tests are auto-detected (asyncio_mode=
@@ -22,6 +23,10 @@ from vitals.utils.timeutils import today_local
 def test_slugify():
     assert supplements_service.slugify("Iron (ferrous bisglycinate)") == "iron_ferrous_bisglycinate"
     assert supplements_service.slugify("  Vitamin D3 ") == "vitamin_d3"
+
+
+def test_slugify_service_facade_reexports_shared_helper():
+    assert supplements_service.slugify is slugify
 
 
 def test_slugify_transliterates_cyrillic_name():
