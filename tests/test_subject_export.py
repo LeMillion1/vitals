@@ -184,6 +184,8 @@ async def test_the_route_hands_back_only_the_callers_record(
     response = await auth_client.get("/settings/export-subject")
     assert response.status_code == 200
     assert "attachment" in response.headers["content-disposition"]
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["pragma"] == "no-cache"
 
     body = json.loads(response.content)
     assert body["metadata"]["kind"] == portability.KIND_SUBJECT

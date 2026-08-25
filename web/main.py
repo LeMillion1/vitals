@@ -461,7 +461,8 @@ async def recent_authentication_handler(
 
     del exc
     accept = request.headers.get("accept", "")
-    if "text/html" not in accept:
+    is_htmx = request.headers.get("HX-Request", "").lower() == "true"
+    if "text/html" not in accept and not is_htmx:
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": "Recent authentication required"},
@@ -483,11 +484,21 @@ async def recent_authentication_handler(
         target = "/auth/start?" + urlencode(
             {"step_up": "true", "next": next_path}
         )
+        if is_htmx:
+            return Response(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                headers={"HX-Redirect": target},
+            )
         return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
 
-    response = RedirectResponse(
-        url="/login?" + urlencode({"next": next_path}),
-        status_code=status.HTTP_303_SEE_OTHER,
+    target = "/login?" + urlencode({"next": next_path})
+    response = (
+        Response(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"HX-Redirect": target},
+        )
+        if is_htmx
+        else RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
     )
     clear_session_cookie(response)
     return response

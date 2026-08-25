@@ -8,6 +8,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — medical-data transfers require a fresh trusted session
+
+Every personal, AI, and legacy installation JSON export and both JSON import
+paths now require authentication performed within the last fifteen minutes.
+Downloaded medical JSON is explicitly `private, no-store` and cannot be reused
+from a browser or intermediary cache. The legacy whole-installation export now
+uses the same installation-operator boundary as restore, including a platform
+administrator who deliberately owns no patient record.
+Stale HTMX upload forms now navigate to the step-up screen instead of failing
+as an inert background request; the selected file is never replayed.
+
+The legacy v1 restore reports a shared installation as a conflict before any
+portable row is replaced. Settings now describe these files truthfully: the
+personal snapshot omits accounts, care conversations, audit history,
+credentials, and file bytes; the one-record installation snapshot is a legacy
+portability format, not a disaster-recovery backup.
+
 ### Added — administrators can approve member account requests
 
 The deployment-gated `admin_approved` mode now has a complete browser path.

@@ -63,11 +63,12 @@ from vitals.services.access_resolution import AccessDeniedError, require_access
 from vitals.services.legacy_ownership import resolve_legacy_ownership_context
 from vitals.services.installation_operator import (
     NotAnOperator,
-    require_installation_operator,
+    require_installation_operator_user,
 )
 from vitals.services.proactive import prefs
 from vitals.utils.timeutils import today_local
-from web.deps import get_redis, get_session, require_auth
+from web.care_context import principal_user_id
+from web.deps import get_redis, get_session, require_auth, require_recent_auth
 from web.ratelimit import rate_limit
 from web.services.env_writer import read_key, write_keys
 from web.templating import templates
@@ -1585,6 +1586,24 @@ async def change_password(
 
 # ── Data portability (backup / restore / LLM export) ──────────────────────────
 
+_PRIVATE_EXPORT_HEADERS = {
+    "Cache-Control": "private, no-store",
+    "Pragma": "no-cache",
+}
+
+
+def _private_json_download(*, body: str, filename: str) -> Response:
+    """Return sensitive JSON without leaving a reusable browser/proxy copy."""
+
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={
+            **_PRIVATE_EXPORT_HEADERS,
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
 
 async def _authorize_export(db: AsyncSession, username: str):
     """Decide the export, rather than infer it from being logged in.
@@ -1610,7 +1629,7 @@ async def _authorize_export(db: AsyncSession, username: str):
 
 
 async def _authorize_installation_operation(
-    db: AsyncSession, username: str, *, operation: str
+    request: Request, db: AsyncSession, *, operation: str
 ) -> None:
     """Decide an operation that is about the installation, not about a record.
 
@@ -1621,11 +1640,10 @@ async def _authorize_installation_operation(
     subject in would read as a check while always saying yes.
     """
 
-    ownership = await resolve_legacy_ownership_context(db, actor_username=username)
     try:
-        await require_installation_operator(
+        await require_installation_operator_user(
             db,
-            access=ownership.access,
+            user_id=await principal_user_id(request, db),
             operation=operation,
         )
     except NotAnOperator as exc:
@@ -1636,7 +1654,8 @@ async def _authorize_installation_operation(
 
 @router.get("/export")
 async def export_backup(
-    username: str = Depends(require_auth),
+    request: Request,
+    _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
     _rl: None = Depends(rate_limit("data_export", limit=2, window=60)),
 ):
@@ -1649,7 +1668,9 @@ async def export_backup(
     export below is not a lesser version of this one: it is the right file for
     anybody who is not the whole installation.
     """
-    await _authorize_export(db, username)
+    await _authorize_installation_operation(
+        request, db, operation="a full portability export"
+    )
     try:
         snapshot = await data_portability_service.export_full(db)
     except data_portability_service.MultiSubjectBackupError as exc:
@@ -1665,16 +1686,12 @@ async def export_backup(
         ) from exc
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_backup_{today_local().strftime('%Y%m%d')}.json"
-    return Response(
-        content=body,
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return _private_json_download(body=body, filename=filename)
 
 
 @router.get("/export-subject")
 async def export_subject_backup(
-    username: str = Depends(require_auth),
+    username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
     _rl: None = Depends(rate_limit("data_export", limit=2, window=60)),
 ):
@@ -1692,16 +1709,12 @@ async def export_subject_backup(
     )
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_record_{today_local().strftime('%Y%m%d')}.json"
-    return Response(
-        content=body,
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return _private_json_download(body=body, filename=filename)
 
 
 @router.get("/export-llm")
 async def export_llm(
-    username: str = Depends(require_auth),
+    username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
     _rl: None = Depends(rate_limit("data_export", limit=2, window=60)),
 ):
@@ -1716,17 +1729,13 @@ async def export_llm(
     )
     body = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     filename = f"vitals_llm_{today_local().strftime('%Y%m%d')}.json"
-    return Response(
-        content=body,
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return _private_json_download(body=body, filename=filename)
 
 
 @router.post("/import")
 async def import_backup(
     request: Request,
-    username: str = Depends(require_auth),
+    _username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
     backup_file: UploadFile = File(...),
     _rl: None = Depends(rate_limit("data_import", limit=2, window=60)),
@@ -1738,7 +1747,7 @@ async def import_backup(
     errors); success returns an OOB fragment with the per-domain stats.
     """
     await _authorize_installation_operation(
-        db, username, operation="a restore"
+        request, db, operation="a restore"
     )
     validate_extension(backup_file.filename, JSON_EXTS)
     # Backups can be large (the raw_payloads data-lake), so allow the bigger cap.
@@ -1753,7 +1762,14 @@ async def import_backup(
 
     try:
         stats = await data_portability_service.import_full(db, payload)
+    except data_portability_service.MultiSubjectBackupError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=t("portability.error.v1_multi_subject_alternative"),
+        ) from exc
     except data_portability_service.PortabilityError as exc:
+        await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     await db.commit()
@@ -1767,7 +1783,7 @@ async def import_backup(
 @router.post("/import-subject")
 async def import_subject_record(
     request: Request,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_recent_auth),
     db: AsyncSession = Depends(get_session),
     backup_file: UploadFile = File(...),
     _rl: None = Depends(rate_limit("data_import", limit=2, window=60)),
@@ -1819,7 +1835,7 @@ async def restart_container(
     from fastapi.responses import JSONResponse
 
     await _authorize_installation_operation(
-        db, username, operation="a restart"
+        request, db, operation="a restart"
     )
 
     logger.info("User %s requested container restart. Terminating process in 500ms...", username)

@@ -240,16 +240,15 @@ async def test_the_scope_is_exact_not_a_family(db_session):
 
 # ── The engine, in a production path ─────────────────────────────────────────
 
-async def test_the_export_route_decides_rather_than_assumes(
+async def test_the_personal_export_routes_decide_rather_than_assume(
     auth_client, db_session, legacy_owner_roots, monkeypatch
 ):
-    """Downloading the record is authorized by the policy engine, not by login.
+    """Downloading one's record is authorized by policy, not merely by login.
 
-    Export is the one routine operation that takes data out of the boundary
-    everything else keeps it inside. Today the answer is always yes — the
-    ordinary download is covered in ``test_data_portability`` — so what this
-    pins is that the question is asked at all: make the engine refuse, and the
-    download stops with a 403 rather than a crash or a file.
+    The whole-installation legacy snapshot has its own operator decision. These
+    two downloads answer the subject-scoped question "what is mine", so what
+    this pins is that the policy question is asked at all: make the engine
+    refuse, and the download stops with a 403 rather than a crash or a file.
 
     Two requests, no more: the route is rate-limited to two per minute, and a
     test that trips its own limiter proves nothing about authorization.
@@ -269,7 +268,7 @@ async def test_the_export_route_decides_rather_than_assumes(
     # gets JSON. The first version of this test only exercised the JSON branch,
     # which is how an undefined name in the HTML one went unnoticed.
     for path, accept in (
-        ("/settings/export", "text/html,application/xhtml+xml"),
+        ("/settings/export-subject", "text/html,application/xhtml+xml"),
         ("/settings/export-llm", "application/json"),
     ):
         refused = await auth_client.get(path, headers={"Accept": accept})

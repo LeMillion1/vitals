@@ -28,15 +28,55 @@ when the installation stops being one person's is to refuse, not to guess.
 
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vitals.enums import UserRoleName
-from vitals.models.identity import HealthSubject
+from vitals.enums import UserRoleName, UserStatus
+from vitals.models.identity import HealthSubject, User, UserRole
 
 
 class NotAnOperator(Exception):
     """This principal may not act for the installation as a whole."""
+
+
+async def require_installation_operator_user(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    operation: str,
+) -> None:
+    """Authorize an account without pretending it must own a health record.
+
+    Platform administrators are installation operators even when they keep no
+    personal record. The legacy web helper resolved only an owned subject first,
+    which accidentally made that legitimate control-plane account unable to run
+    an installation operation. The single-record self-hosted fallback remains:
+    its sole owner is still the operator without needing a platform role.
+    """
+
+    rows = (
+        await session.execute(
+            select(User.status, UserRole.role)
+            .outerjoin(UserRole, UserRole.user_id == User.id)
+            .where(User.id == user_id)
+        )
+    ).all()
+    if not rows or rows[0].status != UserStatus.ACTIVE.value:
+        raise NotAnOperator(f"{operation} needs an active principal behind it")
+    if any(row.role == UserRoleName.PLATFORM_SUPERADMIN.value for row in rows):
+        return
+
+    subjects = (
+        await session.execute(select(HealthSubject.owner_user_id).limit(2))
+    ).scalars().all()
+    if len(subjects) == 1 and subjects[0] == user_id:
+        return
+
+    raise NotAnOperator(
+        f"{operation} is reserved for an operator of this installation"
+    )
 
 
 async def require_installation_operator(
@@ -70,4 +110,8 @@ async def require_installation_operator(
     )
 
 
-__all__ = ["NotAnOperator", "require_installation_operator"]
+__all__ = [
+    "NotAnOperator",
+    "require_installation_operator",
+    "require_installation_operator_user",
+]

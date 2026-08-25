@@ -39,6 +39,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.services.installation_operator import (
     NotAnOperator,
     require_installation_operator,
+    require_installation_operator_user,
 )
 
 
@@ -120,6 +121,30 @@ async def test_a_platform_superadmin_stays_an_operator(db_session):
     )
 
 
+async def test_a_platform_superadmin_needs_no_personal_record(db_session):
+    """Control-plane authority must not depend on owning patient data."""
+
+    from vitals.models.identity import UserRole
+
+    await _subject_with_owner(db_session, "operator-record")
+    admin = User(
+        username="operator-without-record",
+        normalized_username="operator-without-record",
+        password_hash="$synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(admin)
+    await db_session.flush()
+    db_session.add(
+        UserRole(user_id=admin.id, role=UserRoleName.PLATFORM_SUPERADMIN.value)
+    )
+    await db_session.flush()
+
+    await require_installation_operator_user(
+        db_session, user_id=admin.id, operation="a full portability export"
+    )
+
+
 async def test_another_persons_account_is_not_an_operator(db_session):
     """Sole-subject ownership is the clause, not merely being the only account."""
 
@@ -193,11 +218,12 @@ async def test_the_restore_route_asks_before_it_wipes(
 
     from web.routers import settings as settings_router
 
-    async def _refuse(session, *, access, operation):
+    async def _refuse(session, *, user_id, operation):
+        del session, user_id
         raise NotAnOperator(f"{operation} is reserved for an operator")
 
     monkeypatch.setattr(
-        settings_router, "require_installation_operator", _refuse
+        settings_router, "require_installation_operator_user", _refuse
     )
 
     import io
@@ -218,16 +244,35 @@ async def test_the_restore_route_asks_before_it_wipes(
     assert "operator" in response.text
 
 
+async def test_the_full_export_route_is_operator_only(
+    auth_client, legacy_owner_roots, monkeypatch
+):
+    from web.routers import settings as settings_router
+
+    async def _refuse(session, *, user_id, operation):
+        del session, user_id
+        raise NotAnOperator(f"{operation} is reserved for an operator")
+
+    monkeypatch.setattr(
+        settings_router, "require_installation_operator_user", _refuse
+    )
+
+    response = await auth_client.get("/settings/export")
+    assert response.status_code == 403
+    assert "operator" in response.text
+
+
 async def test_the_restart_route_asks_before_it_stops_the_process(
     auth_client, legacy_owner_roots, monkeypatch
 ):
     from web.routers import settings as settings_router
 
-    async def _refuse(session, *, access, operation):
+    async def _refuse(session, *, user_id, operation):
+        del session, user_id
         raise NotAnOperator(f"{operation} is reserved for an operator")
 
     monkeypatch.setattr(
-        settings_router, "require_installation_operator", _refuse
+        settings_router, "require_installation_operator_user", _refuse
     )
 
     response = await auth_client.post("/settings/restart")
@@ -265,3 +310,41 @@ async def test_the_sole_owner_can_still_restore_and_restart(
         },
     )
     assert response.status_code == 200, response.text
+
+
+async def test_shared_installation_restore_is_409_before_any_mutation(
+    auth_client, db_session, legacy_owner_roots
+):
+    """Legacy v1 is refused by type and leaves existing portable rows intact."""
+
+    import io
+    import json
+
+    from vitals.models.app_settings import AppSetting
+    from vitals.services.data_portability_service import BACKUP_VERSION, KIND_FULL
+
+    await _subject_with_owner(db_session, "restore-second-record")
+    marker = AppSetting(key="multi_subject_restore_guard", value="kept")
+    db_session.add(marker)
+    await db_session.commit()
+
+    payload = json.dumps(
+        {
+            "metadata": {"version": BACKUP_VERSION, "kind": KIND_FULL},
+            "app_settings": [],
+        }
+    )
+    response = await auth_client.post(
+        "/settings/import",
+        files={
+            "backup_file": (
+                "backup.json",
+                io.BytesIO(payload.encode()),
+                "application/json",
+            )
+        },
+    )
+
+    assert response.status_code == 409
+    db_session.expire_all()
+    assert await db_session.get(AppSetting, "multi_subject_restore_guard") is not None

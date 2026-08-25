@@ -3318,6 +3318,8 @@ async def test_export_endpoint_downloads_backup(garmin_connection_id, hevy_conne
     assert r.status_code == 200
     assert "attachment" in r.headers["content-disposition"]
     assert "vitals_backup_" in r.headers["content-disposition"]
+    assert r.headers["cache-control"] == "private, no-store"
+    assert r.headers["pragma"] == "no-cache"
     data = r.json()
     assert data["metadata"]["kind"] == "full_backup"
     assert "weight_logs" in data
@@ -3328,6 +3330,8 @@ async def test_export_llm_endpoint_downloads_digest(garmin_connection_id, hevy_c
     r = await auth_client.get("/settings/export-llm")
     assert r.status_code == 200
     assert "vitals_llm_" in r.headers["content-disposition"]
+    assert r.headers["cache-control"] == "private, no-store"
+    assert r.headers["pragma"] == "no-cache"
     data = r.json()
     assert "profile" in data
     assert "raw_payloads" not in data
