@@ -1,4 +1,4 @@
-"""Bounded Stage-3M ownership backfill for optional-channel lab results.
+"""Bounded Stage-3T ownership backfill for optional-channel system alerts.
 
 Historical rows prove only the sole reviewed subject.  Actor and provider
 provenance remain exactly as persisted; this service never infers either root,
@@ -19,89 +19,102 @@ from enum import StrEnum
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
-from sqlalchemy import Table, func, select, update
+from sqlalchemy import Table, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
 from vitals.enums import (
-    AIInvocationPurpose,
-    AIInvocationStatus,
-    Domain,
-    FileAssetPurpose,
-    LabFlag,
+    Severity,
     IntegrationConnectionStatus,
-    IntegrationConnectionType,
     IntegrationProvider,
-    Source,
     UserStatus,
 )
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.ai import AIInvocation
-from vitals.models.raw_payload import RawPayload
-from vitals.models.tenancy import FileAsset, IntegrationConnection
-from vitals.models.labs import LabResult
-from vitals.services.conflict_rule_ownership_backfill_service import (
+from vitals.models.tenancy import IntegrationConnection
+from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
+from vitals.models.system_alert import SystemAlert
+from vitals.services import alerts_service
+from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.progress_photo_ownership_backfill_service import (
+from vitals.operations.ownership.progress_photo import (
     PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
-from vitals.services.shared_report_ownership_backfill_service import (
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.weight_log_ownership_backfill_service import (
+from vitals.operations.ownership.body_scan_metric import (
+    BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.body_scan import (
+    BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.genetic_variant import (
+    GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.lab_result import (
+    LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.garmin_weight_export import (
+    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.notification import (
+    NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.weekly_digest import (
+    WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.weight_log import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.utils.timeutils import now_utc
 
 
-LAB_RESULT_OWNERSHIP_BACKFILL_PHASE = "stage3.raw_linked_facts.lab_results.v1"
-LAB_RESULT_OWNERSHIP_BACKFILL_TABLES = ("lab_results",)
-LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
+SYSTEM_ALERT_OWNERSHIP_BACKFILL_PHASE = (
+    "stage3.subject_optional.system_alerts.v1"
+)
+SYSTEM_ALERT_OWNERSHIP_BACKFILL_TABLES = ("system_alerts",)
+SYSTEM_ALERT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
     MappingProxyType(
         {
-            "lab_results": (
-                f"{LAB_RESULT_OWNERSHIP_BACKFILL_PHASE}.lab_results"
+            "system_alerts": (
+                f"{SYSTEM_ALERT_OWNERSHIP_BACKFILL_PHASE}.system_alerts"
             )
         }
     )
 )
-DEFAULT_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
-MAX_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
+DEFAULT_SYSTEM_ALERT_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
+MAX_SYSTEM_ALERT_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
 
-_TABLE: Table = LabResult.__table__
-_PHASE_KEY = LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["lab_results"]
+_TABLE: Table = SystemAlert.__table__
+_PHASE_KEY = SYSTEM_ALERT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["system_alerts"]
 _PAGE_SIZE = 1000
 _POSTGRES_INTEGER_MAX = (1 << 31) - 1
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-# Manual and MCP results are the owner speaking through two surfaces; parsed
-# results are derived from an uploaded document.  Any other source is unreviewed.
-_MANUAL_SOURCES = {
-    Source.MANUAL.value,
-    Source.MCP.value,
-}
-_ALLOWED_SOURCES = _MANUAL_SOURCES | {Source.LAB_PARSER.value}
-_ALLOWED_FLAGS = {flag.value for flag in LabFlag}
-_MAX_MARKER_LENGTH = 128
+_MAX_ALERT_KEY_LENGTH = 128
+_MAX_ENTITY_REF_LENGTH = 128
+_AI_ALERT_KEY = "signal_parser_failed"
+_CONFLICT_KEY_RE = re.compile(r"conflict:[1-9][0-9]*")
 _HISTORICAL_CONNECTION_STATUSES = {
     IntegrationConnectionStatus.LEGACY.value,
     IntegrationConnectionStatus.ACTIVE.value,
@@ -111,49 +124,34 @@ _HISTORICAL_CONNECTION_STATUSES = {
 _ROW_FIELDS = (
     "id",
     "subject_id",
-    "actor_user_id",
-    "date",
-    "domain",
-    "source",
-    "marker",
-    "value",
-    "unit",
-    "ref_low",
-    "ref_high",
-    "flag",
-    "lab_name",
-    "note",
-    "raw_payload_id",
+    "integration_connection_id",
+    "ai_invocation_id",
     "created_at",
-    "updated_at",
+    "domain",
+    "severity",
+    "message",
+    "alert_key",
+    "entity_ref",
+    "override_at",
+    "overridden_by_user_id",
+    "resolved_at",
+    "resolved_by_user_id",
 )
 _DATA_FIELDS = tuple(
-    field for field in _ROW_FIELDS if field not in {"subject_id", "actor_user_id"}
+    field
+    for field in _ROW_FIELDS
+    if field not in {"subject_id", "integration_connection_id"}
+)
+_INVOCATION_FIELDS = (
+    "id",
+    "subject_id",
+    "status",
 )
 _CONNECTION_FIELDS = (
     "id",
     "subject_id",
     "provider",
     "connection_type",
-    "status",
-)
-_RAW_FIELDS = (
-    "id",
-    "subject_id",
-    "actor_user_id",
-    "integration_connection_id",
-    "file_asset_id",
-    "domain",
-    "source",
-    "external_id",
-    "processed_at",
-)
-_FILE_FIELDS = (
-    "id",
-    "subject_id",
-    "uploaded_by_user_id",
-    "purpose",
-    "storage_ref",
     "status",
 )
 _B_PHASES = tuple(NORMALIZED_MANUAL_CHECKPOINT_PHASES.values())
@@ -165,6 +163,15 @@ _G_PHASES = tuple(CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _H_PHASES = tuple(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _K_PHASES = tuple(SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _L_PHASES = tuple(WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_M_PHASES = tuple(LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_N_PHASES = tuple(GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_O_PHASES = tuple(BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_P_PHASES = tuple(BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_Q_PHASES = tuple(
+    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()
+)
+_R_PHASES = tuple(WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_S_PHASES = tuple(NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _PRIOR_PHASES = (
     (RAW_OWNERSHIP_BACKFILL_PHASE,)
     + _B_PHASES
@@ -176,50 +183,57 @@ _PRIOR_PHASES = (
     + _H_PHASES
     + _K_PHASES
     + _L_PHASES
+    + _M_PHASES
+    + _N_PHASES
+    + _O_PHASES
+    + _P_PHASES
+    + _Q_PHASES
+    + _R_PHASES
+    + _S_PHASES
 )
 
 
-class LabResultOwnershipBackfillStatus(StrEnum):
+class SystemAlertOwnershipBackfillStatus(StrEnum):
     NOT_STARTED = "not_started"
     RUNNING = "running"
     COMPLETED = "completed"
 
 
-class LabResultOwnershipBackfillError(RuntimeError):
-    """Base class for fail-closed Stage-3M errors."""
+class SystemAlertOwnershipBackfillError(RuntimeError):
+    """Base class for fail-closed Stage-3T errors."""
 
 
-class LabResultOwnershipBackfillValidationError(
-    LabResultOwnershipBackfillError, ValueError
+class SystemAlertOwnershipBackfillValidationError(
+    SystemAlertOwnershipBackfillError, ValueError
 ):
     """A caller argument or persisted scalar is invalid."""
 
 
-class LabResultOwnershipBackfillIdentityError(LabResultOwnershipBackfillError):
+class SystemAlertOwnershipBackfillIdentityError(SystemAlertOwnershipBackfillError):
     """The exact-one reviewed owner graph is unavailable."""
 
 
-class LabResultOwnershipBackfillDependencyError(
-    LabResultOwnershipBackfillError
+class SystemAlertOwnershipBackfillDependencyError(
+    SystemAlertOwnershipBackfillError
 ):
     """A prerequisite checkpoint is absent, malformed, or in the wrong mode."""
 
 
-class LabResultOwnershipBackfillStateError(LabResultOwnershipBackfillError):
+class SystemAlertOwnershipBackfillStateError(SystemAlertOwnershipBackfillError):
     """Checkpoint progress or an ownership root is inconsistent."""
 
 
-class LabResultOwnershipBackfillProvenanceError(
-    LabResultOwnershipBackfillError
+class SystemAlertOwnershipBackfillProvenanceError(
+    SystemAlertOwnershipBackfillError
 ):
-    """A lab result row has unsupported persisted provenance."""
+    """A weight row has unsupported persisted provenance."""
 
 
 @dataclass(frozen=True, slots=True)
-class LabResultOwnershipBackfillPreflightResult:
+class SystemAlertOwnershipBackfillPreflightResult:
     phase_key: str
     subject_id: uuid.UUID
-    status: LabResultOwnershipBackfillStatus
+    status: SystemAlertOwnershipBackfillStatus
     tables_total: int
     completed_tables: int
     snapshot_rows: int
@@ -234,7 +248,7 @@ class LabResultOwnershipBackfillPreflightResult:
 
     @property
     def completed(self) -> bool:
-        return self.status is LabResultOwnershipBackfillStatus.COMPLETED
+        return self.status is SystemAlertOwnershipBackfillStatus.COMPLETED
 
     def to_safe_dict(self) -> dict[str, str | int]:
         return {
@@ -255,8 +269,8 @@ class LabResultOwnershipBackfillPreflightResult:
 
 
 @dataclass(frozen=True, slots=True)
-class LabResultOwnershipBackfillBatchResult(
-    LabResultOwnershipBackfillPreflightResult
+class SystemAlertOwnershipBackfillBatchResult(
+    SystemAlertOwnershipBackfillPreflightResult
 ):
     batch_table: str
     batch_scanned_rows: int
@@ -268,7 +282,7 @@ class LabResultOwnershipBackfillBatchResult(
         return self.batch_updated_rows > 0
 
     def to_safe_dict(self) -> dict[str, str | int]:
-        result = LabResultOwnershipBackfillPreflightResult.to_safe_dict(self)
+        result = SystemAlertOwnershipBackfillPreflightResult.to_safe_dict(self)
         result.update(
             {
                 "batch_table": self.batch_table,
@@ -317,9 +331,9 @@ def _validate_batch_size(value: object) -> int:
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
-        or not 1 <= value <= MAX_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE
+        or not 1 <= value <= MAX_SYSTEM_ALERT_OWNERSHIP_BACKFILL_BATCH_SIZE
     ):
-        raise LabResultOwnershipBackfillValidationError(
+        raise SystemAlertOwnershipBackfillValidationError(
             "batch_size must be an integer between 1 and 1000"
         )
     return value
@@ -371,9 +385,9 @@ async def _load_checkpoints(
 
 def _validate_checkpoint(checkpoint: Any, *, phase: str, subject_id: uuid.UUID) -> str:
     error = (
-        LabResultOwnershipBackfillDependencyError
+        SystemAlertOwnershipBackfillDependencyError
         if phase in _PRIOR_PHASES
-        else LabResultOwnershipBackfillStateError
+        else SystemAlertOwnershipBackfillStateError
     )
     if checkpoint.phase_key != phase or checkpoint.subject_id != subject_id:
         raise error("an ownership checkpoint has the wrong phase or subject")
@@ -451,15 +465,15 @@ async def _load_scope(session: AsyncSession, *, for_update: bool) -> _Scope:
         query = query.with_for_update()
     rows = list(await session.execute(query))
     if len(rows) != 1:
-        raise LabResultOwnershipBackfillIdentityError(
-            "lab result backfill requires exactly one health subject"
+        raise SystemAlertOwnershipBackfillIdentityError(
+            "system alert backfill requires exactly one health subject"
         )
     subject_id, owner_user_id = rows[0]
     owner_query = select(User.status).where(User.id == owner_user_id)
     if for_update:
         owner_query = owner_query.with_for_update()
     if await session.scalar(owner_query) != UserStatus.ACTIVE.value:
-        raise LabResultOwnershipBackfillIdentityError(
+        raise SystemAlertOwnershipBackfillIdentityError(
             "the sole health subject must have an active owner"
         )
     return _Scope(subject_id, owner_user_id)
@@ -507,7 +521,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
             ):
                 continue
             if not _exact_empty_completed(checkpoint):
-                raise LabResultOwnershipBackfillDependencyError(
+                raise SystemAlertOwnershipBackfillDependencyError(
                     f"{label} restore checkpoint state is invalid"
                 )
 
@@ -516,12 +530,24 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
     require(_D_PHASES + _E_PHASES, "restore_blocked", "Stage-3D/3E")
     require(_F_PHASES + _G_PHASES, "running", "Stage-3F/3G")
     require(_H_PHASES, "restore_blocked", "Stage-3H")
-    require(_L_PHASES, "running", "Stage-3L")
+    require(
+        _L_PHASES + _M_PHASES + _N_PHASES + _P_PHASES,
+        "running",
+        "Stage-3I through Stage-3P resettable phases",
+    )
+    require(_O_PHASES + _Q_PHASES, "restore_blocked", "Stage-3O/3Q")
+    # Stage 3R and Stage 3S are excluded from backup v1, so their retained
+    # checkpoints are prepared or preserved rather than rebased.
+    for phase in _R_PHASES + _S_PHASES:
+        if checkpoints[phase].status not in {"running", "completed"}:
+            raise SystemAlertOwnershipBackfillDependencyError(
+                "a retained Stage-3R/3S checkpoint state is invalid"
+            )
     # Stage 3K is excluded from backup v1 entirely, so its retained checkpoint is
     # prepared or preserved rather than rebased onto incoming bounds.
     for phase in _K_PHASES:
         if checkpoints[phase].status not in {"running", "completed"}:
-            raise LabResultOwnershipBackfillDependencyError(
+            raise SystemAlertOwnershipBackfillDependencyError(
                 "Stage-3K retained checkpoint state is invalid"
             )
 
@@ -534,7 +560,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("restore_blocked", "completed"),
         ("completed", "completed"),
     }:
-        raise LabResultOwnershipBackfillDependencyError(
+        raise SystemAlertOwnershipBackfillDependencyError(
             "Stage-3E restore checkpoint order is inconsistent"
         )
 
@@ -551,7 +577,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("running", "completed"),
         ("completed", "completed"),
     }:
-        raise LabResultOwnershipBackfillDependencyError(
+        raise SystemAlertOwnershipBackfillDependencyError(
             "Stage-3F restore checkpoint order is inconsistent"
         )
 
@@ -563,8 +589,8 @@ def _validate_own(checkpoint: Any | None, *, scope: _Scope) -> str | None:
         checkpoint, phase=_PHASE_KEY, subject_id=scope.subject_id
     )
     if status == "restore_blocked":
-        raise LabResultOwnershipBackfillStateError(
-            "Stage-3M checkpoints cannot be restore-blocked"
+        raise SystemAlertOwnershipBackfillStateError(
+            "Stage-3T checkpoints cannot be restore-blocked"
         )
     return status
 
@@ -573,8 +599,8 @@ def _require_dependencies(
     checkpoints: Mapping[str, Any], *, scope: _Scope, own_exists: bool
 ) -> bool:
     if set(checkpoints) != set(_PRIOR_PHASES):
-        raise LabResultOwnershipBackfillDependencyError(
-            "Stage-3A through Stage-3L checkpoints are incomplete"
+        raise SystemAlertOwnershipBackfillDependencyError(
+            "Stage-3A through Stage-3S checkpoints are incomplete"
         )
     statuses = {
         phase: _validate_checkpoint(
@@ -585,8 +611,8 @@ def _require_dependencies(
     if all(status == "completed" for status in statuses.values()):
         return False
     if not own_exists:
-        raise LabResultOwnershipBackfillDependencyError(
-            "restore-mode Stage-3M requires its exact portability checkpoint"
+        raise SystemAlertOwnershipBackfillDependencyError(
+            "restore-mode Stage-3T requires its exact portability checkpoint"
         )
     _require_restore_dependencies(checkpoints)
     return True
@@ -597,8 +623,8 @@ def _canonical(value: Any) -> Any:
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise LabResultOwnershipBackfillProvenanceError(
-                "lab result contains a non-finite JSON number"
+            raise SystemAlertOwnershipBackfillProvenanceError(
+                "system alert contains a non-finite JSON number"
             )
         return ["float", value.hex()]
     if isinstance(value, uuid.UUID):
@@ -611,14 +637,14 @@ def _canonical(value: Any) -> Any:
         return ["time", value.isoformat()]
     if isinstance(value, Mapping):
         if any(type(key) is not str for key in value):
-            raise LabResultOwnershipBackfillProvenanceError(
-                "lab result JSON object keys must be strings"
+            raise SystemAlertOwnershipBackfillProvenanceError(
+                "system alert JSON object keys must be strings"
             )
         return {key: _canonical(value[key]) for key in sorted(value)}
     if isinstance(value, (list, tuple)):
         return [_canonical(item) for item in value]
-    raise LabResultOwnershipBackfillProvenanceError(
-        "lab result contains an unsupported JSON value"
+    raise SystemAlertOwnershipBackfillProvenanceError(
+        "system alert contains an unsupported JSON value"
     )
 
 
@@ -641,11 +667,6 @@ def _connection_select():
     return select(*(table.c[field] for field in _CONNECTION_FIELDS))
 
 
-def _raw_select():
-    table = RawPayload.__table__
-    return select(*(table.c[field] for field in _RAW_FIELDS))
-
-
 def _values(row: Any, fields: tuple[str, ...]) -> SimpleNamespace:
     mapping = row._mapping if hasattr(row, "_mapping") else row
     return SimpleNamespace(**{field: mapping[field] for field in fields})
@@ -659,21 +680,17 @@ def _connection_values(row: Any) -> SimpleNamespace:
     return _values(row, _CONNECTION_FIELDS)
 
 
-def _raw_values(row: Any) -> SimpleNamespace:
-    return _values(row, _RAW_FIELDS)
-
-
 def _data_envelope(row: Any) -> list[Any]:
-    return ["lab_results", *[getattr(row, field) for field in _DATA_FIELDS]]
+    return ["system_alerts", *[getattr(row, field) for field in _DATA_FIELDS]]
 
 
 def _ownership_envelope(row: Any) -> list[Any]:
     return [
-        "lab_results",
+        "system_alerts",
         row.id,
         row.subject_id,
-        row.actor_user_id,
-        row.raw_payload_id,
+        row.integration_connection_id,
+        row.ai_invocation_id,
     ]
 
 
@@ -682,167 +699,119 @@ def _same_values(left: Any, right: Any, fields: tuple[str, ...]) -> bool:
 
 
 def _validate_fact_values(row: Any) -> None:
-    """Reject a result whose reviewed business shape cannot be trusted."""
+    """Reject an alert whose reviewed ladder shape cannot be trusted."""
 
-    if not isinstance(row.date, date):
-        raise LabResultOwnershipBackfillProvenanceError(
-            "lab result has an invalid date"
+    if not isinstance(row.created_at, datetime):
+        raise SystemAlertOwnershipBackfillProvenanceError(
+            "system alert has an invalid creation timestamp"
+        )
+    if row.severity not in {item.value for item in Severity}:
+        raise SystemAlertOwnershipBackfillProvenanceError(
+            "system alert has an unsupported severity"
+        )
+    if not isinstance(row.message, str) or not row.message.strip():
+        raise SystemAlertOwnershipBackfillProvenanceError(
+            "system alert has no message"
         )
     if (
-        not isinstance(row.marker, str)
-        or not row.marker.strip()
-        or len(row.marker) > _MAX_MARKER_LENGTH
+        not isinstance(row.alert_key, str)
+        or not row.alert_key.strip()
+        or len(row.alert_key) > _MAX_ALERT_KEY_LENGTH
     ):
-        raise LabResultOwnershipBackfillProvenanceError(
-            "lab result has an invalid marker"
+        raise SystemAlertOwnershipBackfillProvenanceError(
+            "system alert has an invalid key"
         )
-    for field in ("value", "ref_low", "ref_high"):
-        number = getattr(row, field)
-        if field != "value" and number is None:
-            continue
-        if (
-            isinstance(number, bool)
-            or not isinstance(number, (int, float))
-            or not math.isfinite(float(number))
-        ):
-            raise LabResultOwnershipBackfillProvenanceError(
-                "lab result has a missing or non-finite measurement"
-            )
-    if row.flag is not None and row.flag not in _ALLOWED_FLAGS:
-        raise LabResultOwnershipBackfillProvenanceError(
-            "lab result has an unsupported range flag"
+    if (
+        not isinstance(row.entity_ref, str)
+        or len(row.entity_ref) > _MAX_ENTITY_REF_LENGTH
+    ):
+        raise SystemAlertOwnershipBackfillProvenanceError(
+            "system alert has an invalid entity reference"
         )
-    for field in ("unit", "lab_name", "note"):
-        text_value = getattr(row, field)
-        if text_value is not None and not isinstance(text_value, str):
-            raise LabResultOwnershipBackfillProvenanceError(
-                "lab result has an invalid text field"
+    if row.override_at is None and row.overridden_by_user_id is not None:
+        raise SystemAlertOwnershipBackfillProvenanceError(
+            "system alert names an override actor without an override"
+        )
+    if row.resolved_at is None and row.resolved_by_user_id is not None:
+        raise SystemAlertOwnershipBackfillProvenanceError(
+            "system alert names a resolution actor without a resolution"
+        )
+
+
+def _alert_class(alert_key: str) -> tuple[str, IntegrationProvider | None]:
+    """Classify one key through the writer's own reviewed allowlist.
+
+    A health key wins over the historical provider registry: the same
+    ``signal_parser_failed`` key is registered under OpenRouter only so old
+    subject-connection alerts stay resolvable, while the schema requires the
+    connection root to be null wherever a platform invocation funds the parse.
+    """
+
+    if alert_key in alerts_service.HEALTH_ALERT_KEYS or _CONFLICT_KEY_RE.fullmatch(
+        alert_key
+    ):
+        # A conflict alert names one subject-owned or curated rule; the writer
+        # classifies it as health for exactly that reason.
+        return "health", None
+    for provider, keys in alerts_service.PROVIDER_ALERT_KEYS.items():
+        if alert_key in keys:
+            return "provider", provider
+    if alerts_service.is_platform_alert_key(alert_key):
+        return "platform", None
+    raise SystemAlertOwnershipBackfillProvenanceError(
+        "system alert key is outside the reviewed ownership allowlist"
+    )
+
+
+async def _reviewed_provider_root(
+    session: AsyncSession, *, scope: _Scope, provider: IntegrationProvider
+) -> Any:
+    """Return the exact reviewed legacy connection one provider alert describes."""
+
+    connection_type = alerts_service.PROVIDER_ALERT_CONNECTION_TYPES[provider]
+    table = IntegrationConnection.__table__
+    rows = list(
+        await session.execute(
+            select(
+                *(table.c[field] for field in _CONNECTION_FIELDS),
+                table.c.external_account_discriminator,
             )
+            .where(
+                table.c.subject_id == scope.subject_id,
+                table.c.provider == provider.value,
+                table.c.connection_type == connection_type.value,
+            )
+            .order_by(table.c.id)
+            .limit(2)
+        )
+    )
+    if len(rows) != 1:
+        raise SystemAlertOwnershipBackfillStateError(
+            "a provider alert has no unambiguous connection root"
+        )
+    root = rows[0]
+    if (
+        root.external_account_discriminator != LEGACY_ACCOUNT_DISCRIMINATOR
+        or root.status not in _HISTORICAL_CONNECTION_STATUSES
+    ):
+        raise SystemAlertOwnershipBackfillStateError(
+            "the sole provider connection is not the reviewed legacy root"
+        )
+    return _connection_values(root)
 
 
-def _validate_gateway_connection(connection: Any, *, scope: _Scope) -> None:
-    """The only reviewed lab connection root is the subject OpenRouter gateway."""
-
+def _validate_connection(
+    connection: Any, *, scope: _Scope, provider: IntegrationProvider
+) -> None:
+    connection_type = alerts_service.PROVIDER_ALERT_CONNECTION_TYPES[provider]
     if (
         connection.subject_id != scope.subject_id
-        or connection.provider != IntegrationProvider.OPENROUTER.value
-        or connection.connection_type != IntegrationConnectionType.AI_GATEWAY.value
+        or connection.provider != provider.value
+        or connection.connection_type != connection_type.value
         or connection.status not in _HISTORICAL_CONNECTION_STATUSES
     ):
-        raise LabResultOwnershipBackfillProvenanceError(
-            "lab parser raw payload has invalid AI gateway provenance"
-        )
-
-
-def _validate_document(asset: Any, *, scope: _Scope, raw: Any) -> None:
-    if (
-        asset.subject_id != scope.subject_id
-        or asset.purpose != FileAssetPurpose.LAB_DOCUMENT.value
-        or asset.uploaded_by_user_id not in {None, scope.owner_user_id}
-        or asset.storage_ref != raw.external_id
-    ):
-        raise LabResultOwnershipBackfillProvenanceError(
-            "lab parser file provenance is inconsistent"
-        )
-
-
-def _validate_raw(
-    raw: Any,
-    *,
-    scope: _Scope,
-    connections: Mapping[uuid.UUID, Any],
-    files: Mapping[uuid.UUID, Any],
-    parser_invocations: Mapping[int, tuple[int, int, bool]],
-    source: str,
-    fact_is_unowned: bool,
-) -> None:
-    """Validate the reviewed raw root a lab result links, without adopting it."""
-
-    if raw.domain != Domain.LABS.value or raw.source != source:
-        raise LabResultOwnershipBackfillProvenanceError(
-            "lab result raw payload has an invalid domain or source"
-        )
-    raw_roots = (
-        raw.subject_id,
-        raw.actor_user_id,
-        raw.integration_connection_id,
-        raw.file_asset_id,
-    )
-    # Backup v1 restores the raw lake before Stage 3A runs again, so a still
-    # fully-unowned raw is valid provenance for a still-unowned fact — and only
-    # for one.  An adopted fact may never point at unowned raw history.
-    raw_is_unowned = raw_roots == (None, None, None, None)
-    if raw_is_unowned:
-        if not fact_is_unowned:
-            raise LabResultOwnershipBackfillStateError(
-                "an owned lab result links unowned raw provenance"
-            )
-    else:
-        if raw.subject_id != scope.subject_id:
-            raise LabResultOwnershipBackfillProvenanceError(
-                "lab result raw payload has foreign provenance"
-            )
-        if raw.actor_user_id not in {None, scope.owner_user_id}:
-            raise LabResultOwnershipBackfillProvenanceError(
-                "lab result raw payload actor is outside the reviewed owner boundary"
-            )
-    total, succeeded, same_subject = parser_invocations.get(raw.id, (0, 0, True))
-    if not same_subject:
-        raise LabResultOwnershipBackfillStateError(
-            "lab result raw payload has a foreign parser invocation"
-        )
-    if source in _MANUAL_SOURCES:
-        if raw.integration_connection_id is not None or raw.file_asset_id is not None:
-            raise LabResultOwnershipBackfillProvenanceError(
-                "manual or MCP lab provenance cannot carry connection or file roots"
-            )
-        if total != 0:
-            raise LabResultOwnershipBackfillProvenanceError(
-                "manual or MCP lab raw payload cannot claim a document parser"
-            )
-        return
-    if raw_is_unowned:
-        if total != 0:
-            raise LabResultOwnershipBackfillStateError(
-                "unowned lab parser raw cannot claim a document parser invocation"
-            )
-        return
-    if raw.integration_connection_id is not None:
-        # Reviewed subject-funded parser history: the gateway paid for the parse,
-        # so no platform invocation may exist and no file root was registered.
-        connection = connections.get(raw.integration_connection_id)
-        if connection is None:
-            raise LabResultOwnershipBackfillStateError(
-                "lab result raw payload references a missing gateway connection"
-            )
-        _validate_gateway_connection(connection, scope=scope)
-        if total != 0:
-            raise LabResultOwnershipBackfillProvenanceError(
-                "lab parser raw mixes subject and platform AI provenance"
-            )
-        if raw.file_asset_id is not None:
-            raise LabResultOwnershipBackfillProvenanceError(
-                "subject-funded lab parser history cannot claim a file root"
-            )
-        return
-    if raw.file_asset_id is None:
-        # Pre-FileAsset legacy history, and the shape a backup-v1 restore leaves
-        # behind once F/C are stripped.  Registering the document is Stage-3A and
-        # PR-06 work; this phase only refuses a forged parser claim.
-        if total != 0:
-            raise LabResultOwnershipBackfillProvenanceError(
-                "fileless lab parser raw cannot claim a document parser invocation"
-            )
-        return
-    asset = files.get(raw.file_asset_id)
-    if asset is None:
-        raise LabResultOwnershipBackfillStateError(
-            "lab result raw payload references a missing document asset"
-        )
-    _validate_document(asset, scope=scope, raw=raw)
-    if succeeded != 1:
-        raise LabResultOwnershipBackfillProvenanceError(
-            "platform lab parser raw lacks one successful AI invocation"
+        raise SystemAlertOwnershipBackfillProvenanceError(
+            "system alert has invalid provider connection provenance"
         )
 
 
@@ -851,70 +820,93 @@ def _validate_row(
     *,
     scope: _Scope,
     connections: Mapping[uuid.UUID, Any],
-    raws: Mapping[int, Any],
-    files: Mapping[uuid.UUID, Any],
-    parser_invocations: Mapping[int, tuple[int, int, bool]],
+    invocations: Mapping[uuid.UUID, Any],
     historical: bool,
     allow_unowned: bool,
-) -> bool:
-    """Validate one row and return whether sole-subject adoption is required."""
+) -> tuple[bool, IntegrationProvider | None]:
+    """Validate one alert and return whether adoption is required, plus its class."""
 
-    if row.domain != Domain.LABS.value or row.source not in _ALLOWED_SOURCES:
-        raise LabResultOwnershipBackfillProvenanceError(
-            "lab result has invalid domain or source"
-        )
     if not isinstance(row.id, int) or isinstance(row.id, bool) or row.id <= 0:
-        raise LabResultOwnershipBackfillValidationError(
-            "lab result has an invalid primary key"
+        raise SystemAlertOwnershipBackfillValidationError(
+            "system alert has an invalid primary key"
         )
     _validate_fact_values(row)
+    kind, provider = _alert_class(row.alert_key)
 
-    roots = (row.subject_id, row.actor_user_id)
-    needs_adoption = roots == (None, None)
+    for actor in (row.overridden_by_user_id, row.resolved_by_user_id):
+        if actor not in {None, scope.owner_user_id}:
+            raise SystemAlertOwnershipBackfillStateError(
+                "system alert lifecycle actor is outside the reviewed boundary"
+            )
+
+    if kind == "platform":
+        # An installation-wide alert legitimately owns neither root, so it is
+        # never adopted and must never acquire one.
+        if row.subject_id is not None or row.integration_connection_id is not None:
+            raise SystemAlertOwnershipBackfillStateError(
+                "a platform alert cannot claim subject or connection ownership"
+            )
+        if row.ai_invocation_id is not None:
+            raise SystemAlertOwnershipBackfillProvenanceError(
+                "a platform alert cannot claim a platform AI invocation"
+            )
+        return False, None
+
+    if kind == "health":
+        if row.integration_connection_id is not None:
+            raise SystemAlertOwnershipBackfillStateError(
+                "a health alert cannot claim a provider connection"
+            )
+        needs_adoption = row.subject_id is None
+    else:
+        if row.subject_id not in {None, scope.subject_id}:
+            raise SystemAlertOwnershipBackfillStateError(
+                "a provider alert belongs to another subject"
+            )
+        # Backup v1 rebinds S but strips C, so a subject-bound connection-less
+        # provider alert is a restored row this phase still has to complete.
+        needs_adoption = row.integration_connection_id is None
+
     if needs_adoption:
         if not allow_unowned:
-            raise LabResultOwnershipBackfillStateError(
-                "an unowned lab result is outside the historical bridge"
+            raise SystemAlertOwnershipBackfillStateError(
+                "an unowned system alert is outside the historical bridge"
             )
-    elif row.subject_id != scope.subject_id:
-        raise LabResultOwnershipBackfillStateError(
-            "lab result has partial or foreign ownership roots"
-        )
-    if not needs_adoption and row.actor_user_id not in {None, scope.owner_user_id}:
-        raise LabResultOwnershipBackfillStateError(
-            "lab result actor is outside the reviewed ownership boundary"
-        )
+        if row.ai_invocation_id is not None:
+            raise SystemAlertOwnershipBackfillStateError(
+                "an unowned system alert cannot claim a platform invocation"
+            )
+        return True, provider
 
-    if row.raw_payload_id is None:
-        # A rawless result is legitimate for every reviewed source: the writer
-        # accepts a parsed panel typed in by hand, and older parses predate the
-        # raw-first boundary.  Registering that provenance is Stage-3A work.
-        return needs_adoption
-    raw = raws.get(row.raw_payload_id)
-    if raw is None:
-        raise LabResultOwnershipBackfillStateError(
-            "lab result references a missing raw payload"
+    if row.subject_id != scope.subject_id:
+        raise SystemAlertOwnershipBackfillStateError(
+            "system alert belongs to another subject"
         )
-    _validate_raw(
-        raw,
-        scope=scope,
-        connections=connections,
-        files=files,
-        parser_invocations=parser_invocations,
-        source=row.source,
-        fact_is_unowned=needs_adoption,
-    )
-    # The fact carries no actor of its own beyond the owner boundary above, so
-    # the only cross-root rule is that an adopted history may not disagree with
-    # a raw payload that already names the owner.
-    if not historical and row.actor_user_id != raw.actor_user_id:
-        raise LabResultOwnershipBackfillProvenanceError(
-            "live lab result and raw payload have different actor roots"
-        )
-    return needs_adoption
+    if provider is not None:
+        connection = connections.get(row.integration_connection_id)
+        if connection is None:
+            raise SystemAlertOwnershipBackfillStateError(
+                "system alert references a missing provider connection"
+            )
+        _validate_connection(connection, scope=scope, provider=provider)
+    if row.ai_invocation_id is not None:
+        if row.alert_key != _AI_ALERT_KEY or not row.entity_ref.strip():
+            raise SystemAlertOwnershipBackfillProvenanceError(
+                "only a parser alert with an entity reference may name an invocation"
+            )
+        invocation = invocations.get(row.ai_invocation_id)
+        if invocation is None:
+            raise SystemAlertOwnershipBackfillStateError(
+                "system alert references a missing platform invocation"
+            )
+        if invocation.subject_id != scope.subject_id:
+            raise SystemAlertOwnershipBackfillStateError(
+                "system alert links a platform invocation of another subject"
+            )
+    return False, provider
 
 
-async def _after_lab_results_projection_for_test() -> None:
+async def _after_system_alerts_projection_for_test() -> None:
     """Deterministic seam for real PostgreSQL lock/recheck tests."""
 
 
@@ -931,86 +923,18 @@ async def _project_connections(
     return {row.id: row for row in map(_connection_values, rows)}
 
 
-async def _project_raws(
-    session: AsyncSession, raw_payload_ids: set[int]
-) -> dict[int, Any]:
-    if not raw_payload_ids:
-        return {}
-    rows = await session.execute(
-        _raw_select().where(RawPayload.id.in_(raw_payload_ids)).order_by(RawPayload.id)
-    )
-    return {row.id: row for row in map(_raw_values, rows)}
-
-
-async def _project_parser_invocation_scope(
-    session: AsyncSession, *, scope: _Scope, raws: Mapping[int, Any]
-) -> dict[int, tuple[int, int, bool]]:
-    """Return per-raw document-parser counts restricted to the reviewed subject."""
-
-    if not raws:
-        return {}
-    rows = await session.execute(
-        select(
-            AIInvocation.raw_payload_id,
-            AIInvocation.subject_id,
-            AIInvocation.status,
-        )
-        .where(
-            AIInvocation.raw_payload_id.in_(set(raws)),
-            AIInvocation.purpose
-            == AIInvocationPurpose.LAB_DOCUMENT_PARSE.value,
-        )
-        .order_by(AIInvocation.raw_payload_id, AIInvocation.id)
-    )
-    counts: dict[int, tuple[int, int, bool]] = {
-        raw_payload_id: (0, 0, True) for raw_payload_id in raws
-    }
-    for raw_payload_id, subject_id, status in rows:
-        total, succeeded, same_subject = counts[int(raw_payload_id)]
-        counts[int(raw_payload_id)] = (
-            total + 1,
-            succeeded + int(status == AIInvocationStatus.SUCCEEDED.value),
-            same_subject and subject_id == scope.subject_id,
-        )
-    return counts
-
-
-def _file_select():
-    table = FileAsset.__table__
-    return select(*(table.c[field] for field in _FILE_FIELDS))
-
-
-def _file_values(row: Any) -> SimpleNamespace:
-    return _values(row, _FILE_FIELDS)
-
-
-async def _project_files(
-    session: AsyncSession, file_asset_ids: set[uuid.UUID]
+async def _project_invocations(
+    session: AsyncSession, invocation_ids: set[uuid.UUID]
 ) -> dict[uuid.UUID, Any]:
-    if not file_asset_ids:
+    if not invocation_ids:
         return {}
+    table = AIInvocation.__table__
     rows = await session.execute(
-        _file_select()
-        .where(FileAsset.id.in_(file_asset_ids))
-        .order_by(FileAsset.id)
+        select(*(table.c[field] for field in _INVOCATION_FIELDS))
+        .where(table.c.id.in_(invocation_ids))
+        .order_by(table.c.id)
     )
-    return {row.id: row for row in map(_file_values, rows)}
-
-
-def _referenced_file_ids(raws: Mapping[int, Any]) -> set[uuid.UUID]:
-    return {
-        raw.file_asset_id
-        for raw in raws.values()
-        if raw.file_asset_id is not None
-    }
-
-
-def _referenced_connection_ids(raws: Mapping[int, Any]) -> set[uuid.UUID]:
-    return {
-        raw.integration_connection_id
-        for raw in raws.values()
-        if raw.integration_connection_id is not None
-    }
+    return {row.id: _values(row, _INVOCATION_FIELDS) for row in rows}
 
 
 async def _lock_projected_graph(
@@ -1018,14 +942,12 @@ async def _lock_projected_graph(
     *,
     projected_rows: Mapping[int, Any],
     projected_connections: Mapping[uuid.UUID, Any],
-    projected_raws: Mapping[int, Any],
-) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[int, Any]]:
+) -> tuple[dict[int, Any], dict[uuid.UUID, Any]]:
     locked_connections = await _lock_projected_connections(
         session, projected_connections
     )
-    locked_raws = await _lock_projected_raws(session, projected_raws)
     locked_rows = await _lock_projected_rows(session, projected_rows)
-    return locked_rows, locked_connections, locked_raws
+    return locked_rows, locked_connections
 
 
 async def _lock_projected_connections(
@@ -1049,36 +971,12 @@ async def _lock_projected_connections(
             )
             for key in connection_ids
         ):
-            raise LabResultOwnershipBackfillStateError(
+            raise SystemAlertOwnershipBackfillStateError(
                 "a projected provider connection changed before it was locked"
             )
     else:
         locked_connections = {}
     return locked_connections
-
-
-async def _lock_projected_raws(
-    session: AsyncSession,
-    projected_raws: Mapping[int, Any],
-) -> dict[int, Any]:
-    raw_payload_ids = set(projected_raws)
-    if not raw_payload_ids:
-        return {}
-    locked = await session.execute(
-        _raw_select()
-        .where(RawPayload.id.in_(raw_payload_ids))
-        .order_by(RawPayload.id)
-        .with_for_update()
-    )
-    locked_raws = {row.id: row for row in map(_raw_values, locked)}
-    if set(locked_raws) != raw_payload_ids or any(
-        not _same_values(locked_raws[key], projected_raws[key], _RAW_FIELDS)
-        for key in raw_payload_ids
-    ):
-        raise LabResultOwnershipBackfillStateError(
-            "a projected lab result raw payload changed before it was locked"
-        )
-    return locked_raws
 
 
 async def _lock_projected_rows(
@@ -1099,8 +997,8 @@ async def _lock_projected_rows(
         not _same_values(locked_rows[key], projected_rows[key], _ROW_FIELDS)
         for key in projected_rows
     ):
-        raise LabResultOwnershipBackfillStateError(
-            "a projected lab result changed before it was locked"
+        raise SystemAlertOwnershipBackfillStateError(
+            "a projected weight changed before it was locked"
         )
     return locked_rows
 
@@ -1111,37 +1009,37 @@ async def _project_and_lock_ids(
     *,
     scope: _Scope,
     invoke_race_hook: bool,
-) -> tuple[
-    dict[int, Any],
-    dict[uuid.UUID, Any],
-    dict[int, Any],
-    dict[uuid.UUID, Any],
-    dict[int, tuple[int, int, bool]],
-]:
+) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[uuid.UUID, Any]]:
     if not ids:
-        return {}, {}, {}, {}, {}
+        return {}, {}, {}
     raw_rows = await session.execute(
         _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
     )
     projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
-    raw_payload_ids = {row.raw_payload_id for row in projected_rows.values() if row.raw_payload_id is not None}
-    projected_raws = await _project_raws(session, raw_payload_ids)
     projected_connections = await _project_connections(
-        session, _referenced_connection_ids(projected_raws)
+        session,
+        {
+            row.integration_connection_id
+            for row in projected_rows.values()
+            if row.integration_connection_id is not None
+        },
     )
     if invoke_race_hook:
-        await _after_lab_results_projection_for_test()
+        await _after_system_alerts_projection_for_test()
     locked = await _lock_projected_graph(
         session,
         projected_rows=projected_rows,
         projected_connections=projected_connections,
-        projected_raws=projected_raws,
     )
-    files = await _project_files(session, _referenced_file_ids(locked[2]))
-    parser_invocations = await _project_parser_invocation_scope(
-        session, scope=scope, raws=locked[2]
+    invocations = await _project_invocations(
+        session,
+        {
+            row.ai_invocation_id
+            for row in locked[0].values()
+            if row.ai_invocation_id is not None
+        },
     )
-    return (*locked, files, parser_invocations)
+    return (*locked, invocations)
 
 
 def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
@@ -1157,8 +1055,8 @@ def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
         return False, False
     if checkpoint.status == "completed":
         return row_id <= checkpoint.scan_high_watermark_id, False
-    raise LabResultOwnershipBackfillStateError(
-        "Stage-3M checkpoint has an unsupported state"
+    raise SystemAlertOwnershipBackfillStateError(
+        "Stage-3T checkpoint has an unsupported state"
     )
 
 
@@ -1169,32 +1067,24 @@ async def _referenced_connection_digest(
     high: int | None,
     lock_connections: bool,
 ) -> tuple[int, str]:
-    """Page the referenced C set, optionally locking it before any fact row."""
+    """Page the referenced destination set, locking it before any outbox row."""
 
     count = 0
     digest = _EMPTY_SHA256
     cursor: uuid.UUID | None = None
-    raw_table = RawPayload.__table__
-    raw_refs = (
-        select(raw_table.c.integration_connection_id.label("connection_id"))
-        .select_from(
-            _TABLE.join(raw_table, _TABLE.c.raw_payload_id == raw_table.c.id)
-        )
-        .where(
-            _TABLE.c.id > low,
-            raw_table.c.integration_connection_id.is_not(None),
-        )
-    )
-    if high is not None:
-        raw_refs = raw_refs.where(_TABLE.c.id <= high)
-    refs = raw_refs.distinct().subquery()
     while True:
-        query = select(refs.c.connection_id)
+        query = select(_TABLE.c.integration_connection_id.label("connection_id")).where(
+            _TABLE.c.id > low,
+            _TABLE.c.integration_connection_id.is_not(None),
+        )
+        if high is not None:
+            query = query.where(_TABLE.c.id <= high)
         if cursor is not None:
-            query = query.where(refs.c.connection_id > cursor)
+            query = query.where(_TABLE.c.integration_connection_id > cursor)
         connection_ids = list(
             await session.scalars(
-                query.order_by(refs.c.connection_id)
+                query.distinct()
+                .order_by(_TABLE.c.integration_connection_id)
                 .limit(_PAGE_SIZE)
             )
         )
@@ -1202,54 +1092,17 @@ async def _referenced_connection_digest(
             break
         projected = await _project_connections(session, set(connection_ids))
         if set(projected) != set(connection_ids):
-            raise LabResultOwnershipBackfillStateError(
-                "a lab result references a missing provider connection"
+            raise SystemAlertOwnershipBackfillStateError(
+                "a system alert references a missing destination account"
             )
         if lock_connections:
             await _lock_projected_connections(session, projected)
         for connection_id in connection_ids:
-            digest = _extend(digest, ["lab_results_connection", connection_id])
+            digest = _extend(
+                digest, ["system_alerts_connection", connection_id]
+            )
             count += 1
         cursor = connection_ids[-1]
-    return count, digest
-
-
-async def _referenced_raw_digest(
-    session: AsyncSession,
-    *,
-    low: int,
-    high: int | None,
-    lock_raws: bool,
-) -> tuple[int, str]:
-    count = 0
-    digest = _EMPTY_SHA256
-    cursor = 0
-    while True:
-        query = select(_TABLE.c.raw_payload_id).where(
-            _TABLE.c.id > low,
-            _TABLE.c.raw_payload_id.is_not(None),
-            _TABLE.c.raw_payload_id > cursor,
-        )
-        if high is not None:
-            query = query.where(_TABLE.c.id <= high)
-        raw_payload_ids = list(
-            await session.scalars(
-                query.distinct().order_by(_TABLE.c.raw_payload_id).limit(_PAGE_SIZE)
-            )
-        )
-        if not raw_payload_ids:
-            break
-        projected = await _project_raws(session, set(raw_payload_ids))
-        if set(projected) != set(raw_payload_ids):
-            raise LabResultOwnershipBackfillStateError(
-                "a lab result references a missing raw payload"
-            )
-        if lock_raws:
-            await _lock_projected_raws(session, projected)
-        for raw_payload_id in raw_payload_ids:
-            digest = _extend(digest, ["lab_results_raw", raw_payload_id])
-            count += 1
-        cursor = raw_payload_ids[-1]
     return count, digest
 
 
@@ -1269,20 +1122,12 @@ async def _scan_current(
     cursor = low
     locked_ref_count = 0
     locked_ref_digest = _EMPTY_SHA256
-    locked_raw_count = 0
-    locked_raw_digest = _EMPTY_SHA256
     if for_update:
         locked_ref_count, locked_ref_digest = await _referenced_connection_digest(
             session,
             low=low,
             high=high,
             lock_connections=True,
-        )
-        locked_raw_count, locked_raw_digest = await _referenced_raw_digest(
-            session,
-            low=low,
-            high=high,
-            lock_raws=True,
         )
     while True:
         query = (
@@ -1296,67 +1141,60 @@ async def _scan_current(
         ids = list(await session.scalars(query))
         if not ids:
             break
-        if for_update:
-            raw_rows = await session.execute(
-                _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
-            )
-            projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
-            raws = await _project_raws(
-                session,
-                {
-                    row.raw_payload_id
-                    for row in projected_rows.values()
-                    if row.raw_payload_id is not None
-                },
-            )
-            connections = await _project_connections(
-                session, _referenced_connection_ids(raws)
-            )
-            rows = await _lock_projected_rows(session, projected_rows)
-        else:
-            raw_rows = await session.execute(
-                _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
-            )
-            rows = {row.id: row for row in map(_row_values, raw_rows)}
-            raws = await _project_raws(
-                session,
-                {
-                    row.raw_payload_id
-                    for row in rows.values()
-                    if row.raw_payload_id is not None
-                },
-            )
-            connections = await _project_connections(
-                session, _referenced_connection_ids(raws)
-            )
-        if set(rows) != set(ids):
-            raise LabResultOwnershipBackfillStateError(
-                "a projected lab result page changed during validation"
-            )
-        files = await _project_files(session, _referenced_file_ids(raws))
-        parser_invocations = await _project_parser_invocation_scope(
-            session, scope=scope, raws=raws
+        raw_rows = await session.execute(
+            _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
         )
+        projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
+        connections = await _project_connections(
+            session,
+            {
+                row.integration_connection_id
+                for row in projected_rows.values()
+                if row.integration_connection_id is not None
+            },
+        )
+        invocations = await _project_invocations(
+            session,
+            {
+                row.ai_invocation_id
+                for row in projected_rows.values()
+                if row.ai_invocation_id is not None
+            },
+        )
+        rows = (
+            await _lock_projected_rows(session, projected_rows)
+            if for_update
+            else projected_rows
+        )
+        if set(rows) != set(ids):
+            raise SystemAlertOwnershipBackfillStateError(
+                "a projected system alert page changed during validation"
+            )
         for row_id in ids:
             row = rows[row_id]
             historical, allow_unowned = _row_policy(row.id, checkpoint)
-            needs_adoption = _validate_row(
+            needs_adoption, provider = _validate_row(
                 row,
                 scope=scope,
                 connections=connections,
-                raws=raws,
-                files=files,
-                parser_invocations=parser_invocations,
+                invocations=invocations,
                 historical=historical,
                 allow_unowned=allow_unowned,
             )
-            if needs_adoption and checkpoint is not None and (
-                checkpoint.status == "completed"
-                or row.id <= checkpoint.last_scanned_id
-            ):
-                raise LabResultOwnershipBackfillStateError(
-                    "a processed lab result row remained unowned"
-                )
+            if needs_adoption:
+                if checkpoint is not None and (
+                    checkpoint.status == "completed"
+                    or row.id <= checkpoint.last_scanned_id
+                ):
+                    raise SystemAlertOwnershipBackfillStateError(
+                        "a processed system alert row remained unowned"
+                    )
+                if provider is not None:
+                    # Prove the reviewed connection root exists before the
+                    # operator reaches its first mutating batch.
+                    await _reviewed_provider_root(
+                        session, scope=scope, provider=provider
+                    )
             if digest:
                 data = _extend(data, _data_envelope(row))
                 if not needs_adoption:
@@ -1374,20 +1212,10 @@ async def _scan_current(
             current_ref_count != locked_ref_count
             or current_ref_digest != locked_ref_digest
         ):
-            raise LabResultOwnershipBackfillStateError(
-                "lab result provider references changed during validation"
+            raise SystemAlertOwnershipBackfillStateError(
+                "system alert connection references changed during validation"
             )
-        current_raw_count, current_raw_digest = await _referenced_raw_digest(
-            session,
-            low=low,
-            high=high,
-            lock_raws=False,
-        )
-        if current_raw_count != locked_raw_count or current_raw_digest != locked_raw_digest:
-            raise LabResultOwnershipBackfillStateError(
-                "lab result raw references changed during validation"
-            )
-        return count, data, ownership
+    return count, data, ownership
 
 
 async def _bounds(session: AsyncSession) -> tuple[int, int]:
@@ -1398,8 +1226,8 @@ async def _bounds(session: AsyncSession) -> tuple[int, int]:
     ).one()
     high, count = int(high), int(count)
     if not _valid_counter(high) or not _valid_counter(count) or count > high:
-        raise LabResultOwnershipBackfillValidationError(
-            "lab result snapshot bounds are invalid"
+        raise SystemAlertOwnershipBackfillValidationError(
+            "system alert snapshot bounds are invalid"
         )
     return high, count
 
@@ -1422,10 +1250,10 @@ async def _status_result(
     checkpoint: Any | None,
     validate: bool,
     for_update: bool,
-) -> LabResultOwnershipBackfillPreflightResult:
+) -> SystemAlertOwnershipBackfillPreflightResult:
     if checkpoint is None:
         high, snapshot = await _bounds(session)
-        status = LabResultOwnershipBackfillStatus.NOT_STARTED
+        status = SystemAlertOwnershipBackfillStatus.NOT_STARTED
         scanned = updated = unchanged = rows_above = 0
         remaining = snapshot
         before = after = ownership = _EMPTY_SHA256
@@ -1435,7 +1263,7 @@ async def _status_result(
             checkpoint.scan_high_watermark_id,
             checkpoint.snapshot_rows,
         )
-        status = LabResultOwnershipBackfillStatus(checkpoint.status)
+        status = SystemAlertOwnershipBackfillStatus(checkpoint.status)
         scanned, updated, unchanged = (
             checkpoint.scanned_rows,
             checkpoint.updated_rows,
@@ -1455,7 +1283,7 @@ async def _status_result(
             checkpoint.data_checksum_after,
             checkpoint.ownership_checksum_after,
         )
-        completed = status is LabResultOwnershipBackfillStatus.COMPLETED
+        completed = status is SystemAlertOwnershipBackfillStatus.COMPLETED
     if validate:
         await _scan_current(
             session,
@@ -1474,11 +1302,11 @@ async def _status_result(
                 or 0
             )
             if frozen_count != snapshot:
-                raise LabResultOwnershipBackfillStateError(
-                    "the lab result snapshot cardinality changed"
+                raise SystemAlertOwnershipBackfillStateError(
+                    "the alert ladder snapshot cardinality changed"
                 )
-    return LabResultOwnershipBackfillPreflightResult(
-        phase_key=LAB_RESULT_OWNERSHIP_BACKFILL_PHASE,
+    return SystemAlertOwnershipBackfillPreflightResult(
+        phase_key=SYSTEM_ALERT_OWNERSHIP_BACKFILL_PHASE,
         subject_id=scope.subject_id,
         status=status,
         tables_total=1,
@@ -1496,28 +1324,28 @@ async def _status_result(
 
 
 def _batch_result(
-    result: LabResultOwnershipBackfillPreflightResult,
+    result: SystemAlertOwnershipBackfillPreflightResult,
     *,
     scanned: int,
     updated: int,
     unchanged: int,
-) -> LabResultOwnershipBackfillBatchResult:
-    return LabResultOwnershipBackfillBatchResult(
+) -> SystemAlertOwnershipBackfillBatchResult:
+    return SystemAlertOwnershipBackfillBatchResult(
         **{
             field: getattr(result, field)
-            for field in LabResultOwnershipBackfillPreflightResult.__dataclass_fields__
+            for field in SystemAlertOwnershipBackfillPreflightResult.__dataclass_fields__
         },
-        batch_table="lab_results",
+        batch_table="system_alerts",
         batch_scanned_rows=scanned,
         batch_updated_rows=updated,
         batch_unchanged_rows=unchanged,
     )
 
 
-async def preflight_lab_result_ownership_backfill(
+async def preflight_system_alert_ownership_backfill(
     session: AsyncSession,
-) -> LabResultOwnershipBackfillPreflightResult:
-    """Validate the fixed Stage-3M graph without mutation."""
+) -> SystemAlertOwnershipBackfillPreflightResult:
+    """Validate the fixed Stage-3T graph without mutation."""
 
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=False)
@@ -1542,15 +1370,15 @@ async def preflight_lab_result_ownership_backfill(
 def _validate_restore_bounds(snapshot_bounds: Any) -> tuple[int, int]:
     if (
         not isinstance(snapshot_bounds, Mapping)
-        or set(snapshot_bounds) != {"lab_results"}
+        or set(snapshot_bounds) != {"system_alerts"}
     ):
-        raise LabResultOwnershipBackfillValidationError(
-            "snapshot_bounds must contain the exact weight table catalog"
+        raise SystemAlertOwnershipBackfillValidationError(
+            "snapshot_bounds must contain the exact alert ladder table catalog"
         )
-    pair = snapshot_bounds["lab_results"]
+    pair = snapshot_bounds["system_alerts"]
     if not isinstance(pair, tuple) or len(pair) != 2:
-        raise LabResultOwnershipBackfillValidationError(
-            "the lab result snapshot bound must be an exact pair"
+        raise SystemAlertOwnershipBackfillValidationError(
+            "the alert ladder snapshot bound must be an exact pair"
         )
     high, count = pair
     if (
@@ -1559,18 +1387,18 @@ def _validate_restore_bounds(snapshot_bounds: Any) -> tuple[int, int]:
         or count > high
         or (high == 0) != (count == 0)
     ):
-        raise LabResultOwnershipBackfillValidationError(
-            "the lab result snapshot bound is an invalid ID/count pair"
+        raise SystemAlertOwnershipBackfillValidationError(
+            "the alert ladder snapshot bound is an invalid ID/count pair"
         )
     return high, count
 
 
-async def reset_lab_result_ownership_backfill_for_portability_v1_restore(
+async def reset_system_alert_ownership_backfill_for_portability_v1_restore(
     session: AsyncSession,
     *,
     snapshot_bounds: Mapping[str, tuple[int, int]],
 ) -> None:
-    """Reset Stage-3M before the caller atomically replaces portable data."""
+    """Reset Stage-3T before the caller atomically replaces portable data."""
 
     high, count = _validate_restore_bounds(snapshot_bounds)
     with session.no_autoflush:
@@ -1579,8 +1407,8 @@ async def reset_lab_result_ownership_backfill_for_portability_v1_restore(
             session, _PRIOR_PHASES, for_update=True
         )
         if set(dependencies) != set(_PRIOR_PHASES):
-            raise LabResultOwnershipBackfillDependencyError(
-                "Stage-3A through Stage-3L checkpoints are incomplete"
+            raise SystemAlertOwnershipBackfillDependencyError(
+                "Stage-3A through Stage-3S checkpoints are incomplete"
             )
         for phase in _PRIOR_PHASES:
             _validate_checkpoint(
@@ -1658,19 +1486,25 @@ async def _create_checkpoint(
 
 
 def _set_cached_subject(
-    session: AsyncSession, row_id: int, subject_id: uuid.UUID
+    session: AsyncSession,
+    row_id: int,
+    subject_id: uuid.UUID,
+    connection_id: uuid.UUID | None,
 ) -> None:
-    cached = session.identity_map.get((LabResult, (row_id,), None))
+    cached = session.identity_map.get((SystemAlert, (row_id,), None))
     if cached is not None:
         attributes.set_committed_value(cached, "subject_id", subject_id)
+        attributes.set_committed_value(
+            cached, "integration_connection_id", connection_id
+        )
 
 
-async def run_lab_result_ownership_backfill_batch(
+async def run_system_alert_ownership_backfill_batch(
     session: AsyncSession,
     *,
-    batch_size: int = DEFAULT_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE,
-) -> LabResultOwnershipBackfillBatchResult:
-    """Advance the fixed lab result table by at most one primary-key batch."""
+    batch_size: int = DEFAULT_SYSTEM_ALERT_OWNERSHIP_BACKFILL_BATCH_SIZE,
+) -> SystemAlertOwnershipBackfillBatchResult:
+    """Advance the fixed alert ladder by at most one primary-key batch."""
 
     size = _validate_batch_size(batch_size)
     with session.no_autoflush:
@@ -1725,13 +1559,7 @@ async def run_lab_result_ownership_backfill_batch(
                 .limit(size)
             )
         )
-        (
-            rows,
-            connections,
-            raws,
-            files,
-            parser_invocations,
-        ) = await _project_and_lock_ids(
+        rows, connections, invocations = await _project_and_lock_ids(
             session, ids, scope=scope, invoke_race_hook=True
         )
 
@@ -1740,34 +1568,60 @@ async def run_lab_result_ownership_backfill_batch(
         ownership = checkpoint.ownership_checksum_after
         updated_count = 0
         unchanged_count = 0
+        roots: dict[IntegrationProvider, Any] = {}
         for row_id in ids:
             row = rows[row_id]
-            needs_adoption = _validate_row(
+            needs_adoption, provider = _validate_row(
                 row,
                 scope=scope,
                 connections=connections,
-                raws=raws,
-                files=files,
-                parser_invocations=parser_invocations,
+                invocations=invocations,
                 historical=True,
                 allow_unowned=True,
             )
             before = _extend(before, _data_envelope(row))
             if needs_adoption:
+                root = None
+                if provider is not None:
+                    root = roots.get(provider)
+                    if root is None:
+                        root = await _reviewed_provider_root(
+                            session, scope=scope, provider=provider
+                        )
+                        roots[provider] = root
+                        connections[root.id] = root
+                subject_predicate = (
+                    _TABLE.c.subject_id.is_(None)
+                    if root is None
+                    else or_(
+                        _TABLE.c.subject_id.is_(None),
+                        _TABLE.c.subject_id == scope.subject_id,
+                    )
+                )
                 result = await session.execute(
                     update(_TABLE)
                     .where(
                         _TABLE.c.id == row_id,
-                        _TABLE.c.subject_id.is_(None),
-                        _TABLE.c.actor_user_id.is_(None),
+                        subject_predicate,
+                        _TABLE.c.integration_connection_id.is_(None),
                     )
-                    .values(subject_id=scope.subject_id, updated_at=row.updated_at)
+                    .values(
+                        subject_id=scope.subject_id,
+                        integration_connection_id=(
+                            None if root is None else root.id
+                        ),
+                    )
                 )
                 if result.rowcount != 1:
-                    raise LabResultOwnershipBackfillStateError(
-                        "lab result ownership changed during adoption"
+                    raise SystemAlertOwnershipBackfillStateError(
+                        "system alert ownership changed during adoption"
                     )
-                _set_cached_subject(session, row_id, scope.subject_id)
+                _set_cached_subject(
+                    session,
+                    row_id,
+                    scope.subject_id,
+                    None if root is None else root.id,
+                )
                 updated_count += 1
             else:
                 unchanged_count += 1
@@ -1776,28 +1630,33 @@ async def run_lab_result_ownership_backfill_batch(
             )
             current_result = current_raw.one_or_none()
             if current_result is None:
-                raise LabResultOwnershipBackfillStateError(
-                    "a lab result disappeared during adoption"
+                raise SystemAlertOwnershipBackfillStateError(
+                    "a system alert disappeared during adoption"
                 )
             current = _row_values(current_result)
+            if (
+                current.integration_connection_id is not None
+                and current.integration_connection_id not in connections
+            ):
+                raise SystemAlertOwnershipBackfillStateError(
+                    "system alert connection changed during adoption"
+                )
             if _validate_row(
                 current,
                 scope=scope,
                 connections=connections,
-                raws=raws,
-                files=files,
-                parser_invocations=parser_invocations,
+                invocations=invocations,
                 historical=True,
                 allow_unowned=False,
-            ):
-                raise LabResultOwnershipBackfillStateError(
-                    "a processed lab result remained unowned"
+            )[0]:
+                raise SystemAlertOwnershipBackfillStateError(
+                    "a processed system alert remained unowned"
                 )
             after = _extend(after, _data_envelope(current))
             ownership = _extend(ownership, _ownership_envelope(current))
         if before != after:
-            raise LabResultOwnershipBackfillStateError(
-                "lab result data changed while ownership was backfilled"
+            raise SystemAlertOwnershipBackfillStateError(
+                "system alert data changed while ownership was backfilled"
             )
         checkpoint.scanned_rows += len(ids)
         checkpoint.updated_rows += updated_count
@@ -1828,8 +1687,8 @@ async def run_lab_result_ownership_backfill_batch(
                 or data != checkpoint.data_checksum_after
                 or current_ownership != checkpoint.ownership_checksum_after
             ):
-                raise LabResultOwnershipBackfillStateError(
-                    "the lab result snapshot changed during finalization"
+                raise SystemAlertOwnershipBackfillStateError(
+                    "the alert ladder snapshot changed during finalization"
                 )
             checkpoint.last_scanned_id = checkpoint.scan_high_watermark_id
             checkpoint.status = "completed"
@@ -1854,21 +1713,21 @@ async def run_lab_result_ownership_backfill_batch(
 
 
 __all__ = [
-    "LAB_RESULT_OWNERSHIP_BACKFILL_PHASE",
-    "LAB_RESULT_OWNERSHIP_BACKFILL_TABLES",
-    "LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
-    "DEFAULT_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "MAX_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "LabResultOwnershipBackfillStatus",
-    "LabResultOwnershipBackfillError",
-    "LabResultOwnershipBackfillValidationError",
-    "LabResultOwnershipBackfillIdentityError",
-    "LabResultOwnershipBackfillDependencyError",
-    "LabResultOwnershipBackfillStateError",
-    "LabResultOwnershipBackfillProvenanceError",
-    "LabResultOwnershipBackfillPreflightResult",
-    "LabResultOwnershipBackfillBatchResult",
-    "preflight_lab_result_ownership_backfill",
-    "run_lab_result_ownership_backfill_batch",
-    "reset_lab_result_ownership_backfill_for_portability_v1_restore",
+    "SYSTEM_ALERT_OWNERSHIP_BACKFILL_PHASE",
+    "SYSTEM_ALERT_OWNERSHIP_BACKFILL_TABLES",
+    "SYSTEM_ALERT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
+    "DEFAULT_SYSTEM_ALERT_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "MAX_SYSTEM_ALERT_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "SystemAlertOwnershipBackfillStatus",
+    "SystemAlertOwnershipBackfillError",
+    "SystemAlertOwnershipBackfillValidationError",
+    "SystemAlertOwnershipBackfillIdentityError",
+    "SystemAlertOwnershipBackfillDependencyError",
+    "SystemAlertOwnershipBackfillStateError",
+    "SystemAlertOwnershipBackfillProvenanceError",
+    "SystemAlertOwnershipBackfillPreflightResult",
+    "SystemAlertOwnershipBackfillBatchResult",
+    "preflight_system_alert_ownership_backfill",
+    "run_system_alert_ownership_backfill_batch",
+    "reset_system_alert_ownership_backfill_for_portability_v1_restore",
 ]

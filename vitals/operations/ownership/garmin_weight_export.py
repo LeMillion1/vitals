@@ -1,4 +1,4 @@
-"""Bounded Stage-3N ownership backfill for optional-channel genetic variants.
+"""Bounded Stage-3Q ownership backfill for optional-channel Garmin weight exports.
 
 Historical rows prove only the sole reviewed subject.  Actor and provider
 provenance remain exactly as persisted; this service never infers either root,
@@ -24,80 +24,114 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
 from vitals.enums import (
-    Domain,
     IntegrationConnectionStatus,
-    Source,
+    IntegrationConnectionType,
+    IntegrationProvider,
     UserStatus,
 )
-from vitals.models.genetics import GeneticVariant
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.conflict_rule_ownership_backfill_service import (
+from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
+from vitals.models.garmin import (
+    WEIGHT_EXPORT_CHECKING,
+    WEIGHT_EXPORT_CONFLICT,
+    WEIGHT_EXPORT_DELETE_CHECKING,
+    WEIGHT_EXPORT_DELETE_FAILED,
+    WEIGHT_EXPORT_DELETE_PENDING,
+    WEIGHT_EXPORT_DELETED,
+    WEIGHT_EXPORT_FAILED,
+    WEIGHT_EXPORT_MATCHED,
+    WEIGHT_EXPORT_PENDING,
+    WEIGHT_EXPORT_SENT,
+    WEIGHT_EXPORT_SKIPPED,
+    WEIGHT_EXPORT_UNVERIFIED,
+    GarminWeightExport,
+)
+from vitals.models.weight import WeightLog
+from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.progress_photo_ownership_backfill_service import (
+from vitals.operations.ownership.progress_photo import (
     PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
-from vitals.services.shared_report_ownership_backfill_service import (
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.lab_result_ownership_backfill_service import (
+from vitals.operations.ownership.body_scan_metric import (
+    BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.body_scan import (
+    BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.genetic_variant import (
+    GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.lab_result import (
     LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.weight_log_ownership_backfill_service import (
+from vitals.operations.ownership.weight_log import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.utils.timeutils import now_utc
 
 
-GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE = "stage3.raw_linked_facts.genetic_variants.v1"
-GENETIC_VARIANT_OWNERSHIP_BACKFILL_TABLES = ("genetic_variants",)
-GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
+GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_PHASE = (
+    "stage3.provider_outbox.garmin_weight_exports.v1"
+)
+GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_TABLES = ("garmin_weight_exports",)
+GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
     MappingProxyType(
         {
-            "genetic_variants": (
-                f"{GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE}.genetic_variants"
+            "garmin_weight_exports": (
+                f"{GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_PHASE}.weight_logs"
             )
         }
     )
 )
-DEFAULT_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
-MAX_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
+DEFAULT_GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
+MAX_GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
 
-_TABLE: Table = GeneticVariant.__table__
-_PHASE_KEY = GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["genetic_variants"]
+_TABLE: Table = GarminWeightExport.__table__
+_PHASE_KEY = GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["garmin_weight_exports"]
 _PAGE_SIZE = 1000
 _POSTGRES_INTEGER_MAX = (1 << 31) - 1
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-# Manual and MCP variants are the owner speaking through two surfaces; a VCF
-# import is derived from one durable uploaded batch.  Anything else fails closed.
-_MANUAL_SOURCES = {
-    Source.MANUAL.value,
-    Source.MCP.value,
-}
-_ALLOWED_SOURCES = _MANUAL_SOURCES | {Source.VCF_IMPORT.value}
-_MAX_GENE_LENGTH = 64
-_MAX_RSID_LENGTH = 32
+_EXPORT_STATUSES = frozenset(
+    {
+        WEIGHT_EXPORT_PENDING,
+        WEIGHT_EXPORT_CHECKING,
+        WEIGHT_EXPORT_SENT,
+        WEIGHT_EXPORT_MATCHED,
+        WEIGHT_EXPORT_FAILED,
+        WEIGHT_EXPORT_SKIPPED,
+        WEIGHT_EXPORT_CONFLICT,
+        WEIGHT_EXPORT_UNVERIFIED,
+        WEIGHT_EXPORT_DELETE_PENDING,
+        WEIGHT_EXPORT_DELETE_CHECKING,
+        WEIGHT_EXPORT_DELETE_FAILED,
+        WEIGHT_EXPORT_DELETED,
+    }
+)
+_WEIGHT_KG_RANGE = (20.0, 400.0)
 _HISTORICAL_CONNECTION_STATUSES = {
     IntegrationConnectionStatus.LEGACY.value,
     IntegrationConnectionStatus.ACTIVE.value,
@@ -107,23 +141,34 @@ _HISTORICAL_CONNECTION_STATUSES = {
 _ROW_FIELDS = (
     "id",
     "subject_id",
-    "actor_user_id",
-    "domain",
-    "source",
-    "gene",
-    "rsid",
-    "genotype",
-    "marker",
-    "impact",
-    "impact_domain",
-    "interpretation",
-    "action_notes",
-    "raw_payload_id",
+    "integration_connection_id",
+    "requested_by_user_id",
+    "weight_log_id",
+    "date",
+    "weight_kg",
+    "measured_at",
+    "dispatch_timestamp_ms",
+    "status",
+    "attempts",
+    "last_attempt_at",
+    "next_attempt_at",
+    "exported_at",
+    "remote_sample_pk",
+    "remote_weight_kg",
+    "remote_owned",
+    "last_error",
     "created_at",
     "updated_at",
 )
 _DATA_FIELDS = tuple(
-    field for field in _ROW_FIELDS if field not in {"subject_id", "actor_user_id"}
+    field
+    for field in _ROW_FIELDS
+    if field
+    not in {"subject_id", "integration_connection_id", "requested_by_user_id"}
+)
+_WEIGHT_LOG_FIELDS = (
+    "id",
+    "subject_id",
 )
 _CONNECTION_FIELDS = (
     "id",
@@ -131,17 +176,6 @@ _CONNECTION_FIELDS = (
     "provider",
     "connection_type",
     "status",
-)
-_RAW_FIELDS = (
-    "id",
-    "subject_id",
-    "actor_user_id",
-    "integration_connection_id",
-    "file_asset_id",
-    "domain",
-    "source",
-    "external_id",
-    "processed_at",
 )
 _B_PHASES = tuple(NORMALIZED_MANUAL_CHECKPOINT_PHASES.values())
 _C_PHASES = tuple(HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
@@ -153,6 +187,9 @@ _H_PHASES = tuple(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _K_PHASES = tuple(SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _L_PHASES = tuple(WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _M_PHASES = tuple(LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_N_PHASES = tuple(GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_O_PHASES = tuple(BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_P_PHASES = tuple(BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _PRIOR_PHASES = (
     (RAW_OWNERSHIP_BACKFILL_PHASE,)
     + _B_PHASES
@@ -165,50 +202,54 @@ _PRIOR_PHASES = (
     + _K_PHASES
     + _L_PHASES
     + _M_PHASES
+    + _N_PHASES
+    + _O_PHASES
+    + _P_PHASES
 )
 
 
-class GeneticVariantOwnershipBackfillStatus(StrEnum):
+class GarminWeightExportOwnershipBackfillStatus(StrEnum):
     NOT_STARTED = "not_started"
     RUNNING = "running"
     COMPLETED = "completed"
+    RESTORE_BLOCKED = "restore_blocked"
 
 
-class GeneticVariantOwnershipBackfillError(RuntimeError):
-    """Base class for fail-closed Stage-3N errors."""
+class GarminWeightExportOwnershipBackfillError(RuntimeError):
+    """Base class for fail-closed Stage-3Q errors."""
 
 
-class GeneticVariantOwnershipBackfillValidationError(
-    GeneticVariantOwnershipBackfillError, ValueError
+class GarminWeightExportOwnershipBackfillValidationError(
+    GarminWeightExportOwnershipBackfillError, ValueError
 ):
     """A caller argument or persisted scalar is invalid."""
 
 
-class GeneticVariantOwnershipBackfillIdentityError(GeneticVariantOwnershipBackfillError):
+class GarminWeightExportOwnershipBackfillIdentityError(GarminWeightExportOwnershipBackfillError):
     """The exact-one reviewed owner graph is unavailable."""
 
 
-class GeneticVariantOwnershipBackfillDependencyError(
-    GeneticVariantOwnershipBackfillError
+class GarminWeightExportOwnershipBackfillDependencyError(
+    GarminWeightExportOwnershipBackfillError
 ):
     """A prerequisite checkpoint is absent, malformed, or in the wrong mode."""
 
 
-class GeneticVariantOwnershipBackfillStateError(GeneticVariantOwnershipBackfillError):
+class GarminWeightExportOwnershipBackfillStateError(GarminWeightExportOwnershipBackfillError):
     """Checkpoint progress or an ownership root is inconsistent."""
 
 
-class GeneticVariantOwnershipBackfillProvenanceError(
-    GeneticVariantOwnershipBackfillError
+class GarminWeightExportOwnershipBackfillProvenanceError(
+    GarminWeightExportOwnershipBackfillError
 ):
-    """A genetic variant row has unsupported persisted provenance."""
+    """A weight row has unsupported persisted provenance."""
 
 
 @dataclass(frozen=True, slots=True)
-class GeneticVariantOwnershipBackfillPreflightResult:
+class GarminWeightExportOwnershipBackfillPreflightResult:
     phase_key: str
     subject_id: uuid.UUID
-    status: GeneticVariantOwnershipBackfillStatus
+    status: GarminWeightExportOwnershipBackfillStatus
     tables_total: int
     completed_tables: int
     snapshot_rows: int
@@ -223,7 +264,7 @@ class GeneticVariantOwnershipBackfillPreflightResult:
 
     @property
     def completed(self) -> bool:
-        return self.status is GeneticVariantOwnershipBackfillStatus.COMPLETED
+        return self.status is GarminWeightExportOwnershipBackfillStatus.COMPLETED
 
     def to_safe_dict(self) -> dict[str, str | int]:
         return {
@@ -244,8 +285,8 @@ class GeneticVariantOwnershipBackfillPreflightResult:
 
 
 @dataclass(frozen=True, slots=True)
-class GeneticVariantOwnershipBackfillBatchResult(
-    GeneticVariantOwnershipBackfillPreflightResult
+class GarminWeightExportOwnershipBackfillBatchResult(
+    GarminWeightExportOwnershipBackfillPreflightResult
 ):
     batch_table: str
     batch_scanned_rows: int
@@ -257,7 +298,7 @@ class GeneticVariantOwnershipBackfillBatchResult(
         return self.batch_updated_rows > 0
 
     def to_safe_dict(self) -> dict[str, str | int]:
-        result = GeneticVariantOwnershipBackfillPreflightResult.to_safe_dict(self)
+        result = GarminWeightExportOwnershipBackfillPreflightResult.to_safe_dict(self)
         result.update(
             {
                 "batch_table": self.batch_table,
@@ -306,9 +347,9 @@ def _validate_batch_size(value: object) -> int:
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
-        or not 1 <= value <= MAX_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE
+        or not 1 <= value <= MAX_GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_BATCH_SIZE
     ):
-        raise GeneticVariantOwnershipBackfillValidationError(
+        raise GarminWeightExportOwnershipBackfillValidationError(
             "batch_size must be an integer between 1 and 1000"
         )
     return value
@@ -360,9 +401,9 @@ async def _load_checkpoints(
 
 def _validate_checkpoint(checkpoint: Any, *, phase: str, subject_id: uuid.UUID) -> str:
     error = (
-        GeneticVariantOwnershipBackfillDependencyError
+        GarminWeightExportOwnershipBackfillDependencyError
         if phase in _PRIOR_PHASES
-        else GeneticVariantOwnershipBackfillStateError
+        else GarminWeightExportOwnershipBackfillStateError
     )
     if checkpoint.phase_key != phase or checkpoint.subject_id != subject_id:
         raise error("an ownership checkpoint has the wrong phase or subject")
@@ -440,15 +481,15 @@ async def _load_scope(session: AsyncSession, *, for_update: bool) -> _Scope:
         query = query.with_for_update()
     rows = list(await session.execute(query))
     if len(rows) != 1:
-        raise GeneticVariantOwnershipBackfillIdentityError(
-            "genetic variant backfill requires exactly one health subject"
+        raise GarminWeightExportOwnershipBackfillIdentityError(
+            "Garmin weight export backfill requires exactly one health subject"
         )
     subject_id, owner_user_id = rows[0]
     owner_query = select(User.status).where(User.id == owner_user_id)
     if for_update:
         owner_query = owner_query.with_for_update()
     if await session.scalar(owner_query) != UserStatus.ACTIVE.value:
-        raise GeneticVariantOwnershipBackfillIdentityError(
+        raise GarminWeightExportOwnershipBackfillIdentityError(
             "the sole health subject must have an active owner"
         )
     return _Scope(subject_id, owner_user_id)
@@ -496,7 +537,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
             ):
                 continue
             if not _exact_empty_completed(checkpoint):
-                raise GeneticVariantOwnershipBackfillDependencyError(
+                raise GarminWeightExportOwnershipBackfillDependencyError(
                     f"{label} restore checkpoint state is invalid"
                 )
 
@@ -505,12 +546,17 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
     require(_D_PHASES + _E_PHASES, "restore_blocked", "Stage-3D/3E")
     require(_F_PHASES + _G_PHASES, "running", "Stage-3F/3G")
     require(_H_PHASES, "restore_blocked", "Stage-3H")
-    require(_L_PHASES + _M_PHASES, "running", "Stage-3L/3M")
+    require(
+        _L_PHASES + _M_PHASES + _N_PHASES + _P_PHASES,
+        "running",
+        "Stage-3I through Stage-3P resettable phases",
+    )
+    require(_O_PHASES, "restore_blocked", "Stage-3O")
     # Stage 3K is excluded from backup v1 entirely, so its retained checkpoint is
     # prepared or preserved rather than rebased onto incoming bounds.
     for phase in _K_PHASES:
         if checkpoints[phase].status not in {"running", "completed"}:
-            raise GeneticVariantOwnershipBackfillDependencyError(
+            raise GarminWeightExportOwnershipBackfillDependencyError(
                 "Stage-3K retained checkpoint state is invalid"
             )
 
@@ -523,7 +569,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("restore_blocked", "completed"),
         ("completed", "completed"),
     }:
-        raise GeneticVariantOwnershipBackfillDependencyError(
+        raise GarminWeightExportOwnershipBackfillDependencyError(
             "Stage-3E restore checkpoint order is inconsistent"
         )
 
@@ -540,7 +586,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("running", "completed"),
         ("completed", "completed"),
     }:
-        raise GeneticVariantOwnershipBackfillDependencyError(
+        raise GarminWeightExportOwnershipBackfillDependencyError(
             "Stage-3F restore checkpoint order is inconsistent"
         )
 
@@ -548,22 +594,17 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
 def _validate_own(checkpoint: Any | None, *, scope: _Scope) -> str | None:
     if checkpoint is None:
         return None
-    status = _validate_checkpoint(
+    return _validate_checkpoint(
         checkpoint, phase=_PHASE_KEY, subject_id=scope.subject_id
     )
-    if status == "restore_blocked":
-        raise GeneticVariantOwnershipBackfillStateError(
-            "Stage-3N checkpoints cannot be restore-blocked"
-        )
-    return status
 
 
 def _require_dependencies(
     checkpoints: Mapping[str, Any], *, scope: _Scope, own_exists: bool
 ) -> bool:
     if set(checkpoints) != set(_PRIOR_PHASES):
-        raise GeneticVariantOwnershipBackfillDependencyError(
-            "Stage-3A through Stage-3M checkpoints are incomplete"
+        raise GarminWeightExportOwnershipBackfillDependencyError(
+            "Stage-3A through Stage-3P checkpoints are incomplete"
         )
     statuses = {
         phase: _validate_checkpoint(
@@ -574,8 +615,8 @@ def _require_dependencies(
     if all(status == "completed" for status in statuses.values()):
         return False
     if not own_exists:
-        raise GeneticVariantOwnershipBackfillDependencyError(
-            "restore-mode Stage-3N requires its exact portability checkpoint"
+        raise GarminWeightExportOwnershipBackfillDependencyError(
+            "restore-mode Stage-3Q requires its exact portability checkpoint"
         )
     _require_restore_dependencies(checkpoints)
     return True
@@ -586,8 +627,8 @@ def _canonical(value: Any) -> Any:
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise GeneticVariantOwnershipBackfillProvenanceError(
-                "genetic variant contains a non-finite JSON number"
+            raise GarminWeightExportOwnershipBackfillProvenanceError(
+                "Garmin weight export contains a non-finite JSON number"
             )
         return ["float", value.hex()]
     if isinstance(value, uuid.UUID):
@@ -600,14 +641,14 @@ def _canonical(value: Any) -> Any:
         return ["time", value.isoformat()]
     if isinstance(value, Mapping):
         if any(type(key) is not str for key in value):
-            raise GeneticVariantOwnershipBackfillProvenanceError(
-                "genetic variant JSON object keys must be strings"
+            raise GarminWeightExportOwnershipBackfillProvenanceError(
+                "Garmin weight export JSON object keys must be strings"
             )
         return {key: _canonical(value[key]) for key in sorted(value)}
     if isinstance(value, (list, tuple)):
         return [_canonical(item) for item in value]
-    raise GeneticVariantOwnershipBackfillProvenanceError(
-        "genetic variant contains an unsupported JSON value"
+    raise GarminWeightExportOwnershipBackfillProvenanceError(
+        "Garmin weight export contains an unsupported JSON value"
     )
 
 
@@ -630,11 +671,6 @@ def _connection_select():
     return select(*(table.c[field] for field in _CONNECTION_FIELDS))
 
 
-def _raw_select():
-    table = RawPayload.__table__
-    return select(*(table.c[field] for field in _RAW_FIELDS))
-
-
 def _values(row: Any, fields: tuple[str, ...]) -> SimpleNamespace:
     mapping = row._mapping if hasattr(row, "_mapping") else row
     return SimpleNamespace(**{field: mapping[field] for field in fields})
@@ -648,21 +684,18 @@ def _connection_values(row: Any) -> SimpleNamespace:
     return _values(row, _CONNECTION_FIELDS)
 
 
-def _raw_values(row: Any) -> SimpleNamespace:
-    return _values(row, _RAW_FIELDS)
-
-
 def _data_envelope(row: Any) -> list[Any]:
-    return ["genetic_variants", *[getattr(row, field) for field in _DATA_FIELDS]]
+    return ["garmin_weight_exports", *[getattr(row, field) for field in _DATA_FIELDS]]
 
 
 def _ownership_envelope(row: Any) -> list[Any]:
     return [
-        "genetic_variants",
+        "garmin_weight_exports",
         row.id,
         row.subject_id,
-        row.actor_user_id,
-        row.raw_payload_id,
+        row.integration_connection_id,
+        row.requested_by_user_id,
+        row.weight_log_id,
     ]
 
 
@@ -671,75 +704,110 @@ def _same_values(left: Any, right: Any, fields: tuple[str, ...]) -> bool:
 
 
 def _validate_fact_values(row: Any) -> None:
-    """Reject a variant whose reviewed business shape cannot be trusted."""
+    """Reject an outbox row whose reviewed operational shape cannot be trusted."""
 
+    if not isinstance(row.date, date):
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "Garmin weight export has an invalid date"
+        )
+    if not isinstance(row.measured_at, datetime):
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "Garmin weight export has an invalid measurement timestamp"
+        )
+    for field in ("weight_kg", "remote_weight_kg"):
+        value = getattr(row, field)
+        if field == "remote_weight_kg" and value is None:
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or not _WEIGHT_KG_RANGE[0] <= float(value) <= _WEIGHT_KG_RANGE[1]
+        ):
+            raise GarminWeightExportOwnershipBackfillProvenanceError(
+                "Garmin weight export has an out-of-range or non-finite mass"
+            )
+    if row.status not in _EXPORT_STATUSES:
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "Garmin weight export has an unsupported lifecycle status"
+        )
     if (
-        not isinstance(row.gene, str)
-        or not row.gene.strip()
-        or len(row.gene) > _MAX_GENE_LENGTH
+        isinstance(row.attempts, bool)
+        or not isinstance(row.attempts, int)
+        or row.attempts < 0
     ):
-        raise GeneticVariantOwnershipBackfillProvenanceError(
-            "genetic variant has an invalid gene"
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "Garmin weight export has an invalid attempt counter"
         )
-    if row.rsid is not None and (
-        not isinstance(row.rsid, str)
-        or not row.rsid.strip()
-        or len(row.rsid) > _MAX_RSID_LENGTH
+    if type(row.remote_owned) is not bool:
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "Garmin weight export has an invalid ownership marker"
+        )
+    if row.remote_owned and row.remote_sample_pk is None:
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "an owned Garmin sample has no remote identity"
+        )
+    if row.remote_sample_pk is not None and (
+        not isinstance(row.remote_sample_pk, str) or not row.remote_sample_pk.strip()
     ):
-        raise GeneticVariantOwnershipBackfillProvenanceError(
-            "genetic variant has an invalid rsID"
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "Garmin weight export has an invalid remote sample identity"
         )
-    for field in ("genotype", "marker", "impact", "impact_domain",
-                  "interpretation", "action_notes"):
-        text_value = getattr(row, field)
-        if text_value is not None and not isinstance(text_value, str):
-            raise GeneticVariantOwnershipBackfillProvenanceError(
-                "genetic variant has an invalid text field"
-            )
+    if row.last_error is not None and not isinstance(row.last_error, str):
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "Garmin weight export has an invalid error record"
+        )
 
 
-def _validate_raw(
-    raw: Any,
-    *,
-    scope: _Scope,
-    source: str,
-    fact_is_unowned: bool,
-) -> None:
-    """Validate the durable VCF batch a variant links, without adopting it."""
+async def _reviewed_destination(session: AsyncSession, *, scope: _Scope) -> Any:
+    """Return the exact reviewed legacy Garmin account this outbox targets.
 
-    if raw.domain != Domain.GENETICS.value or raw.source != Source.VCF_IMPORT.value:
-        raise GeneticVariantOwnershipBackfillProvenanceError(
-            "genetic variant raw payload has an invalid domain or source"
-        )
-    if source != Source.VCF_IMPORT.value:
-        raise GeneticVariantOwnershipBackfillProvenanceError(
-            "manual and MCP genetic variants require null raw provenance"
-        )
-    # A VCF upload is streamed: it has no durable provider connection and no
-    # registered file, so either root would be forged provenance.
-    if raw.integration_connection_id is not None or raw.file_asset_id is not None:
-        raise GeneticVariantOwnershipBackfillProvenanceError(
-            "VCF provenance requires null provider connection and file roots"
-        )
-    raw_roots = (raw.subject_id, raw.actor_user_id)
-    # Backup v1 restores the raw lake before Stage 3A runs again, so a still
-    # fully-unowned raw is valid provenance for a still-unowned fact — and only
-    # for one.  An adopted variant may never point at unowned raw history.
-    raw_is_unowned = raw_roots == (None, None)
-    if raw_is_unowned:
-        if not fact_is_unowned:
-            raise GeneticVariantOwnershipBackfillStateError(
-                "an owned genetic variant links unowned raw provenance"
+    A rotated or additional account is never guessed: the destination of a
+    historical export is only unambiguous while the subject has exactly one
+    Garmin account root and it is the reviewed legacy singleton.
+    """
+
+    table = IntegrationConnection.__table__
+    rows = list(
+        await session.execute(
+            select(
+                *(table.c[field] for field in _CONNECTION_FIELDS),
+                table.c.external_account_discriminator,
             )
-    else:
-        if raw.subject_id != scope.subject_id:
-            raise GeneticVariantOwnershipBackfillProvenanceError(
-                "genetic variant raw payload has foreign provenance"
+            .where(
+                table.c.subject_id == scope.subject_id,
+                table.c.provider == IntegrationProvider.GARMIN.value,
+                table.c.connection_type == IntegrationConnectionType.ACCOUNT.value,
             )
-        if raw.actor_user_id not in {None, scope.owner_user_id}:
-            raise GeneticVariantOwnershipBackfillProvenanceError(
-                "genetic variant raw payload actor is outside the reviewed owner boundary"
-            )
+            .order_by(table.c.id)
+            .limit(2)
+        )
+    )
+    if len(rows) != 1:
+        raise GarminWeightExportOwnershipBackfillStateError(
+            "the Garmin weight outbox has no unambiguous destination account"
+        )
+    destination = rows[0]
+    if (
+        destination.external_account_discriminator != LEGACY_ACCOUNT_DISCRIMINATOR
+        or destination.status not in _HISTORICAL_CONNECTION_STATUSES
+    ):
+        raise GarminWeightExportOwnershipBackfillStateError(
+            "the sole Garmin account is not the reviewed legacy destination"
+        )
+    return _connection_values(destination)
+
+
+def _validate_connection(connection: Any, *, scope: _Scope) -> None:
+    if (
+        connection.subject_id != scope.subject_id
+        or connection.provider != IntegrationProvider.GARMIN.value
+        or connection.connection_type != IntegrationConnectionType.ACCOUNT.value
+        or connection.status not in _HISTORICAL_CONNECTION_STATUSES
+    ):
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "Garmin weight export has invalid destination account provenance"
+        )
 
 
 def _validate_row(
@@ -747,67 +815,77 @@ def _validate_row(
     *,
     scope: _Scope,
     connections: Mapping[uuid.UUID, Any],
-    raws: Mapping[int, Any],
+    weight_logs: Mapping[int, Any],
     historical: bool,
     allow_unowned: bool,
 ) -> bool:
-    """Validate one row and return whether sole-subject adoption is required."""
+    """Validate one row and return whether reviewed adoption is required."""
 
-    if row.domain != Domain.GENETICS.value or row.source not in _ALLOWED_SOURCES:
-        raise GeneticVariantOwnershipBackfillProvenanceError(
-            "genetic variant has invalid domain or source"
-        )
     if not isinstance(row.id, int) or isinstance(row.id, bool) or row.id <= 0:
-        raise GeneticVariantOwnershipBackfillValidationError(
-            "genetic variant has an invalid primary key"
+        raise GarminWeightExportOwnershipBackfillValidationError(
+            "Garmin weight export has an invalid primary key"
         )
     _validate_fact_values(row)
 
-    roots = (row.subject_id, row.actor_user_id)
-    needs_adoption = roots == (None, None)
+    roots = (
+        row.subject_id,
+        row.integration_connection_id,
+        row.requested_by_user_id,
+    )
+    needs_adoption = roots == (None, None, None)
     if needs_adoption:
         if not allow_unowned:
-            raise GeneticVariantOwnershipBackfillStateError(
-                "an unowned genetic variant is outside the historical bridge"
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "an unowned Garmin weight export is outside the historical bridge"
             )
-    elif row.subject_id != scope.subject_id:
-        raise GeneticVariantOwnershipBackfillStateError(
-            "genetic variant has partial or foreign ownership roots"
-        )
-    if not needs_adoption and row.actor_user_id not in {None, scope.owner_user_id}:
-        raise GeneticVariantOwnershipBackfillStateError(
-            "genetic variant actor is outside the reviewed ownership boundary"
-        )
+    else:
+        if row.subject_id != scope.subject_id:
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "Garmin weight export has partial or foreign ownership roots"
+            )
+        # The outbox has one required destination: an owned row without it is
+        # half-migrated state, not history.
+        if row.integration_connection_id is None:
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "an owned Garmin weight export has no destination account"
+            )
+        connection = connections.get(row.integration_connection_id)
+        if connection is None:
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "Garmin weight export references a missing destination account"
+            )
+        _validate_connection(connection, scope=scope)
+        if row.requested_by_user_id not in {None, scope.owner_user_id}:
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "Garmin weight export requester is outside the reviewed boundary"
+            )
 
-    if row.raw_payload_id is None:
-        if row.source == Source.VCF_IMPORT.value:
-            raise GeneticVariantOwnershipBackfillProvenanceError(
-                "an imported genetic variant requires durable raw provenance"
+    if row.weight_log_id is not None:
+        weight_log = weight_logs.get(row.weight_log_id)
+        if weight_log is None:
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "Garmin weight export references a missing weight log"
             )
-        return needs_adoption
-    if row.source in _MANUAL_SOURCES:
-        raise GeneticVariantOwnershipBackfillProvenanceError(
-            "manual and MCP genetic variants require null raw provenance"
-        )
-    raw = raws.get(row.raw_payload_id)
-    if raw is None:
-        raise GeneticVariantOwnershipBackfillStateError(
-            "genetic variant references a missing raw payload"
-        )
-    _validate_raw(
-        raw,
-        scope=scope,
-        source=row.source,
-        fact_is_unowned=needs_adoption,
-    )
-    if not historical and row.actor_user_id != raw.actor_user_id:
-        raise GeneticVariantOwnershipBackfillProvenanceError(
-            "live genetic variant and raw payload have different actor roots"
+        # Stage 3L already owns every weight fact, so a null or foreign subject
+        # here is a real cross-subject defect rather than pending history.
+        if weight_log.subject_id != scope.subject_id:
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "Garmin weight export links a weight log outside its subject"
+            )
+    elif not historical and row.status not in {
+        WEIGHT_EXPORT_DELETE_PENDING,
+        WEIGHT_EXPORT_DELETE_CHECKING,
+        WEIGHT_EXPORT_DELETE_FAILED,
+        WEIGHT_EXPORT_DELETED,
+        WEIGHT_EXPORT_SKIPPED,
+    }:
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "a live Garmin weight export lost its local weight log"
         )
     return needs_adoption
 
 
-async def _after_genetic_variants_projection_for_test() -> None:
+async def _after_garmin_weight_exports_projection_for_test() -> None:
     """Deterministic seam for real PostgreSQL lock/recheck tests."""
 
 
@@ -824,23 +902,43 @@ async def _project_connections(
     return {row.id: row for row in map(_connection_values, rows)}
 
 
-async def _project_raws(
-    session: AsyncSession, raw_payload_ids: set[int]
+async def _project_weight_logs(
+    session: AsyncSession, weight_log_ids: set[int]
 ) -> dict[int, Any]:
-    if not raw_payload_ids:
+    if not weight_log_ids:
         return {}
+    table = WeightLog.__table__
     rows = await session.execute(
-        _raw_select().where(RawPayload.id.in_(raw_payload_ids)).order_by(RawPayload.id)
+        select(*(table.c[field] for field in _WEIGHT_LOG_FIELDS))
+        .where(table.c.id.in_(weight_log_ids))
+        .order_by(table.c.id)
     )
-    return {row.id: row for row in map(_raw_values, rows)}
+    return {row.id: _values(row, _WEIGHT_LOG_FIELDS) for row in rows}
 
 
-def _referenced_connection_ids(raws: Mapping[int, Any]) -> set[uuid.UUID]:
-    return {
-        raw.integration_connection_id
-        for raw in raws.values()
-        if raw.integration_connection_id is not None
-    }
+async def _lock_projected_weight_logs(
+    session: AsyncSession,
+    projected: Mapping[int, Any],
+) -> dict[int, Any]:
+    weight_log_ids = set(projected)
+    if not weight_log_ids:
+        return {}
+    table = WeightLog.__table__
+    locked_raw = await session.execute(
+        select(*(table.c[field] for field in _WEIGHT_LOG_FIELDS))
+        .where(table.c.id.in_(weight_log_ids))
+        .order_by(table.c.id)
+        .with_for_update()
+    )
+    locked = {row.id: _values(row, _WEIGHT_LOG_FIELDS) for row in locked_raw}
+    if set(locked) != weight_log_ids or any(
+        not _same_values(locked[key], projected[key], _WEIGHT_LOG_FIELDS)
+        for key in weight_log_ids
+    ):
+        raise GarminWeightExportOwnershipBackfillStateError(
+            "a projected weight log changed before it was locked"
+        )
+    return locked
 
 
 async def _lock_projected_graph(
@@ -848,14 +946,16 @@ async def _lock_projected_graph(
     *,
     projected_rows: Mapping[int, Any],
     projected_connections: Mapping[uuid.UUID, Any],
-    projected_raws: Mapping[int, Any],
+    projected_weight_logs: Mapping[int, Any],
 ) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[int, Any]]:
     locked_connections = await _lock_projected_connections(
         session, projected_connections
     )
-    locked_raws = await _lock_projected_raws(session, projected_raws)
+    locked_weight_logs = await _lock_projected_weight_logs(
+        session, projected_weight_logs
+    )
     locked_rows = await _lock_projected_rows(session, projected_rows)
-    return locked_rows, locked_connections, locked_raws
+    return locked_rows, locked_connections, locked_weight_logs
 
 
 async def _lock_projected_connections(
@@ -879,36 +979,12 @@ async def _lock_projected_connections(
             )
             for key in connection_ids
         ):
-            raise GeneticVariantOwnershipBackfillStateError(
+            raise GarminWeightExportOwnershipBackfillStateError(
                 "a projected provider connection changed before it was locked"
             )
     else:
         locked_connections = {}
     return locked_connections
-
-
-async def _lock_projected_raws(
-    session: AsyncSession,
-    projected_raws: Mapping[int, Any],
-) -> dict[int, Any]:
-    raw_payload_ids = set(projected_raws)
-    if not raw_payload_ids:
-        return {}
-    locked = await session.execute(
-        _raw_select()
-        .where(RawPayload.id.in_(raw_payload_ids))
-        .order_by(RawPayload.id)
-        .with_for_update()
-    )
-    locked_raws = {row.id: row for row in map(_raw_values, locked)}
-    if set(locked_raws) != raw_payload_ids or any(
-        not _same_values(locked_raws[key], projected_raws[key], _RAW_FIELDS)
-        for key in raw_payload_ids
-    ):
-        raise GeneticVariantOwnershipBackfillStateError(
-            "a projected genetic variant raw payload changed before it was locked"
-        )
-    return locked_raws
 
 
 async def _lock_projected_rows(
@@ -929,8 +1005,8 @@ async def _lock_projected_rows(
         not _same_values(locked_rows[key], projected_rows[key], _ROW_FIELDS)
         for key in projected_rows
     ):
-        raise GeneticVariantOwnershipBackfillStateError(
-            "a projected genetic variant changed before it was locked"
+        raise GarminWeightExportOwnershipBackfillStateError(
+            "a projected weight changed before it was locked"
         )
     return locked_rows
 
@@ -948,20 +1024,30 @@ async def _project_and_lock_ids(
         _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
     )
     projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
-    raw_payload_ids = {row.raw_payload_id for row in projected_rows.values() if row.raw_payload_id is not None}
-    projected_raws = await _project_raws(session, raw_payload_ids)
+    projected_weight_logs = await _project_weight_logs(
+        session,
+        {
+            row.weight_log_id
+            for row in projected_rows.values()
+            if row.weight_log_id is not None
+        },
+    )
     projected_connections = await _project_connections(
-        session, _referenced_connection_ids(projected_raws)
+        session,
+        {
+            row.integration_connection_id
+            for row in projected_rows.values()
+            if row.integration_connection_id is not None
+        },
     )
     if invoke_race_hook:
-        await _after_genetic_variants_projection_for_test()
-    locked = await _lock_projected_graph(
+        await _after_garmin_weight_exports_projection_for_test()
+    return await _lock_projected_graph(
         session,
         projected_rows=projected_rows,
         projected_connections=projected_connections,
-        projected_raws=projected_raws,
+        projected_weight_logs=projected_weight_logs,
     )
-    return locked
 
 
 def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
@@ -977,8 +1063,8 @@ def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
         return False, False
     if checkpoint.status == "completed":
         return row_id <= checkpoint.scan_high_watermark_id, False
-    raise GeneticVariantOwnershipBackfillStateError(
-        "Stage-3N checkpoint has an unsupported state"
+    raise GarminWeightExportOwnershipBackfillStateError(
+        "Stage-3Q checkpoint has an unsupported state"
     )
 
 
@@ -989,32 +1075,24 @@ async def _referenced_connection_digest(
     high: int | None,
     lock_connections: bool,
 ) -> tuple[int, str]:
-    """Page the referenced C set, optionally locking it before any fact row."""
+    """Page the referenced destination set, locking it before any outbox row."""
 
     count = 0
     digest = _EMPTY_SHA256
     cursor: uuid.UUID | None = None
-    raw_table = RawPayload.__table__
-    raw_refs = (
-        select(raw_table.c.integration_connection_id.label("connection_id"))
-        .select_from(
-            _TABLE.join(raw_table, _TABLE.c.raw_payload_id == raw_table.c.id)
-        )
-        .where(
-            _TABLE.c.id > low,
-            raw_table.c.integration_connection_id.is_not(None),
-        )
-    )
-    if high is not None:
-        raw_refs = raw_refs.where(_TABLE.c.id <= high)
-    refs = raw_refs.distinct().subquery()
     while True:
-        query = select(refs.c.connection_id)
+        query = select(_TABLE.c.integration_connection_id.label("connection_id")).where(
+            _TABLE.c.id > low,
+            _TABLE.c.integration_connection_id.is_not(None),
+        )
+        if high is not None:
+            query = query.where(_TABLE.c.id <= high)
         if cursor is not None:
-            query = query.where(refs.c.connection_id > cursor)
+            query = query.where(_TABLE.c.integration_connection_id > cursor)
         connection_ids = list(
             await session.scalars(
-                query.order_by(refs.c.connection_id)
+                query.distinct()
+                .order_by(_TABLE.c.integration_connection_id)
                 .limit(_PAGE_SIZE)
             )
         )
@@ -1022,79 +1100,87 @@ async def _referenced_connection_digest(
             break
         projected = await _project_connections(session, set(connection_ids))
         if set(projected) != set(connection_ids):
-            raise GeneticVariantOwnershipBackfillStateError(
-                "a genetic variant references a missing provider connection"
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "a Garmin weight export references a missing destination account"
             )
         if lock_connections:
             await _lock_projected_connections(session, projected)
         for connection_id in connection_ids:
-            digest = _extend(digest, ["genetic_variants_connection", connection_id])
+            digest = _extend(
+                digest, ["garmin_weight_exports_connection", connection_id]
+            )
             count += 1
         cursor = connection_ids[-1]
     return count, digest
 
 
-async def _referenced_raw_digest(
+async def _referenced_weight_log_digest(
     session: AsyncSession,
     *,
     low: int,
     high: int | None,
-    lock_raws: bool,
+    lock_weight_logs: bool,
 ) -> tuple[int, str]:
     count = 0
     digest = _EMPTY_SHA256
     cursor = 0
     while True:
-        query = select(_TABLE.c.raw_payload_id).where(
+        query = select(_TABLE.c.weight_log_id).where(
             _TABLE.c.id > low,
-            _TABLE.c.raw_payload_id.is_not(None),
-            _TABLE.c.raw_payload_id > cursor,
+            _TABLE.c.weight_log_id.is_not(None),
+            _TABLE.c.weight_log_id > cursor,
         )
         if high is not None:
             query = query.where(_TABLE.c.id <= high)
-        raw_payload_ids = list(
+        weight_log_ids = list(
             await session.scalars(
-                query.distinct().order_by(_TABLE.c.raw_payload_id).limit(_PAGE_SIZE)
+                query.distinct().order_by(_TABLE.c.weight_log_id).limit(_PAGE_SIZE)
             )
         )
-        if not raw_payload_ids:
+        if not weight_log_ids:
             break
-        projected = await _project_raws(session, set(raw_payload_ids))
-        if set(projected) != set(raw_payload_ids):
-            raise GeneticVariantOwnershipBackfillStateError(
-                "a genetic variant references a missing raw payload"
+        projected = await _project_weight_logs(session, set(weight_log_ids))
+        if set(projected) != set(weight_log_ids):
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "a Garmin weight export references a missing weight log"
             )
-        if lock_raws:
-            await _lock_projected_raws(session, projected)
-        for raw_payload_id in raw_payload_ids:
-            digest = _extend(digest, ["genetic_variants_raw", raw_payload_id])
+        if lock_weight_logs:
+            await _lock_projected_weight_logs(session, projected)
+        for weight_log_id in weight_log_ids:
+            digest = _extend(
+                digest,
+                [
+                    "garmin_weight_exports_weight_log",
+                    weight_log_id,
+                    projected[weight_log_id].subject_id,
+                ],
+            )
             count += 1
-        cursor = raw_payload_ids[-1]
+        cursor = weight_log_ids[-1]
     return count, digest
 
 
-async def _validate_rsid_invariant(session: AsyncSession) -> None:
-    """Reject two variants sharing one rsID before scoped keys exist."""
+async def _validate_active_date_invariant(session: AsyncSession) -> None:
+    """Reject two outbox rows on one date before scoped keys exist."""
 
-    left = _TABLE.alias("genetic_variant_left")
-    right = _TABLE.alias("genetic_variant_right")
+    left = _TABLE.alias("garmin_weight_export_left")
+    right = _TABLE.alias("garmin_weight_export_right")
     duplicate = await session.scalar(
         select(left.c.id)
         .select_from(
             left.join(
                 right,
                 and_(
-                    left.c.rsid == right.c.rsid,
+                    left.c.date == right.c.date,
                     left.c.id < right.c.id,
                 ),
             )
         )
-        .where(left.c.rsid.is_not(None), right.c.rsid.is_not(None))
         .limit(1)
     )
     if duplicate is not None:
-        raise GeneticVariantOwnershipBackfillProvenanceError(
-            "one rsID carries more than one genetic variant"
+        raise GarminWeightExportOwnershipBackfillProvenanceError(
+            "one date carries more than one Garmin weight export"
         )
 
 
@@ -1114,9 +1200,19 @@ async def _scan_current(
     cursor = low
     locked_ref_count = 0
     locked_ref_digest = _EMPTY_SHA256
-    locked_raw_count = 0
-    locked_raw_digest = _EMPTY_SHA256
-    await _validate_rsid_invariant(session)
+    locked_log_count = 0
+    locked_log_digest = _EMPTY_SHA256
+    await _validate_active_date_invariant(session)
+    if (checkpoint is None or checkpoint.status == "running") and (
+        await session.scalar(
+            select(_TABLE.c.id).where(_TABLE.c.subject_id.is_(None)).limit(1)
+        )
+        is not None
+    ):
+        # While a row still needs adoption the destination must be resolvable,
+        # so an ambiguous Garmin account surfaces in the read-only preflight
+        # rather than at the first mutating batch.
+        await _reviewed_destination(session, scope=scope)
     if for_update:
         locked_ref_count, locked_ref_digest = await _referenced_connection_digest(
             session,
@@ -1124,11 +1220,11 @@ async def _scan_current(
             high=high,
             lock_connections=True,
         )
-        locked_raw_count, locked_raw_digest = await _referenced_raw_digest(
+        locked_log_count, locked_log_digest = await _referenced_weight_log_digest(
             session,
             low=low,
             high=high,
-            lock_raws=True,
+            lock_weight_logs=True,
         )
     while True:
         query = (
@@ -1142,42 +1238,34 @@ async def _scan_current(
         ids = list(await session.scalars(query))
         if not ids:
             break
-        if for_update:
-            raw_rows = await session.execute(
-                _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
-            )
-            projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
-            raws = await _project_raws(
-                session,
-                {
-                    row.raw_payload_id
-                    for row in projected_rows.values()
-                    if row.raw_payload_id is not None
-                },
-            )
-            connections = await _project_connections(
-                session, _referenced_connection_ids(raws)
-            )
-            rows = await _lock_projected_rows(session, projected_rows)
-        else:
-            raw_rows = await session.execute(
-                _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
-            )
-            rows = {row.id: row for row in map(_row_values, raw_rows)}
-            raws = await _project_raws(
-                session,
-                {
-                    row.raw_payload_id
-                    for row in rows.values()
-                    if row.raw_payload_id is not None
-                },
-            )
-            connections = await _project_connections(
-                session, _referenced_connection_ids(raws)
-            )
+        raw_rows = await session.execute(
+            _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
+        )
+        projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
+        weight_logs = await _project_weight_logs(
+            session,
+            {
+                row.weight_log_id
+                for row in projected_rows.values()
+                if row.weight_log_id is not None
+            },
+        )
+        connections = await _project_connections(
+            session,
+            {
+                row.integration_connection_id
+                for row in projected_rows.values()
+                if row.integration_connection_id is not None
+            },
+        )
+        rows = (
+            await _lock_projected_rows(session, projected_rows)
+            if for_update
+            else projected_rows
+        )
         if set(rows) != set(ids):
-            raise GeneticVariantOwnershipBackfillStateError(
-                "a projected genetic variant page changed during validation"
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "a projected Garmin weight export page changed during validation"
             )
         for row_id in ids:
             row = rows[row_id]
@@ -1186,7 +1274,7 @@ async def _scan_current(
                 row,
                 scope=scope,
                 connections=connections,
-                raws=raws,
+                weight_logs=weight_logs,
                 historical=historical,
                 allow_unowned=allow_unowned,
             )
@@ -1194,8 +1282,8 @@ async def _scan_current(
                 checkpoint.status == "completed"
                 or row.id <= checkpoint.last_scanned_id
             ):
-                raise GeneticVariantOwnershipBackfillStateError(
-                    "a processed genetic variant row remained unowned"
+                raise GarminWeightExportOwnershipBackfillStateError(
+                    "a processed Garmin weight export row remained unowned"
                 )
             if digest:
                 data = _extend(data, _data_envelope(row))
@@ -1214,21 +1302,24 @@ async def _scan_current(
             current_ref_count != locked_ref_count
             or current_ref_digest != locked_ref_digest
         ):
-            raise GeneticVariantOwnershipBackfillStateError(
-                "genetic variant provider references changed during validation"
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "Garmin weight export destination references changed during validation"
             )
-        current_raw_count, current_raw_digest = await _referenced_raw_digest(
+        current_log_count, current_log_digest = await _referenced_weight_log_digest(
             session,
             low=low,
             high=high,
-            lock_raws=False,
+            lock_weight_logs=False,
         )
-        if current_raw_count != locked_raw_count or current_raw_digest != locked_raw_digest:
-            raise GeneticVariantOwnershipBackfillStateError(
-                "genetic variant raw references changed during validation"
+        if (
+            current_log_count != locked_log_count
+            or current_log_digest != locked_log_digest
+        ):
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "Garmin weight export weight-log references changed during validation"
             )
-        await _validate_rsid_invariant(session)
-        return count, data, ownership
+        await _validate_active_date_invariant(session)
+    return count, data, ownership
 
 
 async def _bounds(session: AsyncSession) -> tuple[int, int]:
@@ -1239,8 +1330,8 @@ async def _bounds(session: AsyncSession) -> tuple[int, int]:
     ).one()
     high, count = int(high), int(count)
     if not _valid_counter(high) or not _valid_counter(count) or count > high:
-        raise GeneticVariantOwnershipBackfillValidationError(
-            "genetic variant snapshot bounds are invalid"
+        raise GarminWeightExportOwnershipBackfillValidationError(
+            "Garmin weight export snapshot bounds are invalid"
         )
     return high, count
 
@@ -1263,10 +1354,10 @@ async def _status_result(
     checkpoint: Any | None,
     validate: bool,
     for_update: bool,
-) -> GeneticVariantOwnershipBackfillPreflightResult:
+) -> GarminWeightExportOwnershipBackfillPreflightResult:
     if checkpoint is None:
         high, snapshot = await _bounds(session)
-        status = GeneticVariantOwnershipBackfillStatus.NOT_STARTED
+        status = GarminWeightExportOwnershipBackfillStatus.NOT_STARTED
         scanned = updated = unchanged = rows_above = 0
         remaining = snapshot
         before = after = ownership = _EMPTY_SHA256
@@ -1276,7 +1367,7 @@ async def _status_result(
             checkpoint.scan_high_watermark_id,
             checkpoint.snapshot_rows,
         )
-        status = GeneticVariantOwnershipBackfillStatus(checkpoint.status)
+        status = GarminWeightExportOwnershipBackfillStatus(checkpoint.status)
         scanned, updated, unchanged = (
             checkpoint.scanned_rows,
             checkpoint.updated_rows,
@@ -1296,8 +1387,28 @@ async def _status_result(
             checkpoint.data_checksum_after,
             checkpoint.ownership_checksum_after,
         )
-        completed = status is GeneticVariantOwnershipBackfillStatus.COMPLETED
+        completed = status is GarminWeightExportOwnershipBackfillStatus.COMPLETED
     if validate:
+        if checkpoint is not None and checkpoint.status == "restore_blocked":
+            await _validate_restore_blocked_rows(
+                session, scope=scope, checkpoint=checkpoint
+            )
+            return GarminWeightExportOwnershipBackfillPreflightResult(
+                phase_key=GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_PHASE,
+                subject_id=scope.subject_id,
+                status=status,
+                tables_total=1,
+                completed_tables=int(completed),
+                snapshot_rows=snapshot,
+                scanned_rows=scanned,
+                updated_rows=updated,
+                unchanged_rows=unchanged,
+                remaining_rows=remaining,
+                rows_above_high_watermark=rows_above,
+                data_checksum_before=before,
+                data_checksum_after=after,
+                ownership_checksum_after=ownership,
+            )
         await _scan_current(
             session,
             scope=scope,
@@ -1315,11 +1426,11 @@ async def _status_result(
                 or 0
             )
             if frozen_count != snapshot:
-                raise GeneticVariantOwnershipBackfillStateError(
-                    "the genetic variant snapshot cardinality changed"
+                raise GarminWeightExportOwnershipBackfillStateError(
+                    "the Garmin outbox snapshot cardinality changed"
                 )
-    return GeneticVariantOwnershipBackfillPreflightResult(
-        phase_key=GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE,
+    return GarminWeightExportOwnershipBackfillPreflightResult(
+        phase_key=GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_PHASE,
         subject_id=scope.subject_id,
         status=status,
         tables_total=1,
@@ -1337,28 +1448,28 @@ async def _status_result(
 
 
 def _batch_result(
-    result: GeneticVariantOwnershipBackfillPreflightResult,
+    result: GarminWeightExportOwnershipBackfillPreflightResult,
     *,
     scanned: int,
     updated: int,
     unchanged: int,
-) -> GeneticVariantOwnershipBackfillBatchResult:
-    return GeneticVariantOwnershipBackfillBatchResult(
+) -> GarminWeightExportOwnershipBackfillBatchResult:
+    return GarminWeightExportOwnershipBackfillBatchResult(
         **{
             field: getattr(result, field)
-            for field in GeneticVariantOwnershipBackfillPreflightResult.__dataclass_fields__
+            for field in GarminWeightExportOwnershipBackfillPreflightResult.__dataclass_fields__
         },
-        batch_table="genetic_variants",
+        batch_table="garmin_weight_exports",
         batch_scanned_rows=scanned,
         batch_updated_rows=updated,
         batch_unchanged_rows=unchanged,
     )
 
 
-async def preflight_genetic_variant_ownership_backfill(
+async def preflight_garmin_weight_export_ownership_backfill(
     session: AsyncSession,
-) -> GeneticVariantOwnershipBackfillPreflightResult:
-    """Validate the fixed Stage-3N graph without mutation."""
+) -> GarminWeightExportOwnershipBackfillPreflightResult:
+    """Validate the fixed Stage-3Q graph without mutation."""
 
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=False)
@@ -1383,15 +1494,15 @@ async def preflight_genetic_variant_ownership_backfill(
 def _validate_restore_bounds(snapshot_bounds: Any) -> tuple[int, int]:
     if (
         not isinstance(snapshot_bounds, Mapping)
-        or set(snapshot_bounds) != {"genetic_variants"}
+        or set(snapshot_bounds) != {"garmin_weight_exports"}
     ):
-        raise GeneticVariantOwnershipBackfillValidationError(
-            "snapshot_bounds must contain the exact weight table catalog"
+        raise GarminWeightExportOwnershipBackfillValidationError(
+            "snapshot_bounds must contain the exact Garmin outbox table catalog"
         )
-    pair = snapshot_bounds["genetic_variants"]
+    pair = snapshot_bounds["garmin_weight_exports"]
     if not isinstance(pair, tuple) or len(pair) != 2:
-        raise GeneticVariantOwnershipBackfillValidationError(
-            "the genetic variant snapshot bound must be an exact pair"
+        raise GarminWeightExportOwnershipBackfillValidationError(
+            "the Garmin outbox snapshot bound must be an exact pair"
         )
     high, count = pair
     if (
@@ -1400,28 +1511,81 @@ def _validate_restore_bounds(snapshot_bounds: Any) -> tuple[int, int]:
         or count > high
         or (high == 0) != (count == 0)
     ):
-        raise GeneticVariantOwnershipBackfillValidationError(
-            "the genetic variant snapshot bound is an invalid ID/count pair"
+        raise GarminWeightExportOwnershipBackfillValidationError(
+            "the Garmin outbox snapshot bound is an invalid ID/count pair"
         )
     return high, count
 
 
-async def reset_genetic_variant_ownership_backfill_for_portability_v1_restore(
+async def _validate_restore_blocked_rows(
+    session: AsyncSession,
+    *,
+    scope: _Scope,
+    checkpoint: Any,
+) -> None:
+    """Validate the S-only shape backup v1 leaves in the outbox."""
+
+    await _validate_active_date_invariant(session)
+    count = 0
+    high = 0
+    cursor = 0
+    while True:
+        raw_rows = list(
+            await session.execute(
+                _row_select()
+                .where(_TABLE.c.id > cursor)
+                .order_by(_TABLE.c.id)
+                .limit(_PAGE_SIZE)
+            )
+        )
+        if not raw_rows:
+            break
+        for raw in raw_rows:
+            row = _row_values(raw)
+            if (
+                row.subject_id != scope.subject_id
+                or row.integration_connection_id is not None
+                or row.requested_by_user_id is not None
+            ):
+                raise GarminWeightExportOwnershipBackfillStateError(
+                    "restored Garmin weight export has an invalid v1 ownership shape"
+                )
+            _validate_fact_values(row)
+            count += 1
+            high = row.id
+            cursor = row.id
+    if count != checkpoint.snapshot_rows:
+        raise GarminWeightExportOwnershipBackfillStateError(
+            "restore-blocked Garmin outbox cardinality differs from the backup"
+        )
+    if high != checkpoint.scan_high_watermark_id:
+        raise GarminWeightExportOwnershipBackfillStateError(
+            "restore-blocked Garmin outbox high watermark differs from the backup"
+        )
+
+
+async def block_garmin_weight_export_ownership_backfill_for_portability_v1_restore(
     session: AsyncSession,
     *,
     snapshot_bounds: Mapping[str, tuple[int, int]],
 ) -> None:
-    """Reset Stage-3N before the caller atomically replaces portable data."""
+    """Record backup-v1 destination loss before portable rows are replaced.
+
+    The outbox needs a required destination connection that backup v1 cannot
+    carry, so a nonempty restored snapshot is blocked rather than silently
+    re-pointed at whatever Garmin account happens to exist.
+    """
 
     high, count = _validate_restore_bounds(snapshot_bounds)
+    reset_at = now_utc().replace(microsecond=0)
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=True)
         dependencies = await _load_checkpoints(
             session, _PRIOR_PHASES, for_update=True
         )
         if set(dependencies) != set(_PRIOR_PHASES):
-            raise GeneticVariantOwnershipBackfillDependencyError(
-                "Stage-3A through Stage-3M checkpoints are incomplete"
+            raise GarminWeightExportOwnershipBackfillDependencyError(
+                "Stage-3A through Stage-3P checkpoints are incomplete"
             )
         for phase in _PRIOR_PHASES:
             _validate_checkpoint(
@@ -1430,33 +1594,28 @@ async def reset_genetic_variant_ownership_backfill_for_portability_v1_restore(
         _require_restore_dependencies(dependencies)
         own = await _load_checkpoints(session, (_PHASE_KEY,), for_update=True)
         checkpoint = own.get(_PHASE_KEY)
-        _validate_own(checkpoint, scope=scope)
-        if checkpoint is None:
+        own_status = _validate_own(checkpoint, scope=scope)
+        if own_status == "restore_blocked":
+            assert checkpoint is not None
+            await _validate_restore_blocked_rows(
+                session, scope=scope, checkpoint=checkpoint
+            )
+        else:
             await _scan_current(
                 session,
                 scope=scope,
-                checkpoint=None,
+                checkpoint=checkpoint,
                 for_update=True,
                 digest=False,
             )
-        else:
-            # A portability replacement is allowed to reset progress, not to
-            # conceal drift in the outgoing checkpoint evidence.
-            await _status_result(
-                session,
-                scope=scope,
-                checkpoint=checkpoint,
-                validate=True,
-                for_update=True,
-            )
-        status = "completed" if (high, count) == (0, 0) else "running"
+        empty = (high, count) == (0, 0)
         if checkpoint is None:
             checkpoint = OwnershipBackfillCheckpoint(
                 phase_key=_PHASE_KEY,
                 subject_id=scope.subject_id,
             )
             session.add(checkpoint)
-        checkpoint.status = status
+        checkpoint.status = "completed" if empty else "restore_blocked"
         checkpoint.scan_high_watermark_id = high
         checkpoint.snapshot_rows = count
         checkpoint.last_scanned_id = 0
@@ -1466,9 +1625,9 @@ async def reset_genetic_variant_ownership_backfill_for_portability_v1_restore(
         checkpoint.data_checksum_before = _EMPTY_SHA256
         checkpoint.data_checksum_after = _EMPTY_SHA256
         checkpoint.ownership_checksum_after = _EMPTY_SHA256
-        checkpoint.started_at = func.now()
-        checkpoint.updated_at = func.now()
-        checkpoint.completed_at = func.now() if status == "completed" else None
+        checkpoint.started_at = reset_at
+        checkpoint.updated_at = reset_at
+        checkpoint.completed_at = reset_at if empty else None
         await session.flush()
 
 
@@ -1499,19 +1658,25 @@ async def _create_checkpoint(
 
 
 def _set_cached_subject(
-    session: AsyncSession, row_id: int, subject_id: uuid.UUID
+    session: AsyncSession,
+    row_id: int,
+    subject_id: uuid.UUID,
+    connection_id: uuid.UUID,
 ) -> None:
-    cached = session.identity_map.get((GeneticVariant, (row_id,), None))
+    cached = session.identity_map.get((GarminWeightExport, (row_id,), None))
     if cached is not None:
         attributes.set_committed_value(cached, "subject_id", subject_id)
+        attributes.set_committed_value(
+            cached, "integration_connection_id", connection_id
+        )
 
 
-async def run_genetic_variant_ownership_backfill_batch(
+async def run_garmin_weight_export_ownership_backfill_batch(
     session: AsyncSession,
     *,
-    batch_size: int = DEFAULT_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE,
-) -> GeneticVariantOwnershipBackfillBatchResult:
-    """Advance the fixed genetic variant table by at most one primary-key batch."""
+    batch_size: int = DEFAULT_GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_BATCH_SIZE,
+) -> GarminWeightExportOwnershipBackfillBatchResult:
+    """Advance the fixed Garmin outbox by at most one primary-key batch."""
 
     size = _validate_batch_size(batch_size)
     with session.no_autoflush:
@@ -1525,6 +1690,10 @@ async def run_genetic_variant_ownership_backfill_batch(
         _require_dependencies(
             dependencies, scope=scope, own_exists=checkpoint is not None
         )
+        if checkpoint is not None and checkpoint.status == "restore_blocked":
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "Garmin outbox ownership is blocked pending a portability restore"
+            )
         if checkpoint is not None and checkpoint.status == "completed":
             result = await _status_result(
                 session,
@@ -1566,9 +1735,10 @@ async def run_genetic_variant_ownership_backfill_batch(
                 .limit(size)
             )
         )
-        rows, connections, raws = await _project_and_lock_ids(
+        rows, connections, weight_logs = await _project_and_lock_ids(
             session, ids, scope=scope, invoke_race_hook=True
         )
+        destination = await _reviewed_destination(session, scope=scope)
 
         before = checkpoint.data_checksum_before
         after = checkpoint.data_checksum_after
@@ -1581,7 +1751,7 @@ async def run_genetic_variant_ownership_backfill_batch(
                 row,
                 scope=scope,
                 connections=connections,
-                raws=raws,
+                weight_logs=weight_logs,
                 historical=True,
                 allow_unowned=True,
             )
@@ -1592,15 +1762,22 @@ async def run_genetic_variant_ownership_backfill_batch(
                     .where(
                         _TABLE.c.id == row_id,
                         _TABLE.c.subject_id.is_(None),
-                        _TABLE.c.actor_user_id.is_(None),
+                        _TABLE.c.requested_by_user_id.is_(None),
+                        _TABLE.c.integration_connection_id.is_(None),
                     )
-                    .values(subject_id=scope.subject_id, updated_at=row.updated_at)
+                    .values(
+                        subject_id=scope.subject_id,
+                        integration_connection_id=destination.id,
+                        updated_at=row.updated_at,
+                    )
                 )
                 if result.rowcount != 1:
-                    raise GeneticVariantOwnershipBackfillStateError(
-                        "genetic variant ownership changed during adoption"
+                    raise GarminWeightExportOwnershipBackfillStateError(
+                        "Garmin weight export ownership changed during adoption"
                     )
-                _set_cached_subject(session, row_id, scope.subject_id)
+                _set_cached_subject(
+                    session, row_id, scope.subject_id, destination.id
+                )
                 updated_count += 1
             else:
                 unchanged_count += 1
@@ -1609,26 +1786,35 @@ async def run_genetic_variant_ownership_backfill_batch(
             )
             current_result = current_raw.one_or_none()
             if current_result is None:
-                raise GeneticVariantOwnershipBackfillStateError(
-                    "a genetic variant disappeared during adoption"
+                raise GarminWeightExportOwnershipBackfillStateError(
+                    "a Garmin weight export disappeared during adoption"
                 )
             current = _row_values(current_result)
+            current_connections = dict(connections)
+            current_connections.setdefault(destination.id, destination)
+            if (
+                current.integration_connection_id is not None
+                and current.integration_connection_id not in current_connections
+            ):
+                raise GarminWeightExportOwnershipBackfillStateError(
+                    "Garmin weight export destination changed during adoption"
+                )
             if _validate_row(
                 current,
                 scope=scope,
-                connections=connections,
-                raws=raws,
+                connections=current_connections,
+                weight_logs=weight_logs,
                 historical=True,
                 allow_unowned=False,
             ):
-                raise GeneticVariantOwnershipBackfillStateError(
-                    "a processed genetic variant remained unowned"
+                raise GarminWeightExportOwnershipBackfillStateError(
+                    "a processed Garmin weight export remained unowned"
                 )
             after = _extend(after, _data_envelope(current))
             ownership = _extend(ownership, _ownership_envelope(current))
         if before != after:
-            raise GeneticVariantOwnershipBackfillStateError(
-                "genetic variant data changed while ownership was backfilled"
+            raise GarminWeightExportOwnershipBackfillStateError(
+                "Garmin weight export data changed while ownership was backfilled"
             )
         checkpoint.scanned_rows += len(ids)
         checkpoint.updated_rows += updated_count
@@ -1659,8 +1845,8 @@ async def run_genetic_variant_ownership_backfill_batch(
                 or data != checkpoint.data_checksum_after
                 or current_ownership != checkpoint.ownership_checksum_after
             ):
-                raise GeneticVariantOwnershipBackfillStateError(
-                    "the genetic variant snapshot changed during finalization"
+                raise GarminWeightExportOwnershipBackfillStateError(
+                    "the Garmin outbox snapshot changed during finalization"
                 )
             checkpoint.last_scanned_id = checkpoint.scan_high_watermark_id
             checkpoint.status = "completed"
@@ -1685,21 +1871,21 @@ async def run_genetic_variant_ownership_backfill_batch(
 
 
 __all__ = [
-    "GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE",
-    "GENETIC_VARIANT_OWNERSHIP_BACKFILL_TABLES",
-    "GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
-    "DEFAULT_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "MAX_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "GeneticVariantOwnershipBackfillStatus",
-    "GeneticVariantOwnershipBackfillError",
-    "GeneticVariantOwnershipBackfillValidationError",
-    "GeneticVariantOwnershipBackfillIdentityError",
-    "GeneticVariantOwnershipBackfillDependencyError",
-    "GeneticVariantOwnershipBackfillStateError",
-    "GeneticVariantOwnershipBackfillProvenanceError",
-    "GeneticVariantOwnershipBackfillPreflightResult",
-    "GeneticVariantOwnershipBackfillBatchResult",
-    "preflight_genetic_variant_ownership_backfill",
-    "run_genetic_variant_ownership_backfill_batch",
-    "reset_genetic_variant_ownership_backfill_for_portability_v1_restore",
+    "GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_PHASE",
+    "GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_TABLES",
+    "GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
+    "DEFAULT_GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "MAX_GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "GarminWeightExportOwnershipBackfillStatus",
+    "GarminWeightExportOwnershipBackfillError",
+    "GarminWeightExportOwnershipBackfillValidationError",
+    "GarminWeightExportOwnershipBackfillIdentityError",
+    "GarminWeightExportOwnershipBackfillDependencyError",
+    "GarminWeightExportOwnershipBackfillStateError",
+    "GarminWeightExportOwnershipBackfillProvenanceError",
+    "GarminWeightExportOwnershipBackfillPreflightResult",
+    "GarminWeightExportOwnershipBackfillBatchResult",
+    "preflight_garmin_weight_export_ownership_backfill",
+    "run_garmin_weight_export_ownership_backfill_batch",
+    "block_garmin_weight_export_ownership_backfill_for_portability_v1_restore",
 ]

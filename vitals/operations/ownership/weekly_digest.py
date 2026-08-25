@@ -1,4 +1,4 @@
-"""Bounded Stage-3P ownership backfill for optional-channel body-scan metrics.
+"""Bounded Stage-3R ownership backfill for optional-channel weekly digests.
 
 Historical rows prove only the sole reviewed subject.  Actor and provider
 provenance remain exactly as persisted; this service never infers either root,
@@ -23,91 +23,144 @@ from sqlalchemy import Table, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
-from vitals.enums import Domain, UserStatus
-from vitals.models.body_scan import BodyScan, BodyScanMetric
+from vitals.enums import (
+    AIInvocationPurpose,
+    AIInvocationStatus,
+    DigestKind,
+    Domain,
+    IntegrationConnectionStatus,
+    IntegrationConnectionType,
+    IntegrationProvider,
+    Source,
+    UserStatus,
+)
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.services.conflict_rule_ownership_backfill_service import (
+from vitals.models.ai import AIInvocation
+from vitals.models.tenancy import IntegrationConnection
+from vitals.models.milestones import WeeklyDigest
+from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
-    PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
-from vitals.services.shared_report_ownership_backfill_service import (
-    SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.lab_result_ownership_backfill_service import (
-    LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.body_scan_ownership_backfill_service import (
-    BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.genetic_variant_ownership_backfill_service import (
-    GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.progress_photo_ownership_backfill_service import (
+from vitals.operations.ownership.progress_photo import (
     PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.weight_log_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
+    PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.shared_report import (
+    SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.body_scan_metric import (
+    BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.body_scan import (
+    BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.garmin_weight_export import (
+    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.genetic_variant import (
+    GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.lab_result import (
+    LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.weight_log import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.utils.timeutils import now_utc
 
 
-BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_PHASE = "stage3.inherited_children.body_scan_metrics.v1"
-BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_TABLES = ("body_scan_metrics",)
-BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
+WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE = (
+    "stage3.retained_artifact.weekly_digests.v1"
+)
+WEEKLY_DIGEST_OWNERSHIP_BACKFILL_TABLES = ("weekly_digests",)
+WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
     MappingProxyType(
         {
-            "body_scan_metrics": (
-                f"{BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_PHASE}.genetic_variants"
+            "weekly_digests": (
+                f"{WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE}.weekly_digests"
             )
         }
     )
 )
-DEFAULT_BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
-MAX_BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
+DEFAULT_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
+MAX_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
 
-_TABLE: Table = BodyScanMetric.__table__
-_PHASE_KEY = BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["body_scan_metrics"]
+_TABLE: Table = WeeklyDigest.__table__
+_PHASE_KEY = WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["weekly_digests"]
 _PAGE_SIZE = 1000
 _POSTGRES_INTEGER_MAX = (1 << 31) - 1
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ALLOWED_SOURCES = frozenset(
+    {
+        Source.MANUAL.value,
+        Source.MCP.value,
+        Source.SCHEDULER.value,
+        Source.SYSTEM.value,
+    }
+)
+_ALLOWED_KINDS = frozenset(kind.value for kind in DigestKind)
+_INVOCATION_PURPOSE_BY_KIND = {
+    DigestKind.WEEKLY.value: AIInvocationPurpose.WEEKLY_DIGEST.value,
+    DigestKind.DAILY_BRIEF.value: AIInvocationPurpose.DAILY_BRIEF.value,
+}
+_HISTORICAL_CONNECTION_STATUSES = {
+    IntegrationConnectionStatus.LEGACY.value,
+    IntegrationConnectionStatus.ACTIVE.value,
+    IntegrationConnectionStatus.DISABLED.value,
+    IntegrationConnectionStatus.RETIRED.value,
+}
 _ROW_FIELDS = (
     "id",
     "subject_id",
-    "scan_id",
-    "metric_key",
-    "label",
-    "value",
-    "unit",
-    "ref_low",
-    "ref_high",
-    "segment",
-    "category",
+    "actor_user_id",
+    "integration_connection_id",
+    "ai_invocation_id",
+    "date",
+    "domain",
+    "source",
+    "kind",
+    "content",
+    "context_json",
+    "model",
     "created_at",
     "updated_at",
 )
-_DATA_FIELDS = tuple(field for field in _ROW_FIELDS if field != "subject_id")
-_PARENT_FIELDS = (
+_DATA_FIELDS = tuple(
+    field
+    for field in _ROW_FIELDS
+    if field not in {"subject_id", "actor_user_id", "integration_connection_id"}
+)
+_INVOCATION_FIELDS = (
     "id",
     "subject_id",
-    "domain",
+    "actor_user_id",
+    "purpose",
+    "status",
+)
+_CONNECTION_FIELDS = (
+    "id",
+    "subject_id",
+    "provider",
+    "connection_type",
+    "status",
 )
 _B_PHASES = tuple(NORMALIZED_MANUAL_CHECKPOINT_PHASES.values())
 _C_PHASES = tuple(HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
@@ -121,6 +174,10 @@ _L_PHASES = tuple(WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _M_PHASES = tuple(LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _N_PHASES = tuple(GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _O_PHASES = tuple(BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_P_PHASES = tuple(BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_Q_PHASES = tuple(
+    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()
+)
 _PRIOR_PHASES = (
     (RAW_OWNERSHIP_BACKFILL_PHASE,)
     + _B_PHASES
@@ -135,50 +192,52 @@ _PRIOR_PHASES = (
     + _M_PHASES
     + _N_PHASES
     + _O_PHASES
+    + _P_PHASES
+    + _Q_PHASES
 )
 
 
-class BodyScanMetricOwnershipBackfillStatus(StrEnum):
+class WeeklyDigestOwnershipBackfillStatus(StrEnum):
     NOT_STARTED = "not_started"
     RUNNING = "running"
     COMPLETED = "completed"
 
 
-class BodyScanMetricOwnershipBackfillError(RuntimeError):
-    """Base class for fail-closed Stage-3P errors."""
+class WeeklyDigestOwnershipBackfillError(RuntimeError):
+    """Base class for fail-closed Stage-3R errors."""
 
 
-class BodyScanMetricOwnershipBackfillValidationError(
-    BodyScanMetricOwnershipBackfillError, ValueError
+class WeeklyDigestOwnershipBackfillValidationError(
+    WeeklyDigestOwnershipBackfillError, ValueError
 ):
     """A caller argument or persisted scalar is invalid."""
 
 
-class BodyScanMetricOwnershipBackfillIdentityError(BodyScanMetricOwnershipBackfillError):
+class WeeklyDigestOwnershipBackfillIdentityError(WeeklyDigestOwnershipBackfillError):
     """The exact-one reviewed owner graph is unavailable."""
 
 
-class BodyScanMetricOwnershipBackfillDependencyError(
-    BodyScanMetricOwnershipBackfillError
+class WeeklyDigestOwnershipBackfillDependencyError(
+    WeeklyDigestOwnershipBackfillError
 ):
     """A prerequisite checkpoint is absent, malformed, or in the wrong mode."""
 
 
-class BodyScanMetricOwnershipBackfillStateError(BodyScanMetricOwnershipBackfillError):
+class WeeklyDigestOwnershipBackfillStateError(WeeklyDigestOwnershipBackfillError):
     """Checkpoint progress or an ownership root is inconsistent."""
 
 
-class BodyScanMetricOwnershipBackfillProvenanceError(
-    BodyScanMetricOwnershipBackfillError
+class WeeklyDigestOwnershipBackfillProvenanceError(
+    WeeklyDigestOwnershipBackfillError
 ):
-    """A body-scan metric row has unsupported persisted provenance."""
+    """A weight row has unsupported persisted provenance."""
 
 
 @dataclass(frozen=True, slots=True)
-class BodyScanMetricOwnershipBackfillPreflightResult:
+class WeeklyDigestOwnershipBackfillPreflightResult:
     phase_key: str
     subject_id: uuid.UUID
-    status: BodyScanMetricOwnershipBackfillStatus
+    status: WeeklyDigestOwnershipBackfillStatus
     tables_total: int
     completed_tables: int
     snapshot_rows: int
@@ -193,7 +252,7 @@ class BodyScanMetricOwnershipBackfillPreflightResult:
 
     @property
     def completed(self) -> bool:
-        return self.status is BodyScanMetricOwnershipBackfillStatus.COMPLETED
+        return self.status is WeeklyDigestOwnershipBackfillStatus.COMPLETED
 
     def to_safe_dict(self) -> dict[str, str | int]:
         return {
@@ -214,8 +273,8 @@ class BodyScanMetricOwnershipBackfillPreflightResult:
 
 
 @dataclass(frozen=True, slots=True)
-class BodyScanMetricOwnershipBackfillBatchResult(
-    BodyScanMetricOwnershipBackfillPreflightResult
+class WeeklyDigestOwnershipBackfillBatchResult(
+    WeeklyDigestOwnershipBackfillPreflightResult
 ):
     batch_table: str
     batch_scanned_rows: int
@@ -227,7 +286,7 @@ class BodyScanMetricOwnershipBackfillBatchResult(
         return self.batch_updated_rows > 0
 
     def to_safe_dict(self) -> dict[str, str | int]:
-        result = BodyScanMetricOwnershipBackfillPreflightResult.to_safe_dict(self)
+        result = WeeklyDigestOwnershipBackfillPreflightResult.to_safe_dict(self)
         result.update(
             {
                 "batch_table": self.batch_table,
@@ -276,9 +335,9 @@ def _validate_batch_size(value: object) -> int:
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
-        or not 1 <= value <= MAX_BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_BATCH_SIZE
+        or not 1 <= value <= MAX_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE
     ):
-        raise BodyScanMetricOwnershipBackfillValidationError(
+        raise WeeklyDigestOwnershipBackfillValidationError(
             "batch_size must be an integer between 1 and 1000"
         )
     return value
@@ -330,9 +389,9 @@ async def _load_checkpoints(
 
 def _validate_checkpoint(checkpoint: Any, *, phase: str, subject_id: uuid.UUID) -> str:
     error = (
-        BodyScanMetricOwnershipBackfillDependencyError
+        WeeklyDigestOwnershipBackfillDependencyError
         if phase in _PRIOR_PHASES
-        else BodyScanMetricOwnershipBackfillStateError
+        else WeeklyDigestOwnershipBackfillStateError
     )
     if checkpoint.phase_key != phase or checkpoint.subject_id != subject_id:
         raise error("an ownership checkpoint has the wrong phase or subject")
@@ -410,15 +469,15 @@ async def _load_scope(session: AsyncSession, *, for_update: bool) -> _Scope:
         query = query.with_for_update()
     rows = list(await session.execute(query))
     if len(rows) != 1:
-        raise BodyScanMetricOwnershipBackfillIdentityError(
-            "body-scan metric backfill requires exactly one health subject"
+        raise WeeklyDigestOwnershipBackfillIdentityError(
+            "weekly digest backfill requires exactly one health subject"
         )
     subject_id, owner_user_id = rows[0]
     owner_query = select(User.status).where(User.id == owner_user_id)
     if for_update:
         owner_query = owner_query.with_for_update()
     if await session.scalar(owner_query) != UserStatus.ACTIVE.value:
-        raise BodyScanMetricOwnershipBackfillIdentityError(
+        raise WeeklyDigestOwnershipBackfillIdentityError(
             "the sole health subject must have an active owner"
         )
     return _Scope(subject_id, owner_user_id)
@@ -466,7 +525,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
             ):
                 continue
             if not _exact_empty_completed(checkpoint):
-                raise BodyScanMetricOwnershipBackfillDependencyError(
+                raise WeeklyDigestOwnershipBackfillDependencyError(
                     f"{label} restore checkpoint state is invalid"
                 )
 
@@ -475,13 +534,17 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
     require(_D_PHASES + _E_PHASES, "restore_blocked", "Stage-3D/3E")
     require(_F_PHASES + _G_PHASES, "running", "Stage-3F/3G")
     require(_H_PHASES, "restore_blocked", "Stage-3H")
-    require(_L_PHASES + _M_PHASES + _N_PHASES, "running", "Stage-3L/3M/3N")
-    require(_O_PHASES, "restore_blocked", "Stage-3O")
+    require(
+        _L_PHASES + _M_PHASES + _N_PHASES + _P_PHASES,
+        "running",
+        "Stage-3I through Stage-3P resettable phases",
+    )
+    require(_O_PHASES + _Q_PHASES, "restore_blocked", "Stage-3O/3Q")
     # Stage 3K is excluded from backup v1 entirely, so its retained checkpoint is
     # prepared or preserved rather than rebased onto incoming bounds.
     for phase in _K_PHASES:
         if checkpoints[phase].status not in {"running", "completed"}:
-            raise BodyScanMetricOwnershipBackfillDependencyError(
+            raise WeeklyDigestOwnershipBackfillDependencyError(
                 "Stage-3K retained checkpoint state is invalid"
             )
 
@@ -494,7 +557,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("restore_blocked", "completed"),
         ("completed", "completed"),
     }:
-        raise BodyScanMetricOwnershipBackfillDependencyError(
+        raise WeeklyDigestOwnershipBackfillDependencyError(
             "Stage-3E restore checkpoint order is inconsistent"
         )
 
@@ -511,7 +574,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("running", "completed"),
         ("completed", "completed"),
     }:
-        raise BodyScanMetricOwnershipBackfillDependencyError(
+        raise WeeklyDigestOwnershipBackfillDependencyError(
             "Stage-3F restore checkpoint order is inconsistent"
         )
 
@@ -523,8 +586,8 @@ def _validate_own(checkpoint: Any | None, *, scope: _Scope) -> str | None:
         checkpoint, phase=_PHASE_KEY, subject_id=scope.subject_id
     )
     if status == "restore_blocked":
-        raise BodyScanMetricOwnershipBackfillStateError(
-            "Stage-3P checkpoints cannot be restore-blocked"
+        raise WeeklyDigestOwnershipBackfillStateError(
+            "Stage-3R checkpoints cannot be restore-blocked"
         )
     return status
 
@@ -533,8 +596,8 @@ def _require_dependencies(
     checkpoints: Mapping[str, Any], *, scope: _Scope, own_exists: bool
 ) -> bool:
     if set(checkpoints) != set(_PRIOR_PHASES):
-        raise BodyScanMetricOwnershipBackfillDependencyError(
-            "Stage-3A through Stage-3O checkpoints are incomplete"
+        raise WeeklyDigestOwnershipBackfillDependencyError(
+            "Stage-3A through Stage-3Q checkpoints are incomplete"
         )
     statuses = {
         phase: _validate_checkpoint(
@@ -545,8 +608,8 @@ def _require_dependencies(
     if all(status == "completed" for status in statuses.values()):
         return False
     if not own_exists:
-        raise BodyScanMetricOwnershipBackfillDependencyError(
-            "restore-mode Stage-3P requires its exact portability checkpoint"
+        raise WeeklyDigestOwnershipBackfillDependencyError(
+            "restore-mode Stage-3R requires its exact portability checkpoint"
         )
     _require_restore_dependencies(checkpoints)
     return True
@@ -557,8 +620,8 @@ def _canonical(value: Any) -> Any:
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise BodyScanMetricOwnershipBackfillProvenanceError(
-                "body-scan metric contains a non-finite JSON number"
+            raise WeeklyDigestOwnershipBackfillProvenanceError(
+                "weekly digest contains a non-finite JSON number"
             )
         return ["float", value.hex()]
     if isinstance(value, uuid.UUID):
@@ -571,14 +634,14 @@ def _canonical(value: Any) -> Any:
         return ["time", value.isoformat()]
     if isinstance(value, Mapping):
         if any(type(key) is not str for key in value):
-            raise BodyScanMetricOwnershipBackfillProvenanceError(
-                "body-scan metric JSON object keys must be strings"
+            raise WeeklyDigestOwnershipBackfillProvenanceError(
+                "weekly digest JSON object keys must be strings"
             )
         return {key: _canonical(value[key]) for key in sorted(value)}
     if isinstance(value, (list, tuple)):
         return [_canonical(item) for item in value]
-    raise BodyScanMetricOwnershipBackfillProvenanceError(
-        "body-scan metric contains an unsupported JSON value"
+    raise WeeklyDigestOwnershipBackfillProvenanceError(
+        "weekly digest contains an unsupported JSON value"
     )
 
 
@@ -596,6 +659,11 @@ def _row_select():
     return select(*(_TABLE.c[field] for field in _ROW_FIELDS))
 
 
+def _connection_select():
+    table = IntegrationConnection.__table__
+    return select(*(table.c[field] for field in _CONNECTION_FIELDS))
+
+
 def _values(row: Any, fields: tuple[str, ...]) -> SimpleNamespace:
     mapping = row._mapping if hasattr(row, "_mapping") else row
     return SimpleNamespace(**{field: mapping[field] for field in fields})
@@ -605,26 +673,23 @@ def _row_values(row: Any) -> SimpleNamespace:
     return _values(row, _ROW_FIELDS)
 
 
+def _connection_values(row: Any) -> SimpleNamespace:
+    return _values(row, _CONNECTION_FIELDS)
+
+
 def _data_envelope(row: Any) -> list[Any]:
-    return ["body_scan_metrics", *[getattr(row, field) for field in _DATA_FIELDS]]
+    return ["weekly_digests", *[getattr(row, field) for field in _DATA_FIELDS]]
 
 
 def _ownership_envelope(row: Any) -> list[Any]:
     return [
-        "body_scan_metrics",
+        "weekly_digests",
         row.id,
         row.subject_id,
-        row.scan_id,
+        row.actor_user_id,
+        row.integration_connection_id,
+        row.ai_invocation_id,
     ]
-
-
-def _parent_select():
-    table = BodyScan.__table__
-    return select(*(table.c[field] for field in _PARENT_FIELDS))
-
-
-def _parent_values(row: Any) -> SimpleNamespace:
-    return _values(row, _PARENT_FIELDS)
 
 
 def _same_values(left: Any, right: Any, fields: tuple[str, ...]) -> bool:
@@ -632,133 +697,234 @@ def _same_values(left: Any, right: Any, fields: tuple[str, ...]) -> bool:
 
 
 def _validate_fact_values(row: Any) -> None:
-    """Reject a metric whose reviewed business shape cannot be trusted."""
+    """Reject a digest whose reviewed artifact shape cannot be trusted."""
 
-    for field in ("metric_key", "label", "category"):
-        text_value = getattr(row, field)
-        if not isinstance(text_value, str) or not text_value.strip():
-            raise BodyScanMetricOwnershipBackfillProvenanceError(
-                "body-scan metric has an invalid required text field"
-            )
-    for field in ("value", "ref_low", "ref_high"):
-        number = getattr(row, field)
-        if field != "value" and number is None:
-            continue
-        if (
-            isinstance(number, bool)
-            or not isinstance(number, (int, float))
-            or not math.isfinite(float(number))
-        ):
-            raise BodyScanMetricOwnershipBackfillProvenanceError(
-                "body-scan metric has a missing or non-finite measurement"
-            )
-    for field in ("unit", "segment"):
-        text_value = getattr(row, field)
-        if text_value is not None and not isinstance(text_value, str):
-            raise BodyScanMetricOwnershipBackfillProvenanceError(
-                "body-scan metric has an invalid optional text field"
-            )
+    if not isinstance(row.date, date):
+        raise WeeklyDigestOwnershipBackfillProvenanceError(
+            "weekly digest has an invalid date"
+        )
+    if row.kind not in _ALLOWED_KINDS:
+        raise WeeklyDigestOwnershipBackfillProvenanceError(
+            "weekly digest has an unsupported kind"
+        )
+    if not isinstance(row.content, str) or not row.content.strip():
+        raise WeeklyDigestOwnershipBackfillProvenanceError(
+            "weekly digest has no narrative content"
+        )
+    if row.model is not None and not isinstance(row.model, str):
+        raise WeeklyDigestOwnershipBackfillProvenanceError(
+            "weekly digest has an invalid model record"
+        )
+
+
+def _validate_connection(connection: Any, *, scope: _Scope) -> None:
+    """The only reviewed digest connection is the subject OpenRouter gateway."""
+
+    if (
+        connection.subject_id != scope.subject_id
+        or connection.provider != IntegrationProvider.OPENROUTER.value
+        or connection.connection_type != IntegrationConnectionType.AI_GATEWAY.value
+        or connection.status not in _HISTORICAL_CONNECTION_STATUSES
+    ):
+        raise WeeklyDigestOwnershipBackfillProvenanceError(
+            "weekly digest has invalid AI gateway provenance"
+        )
+
+
+def _validate_invocation(invocation: Any, *, row: Any, scope: _Scope) -> None:
+    if invocation.subject_id != scope.subject_id:
+        raise WeeklyDigestOwnershipBackfillStateError(
+            "weekly digest links a platform invocation of another subject"
+        )
+    if invocation.actor_user_id not in {None, scope.owner_user_id}:
+        raise WeeklyDigestOwnershipBackfillStateError(
+            "weekly digest invocation actor is outside the reviewed boundary"
+        )
+    expected = _INVOCATION_PURPOSE_BY_KIND.get(row.kind)
+    if expected is not None and invocation.purpose != expected:
+        raise WeeklyDigestOwnershipBackfillProvenanceError(
+            "weekly digest invocation purpose does not match its kind"
+        )
+    if invocation.status != AIInvocationStatus.SUCCEEDED.value:
+        raise WeeklyDigestOwnershipBackfillProvenanceError(
+            "weekly digest links an invocation that never succeeded"
+        )
 
 
 def _validate_row(
     row: Any,
     *,
     scope: _Scope,
-    parents: Mapping[int, Any],
+    connections: Mapping[uuid.UUID, Any],
+    invocations: Mapping[uuid.UUID, Any],
     historical: bool,
     allow_unowned: bool,
 ) -> bool:
-    """Validate one child and return whether parent-subject adoption is required."""
+    """Validate one digest and return whether sole-subject adoption is required."""
 
-    if not isinstance(row.id, int) or isinstance(row.id, bool) or row.id <= 0:
-        raise BodyScanMetricOwnershipBackfillValidationError(
-            "body-scan metric has an invalid primary key"
+    if row.domain != Domain.MILESTONES.value or row.source not in _ALLOWED_SOURCES:
+        raise WeeklyDigestOwnershipBackfillProvenanceError(
+            "weekly digest has invalid domain or source"
         )
-    if not isinstance(row.scan_id, int) or isinstance(row.scan_id, bool):
-        raise BodyScanMetricOwnershipBackfillValidationError(
-            "body-scan metric has an invalid parent reference"
+    if not isinstance(row.id, int) or isinstance(row.id, bool) or row.id <= 0:
+        raise WeeklyDigestOwnershipBackfillValidationError(
+            "weekly digest has an invalid primary key"
         )
     _validate_fact_values(row)
 
-    parent = parents.get(row.scan_id)
-    if parent is None:
-        raise BodyScanMetricOwnershipBackfillStateError(
-            "body-scan metric references a missing scan"
-        )
-    if parent.domain != Domain.BODY_COMPOSITION.value:
-        raise BodyScanMetricOwnershipBackfillProvenanceError(
-            "body-scan metric parent has an invalid domain"
-        )
-    if parent.subject_id not in {None, scope.subject_id}:
-        raise BodyScanMetricOwnershipBackfillStateError(
-            "body-scan metric parent belongs to another subject"
-        )
-
-    needs_adoption = row.subject_id is None
+    roots = (
+        row.subject_id,
+        row.actor_user_id,
+        row.integration_connection_id,
+    )
+    needs_adoption = roots == (None, None, None)
     if needs_adoption:
         if not allow_unowned:
-            raise BodyScanMetricOwnershipBackfillStateError(
-                "an unowned body-scan metric is outside the historical bridge"
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "an unowned weekly digest is outside the historical bridge"
             )
-        # A child never leads its parent: only a scan Stage 3O already adopted
-        # can hand its subject down.
-        if parent.subject_id is None:
-            raise BodyScanMetricOwnershipBackfillStateError(
-                "body-scan metric cannot inherit from an unowned scan"
+        if row.ai_invocation_id is not None:
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "an unowned weekly digest cannot claim a platform invocation"
             )
         return True
     if row.subject_id != scope.subject_id:
-        raise BodyScanMetricOwnershipBackfillStateError(
-            "body-scan metric has foreign ownership"
+        raise WeeklyDigestOwnershipBackfillStateError(
+            "weekly digest has partial or foreign ownership roots"
         )
-    if parent.subject_id != row.subject_id:
-        raise BodyScanMetricOwnershipBackfillStateError(
-            "body-scan metric ownership does not inherit its scan"
+    if row.actor_user_id not in {None, scope.owner_user_id}:
+        raise WeeklyDigestOwnershipBackfillStateError(
+            "weekly digest actor is outside the reviewed ownership boundary"
         )
-    if not historical and parent.subject_id != scope.subject_id:
-        raise BodyScanMetricOwnershipBackfillStateError(
-            "a live body-scan metric requires the strict parent graph"
+    if row.integration_connection_id is not None:
+        connection = connections.get(row.integration_connection_id)
+        if connection is None:
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "weekly digest references a missing AI gateway connection"
+            )
+        _validate_connection(connection, scope=scope)
+        # Subject-funded history and platform funding are mutually exclusive;
+        # the model check constraint says the same thing in the schema.
+        if row.ai_invocation_id is not None:
+            raise WeeklyDigestOwnershipBackfillProvenanceError(
+                "weekly digest mixes subject and platform AI funding"
+            )
+    if row.ai_invocation_id is not None:
+        invocation = invocations.get(row.ai_invocation_id)
+        if invocation is None:
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "weekly digest references a missing platform invocation"
+            )
+        _validate_invocation(invocation, row=row, scope=scope)
+    elif not historical and row.integration_connection_id is None:
+        # Above the frozen watermark every generated artifact is funded through
+        # the platform gateway.
+        raise WeeklyDigestOwnershipBackfillProvenanceError(
+            "a live weekly digest has no reviewed AI funding provenance"
         )
     return False
 
 
-async def _after_body_scan_metrics_projection_for_test() -> None:
+async def _after_weekly_digests_projection_for_test() -> None:
     """Deterministic seam for real PostgreSQL lock/recheck tests."""
 
 
-async def _project_parents(
-    session: AsyncSession, scan_ids: set[int]
-) -> dict[int, Any]:
-    if not scan_ids:
+async def _project_connections(
+    session: AsyncSession, connection_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, Any]:
+    if not connection_ids:
         return {}
     rows = await session.execute(
-        _parent_select().where(BodyScan.id.in_(scan_ids)).order_by(BodyScan.id)
+        _connection_select()
+        .where(IntegrationConnection.id.in_(connection_ids))
+        .order_by(IntegrationConnection.id)
     )
-    return {row.id: row for row in map(_parent_values, rows)}
+    return {row.id: row for row in map(_connection_values, rows)}
 
 
-async def _lock_projected_parents(
-    session: AsyncSession,
-    projected_parents: Mapping[int, Any],
-) -> dict[int, Any]:
-    scan_ids = set(projected_parents)
-    if not scan_ids:
+async def _project_invocations(
+    session: AsyncSession, invocation_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, Any]:
+    if not invocation_ids:
         return {}
+    table = AIInvocation.__table__
+    rows = await session.execute(
+        select(*(table.c[field] for field in _INVOCATION_FIELDS))
+        .where(table.c.id.in_(invocation_ids))
+        .order_by(table.c.id)
+    )
+    return {row.id: _values(row, _INVOCATION_FIELDS) for row in rows}
+
+
+async def _lock_projected_invocations(
+    session: AsyncSession,
+    projected: Mapping[uuid.UUID, Any],
+) -> dict[uuid.UUID, Any]:
+    invocation_ids = set(projected)
+    if not invocation_ids:
+        return {}
+    table = AIInvocation.__table__
     locked_raw = await session.execute(
-        _parent_select()
-        .where(BodyScan.id.in_(scan_ids))
-        .order_by(BodyScan.id)
+        select(*(table.c[field] for field in _INVOCATION_FIELDS))
+        .where(table.c.id.in_(invocation_ids))
+        .order_by(table.c.id)
         .with_for_update()
     )
-    locked = {row.id: row for row in map(_parent_values, locked_raw)}
-    if set(locked) != scan_ids or any(
-        not _same_values(locked[key], projected_parents[key], _PARENT_FIELDS)
-        for key in scan_ids
+    locked = {row.id: _values(row, _INVOCATION_FIELDS) for row in locked_raw}
+    if set(locked) != invocation_ids or any(
+        not _same_values(locked[key], projected[key], _INVOCATION_FIELDS)
+        for key in invocation_ids
     ):
-        raise BodyScanMetricOwnershipBackfillStateError(
-            "a projected body scan changed before it was locked"
+        raise WeeklyDigestOwnershipBackfillStateError(
+            "a projected platform invocation changed before it was locked"
         )
     return locked
+
+
+async def _lock_projected_graph(
+    session: AsyncSession,
+    *,
+    projected_rows: Mapping[int, Any],
+    projected_connections: Mapping[uuid.UUID, Any],
+    projected_invocations: Mapping[uuid.UUID, Any],
+) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[uuid.UUID, Any]]:
+    locked_connections = await _lock_projected_connections(
+        session, projected_connections
+    )
+    locked_invocations = await _lock_projected_invocations(
+        session, projected_invocations
+    )
+    locked_rows = await _lock_projected_rows(session, projected_rows)
+    return locked_rows, locked_connections, locked_invocations
+
+
+async def _lock_projected_connections(
+    session: AsyncSession,
+    projected_connections: Mapping[uuid.UUID, Any],
+) -> dict[uuid.UUID, Any]:
+    connection_ids = set(projected_connections)
+    if connection_ids:
+        locked_raw = await session.execute(
+            _connection_select()
+            .where(IntegrationConnection.id.in_(connection_ids))
+            .order_by(IntegrationConnection.id)
+            .with_for_update()
+        )
+        locked_connections = {
+            row.id: row for row in map(_connection_values, locked_raw)
+        }
+        if set(locked_connections) != connection_ids or any(
+            not _same_values(
+                locked_connections[key], projected_connections[key], _CONNECTION_FIELDS
+            )
+            for key in connection_ids
+        ):
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "a projected provider connection changed before it was locked"
+            )
+    else:
+        locked_connections = {}
+    return locked_connections
 
 
 async def _lock_projected_rows(
@@ -779,8 +945,8 @@ async def _lock_projected_rows(
         not _same_values(locked_rows[key], projected_rows[key], _ROW_FIELDS)
         for key in projected_rows
     ):
-        raise BodyScanMetricOwnershipBackfillStateError(
-            "a projected body-scan metric changed before it was locked"
+        raise WeeklyDigestOwnershipBackfillStateError(
+            "a projected weight changed before it was locked"
         )
     return locked_rows
 
@@ -791,23 +957,37 @@ async def _project_and_lock_ids(
     *,
     scope: _Scope,
     invoke_race_hook: bool,
-) -> tuple[dict[int, Any], dict[int, Any]]:
+) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[uuid.UUID, Any]]:
     if not ids:
-        return {}, {}
+        return {}, {}, {}
     raw_rows = await session.execute(
         _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
     )
     projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
-    projected_parents = await _project_parents(
-        session, {row.scan_id for row in projected_rows.values()}
+    projected_connections = await _project_connections(
+        session,
+        {
+            row.integration_connection_id
+            for row in projected_rows.values()
+            if row.integration_connection_id is not None
+        },
+    )
+    projected_invocations = await _project_invocations(
+        session,
+        {
+            row.ai_invocation_id
+            for row in projected_rows.values()
+            if row.ai_invocation_id is not None
+        },
     )
     if invoke_race_hook:
-        await _after_body_scan_metrics_projection_for_test()
-    # Parents are locked before children so a concurrent scan adoption cannot
-    # slip between validation and the child update.
-    locked_parents = await _lock_projected_parents(session, projected_parents)
-    locked_rows = await _lock_projected_rows(session, projected_rows)
-    return locked_rows, locked_parents
+        await _after_weekly_digests_projection_for_test()
+    return await _lock_projected_graph(
+        session,
+        projected_rows=projected_rows,
+        projected_connections=projected_connections,
+        projected_invocations=projected_invocations,
+    )
 
 
 def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
@@ -823,51 +1003,101 @@ def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
         return False, False
     if checkpoint.status == "completed":
         return row_id <= checkpoint.scan_high_watermark_id, False
-    raise BodyScanMetricOwnershipBackfillStateError(
-        "Stage-3P checkpoint has an unsupported state"
+    raise WeeklyDigestOwnershipBackfillStateError(
+        "Stage-3R checkpoint has an unsupported state"
     )
 
 
-async def _referenced_parent_digest(
+async def _referenced_connection_digest(
     session: AsyncSession,
     *,
     low: int,
     high: int | None,
-    lock_parents: bool,
+    lock_connections: bool,
 ) -> tuple[int, str]:
-    """Page the referenced parent set, optionally locking it before any child."""
+    """Page the referenced gateway set, locking it before any digest row."""
 
     count = 0
     digest = _EMPTY_SHA256
-    cursor = 0
+    cursor: uuid.UUID | None = None
     while True:
-        query = select(_TABLE.c.scan_id).where(
+        query = select(_TABLE.c.integration_connection_id).where(
             _TABLE.c.id > low,
-            _TABLE.c.scan_id > cursor,
+            _TABLE.c.integration_connection_id.is_not(None),
         )
         if high is not None:
             query = query.where(_TABLE.c.id <= high)
-        scan_ids = list(
+        if cursor is not None:
+            query = query.where(_TABLE.c.integration_connection_id > cursor)
+        connection_ids = list(
             await session.scalars(
-                query.distinct().order_by(_TABLE.c.scan_id).limit(_PAGE_SIZE)
+                query.distinct()
+                .order_by(_TABLE.c.integration_connection_id)
+                .limit(_PAGE_SIZE)
             )
         )
-        if not scan_ids:
+        if not connection_ids:
             break
-        projected = await _project_parents(session, set(scan_ids))
-        if set(projected) != set(scan_ids):
-            raise BodyScanMetricOwnershipBackfillStateError(
-                "a body-scan metric references a missing scan"
+        projected = await _project_connections(session, set(connection_ids))
+        if set(projected) != set(connection_ids):
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "a weekly digest references a missing AI gateway connection"
             )
-        if lock_parents:
-            await _lock_projected_parents(session, projected)
-        for scan_id in scan_ids:
+        if lock_connections:
+            await _lock_projected_connections(session, projected)
+        for connection_id in connection_ids:
+            digest = _extend(digest, ["weekly_digests_connection", connection_id])
+            count += 1
+        cursor = connection_ids[-1]
+    return count, digest
+
+
+async def _referenced_invocation_digest(
+    session: AsyncSession,
+    *,
+    low: int,
+    high: int | None,
+    lock_invocations: bool,
+) -> tuple[int, str]:
+    count = 0
+    digest = _EMPTY_SHA256
+    cursor: uuid.UUID | None = None
+    while True:
+        query = select(_TABLE.c.ai_invocation_id).where(
+            _TABLE.c.id > low,
+            _TABLE.c.ai_invocation_id.is_not(None),
+        )
+        if high is not None:
+            query = query.where(_TABLE.c.id <= high)
+        if cursor is not None:
+            query = query.where(_TABLE.c.ai_invocation_id > cursor)
+        invocation_ids = list(
+            await session.scalars(
+                query.distinct()
+                .order_by(_TABLE.c.ai_invocation_id)
+                .limit(_PAGE_SIZE)
+            )
+        )
+        if not invocation_ids:
+            break
+        projected = await _project_invocations(session, set(invocation_ids))
+        if set(projected) != set(invocation_ids):
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "a weekly digest references a missing platform invocation"
+            )
+        if lock_invocations:
+            await _lock_projected_invocations(session, projected)
+        for invocation_id in invocation_ids:
             digest = _extend(
                 digest,
-                ["body_scan_metrics_parent", scan_id, projected[scan_id].subject_id],
+                [
+                    "weekly_digests_invocation",
+                    invocation_id,
+                    projected[invocation_id].subject_id,
+                ],
             )
             count += 1
-        cursor = scan_ids[-1]
+        cursor = invocation_ids[-1]
     return count, digest
 
 
@@ -885,14 +1115,22 @@ async def _scan_current(
     data = _EMPTY_SHA256
     ownership = _EMPTY_SHA256
     cursor = low
-    locked_parent_count = 0
-    locked_parent_digest = _EMPTY_SHA256
+    locked_ref_count = 0
+    locked_ref_digest = _EMPTY_SHA256
+    locked_inv_count = 0
+    locked_inv_digest = _EMPTY_SHA256
     if for_update:
-        locked_parent_count, locked_parent_digest = await _referenced_parent_digest(
+        locked_ref_count, locked_ref_digest = await _referenced_connection_digest(
             session,
             low=low,
             high=high,
-            lock_parents=True,
+            lock_connections=True,
+        )
+        locked_inv_count, locked_inv_digest = await _referenced_invocation_digest(
+            session,
+            low=low,
+            high=high,
+            lock_invocations=True,
         )
     while True:
         query = (
@@ -910,8 +1148,21 @@ async def _scan_current(
             _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
         )
         projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
-        parents = await _project_parents(
-            session, {row.scan_id for row in projected_rows.values()}
+        connections = await _project_connections(
+            session,
+            {
+                row.integration_connection_id
+                for row in projected_rows.values()
+                if row.integration_connection_id is not None
+            },
+        )
+        invocations = await _project_invocations(
+            session,
+            {
+                row.ai_invocation_id
+                for row in projected_rows.values()
+                if row.ai_invocation_id is not None
+            },
         )
         rows = (
             await _lock_projected_rows(session, projected_rows)
@@ -919,8 +1170,8 @@ async def _scan_current(
             else projected_rows
         )
         if set(rows) != set(ids):
-            raise BodyScanMetricOwnershipBackfillStateError(
-                "a projected body-scan metric page changed during validation"
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "a projected weekly digest page changed during validation"
             )
         for row_id in ids:
             row = rows[row_id]
@@ -928,7 +1179,8 @@ async def _scan_current(
             needs_adoption = _validate_row(
                 row,
                 scope=scope,
-                parents=parents,
+                connections=connections,
+                invocations=invocations,
                 historical=historical,
                 allow_unowned=allow_unowned,
             )
@@ -936,8 +1188,8 @@ async def _scan_current(
                 checkpoint.status == "completed"
                 or row.id <= checkpoint.last_scanned_id
             ):
-                raise BodyScanMetricOwnershipBackfillStateError(
-                    "a processed body-scan metric row remained unowned"
+                raise WeeklyDigestOwnershipBackfillStateError(
+                    "a processed weekly digest row remained unowned"
                 )
             if digest:
                 data = _extend(data, _data_envelope(row))
@@ -946,18 +1198,31 @@ async def _scan_current(
             cursor = row.id
             count += 1
     if for_update:
-        current_count, current_digest = await _referenced_parent_digest(
+        current_ref_count, current_ref_digest = await _referenced_connection_digest(
             session,
             low=low,
             high=high,
-            lock_parents=False,
+            lock_connections=False,
         )
         if (
-            current_count != locked_parent_count
-            or current_digest != locked_parent_digest
+            current_ref_count != locked_ref_count
+            or current_ref_digest != locked_ref_digest
         ):
-            raise BodyScanMetricOwnershipBackfillStateError(
-                "body-scan metric parent references changed during validation"
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "weekly digest gateway references changed during validation"
+            )
+        current_inv_count, current_inv_digest = await _referenced_invocation_digest(
+            session,
+            low=low,
+            high=high,
+            lock_invocations=False,
+        )
+        if (
+            current_inv_count != locked_inv_count
+            or current_inv_digest != locked_inv_digest
+        ):
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "weekly digest invocation references changed during validation"
             )
     return count, data, ownership
 
@@ -970,8 +1235,8 @@ async def _bounds(session: AsyncSession) -> tuple[int, int]:
     ).one()
     high, count = int(high), int(count)
     if not _valid_counter(high) or not _valid_counter(count) or count > high:
-        raise BodyScanMetricOwnershipBackfillValidationError(
-            "body-scan metric snapshot bounds are invalid"
+        raise WeeklyDigestOwnershipBackfillValidationError(
+            "weekly digest snapshot bounds are invalid"
         )
     return high, count
 
@@ -994,10 +1259,10 @@ async def _status_result(
     checkpoint: Any | None,
     validate: bool,
     for_update: bool,
-) -> BodyScanMetricOwnershipBackfillPreflightResult:
+) -> WeeklyDigestOwnershipBackfillPreflightResult:
     if checkpoint is None:
         high, snapshot = await _bounds(session)
-        status = BodyScanMetricOwnershipBackfillStatus.NOT_STARTED
+        status = WeeklyDigestOwnershipBackfillStatus.NOT_STARTED
         scanned = updated = unchanged = rows_above = 0
         remaining = snapshot
         before = after = ownership = _EMPTY_SHA256
@@ -1007,7 +1272,7 @@ async def _status_result(
             checkpoint.scan_high_watermark_id,
             checkpoint.snapshot_rows,
         )
-        status = BodyScanMetricOwnershipBackfillStatus(checkpoint.status)
+        status = WeeklyDigestOwnershipBackfillStatus(checkpoint.status)
         scanned, updated, unchanged = (
             checkpoint.scanned_rows,
             checkpoint.updated_rows,
@@ -1027,7 +1292,7 @@ async def _status_result(
             checkpoint.data_checksum_after,
             checkpoint.ownership_checksum_after,
         )
-        completed = status is BodyScanMetricOwnershipBackfillStatus.COMPLETED
+        completed = status is WeeklyDigestOwnershipBackfillStatus.COMPLETED
     if validate:
         await _scan_current(
             session,
@@ -1046,11 +1311,11 @@ async def _status_result(
                 or 0
             )
             if frozen_count != snapshot:
-                raise BodyScanMetricOwnershipBackfillStateError(
-                    "the body-scan metric snapshot cardinality changed"
+                raise WeeklyDigestOwnershipBackfillStateError(
+                    "the weight snapshot cardinality changed"
                 )
-    return BodyScanMetricOwnershipBackfillPreflightResult(
-        phase_key=BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_PHASE,
+    return WeeklyDigestOwnershipBackfillPreflightResult(
+        phase_key=WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE,
         subject_id=scope.subject_id,
         status=status,
         tables_total=1,
@@ -1068,28 +1333,28 @@ async def _status_result(
 
 
 def _batch_result(
-    result: BodyScanMetricOwnershipBackfillPreflightResult,
+    result: WeeklyDigestOwnershipBackfillPreflightResult,
     *,
     scanned: int,
     updated: int,
     unchanged: int,
-) -> BodyScanMetricOwnershipBackfillBatchResult:
-    return BodyScanMetricOwnershipBackfillBatchResult(
+) -> WeeklyDigestOwnershipBackfillBatchResult:
+    return WeeklyDigestOwnershipBackfillBatchResult(
         **{
             field: getattr(result, field)
-            for field in BodyScanMetricOwnershipBackfillPreflightResult.__dataclass_fields__
+            for field in WeeklyDigestOwnershipBackfillPreflightResult.__dataclass_fields__
         },
-        batch_table="body_scan_metrics",
+        batch_table="weekly_digests",
         batch_scanned_rows=scanned,
         batch_updated_rows=updated,
         batch_unchanged_rows=unchanged,
     )
 
 
-async def preflight_body_scan_metric_ownership_backfill(
+async def preflight_weekly_digest_ownership_backfill(
     session: AsyncSession,
-) -> BodyScanMetricOwnershipBackfillPreflightResult:
-    """Validate the fixed Stage-3P graph without mutation."""
+) -> WeeklyDigestOwnershipBackfillPreflightResult:
+    """Validate the fixed Stage-3R graph without mutation."""
 
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=False)
@@ -1111,48 +1376,24 @@ async def preflight_body_scan_metric_ownership_backfill(
         )
 
 
-def _validate_restore_bounds(snapshot_bounds: Any) -> tuple[int, int]:
-    if (
-        not isinstance(snapshot_bounds, Mapping)
-        or set(snapshot_bounds) != {"body_scan_metrics"}
-    ):
-        raise BodyScanMetricOwnershipBackfillValidationError(
-            "snapshot_bounds must contain the exact weight table catalog"
-        )
-    pair = snapshot_bounds["body_scan_metrics"]
-    if not isinstance(pair, tuple) or len(pair) != 2:
-        raise BodyScanMetricOwnershipBackfillValidationError(
-            "the body-scan metric snapshot bound must be an exact pair"
-        )
-    high, count = pair
-    if (
-        not _valid_counter(high)
-        or not _valid_counter(count)
-        or count > high
-        or (high == 0) != (count == 0)
-    ):
-        raise BodyScanMetricOwnershipBackfillValidationError(
-            "the body-scan metric snapshot bound is an invalid ID/count pair"
-        )
-    return high, count
-
-
-async def reset_body_scan_metric_ownership_backfill_for_portability_v1_restore(
+async def prepare_weekly_digest_ownership_backfill_for_portability_v1_restore(
     session: AsyncSession,
-    *,
-    snapshot_bounds: Mapping[str, tuple[int, int]],
 ) -> None:
-    """Reset Stage-3P before the caller atomically replaces portable data."""
+    """Prepare or preserve retained Stage-3R evidence before replacement.
 
-    high, count = _validate_restore_bounds(snapshot_bounds)
+    Backup v1 neither exports nor replaces digests, so this phase never accepts
+    incoming bounds: it validates the retained local artifacts and, on a first
+    restore, freezes them as its own reviewed snapshot.
+    """
+
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=True)
         dependencies = await _load_checkpoints(
             session, _PRIOR_PHASES, for_update=True
         )
         if set(dependencies) != set(_PRIOR_PHASES):
-            raise BodyScanMetricOwnershipBackfillDependencyError(
-                "Stage-3A through Stage-3O checkpoints are incomplete"
+            raise WeeklyDigestOwnershipBackfillDependencyError(
+                "Stage-3A through Stage-3Q checkpoints are incomplete"
             )
         for phase in _PRIOR_PHASES:
             _validate_checkpoint(
@@ -1163,16 +1404,23 @@ async def reset_body_scan_metric_ownership_backfill_for_portability_v1_restore(
         checkpoint = own.get(_PHASE_KEY)
         _validate_own(checkpoint, scope=scope)
         if checkpoint is None:
+            high, count = await _bounds(session)
             await _scan_current(
                 session,
                 scope=scope,
                 checkpoint=None,
+                high=high,
                 for_update=True,
                 digest=False,
             )
+            if await _bounds(session) != (high, count):
+                raise WeeklyDigestOwnershipBackfillStateError(
+                    "retained weekly-digest bounds changed during restore preparation"
+                )
+            await _create_checkpoint(session, scope=scope, high=high, count=count)
         else:
-            # A portability replacement is allowed to reset progress, not to
-            # conceal drift in the outgoing checkpoint evidence.
+            # A portability replacement may not conceal drift in the retained
+            # artifacts it is not allowed to carry.
             await _status_result(
                 session,
                 scope=scope,
@@ -1180,26 +1428,6 @@ async def reset_body_scan_metric_ownership_backfill_for_portability_v1_restore(
                 validate=True,
                 for_update=True,
             )
-        status = "completed" if (high, count) == (0, 0) else "running"
-        if checkpoint is None:
-            checkpoint = OwnershipBackfillCheckpoint(
-                phase_key=_PHASE_KEY,
-                subject_id=scope.subject_id,
-            )
-            session.add(checkpoint)
-        checkpoint.status = status
-        checkpoint.scan_high_watermark_id = high
-        checkpoint.snapshot_rows = count
-        checkpoint.last_scanned_id = 0
-        checkpoint.scanned_rows = 0
-        checkpoint.updated_rows = 0
-        checkpoint.unchanged_rows = 0
-        checkpoint.data_checksum_before = _EMPTY_SHA256
-        checkpoint.data_checksum_after = _EMPTY_SHA256
-        checkpoint.ownership_checksum_after = _EMPTY_SHA256
-        checkpoint.started_at = func.now()
-        checkpoint.updated_at = func.now()
-        checkpoint.completed_at = func.now() if status == "completed" else None
         await session.flush()
 
 
@@ -1232,17 +1460,17 @@ async def _create_checkpoint(
 def _set_cached_subject(
     session: AsyncSession, row_id: int, subject_id: uuid.UUID
 ) -> None:
-    cached = session.identity_map.get((BodyScanMetric, (row_id,), None))
+    cached = session.identity_map.get((WeeklyDigest, (row_id,), None))
     if cached is not None:
         attributes.set_committed_value(cached, "subject_id", subject_id)
 
 
-async def run_body_scan_metric_ownership_backfill_batch(
+async def run_weekly_digest_ownership_backfill_batch(
     session: AsyncSession,
     *,
-    batch_size: int = DEFAULT_BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_BATCH_SIZE,
-) -> BodyScanMetricOwnershipBackfillBatchResult:
-    """Advance the fixed body-scan metric table by at most one primary-key batch."""
+    batch_size: int = DEFAULT_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE,
+) -> WeeklyDigestOwnershipBackfillBatchResult:
+    """Advance the fixed weight table by at most one primary-key batch."""
 
     size = _validate_batch_size(batch_size)
     with session.no_autoflush:
@@ -1297,7 +1525,7 @@ async def run_body_scan_metric_ownership_backfill_batch(
                 .limit(size)
             )
         )
-        rows, parents = await _project_and_lock_ids(
+        rows, connections, invocations = await _project_and_lock_ids(
             session, ids, scope=scope, invoke_race_hook=True
         )
 
@@ -1311,7 +1539,8 @@ async def run_body_scan_metric_ownership_backfill_batch(
             needs_adoption = _validate_row(
                 row,
                 scope=scope,
-                parents=parents,
+                connections=connections,
+                invocations=invocations,
                 historical=True,
                 allow_unowned=True,
             )
@@ -1322,12 +1551,14 @@ async def run_body_scan_metric_ownership_backfill_batch(
                     .where(
                         _TABLE.c.id == row_id,
                         _TABLE.c.subject_id.is_(None),
+                        _TABLE.c.actor_user_id.is_(None),
+                        _TABLE.c.integration_connection_id.is_(None),
                     )
                     .values(subject_id=scope.subject_id, updated_at=row.updated_at)
                 )
                 if result.rowcount != 1:
-                    raise BodyScanMetricOwnershipBackfillStateError(
-                        "body-scan metric ownership changed during adoption"
+                    raise WeeklyDigestOwnershipBackfillStateError(
+                        "weekly digest ownership changed during adoption"
                     )
                 _set_cached_subject(session, row_id, scope.subject_id)
                 updated_count += 1
@@ -1338,25 +1569,34 @@ async def run_body_scan_metric_ownership_backfill_batch(
             )
             current_result = current_raw.one_or_none()
             if current_result is None:
-                raise BodyScanMetricOwnershipBackfillStateError(
-                    "a body-scan metric disappeared during adoption"
+                raise WeeklyDigestOwnershipBackfillStateError(
+                    "a weekly digest disappeared during adoption"
                 )
             current = _row_values(current_result)
+            current_connections = connections
+            if (
+                current.integration_connection_id is not None
+                and current.integration_connection_id not in current_connections
+            ):
+                raise WeeklyDigestOwnershipBackfillStateError(
+                    "weekly digest provider connection changed during adoption"
+                )
             if _validate_row(
                 current,
                 scope=scope,
-                parents=parents,
+                connections=current_connections,
+                invocations=invocations,
                 historical=True,
                 allow_unowned=False,
             ):
-                raise BodyScanMetricOwnershipBackfillStateError(
-                    "a processed body-scan metric remained unowned"
+                raise WeeklyDigestOwnershipBackfillStateError(
+                    "a processed weight remained unowned"
                 )
             after = _extend(after, _data_envelope(current))
             ownership = _extend(ownership, _ownership_envelope(current))
         if before != after:
-            raise BodyScanMetricOwnershipBackfillStateError(
-                "body-scan metric data changed while ownership was backfilled"
+            raise WeeklyDigestOwnershipBackfillStateError(
+                "weekly digest data changed while ownership was backfilled"
             )
         checkpoint.scanned_rows += len(ids)
         checkpoint.updated_rows += updated_count
@@ -1387,8 +1627,8 @@ async def run_body_scan_metric_ownership_backfill_batch(
                 or data != checkpoint.data_checksum_after
                 or current_ownership != checkpoint.ownership_checksum_after
             ):
-                raise BodyScanMetricOwnershipBackfillStateError(
-                    "the body-scan metric snapshot changed during finalization"
+                raise WeeklyDigestOwnershipBackfillStateError(
+                    "the weight snapshot changed during finalization"
                 )
             checkpoint.last_scanned_id = checkpoint.scan_high_watermark_id
             checkpoint.status = "completed"
@@ -1413,21 +1653,21 @@ async def run_body_scan_metric_ownership_backfill_batch(
 
 
 __all__ = [
-    "BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_PHASE",
-    "BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_TABLES",
-    "BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
-    "DEFAULT_BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "MAX_BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "BodyScanMetricOwnershipBackfillStatus",
-    "BodyScanMetricOwnershipBackfillError",
-    "BodyScanMetricOwnershipBackfillValidationError",
-    "BodyScanMetricOwnershipBackfillIdentityError",
-    "BodyScanMetricOwnershipBackfillDependencyError",
-    "BodyScanMetricOwnershipBackfillStateError",
-    "BodyScanMetricOwnershipBackfillProvenanceError",
-    "BodyScanMetricOwnershipBackfillPreflightResult",
-    "BodyScanMetricOwnershipBackfillBatchResult",
-    "preflight_body_scan_metric_ownership_backfill",
-    "run_body_scan_metric_ownership_backfill_batch",
-    "reset_body_scan_metric_ownership_backfill_for_portability_v1_restore",
+    "WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE",
+    "WEEKLY_DIGEST_OWNERSHIP_BACKFILL_TABLES",
+    "WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
+    "DEFAULT_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "MAX_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "WeeklyDigestOwnershipBackfillStatus",
+    "WeeklyDigestOwnershipBackfillError",
+    "WeeklyDigestOwnershipBackfillValidationError",
+    "WeeklyDigestOwnershipBackfillIdentityError",
+    "WeeklyDigestOwnershipBackfillDependencyError",
+    "WeeklyDigestOwnershipBackfillStateError",
+    "WeeklyDigestOwnershipBackfillProvenanceError",
+    "WeeklyDigestOwnershipBackfillPreflightResult",
+    "WeeklyDigestOwnershipBackfillBatchResult",
+    "preflight_weekly_digest_ownership_backfill",
+    "run_weekly_digest_ownership_backfill_batch",
+    "prepare_weekly_digest_ownership_backfill_for_portability_v1_restore",
 ]

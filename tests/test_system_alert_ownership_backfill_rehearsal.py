@@ -25,20 +25,21 @@ from sqlalchemy.pool import NullPool
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.ownership_deploy import OWNERSHIP_BACKFILL_SEQUENCE
+from vitals.operations.ownership import portability_v1
 from vitals.services import (
     conflict_catalog,
     data_portability_service,
     hrt_catalog,
 )
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_BACKFILL_PHASE,
 )
-from vitals.services.raw_ownership_backfill_service import (
+from vitals.operations.ownership.raw import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
-from vitals.services.system_alert_ownership_backfill_service import (
+from vitals.operations.ownership.system_alert import (
     SYSTEM_ALERT_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.ownership import PRE_OWNERSHIP_CONTRACT_REVISION
@@ -330,14 +331,14 @@ async def _round_trip_portability_v1(engine: AsyncEngine) -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
         snapshot = await data_portability_service.export_full(session)
-        await data_portability_service.import_full(session, snapshot)
+        await portability_v1.import_full(session, snapshot)
         await session.commit()
 
 
 async def _replace_with_empty_portability_v1(engine: AsyncEngine) -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
-        await data_portability_service.import_full(
+        await portability_v1.import_full(
             session,
             {
                 "metadata": {"version": "1.0", "kind": "full_backup"},

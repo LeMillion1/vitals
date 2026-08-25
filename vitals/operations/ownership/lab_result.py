@@ -1,4 +1,4 @@
-"""Bounded Stage-3S ownership backfill for optional-channel notifications.
+"""Bounded Stage-3M ownership backfill for optional-channel lab results.
 
 Historical rows prove only the sole reviewed subject.  Actor and provider
 provenance remain exactly as persisted; this service never infers either root,
@@ -24,93 +24,84 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
 from vitals.enums import (
+    AIInvocationPurpose,
     AIInvocationStatus,
+    Domain,
+    FileAssetPurpose,
+    LabFlag,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
+    Source,
     UserStatus,
 )
-from vitals.models.ai import AIInvocation
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.models.proactive import Notification, NotificationDeliveryIntent
-from vitals.models.tenancy import IntegrationConnection
-from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
-from vitals.services.conflict_rule_ownership_backfill_service import (
+from vitals.models.ai import AIInvocation
+from vitals.models.raw_payload import RawPayload
+from vitals.models.tenancy import FileAsset, IntegrationConnection
+from vitals.models.labs import LabResult
+from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.progress_photo_ownership_backfill_service import (
+from vitals.operations.ownership.progress_photo import (
     PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
-from vitals.services.shared_report_ownership_backfill_service import (
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.body_scan_metric_ownership_backfill_service import (
-    BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.body_scan_ownership_backfill_service import (
-    BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.genetic_variant_ownership_backfill_service import (
-    GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.lab_result_ownership_backfill_service import (
-    LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.garmin_weight_export_ownership_backfill_service import (
-    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.weekly_digest_ownership_backfill_service import (
-    WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.weight_log_ownership_backfill_service import (
+from vitals.operations.ownership.weight_log import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.utils.timeutils import now_utc
 
 
-NOTIFICATION_OWNERSHIP_BACKFILL_PHASE = (
-    "stage3.delivery_artifact.notifications.v1"
-)
-NOTIFICATION_OWNERSHIP_BACKFILL_TABLES = ("notifications",)
-NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
+LAB_RESULT_OWNERSHIP_BACKFILL_PHASE = "stage3.raw_linked_facts.lab_results.v1"
+LAB_RESULT_OWNERSHIP_BACKFILL_TABLES = ("lab_results",)
+LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
     MappingProxyType(
         {
-            "notifications": (
-                f"{NOTIFICATION_OWNERSHIP_BACKFILL_PHASE}.notifications"
+            "lab_results": (
+                f"{LAB_RESULT_OWNERSHIP_BACKFILL_PHASE}.lab_results"
             )
         }
     )
 )
-DEFAULT_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
-MAX_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
+DEFAULT_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
+MAX_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
 
-_TABLE: Table = Notification.__table__
-_PHASE_KEY = NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["notifications"]
+_TABLE: Table = LabResult.__table__
+_PHASE_KEY = LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["lab_results"]
 _PAGE_SIZE = 1000
 _POSTGRES_INTEGER_MAX = (1 << 31) - 1
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_CATEGORIES = frozenset({"brief", "evening", "nudge", "reply", "echo"})
-_AI_CATEGORIES = frozenset({"reply", "echo"})
-_TELEGRAM_CHANNEL = IntegrationProvider.TELEGRAM.value
+# Manual and MCP results are the owner speaking through two surfaces; parsed
+# results are derived from an uploaded document.  Any other source is unreviewed.
+_MANUAL_SOURCES = {
+    Source.MANUAL.value,
+    Source.MCP.value,
+}
+_ALLOWED_SOURCES = _MANUAL_SOURCES | {Source.LAB_PARSER.value}
+_ALLOWED_FLAGS = {flag.value for flag in LabFlag}
+_MAX_MARKER_LENGTH = 128
 _HISTORICAL_CONNECTION_STATUSES = {
     IntegrationConnectionStatus.LEGACY.value,
     IntegrationConnectionStatus.ACTIVE.value,
@@ -121,44 +112,48 @@ _ROW_FIELDS = (
     "id",
     "subject_id",
     "actor_user_id",
-    "recipient_user_id",
-    "integration_connection_id",
-    "ai_invocation_id",
-    "delivery_intent_id",
-    "sent_at",
-    "category",
-    "dedupe_key",
-    "channel",
-    "external_id",
-    "payload",
+    "date",
+    "domain",
+    "source",
+    "marker",
+    "value",
+    "unit",
+    "ref_low",
+    "ref_high",
+    "flag",
+    "lab_name",
+    "note",
+    "raw_payload_id",
+    "created_at",
+    "updated_at",
 )
 _DATA_FIELDS = tuple(
-    field
-    for field in _ROW_FIELDS
-    if field
-    not in {
-        "subject_id",
-        "actor_user_id",
-        "recipient_user_id",
-        "integration_connection_id",
-    }
-)
-_INTENT_FIELDS = (
-    "id",
-    "subject_id",
-    "recipient_user_id",
-    "integration_connection_id",
-)
-_INVOCATION_FIELDS = (
-    "id",
-    "subject_id",
-    "status",
+    field for field in _ROW_FIELDS if field not in {"subject_id", "actor_user_id"}
 )
 _CONNECTION_FIELDS = (
     "id",
     "subject_id",
     "provider",
     "connection_type",
+    "status",
+)
+_RAW_FIELDS = (
+    "id",
+    "subject_id",
+    "actor_user_id",
+    "integration_connection_id",
+    "file_asset_id",
+    "domain",
+    "source",
+    "external_id",
+    "processed_at",
+)
+_FILE_FIELDS = (
+    "id",
+    "subject_id",
+    "uploaded_by_user_id",
+    "purpose",
+    "storage_ref",
     "status",
 )
 _B_PHASES = tuple(NORMALIZED_MANUAL_CHECKPOINT_PHASES.values())
@@ -170,14 +165,6 @@ _G_PHASES = tuple(CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _H_PHASES = tuple(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _K_PHASES = tuple(SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _L_PHASES = tuple(WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_M_PHASES = tuple(LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_N_PHASES = tuple(GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_O_PHASES = tuple(BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_P_PHASES = tuple(BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_Q_PHASES = tuple(
-    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()
-)
-_R_PHASES = tuple(WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _PRIOR_PHASES = (
     (RAW_OWNERSHIP_BACKFILL_PHASE,)
     + _B_PHASES
@@ -189,56 +176,50 @@ _PRIOR_PHASES = (
     + _H_PHASES
     + _K_PHASES
     + _L_PHASES
-    + _M_PHASES
-    + _N_PHASES
-    + _O_PHASES
-    + _P_PHASES
-    + _Q_PHASES
-    + _R_PHASES
 )
 
 
-class NotificationOwnershipBackfillStatus(StrEnum):
+class LabResultOwnershipBackfillStatus(StrEnum):
     NOT_STARTED = "not_started"
     RUNNING = "running"
     COMPLETED = "completed"
 
 
-class NotificationOwnershipBackfillError(RuntimeError):
-    """Base class for fail-closed Stage-3S errors."""
+class LabResultOwnershipBackfillError(RuntimeError):
+    """Base class for fail-closed Stage-3M errors."""
 
 
-class NotificationOwnershipBackfillValidationError(
-    NotificationOwnershipBackfillError, ValueError
+class LabResultOwnershipBackfillValidationError(
+    LabResultOwnershipBackfillError, ValueError
 ):
     """A caller argument or persisted scalar is invalid."""
 
 
-class NotificationOwnershipBackfillIdentityError(NotificationOwnershipBackfillError):
+class LabResultOwnershipBackfillIdentityError(LabResultOwnershipBackfillError):
     """The exact-one reviewed owner graph is unavailable."""
 
 
-class NotificationOwnershipBackfillDependencyError(
-    NotificationOwnershipBackfillError
+class LabResultOwnershipBackfillDependencyError(
+    LabResultOwnershipBackfillError
 ):
     """A prerequisite checkpoint is absent, malformed, or in the wrong mode."""
 
 
-class NotificationOwnershipBackfillStateError(NotificationOwnershipBackfillError):
+class LabResultOwnershipBackfillStateError(LabResultOwnershipBackfillError):
     """Checkpoint progress or an ownership root is inconsistent."""
 
 
-class NotificationOwnershipBackfillProvenanceError(
-    NotificationOwnershipBackfillError
+class LabResultOwnershipBackfillProvenanceError(
+    LabResultOwnershipBackfillError
 ):
-    """A weight row has unsupported persisted provenance."""
+    """A lab result row has unsupported persisted provenance."""
 
 
 @dataclass(frozen=True, slots=True)
-class NotificationOwnershipBackfillPreflightResult:
+class LabResultOwnershipBackfillPreflightResult:
     phase_key: str
     subject_id: uuid.UUID
-    status: NotificationOwnershipBackfillStatus
+    status: LabResultOwnershipBackfillStatus
     tables_total: int
     completed_tables: int
     snapshot_rows: int
@@ -253,7 +234,7 @@ class NotificationOwnershipBackfillPreflightResult:
 
     @property
     def completed(self) -> bool:
-        return self.status is NotificationOwnershipBackfillStatus.COMPLETED
+        return self.status is LabResultOwnershipBackfillStatus.COMPLETED
 
     def to_safe_dict(self) -> dict[str, str | int]:
         return {
@@ -274,8 +255,8 @@ class NotificationOwnershipBackfillPreflightResult:
 
 
 @dataclass(frozen=True, slots=True)
-class NotificationOwnershipBackfillBatchResult(
-    NotificationOwnershipBackfillPreflightResult
+class LabResultOwnershipBackfillBatchResult(
+    LabResultOwnershipBackfillPreflightResult
 ):
     batch_table: str
     batch_scanned_rows: int
@@ -287,7 +268,7 @@ class NotificationOwnershipBackfillBatchResult(
         return self.batch_updated_rows > 0
 
     def to_safe_dict(self) -> dict[str, str | int]:
-        result = NotificationOwnershipBackfillPreflightResult.to_safe_dict(self)
+        result = LabResultOwnershipBackfillPreflightResult.to_safe_dict(self)
         result.update(
             {
                 "batch_table": self.batch_table,
@@ -336,9 +317,9 @@ def _validate_batch_size(value: object) -> int:
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
-        or not 1 <= value <= MAX_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE
+        or not 1 <= value <= MAX_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE
     ):
-        raise NotificationOwnershipBackfillValidationError(
+        raise LabResultOwnershipBackfillValidationError(
             "batch_size must be an integer between 1 and 1000"
         )
     return value
@@ -390,9 +371,9 @@ async def _load_checkpoints(
 
 def _validate_checkpoint(checkpoint: Any, *, phase: str, subject_id: uuid.UUID) -> str:
     error = (
-        NotificationOwnershipBackfillDependencyError
+        LabResultOwnershipBackfillDependencyError
         if phase in _PRIOR_PHASES
-        else NotificationOwnershipBackfillStateError
+        else LabResultOwnershipBackfillStateError
     )
     if checkpoint.phase_key != phase or checkpoint.subject_id != subject_id:
         raise error("an ownership checkpoint has the wrong phase or subject")
@@ -470,15 +451,15 @@ async def _load_scope(session: AsyncSession, *, for_update: bool) -> _Scope:
         query = query.with_for_update()
     rows = list(await session.execute(query))
     if len(rows) != 1:
-        raise NotificationOwnershipBackfillIdentityError(
-            "notification backfill requires exactly one health subject"
+        raise LabResultOwnershipBackfillIdentityError(
+            "lab result backfill requires exactly one health subject"
         )
     subject_id, owner_user_id = rows[0]
     owner_query = select(User.status).where(User.id == owner_user_id)
     if for_update:
         owner_query = owner_query.with_for_update()
     if await session.scalar(owner_query) != UserStatus.ACTIVE.value:
-        raise NotificationOwnershipBackfillIdentityError(
+        raise LabResultOwnershipBackfillIdentityError(
             "the sole health subject must have an active owner"
         )
     return _Scope(subject_id, owner_user_id)
@@ -526,7 +507,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
             ):
                 continue
             if not _exact_empty_completed(checkpoint):
-                raise NotificationOwnershipBackfillDependencyError(
+                raise LabResultOwnershipBackfillDependencyError(
                     f"{label} restore checkpoint state is invalid"
                 )
 
@@ -535,24 +516,12 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
     require(_D_PHASES + _E_PHASES, "restore_blocked", "Stage-3D/3E")
     require(_F_PHASES + _G_PHASES, "running", "Stage-3F/3G")
     require(_H_PHASES, "restore_blocked", "Stage-3H")
-    require(
-        _L_PHASES + _M_PHASES + _N_PHASES + _P_PHASES,
-        "running",
-        "Stage-3I through Stage-3P resettable phases",
-    )
-    require(_O_PHASES + _Q_PHASES, "restore_blocked", "Stage-3O/3Q")
-    # Stage 3R is excluded from backup v1, so its retained checkpoint is
-    # prepared or preserved rather than rebased onto incoming bounds.
-    for phase in _R_PHASES:
-        if checkpoints[phase].status not in {"running", "completed"}:
-            raise NotificationOwnershipBackfillDependencyError(
-                "Stage-3R retained checkpoint state is invalid"
-            )
+    require(_L_PHASES, "running", "Stage-3L")
     # Stage 3K is excluded from backup v1 entirely, so its retained checkpoint is
     # prepared or preserved rather than rebased onto incoming bounds.
     for phase in _K_PHASES:
         if checkpoints[phase].status not in {"running", "completed"}:
-            raise NotificationOwnershipBackfillDependencyError(
+            raise LabResultOwnershipBackfillDependencyError(
                 "Stage-3K retained checkpoint state is invalid"
             )
 
@@ -565,7 +534,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("restore_blocked", "completed"),
         ("completed", "completed"),
     }:
-        raise NotificationOwnershipBackfillDependencyError(
+        raise LabResultOwnershipBackfillDependencyError(
             "Stage-3E restore checkpoint order is inconsistent"
         )
 
@@ -582,7 +551,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("running", "completed"),
         ("completed", "completed"),
     }:
-        raise NotificationOwnershipBackfillDependencyError(
+        raise LabResultOwnershipBackfillDependencyError(
             "Stage-3F restore checkpoint order is inconsistent"
         )
 
@@ -594,8 +563,8 @@ def _validate_own(checkpoint: Any | None, *, scope: _Scope) -> str | None:
         checkpoint, phase=_PHASE_KEY, subject_id=scope.subject_id
     )
     if status == "restore_blocked":
-        raise NotificationOwnershipBackfillStateError(
-            "Stage-3S checkpoints cannot be restore-blocked"
+        raise LabResultOwnershipBackfillStateError(
+            "Stage-3M checkpoints cannot be restore-blocked"
         )
     return status
 
@@ -604,8 +573,8 @@ def _require_dependencies(
     checkpoints: Mapping[str, Any], *, scope: _Scope, own_exists: bool
 ) -> bool:
     if set(checkpoints) != set(_PRIOR_PHASES):
-        raise NotificationOwnershipBackfillDependencyError(
-            "Stage-3A through Stage-3R checkpoints are incomplete"
+        raise LabResultOwnershipBackfillDependencyError(
+            "Stage-3A through Stage-3L checkpoints are incomplete"
         )
     statuses = {
         phase: _validate_checkpoint(
@@ -616,8 +585,8 @@ def _require_dependencies(
     if all(status == "completed" for status in statuses.values()):
         return False
     if not own_exists:
-        raise NotificationOwnershipBackfillDependencyError(
-            "restore-mode Stage-3S requires its exact portability checkpoint"
+        raise LabResultOwnershipBackfillDependencyError(
+            "restore-mode Stage-3M requires its exact portability checkpoint"
         )
     _require_restore_dependencies(checkpoints)
     return True
@@ -628,8 +597,8 @@ def _canonical(value: Any) -> Any:
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise NotificationOwnershipBackfillProvenanceError(
-                "notification contains a non-finite JSON number"
+            raise LabResultOwnershipBackfillProvenanceError(
+                "lab result contains a non-finite JSON number"
             )
         return ["float", value.hex()]
     if isinstance(value, uuid.UUID):
@@ -642,14 +611,14 @@ def _canonical(value: Any) -> Any:
         return ["time", value.isoformat()]
     if isinstance(value, Mapping):
         if any(type(key) is not str for key in value):
-            raise NotificationOwnershipBackfillProvenanceError(
-                "notification JSON object keys must be strings"
+            raise LabResultOwnershipBackfillProvenanceError(
+                "lab result JSON object keys must be strings"
             )
         return {key: _canonical(value[key]) for key in sorted(value)}
     if isinstance(value, (list, tuple)):
         return [_canonical(item) for item in value]
-    raise NotificationOwnershipBackfillProvenanceError(
-        "notification contains an unsupported JSON value"
+    raise LabResultOwnershipBackfillProvenanceError(
+        "lab result contains an unsupported JSON value"
     )
 
 
@@ -672,6 +641,11 @@ def _connection_select():
     return select(*(table.c[field] for field in _CONNECTION_FIELDS))
 
 
+def _raw_select():
+    table = RawPayload.__table__
+    return select(*(table.c[field] for field in _RAW_FIELDS))
+
+
 def _values(row: Any, fields: tuple[str, ...]) -> SimpleNamespace:
     mapping = row._mapping if hasattr(row, "_mapping") else row
     return SimpleNamespace(**{field: mapping[field] for field in fields})
@@ -685,20 +659,21 @@ def _connection_values(row: Any) -> SimpleNamespace:
     return _values(row, _CONNECTION_FIELDS)
 
 
+def _raw_values(row: Any) -> SimpleNamespace:
+    return _values(row, _RAW_FIELDS)
+
+
 def _data_envelope(row: Any) -> list[Any]:
-    return ["notifications", *[getattr(row, field) for field in _DATA_FIELDS]]
+    return ["lab_results", *[getattr(row, field) for field in _DATA_FIELDS]]
 
 
 def _ownership_envelope(row: Any) -> list[Any]:
     return [
-        "notifications",
+        "lab_results",
         row.id,
         row.subject_id,
         row.actor_user_id,
-        row.recipient_user_id,
-        row.integration_connection_id,
-        row.delivery_intent_id,
-        row.ai_invocation_id,
+        row.raw_payload_id,
     ]
 
 
@@ -707,76 +682,167 @@ def _same_values(left: Any, right: Any, fields: tuple[str, ...]) -> bool:
 
 
 def _validate_fact_values(row: Any) -> None:
-    """Reject a message whose reviewed delivery shape cannot be trusted."""
+    """Reject a result whose reviewed business shape cannot be trusted."""
 
-    if not isinstance(row.sent_at, datetime):
-        raise NotificationOwnershipBackfillProvenanceError(
-            "notification has an invalid sent timestamp"
+    if not isinstance(row.date, date):
+        raise LabResultOwnershipBackfillProvenanceError(
+            "lab result has an invalid date"
         )
-    if row.category not in _CATEGORIES:
-        raise NotificationOwnershipBackfillProvenanceError(
-            "notification has an unsupported category"
-        )
-    if row.channel != _TELEGRAM_CHANNEL:
-        raise NotificationOwnershipBackfillProvenanceError(
-            "notification has an unreviewed delivery channel"
-        )
-    for field in ("dedupe_key", "external_id"):
-        value = getattr(row, field)
-        if value is not None and (not isinstance(value, str) or not value.strip()):
-            raise NotificationOwnershipBackfillProvenanceError(
-                "notification has an invalid delivery key"
-            )
-
-
-async def _reviewed_recipient(session: AsyncSession, *, scope: _Scope) -> Any:
-    """Return the exact reviewed legacy Telegram recipient this log delivered to.
-
-    A rotated or additional recipient is never guessed: the destination of a
-    historical message is only unambiguous while the subject has exactly one
-    Telegram recipient root and it is the reviewed legacy singleton.
-    """
-
-    table = IntegrationConnection.__table__
-    rows = list(
-        await session.execute(
-            select(
-                *(table.c[field] for field in _CONNECTION_FIELDS),
-                table.c.external_account_discriminator,
-            )
-            .where(
-                table.c.subject_id == scope.subject_id,
-                table.c.provider == IntegrationProvider.TELEGRAM.value,
-                table.c.connection_type == IntegrationConnectionType.RECIPIENT.value,
-            )
-            .order_by(table.c.id)
-            .limit(2)
-        )
-    )
-    if len(rows) != 1:
-        raise NotificationOwnershipBackfillStateError(
-            "the notification log has no unambiguous delivery recipient"
-        )
-    destination = rows[0]
     if (
-        destination.external_account_discriminator != LEGACY_ACCOUNT_DISCRIMINATOR
-        or destination.status not in _HISTORICAL_CONNECTION_STATUSES
+        not isinstance(row.marker, str)
+        or not row.marker.strip()
+        or len(row.marker) > _MAX_MARKER_LENGTH
     ):
-        raise NotificationOwnershipBackfillStateError(
-            "the sole Telegram recipient is not the reviewed legacy destination"
+        raise LabResultOwnershipBackfillProvenanceError(
+            "lab result has an invalid marker"
         )
-    return _connection_values(destination)
+    for field in ("value", "ref_low", "ref_high"):
+        number = getattr(row, field)
+        if field != "value" and number is None:
+            continue
+        if (
+            isinstance(number, bool)
+            or not isinstance(number, (int, float))
+            or not math.isfinite(float(number))
+        ):
+            raise LabResultOwnershipBackfillProvenanceError(
+                "lab result has a missing or non-finite measurement"
+            )
+    if row.flag is not None and row.flag not in _ALLOWED_FLAGS:
+        raise LabResultOwnershipBackfillProvenanceError(
+            "lab result has an unsupported range flag"
+        )
+    for field in ("unit", "lab_name", "note"):
+        text_value = getattr(row, field)
+        if text_value is not None and not isinstance(text_value, str):
+            raise LabResultOwnershipBackfillProvenanceError(
+                "lab result has an invalid text field"
+            )
 
 
-def _validate_connection(connection: Any, *, scope: _Scope) -> None:
+def _validate_gateway_connection(connection: Any, *, scope: _Scope) -> None:
+    """The only reviewed lab connection root is the subject OpenRouter gateway."""
+
     if (
         connection.subject_id != scope.subject_id
-        or connection.provider != IntegrationProvider.TELEGRAM.value
-        or connection.connection_type != IntegrationConnectionType.RECIPIENT.value
+        or connection.provider != IntegrationProvider.OPENROUTER.value
+        or connection.connection_type != IntegrationConnectionType.AI_GATEWAY.value
         or connection.status not in _HISTORICAL_CONNECTION_STATUSES
     ):
-        raise NotificationOwnershipBackfillProvenanceError(
-            "notification has invalid delivery recipient provenance"
+        raise LabResultOwnershipBackfillProvenanceError(
+            "lab parser raw payload has invalid AI gateway provenance"
+        )
+
+
+def _validate_document(asset: Any, *, scope: _Scope, raw: Any) -> None:
+    if (
+        asset.subject_id != scope.subject_id
+        or asset.purpose != FileAssetPurpose.LAB_DOCUMENT.value
+        or asset.uploaded_by_user_id not in {None, scope.owner_user_id}
+        or asset.storage_ref != raw.external_id
+    ):
+        raise LabResultOwnershipBackfillProvenanceError(
+            "lab parser file provenance is inconsistent"
+        )
+
+
+def _validate_raw(
+    raw: Any,
+    *,
+    scope: _Scope,
+    connections: Mapping[uuid.UUID, Any],
+    files: Mapping[uuid.UUID, Any],
+    parser_invocations: Mapping[int, tuple[int, int, bool]],
+    source: str,
+    fact_is_unowned: bool,
+) -> None:
+    """Validate the reviewed raw root a lab result links, without adopting it."""
+
+    if raw.domain != Domain.LABS.value or raw.source != source:
+        raise LabResultOwnershipBackfillProvenanceError(
+            "lab result raw payload has an invalid domain or source"
+        )
+    raw_roots = (
+        raw.subject_id,
+        raw.actor_user_id,
+        raw.integration_connection_id,
+        raw.file_asset_id,
+    )
+    # Backup v1 restores the raw lake before Stage 3A runs again, so a still
+    # fully-unowned raw is valid provenance for a still-unowned fact — and only
+    # for one.  An adopted fact may never point at unowned raw history.
+    raw_is_unowned = raw_roots == (None, None, None, None)
+    if raw_is_unowned:
+        if not fact_is_unowned:
+            raise LabResultOwnershipBackfillStateError(
+                "an owned lab result links unowned raw provenance"
+            )
+    else:
+        if raw.subject_id != scope.subject_id:
+            raise LabResultOwnershipBackfillProvenanceError(
+                "lab result raw payload has foreign provenance"
+            )
+        if raw.actor_user_id not in {None, scope.owner_user_id}:
+            raise LabResultOwnershipBackfillProvenanceError(
+                "lab result raw payload actor is outside the reviewed owner boundary"
+            )
+    total, succeeded, same_subject = parser_invocations.get(raw.id, (0, 0, True))
+    if not same_subject:
+        raise LabResultOwnershipBackfillStateError(
+            "lab result raw payload has a foreign parser invocation"
+        )
+    if source in _MANUAL_SOURCES:
+        if raw.integration_connection_id is not None or raw.file_asset_id is not None:
+            raise LabResultOwnershipBackfillProvenanceError(
+                "manual or MCP lab provenance cannot carry connection or file roots"
+            )
+        if total != 0:
+            raise LabResultOwnershipBackfillProvenanceError(
+                "manual or MCP lab raw payload cannot claim a document parser"
+            )
+        return
+    if raw_is_unowned:
+        if total != 0:
+            raise LabResultOwnershipBackfillStateError(
+                "unowned lab parser raw cannot claim a document parser invocation"
+            )
+        return
+    if raw.integration_connection_id is not None:
+        # Reviewed subject-funded parser history: the gateway paid for the parse,
+        # so no platform invocation may exist and no file root was registered.
+        connection = connections.get(raw.integration_connection_id)
+        if connection is None:
+            raise LabResultOwnershipBackfillStateError(
+                "lab result raw payload references a missing gateway connection"
+            )
+        _validate_gateway_connection(connection, scope=scope)
+        if total != 0:
+            raise LabResultOwnershipBackfillProvenanceError(
+                "lab parser raw mixes subject and platform AI provenance"
+            )
+        if raw.file_asset_id is not None:
+            raise LabResultOwnershipBackfillProvenanceError(
+                "subject-funded lab parser history cannot claim a file root"
+            )
+        return
+    if raw.file_asset_id is None:
+        # Pre-FileAsset legacy history, and the shape a backup-v1 restore leaves
+        # behind once F/C are stripped.  Registering the document is Stage-3A and
+        # PR-06 work; this phase only refuses a forged parser claim.
+        if total != 0:
+            raise LabResultOwnershipBackfillProvenanceError(
+                "fileless lab parser raw cannot claim a document parser invocation"
+            )
+        return
+    asset = files.get(raw.file_asset_id)
+    if asset is None:
+        raise LabResultOwnershipBackfillStateError(
+            "lab result raw payload references a missing document asset"
+        )
+    _validate_document(asset, scope=scope, raw=raw)
+    if succeeded != 1:
+        raise LabResultOwnershipBackfillProvenanceError(
+            "platform lab parser raw lacks one successful AI invocation"
         )
 
 
@@ -785,98 +851,70 @@ def _validate_row(
     *,
     scope: _Scope,
     connections: Mapping[uuid.UUID, Any],
-    intents: Mapping[uuid.UUID, Any],
-    invocations: Mapping[uuid.UUID, Any],
+    raws: Mapping[int, Any],
+    files: Mapping[uuid.UUID, Any],
+    parser_invocations: Mapping[int, tuple[int, int, bool]],
     historical: bool,
     allow_unowned: bool,
 ) -> bool:
-    """Validate one message and return whether reviewed adoption is required."""
+    """Validate one row and return whether sole-subject adoption is required."""
 
+    if row.domain != Domain.LABS.value or row.source not in _ALLOWED_SOURCES:
+        raise LabResultOwnershipBackfillProvenanceError(
+            "lab result has invalid domain or source"
+        )
     if not isinstance(row.id, int) or isinstance(row.id, bool) or row.id <= 0:
-        raise NotificationOwnershipBackfillValidationError(
-            "notification has an invalid primary key"
+        raise LabResultOwnershipBackfillValidationError(
+            "lab result has an invalid primary key"
         )
     _validate_fact_values(row)
 
-    roots = (
-        row.subject_id,
-        row.actor_user_id,
-        row.recipient_user_id,
-        row.integration_connection_id,
-    )
-    needs_adoption = roots == (None, None, None, None)
+    roots = (row.subject_id, row.actor_user_id)
+    needs_adoption = roots == (None, None)
     if needs_adoption:
         if not allow_unowned:
-            raise NotificationOwnershipBackfillStateError(
-                "an unowned notification is outside the historical bridge"
+            raise LabResultOwnershipBackfillStateError(
+                "an unowned lab result is outside the historical bridge"
             )
-        if row.ai_invocation_id is not None or row.delivery_intent_id is not None:
-            raise NotificationOwnershipBackfillStateError(
-                "an unowned notification cannot claim platform delivery state"
-            )
-        return True
+    elif row.subject_id != scope.subject_id:
+        raise LabResultOwnershipBackfillStateError(
+            "lab result has partial or foreign ownership roots"
+        )
+    if not needs_adoption and row.actor_user_id not in {None, scope.owner_user_id}:
+        raise LabResultOwnershipBackfillStateError(
+            "lab result actor is outside the reviewed ownership boundary"
+        )
 
-    if row.subject_id != scope.subject_id:
-        raise NotificationOwnershipBackfillStateError(
-            "notification has partial or foreign ownership roots"
+    if row.raw_payload_id is None:
+        # A rawless result is legitimate for every reviewed source: the writer
+        # accepts a parsed panel typed in by hand, and older parses predate the
+        # raw-first boundary.  Registering that provenance is Stage-3A work.
+        return needs_adoption
+    raw = raws.get(row.raw_payload_id)
+    if raw is None:
+        raise LabResultOwnershipBackfillStateError(
+            "lab result references a missing raw payload"
         )
-    # A delivered message means nothing without both the person it went to and
-    # the channel that carried it; the schema states the same rule.
-    if row.recipient_user_id is None or row.integration_connection_id is None:
-        raise NotificationOwnershipBackfillStateError(
-            "an owned notification has an incomplete delivery graph"
+    _validate_raw(
+        raw,
+        scope=scope,
+        connections=connections,
+        files=files,
+        parser_invocations=parser_invocations,
+        source=row.source,
+        fact_is_unowned=needs_adoption,
+    )
+    # The fact carries no actor of its own beyond the owner boundary above, so
+    # the only cross-root rule is that an adopted history may not disagree with
+    # a raw payload that already names the owner.
+    if not historical and row.actor_user_id != raw.actor_user_id:
+        raise LabResultOwnershipBackfillProvenanceError(
+            "live lab result and raw payload have different actor roots"
         )
-    if row.recipient_user_id != scope.owner_user_id:
-        raise NotificationOwnershipBackfillStateError(
-            "notification recipient is outside the reviewed ownership boundary"
-        )
-    if row.actor_user_id not in {None, scope.owner_user_id}:
-        raise NotificationOwnershipBackfillStateError(
-            "notification actor is outside the reviewed ownership boundary"
-        )
-    connection = connections.get(row.integration_connection_id)
-    if connection is None:
-        raise NotificationOwnershipBackfillStateError(
-            "notification references a missing delivery recipient"
-        )
-    _validate_connection(connection, scope=scope)
-
-    if row.delivery_intent_id is not None:
-        intent = intents.get(row.delivery_intent_id)
-        if intent is None:
-            raise NotificationOwnershipBackfillStateError(
-                "notification references a missing delivery intent"
-            )
-        if (
-            intent.subject_id != row.subject_id
-            or intent.recipient_user_id != row.recipient_user_id
-            or intent.integration_connection_id != row.integration_connection_id
-        ):
-            raise NotificationOwnershipBackfillStateError(
-                "notification and its delivery intent disagree on the recipient"
-            )
-    if row.ai_invocation_id is not None:
-        if row.category not in _AI_CATEGORIES:
-            raise NotificationOwnershipBackfillProvenanceError(
-                "only a reply or echo may claim a platform AI invocation"
-            )
-        invocation = invocations.get(row.ai_invocation_id)
-        if invocation is None:
-            raise NotificationOwnershipBackfillStateError(
-                "notification references a missing platform invocation"
-            )
-        if invocation.subject_id != scope.subject_id:
-            raise NotificationOwnershipBackfillStateError(
-                "notification links a platform invocation of another subject"
-            )
-        if invocation.status != AIInvocationStatus.SUCCEEDED.value:
-            raise NotificationOwnershipBackfillProvenanceError(
-                "notification links an invocation that never succeeded"
-            )
-    return False
+    return needs_adoption
 
 
-async def _after_notifications_projection_for_test() -> None:
+async def _after_lab_results_projection_for_test() -> None:
     """Deterministic seam for real PostgreSQL lock/recheck tests."""
 
 
@@ -893,57 +931,86 @@ async def _project_connections(
     return {row.id: row for row in map(_connection_values, rows)}
 
 
-async def _project_intents(
-    session: AsyncSession, intent_ids: set[uuid.UUID]
-) -> dict[uuid.UUID, Any]:
-    if not intent_ids:
+async def _project_raws(
+    session: AsyncSession, raw_payload_ids: set[int]
+) -> dict[int, Any]:
+    if not raw_payload_ids:
         return {}
-    table = NotificationDeliveryIntent.__table__
     rows = await session.execute(
-        select(*(table.c[field] for field in _INTENT_FIELDS))
-        .where(table.c.id.in_(intent_ids))
-        .order_by(table.c.id)
+        _raw_select().where(RawPayload.id.in_(raw_payload_ids)).order_by(RawPayload.id)
     )
-    return {row.id: _values(row, _INTENT_FIELDS) for row in rows}
+    return {row.id: row for row in map(_raw_values, rows)}
 
 
-async def _lock_projected_intents(
-    session: AsyncSession,
-    projected: Mapping[uuid.UUID, Any],
-) -> dict[uuid.UUID, Any]:
-    intent_ids = set(projected)
-    if not intent_ids:
+async def _project_parser_invocation_scope(
+    session: AsyncSession, *, scope: _Scope, raws: Mapping[int, Any]
+) -> dict[int, tuple[int, int, bool]]:
+    """Return per-raw document-parser counts restricted to the reviewed subject."""
+
+    if not raws:
         return {}
-    table = NotificationDeliveryIntent.__table__
-    locked_raw = await session.execute(
-        select(*(table.c[field] for field in _INTENT_FIELDS))
-        .where(table.c.id.in_(intent_ids))
-        .order_by(table.c.id)
-        .with_for_update()
-    )
-    locked = {row.id: _values(row, _INTENT_FIELDS) for row in locked_raw}
-    if set(locked) != intent_ids or any(
-        not _same_values(locked[key], projected[key], _INTENT_FIELDS)
-        for key in intent_ids
-    ):
-        raise NotificationOwnershipBackfillStateError(
-            "a projected delivery intent changed before it was locked"
+    rows = await session.execute(
+        select(
+            AIInvocation.raw_payload_id,
+            AIInvocation.subject_id,
+            AIInvocation.status,
         )
-    return locked
-
-
-async def _project_invocations(
-    session: AsyncSession, invocation_ids: set[uuid.UUID]
-) -> dict[uuid.UUID, Any]:
-    if not invocation_ids:
-        return {}
-    table = AIInvocation.__table__
-    rows = await session.execute(
-        select(*(table.c[field] for field in _INVOCATION_FIELDS))
-        .where(table.c.id.in_(invocation_ids))
-        .order_by(table.c.id)
+        .where(
+            AIInvocation.raw_payload_id.in_(set(raws)),
+            AIInvocation.purpose
+            == AIInvocationPurpose.LAB_DOCUMENT_PARSE.value,
+        )
+        .order_by(AIInvocation.raw_payload_id, AIInvocation.id)
     )
-    return {row.id: _values(row, _INVOCATION_FIELDS) for row in rows}
+    counts: dict[int, tuple[int, int, bool]] = {
+        raw_payload_id: (0, 0, True) for raw_payload_id in raws
+    }
+    for raw_payload_id, subject_id, status in rows:
+        total, succeeded, same_subject = counts[int(raw_payload_id)]
+        counts[int(raw_payload_id)] = (
+            total + 1,
+            succeeded + int(status == AIInvocationStatus.SUCCEEDED.value),
+            same_subject and subject_id == scope.subject_id,
+        )
+    return counts
+
+
+def _file_select():
+    table = FileAsset.__table__
+    return select(*(table.c[field] for field in _FILE_FIELDS))
+
+
+def _file_values(row: Any) -> SimpleNamespace:
+    return _values(row, _FILE_FIELDS)
+
+
+async def _project_files(
+    session: AsyncSession, file_asset_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, Any]:
+    if not file_asset_ids:
+        return {}
+    rows = await session.execute(
+        _file_select()
+        .where(FileAsset.id.in_(file_asset_ids))
+        .order_by(FileAsset.id)
+    )
+    return {row.id: row for row in map(_file_values, rows)}
+
+
+def _referenced_file_ids(raws: Mapping[int, Any]) -> set[uuid.UUID]:
+    return {
+        raw.file_asset_id
+        for raw in raws.values()
+        if raw.file_asset_id is not None
+    }
+
+
+def _referenced_connection_ids(raws: Mapping[int, Any]) -> set[uuid.UUID]:
+    return {
+        raw.integration_connection_id
+        for raw in raws.values()
+        if raw.integration_connection_id is not None
+    }
 
 
 async def _lock_projected_graph(
@@ -951,14 +1018,14 @@ async def _lock_projected_graph(
     *,
     projected_rows: Mapping[int, Any],
     projected_connections: Mapping[uuid.UUID, Any],
-    projected_intents: Mapping[uuid.UUID, Any],
-) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[uuid.UUID, Any]]:
+    projected_raws: Mapping[int, Any],
+) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[int, Any]]:
     locked_connections = await _lock_projected_connections(
         session, projected_connections
     )
-    locked_intents = await _lock_projected_intents(session, projected_intents)
+    locked_raws = await _lock_projected_raws(session, projected_raws)
     locked_rows = await _lock_projected_rows(session, projected_rows)
-    return locked_rows, locked_connections, locked_intents
+    return locked_rows, locked_connections, locked_raws
 
 
 async def _lock_projected_connections(
@@ -982,12 +1049,36 @@ async def _lock_projected_connections(
             )
             for key in connection_ids
         ):
-            raise NotificationOwnershipBackfillStateError(
+            raise LabResultOwnershipBackfillStateError(
                 "a projected provider connection changed before it was locked"
             )
     else:
         locked_connections = {}
     return locked_connections
+
+
+async def _lock_projected_raws(
+    session: AsyncSession,
+    projected_raws: Mapping[int, Any],
+) -> dict[int, Any]:
+    raw_payload_ids = set(projected_raws)
+    if not raw_payload_ids:
+        return {}
+    locked = await session.execute(
+        _raw_select()
+        .where(RawPayload.id.in_(raw_payload_ids))
+        .order_by(RawPayload.id)
+        .with_for_update()
+    )
+    locked_raws = {row.id: row for row in map(_raw_values, locked)}
+    if set(locked_raws) != raw_payload_ids or any(
+        not _same_values(locked_raws[key], projected_raws[key], _RAW_FIELDS)
+        for key in raw_payload_ids
+    ):
+        raise LabResultOwnershipBackfillStateError(
+            "a projected lab result raw payload changed before it was locked"
+        )
+    return locked_raws
 
 
 async def _lock_projected_rows(
@@ -1008,8 +1099,8 @@ async def _lock_projected_rows(
         not _same_values(locked_rows[key], projected_rows[key], _ROW_FIELDS)
         for key in projected_rows
     ):
-        raise NotificationOwnershipBackfillStateError(
-            "a projected weight changed before it was locked"
+        raise LabResultOwnershipBackfillStateError(
+            "a projected lab result changed before it was locked"
         )
     return locked_rows
 
@@ -1023,48 +1114,34 @@ async def _project_and_lock_ids(
 ) -> tuple[
     dict[int, Any],
     dict[uuid.UUID, Any],
+    dict[int, Any],
     dict[uuid.UUID, Any],
-    dict[uuid.UUID, Any],
+    dict[int, tuple[int, int, bool]],
 ]:
     if not ids:
-        return {}, {}, {}, {}
+        return {}, {}, {}, {}, {}
     raw_rows = await session.execute(
         _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
     )
     projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
+    raw_payload_ids = {row.raw_payload_id for row in projected_rows.values() if row.raw_payload_id is not None}
+    projected_raws = await _project_raws(session, raw_payload_ids)
     projected_connections = await _project_connections(
-        session,
-        {
-            row.integration_connection_id
-            for row in projected_rows.values()
-            if row.integration_connection_id is not None
-        },
-    )
-    projected_intents = await _project_intents(
-        session,
-        {
-            row.delivery_intent_id
-            for row in projected_rows.values()
-            if row.delivery_intent_id is not None
-        },
+        session, _referenced_connection_ids(projected_raws)
     )
     if invoke_race_hook:
-        await _after_notifications_projection_for_test()
+        await _after_lab_results_projection_for_test()
     locked = await _lock_projected_graph(
         session,
         projected_rows=projected_rows,
         projected_connections=projected_connections,
-        projected_intents=projected_intents,
+        projected_raws=projected_raws,
     )
-    invocations = await _project_invocations(
-        session,
-        {
-            row.ai_invocation_id
-            for row in locked[0].values()
-            if row.ai_invocation_id is not None
-        },
+    files = await _project_files(session, _referenced_file_ids(locked[2]))
+    parser_invocations = await _project_parser_invocation_scope(
+        session, scope=scope, raws=locked[2]
     )
-    return (*locked, invocations)
+    return (*locked, files, parser_invocations)
 
 
 def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
@@ -1080,8 +1157,8 @@ def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
         return False, False
     if checkpoint.status == "completed":
         return row_id <= checkpoint.scan_high_watermark_id, False
-    raise NotificationOwnershipBackfillStateError(
-        "Stage-3S checkpoint has an unsupported state"
+    raise LabResultOwnershipBackfillStateError(
+        "Stage-3M checkpoint has an unsupported state"
     )
 
 
@@ -1092,24 +1169,32 @@ async def _referenced_connection_digest(
     high: int | None,
     lock_connections: bool,
 ) -> tuple[int, str]:
-    """Page the referenced destination set, locking it before any outbox row."""
+    """Page the referenced C set, optionally locking it before any fact row."""
 
     count = 0
     digest = _EMPTY_SHA256
     cursor: uuid.UUID | None = None
-    while True:
-        query = select(_TABLE.c.integration_connection_id.label("connection_id")).where(
-            _TABLE.c.id > low,
-            _TABLE.c.integration_connection_id.is_not(None),
+    raw_table = RawPayload.__table__
+    raw_refs = (
+        select(raw_table.c.integration_connection_id.label("connection_id"))
+        .select_from(
+            _TABLE.join(raw_table, _TABLE.c.raw_payload_id == raw_table.c.id)
         )
-        if high is not None:
-            query = query.where(_TABLE.c.id <= high)
+        .where(
+            _TABLE.c.id > low,
+            raw_table.c.integration_connection_id.is_not(None),
+        )
+    )
+    if high is not None:
+        raw_refs = raw_refs.where(_TABLE.c.id <= high)
+    refs = raw_refs.distinct().subquery()
+    while True:
+        query = select(refs.c.connection_id)
         if cursor is not None:
-            query = query.where(_TABLE.c.integration_connection_id > cursor)
+            query = query.where(refs.c.connection_id > cursor)
         connection_ids = list(
             await session.scalars(
-                query.distinct()
-                .order_by(_TABLE.c.integration_connection_id)
+                query.order_by(refs.c.connection_id)
                 .limit(_PAGE_SIZE)
             )
         )
@@ -1117,67 +1202,54 @@ async def _referenced_connection_digest(
             break
         projected = await _project_connections(session, set(connection_ids))
         if set(projected) != set(connection_ids):
-            raise NotificationOwnershipBackfillStateError(
-                "a notification references a missing destination account"
+            raise LabResultOwnershipBackfillStateError(
+                "a lab result references a missing provider connection"
             )
         if lock_connections:
             await _lock_projected_connections(session, projected)
         for connection_id in connection_ids:
-            digest = _extend(
-                digest, ["notifications_connection", connection_id]
-            )
+            digest = _extend(digest, ["lab_results_connection", connection_id])
             count += 1
         cursor = connection_ids[-1]
     return count, digest
 
 
-async def _referenced_intent_digest(
+async def _referenced_raw_digest(
     session: AsyncSession,
     *,
     low: int,
     high: int | None,
-    lock_intents: bool,
+    lock_raws: bool,
 ) -> tuple[int, str]:
     count = 0
     digest = _EMPTY_SHA256
-    cursor: uuid.UUID | None = None
+    cursor = 0
     while True:
-        query = select(_TABLE.c.delivery_intent_id).where(
+        query = select(_TABLE.c.raw_payload_id).where(
             _TABLE.c.id > low,
-            _TABLE.c.delivery_intent_id.is_not(None),
+            _TABLE.c.raw_payload_id.is_not(None),
+            _TABLE.c.raw_payload_id > cursor,
         )
         if high is not None:
             query = query.where(_TABLE.c.id <= high)
-        if cursor is not None:
-            query = query.where(_TABLE.c.delivery_intent_id > cursor)
-        intent_ids = list(
+        raw_payload_ids = list(
             await session.scalars(
-                query.distinct()
-                .order_by(_TABLE.c.delivery_intent_id)
-                .limit(_PAGE_SIZE)
+                query.distinct().order_by(_TABLE.c.raw_payload_id).limit(_PAGE_SIZE)
             )
         )
-        if not intent_ids:
+        if not raw_payload_ids:
             break
-        projected = await _project_intents(session, set(intent_ids))
-        if set(projected) != set(intent_ids):
-            raise NotificationOwnershipBackfillStateError(
-                "a notification references a missing delivery intent"
+        projected = await _project_raws(session, set(raw_payload_ids))
+        if set(projected) != set(raw_payload_ids):
+            raise LabResultOwnershipBackfillStateError(
+                "a lab result references a missing raw payload"
             )
-        if lock_intents:
-            await _lock_projected_intents(session, projected)
-        for intent_id in intent_ids:
-            digest = _extend(
-                digest,
-                [
-                    "notifications_intent",
-                    intent_id,
-                    projected[intent_id].subject_id,
-                    projected[intent_id].recipient_user_id,
-                ],
-            )
+        if lock_raws:
+            await _lock_projected_raws(session, projected)
+        for raw_payload_id in raw_payload_ids:
+            digest = _extend(digest, ["lab_results_raw", raw_payload_id])
             count += 1
-        cursor = intent_ids[-1]
+        cursor = raw_payload_ids[-1]
     return count, digest
 
 
@@ -1197,17 +1269,8 @@ async def _scan_current(
     cursor = low
     locked_ref_count = 0
     locked_ref_digest = _EMPTY_SHA256
-    locked_intent_count = 0
-    locked_intent_digest = _EMPTY_SHA256
-    if (checkpoint is None or checkpoint.status == "running") and (
-        await session.scalar(
-            select(_TABLE.c.id).where(_TABLE.c.subject_id.is_(None)).limit(1)
-        )
-        is not None
-    ):
-        # While a message still needs adoption the recipient must be resolvable,
-        # so an ambiguous Telegram root surfaces in the read-only preflight.
-        await _reviewed_recipient(session, scope=scope)
+    locked_raw_count = 0
+    locked_raw_digest = _EMPTY_SHA256
     if for_update:
         locked_ref_count, locked_ref_digest = await _referenced_connection_digest(
             session,
@@ -1215,11 +1278,11 @@ async def _scan_current(
             high=high,
             lock_connections=True,
         )
-        locked_intent_count, locked_intent_digest = await _referenced_intent_digest(
+        locked_raw_count, locked_raw_digest = await _referenced_raw_digest(
             session,
             low=low,
             high=high,
-            lock_intents=True,
+            lock_raws=True,
         )
     while True:
         query = (
@@ -1233,43 +1296,47 @@ async def _scan_current(
         ids = list(await session.scalars(query))
         if not ids:
             break
-        raw_rows = await session.execute(
-            _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
-        )
-        projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
-        connections = await _project_connections(
-            session,
-            {
-                row.integration_connection_id
-                for row in projected_rows.values()
-                if row.integration_connection_id is not None
-            },
-        )
-        intents = await _project_intents(
-            session,
-            {
-                row.delivery_intent_id
-                for row in projected_rows.values()
-                if row.delivery_intent_id is not None
-            },
-        )
-        invocations = await _project_invocations(
-            session,
-            {
-                row.ai_invocation_id
-                for row in projected_rows.values()
-                if row.ai_invocation_id is not None
-            },
-        )
-        rows = (
-            await _lock_projected_rows(session, projected_rows)
-            if for_update
-            else projected_rows
-        )
-        if set(rows) != set(ids):
-            raise NotificationOwnershipBackfillStateError(
-                "a projected notification page changed during validation"
+        if for_update:
+            raw_rows = await session.execute(
+                _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
             )
+            projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
+            raws = await _project_raws(
+                session,
+                {
+                    row.raw_payload_id
+                    for row in projected_rows.values()
+                    if row.raw_payload_id is not None
+                },
+            )
+            connections = await _project_connections(
+                session, _referenced_connection_ids(raws)
+            )
+            rows = await _lock_projected_rows(session, projected_rows)
+        else:
+            raw_rows = await session.execute(
+                _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
+            )
+            rows = {row.id: row for row in map(_row_values, raw_rows)}
+            raws = await _project_raws(
+                session,
+                {
+                    row.raw_payload_id
+                    for row in rows.values()
+                    if row.raw_payload_id is not None
+                },
+            )
+            connections = await _project_connections(
+                session, _referenced_connection_ids(raws)
+            )
+        if set(rows) != set(ids):
+            raise LabResultOwnershipBackfillStateError(
+                "a projected lab result page changed during validation"
+            )
+        files = await _project_files(session, _referenced_file_ids(raws))
+        parser_invocations = await _project_parser_invocation_scope(
+            session, scope=scope, raws=raws
+        )
         for row_id in ids:
             row = rows[row_id]
             historical, allow_unowned = _row_policy(row.id, checkpoint)
@@ -1277,8 +1344,9 @@ async def _scan_current(
                 row,
                 scope=scope,
                 connections=connections,
-                intents=intents,
-                invocations=invocations,
+                raws=raws,
+                files=files,
+                parser_invocations=parser_invocations,
                 historical=historical,
                 allow_unowned=allow_unowned,
             )
@@ -1286,8 +1354,8 @@ async def _scan_current(
                 checkpoint.status == "completed"
                 or row.id <= checkpoint.last_scanned_id
             ):
-                raise NotificationOwnershipBackfillStateError(
-                    "a processed notification row remained unowned"
+                raise LabResultOwnershipBackfillStateError(
+                    "a processed lab result row remained unowned"
                 )
             if digest:
                 data = _extend(data, _data_envelope(row))
@@ -1306,23 +1374,20 @@ async def _scan_current(
             current_ref_count != locked_ref_count
             or current_ref_digest != locked_ref_digest
         ):
-            raise NotificationOwnershipBackfillStateError(
-                "notification recipient references changed during validation"
+            raise LabResultOwnershipBackfillStateError(
+                "lab result provider references changed during validation"
             )
-        current_intent_count, current_intent_digest = await _referenced_intent_digest(
+        current_raw_count, current_raw_digest = await _referenced_raw_digest(
             session,
             low=low,
             high=high,
-            lock_intents=False,
+            lock_raws=False,
         )
-        if (
-            current_intent_count != locked_intent_count
-            or current_intent_digest != locked_intent_digest
-        ):
-            raise NotificationOwnershipBackfillStateError(
-                "notification delivery-intent references changed during validation"
+        if current_raw_count != locked_raw_count or current_raw_digest != locked_raw_digest:
+            raise LabResultOwnershipBackfillStateError(
+                "lab result raw references changed during validation"
             )
-    return count, data, ownership
+        return count, data, ownership
 
 
 async def _bounds(session: AsyncSession) -> tuple[int, int]:
@@ -1333,8 +1398,8 @@ async def _bounds(session: AsyncSession) -> tuple[int, int]:
     ).one()
     high, count = int(high), int(count)
     if not _valid_counter(high) or not _valid_counter(count) or count > high:
-        raise NotificationOwnershipBackfillValidationError(
-            "notification snapshot bounds are invalid"
+        raise LabResultOwnershipBackfillValidationError(
+            "lab result snapshot bounds are invalid"
         )
     return high, count
 
@@ -1357,10 +1422,10 @@ async def _status_result(
     checkpoint: Any | None,
     validate: bool,
     for_update: bool,
-) -> NotificationOwnershipBackfillPreflightResult:
+) -> LabResultOwnershipBackfillPreflightResult:
     if checkpoint is None:
         high, snapshot = await _bounds(session)
-        status = NotificationOwnershipBackfillStatus.NOT_STARTED
+        status = LabResultOwnershipBackfillStatus.NOT_STARTED
         scanned = updated = unchanged = rows_above = 0
         remaining = snapshot
         before = after = ownership = _EMPTY_SHA256
@@ -1370,7 +1435,7 @@ async def _status_result(
             checkpoint.scan_high_watermark_id,
             checkpoint.snapshot_rows,
         )
-        status = NotificationOwnershipBackfillStatus(checkpoint.status)
+        status = LabResultOwnershipBackfillStatus(checkpoint.status)
         scanned, updated, unchanged = (
             checkpoint.scanned_rows,
             checkpoint.updated_rows,
@@ -1390,7 +1455,7 @@ async def _status_result(
             checkpoint.data_checksum_after,
             checkpoint.ownership_checksum_after,
         )
-        completed = status is NotificationOwnershipBackfillStatus.COMPLETED
+        completed = status is LabResultOwnershipBackfillStatus.COMPLETED
     if validate:
         await _scan_current(
             session,
@@ -1409,11 +1474,11 @@ async def _status_result(
                 or 0
             )
             if frozen_count != snapshot:
-                raise NotificationOwnershipBackfillStateError(
-                    "the notification log snapshot cardinality changed"
+                raise LabResultOwnershipBackfillStateError(
+                    "the lab result snapshot cardinality changed"
                 )
-    return NotificationOwnershipBackfillPreflightResult(
-        phase_key=NOTIFICATION_OWNERSHIP_BACKFILL_PHASE,
+    return LabResultOwnershipBackfillPreflightResult(
+        phase_key=LAB_RESULT_OWNERSHIP_BACKFILL_PHASE,
         subject_id=scope.subject_id,
         status=status,
         tables_total=1,
@@ -1431,28 +1496,28 @@ async def _status_result(
 
 
 def _batch_result(
-    result: NotificationOwnershipBackfillPreflightResult,
+    result: LabResultOwnershipBackfillPreflightResult,
     *,
     scanned: int,
     updated: int,
     unchanged: int,
-) -> NotificationOwnershipBackfillBatchResult:
-    return NotificationOwnershipBackfillBatchResult(
+) -> LabResultOwnershipBackfillBatchResult:
+    return LabResultOwnershipBackfillBatchResult(
         **{
             field: getattr(result, field)
-            for field in NotificationOwnershipBackfillPreflightResult.__dataclass_fields__
+            for field in LabResultOwnershipBackfillPreflightResult.__dataclass_fields__
         },
-        batch_table="notifications",
+        batch_table="lab_results",
         batch_scanned_rows=scanned,
         batch_updated_rows=updated,
         batch_unchanged_rows=unchanged,
     )
 
 
-async def preflight_notification_ownership_backfill(
+async def preflight_lab_result_ownership_backfill(
     session: AsyncSession,
-) -> NotificationOwnershipBackfillPreflightResult:
-    """Validate the fixed Stage-3S graph without mutation."""
+) -> LabResultOwnershipBackfillPreflightResult:
+    """Validate the fixed Stage-3M graph without mutation."""
 
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=False)
@@ -1477,15 +1542,15 @@ async def preflight_notification_ownership_backfill(
 def _validate_restore_bounds(snapshot_bounds: Any) -> tuple[int, int]:
     if (
         not isinstance(snapshot_bounds, Mapping)
-        or set(snapshot_bounds) != {"notifications"}
+        or set(snapshot_bounds) != {"lab_results"}
     ):
-        raise NotificationOwnershipBackfillValidationError(
-            "snapshot_bounds must contain the exact notification log table catalog"
+        raise LabResultOwnershipBackfillValidationError(
+            "snapshot_bounds must contain the exact weight table catalog"
         )
-    pair = snapshot_bounds["notifications"]
+    pair = snapshot_bounds["lab_results"]
     if not isinstance(pair, tuple) or len(pair) != 2:
-        raise NotificationOwnershipBackfillValidationError(
-            "the notification log snapshot bound must be an exact pair"
+        raise LabResultOwnershipBackfillValidationError(
+            "the lab result snapshot bound must be an exact pair"
         )
     high, count = pair
     if (
@@ -1494,30 +1559,28 @@ def _validate_restore_bounds(snapshot_bounds: Any) -> tuple[int, int]:
         or count > high
         or (high == 0) != (count == 0)
     ):
-        raise NotificationOwnershipBackfillValidationError(
-            "the notification log snapshot bound is an invalid ID/count pair"
+        raise LabResultOwnershipBackfillValidationError(
+            "the lab result snapshot bound is an invalid ID/count pair"
         )
     return high, count
 
 
-async def prepare_notification_ownership_backfill_for_portability_v1_restore(
+async def reset_lab_result_ownership_backfill_for_portability_v1_restore(
     session: AsyncSession,
+    *,
+    snapshot_bounds: Mapping[str, tuple[int, int]],
 ) -> None:
-    """Prepare or preserve retained Stage-3S evidence before replacement.
+    """Reset Stage-3M before the caller atomically replaces portable data."""
 
-    Backup v1 neither exports nor replaces delivered messages, so this phase
-    never accepts incoming bounds: it validates the retained local delivery log
-    and, on a first restore, freezes it as its own reviewed snapshot.
-    """
-
+    high, count = _validate_restore_bounds(snapshot_bounds)
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=True)
         dependencies = await _load_checkpoints(
             session, _PRIOR_PHASES, for_update=True
         )
         if set(dependencies) != set(_PRIOR_PHASES):
-            raise NotificationOwnershipBackfillDependencyError(
-                "Stage-3A through Stage-3R checkpoints are incomplete"
+            raise LabResultOwnershipBackfillDependencyError(
+                "Stage-3A through Stage-3L checkpoints are incomplete"
             )
         for phase in _PRIOR_PHASES:
             _validate_checkpoint(
@@ -1528,23 +1591,16 @@ async def prepare_notification_ownership_backfill_for_portability_v1_restore(
         checkpoint = own.get(_PHASE_KEY)
         _validate_own(checkpoint, scope=scope)
         if checkpoint is None:
-            high, count = await _bounds(session)
             await _scan_current(
                 session,
                 scope=scope,
                 checkpoint=None,
-                high=high,
                 for_update=True,
                 digest=False,
             )
-            if await _bounds(session) != (high, count):
-                raise NotificationOwnershipBackfillStateError(
-                    "retained notification bounds changed during restore preparation"
-                )
-            await _create_checkpoint(session, scope=scope, high=high, count=count)
         else:
-            # A portability replacement may not conceal drift in the retained
-            # delivery log it is not allowed to carry.
+            # A portability replacement is allowed to reset progress, not to
+            # conceal drift in the outgoing checkpoint evidence.
             await _status_result(
                 session,
                 scope=scope,
@@ -1552,6 +1608,26 @@ async def prepare_notification_ownership_backfill_for_portability_v1_restore(
                 validate=True,
                 for_update=True,
             )
+        status = "completed" if (high, count) == (0, 0) else "running"
+        if checkpoint is None:
+            checkpoint = OwnershipBackfillCheckpoint(
+                phase_key=_PHASE_KEY,
+                subject_id=scope.subject_id,
+            )
+            session.add(checkpoint)
+        checkpoint.status = status
+        checkpoint.scan_high_watermark_id = high
+        checkpoint.snapshot_rows = count
+        checkpoint.last_scanned_id = 0
+        checkpoint.scanned_rows = 0
+        checkpoint.updated_rows = 0
+        checkpoint.unchanged_rows = 0
+        checkpoint.data_checksum_before = _EMPTY_SHA256
+        checkpoint.data_checksum_after = _EMPTY_SHA256
+        checkpoint.ownership_checksum_after = _EMPTY_SHA256
+        checkpoint.started_at = func.now()
+        checkpoint.updated_at = func.now()
+        checkpoint.completed_at = func.now() if status == "completed" else None
         await session.flush()
 
 
@@ -1582,29 +1658,19 @@ async def _create_checkpoint(
 
 
 def _set_cached_subject(
-    session: AsyncSession,
-    row_id: int,
-    subject_id: uuid.UUID,
-    recipient_user_id: uuid.UUID,
-    connection_id: uuid.UUID,
+    session: AsyncSession, row_id: int, subject_id: uuid.UUID
 ) -> None:
-    cached = session.identity_map.get((Notification, (row_id,), None))
+    cached = session.identity_map.get((LabResult, (row_id,), None))
     if cached is not None:
         attributes.set_committed_value(cached, "subject_id", subject_id)
-        attributes.set_committed_value(
-            cached, "recipient_user_id", recipient_user_id
-        )
-        attributes.set_committed_value(
-            cached, "integration_connection_id", connection_id
-        )
 
 
-async def run_notification_ownership_backfill_batch(
+async def run_lab_result_ownership_backfill_batch(
     session: AsyncSession,
     *,
-    batch_size: int = DEFAULT_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE,
-) -> NotificationOwnershipBackfillBatchResult:
-    """Advance the fixed notification log by at most one primary-key batch."""
+    batch_size: int = DEFAULT_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE,
+) -> LabResultOwnershipBackfillBatchResult:
+    """Advance the fixed lab result table by at most one primary-key batch."""
 
     size = _validate_batch_size(batch_size)
     with session.no_autoflush:
@@ -1659,10 +1725,15 @@ async def run_notification_ownership_backfill_batch(
                 .limit(size)
             )
         )
-        rows, connections, intents, invocations = await _project_and_lock_ids(
+        (
+            rows,
+            connections,
+            raws,
+            files,
+            parser_invocations,
+        ) = await _project_and_lock_ids(
             session, ids, scope=scope, invoke_race_hook=True
         )
-        destination = await _reviewed_recipient(session, scope=scope)
 
         before = checkpoint.data_checksum_before
         after = checkpoint.data_checksum_after
@@ -1675,8 +1746,9 @@ async def run_notification_ownership_backfill_batch(
                 row,
                 scope=scope,
                 connections=connections,
-                intents=intents,
-                invocations=invocations,
+                raws=raws,
+                files=files,
+                parser_invocations=parser_invocations,
                 historical=True,
                 allow_unowned=True,
             )
@@ -1688,26 +1760,14 @@ async def run_notification_ownership_backfill_batch(
                         _TABLE.c.id == row_id,
                         _TABLE.c.subject_id.is_(None),
                         _TABLE.c.actor_user_id.is_(None),
-                        _TABLE.c.recipient_user_id.is_(None),
-                        _TABLE.c.integration_connection_id.is_(None),
                     )
-                    .values(
-                        subject_id=scope.subject_id,
-                        recipient_user_id=scope.owner_user_id,
-                        integration_connection_id=destination.id,
-                    )
+                    .values(subject_id=scope.subject_id, updated_at=row.updated_at)
                 )
                 if result.rowcount != 1:
-                    raise NotificationOwnershipBackfillStateError(
-                        "notification ownership changed during adoption"
+                    raise LabResultOwnershipBackfillStateError(
+                        "lab result ownership changed during adoption"
                     )
-                _set_cached_subject(
-                    session,
-                    row_id,
-                    scope.subject_id,
-                    scope.owner_user_id,
-                    destination.id,
-                )
+                _set_cached_subject(session, row_id, scope.subject_id)
                 updated_count += 1
             else:
                 unchanged_count += 1
@@ -1716,36 +1776,28 @@ async def run_notification_ownership_backfill_batch(
             )
             current_result = current_raw.one_or_none()
             if current_result is None:
-                raise NotificationOwnershipBackfillStateError(
-                    "a notification disappeared during adoption"
+                raise LabResultOwnershipBackfillStateError(
+                    "a lab result disappeared during adoption"
                 )
             current = _row_values(current_result)
-            current_connections = dict(connections)
-            current_connections.setdefault(destination.id, destination)
-            if (
-                current.integration_connection_id is not None
-                and current.integration_connection_id not in current_connections
-            ):
-                raise NotificationOwnershipBackfillStateError(
-                    "notification destination changed during adoption"
-                )
             if _validate_row(
                 current,
                 scope=scope,
-                connections=current_connections,
-                intents=intents,
-                invocations=invocations,
+                connections=connections,
+                raws=raws,
+                files=files,
+                parser_invocations=parser_invocations,
                 historical=True,
                 allow_unowned=False,
             ):
-                raise NotificationOwnershipBackfillStateError(
-                    "a processed notification remained unowned"
+                raise LabResultOwnershipBackfillStateError(
+                    "a processed lab result remained unowned"
                 )
             after = _extend(after, _data_envelope(current))
             ownership = _extend(ownership, _ownership_envelope(current))
         if before != after:
-            raise NotificationOwnershipBackfillStateError(
-                "notification data changed while ownership was backfilled"
+            raise LabResultOwnershipBackfillStateError(
+                "lab result data changed while ownership was backfilled"
             )
         checkpoint.scanned_rows += len(ids)
         checkpoint.updated_rows += updated_count
@@ -1776,8 +1828,8 @@ async def run_notification_ownership_backfill_batch(
                 or data != checkpoint.data_checksum_after
                 or current_ownership != checkpoint.ownership_checksum_after
             ):
-                raise NotificationOwnershipBackfillStateError(
-                    "the notification log snapshot changed during finalization"
+                raise LabResultOwnershipBackfillStateError(
+                    "the lab result snapshot changed during finalization"
                 )
             checkpoint.last_scanned_id = checkpoint.scan_high_watermark_id
             checkpoint.status = "completed"
@@ -1802,21 +1854,21 @@ async def run_notification_ownership_backfill_batch(
 
 
 __all__ = [
-    "NOTIFICATION_OWNERSHIP_BACKFILL_PHASE",
-    "NOTIFICATION_OWNERSHIP_BACKFILL_TABLES",
-    "NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
-    "DEFAULT_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "MAX_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "NotificationOwnershipBackfillStatus",
-    "NotificationOwnershipBackfillError",
-    "NotificationOwnershipBackfillValidationError",
-    "NotificationOwnershipBackfillIdentityError",
-    "NotificationOwnershipBackfillDependencyError",
-    "NotificationOwnershipBackfillStateError",
-    "NotificationOwnershipBackfillProvenanceError",
-    "NotificationOwnershipBackfillPreflightResult",
-    "NotificationOwnershipBackfillBatchResult",
-    "preflight_notification_ownership_backfill",
-    "run_notification_ownership_backfill_batch",
-    "prepare_notification_ownership_backfill_for_portability_v1_restore",
+    "LAB_RESULT_OWNERSHIP_BACKFILL_PHASE",
+    "LAB_RESULT_OWNERSHIP_BACKFILL_TABLES",
+    "LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
+    "DEFAULT_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "MAX_LAB_RESULT_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "LabResultOwnershipBackfillStatus",
+    "LabResultOwnershipBackfillError",
+    "LabResultOwnershipBackfillValidationError",
+    "LabResultOwnershipBackfillIdentityError",
+    "LabResultOwnershipBackfillDependencyError",
+    "LabResultOwnershipBackfillStateError",
+    "LabResultOwnershipBackfillProvenanceError",
+    "LabResultOwnershipBackfillPreflightResult",
+    "LabResultOwnershipBackfillBatchResult",
+    "preflight_lab_result_ownership_backfill",
+    "run_lab_result_ownership_backfill_batch",
+    "reset_lab_result_ownership_backfill_for_portability_v1_restore",
 ]

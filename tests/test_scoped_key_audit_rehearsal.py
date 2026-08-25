@@ -33,7 +33,7 @@ from vitals.models.base import Base
 from vitals.services import conflict_catalog, hrt_catalog
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
 from vitals.scoped_keys import SCOPED_KEYS
-from vitals.services.scoped_key_audit_service import SCOPED_KEY_AUDIT_PHASE
+from vitals.operations.ownership.audit import SCOPED_KEY_AUDIT_PHASE
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots
 from vitals.ownership import PRE_OWNERSHIP_CONTRACT_REVISION
 

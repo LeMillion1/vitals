@@ -31,7 +31,7 @@ from vitals.models.base import Base
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.scoped_keys import SCOPED_KEYS, ScopedIndex, ScopedKeySpec
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.ownership_validation_service import (
+from vitals.operations.ownership.validate import (
     OwnershipValidationError,
     OwnershipValidationStatus,
     preflight_ownership_validation,

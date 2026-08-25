@@ -21,14 +21,14 @@ from vitals.models.hrt import (
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.services import hrt_catalog
-from vitals.services import hrt_compound_ownership_backfill_service as service
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership import hrt_compound as service
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     HRT_COMPOUND_OWNERSHIP_BACKFILL_PHASE,
     HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES,
@@ -41,13 +41,13 @@ from vitals.services.hrt_compound_ownership_backfill_service import (
     reset_hrt_compound_backfill_for_portability_v1_restore,
     run_hrt_compound_ownership_backfill_batch,
 )
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
 
 
 _EMPTY = hashlib.sha256(b"").hexdigest()

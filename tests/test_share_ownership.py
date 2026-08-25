@@ -16,7 +16,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.share import SharedReport
 from vitals.models.weight import WeightLog
 from vitals.services import identity_service, share_service
-from vitals.services.shared_report_ownership_backfill_service import (
+from vitals.operations.ownership.shared_report import (
     SharedReportHistoricalBridgeState,
     SharedReportOwnershipBackfillStateError,
 )
@@ -103,7 +103,7 @@ def _bridge(
     high_watermark: int,
     completed: bool = False,
 ) -> None:
-    from vitals.services import shared_report_ownership_backfill_service
+    from vitals.ownership_transition import bridges as ownership_bridges
 
     async def load(session, *, subject_id):
         del session, subject_id
@@ -114,7 +114,7 @@ def _bridge(
         )
 
     monkeypatch.setattr(
-        shared_report_ownership_backfill_service,
+        ownership_bridges,
         "shared_report_historical_bridge_state",
         load,
     )
@@ -332,7 +332,7 @@ async def test_checkpoint_errors_fail_owner_and_purge_and_are_public_not_found(
     legacy_owner_roots,
     monkeypatch,
 ):
-    from vitals.services import shared_report_ownership_backfill_service
+    from vitals.ownership_transition import bridges as ownership_bridges
 
     report = _bare_report(
         "malformed-checkpoint",
@@ -350,7 +350,7 @@ async def test_checkpoint_errors_fail_owner_and_purge_and_are_public_not_found(
         )
 
     monkeypatch.setattr(
-        shared_report_ownership_backfill_service,
+        ownership_bridges,
         "shared_report_historical_bridge_state",
         reject,
     )

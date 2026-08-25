@@ -17,24 +17,24 @@ from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.models.system_alert import SystemAlert
 from vitals.services import conflict_catalog
-from vitals.services import conflict_rule_ownership_backfill_service as service
+from vitals.operations.ownership import conflict_rule as service
 from vitals.services.conflict_activation_service import SETTING_KEY
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
 
 
 _EMPTY = hashlib.sha256(b"").hexdigest()

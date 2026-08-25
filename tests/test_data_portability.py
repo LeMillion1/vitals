@@ -43,86 +43,87 @@ from vitals.models.supplements import Supplement
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import FileAsset, IntegrationConnection
 from vitals.models.weight import BodyMeasurement, ProgressPhoto, WeightLog
+from vitals.operations.ownership import portability_v1
+from vitals.operations.ownership.portability_v1 import import_full
 from vitals.services import conflict_catalog, data_portability_service
 from vitals.services.data_portability_service import (
     PortabilityError,
     export_full,
     export_llm,
-    import_full,
 )
-from vitals.services.conflict_rule_ownership_backfill_service import (
+from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     CONFLICT_RULE_OWNERSHIP_BACKFILL_TABLES,
 )
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     HEVY_CHILD_OWNERSHIP_BACKFILL_TABLES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     HRT_CHILD_OWNERSHIP_BACKFILL_TABLES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES,
 )
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
     NORMALIZED_MANUAL_TABLES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     PROVIDER_RAW_OWNERSHIP_BACKFILL_TABLES,
 )
-from vitals.services.progress_photo_ownership_backfill_service import (
+from vitals.operations.ownership.progress_photo import (
     PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     PROGRESS_PHOTO_OWNERSHIP_BACKFILL_TABLES,
     ProgressPhotoOwnershipBackfillStateError,
 )
-from vitals.services.raw_ownership_backfill_service import (
+from vitals.operations.ownership.raw import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
     RawOwnershipBackfillIdentityError,
     RawOwnershipBackfillStateError,
 )
-from vitals.services.shared_report_ownership_backfill_service import (
+from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.system_alert_ownership_backfill_service import (
+from vitals.operations.ownership.system_alert import (
     SYSTEM_ALERT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     SystemAlertOwnershipBackfillStateError,
 )
-from vitals.services.notification_ownership_backfill_service import (
+from vitals.operations.ownership.notification import (
     NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     NotificationOwnershipBackfillStateError,
 )
-from vitals.services.weekly_digest_ownership_backfill_service import (
+from vitals.operations.ownership.weekly_digest import (
     WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     WeeklyDigestOwnershipBackfillStateError,
 )
-from vitals.services.garmin_weight_export_ownership_backfill_service import (
+from vitals.operations.ownership.garmin_weight_export import (
     GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     GarminWeightExportOwnershipBackfillStateError,
 )
-from vitals.services.body_scan_metric_ownership_backfill_service import (
+from vitals.operations.ownership.body_scan_metric import (
     BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     BodyScanMetricOwnershipBackfillStateError,
 )
-from vitals.services.body_scan_ownership_backfill_service import (
+from vitals.operations.ownership.body_scan import (
     BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     BODY_SCAN_OWNERSHIP_BACKFILL_TABLES,
     BodyScanOwnershipBackfillStateError,
 )
-from vitals.services.genetic_variant_ownership_backfill_service import (
+from vitals.operations.ownership.genetic_variant import (
     GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     GENETIC_VARIANT_OWNERSHIP_BACKFILL_TABLES,
     GeneticVariantOwnershipBackfillStateError,
 )
-from vitals.services.lab_result_ownership_backfill_service import (
+from vitals.operations.ownership.lab_result import (
     LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     LAB_RESULT_OWNERSHIP_BACKFILL_TABLES,
     LabResultOwnershipBackfillStateError,
 )
-from vitals.services.weight_log_ownership_backfill_service import (
+from vitals.operations.ownership.weight_log import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     WEIGHT_LOG_OWNERSHIP_BACKFILL_TABLES,
     WeightLogOwnershipBackfillStateError,
@@ -555,7 +556,7 @@ async def test_full_import_blocks_raw_backfill_atomically_and_preserves_other_ph
     original_subject = data_portability_service._single_local_subject_id
     original_preflight = data_portability_service._refuse_retained_raw_references
     original_block = (
-        data_portability_service.block_raw_ownership_backfill_for_portability_v1_restore
+        portability_v1.block_raw_ownership_backfill_for_portability_v1_restore
     )
 
     async def tracked_governance(*args, **kwargs):
@@ -590,7 +591,7 @@ async def test_full_import_blocks_raw_backfill_atomically_and_preserves_other_ph
         tracked_preflight,
     )
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "block_raw_ownership_backfill_for_portability_v1_restore",
         tracked_block,
     )
@@ -1003,7 +1004,7 @@ async def test_hrt_child_replacement_rejects_invalid_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_hrt_child_backfill_for_portability_v1_restore",
         unexpected_reset,
     )
@@ -1122,7 +1123,7 @@ async def test_provider_replacement_rejects_invalid_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "block_provider_raw_ownership_backfill_for_portability_v1_restore",
         unexpected_block,
     )
@@ -1240,7 +1241,7 @@ async def test_hevy_child_replacement_rejects_invalid_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "block_hevy_child_ownership_backfill_for_portability_v1_restore",
         unexpected_block,
     )
@@ -1492,7 +1493,7 @@ async def test_conflict_rule_replacement_rejects_invalid_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_conflict_rule_backfill_for_portability_v1_restore",
         unexpected_reset,
     )
@@ -1775,7 +1776,7 @@ async def test_progress_photo_replacement_rejects_invalid_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "block_progress_photo_ownership_backfill_for_portability_v1_restore",
         unexpected_block,
     )
@@ -1803,7 +1804,7 @@ async def test_full_import_calls_progress_block_after_conflict_reset(
 ):
     order: list[str] = []
     original_conflict_reset = (
-        data_portability_service.reset_conflict_rule_backfill_for_portability_v1_restore
+        portability_v1.reset_conflict_rule_backfill_for_portability_v1_restore
     )
 
     async def tracked_conflict_reset(*args, **kwargs):
@@ -1815,12 +1816,12 @@ async def test_full_import_calls_progress_block_after_conflict_reset(
         raise ProgressPhotoOwnershipBackfillStateError("synthetic stop")
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_conflict_rule_backfill_for_portability_v1_restore",
         tracked_conflict_reset,
     )
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "block_progress_photo_ownership_backfill_for_portability_v1_restore",
         stopping_progress_block,
     )
@@ -1843,10 +1844,10 @@ async def test_full_import_preflights_progress_after_conflict_rules(
 ):
     order: list[str] = []
     original_conflict_preflight = (
-        data_portability_service.preflight_conflict_rule_ownership_backfill
+        portability_v1.preflight_conflict_rule_ownership_backfill
     )
     original_progress_preflight = (
-        data_portability_service.preflight_progress_photo_ownership_backfill
+        portability_v1.preflight_progress_photo_ownership_backfill
     )
 
     async def tracked_conflict_preflight(*args, **kwargs):
@@ -1858,12 +1859,12 @@ async def test_full_import_preflights_progress_after_conflict_rules(
         return await original_progress_preflight(*args, **kwargs)
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "preflight_conflict_rule_ownership_backfill",
         tracked_conflict_preflight,
     )
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "preflight_progress_photo_ownership_backfill",
         tracked_progress_preflight,
     )
@@ -2372,7 +2373,7 @@ async def test_system_alert_post_load_rejection_rolls_back_replacement(
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
-            data_portability_service,
+            portability_v1,
             "preflight_system_alert_ownership_backfill",
             rejected_preflight,
         )
@@ -2452,7 +2453,7 @@ async def test_notification_post_load_rejection_rolls_back_replacement(
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
-            data_portability_service,
+            portability_v1,
             "preflight_notification_ownership_backfill",
             rejected_preflight,
         )
@@ -2517,7 +2518,7 @@ async def test_weekly_digest_post_load_rejection_rolls_back_replacement(
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
-            data_portability_service,
+            portability_v1,
             "preflight_weekly_digest_ownership_backfill",
             rejected_preflight,
         )
@@ -2624,7 +2625,7 @@ async def test_garmin_outbox_post_load_rejection_rolls_back_replacement(
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
-            data_portability_service,
+            portability_v1,
             "preflight_garmin_weight_export_ownership_backfill",
             rejected_preflight,
         )
@@ -2695,7 +2696,7 @@ async def test_body_scan_metric_post_load_rejection_rolls_back_replacement(
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
-            data_portability_service,
+            portability_v1,
             "preflight_body_scan_metric_ownership_backfill",
             rejected_preflight,
         )
@@ -2729,7 +2730,7 @@ async def test_body_scan_replacement_rejects_invalid_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "block_body_scan_ownership_backfill_for_portability_v1_restore",
         unexpected_block,
     )
@@ -2755,7 +2756,7 @@ async def test_full_import_blocks_body_scans_after_genetic_variant_reset(
 ):
     order: list[str] = []
     original_genetic_reset = (
-        data_portability_service
+        portability_v1
         .reset_genetic_variant_ownership_backfill_for_portability_v1_restore
     )
 
@@ -2768,12 +2769,12 @@ async def test_full_import_blocks_body_scans_after_genetic_variant_reset(
         raise BodyScanOwnershipBackfillStateError("sensitive synthetic state")
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_genetic_variant_ownership_backfill_for_portability_v1_restore",
         tracked_genetic_reset,
     )
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "block_body_scan_ownership_backfill_for_portability_v1_restore",
         stopping_body_scan_block,
     )
@@ -2809,7 +2810,7 @@ async def test_genetic_variant_replacement_rejects_invalid_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_genetic_variant_ownership_backfill_for_portability_v1_restore",
         unexpected_reset,
     )
@@ -2835,7 +2836,7 @@ async def test_full_import_calls_genetic_variant_reset_after_lab_result_reset(
 ):
     order: list[str] = []
     original_lab_reset = (
-        data_portability_service
+        portability_v1
         .reset_lab_result_ownership_backfill_for_portability_v1_restore
     )
 
@@ -2848,12 +2849,12 @@ async def test_full_import_calls_genetic_variant_reset_after_lab_result_reset(
         raise GeneticVariantOwnershipBackfillStateError("sensitive synthetic state")
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_lab_result_ownership_backfill_for_portability_v1_restore",
         tracked_lab_reset,
     )
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_genetic_variant_ownership_backfill_for_portability_v1_restore",
         stopping_genetic_reset,
     )
@@ -2891,7 +2892,7 @@ async def test_genetic_variant_post_load_rejection_rolls_back_whole_replacement(
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
-            data_portability_service,
+            portability_v1,
             "preflight_genetic_variant_ownership_backfill",
             rejected_preflight,
         )
@@ -2930,7 +2931,7 @@ async def test_lab_result_replacement_rejects_invalid_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_lab_result_ownership_backfill_for_portability_v1_restore",
         unexpected_reset,
     )
@@ -2956,7 +2957,7 @@ async def test_full_import_calls_lab_result_reset_after_weight_log_reset(
 ):
     order: list[str] = []
     original_weight_reset = (
-        data_portability_service
+        portability_v1
         .reset_weight_log_ownership_backfill_for_portability_v1_restore
     )
 
@@ -2969,12 +2970,12 @@ async def test_full_import_calls_lab_result_reset_after_weight_log_reset(
         raise LabResultOwnershipBackfillStateError("sensitive synthetic state")
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_weight_log_ownership_backfill_for_portability_v1_restore",
         tracked_weight_reset,
     )
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_lab_result_ownership_backfill_for_portability_v1_restore",
         stopping_lab_result_reset,
     )
@@ -3014,7 +3015,7 @@ async def test_lab_result_post_load_rejection_rolls_back_whole_replacement(
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
-            data_portability_service,
+            portability_v1,
             "preflight_lab_result_ownership_backfill",
             rejected_preflight,
         )
@@ -3053,7 +3054,7 @@ async def test_weight_log_replacement_rejects_invalid_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_weight_log_ownership_backfill_for_portability_v1_restore",
         unexpected_reset,
     )
@@ -3079,7 +3080,7 @@ async def test_full_import_calls_weight_log_reset_after_shared_report_preparatio
 ):
     order: list[str] = []
     original_prepare = (
-        data_portability_service
+        portability_v1
         .prepare_shared_report_ownership_backfill_for_portability_v1_restore
     )
 
@@ -3092,12 +3093,12 @@ async def test_full_import_calls_weight_log_reset_after_shared_report_preparatio
         raise WeightLogOwnershipBackfillStateError("sensitive synthetic state")
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "prepare_shared_report_ownership_backfill_for_portability_v1_restore",
         tracked_prepare,
     )
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_weight_log_ownership_backfill_for_portability_v1_restore",
         stopping_weight_log_reset,
     )
@@ -3137,7 +3138,7 @@ async def test_weight_log_post_load_rejection_rolls_back_whole_replacement(
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
-            data_portability_service,
+            portability_v1,
             "preflight_weight_log_ownership_backfill",
             rejected_preflight,
         )
@@ -3176,7 +3177,7 @@ async def test_hrt_compound_replacement_rejects_invalid_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "reset_hrt_compound_backfill_for_portability_v1_restore",
         unexpected_reset,
     )
@@ -3227,7 +3228,7 @@ async def test_raw_replacement_rejects_nonpositive_ids_before_mutation(
         called = True
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "block_raw_ownership_backfill_for_portability_v1_restore",
         unexpected_block,
     )
@@ -3274,7 +3275,7 @@ async def test_raw_restore_block_failure_is_bounded_and_does_not_start_replaceme
         raise block_error("sensitive raw id 999 must never escape")
 
     monkeypatch.setattr(
-        data_portability_service,
+        portability_v1,
         "block_raw_ownership_backfill_for_portability_v1_restore",
         rejected_block,
     )

@@ -16,54 +16,54 @@ from vitals.enums import (
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.system_alert import SystemAlert
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services import system_alert_ownership_backfill_service as service
-from vitals.services.body_scan_metric_ownership_backfill_service import (
+from vitals.operations.ownership import system_alert as service
+from vitals.operations.ownership.body_scan_metric import (
     BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.body_scan_ownership_backfill_service import (
+from vitals.operations.ownership.body_scan import (
     BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.conflict_rule_ownership_backfill_service import (
+from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.garmin_weight_export_ownership_backfill_service import (
+from vitals.operations.ownership.garmin_weight_export import (
     GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.genetic_variant_ownership_backfill_service import (
+from vitals.operations.ownership.genetic_variant import (
     GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.lab_result_ownership_backfill_service import (
+from vitals.operations.ownership.lab_result import (
     LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.notification_ownership_backfill_service import (
+from vitals.operations.ownership.notification import (
     NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.progress_photo_ownership_backfill_service import (
+from vitals.operations.ownership.progress_photo import (
     PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
-from vitals.services.shared_report_ownership_backfill_service import (
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.weekly_digest_ownership_backfill_service import (
+from vitals.operations.ownership.weekly_digest import (
     WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.weight_log_ownership_backfill_service import (
+from vitals.operations.ownership.weight_log import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 

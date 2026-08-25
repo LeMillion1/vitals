@@ -16,8 +16,8 @@ from vitals.models.milestones import Milestone
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.skincare import SkincareLog
 from vitals.models.timeline import Annotation
-from vitals.services import normalized_ownership_backfill_service as backfill_service
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership import normalized as backfill_service
+from vitals.operations.ownership.normalized import (
     MAX_NORMALIZED_OWNERSHIP_BACKFILL_BATCH_SIZE,
     NORMALIZED_MANUAL_BACKFILL_PHASE,
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
@@ -31,7 +31,7 @@ from vitals.services.normalized_ownership_backfill_service import (
     reset_normalized_manual_backfill_for_portability_v1_restore,
     run_normalized_ownership_backfill_batch,
 )
-from vitals.services.raw_ownership_backfill_service import (
+from vitals.operations.ownership.raw import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
 )
 
@@ -170,7 +170,7 @@ async def test_ordinary_api_rejects_noncompleted_raw_dependency(db_session, stat
 
 @pytest.mark.asyncio
 async def test_foreign_raw_dependency_projection_fails_closed():
-    from vitals.services import normalized_ownership_backfill_service as service
+    from vitals.operations.ownership import normalized as service
 
     subject_id = uuid.uuid4()
     projection = service._CheckpointProjection(

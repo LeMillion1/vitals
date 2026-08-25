@@ -53,6 +53,7 @@ from vitals.models.weight import (
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset
 from vitals.ownership import WriteIdentity
+from vitals.ownership_transition import bridges as ownership_bridges
 from vitals.services import (
     alerts_service,
     conflict_engine,
@@ -2286,23 +2287,14 @@ async def _progress_photo_historical_processed_bound(
     *,
     subject_id: uuid.UUID,
 ) -> int | None:
-    """Return the service-validated Stage-3H historical compatibility bound.
-
-    The import stays local to keep Weight usable while the fixed migration
-    module and its consumer are deployed together without an import cycle.
-    """
-
-    from vitals.services.progress_photo_ownership_backfill_service import (
-        ProgressPhotoOwnershipBackfillError,
-        progress_photo_historical_processed_bound,
-    )
+    """Return the read-only Stage-3H historical compatibility bound."""
 
     try:
-        return await progress_photo_historical_processed_bound(
+        return await ownership_bridges.progress_photo_historical_processed_bound(
             session,
             subject_id=subject_id,
         )
-    except ProgressPhotoOwnershipBackfillError as exc:
+    except ownership_bridges.ProgressPhotoOwnershipBackfillError as exc:
         raise ProgressPhotoOwnershipError(
             "progress-photo migration checkpoint is not authoritative"
         ) from exc

@@ -31,7 +31,7 @@ import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.services import conflict_catalog, hrt_catalog
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
-from vitals.services.ownership_validation_service import (
+from vitals.operations.ownership.validate import (
     OWNERSHIP_VALIDATION_PHASE,
     STAGE3_PHASES,
     SUBJECT_EQUALITY_CONSTRAINTS,

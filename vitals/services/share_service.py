@@ -40,6 +40,7 @@ from vitals.enums import Domain, UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.share import SharedReport
 from vitals.ownership import WriteIdentity
+from vitals.ownership_transition import bridges as ownership_bridges
 from vitals.services.identity_service import acquire_identity_governance_lock
 from vitals.persistence.rls import enter_platform_scope
 from vitals.utils.passwords import hash_password
@@ -419,19 +420,14 @@ async def _historical_bridge_state(
     subject_id: uuid.UUID,
     public: bool = False,
 ) -> Any:
-    """Load the service-validated Stage-3K boundary without an import cycle."""
-
-    from vitals.services.shared_report_ownership_backfill_service import (
-        SharedReportOwnershipBackfillError,
-        shared_report_historical_bridge_state,
-    )
+    """Load the read-only Stage-3K compatibility boundary."""
 
     try:
-        return await shared_report_historical_bridge_state(
+        return await ownership_bridges.shared_report_historical_bridge_state(
             session,
             subject_id=subject_id,
         )
-    except SharedReportOwnershipBackfillError as exc:
+    except ownership_bridges.SharedReportOwnershipBackfillError as exc:
         error = (
             _PublicReportOwnershipError
             if public

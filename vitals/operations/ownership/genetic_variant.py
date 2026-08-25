@@ -1,4 +1,4 @@
-"""Bounded Stage-3R ownership backfill for optional-channel weekly digests.
+"""Bounded Stage-3N ownership backfill for optional-channel genetic variants.
 
 Historical rows prove only the sole reviewed subject.  Actor and provider
 provenance remain exactly as persisted; this service never infers either root,
@@ -19,108 +19,85 @@ from enum import StrEnum
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
-from sqlalchemy import Table, func, select, update
+from sqlalchemy import Table, and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
 from vitals.enums import (
-    AIInvocationPurpose,
-    AIInvocationStatus,
-    DigestKind,
     Domain,
     IntegrationConnectionStatus,
-    IntegrationConnectionType,
-    IntegrationProvider,
     Source,
     UserStatus,
 )
+from vitals.models.genetics import GeneticVariant
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.models.ai import AIInvocation
+from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import IntegrationConnection
-from vitals.models.milestones import WeeklyDigest
-from vitals.services.conflict_rule_ownership_backfill_service import (
+from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.progress_photo_ownership_backfill_service import (
+from vitals.operations.ownership.progress_photo import (
     PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
-from vitals.services.shared_report_ownership_backfill_service import (
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.body_scan_metric_ownership_backfill_service import (
-    BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.body_scan_ownership_backfill_service import (
-    BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.garmin_weight_export_ownership_backfill_service import (
-    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.genetic_variant_ownership_backfill_service import (
-    GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
-)
-from vitals.services.lab_result_ownership_backfill_service import (
+from vitals.operations.ownership.lab_result import (
     LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.weight_log_ownership_backfill_service import (
+from vitals.operations.ownership.weight_log import (
     WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.utils.timeutils import now_utc
 
 
-WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE = (
-    "stage3.retained_artifact.weekly_digests.v1"
-)
-WEEKLY_DIGEST_OWNERSHIP_BACKFILL_TABLES = ("weekly_digests",)
-WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
+GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE = "stage3.raw_linked_facts.genetic_variants.v1"
+GENETIC_VARIANT_OWNERSHIP_BACKFILL_TABLES = ("genetic_variants",)
+GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
     MappingProxyType(
         {
-            "weekly_digests": (
-                f"{WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE}.weekly_digests"
+            "genetic_variants": (
+                f"{GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE}.genetic_variants"
             )
         }
     )
 )
-DEFAULT_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
-MAX_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
+DEFAULT_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
+MAX_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
 
-_TABLE: Table = WeeklyDigest.__table__
-_PHASE_KEY = WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["weekly_digests"]
+_TABLE: Table = GeneticVariant.__table__
+_PHASE_KEY = GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["genetic_variants"]
 _PAGE_SIZE = 1000
 _POSTGRES_INTEGER_MAX = (1 << 31) - 1
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_ALLOWED_SOURCES = frozenset(
-    {
-        Source.MANUAL.value,
-        Source.MCP.value,
-        Source.SCHEDULER.value,
-        Source.SYSTEM.value,
-    }
-)
-_ALLOWED_KINDS = frozenset(kind.value for kind in DigestKind)
-_INVOCATION_PURPOSE_BY_KIND = {
-    DigestKind.WEEKLY.value: AIInvocationPurpose.WEEKLY_DIGEST.value,
-    DigestKind.DAILY_BRIEF.value: AIInvocationPurpose.DAILY_BRIEF.value,
+# Manual and MCP variants are the owner speaking through two surfaces; a VCF
+# import is derived from one durable uploaded batch.  Anything else fails closed.
+_MANUAL_SOURCES = {
+    Source.MANUAL.value,
+    Source.MCP.value,
 }
+_ALLOWED_SOURCES = _MANUAL_SOURCES | {Source.VCF_IMPORT.value}
+_MAX_GENE_LENGTH = 64
+_MAX_RSID_LENGTH = 32
 _HISTORICAL_CONNECTION_STATUSES = {
     IntegrationConnectionStatus.LEGACY.value,
     IntegrationConnectionStatus.ACTIVE.value,
@@ -131,29 +108,22 @@ _ROW_FIELDS = (
     "id",
     "subject_id",
     "actor_user_id",
-    "integration_connection_id",
-    "ai_invocation_id",
-    "date",
     "domain",
     "source",
-    "kind",
-    "content",
-    "context_json",
-    "model",
+    "gene",
+    "rsid",
+    "genotype",
+    "marker",
+    "impact",
+    "impact_domain",
+    "interpretation",
+    "action_notes",
+    "raw_payload_id",
     "created_at",
     "updated_at",
 )
 _DATA_FIELDS = tuple(
-    field
-    for field in _ROW_FIELDS
-    if field not in {"subject_id", "actor_user_id", "integration_connection_id"}
-)
-_INVOCATION_FIELDS = (
-    "id",
-    "subject_id",
-    "actor_user_id",
-    "purpose",
-    "status",
+    field for field in _ROW_FIELDS if field not in {"subject_id", "actor_user_id"}
 )
 _CONNECTION_FIELDS = (
     "id",
@@ -161,6 +131,17 @@ _CONNECTION_FIELDS = (
     "provider",
     "connection_type",
     "status",
+)
+_RAW_FIELDS = (
+    "id",
+    "subject_id",
+    "actor_user_id",
+    "integration_connection_id",
+    "file_asset_id",
+    "domain",
+    "source",
+    "external_id",
+    "processed_at",
 )
 _B_PHASES = tuple(NORMALIZED_MANUAL_CHECKPOINT_PHASES.values())
 _C_PHASES = tuple(HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
@@ -172,12 +153,6 @@ _H_PHASES = tuple(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _K_PHASES = tuple(SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _L_PHASES = tuple(WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _M_PHASES = tuple(LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_N_PHASES = tuple(GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_O_PHASES = tuple(BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_P_PHASES = tuple(BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
-_Q_PHASES = tuple(
-    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()
-)
 _PRIOR_PHASES = (
     (RAW_OWNERSHIP_BACKFILL_PHASE,)
     + _B_PHASES
@@ -190,54 +165,50 @@ _PRIOR_PHASES = (
     + _K_PHASES
     + _L_PHASES
     + _M_PHASES
-    + _N_PHASES
-    + _O_PHASES
-    + _P_PHASES
-    + _Q_PHASES
 )
 
 
-class WeeklyDigestOwnershipBackfillStatus(StrEnum):
+class GeneticVariantOwnershipBackfillStatus(StrEnum):
     NOT_STARTED = "not_started"
     RUNNING = "running"
     COMPLETED = "completed"
 
 
-class WeeklyDigestOwnershipBackfillError(RuntimeError):
-    """Base class for fail-closed Stage-3R errors."""
+class GeneticVariantOwnershipBackfillError(RuntimeError):
+    """Base class for fail-closed Stage-3N errors."""
 
 
-class WeeklyDigestOwnershipBackfillValidationError(
-    WeeklyDigestOwnershipBackfillError, ValueError
+class GeneticVariantOwnershipBackfillValidationError(
+    GeneticVariantOwnershipBackfillError, ValueError
 ):
     """A caller argument or persisted scalar is invalid."""
 
 
-class WeeklyDigestOwnershipBackfillIdentityError(WeeklyDigestOwnershipBackfillError):
+class GeneticVariantOwnershipBackfillIdentityError(GeneticVariantOwnershipBackfillError):
     """The exact-one reviewed owner graph is unavailable."""
 
 
-class WeeklyDigestOwnershipBackfillDependencyError(
-    WeeklyDigestOwnershipBackfillError
+class GeneticVariantOwnershipBackfillDependencyError(
+    GeneticVariantOwnershipBackfillError
 ):
     """A prerequisite checkpoint is absent, malformed, or in the wrong mode."""
 
 
-class WeeklyDigestOwnershipBackfillStateError(WeeklyDigestOwnershipBackfillError):
+class GeneticVariantOwnershipBackfillStateError(GeneticVariantOwnershipBackfillError):
     """Checkpoint progress or an ownership root is inconsistent."""
 
 
-class WeeklyDigestOwnershipBackfillProvenanceError(
-    WeeklyDigestOwnershipBackfillError
+class GeneticVariantOwnershipBackfillProvenanceError(
+    GeneticVariantOwnershipBackfillError
 ):
-    """A weight row has unsupported persisted provenance."""
+    """A genetic variant row has unsupported persisted provenance."""
 
 
 @dataclass(frozen=True, slots=True)
-class WeeklyDigestOwnershipBackfillPreflightResult:
+class GeneticVariantOwnershipBackfillPreflightResult:
     phase_key: str
     subject_id: uuid.UUID
-    status: WeeklyDigestOwnershipBackfillStatus
+    status: GeneticVariantOwnershipBackfillStatus
     tables_total: int
     completed_tables: int
     snapshot_rows: int
@@ -252,7 +223,7 @@ class WeeklyDigestOwnershipBackfillPreflightResult:
 
     @property
     def completed(self) -> bool:
-        return self.status is WeeklyDigestOwnershipBackfillStatus.COMPLETED
+        return self.status is GeneticVariantOwnershipBackfillStatus.COMPLETED
 
     def to_safe_dict(self) -> dict[str, str | int]:
         return {
@@ -273,8 +244,8 @@ class WeeklyDigestOwnershipBackfillPreflightResult:
 
 
 @dataclass(frozen=True, slots=True)
-class WeeklyDigestOwnershipBackfillBatchResult(
-    WeeklyDigestOwnershipBackfillPreflightResult
+class GeneticVariantOwnershipBackfillBatchResult(
+    GeneticVariantOwnershipBackfillPreflightResult
 ):
     batch_table: str
     batch_scanned_rows: int
@@ -286,7 +257,7 @@ class WeeklyDigestOwnershipBackfillBatchResult(
         return self.batch_updated_rows > 0
 
     def to_safe_dict(self) -> dict[str, str | int]:
-        result = WeeklyDigestOwnershipBackfillPreflightResult.to_safe_dict(self)
+        result = GeneticVariantOwnershipBackfillPreflightResult.to_safe_dict(self)
         result.update(
             {
                 "batch_table": self.batch_table,
@@ -335,9 +306,9 @@ def _validate_batch_size(value: object) -> int:
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
-        or not 1 <= value <= MAX_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE
+        or not 1 <= value <= MAX_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE
     ):
-        raise WeeklyDigestOwnershipBackfillValidationError(
+        raise GeneticVariantOwnershipBackfillValidationError(
             "batch_size must be an integer between 1 and 1000"
         )
     return value
@@ -389,9 +360,9 @@ async def _load_checkpoints(
 
 def _validate_checkpoint(checkpoint: Any, *, phase: str, subject_id: uuid.UUID) -> str:
     error = (
-        WeeklyDigestOwnershipBackfillDependencyError
+        GeneticVariantOwnershipBackfillDependencyError
         if phase in _PRIOR_PHASES
-        else WeeklyDigestOwnershipBackfillStateError
+        else GeneticVariantOwnershipBackfillStateError
     )
     if checkpoint.phase_key != phase or checkpoint.subject_id != subject_id:
         raise error("an ownership checkpoint has the wrong phase or subject")
@@ -469,15 +440,15 @@ async def _load_scope(session: AsyncSession, *, for_update: bool) -> _Scope:
         query = query.with_for_update()
     rows = list(await session.execute(query))
     if len(rows) != 1:
-        raise WeeklyDigestOwnershipBackfillIdentityError(
-            "weekly digest backfill requires exactly one health subject"
+        raise GeneticVariantOwnershipBackfillIdentityError(
+            "genetic variant backfill requires exactly one health subject"
         )
     subject_id, owner_user_id = rows[0]
     owner_query = select(User.status).where(User.id == owner_user_id)
     if for_update:
         owner_query = owner_query.with_for_update()
     if await session.scalar(owner_query) != UserStatus.ACTIVE.value:
-        raise WeeklyDigestOwnershipBackfillIdentityError(
+        raise GeneticVariantOwnershipBackfillIdentityError(
             "the sole health subject must have an active owner"
         )
     return _Scope(subject_id, owner_user_id)
@@ -525,7 +496,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
             ):
                 continue
             if not _exact_empty_completed(checkpoint):
-                raise WeeklyDigestOwnershipBackfillDependencyError(
+                raise GeneticVariantOwnershipBackfillDependencyError(
                     f"{label} restore checkpoint state is invalid"
                 )
 
@@ -534,17 +505,12 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
     require(_D_PHASES + _E_PHASES, "restore_blocked", "Stage-3D/3E")
     require(_F_PHASES + _G_PHASES, "running", "Stage-3F/3G")
     require(_H_PHASES, "restore_blocked", "Stage-3H")
-    require(
-        _L_PHASES + _M_PHASES + _N_PHASES + _P_PHASES,
-        "running",
-        "Stage-3I through Stage-3P resettable phases",
-    )
-    require(_O_PHASES + _Q_PHASES, "restore_blocked", "Stage-3O/3Q")
+    require(_L_PHASES + _M_PHASES, "running", "Stage-3L/3M")
     # Stage 3K is excluded from backup v1 entirely, so its retained checkpoint is
     # prepared or preserved rather than rebased onto incoming bounds.
     for phase in _K_PHASES:
         if checkpoints[phase].status not in {"running", "completed"}:
-            raise WeeklyDigestOwnershipBackfillDependencyError(
+            raise GeneticVariantOwnershipBackfillDependencyError(
                 "Stage-3K retained checkpoint state is invalid"
             )
 
@@ -557,7 +523,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("restore_blocked", "completed"),
         ("completed", "completed"),
     }:
-        raise WeeklyDigestOwnershipBackfillDependencyError(
+        raise GeneticVariantOwnershipBackfillDependencyError(
             "Stage-3E restore checkpoint order is inconsistent"
         )
 
@@ -574,7 +540,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("running", "completed"),
         ("completed", "completed"),
     }:
-        raise WeeklyDigestOwnershipBackfillDependencyError(
+        raise GeneticVariantOwnershipBackfillDependencyError(
             "Stage-3F restore checkpoint order is inconsistent"
         )
 
@@ -586,8 +552,8 @@ def _validate_own(checkpoint: Any | None, *, scope: _Scope) -> str | None:
         checkpoint, phase=_PHASE_KEY, subject_id=scope.subject_id
     )
     if status == "restore_blocked":
-        raise WeeklyDigestOwnershipBackfillStateError(
-            "Stage-3R checkpoints cannot be restore-blocked"
+        raise GeneticVariantOwnershipBackfillStateError(
+            "Stage-3N checkpoints cannot be restore-blocked"
         )
     return status
 
@@ -596,8 +562,8 @@ def _require_dependencies(
     checkpoints: Mapping[str, Any], *, scope: _Scope, own_exists: bool
 ) -> bool:
     if set(checkpoints) != set(_PRIOR_PHASES):
-        raise WeeklyDigestOwnershipBackfillDependencyError(
-            "Stage-3A through Stage-3Q checkpoints are incomplete"
+        raise GeneticVariantOwnershipBackfillDependencyError(
+            "Stage-3A through Stage-3M checkpoints are incomplete"
         )
     statuses = {
         phase: _validate_checkpoint(
@@ -608,8 +574,8 @@ def _require_dependencies(
     if all(status == "completed" for status in statuses.values()):
         return False
     if not own_exists:
-        raise WeeklyDigestOwnershipBackfillDependencyError(
-            "restore-mode Stage-3R requires its exact portability checkpoint"
+        raise GeneticVariantOwnershipBackfillDependencyError(
+            "restore-mode Stage-3N requires its exact portability checkpoint"
         )
     _require_restore_dependencies(checkpoints)
     return True
@@ -620,8 +586,8 @@ def _canonical(value: Any) -> Any:
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise WeeklyDigestOwnershipBackfillProvenanceError(
-                "weekly digest contains a non-finite JSON number"
+            raise GeneticVariantOwnershipBackfillProvenanceError(
+                "genetic variant contains a non-finite JSON number"
             )
         return ["float", value.hex()]
     if isinstance(value, uuid.UUID):
@@ -634,14 +600,14 @@ def _canonical(value: Any) -> Any:
         return ["time", value.isoformat()]
     if isinstance(value, Mapping):
         if any(type(key) is not str for key in value):
-            raise WeeklyDigestOwnershipBackfillProvenanceError(
-                "weekly digest JSON object keys must be strings"
+            raise GeneticVariantOwnershipBackfillProvenanceError(
+                "genetic variant JSON object keys must be strings"
             )
         return {key: _canonical(value[key]) for key in sorted(value)}
     if isinstance(value, (list, tuple)):
         return [_canonical(item) for item in value]
-    raise WeeklyDigestOwnershipBackfillProvenanceError(
-        "weekly digest contains an unsupported JSON value"
+    raise GeneticVariantOwnershipBackfillProvenanceError(
+        "genetic variant contains an unsupported JSON value"
     )
 
 
@@ -664,6 +630,11 @@ def _connection_select():
     return select(*(table.c[field] for field in _CONNECTION_FIELDS))
 
 
+def _raw_select():
+    table = RawPayload.__table__
+    return select(*(table.c[field] for field in _RAW_FIELDS))
+
+
 def _values(row: Any, fields: tuple[str, ...]) -> SimpleNamespace:
     mapping = row._mapping if hasattr(row, "_mapping") else row
     return SimpleNamespace(**{field: mapping[field] for field in fields})
@@ -677,18 +648,21 @@ def _connection_values(row: Any) -> SimpleNamespace:
     return _values(row, _CONNECTION_FIELDS)
 
 
+def _raw_values(row: Any) -> SimpleNamespace:
+    return _values(row, _RAW_FIELDS)
+
+
 def _data_envelope(row: Any) -> list[Any]:
-    return ["weekly_digests", *[getattr(row, field) for field in _DATA_FIELDS]]
+    return ["genetic_variants", *[getattr(row, field) for field in _DATA_FIELDS]]
 
 
 def _ownership_envelope(row: Any) -> list[Any]:
     return [
-        "weekly_digests",
+        "genetic_variants",
         row.id,
         row.subject_id,
         row.actor_user_id,
-        row.integration_connection_id,
-        row.ai_invocation_id,
+        row.raw_payload_id,
     ]
 
 
@@ -697,58 +671,75 @@ def _same_values(left: Any, right: Any, fields: tuple[str, ...]) -> bool:
 
 
 def _validate_fact_values(row: Any) -> None:
-    """Reject a digest whose reviewed artifact shape cannot be trusted."""
-
-    if not isinstance(row.date, date):
-        raise WeeklyDigestOwnershipBackfillProvenanceError(
-            "weekly digest has an invalid date"
-        )
-    if row.kind not in _ALLOWED_KINDS:
-        raise WeeklyDigestOwnershipBackfillProvenanceError(
-            "weekly digest has an unsupported kind"
-        )
-    if not isinstance(row.content, str) or not row.content.strip():
-        raise WeeklyDigestOwnershipBackfillProvenanceError(
-            "weekly digest has no narrative content"
-        )
-    if row.model is not None and not isinstance(row.model, str):
-        raise WeeklyDigestOwnershipBackfillProvenanceError(
-            "weekly digest has an invalid model record"
-        )
-
-
-def _validate_connection(connection: Any, *, scope: _Scope) -> None:
-    """The only reviewed digest connection is the subject OpenRouter gateway."""
+    """Reject a variant whose reviewed business shape cannot be trusted."""
 
     if (
-        connection.subject_id != scope.subject_id
-        or connection.provider != IntegrationProvider.OPENROUTER.value
-        or connection.connection_type != IntegrationConnectionType.AI_GATEWAY.value
-        or connection.status not in _HISTORICAL_CONNECTION_STATUSES
+        not isinstance(row.gene, str)
+        or not row.gene.strip()
+        or len(row.gene) > _MAX_GENE_LENGTH
     ):
-        raise WeeklyDigestOwnershipBackfillProvenanceError(
-            "weekly digest has invalid AI gateway provenance"
+        raise GeneticVariantOwnershipBackfillProvenanceError(
+            "genetic variant has an invalid gene"
         )
+    if row.rsid is not None and (
+        not isinstance(row.rsid, str)
+        or not row.rsid.strip()
+        or len(row.rsid) > _MAX_RSID_LENGTH
+    ):
+        raise GeneticVariantOwnershipBackfillProvenanceError(
+            "genetic variant has an invalid rsID"
+        )
+    for field in ("genotype", "marker", "impact", "impact_domain",
+                  "interpretation", "action_notes"):
+        text_value = getattr(row, field)
+        if text_value is not None and not isinstance(text_value, str):
+            raise GeneticVariantOwnershipBackfillProvenanceError(
+                "genetic variant has an invalid text field"
+            )
 
 
-def _validate_invocation(invocation: Any, *, row: Any, scope: _Scope) -> None:
-    if invocation.subject_id != scope.subject_id:
-        raise WeeklyDigestOwnershipBackfillStateError(
-            "weekly digest links a platform invocation of another subject"
+def _validate_raw(
+    raw: Any,
+    *,
+    scope: _Scope,
+    source: str,
+    fact_is_unowned: bool,
+) -> None:
+    """Validate the durable VCF batch a variant links, without adopting it."""
+
+    if raw.domain != Domain.GENETICS.value or raw.source != Source.VCF_IMPORT.value:
+        raise GeneticVariantOwnershipBackfillProvenanceError(
+            "genetic variant raw payload has an invalid domain or source"
         )
-    if invocation.actor_user_id not in {None, scope.owner_user_id}:
-        raise WeeklyDigestOwnershipBackfillStateError(
-            "weekly digest invocation actor is outside the reviewed boundary"
+    if source != Source.VCF_IMPORT.value:
+        raise GeneticVariantOwnershipBackfillProvenanceError(
+            "manual and MCP genetic variants require null raw provenance"
         )
-    expected = _INVOCATION_PURPOSE_BY_KIND.get(row.kind)
-    if expected is not None and invocation.purpose != expected:
-        raise WeeklyDigestOwnershipBackfillProvenanceError(
-            "weekly digest invocation purpose does not match its kind"
+    # A VCF upload is streamed: it has no durable provider connection and no
+    # registered file, so either root would be forged provenance.
+    if raw.integration_connection_id is not None or raw.file_asset_id is not None:
+        raise GeneticVariantOwnershipBackfillProvenanceError(
+            "VCF provenance requires null provider connection and file roots"
         )
-    if invocation.status != AIInvocationStatus.SUCCEEDED.value:
-        raise WeeklyDigestOwnershipBackfillProvenanceError(
-            "weekly digest links an invocation that never succeeded"
-        )
+    raw_roots = (raw.subject_id, raw.actor_user_id)
+    # Backup v1 restores the raw lake before Stage 3A runs again, so a still
+    # fully-unowned raw is valid provenance for a still-unowned fact — and only
+    # for one.  An adopted variant may never point at unowned raw history.
+    raw_is_unowned = raw_roots == (None, None)
+    if raw_is_unowned:
+        if not fact_is_unowned:
+            raise GeneticVariantOwnershipBackfillStateError(
+                "an owned genetic variant links unowned raw provenance"
+            )
+    else:
+        if raw.subject_id != scope.subject_id:
+            raise GeneticVariantOwnershipBackfillProvenanceError(
+                "genetic variant raw payload has foreign provenance"
+            )
+        if raw.actor_user_id not in {None, scope.owner_user_id}:
+            raise GeneticVariantOwnershipBackfillProvenanceError(
+                "genetic variant raw payload actor is outside the reviewed owner boundary"
+            )
 
 
 def _validate_row(
@@ -756,76 +747,67 @@ def _validate_row(
     *,
     scope: _Scope,
     connections: Mapping[uuid.UUID, Any],
-    invocations: Mapping[uuid.UUID, Any],
+    raws: Mapping[int, Any],
     historical: bool,
     allow_unowned: bool,
 ) -> bool:
-    """Validate one digest and return whether sole-subject adoption is required."""
+    """Validate one row and return whether sole-subject adoption is required."""
 
-    if row.domain != Domain.MILESTONES.value or row.source not in _ALLOWED_SOURCES:
-        raise WeeklyDigestOwnershipBackfillProvenanceError(
-            "weekly digest has invalid domain or source"
+    if row.domain != Domain.GENETICS.value or row.source not in _ALLOWED_SOURCES:
+        raise GeneticVariantOwnershipBackfillProvenanceError(
+            "genetic variant has invalid domain or source"
         )
     if not isinstance(row.id, int) or isinstance(row.id, bool) or row.id <= 0:
-        raise WeeklyDigestOwnershipBackfillValidationError(
-            "weekly digest has an invalid primary key"
+        raise GeneticVariantOwnershipBackfillValidationError(
+            "genetic variant has an invalid primary key"
         )
     _validate_fact_values(row)
 
-    roots = (
-        row.subject_id,
-        row.actor_user_id,
-        row.integration_connection_id,
-    )
-    needs_adoption = roots == (None, None, None)
+    roots = (row.subject_id, row.actor_user_id)
+    needs_adoption = roots == (None, None)
     if needs_adoption:
         if not allow_unowned:
-            raise WeeklyDigestOwnershipBackfillStateError(
-                "an unowned weekly digest is outside the historical bridge"
+            raise GeneticVariantOwnershipBackfillStateError(
+                "an unowned genetic variant is outside the historical bridge"
             )
-        if row.ai_invocation_id is not None:
-            raise WeeklyDigestOwnershipBackfillStateError(
-                "an unowned weekly digest cannot claim a platform invocation"
-            )
-        return True
-    if row.subject_id != scope.subject_id:
-        raise WeeklyDigestOwnershipBackfillStateError(
-            "weekly digest has partial or foreign ownership roots"
+    elif row.subject_id != scope.subject_id:
+        raise GeneticVariantOwnershipBackfillStateError(
+            "genetic variant has partial or foreign ownership roots"
         )
-    if row.actor_user_id not in {None, scope.owner_user_id}:
-        raise WeeklyDigestOwnershipBackfillStateError(
-            "weekly digest actor is outside the reviewed ownership boundary"
+    if not needs_adoption and row.actor_user_id not in {None, scope.owner_user_id}:
+        raise GeneticVariantOwnershipBackfillStateError(
+            "genetic variant actor is outside the reviewed ownership boundary"
         )
-    if row.integration_connection_id is not None:
-        connection = connections.get(row.integration_connection_id)
-        if connection is None:
-            raise WeeklyDigestOwnershipBackfillStateError(
-                "weekly digest references a missing AI gateway connection"
+
+    if row.raw_payload_id is None:
+        if row.source == Source.VCF_IMPORT.value:
+            raise GeneticVariantOwnershipBackfillProvenanceError(
+                "an imported genetic variant requires durable raw provenance"
             )
-        _validate_connection(connection, scope=scope)
-        # Subject-funded history and platform funding are mutually exclusive;
-        # the model check constraint says the same thing in the schema.
-        if row.ai_invocation_id is not None:
-            raise WeeklyDigestOwnershipBackfillProvenanceError(
-                "weekly digest mixes subject and platform AI funding"
-            )
-    if row.ai_invocation_id is not None:
-        invocation = invocations.get(row.ai_invocation_id)
-        if invocation is None:
-            raise WeeklyDigestOwnershipBackfillStateError(
-                "weekly digest references a missing platform invocation"
-            )
-        _validate_invocation(invocation, row=row, scope=scope)
-    elif not historical and row.integration_connection_id is None:
-        # Above the frozen watermark every generated artifact is funded through
-        # the platform gateway.
-        raise WeeklyDigestOwnershipBackfillProvenanceError(
-            "a live weekly digest has no reviewed AI funding provenance"
+        return needs_adoption
+    if row.source in _MANUAL_SOURCES:
+        raise GeneticVariantOwnershipBackfillProvenanceError(
+            "manual and MCP genetic variants require null raw provenance"
         )
-    return False
+    raw = raws.get(row.raw_payload_id)
+    if raw is None:
+        raise GeneticVariantOwnershipBackfillStateError(
+            "genetic variant references a missing raw payload"
+        )
+    _validate_raw(
+        raw,
+        scope=scope,
+        source=row.source,
+        fact_is_unowned=needs_adoption,
+    )
+    if not historical and row.actor_user_id != raw.actor_user_id:
+        raise GeneticVariantOwnershipBackfillProvenanceError(
+            "live genetic variant and raw payload have different actor roots"
+        )
+    return needs_adoption
 
 
-async def _after_weekly_digests_projection_for_test() -> None:
+async def _after_genetic_variants_projection_for_test() -> None:
     """Deterministic seam for real PostgreSQL lock/recheck tests."""
 
 
@@ -842,43 +824,23 @@ async def _project_connections(
     return {row.id: row for row in map(_connection_values, rows)}
 
 
-async def _project_invocations(
-    session: AsyncSession, invocation_ids: set[uuid.UUID]
-) -> dict[uuid.UUID, Any]:
-    if not invocation_ids:
+async def _project_raws(
+    session: AsyncSession, raw_payload_ids: set[int]
+) -> dict[int, Any]:
+    if not raw_payload_ids:
         return {}
-    table = AIInvocation.__table__
     rows = await session.execute(
-        select(*(table.c[field] for field in _INVOCATION_FIELDS))
-        .where(table.c.id.in_(invocation_ids))
-        .order_by(table.c.id)
+        _raw_select().where(RawPayload.id.in_(raw_payload_ids)).order_by(RawPayload.id)
     )
-    return {row.id: _values(row, _INVOCATION_FIELDS) for row in rows}
+    return {row.id: row for row in map(_raw_values, rows)}
 
 
-async def _lock_projected_invocations(
-    session: AsyncSession,
-    projected: Mapping[uuid.UUID, Any],
-) -> dict[uuid.UUID, Any]:
-    invocation_ids = set(projected)
-    if not invocation_ids:
-        return {}
-    table = AIInvocation.__table__
-    locked_raw = await session.execute(
-        select(*(table.c[field] for field in _INVOCATION_FIELDS))
-        .where(table.c.id.in_(invocation_ids))
-        .order_by(table.c.id)
-        .with_for_update()
-    )
-    locked = {row.id: _values(row, _INVOCATION_FIELDS) for row in locked_raw}
-    if set(locked) != invocation_ids or any(
-        not _same_values(locked[key], projected[key], _INVOCATION_FIELDS)
-        for key in invocation_ids
-    ):
-        raise WeeklyDigestOwnershipBackfillStateError(
-            "a projected platform invocation changed before it was locked"
-        )
-    return locked
+def _referenced_connection_ids(raws: Mapping[int, Any]) -> set[uuid.UUID]:
+    return {
+        raw.integration_connection_id
+        for raw in raws.values()
+        if raw.integration_connection_id is not None
+    }
 
 
 async def _lock_projected_graph(
@@ -886,16 +848,14 @@ async def _lock_projected_graph(
     *,
     projected_rows: Mapping[int, Any],
     projected_connections: Mapping[uuid.UUID, Any],
-    projected_invocations: Mapping[uuid.UUID, Any],
-) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[uuid.UUID, Any]]:
+    projected_raws: Mapping[int, Any],
+) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[int, Any]]:
     locked_connections = await _lock_projected_connections(
         session, projected_connections
     )
-    locked_invocations = await _lock_projected_invocations(
-        session, projected_invocations
-    )
+    locked_raws = await _lock_projected_raws(session, projected_raws)
     locked_rows = await _lock_projected_rows(session, projected_rows)
-    return locked_rows, locked_connections, locked_invocations
+    return locked_rows, locked_connections, locked_raws
 
 
 async def _lock_projected_connections(
@@ -919,12 +879,36 @@ async def _lock_projected_connections(
             )
             for key in connection_ids
         ):
-            raise WeeklyDigestOwnershipBackfillStateError(
+            raise GeneticVariantOwnershipBackfillStateError(
                 "a projected provider connection changed before it was locked"
             )
     else:
         locked_connections = {}
     return locked_connections
+
+
+async def _lock_projected_raws(
+    session: AsyncSession,
+    projected_raws: Mapping[int, Any],
+) -> dict[int, Any]:
+    raw_payload_ids = set(projected_raws)
+    if not raw_payload_ids:
+        return {}
+    locked = await session.execute(
+        _raw_select()
+        .where(RawPayload.id.in_(raw_payload_ids))
+        .order_by(RawPayload.id)
+        .with_for_update()
+    )
+    locked_raws = {row.id: row for row in map(_raw_values, locked)}
+    if set(locked_raws) != raw_payload_ids or any(
+        not _same_values(locked_raws[key], projected_raws[key], _RAW_FIELDS)
+        for key in raw_payload_ids
+    ):
+        raise GeneticVariantOwnershipBackfillStateError(
+            "a projected genetic variant raw payload changed before it was locked"
+        )
+    return locked_raws
 
 
 async def _lock_projected_rows(
@@ -945,8 +929,8 @@ async def _lock_projected_rows(
         not _same_values(locked_rows[key], projected_rows[key], _ROW_FIELDS)
         for key in projected_rows
     ):
-        raise WeeklyDigestOwnershipBackfillStateError(
-            "a projected weight changed before it was locked"
+        raise GeneticVariantOwnershipBackfillStateError(
+            "a projected genetic variant changed before it was locked"
         )
     return locked_rows
 
@@ -957,37 +941,27 @@ async def _project_and_lock_ids(
     *,
     scope: _Scope,
     invoke_race_hook: bool,
-) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[uuid.UUID, Any]]:
+) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[int, Any]]:
     if not ids:
         return {}, {}, {}
     raw_rows = await session.execute(
         _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
     )
     projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
+    raw_payload_ids = {row.raw_payload_id for row in projected_rows.values() if row.raw_payload_id is not None}
+    projected_raws = await _project_raws(session, raw_payload_ids)
     projected_connections = await _project_connections(
-        session,
-        {
-            row.integration_connection_id
-            for row in projected_rows.values()
-            if row.integration_connection_id is not None
-        },
-    )
-    projected_invocations = await _project_invocations(
-        session,
-        {
-            row.ai_invocation_id
-            for row in projected_rows.values()
-            if row.ai_invocation_id is not None
-        },
+        session, _referenced_connection_ids(projected_raws)
     )
     if invoke_race_hook:
-        await _after_weekly_digests_projection_for_test()
-    return await _lock_projected_graph(
+        await _after_genetic_variants_projection_for_test()
+    locked = await _lock_projected_graph(
         session,
         projected_rows=projected_rows,
         projected_connections=projected_connections,
-        projected_invocations=projected_invocations,
+        projected_raws=projected_raws,
     )
+    return locked
 
 
 def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
@@ -1003,8 +977,8 @@ def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
         return False, False
     if checkpoint.status == "completed":
         return row_id <= checkpoint.scan_high_watermark_id, False
-    raise WeeklyDigestOwnershipBackfillStateError(
-        "Stage-3R checkpoint has an unsupported state"
+    raise GeneticVariantOwnershipBackfillStateError(
+        "Stage-3N checkpoint has an unsupported state"
     )
 
 
@@ -1015,24 +989,32 @@ async def _referenced_connection_digest(
     high: int | None,
     lock_connections: bool,
 ) -> tuple[int, str]:
-    """Page the referenced gateway set, locking it before any digest row."""
+    """Page the referenced C set, optionally locking it before any fact row."""
 
     count = 0
     digest = _EMPTY_SHA256
     cursor: uuid.UUID | None = None
-    while True:
-        query = select(_TABLE.c.integration_connection_id).where(
-            _TABLE.c.id > low,
-            _TABLE.c.integration_connection_id.is_not(None),
+    raw_table = RawPayload.__table__
+    raw_refs = (
+        select(raw_table.c.integration_connection_id.label("connection_id"))
+        .select_from(
+            _TABLE.join(raw_table, _TABLE.c.raw_payload_id == raw_table.c.id)
         )
-        if high is not None:
-            query = query.where(_TABLE.c.id <= high)
+        .where(
+            _TABLE.c.id > low,
+            raw_table.c.integration_connection_id.is_not(None),
+        )
+    )
+    if high is not None:
+        raw_refs = raw_refs.where(_TABLE.c.id <= high)
+    refs = raw_refs.distinct().subquery()
+    while True:
+        query = select(refs.c.connection_id)
         if cursor is not None:
-            query = query.where(_TABLE.c.integration_connection_id > cursor)
+            query = query.where(refs.c.connection_id > cursor)
         connection_ids = list(
             await session.scalars(
-                query.distinct()
-                .order_by(_TABLE.c.integration_connection_id)
+                query.order_by(refs.c.connection_id)
                 .limit(_PAGE_SIZE)
             )
         )
@@ -1040,65 +1022,80 @@ async def _referenced_connection_digest(
             break
         projected = await _project_connections(session, set(connection_ids))
         if set(projected) != set(connection_ids):
-            raise WeeklyDigestOwnershipBackfillStateError(
-                "a weekly digest references a missing AI gateway connection"
+            raise GeneticVariantOwnershipBackfillStateError(
+                "a genetic variant references a missing provider connection"
             )
         if lock_connections:
             await _lock_projected_connections(session, projected)
         for connection_id in connection_ids:
-            digest = _extend(digest, ["weekly_digests_connection", connection_id])
+            digest = _extend(digest, ["genetic_variants_connection", connection_id])
             count += 1
         cursor = connection_ids[-1]
     return count, digest
 
 
-async def _referenced_invocation_digest(
+async def _referenced_raw_digest(
     session: AsyncSession,
     *,
     low: int,
     high: int | None,
-    lock_invocations: bool,
+    lock_raws: bool,
 ) -> tuple[int, str]:
     count = 0
     digest = _EMPTY_SHA256
-    cursor: uuid.UUID | None = None
+    cursor = 0
     while True:
-        query = select(_TABLE.c.ai_invocation_id).where(
+        query = select(_TABLE.c.raw_payload_id).where(
             _TABLE.c.id > low,
-            _TABLE.c.ai_invocation_id.is_not(None),
+            _TABLE.c.raw_payload_id.is_not(None),
+            _TABLE.c.raw_payload_id > cursor,
         )
         if high is not None:
             query = query.where(_TABLE.c.id <= high)
-        if cursor is not None:
-            query = query.where(_TABLE.c.ai_invocation_id > cursor)
-        invocation_ids = list(
+        raw_payload_ids = list(
             await session.scalars(
-                query.distinct()
-                .order_by(_TABLE.c.ai_invocation_id)
-                .limit(_PAGE_SIZE)
+                query.distinct().order_by(_TABLE.c.raw_payload_id).limit(_PAGE_SIZE)
             )
         )
-        if not invocation_ids:
+        if not raw_payload_ids:
             break
-        projected = await _project_invocations(session, set(invocation_ids))
-        if set(projected) != set(invocation_ids):
-            raise WeeklyDigestOwnershipBackfillStateError(
-                "a weekly digest references a missing platform invocation"
+        projected = await _project_raws(session, set(raw_payload_ids))
+        if set(projected) != set(raw_payload_ids):
+            raise GeneticVariantOwnershipBackfillStateError(
+                "a genetic variant references a missing raw payload"
             )
-        if lock_invocations:
-            await _lock_projected_invocations(session, projected)
-        for invocation_id in invocation_ids:
-            digest = _extend(
-                digest,
-                [
-                    "weekly_digests_invocation",
-                    invocation_id,
-                    projected[invocation_id].subject_id,
-                ],
-            )
+        if lock_raws:
+            await _lock_projected_raws(session, projected)
+        for raw_payload_id in raw_payload_ids:
+            digest = _extend(digest, ["genetic_variants_raw", raw_payload_id])
             count += 1
-        cursor = invocation_ids[-1]
+        cursor = raw_payload_ids[-1]
     return count, digest
+
+
+async def _validate_rsid_invariant(session: AsyncSession) -> None:
+    """Reject two variants sharing one rsID before scoped keys exist."""
+
+    left = _TABLE.alias("genetic_variant_left")
+    right = _TABLE.alias("genetic_variant_right")
+    duplicate = await session.scalar(
+        select(left.c.id)
+        .select_from(
+            left.join(
+                right,
+                and_(
+                    left.c.rsid == right.c.rsid,
+                    left.c.id < right.c.id,
+                ),
+            )
+        )
+        .where(left.c.rsid.is_not(None), right.c.rsid.is_not(None))
+        .limit(1)
+    )
+    if duplicate is not None:
+        raise GeneticVariantOwnershipBackfillProvenanceError(
+            "one rsID carries more than one genetic variant"
+        )
 
 
 async def _scan_current(
@@ -1117,8 +1114,9 @@ async def _scan_current(
     cursor = low
     locked_ref_count = 0
     locked_ref_digest = _EMPTY_SHA256
-    locked_inv_count = 0
-    locked_inv_digest = _EMPTY_SHA256
+    locked_raw_count = 0
+    locked_raw_digest = _EMPTY_SHA256
+    await _validate_rsid_invariant(session)
     if for_update:
         locked_ref_count, locked_ref_digest = await _referenced_connection_digest(
             session,
@@ -1126,11 +1124,11 @@ async def _scan_current(
             high=high,
             lock_connections=True,
         )
-        locked_inv_count, locked_inv_digest = await _referenced_invocation_digest(
+        locked_raw_count, locked_raw_digest = await _referenced_raw_digest(
             session,
             low=low,
             high=high,
-            lock_invocations=True,
+            lock_raws=True,
         )
     while True:
         query = (
@@ -1144,34 +1142,42 @@ async def _scan_current(
         ids = list(await session.scalars(query))
         if not ids:
             break
-        raw_rows = await session.execute(
-            _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
-        )
-        projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
-        connections = await _project_connections(
-            session,
-            {
-                row.integration_connection_id
-                for row in projected_rows.values()
-                if row.integration_connection_id is not None
-            },
-        )
-        invocations = await _project_invocations(
-            session,
-            {
-                row.ai_invocation_id
-                for row in projected_rows.values()
-                if row.ai_invocation_id is not None
-            },
-        )
-        rows = (
-            await _lock_projected_rows(session, projected_rows)
-            if for_update
-            else projected_rows
-        )
+        if for_update:
+            raw_rows = await session.execute(
+                _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
+            )
+            projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
+            raws = await _project_raws(
+                session,
+                {
+                    row.raw_payload_id
+                    for row in projected_rows.values()
+                    if row.raw_payload_id is not None
+                },
+            )
+            connections = await _project_connections(
+                session, _referenced_connection_ids(raws)
+            )
+            rows = await _lock_projected_rows(session, projected_rows)
+        else:
+            raw_rows = await session.execute(
+                _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
+            )
+            rows = {row.id: row for row in map(_row_values, raw_rows)}
+            raws = await _project_raws(
+                session,
+                {
+                    row.raw_payload_id
+                    for row in rows.values()
+                    if row.raw_payload_id is not None
+                },
+            )
+            connections = await _project_connections(
+                session, _referenced_connection_ids(raws)
+            )
         if set(rows) != set(ids):
-            raise WeeklyDigestOwnershipBackfillStateError(
-                "a projected weekly digest page changed during validation"
+            raise GeneticVariantOwnershipBackfillStateError(
+                "a projected genetic variant page changed during validation"
             )
         for row_id in ids:
             row = rows[row_id]
@@ -1180,7 +1186,7 @@ async def _scan_current(
                 row,
                 scope=scope,
                 connections=connections,
-                invocations=invocations,
+                raws=raws,
                 historical=historical,
                 allow_unowned=allow_unowned,
             )
@@ -1188,8 +1194,8 @@ async def _scan_current(
                 checkpoint.status == "completed"
                 or row.id <= checkpoint.last_scanned_id
             ):
-                raise WeeklyDigestOwnershipBackfillStateError(
-                    "a processed weekly digest row remained unowned"
+                raise GeneticVariantOwnershipBackfillStateError(
+                    "a processed genetic variant row remained unowned"
                 )
             if digest:
                 data = _extend(data, _data_envelope(row))
@@ -1208,23 +1214,21 @@ async def _scan_current(
             current_ref_count != locked_ref_count
             or current_ref_digest != locked_ref_digest
         ):
-            raise WeeklyDigestOwnershipBackfillStateError(
-                "weekly digest gateway references changed during validation"
+            raise GeneticVariantOwnershipBackfillStateError(
+                "genetic variant provider references changed during validation"
             )
-        current_inv_count, current_inv_digest = await _referenced_invocation_digest(
+        current_raw_count, current_raw_digest = await _referenced_raw_digest(
             session,
             low=low,
             high=high,
-            lock_invocations=False,
+            lock_raws=False,
         )
-        if (
-            current_inv_count != locked_inv_count
-            or current_inv_digest != locked_inv_digest
-        ):
-            raise WeeklyDigestOwnershipBackfillStateError(
-                "weekly digest invocation references changed during validation"
+        if current_raw_count != locked_raw_count or current_raw_digest != locked_raw_digest:
+            raise GeneticVariantOwnershipBackfillStateError(
+                "genetic variant raw references changed during validation"
             )
-    return count, data, ownership
+        await _validate_rsid_invariant(session)
+        return count, data, ownership
 
 
 async def _bounds(session: AsyncSession) -> tuple[int, int]:
@@ -1235,8 +1239,8 @@ async def _bounds(session: AsyncSession) -> tuple[int, int]:
     ).one()
     high, count = int(high), int(count)
     if not _valid_counter(high) or not _valid_counter(count) or count > high:
-        raise WeeklyDigestOwnershipBackfillValidationError(
-            "weekly digest snapshot bounds are invalid"
+        raise GeneticVariantOwnershipBackfillValidationError(
+            "genetic variant snapshot bounds are invalid"
         )
     return high, count
 
@@ -1259,10 +1263,10 @@ async def _status_result(
     checkpoint: Any | None,
     validate: bool,
     for_update: bool,
-) -> WeeklyDigestOwnershipBackfillPreflightResult:
+) -> GeneticVariantOwnershipBackfillPreflightResult:
     if checkpoint is None:
         high, snapshot = await _bounds(session)
-        status = WeeklyDigestOwnershipBackfillStatus.NOT_STARTED
+        status = GeneticVariantOwnershipBackfillStatus.NOT_STARTED
         scanned = updated = unchanged = rows_above = 0
         remaining = snapshot
         before = after = ownership = _EMPTY_SHA256
@@ -1272,7 +1276,7 @@ async def _status_result(
             checkpoint.scan_high_watermark_id,
             checkpoint.snapshot_rows,
         )
-        status = WeeklyDigestOwnershipBackfillStatus(checkpoint.status)
+        status = GeneticVariantOwnershipBackfillStatus(checkpoint.status)
         scanned, updated, unchanged = (
             checkpoint.scanned_rows,
             checkpoint.updated_rows,
@@ -1292,7 +1296,7 @@ async def _status_result(
             checkpoint.data_checksum_after,
             checkpoint.ownership_checksum_after,
         )
-        completed = status is WeeklyDigestOwnershipBackfillStatus.COMPLETED
+        completed = status is GeneticVariantOwnershipBackfillStatus.COMPLETED
     if validate:
         await _scan_current(
             session,
@@ -1311,11 +1315,11 @@ async def _status_result(
                 or 0
             )
             if frozen_count != snapshot:
-                raise WeeklyDigestOwnershipBackfillStateError(
-                    "the weight snapshot cardinality changed"
+                raise GeneticVariantOwnershipBackfillStateError(
+                    "the genetic variant snapshot cardinality changed"
                 )
-    return WeeklyDigestOwnershipBackfillPreflightResult(
-        phase_key=WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE,
+    return GeneticVariantOwnershipBackfillPreflightResult(
+        phase_key=GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE,
         subject_id=scope.subject_id,
         status=status,
         tables_total=1,
@@ -1333,28 +1337,28 @@ async def _status_result(
 
 
 def _batch_result(
-    result: WeeklyDigestOwnershipBackfillPreflightResult,
+    result: GeneticVariantOwnershipBackfillPreflightResult,
     *,
     scanned: int,
     updated: int,
     unchanged: int,
-) -> WeeklyDigestOwnershipBackfillBatchResult:
-    return WeeklyDigestOwnershipBackfillBatchResult(
+) -> GeneticVariantOwnershipBackfillBatchResult:
+    return GeneticVariantOwnershipBackfillBatchResult(
         **{
             field: getattr(result, field)
-            for field in WeeklyDigestOwnershipBackfillPreflightResult.__dataclass_fields__
+            for field in GeneticVariantOwnershipBackfillPreflightResult.__dataclass_fields__
         },
-        batch_table="weekly_digests",
+        batch_table="genetic_variants",
         batch_scanned_rows=scanned,
         batch_updated_rows=updated,
         batch_unchanged_rows=unchanged,
     )
 
 
-async def preflight_weekly_digest_ownership_backfill(
+async def preflight_genetic_variant_ownership_backfill(
     session: AsyncSession,
-) -> WeeklyDigestOwnershipBackfillPreflightResult:
-    """Validate the fixed Stage-3R graph without mutation."""
+) -> GeneticVariantOwnershipBackfillPreflightResult:
+    """Validate the fixed Stage-3N graph without mutation."""
 
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=False)
@@ -1376,24 +1380,48 @@ async def preflight_weekly_digest_ownership_backfill(
         )
 
 
-async def prepare_weekly_digest_ownership_backfill_for_portability_v1_restore(
+def _validate_restore_bounds(snapshot_bounds: Any) -> tuple[int, int]:
+    if (
+        not isinstance(snapshot_bounds, Mapping)
+        or set(snapshot_bounds) != {"genetic_variants"}
+    ):
+        raise GeneticVariantOwnershipBackfillValidationError(
+            "snapshot_bounds must contain the exact weight table catalog"
+        )
+    pair = snapshot_bounds["genetic_variants"]
+    if not isinstance(pair, tuple) or len(pair) != 2:
+        raise GeneticVariantOwnershipBackfillValidationError(
+            "the genetic variant snapshot bound must be an exact pair"
+        )
+    high, count = pair
+    if (
+        not _valid_counter(high)
+        or not _valid_counter(count)
+        or count > high
+        or (high == 0) != (count == 0)
+    ):
+        raise GeneticVariantOwnershipBackfillValidationError(
+            "the genetic variant snapshot bound is an invalid ID/count pair"
+        )
+    return high, count
+
+
+async def reset_genetic_variant_ownership_backfill_for_portability_v1_restore(
     session: AsyncSession,
+    *,
+    snapshot_bounds: Mapping[str, tuple[int, int]],
 ) -> None:
-    """Prepare or preserve retained Stage-3R evidence before replacement.
+    """Reset Stage-3N before the caller atomically replaces portable data."""
 
-    Backup v1 neither exports nor replaces digests, so this phase never accepts
-    incoming bounds: it validates the retained local artifacts and, on a first
-    restore, freezes them as its own reviewed snapshot.
-    """
-
+    high, count = _validate_restore_bounds(snapshot_bounds)
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=True)
         dependencies = await _load_checkpoints(
             session, _PRIOR_PHASES, for_update=True
         )
         if set(dependencies) != set(_PRIOR_PHASES):
-            raise WeeklyDigestOwnershipBackfillDependencyError(
-                "Stage-3A through Stage-3Q checkpoints are incomplete"
+            raise GeneticVariantOwnershipBackfillDependencyError(
+                "Stage-3A through Stage-3M checkpoints are incomplete"
             )
         for phase in _PRIOR_PHASES:
             _validate_checkpoint(
@@ -1404,23 +1432,16 @@ async def prepare_weekly_digest_ownership_backfill_for_portability_v1_restore(
         checkpoint = own.get(_PHASE_KEY)
         _validate_own(checkpoint, scope=scope)
         if checkpoint is None:
-            high, count = await _bounds(session)
             await _scan_current(
                 session,
                 scope=scope,
                 checkpoint=None,
-                high=high,
                 for_update=True,
                 digest=False,
             )
-            if await _bounds(session) != (high, count):
-                raise WeeklyDigestOwnershipBackfillStateError(
-                    "retained weekly-digest bounds changed during restore preparation"
-                )
-            await _create_checkpoint(session, scope=scope, high=high, count=count)
         else:
-            # A portability replacement may not conceal drift in the retained
-            # artifacts it is not allowed to carry.
+            # A portability replacement is allowed to reset progress, not to
+            # conceal drift in the outgoing checkpoint evidence.
             await _status_result(
                 session,
                 scope=scope,
@@ -1428,6 +1449,26 @@ async def prepare_weekly_digest_ownership_backfill_for_portability_v1_restore(
                 validate=True,
                 for_update=True,
             )
+        status = "completed" if (high, count) == (0, 0) else "running"
+        if checkpoint is None:
+            checkpoint = OwnershipBackfillCheckpoint(
+                phase_key=_PHASE_KEY,
+                subject_id=scope.subject_id,
+            )
+            session.add(checkpoint)
+        checkpoint.status = status
+        checkpoint.scan_high_watermark_id = high
+        checkpoint.snapshot_rows = count
+        checkpoint.last_scanned_id = 0
+        checkpoint.scanned_rows = 0
+        checkpoint.updated_rows = 0
+        checkpoint.unchanged_rows = 0
+        checkpoint.data_checksum_before = _EMPTY_SHA256
+        checkpoint.data_checksum_after = _EMPTY_SHA256
+        checkpoint.ownership_checksum_after = _EMPTY_SHA256
+        checkpoint.started_at = func.now()
+        checkpoint.updated_at = func.now()
+        checkpoint.completed_at = func.now() if status == "completed" else None
         await session.flush()
 
 
@@ -1460,17 +1501,17 @@ async def _create_checkpoint(
 def _set_cached_subject(
     session: AsyncSession, row_id: int, subject_id: uuid.UUID
 ) -> None:
-    cached = session.identity_map.get((WeeklyDigest, (row_id,), None))
+    cached = session.identity_map.get((GeneticVariant, (row_id,), None))
     if cached is not None:
         attributes.set_committed_value(cached, "subject_id", subject_id)
 
 
-async def run_weekly_digest_ownership_backfill_batch(
+async def run_genetic_variant_ownership_backfill_batch(
     session: AsyncSession,
     *,
-    batch_size: int = DEFAULT_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE,
-) -> WeeklyDigestOwnershipBackfillBatchResult:
-    """Advance the fixed weight table by at most one primary-key batch."""
+    batch_size: int = DEFAULT_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE,
+) -> GeneticVariantOwnershipBackfillBatchResult:
+    """Advance the fixed genetic variant table by at most one primary-key batch."""
 
     size = _validate_batch_size(batch_size)
     with session.no_autoflush:
@@ -1525,7 +1566,7 @@ async def run_weekly_digest_ownership_backfill_batch(
                 .limit(size)
             )
         )
-        rows, connections, invocations = await _project_and_lock_ids(
+        rows, connections, raws = await _project_and_lock_ids(
             session, ids, scope=scope, invoke_race_hook=True
         )
 
@@ -1540,7 +1581,7 @@ async def run_weekly_digest_ownership_backfill_batch(
                 row,
                 scope=scope,
                 connections=connections,
-                invocations=invocations,
+                raws=raws,
                 historical=True,
                 allow_unowned=True,
             )
@@ -1552,13 +1593,12 @@ async def run_weekly_digest_ownership_backfill_batch(
                         _TABLE.c.id == row_id,
                         _TABLE.c.subject_id.is_(None),
                         _TABLE.c.actor_user_id.is_(None),
-                        _TABLE.c.integration_connection_id.is_(None),
                     )
                     .values(subject_id=scope.subject_id, updated_at=row.updated_at)
                 )
                 if result.rowcount != 1:
-                    raise WeeklyDigestOwnershipBackfillStateError(
-                        "weekly digest ownership changed during adoption"
+                    raise GeneticVariantOwnershipBackfillStateError(
+                        "genetic variant ownership changed during adoption"
                     )
                 _set_cached_subject(session, row_id, scope.subject_id)
                 updated_count += 1
@@ -1569,34 +1609,26 @@ async def run_weekly_digest_ownership_backfill_batch(
             )
             current_result = current_raw.one_or_none()
             if current_result is None:
-                raise WeeklyDigestOwnershipBackfillStateError(
-                    "a weekly digest disappeared during adoption"
+                raise GeneticVariantOwnershipBackfillStateError(
+                    "a genetic variant disappeared during adoption"
                 )
             current = _row_values(current_result)
-            current_connections = connections
-            if (
-                current.integration_connection_id is not None
-                and current.integration_connection_id not in current_connections
-            ):
-                raise WeeklyDigestOwnershipBackfillStateError(
-                    "weekly digest provider connection changed during adoption"
-                )
             if _validate_row(
                 current,
                 scope=scope,
-                connections=current_connections,
-                invocations=invocations,
+                connections=connections,
+                raws=raws,
                 historical=True,
                 allow_unowned=False,
             ):
-                raise WeeklyDigestOwnershipBackfillStateError(
-                    "a processed weight remained unowned"
+                raise GeneticVariantOwnershipBackfillStateError(
+                    "a processed genetic variant remained unowned"
                 )
             after = _extend(after, _data_envelope(current))
             ownership = _extend(ownership, _ownership_envelope(current))
         if before != after:
-            raise WeeklyDigestOwnershipBackfillStateError(
-                "weekly digest data changed while ownership was backfilled"
+            raise GeneticVariantOwnershipBackfillStateError(
+                "genetic variant data changed while ownership was backfilled"
             )
         checkpoint.scanned_rows += len(ids)
         checkpoint.updated_rows += updated_count
@@ -1627,8 +1659,8 @@ async def run_weekly_digest_ownership_backfill_batch(
                 or data != checkpoint.data_checksum_after
                 or current_ownership != checkpoint.ownership_checksum_after
             ):
-                raise WeeklyDigestOwnershipBackfillStateError(
-                    "the weight snapshot changed during finalization"
+                raise GeneticVariantOwnershipBackfillStateError(
+                    "the genetic variant snapshot changed during finalization"
                 )
             checkpoint.last_scanned_id = checkpoint.scan_high_watermark_id
             checkpoint.status = "completed"
@@ -1653,21 +1685,21 @@ async def run_weekly_digest_ownership_backfill_batch(
 
 
 __all__ = [
-    "WEEKLY_DIGEST_OWNERSHIP_BACKFILL_PHASE",
-    "WEEKLY_DIGEST_OWNERSHIP_BACKFILL_TABLES",
-    "WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
-    "DEFAULT_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "MAX_WEEKLY_DIGEST_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "WeeklyDigestOwnershipBackfillStatus",
-    "WeeklyDigestOwnershipBackfillError",
-    "WeeklyDigestOwnershipBackfillValidationError",
-    "WeeklyDigestOwnershipBackfillIdentityError",
-    "WeeklyDigestOwnershipBackfillDependencyError",
-    "WeeklyDigestOwnershipBackfillStateError",
-    "WeeklyDigestOwnershipBackfillProvenanceError",
-    "WeeklyDigestOwnershipBackfillPreflightResult",
-    "WeeklyDigestOwnershipBackfillBatchResult",
-    "preflight_weekly_digest_ownership_backfill",
-    "run_weekly_digest_ownership_backfill_batch",
-    "prepare_weekly_digest_ownership_backfill_for_portability_v1_restore",
+    "GENETIC_VARIANT_OWNERSHIP_BACKFILL_PHASE",
+    "GENETIC_VARIANT_OWNERSHIP_BACKFILL_TABLES",
+    "GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
+    "DEFAULT_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "MAX_GENETIC_VARIANT_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "GeneticVariantOwnershipBackfillStatus",
+    "GeneticVariantOwnershipBackfillError",
+    "GeneticVariantOwnershipBackfillValidationError",
+    "GeneticVariantOwnershipBackfillIdentityError",
+    "GeneticVariantOwnershipBackfillDependencyError",
+    "GeneticVariantOwnershipBackfillStateError",
+    "GeneticVariantOwnershipBackfillProvenanceError",
+    "GeneticVariantOwnershipBackfillPreflightResult",
+    "GeneticVariantOwnershipBackfillBatchResult",
+    "preflight_genetic_variant_ownership_backfill",
+    "run_genetic_variant_ownership_backfill_batch",
+    "reset_genetic_variant_ownership_backfill_for_portability_v1_restore",
 ]

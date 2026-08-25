@@ -1,4 +1,4 @@
-"""Bounded Stage-3L ownership backfill for optional-channel weight facts.
+"""Bounded Stage-3S ownership backfill for optional-channel notifications.
 
 Historical rows prove only the sole reviewed subject.  Actor and provider
 provenance remain exactly as persisted; this service never infers either root,
@@ -19,108 +19,98 @@ from enum import StrEnum
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
-from sqlalchemy import Table, and_, func, select, update
+from sqlalchemy import Table, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
 from vitals.enums import (
-    AIInvocationPurpose,
-    Domain,
+    AIInvocationStatus,
     IntegrationConnectionStatus,
     IntegrationConnectionType,
     IntegrationProvider,
-    Source,
     UserStatus,
 )
+from vitals.models.ai import AIInvocation
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.models.ai import AIInvocation
-from vitals.models.raw_payload import RawPayload
+from vitals.models.proactive import Notification, NotificationDeliveryIntent
 from vitals.models.tenancy import IntegrationConnection
-from vitals.models.weight import WeightLog
-from vitals.services.conflict_rule_ownership_backfill_service import (
+from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
+from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.progress_photo_ownership_backfill_service import (
+from vitals.operations.ownership.progress_photo import (
     PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
-from vitals.services.shared_report_ownership_backfill_service import (
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.shared_report import (
     SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.body_scan_metric import (
+    BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.body_scan import (
+    BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.genetic_variant import (
+    GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.lab_result import (
+    LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.garmin_weight_export import (
+    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.weekly_digest import (
+    WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
+)
+from vitals.operations.ownership.weight_log import (
+    WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.utils.timeutils import now_utc
 
 
-WEIGHT_LOG_OWNERSHIP_BACKFILL_PHASE = "stage3.channel_optional.weight_logs.v1"
-WEIGHT_LOG_OWNERSHIP_BACKFILL_TABLES = ("weight_logs",)
-WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
+NOTIFICATION_OWNERSHIP_BACKFILL_PHASE = (
+    "stage3.delivery_artifact.notifications.v1"
+)
+NOTIFICATION_OWNERSHIP_BACKFILL_TABLES = ("notifications",)
+NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES: Mapping[str, str] = (
     MappingProxyType(
         {
-            "weight_logs": (
-                f"{WEIGHT_LOG_OWNERSHIP_BACKFILL_PHASE}.weight_logs"
+            "notifications": (
+                f"{NOTIFICATION_OWNERSHIP_BACKFILL_PHASE}.notifications"
             )
         }
     )
 )
-DEFAULT_WEIGHT_LOG_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
-MAX_WEIGHT_LOG_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
+DEFAULT_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE = 250
+MAX_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE = 1000
 
-_TABLE: Table = WeightLog.__table__
-_PHASE_KEY = WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["weight_logs"]
+_TABLE: Table = Notification.__table__
+_PHASE_KEY = NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES["notifications"]
 _PAGE_SIZE = 1000
 _POSTGRES_INTEGER_MAX = (1 << 31) - 1
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-# Manual and MCP weights are the owner speaking through two surfaces; Garmin and
-# body-scan weights are derived facts whose provider provenance lives on the raw
-# payload.  Any other source is unreviewed and fails closed.
-_MANUAL_SOURCES = {
-    Source.MANUAL.value,
-    Source.MCP.value,
-}
-_ALLOWED_SOURCES = _MANUAL_SOURCES | {
-    Source.GARMIN_API.value,
-    Source.BODY_SCAN.value,
-}
-# provider/type expected on both the fact C and the raw C for a derived source.
-_EXPECTED_CONNECTION_ROOTS = {
-    Source.GARMIN_API.value: (
-        IntegrationProvider.GARMIN.value,
-        IntegrationConnectionType.ACCOUNT.value,
-    ),
-    Source.BODY_SCAN.value: (
-        IntegrationProvider.OPENROUTER.value,
-        IntegrationConnectionType.AI_GATEWAY.value,
-    ),
-}
-# Structured MCP body composition is raw-first as MCP while its derived weight
-# fact stays BODY_SCAN, so one fact source accepts two reviewed raw sources.
-_EXPECTED_RAW_ROOTS = {
-    Source.MANUAL.value: (Domain.WEIGHT.value, {Source.MANUAL.value}),
-    Source.MCP.value: (Domain.WEIGHT.value, {Source.MCP.value}),
-    Source.GARMIN_API.value: (Domain.GARMIN.value, {Source.GARMIN_API.value}),
-    Source.BODY_SCAN.value: (
-        Domain.BODY_COMPOSITION.value,
-        {Source.BODY_SCAN.value, Source.MCP.value},
-    ),
-}
-_WEIGHT_KG_RANGE = (20.0, 400.0)
+_CATEGORIES = frozenset({"brief", "evening", "nudge", "reply", "echo"})
+_AI_CATEGORIES = frozenset({"reply", "echo"})
+_TELEGRAM_CHANNEL = IntegrationProvider.TELEGRAM.value
 _HISTORICAL_CONNECTION_STATUSES = {
     IntegrationConnectionStatus.LEGACY.value,
     IntegrationConnectionStatus.ACTIVE.value,
@@ -131,28 +121,38 @@ _ROW_FIELDS = (
     "id",
     "subject_id",
     "actor_user_id",
+    "recipient_user_id",
     "integration_connection_id",
-    "date",
-    "domain",
-    "source",
-    "weight_kg",
-    "note",
-    "superseded",
-    "raw_payload_id",
-    "created_at",
-    "updated_at",
+    "ai_invocation_id",
+    "delivery_intent_id",
+    "sent_at",
+    "category",
+    "dedupe_key",
+    "channel",
+    "external_id",
+    "payload",
 )
-_DATA_FIELDS = (
+_DATA_FIELDS = tuple(
+    field
+    for field in _ROW_FIELDS
+    if field
+    not in {
+        "subject_id",
+        "actor_user_id",
+        "recipient_user_id",
+        "integration_connection_id",
+    }
+)
+_INTENT_FIELDS = (
     "id",
-    "date",
-    "domain",
-    "source",
-    "weight_kg",
-    "note",
-    "superseded",
-    "raw_payload_id",
-    "created_at",
-    "updated_at",
+    "subject_id",
+    "recipient_user_id",
+    "integration_connection_id",
+)
+_INVOCATION_FIELDS = (
+    "id",
+    "subject_id",
+    "status",
 )
 _CONNECTION_FIELDS = (
     "id",
@@ -160,16 +160,6 @@ _CONNECTION_FIELDS = (
     "provider",
     "connection_type",
     "status",
-)
-_RAW_FIELDS = (
-    "id",
-    "subject_id",
-    "actor_user_id",
-    "integration_connection_id",
-    "file_asset_id",
-    "domain",
-    "source",
-    "processed_at",
 )
 _B_PHASES = tuple(NORMALIZED_MANUAL_CHECKPOINT_PHASES.values())
 _C_PHASES = tuple(HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
@@ -179,6 +169,15 @@ _F_PHASES = tuple(HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _G_PHASES = tuple(CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _H_PHASES = tuple(PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _K_PHASES = tuple(SHARED_REPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_L_PHASES = tuple(WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_M_PHASES = tuple(LAB_RESULT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_N_PHASES = tuple(GENETIC_VARIANT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_O_PHASES = tuple(BODY_SCAN_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_P_PHASES = tuple(BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
+_Q_PHASES = tuple(
+    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values()
+)
+_R_PHASES = tuple(WEEKLY_DIGEST_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES.values())
 _PRIOR_PHASES = (
     (RAW_OWNERSHIP_BACKFILL_PHASE,)
     + _B_PHASES
@@ -189,50 +188,57 @@ _PRIOR_PHASES = (
     + _G_PHASES
     + _H_PHASES
     + _K_PHASES
+    + _L_PHASES
+    + _M_PHASES
+    + _N_PHASES
+    + _O_PHASES
+    + _P_PHASES
+    + _Q_PHASES
+    + _R_PHASES
 )
 
 
-class WeightLogOwnershipBackfillStatus(StrEnum):
+class NotificationOwnershipBackfillStatus(StrEnum):
     NOT_STARTED = "not_started"
     RUNNING = "running"
     COMPLETED = "completed"
 
 
-class WeightLogOwnershipBackfillError(RuntimeError):
-    """Base class for fail-closed Stage-3L errors."""
+class NotificationOwnershipBackfillError(RuntimeError):
+    """Base class for fail-closed Stage-3S errors."""
 
 
-class WeightLogOwnershipBackfillValidationError(
-    WeightLogOwnershipBackfillError, ValueError
+class NotificationOwnershipBackfillValidationError(
+    NotificationOwnershipBackfillError, ValueError
 ):
     """A caller argument or persisted scalar is invalid."""
 
 
-class WeightLogOwnershipBackfillIdentityError(WeightLogOwnershipBackfillError):
+class NotificationOwnershipBackfillIdentityError(NotificationOwnershipBackfillError):
     """The exact-one reviewed owner graph is unavailable."""
 
 
-class WeightLogOwnershipBackfillDependencyError(
-    WeightLogOwnershipBackfillError
+class NotificationOwnershipBackfillDependencyError(
+    NotificationOwnershipBackfillError
 ):
     """A prerequisite checkpoint is absent, malformed, or in the wrong mode."""
 
 
-class WeightLogOwnershipBackfillStateError(WeightLogOwnershipBackfillError):
+class NotificationOwnershipBackfillStateError(NotificationOwnershipBackfillError):
     """Checkpoint progress or an ownership root is inconsistent."""
 
 
-class WeightLogOwnershipBackfillProvenanceError(
-    WeightLogOwnershipBackfillError
+class NotificationOwnershipBackfillProvenanceError(
+    NotificationOwnershipBackfillError
 ):
     """A weight row has unsupported persisted provenance."""
 
 
 @dataclass(frozen=True, slots=True)
-class WeightLogOwnershipBackfillPreflightResult:
+class NotificationOwnershipBackfillPreflightResult:
     phase_key: str
     subject_id: uuid.UUID
-    status: WeightLogOwnershipBackfillStatus
+    status: NotificationOwnershipBackfillStatus
     tables_total: int
     completed_tables: int
     snapshot_rows: int
@@ -247,7 +253,7 @@ class WeightLogOwnershipBackfillPreflightResult:
 
     @property
     def completed(self) -> bool:
-        return self.status is WeightLogOwnershipBackfillStatus.COMPLETED
+        return self.status is NotificationOwnershipBackfillStatus.COMPLETED
 
     def to_safe_dict(self) -> dict[str, str | int]:
         return {
@@ -268,8 +274,8 @@ class WeightLogOwnershipBackfillPreflightResult:
 
 
 @dataclass(frozen=True, slots=True)
-class WeightLogOwnershipBackfillBatchResult(
-    WeightLogOwnershipBackfillPreflightResult
+class NotificationOwnershipBackfillBatchResult(
+    NotificationOwnershipBackfillPreflightResult
 ):
     batch_table: str
     batch_scanned_rows: int
@@ -281,7 +287,7 @@ class WeightLogOwnershipBackfillBatchResult(
         return self.batch_updated_rows > 0
 
     def to_safe_dict(self) -> dict[str, str | int]:
-        result = WeightLogOwnershipBackfillPreflightResult.to_safe_dict(self)
+        result = NotificationOwnershipBackfillPreflightResult.to_safe_dict(self)
         result.update(
             {
                 "batch_table": self.batch_table,
@@ -330,9 +336,9 @@ def _validate_batch_size(value: object) -> int:
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
-        or not 1 <= value <= MAX_WEIGHT_LOG_OWNERSHIP_BACKFILL_BATCH_SIZE
+        or not 1 <= value <= MAX_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE
     ):
-        raise WeightLogOwnershipBackfillValidationError(
+        raise NotificationOwnershipBackfillValidationError(
             "batch_size must be an integer between 1 and 1000"
         )
     return value
@@ -384,9 +390,9 @@ async def _load_checkpoints(
 
 def _validate_checkpoint(checkpoint: Any, *, phase: str, subject_id: uuid.UUID) -> str:
     error = (
-        WeightLogOwnershipBackfillDependencyError
+        NotificationOwnershipBackfillDependencyError
         if phase in _PRIOR_PHASES
-        else WeightLogOwnershipBackfillStateError
+        else NotificationOwnershipBackfillStateError
     )
     if checkpoint.phase_key != phase or checkpoint.subject_id != subject_id:
         raise error("an ownership checkpoint has the wrong phase or subject")
@@ -464,15 +470,15 @@ async def _load_scope(session: AsyncSession, *, for_update: bool) -> _Scope:
         query = query.with_for_update()
     rows = list(await session.execute(query))
     if len(rows) != 1:
-        raise WeightLogOwnershipBackfillIdentityError(
-            "weight fact backfill requires exactly one health subject"
+        raise NotificationOwnershipBackfillIdentityError(
+            "notification backfill requires exactly one health subject"
         )
     subject_id, owner_user_id = rows[0]
     owner_query = select(User.status).where(User.id == owner_user_id)
     if for_update:
         owner_query = owner_query.with_for_update()
     if await session.scalar(owner_query) != UserStatus.ACTIVE.value:
-        raise WeightLogOwnershipBackfillIdentityError(
+        raise NotificationOwnershipBackfillIdentityError(
             "the sole health subject must have an active owner"
         )
     return _Scope(subject_id, owner_user_id)
@@ -520,7 +526,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
             ):
                 continue
             if not _exact_empty_completed(checkpoint):
-                raise WeightLogOwnershipBackfillDependencyError(
+                raise NotificationOwnershipBackfillDependencyError(
                     f"{label} restore checkpoint state is invalid"
                 )
 
@@ -529,11 +535,24 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
     require(_D_PHASES + _E_PHASES, "restore_blocked", "Stage-3D/3E")
     require(_F_PHASES + _G_PHASES, "running", "Stage-3F/3G")
     require(_H_PHASES, "restore_blocked", "Stage-3H")
+    require(
+        _L_PHASES + _M_PHASES + _N_PHASES + _P_PHASES,
+        "running",
+        "Stage-3I through Stage-3P resettable phases",
+    )
+    require(_O_PHASES + _Q_PHASES, "restore_blocked", "Stage-3O/3Q")
+    # Stage 3R is excluded from backup v1, so its retained checkpoint is
+    # prepared or preserved rather than rebased onto incoming bounds.
+    for phase in _R_PHASES:
+        if checkpoints[phase].status not in {"running", "completed"}:
+            raise NotificationOwnershipBackfillDependencyError(
+                "Stage-3R retained checkpoint state is invalid"
+            )
     # Stage 3K is excluded from backup v1 entirely, so its retained checkpoint is
     # prepared or preserved rather than rebased onto incoming bounds.
     for phase in _K_PHASES:
         if checkpoints[phase].status not in {"running", "completed"}:
-            raise WeightLogOwnershipBackfillDependencyError(
+            raise NotificationOwnershipBackfillDependencyError(
                 "Stage-3K retained checkpoint state is invalid"
             )
 
@@ -546,7 +565,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("restore_blocked", "completed"),
         ("completed", "completed"),
     }:
-        raise WeightLogOwnershipBackfillDependencyError(
+        raise NotificationOwnershipBackfillDependencyError(
             "Stage-3E restore checkpoint order is inconsistent"
         )
 
@@ -563,7 +582,7 @@ def _require_restore_dependencies(checkpoints: Mapping[str, Any]) -> None:
         ("running", "completed"),
         ("completed", "completed"),
     }:
-        raise WeightLogOwnershipBackfillDependencyError(
+        raise NotificationOwnershipBackfillDependencyError(
             "Stage-3F restore checkpoint order is inconsistent"
         )
 
@@ -575,8 +594,8 @@ def _validate_own(checkpoint: Any | None, *, scope: _Scope) -> str | None:
         checkpoint, phase=_PHASE_KEY, subject_id=scope.subject_id
     )
     if status == "restore_blocked":
-        raise WeightLogOwnershipBackfillStateError(
-            "Stage-3L checkpoints cannot be restore-blocked"
+        raise NotificationOwnershipBackfillStateError(
+            "Stage-3S checkpoints cannot be restore-blocked"
         )
     return status
 
@@ -585,8 +604,8 @@ def _require_dependencies(
     checkpoints: Mapping[str, Any], *, scope: _Scope, own_exists: bool
 ) -> bool:
     if set(checkpoints) != set(_PRIOR_PHASES):
-        raise WeightLogOwnershipBackfillDependencyError(
-            "Stage-3A through Stage-3K checkpoints are incomplete"
+        raise NotificationOwnershipBackfillDependencyError(
+            "Stage-3A through Stage-3R checkpoints are incomplete"
         )
     statuses = {
         phase: _validate_checkpoint(
@@ -597,8 +616,8 @@ def _require_dependencies(
     if all(status == "completed" for status in statuses.values()):
         return False
     if not own_exists:
-        raise WeightLogOwnershipBackfillDependencyError(
-            "restore-mode Stage-3L requires its exact portability checkpoint"
+        raise NotificationOwnershipBackfillDependencyError(
+            "restore-mode Stage-3S requires its exact portability checkpoint"
         )
     _require_restore_dependencies(checkpoints)
     return True
@@ -609,8 +628,8 @@ def _canonical(value: Any) -> Any:
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise WeightLogOwnershipBackfillProvenanceError(
-                "weight fact contains a non-finite JSON number"
+            raise NotificationOwnershipBackfillProvenanceError(
+                "notification contains a non-finite JSON number"
             )
         return ["float", value.hex()]
     if isinstance(value, uuid.UUID):
@@ -623,14 +642,14 @@ def _canonical(value: Any) -> Any:
         return ["time", value.isoformat()]
     if isinstance(value, Mapping):
         if any(type(key) is not str for key in value):
-            raise WeightLogOwnershipBackfillProvenanceError(
-                "weight fact JSON object keys must be strings"
+            raise NotificationOwnershipBackfillProvenanceError(
+                "notification JSON object keys must be strings"
             )
         return {key: _canonical(value[key]) for key in sorted(value)}
     if isinstance(value, (list, tuple)):
         return [_canonical(item) for item in value]
-    raise WeightLogOwnershipBackfillProvenanceError(
-        "weight fact contains an unsupported JSON value"
+    raise NotificationOwnershipBackfillProvenanceError(
+        "notification contains an unsupported JSON value"
     )
 
 
@@ -653,11 +672,6 @@ def _connection_select():
     return select(*(table.c[field] for field in _CONNECTION_FIELDS))
 
 
-def _raw_select():
-    table = RawPayload.__table__
-    return select(*(table.c[field] for field in _RAW_FIELDS))
-
-
 def _values(row: Any, fields: tuple[str, ...]) -> SimpleNamespace:
     mapping = row._mapping if hasattr(row, "_mapping") else row
     return SimpleNamespace(**{field: mapping[field] for field in fields})
@@ -671,22 +685,20 @@ def _connection_values(row: Any) -> SimpleNamespace:
     return _values(row, _CONNECTION_FIELDS)
 
 
-def _raw_values(row: Any) -> SimpleNamespace:
-    return _values(row, _RAW_FIELDS)
-
-
 def _data_envelope(row: Any) -> list[Any]:
-    return ["weight_logs", *[getattr(row, field) for field in _DATA_FIELDS]]
+    return ["notifications", *[getattr(row, field) for field in _DATA_FIELDS]]
 
 
 def _ownership_envelope(row: Any) -> list[Any]:
     return [
-        "weight_logs",
+        "notifications",
         row.id,
         row.subject_id,
         row.actor_user_id,
+        row.recipient_user_id,
         row.integration_connection_id,
-        row.raw_payload_id,
+        row.delivery_intent_id,
+        row.ai_invocation_id,
     ]
 
 
@@ -695,131 +707,76 @@ def _same_values(left: Any, right: Any, fields: tuple[str, ...]) -> bool:
 
 
 def _validate_fact_values(row: Any) -> None:
-    """Reject a fact whose reviewed business shape cannot be trusted."""
+    """Reject a message whose reviewed delivery shape cannot be trusted."""
 
-    if not isinstance(row.date, date):
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "weight fact has an invalid date"
+    if not isinstance(row.sent_at, datetime):
+        raise NotificationOwnershipBackfillProvenanceError(
+            "notification has an invalid sent timestamp"
         )
-    value = row.weight_kg
+    if row.category not in _CATEGORIES:
+        raise NotificationOwnershipBackfillProvenanceError(
+            "notification has an unsupported category"
+        )
+    if row.channel != _TELEGRAM_CHANNEL:
+        raise NotificationOwnershipBackfillProvenanceError(
+            "notification has an unreviewed delivery channel"
+        )
+    for field in ("dedupe_key", "external_id"):
+        value = getattr(row, field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise NotificationOwnershipBackfillProvenanceError(
+                "notification has an invalid delivery key"
+            )
+
+
+async def _reviewed_recipient(session: AsyncSession, *, scope: _Scope) -> Any:
+    """Return the exact reviewed legacy Telegram recipient this log delivered to.
+
+    A rotated or additional recipient is never guessed: the destination of a
+    historical message is only unambiguous while the subject has exactly one
+    Telegram recipient root and it is the reviewed legacy singleton.
+    """
+
+    table = IntegrationConnection.__table__
+    rows = list(
+        await session.execute(
+            select(
+                *(table.c[field] for field in _CONNECTION_FIELDS),
+                table.c.external_account_discriminator,
+            )
+            .where(
+                table.c.subject_id == scope.subject_id,
+                table.c.provider == IntegrationProvider.TELEGRAM.value,
+                table.c.connection_type == IntegrationConnectionType.RECIPIENT.value,
+            )
+            .order_by(table.c.id)
+            .limit(2)
+        )
+    )
+    if len(rows) != 1:
+        raise NotificationOwnershipBackfillStateError(
+            "the notification log has no unambiguous delivery recipient"
+        )
+    destination = rows[0]
     if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        or not _WEIGHT_KG_RANGE[0] <= float(value) <= _WEIGHT_KG_RANGE[1]
+        destination.external_account_discriminator != LEGACY_ACCOUNT_DISCRIMINATOR
+        or destination.status not in _HISTORICAL_CONNECTION_STATUSES
     ):
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "weight fact has an out-of-range or non-finite mass"
+        raise NotificationOwnershipBackfillStateError(
+            "the sole Telegram recipient is not the reviewed legacy destination"
         )
-    if type(row.superseded) is not bool:
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "weight fact has an invalid superseded marker"
-        )
-    if row.note is not None and not isinstance(row.note, str):
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "weight fact has an invalid note"
-        )
+    return _connection_values(destination)
 
 
-def _validate_connection(connection: Any, *, scope: _Scope, source: str) -> None:
-    expected = _EXPECTED_CONNECTION_ROOTS.get(source)
-    if expected is None:
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "manual and MCP weight facts cannot claim provider provenance"
-        )
-    provider, connection_type = expected
+def _validate_connection(connection: Any, *, scope: _Scope) -> None:
     if (
         connection.subject_id != scope.subject_id
-        or connection.provider != provider
-        or connection.connection_type != connection_type
+        or connection.provider != IntegrationProvider.TELEGRAM.value
+        or connection.connection_type != IntegrationConnectionType.RECIPIENT.value
         or connection.status not in _HISTORICAL_CONNECTION_STATUSES
     ):
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "weight fact has invalid provider connection provenance"
-        )
-
-
-def _validate_raw(
-    raw: Any,
-    *,
-    scope: _Scope,
-    connections: Mapping[uuid.UUID, Any],
-    parser_invocations: Mapping[int, tuple[int, bool]],
-    source: str,
-    fact_is_unowned: bool,
-) -> None:
-    """Validate the reviewed raw root a weight fact links, without adopting it."""
-
-    domain, raw_sources = _EXPECTED_RAW_ROOTS[source]
-    if raw.domain != domain or raw.source not in raw_sources:
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "weight raw payload has an invalid domain or source"
-        )
-    raw_roots = (
-        raw.subject_id,
-        raw.actor_user_id,
-        raw.integration_connection_id,
-        raw.file_asset_id,
-    )
-    # Backup v1 restores the raw lake before Stage 3A runs again, so a still
-    # fully-unowned raw is valid provenance for a still-unowned fact — and only
-    # for one.  An adopted fact may never point at unowned raw history.
-    raw_is_unowned = raw_roots == (None, None, None, None)
-    if raw_is_unowned:
-        if not fact_is_unowned:
-            raise WeightLogOwnershipBackfillStateError(
-                "an owned weight fact links unowned raw provenance"
-            )
-    else:
-        if raw.subject_id != scope.subject_id or raw.file_asset_id is not None:
-            raise WeightLogOwnershipBackfillProvenanceError(
-                "weight raw payload has foreign or file provenance"
-            )
-        if raw.actor_user_id not in {None, scope.owner_user_id}:
-            raise WeightLogOwnershipBackfillProvenanceError(
-                "weight raw payload actor is outside the reviewed owner boundary"
-            )
-    if raw.integration_connection_id is not None:
-        connection = connections.get(raw.integration_connection_id)
-        if connection is None:
-            raise WeightLogOwnershipBackfillStateError(
-                "weight raw payload references a missing provider connection"
-            )
-        _validate_connection(connection, scope=scope, source=source)
-    if source in _MANUAL_SOURCES and raw.integration_connection_id is not None:
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "manual or MCP weight raw payload cannot claim provider provenance"
-        )
-    # A raw C is Stage-3A/3D evidence, not a Stage-3L requirement: backup v1
-    # strips it and records those phases as restore-blocked, so demanding one
-    # here would refuse every legitimately restored provider history.
-    if source != Source.BODY_SCAN.value:
-        return
-    # Subject-funded parser history and platform-gateway invocations are mutually
-    # exclusive.  Either shape may be legitimate, mixing them is not.
-    count, same_subject = parser_invocations.get(raw.id, (0, True))
-    if not same_subject:
-        raise WeightLogOwnershipBackfillStateError(
-            "weight raw payload has a foreign parser invocation"
-        )
-    if raw_is_unowned and count != 0:
-        raise WeightLogOwnershipBackfillStateError(
-            "unowned body-composition raw cannot claim a parser invocation"
-        )
-    # Structured MCP body composition is never provider-funded.  Its actor is an
-    # ingress requirement rather than durable evidence: backup v1 strips A, so a
-    # restored lineage legitimately has none.
-    if raw.source == Source.MCP.value and raw.integration_connection_id is not None:
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "MCP body-composition lineage must be connectionless"
-        )
-    if raw.integration_connection_id is not None and count != 0:
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "body-scan weight mixes subject and platform parser provenance"
-        )
-    if raw.source == Source.MCP.value and count != 0:
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "MCP body-composition raw cannot claim an AI parser invocation"
+        raise NotificationOwnershipBackfillProvenanceError(
+            "notification has invalid delivery recipient provenance"
         )
 
 
@@ -828,100 +785,98 @@ def _validate_row(
     *,
     scope: _Scope,
     connections: Mapping[uuid.UUID, Any],
-    raws: Mapping[int, Any],
-    parser_invocations: Mapping[int, tuple[int, bool]],
+    intents: Mapping[uuid.UUID, Any],
+    invocations: Mapping[uuid.UUID, Any],
     historical: bool,
     allow_unowned: bool,
 ) -> bool:
-    """Validate one row and return whether sole-subject adoption is required."""
+    """Validate one message and return whether reviewed adoption is required."""
 
-    if row.domain != Domain.WEIGHT.value or row.source not in _ALLOWED_SOURCES:
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "weight fact has invalid domain or source"
-        )
     if not isinstance(row.id, int) or isinstance(row.id, bool) or row.id <= 0:
-        raise WeightLogOwnershipBackfillValidationError(
-            "weight fact has an invalid primary key"
+        raise NotificationOwnershipBackfillValidationError(
+            "notification has an invalid primary key"
         )
     _validate_fact_values(row)
 
     roots = (
         row.subject_id,
         row.actor_user_id,
+        row.recipient_user_id,
         row.integration_connection_id,
     )
-    needs_adoption = roots == (None, None, None)
+    needs_adoption = roots == (None, None, None, None)
     if needs_adoption:
         if not allow_unowned:
-            raise WeightLogOwnershipBackfillStateError(
-                "an unowned weight fact is outside the historical bridge"
+            raise NotificationOwnershipBackfillStateError(
+                "an unowned notification is outside the historical bridge"
             )
-    elif row.subject_id != scope.subject_id:
-        raise WeightLogOwnershipBackfillStateError(
-            "weight fact has partial or foreign ownership roots"
-        )
-    if not needs_adoption and row.actor_user_id not in {None, scope.owner_user_id}:
-        raise WeightLogOwnershipBackfillStateError(
-            "weight fact actor is outside the reviewed ownership boundary"
-        )
-    connection = None
-    if row.integration_connection_id is not None:
-        connection = connections.get(row.integration_connection_id)
-        if connection is None:
-            raise WeightLogOwnershipBackfillStateError(
-                "weight fact references a missing provider connection"
+        if row.ai_invocation_id is not None or row.delivery_intent_id is not None:
+            raise NotificationOwnershipBackfillStateError(
+                "an unowned notification cannot claim platform delivery state"
             )
-        # A valid provider root may be disabled or retired after the fact.  The
-        # live-ingress gate belongs to the writer, not to this migration.
-        _validate_connection(connection, scope=scope, source=row.source)
+        return True
 
-    raw = None
-    if row.raw_payload_id is not None:
-        raw = raws.get(row.raw_payload_id)
-        if raw is None:
-            raise WeightLogOwnershipBackfillStateError(
-                "weight fact references a missing raw payload"
-            )
-        _validate_raw(
-            raw,
-            scope=scope,
-            connections=connections,
-            parser_invocations=parser_invocations,
-            source=row.source,
-            fact_is_unowned=needs_adoption,
+    if row.subject_id != scope.subject_id:
+        raise NotificationOwnershipBackfillStateError(
+            "notification has partial or foreign ownership roots"
         )
-        row_pair = (row.actor_user_id, row.integration_connection_id)
-        raw_pair = (raw.actor_user_id, raw.integration_connection_id)
-        if historical and row_pair not in {(None, None), raw_pair}:
-            raise WeightLogOwnershipBackfillProvenanceError(
-                "historical weight fact and raw payload have incompatible roots"
-            )
-        if not historical and row_pair != raw_pair:
-            raise WeightLogOwnershipBackfillProvenanceError(
-                "live weight fact and raw payload have different actor/provider roots"
-            )
-    elif row.source in _MANUAL_SOURCES:
-        pass
-    elif row.source == Source.GARMIN_API.value:
-        if not historical:
-            raise WeightLogOwnershipBackfillProvenanceError(
-                "live Garmin weight fact requires durable raw provenance"
-            )
-    elif connection is not None:
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "provider-backed body-scan weight requires durable raw provenance"
+    # A delivered message means nothing without both the person it went to and
+    # the channel that carried it; the schema states the same rule.
+    if row.recipient_user_id is None or row.integration_connection_id is None:
+        raise NotificationOwnershipBackfillStateError(
+            "an owned notification has an incomplete delivery graph"
         )
-    if not historical and row.source in _MANUAL_SOURCES and (
-        raw is not None or connection is not None
-    ):
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "live manual or MCP weight fact cannot claim provider provenance"
+    if row.recipient_user_id != scope.owner_user_id:
+        raise NotificationOwnershipBackfillStateError(
+            "notification recipient is outside the reviewed ownership boundary"
         )
-    return needs_adoption
+    if row.actor_user_id not in {None, scope.owner_user_id}:
+        raise NotificationOwnershipBackfillStateError(
+            "notification actor is outside the reviewed ownership boundary"
+        )
+    connection = connections.get(row.integration_connection_id)
+    if connection is None:
+        raise NotificationOwnershipBackfillStateError(
+            "notification references a missing delivery recipient"
+        )
+    _validate_connection(connection, scope=scope)
+
+    if row.delivery_intent_id is not None:
+        intent = intents.get(row.delivery_intent_id)
+        if intent is None:
+            raise NotificationOwnershipBackfillStateError(
+                "notification references a missing delivery intent"
+            )
+        if (
+            intent.subject_id != row.subject_id
+            or intent.recipient_user_id != row.recipient_user_id
+            or intent.integration_connection_id != row.integration_connection_id
+        ):
+            raise NotificationOwnershipBackfillStateError(
+                "notification and its delivery intent disagree on the recipient"
+            )
+    if row.ai_invocation_id is not None:
+        if row.category not in _AI_CATEGORIES:
+            raise NotificationOwnershipBackfillProvenanceError(
+                "only a reply or echo may claim a platform AI invocation"
+            )
+        invocation = invocations.get(row.ai_invocation_id)
+        if invocation is None:
+            raise NotificationOwnershipBackfillStateError(
+                "notification references a missing platform invocation"
+            )
+        if invocation.subject_id != scope.subject_id:
+            raise NotificationOwnershipBackfillStateError(
+                "notification links a platform invocation of another subject"
+            )
+        if invocation.status != AIInvocationStatus.SUCCEEDED.value:
+            raise NotificationOwnershipBackfillProvenanceError(
+                "notification links an invocation that never succeeded"
+            )
+    return False
 
 
-
-async def _after_weight_logs_projection_for_test() -> None:
+async def _after_notifications_projection_for_test() -> None:
     """Deterministic seam for real PostgreSQL lock/recheck tests."""
 
 
@@ -938,47 +893,57 @@ async def _project_connections(
     return {row.id: row for row in map(_connection_values, rows)}
 
 
-async def _project_raws(
-    session: AsyncSession, raw_payload_ids: set[int]
-) -> dict[int, Any]:
-    if not raw_payload_ids:
+async def _project_intents(
+    session: AsyncSession, intent_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, Any]:
+    if not intent_ids:
         return {}
+    table = NotificationDeliveryIntent.__table__
     rows = await session.execute(
-        _raw_select().where(RawPayload.id.in_(raw_payload_ids)).order_by(RawPayload.id)
+        select(*(table.c[field] for field in _INTENT_FIELDS))
+        .where(table.c.id.in_(intent_ids))
+        .order_by(table.c.id)
     )
-    return {row.id: row for row in map(_raw_values, rows)}
+    return {row.id: _values(row, _INTENT_FIELDS) for row in rows}
 
 
-async def _project_parser_invocation_scope(
-    session: AsyncSession, *, scope: _Scope, raws: Mapping[int, Any]
-) -> dict[int, tuple[int, bool]]:
-    """Return per-raw parser counts restricted to the reviewed subject."""
-
-    body_scan_raws = {
-        raw.id
-        for raw in raws.values()
-        if raw.domain == Domain.BODY_COMPOSITION.value
-    }
-    if not body_scan_raws:
+async def _lock_projected_intents(
+    session: AsyncSession,
+    projected: Mapping[uuid.UUID, Any],
+) -> dict[uuid.UUID, Any]:
+    intent_ids = set(projected)
+    if not intent_ids:
         return {}
-    rows = await session.execute(
-        select(AIInvocation.raw_payload_id, AIInvocation.subject_id)
-        .where(
-            AIInvocation.raw_payload_id.in_(body_scan_raws),
-            AIInvocation.purpose == AIInvocationPurpose.BODY_SCAN_PARSE.value,
-        )
-        .order_by(AIInvocation.raw_payload_id, AIInvocation.id)
+    table = NotificationDeliveryIntent.__table__
+    locked_raw = await session.execute(
+        select(*(table.c[field] for field in _INTENT_FIELDS))
+        .where(table.c.id.in_(intent_ids))
+        .order_by(table.c.id)
+        .with_for_update()
     )
-    counts: dict[int, tuple[int, bool]] = {
-        raw_payload_id: (0, True) for raw_payload_id in body_scan_raws
-    }
-    for raw_payload_id, subject_id in rows:
-        count, same_subject = counts[int(raw_payload_id)]
-        counts[int(raw_payload_id)] = (
-            count + 1,
-            same_subject and subject_id == scope.subject_id,
+    locked = {row.id: _values(row, _INTENT_FIELDS) for row in locked_raw}
+    if set(locked) != intent_ids or any(
+        not _same_values(locked[key], projected[key], _INTENT_FIELDS)
+        for key in intent_ids
+    ):
+        raise NotificationOwnershipBackfillStateError(
+            "a projected delivery intent changed before it was locked"
         )
-    return counts
+    return locked
+
+
+async def _project_invocations(
+    session: AsyncSession, invocation_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, Any]:
+    if not invocation_ids:
+        return {}
+    table = AIInvocation.__table__
+    rows = await session.execute(
+        select(*(table.c[field] for field in _INVOCATION_FIELDS))
+        .where(table.c.id.in_(invocation_ids))
+        .order_by(table.c.id)
+    )
+    return {row.id: _values(row, _INVOCATION_FIELDS) for row in rows}
 
 
 async def _lock_projected_graph(
@@ -986,14 +951,14 @@ async def _lock_projected_graph(
     *,
     projected_rows: Mapping[int, Any],
     projected_connections: Mapping[uuid.UUID, Any],
-    projected_raws: Mapping[int, Any],
-) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[int, Any]]:
+    projected_intents: Mapping[uuid.UUID, Any],
+) -> tuple[dict[int, Any], dict[uuid.UUID, Any], dict[uuid.UUID, Any]]:
     locked_connections = await _lock_projected_connections(
         session, projected_connections
     )
-    locked_raws = await _lock_projected_raws(session, projected_raws)
+    locked_intents = await _lock_projected_intents(session, projected_intents)
     locked_rows = await _lock_projected_rows(session, projected_rows)
-    return locked_rows, locked_connections, locked_raws
+    return locked_rows, locked_connections, locked_intents
 
 
 async def _lock_projected_connections(
@@ -1017,36 +982,12 @@ async def _lock_projected_connections(
             )
             for key in connection_ids
         ):
-            raise WeightLogOwnershipBackfillStateError(
+            raise NotificationOwnershipBackfillStateError(
                 "a projected provider connection changed before it was locked"
             )
     else:
         locked_connections = {}
     return locked_connections
-
-
-async def _lock_projected_raws(
-    session: AsyncSession,
-    projected_raws: Mapping[int, Any],
-) -> dict[int, Any]:
-    raw_payload_ids = set(projected_raws)
-    if not raw_payload_ids:
-        return {}
-    locked = await session.execute(
-        _raw_select()
-        .where(RawPayload.id.in_(raw_payload_ids))
-        .order_by(RawPayload.id)
-        .with_for_update()
-    )
-    locked_raws = {row.id: row for row in map(_raw_values, locked)}
-    if set(locked_raws) != raw_payload_ids or any(
-        not _same_values(locked_raws[key], projected_raws[key], _RAW_FIELDS)
-        for key in raw_payload_ids
-    ):
-        raise WeightLogOwnershipBackfillStateError(
-            "a projected weight raw payload changed before it was locked"
-        )
-    return locked_raws
 
 
 async def _lock_projected_rows(
@@ -1067,7 +1008,7 @@ async def _lock_projected_rows(
         not _same_values(locked_rows[key], projected_rows[key], _ROW_FIELDS)
         for key in projected_rows
     ):
-        raise WeightLogOwnershipBackfillStateError(
+        raise NotificationOwnershipBackfillStateError(
             "a projected weight changed before it was locked"
         )
     return locked_rows
@@ -1082,8 +1023,8 @@ async def _project_and_lock_ids(
 ) -> tuple[
     dict[int, Any],
     dict[uuid.UUID, Any],
-    dict[int, Any],
-    dict[int, tuple[int, bool]],
+    dict[uuid.UUID, Any],
+    dict[uuid.UUID, Any],
 ]:
     if not ids:
         return {}, {}, {}, {}
@@ -1091,30 +1032,39 @@ async def _project_and_lock_ids(
         _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
     )
     projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
-    raw_payload_ids = {row.raw_payload_id for row in projected_rows.values() if row.raw_payload_id is not None}
-    projected_raws = await _project_raws(session, raw_payload_ids)
-    connection_ids = {
-        row.integration_connection_id
-        for row in projected_rows.values()
-        if row.integration_connection_id is not None
-    } | {
-        raw.integration_connection_id
-        for raw in projected_raws.values()
-        if raw.integration_connection_id is not None
-    }
-    projected_connections = await _project_connections(session, connection_ids)
+    projected_connections = await _project_connections(
+        session,
+        {
+            row.integration_connection_id
+            for row in projected_rows.values()
+            if row.integration_connection_id is not None
+        },
+    )
+    projected_intents = await _project_intents(
+        session,
+        {
+            row.delivery_intent_id
+            for row in projected_rows.values()
+            if row.delivery_intent_id is not None
+        },
+    )
     if invoke_race_hook:
-        await _after_weight_logs_projection_for_test()
+        await _after_notifications_projection_for_test()
     locked = await _lock_projected_graph(
         session,
         projected_rows=projected_rows,
         projected_connections=projected_connections,
-        projected_raws=projected_raws,
+        projected_intents=projected_intents,
     )
-    parser_invocations = await _project_parser_invocation_scope(
-        session, scope=scope, raws=locked[2]
+    invocations = await _project_invocations(
+        session,
+        {
+            row.ai_invocation_id
+            for row in locked[0].values()
+            if row.ai_invocation_id is not None
+        },
     )
-    return (*locked, parser_invocations)
+    return (*locked, invocations)
 
 
 def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
@@ -1130,8 +1080,8 @@ def _row_policy(row_id: int, checkpoint: Any | None) -> tuple[bool, bool]:
         return False, False
     if checkpoint.status == "completed":
         return row_id <= checkpoint.scan_high_watermark_id, False
-    raise WeightLogOwnershipBackfillStateError(
-        "Stage-3L checkpoint has an unsupported state"
+    raise NotificationOwnershipBackfillStateError(
+        "Stage-3S checkpoint has an unsupported state"
     )
 
 
@@ -1142,39 +1092,24 @@ async def _referenced_connection_digest(
     high: int | None,
     lock_connections: bool,
 ) -> tuple[int, str]:
-    """Page the referenced C set, optionally locking it before any fact row."""
+    """Page the referenced destination set, locking it before any outbox row."""
 
     count = 0
     digest = _EMPTY_SHA256
     cursor: uuid.UUID | None = None
-    fact_refs = select(
-        _TABLE.c.integration_connection_id.label("connection_id")
-    ).where(
-        _TABLE.c.id > low,
-        _TABLE.c.integration_connection_id.is_not(None),
-    )
-    raw_table = RawPayload.__table__
-    raw_refs = (
-        select(raw_table.c.integration_connection_id.label("connection_id"))
-        .select_from(
-            _TABLE.join(raw_table, _TABLE.c.raw_payload_id == raw_table.c.id)
-        )
-        .where(
-            _TABLE.c.id > low,
-            raw_table.c.integration_connection_id.is_not(None),
-        )
-    )
-    if high is not None:
-        fact_refs = fact_refs.where(_TABLE.c.id <= high)
-        raw_refs = raw_refs.where(_TABLE.c.id <= high)
-    refs = fact_refs.union(raw_refs).subquery()
     while True:
-        query = select(refs.c.connection_id)
+        query = select(_TABLE.c.integration_connection_id.label("connection_id")).where(
+            _TABLE.c.id > low,
+            _TABLE.c.integration_connection_id.is_not(None),
+        )
+        if high is not None:
+            query = query.where(_TABLE.c.id <= high)
         if cursor is not None:
-            query = query.where(refs.c.connection_id > cursor)
+            query = query.where(_TABLE.c.integration_connection_id > cursor)
         connection_ids = list(
             await session.scalars(
-                query.order_by(refs.c.connection_id)
+                query.distinct()
+                .order_by(_TABLE.c.integration_connection_id)
                 .limit(_PAGE_SIZE)
             )
         )
@@ -1182,83 +1117,68 @@ async def _referenced_connection_digest(
             break
         projected = await _project_connections(session, set(connection_ids))
         if set(projected) != set(connection_ids):
-            raise WeightLogOwnershipBackfillStateError(
-                "a weight fact references a missing provider connection"
+            raise NotificationOwnershipBackfillStateError(
+                "a notification references a missing destination account"
             )
         if lock_connections:
             await _lock_projected_connections(session, projected)
         for connection_id in connection_ids:
-            digest = _extend(digest, ["weight_logs_connection", connection_id])
+            digest = _extend(
+                digest, ["notifications_connection", connection_id]
+            )
             count += 1
         cursor = connection_ids[-1]
     return count, digest
 
 
-async def _referenced_raw_digest(
+async def _referenced_intent_digest(
     session: AsyncSession,
     *,
     low: int,
     high: int | None,
-    lock_raws: bool,
+    lock_intents: bool,
 ) -> tuple[int, str]:
     count = 0
     digest = _EMPTY_SHA256
-    cursor = 0
+    cursor: uuid.UUID | None = None
     while True:
-        query = select(_TABLE.c.raw_payload_id).where(
+        query = select(_TABLE.c.delivery_intent_id).where(
             _TABLE.c.id > low,
-            _TABLE.c.raw_payload_id.is_not(None),
-            _TABLE.c.raw_payload_id > cursor,
+            _TABLE.c.delivery_intent_id.is_not(None),
         )
         if high is not None:
             query = query.where(_TABLE.c.id <= high)
-        raw_payload_ids = list(
+        if cursor is not None:
+            query = query.where(_TABLE.c.delivery_intent_id > cursor)
+        intent_ids = list(
             await session.scalars(
-                query.distinct().order_by(_TABLE.c.raw_payload_id).limit(_PAGE_SIZE)
+                query.distinct()
+                .order_by(_TABLE.c.delivery_intent_id)
+                .limit(_PAGE_SIZE)
             )
         )
-        if not raw_payload_ids:
+        if not intent_ids:
             break
-        projected = await _project_raws(session, set(raw_payload_ids))
-        if set(projected) != set(raw_payload_ids):
-            raise WeightLogOwnershipBackfillStateError(
-                "a weight fact references a missing raw payload"
+        projected = await _project_intents(session, set(intent_ids))
+        if set(projected) != set(intent_ids):
+            raise NotificationOwnershipBackfillStateError(
+                "a notification references a missing delivery intent"
             )
-        if lock_raws:
-            await _lock_projected_raws(session, projected)
-        for raw_payload_id in raw_payload_ids:
-            digest = _extend(digest, ["weight_logs_raw", raw_payload_id])
+        if lock_intents:
+            await _lock_projected_intents(session, projected)
+        for intent_id in intent_ids:
+            digest = _extend(
+                digest,
+                [
+                    "notifications_intent",
+                    intent_id,
+                    projected[intent_id].subject_id,
+                    projected[intent_id].recipient_user_id,
+                ],
+            )
             count += 1
-        cursor = raw_payload_ids[-1]
+        cursor = intent_ids[-1]
     return count, digest
-
-
-async def _validate_active_date_invariant(session: AsyncSession) -> None:
-    """Reject two active weights on one date before scoped keys exist."""
-
-    left = _TABLE.alias("weight_active_left")
-    right = _TABLE.alias("weight_active_right")
-    duplicate = await session.scalar(
-        select(left.c.id)
-        .select_from(
-            left.join(
-                right,
-                and_(
-                    left.c.date == right.c.date,
-                    left.c.id < right.c.id,
-                ),
-            )
-        )
-        .where(
-            left.c.superseded.is_(False),
-            right.c.superseded.is_(False),
-        )
-        .limit(1)
-    )
-    if duplicate is not None:
-        raise WeightLogOwnershipBackfillProvenanceError(
-            "one date carries more than one active weight fact"
-        )
 
 
 async def _scan_current(
@@ -1277,9 +1197,17 @@ async def _scan_current(
     cursor = low
     locked_ref_count = 0
     locked_ref_digest = _EMPTY_SHA256
-    locked_raw_count = 0
-    locked_raw_digest = _EMPTY_SHA256
-    await _validate_active_date_invariant(session)
+    locked_intent_count = 0
+    locked_intent_digest = _EMPTY_SHA256
+    if (checkpoint is None or checkpoint.status == "running") and (
+        await session.scalar(
+            select(_TABLE.c.id).where(_TABLE.c.subject_id.is_(None)).limit(1)
+        )
+        is not None
+    ):
+        # While a message still needs adoption the recipient must be resolvable,
+        # so an ambiguous Telegram root surfaces in the read-only preflight.
+        await _reviewed_recipient(session, scope=scope)
     if for_update:
         locked_ref_count, locked_ref_digest = await _referenced_connection_digest(
             session,
@@ -1287,11 +1215,11 @@ async def _scan_current(
             high=high,
             lock_connections=True,
         )
-        locked_raw_count, locked_raw_digest = await _referenced_raw_digest(
+        locked_intent_count, locked_intent_digest = await _referenced_intent_digest(
             session,
             low=low,
             high=high,
-            lock_raws=True,
+            lock_intents=True,
         )
     while True:
         query = (
@@ -1305,58 +1233,43 @@ async def _scan_current(
         ids = list(await session.scalars(query))
         if not ids:
             break
-        if for_update:
-            raw_rows = await session.execute(
-                _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
-            )
-            projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
-            raws = await _project_raws(
-                session,
-                {row.raw_payload_id for row in projected_rows.values() if row.raw_payload_id is not None},
-            )
-            connections = await _project_connections(
-                session,
-                {
-                    row.integration_connection_id
-                    for row in projected_rows.values()
-                    if row.integration_connection_id is not None
-                }
-                | {
-                    raw.integration_connection_id
-                    for raw in raws.values()
-                    if raw.integration_connection_id is not None
-                },
-            )
-            rows = await _lock_projected_rows(session, projected_rows)
-        else:
-            raw_rows = await session.execute(
-                _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
-            )
-            rows = {row.id: row for row in map(_row_values, raw_rows)}
-            raws = await _project_raws(
-                session,
-                {row.raw_payload_id for row in rows.values() if row.raw_payload_id is not None},
-            )
-            connections = await _project_connections(
-                session,
-                {
-                    row.integration_connection_id
-                    for row in rows.values()
-                    if row.integration_connection_id is not None
-                }
-                | {
-                    raw.integration_connection_id
-                    for raw in raws.values()
-                    if raw.integration_connection_id is not None
-                },
-            )
-        if set(rows) != set(ids):
-            raise WeightLogOwnershipBackfillStateError(
-                "a projected weight page changed during validation"
-            )
-        parser_invocations = await _project_parser_invocation_scope(
-            session, scope=scope, raws=raws
+        raw_rows = await session.execute(
+            _row_select().where(_TABLE.c.id.in_(ids)).order_by(_TABLE.c.id)
         )
+        projected_rows = {row.id: row for row in map(_row_values, raw_rows)}
+        connections = await _project_connections(
+            session,
+            {
+                row.integration_connection_id
+                for row in projected_rows.values()
+                if row.integration_connection_id is not None
+            },
+        )
+        intents = await _project_intents(
+            session,
+            {
+                row.delivery_intent_id
+                for row in projected_rows.values()
+                if row.delivery_intent_id is not None
+            },
+        )
+        invocations = await _project_invocations(
+            session,
+            {
+                row.ai_invocation_id
+                for row in projected_rows.values()
+                if row.ai_invocation_id is not None
+            },
+        )
+        rows = (
+            await _lock_projected_rows(session, projected_rows)
+            if for_update
+            else projected_rows
+        )
+        if set(rows) != set(ids):
+            raise NotificationOwnershipBackfillStateError(
+                "a projected notification page changed during validation"
+            )
         for row_id in ids:
             row = rows[row_id]
             historical, allow_unowned = _row_policy(row.id, checkpoint)
@@ -1364,8 +1277,8 @@ async def _scan_current(
                 row,
                 scope=scope,
                 connections=connections,
-                raws=raws,
-                parser_invocations=parser_invocations,
+                intents=intents,
+                invocations=invocations,
                 historical=historical,
                 allow_unowned=allow_unowned,
             )
@@ -1373,8 +1286,8 @@ async def _scan_current(
                 checkpoint.status == "completed"
                 or row.id <= checkpoint.last_scanned_id
             ):
-                raise WeightLogOwnershipBackfillStateError(
-                    "a processed weight row remained unowned"
+                raise NotificationOwnershipBackfillStateError(
+                    "a processed notification row remained unowned"
                 )
             if digest:
                 data = _extend(data, _data_envelope(row))
@@ -1393,20 +1306,22 @@ async def _scan_current(
             current_ref_count != locked_ref_count
             or current_ref_digest != locked_ref_digest
         ):
-            raise WeightLogOwnershipBackfillStateError(
-                "weight fact provider references changed during validation"
+            raise NotificationOwnershipBackfillStateError(
+                "notification recipient references changed during validation"
             )
-        current_raw_count, current_raw_digest = await _referenced_raw_digest(
+        current_intent_count, current_intent_digest = await _referenced_intent_digest(
             session,
             low=low,
             high=high,
-            lock_raws=False,
+            lock_intents=False,
         )
-        if current_raw_count != locked_raw_count or current_raw_digest != locked_raw_digest:
-            raise WeightLogOwnershipBackfillStateError(
-                "weight fact raw references changed during validation"
+        if (
+            current_intent_count != locked_intent_count
+            or current_intent_digest != locked_intent_digest
+        ):
+            raise NotificationOwnershipBackfillStateError(
+                "notification delivery-intent references changed during validation"
             )
-        await _validate_active_date_invariant(session)
     return count, data, ownership
 
 
@@ -1418,8 +1333,8 @@ async def _bounds(session: AsyncSession) -> tuple[int, int]:
     ).one()
     high, count = int(high), int(count)
     if not _valid_counter(high) or not _valid_counter(count) or count > high:
-        raise WeightLogOwnershipBackfillValidationError(
-            "weight fact snapshot bounds are invalid"
+        raise NotificationOwnershipBackfillValidationError(
+            "notification snapshot bounds are invalid"
         )
     return high, count
 
@@ -1442,10 +1357,10 @@ async def _status_result(
     checkpoint: Any | None,
     validate: bool,
     for_update: bool,
-) -> WeightLogOwnershipBackfillPreflightResult:
+) -> NotificationOwnershipBackfillPreflightResult:
     if checkpoint is None:
         high, snapshot = await _bounds(session)
-        status = WeightLogOwnershipBackfillStatus.NOT_STARTED
+        status = NotificationOwnershipBackfillStatus.NOT_STARTED
         scanned = updated = unchanged = rows_above = 0
         remaining = snapshot
         before = after = ownership = _EMPTY_SHA256
@@ -1455,7 +1370,7 @@ async def _status_result(
             checkpoint.scan_high_watermark_id,
             checkpoint.snapshot_rows,
         )
-        status = WeightLogOwnershipBackfillStatus(checkpoint.status)
+        status = NotificationOwnershipBackfillStatus(checkpoint.status)
         scanned, updated, unchanged = (
             checkpoint.scanned_rows,
             checkpoint.updated_rows,
@@ -1475,7 +1390,7 @@ async def _status_result(
             checkpoint.data_checksum_after,
             checkpoint.ownership_checksum_after,
         )
-        completed = status is WeightLogOwnershipBackfillStatus.COMPLETED
+        completed = status is NotificationOwnershipBackfillStatus.COMPLETED
     if validate:
         await _scan_current(
             session,
@@ -1494,11 +1409,11 @@ async def _status_result(
                 or 0
             )
             if frozen_count != snapshot:
-                raise WeightLogOwnershipBackfillStateError(
-                    "the weight snapshot cardinality changed"
+                raise NotificationOwnershipBackfillStateError(
+                    "the notification log snapshot cardinality changed"
                 )
-    return WeightLogOwnershipBackfillPreflightResult(
-        phase_key=WEIGHT_LOG_OWNERSHIP_BACKFILL_PHASE,
+    return NotificationOwnershipBackfillPreflightResult(
+        phase_key=NOTIFICATION_OWNERSHIP_BACKFILL_PHASE,
         subject_id=scope.subject_id,
         status=status,
         tables_total=1,
@@ -1516,28 +1431,28 @@ async def _status_result(
 
 
 def _batch_result(
-    result: WeightLogOwnershipBackfillPreflightResult,
+    result: NotificationOwnershipBackfillPreflightResult,
     *,
     scanned: int,
     updated: int,
     unchanged: int,
-) -> WeightLogOwnershipBackfillBatchResult:
-    return WeightLogOwnershipBackfillBatchResult(
+) -> NotificationOwnershipBackfillBatchResult:
+    return NotificationOwnershipBackfillBatchResult(
         **{
             field: getattr(result, field)
-            for field in WeightLogOwnershipBackfillPreflightResult.__dataclass_fields__
+            for field in NotificationOwnershipBackfillPreflightResult.__dataclass_fields__
         },
-        batch_table="weight_logs",
+        batch_table="notifications",
         batch_scanned_rows=scanned,
         batch_updated_rows=updated,
         batch_unchanged_rows=unchanged,
     )
 
 
-async def preflight_weight_log_ownership_backfill(
+async def preflight_notification_ownership_backfill(
     session: AsyncSession,
-) -> WeightLogOwnershipBackfillPreflightResult:
-    """Validate the fixed Stage-3L graph without mutation."""
+) -> NotificationOwnershipBackfillPreflightResult:
+    """Validate the fixed Stage-3S graph without mutation."""
 
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=False)
@@ -1562,15 +1477,15 @@ async def preflight_weight_log_ownership_backfill(
 def _validate_restore_bounds(snapshot_bounds: Any) -> tuple[int, int]:
     if (
         not isinstance(snapshot_bounds, Mapping)
-        or set(snapshot_bounds) != {"weight_logs"}
+        or set(snapshot_bounds) != {"notifications"}
     ):
-        raise WeightLogOwnershipBackfillValidationError(
-            "snapshot_bounds must contain the exact weight table catalog"
+        raise NotificationOwnershipBackfillValidationError(
+            "snapshot_bounds must contain the exact notification log table catalog"
         )
-    pair = snapshot_bounds["weight_logs"]
+    pair = snapshot_bounds["notifications"]
     if not isinstance(pair, tuple) or len(pair) != 2:
-        raise WeightLogOwnershipBackfillValidationError(
-            "the weight snapshot bound must be an exact pair"
+        raise NotificationOwnershipBackfillValidationError(
+            "the notification log snapshot bound must be an exact pair"
         )
     high, count = pair
     if (
@@ -1579,28 +1494,30 @@ def _validate_restore_bounds(snapshot_bounds: Any) -> tuple[int, int]:
         or count > high
         or (high == 0) != (count == 0)
     ):
-        raise WeightLogOwnershipBackfillValidationError(
-            "the weight snapshot bound is an invalid ID/count pair"
+        raise NotificationOwnershipBackfillValidationError(
+            "the notification log snapshot bound is an invalid ID/count pair"
         )
     return high, count
 
 
-async def reset_weight_log_ownership_backfill_for_portability_v1_restore(
+async def prepare_notification_ownership_backfill_for_portability_v1_restore(
     session: AsyncSession,
-    *,
-    snapshot_bounds: Mapping[str, tuple[int, int]],
 ) -> None:
-    """Reset Stage-3L before the caller atomically replaces portable data."""
+    """Prepare or preserve retained Stage-3S evidence before replacement.
 
-    high, count = _validate_restore_bounds(snapshot_bounds)
+    Backup v1 neither exports nor replaces delivered messages, so this phase
+    never accepts incoming bounds: it validates the retained local delivery log
+    and, on a first restore, freezes it as its own reviewed snapshot.
+    """
+
     with session.no_autoflush:
         scope = await _load_scope(session, for_update=True)
         dependencies = await _load_checkpoints(
             session, _PRIOR_PHASES, for_update=True
         )
         if set(dependencies) != set(_PRIOR_PHASES):
-            raise WeightLogOwnershipBackfillDependencyError(
-                "Stage-3A through Stage-3K checkpoints are incomplete"
+            raise NotificationOwnershipBackfillDependencyError(
+                "Stage-3A through Stage-3R checkpoints are incomplete"
             )
         for phase in _PRIOR_PHASES:
             _validate_checkpoint(
@@ -1611,16 +1528,23 @@ async def reset_weight_log_ownership_backfill_for_portability_v1_restore(
         checkpoint = own.get(_PHASE_KEY)
         _validate_own(checkpoint, scope=scope)
         if checkpoint is None:
+            high, count = await _bounds(session)
             await _scan_current(
                 session,
                 scope=scope,
                 checkpoint=None,
+                high=high,
                 for_update=True,
                 digest=False,
             )
+            if await _bounds(session) != (high, count):
+                raise NotificationOwnershipBackfillStateError(
+                    "retained notification bounds changed during restore preparation"
+                )
+            await _create_checkpoint(session, scope=scope, high=high, count=count)
         else:
-            # A portability replacement is allowed to reset progress, not to
-            # conceal drift in the outgoing checkpoint evidence.
+            # A portability replacement may not conceal drift in the retained
+            # delivery log it is not allowed to carry.
             await _status_result(
                 session,
                 scope=scope,
@@ -1628,26 +1552,6 @@ async def reset_weight_log_ownership_backfill_for_portability_v1_restore(
                 validate=True,
                 for_update=True,
             )
-        status = "completed" if (high, count) == (0, 0) else "running"
-        if checkpoint is None:
-            checkpoint = OwnershipBackfillCheckpoint(
-                phase_key=_PHASE_KEY,
-                subject_id=scope.subject_id,
-            )
-            session.add(checkpoint)
-        checkpoint.status = status
-        checkpoint.scan_high_watermark_id = high
-        checkpoint.snapshot_rows = count
-        checkpoint.last_scanned_id = 0
-        checkpoint.scanned_rows = 0
-        checkpoint.updated_rows = 0
-        checkpoint.unchanged_rows = 0
-        checkpoint.data_checksum_before = _EMPTY_SHA256
-        checkpoint.data_checksum_after = _EMPTY_SHA256
-        checkpoint.ownership_checksum_after = _EMPTY_SHA256
-        checkpoint.started_at = func.now()
-        checkpoint.updated_at = func.now()
-        checkpoint.completed_at = func.now() if status == "completed" else None
         await session.flush()
 
 
@@ -1678,19 +1582,29 @@ async def _create_checkpoint(
 
 
 def _set_cached_subject(
-    session: AsyncSession, row_id: int, subject_id: uuid.UUID
+    session: AsyncSession,
+    row_id: int,
+    subject_id: uuid.UUID,
+    recipient_user_id: uuid.UUID,
+    connection_id: uuid.UUID,
 ) -> None:
-    cached = session.identity_map.get((WeightLog, (row_id,), None))
+    cached = session.identity_map.get((Notification, (row_id,), None))
     if cached is not None:
         attributes.set_committed_value(cached, "subject_id", subject_id)
+        attributes.set_committed_value(
+            cached, "recipient_user_id", recipient_user_id
+        )
+        attributes.set_committed_value(
+            cached, "integration_connection_id", connection_id
+        )
 
 
-async def run_weight_log_ownership_backfill_batch(
+async def run_notification_ownership_backfill_batch(
     session: AsyncSession,
     *,
-    batch_size: int = DEFAULT_WEIGHT_LOG_OWNERSHIP_BACKFILL_BATCH_SIZE,
-) -> WeightLogOwnershipBackfillBatchResult:
-    """Advance the fixed weight table by at most one primary-key batch."""
+    batch_size: int = DEFAULT_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE,
+) -> NotificationOwnershipBackfillBatchResult:
+    """Advance the fixed notification log by at most one primary-key batch."""
 
     size = _validate_batch_size(batch_size)
     with session.no_autoflush:
@@ -1745,9 +1659,10 @@ async def run_weight_log_ownership_backfill_batch(
                 .limit(size)
             )
         )
-        rows, connections, raws, parser_invocations = await _project_and_lock_ids(
+        rows, connections, intents, invocations = await _project_and_lock_ids(
             session, ids, scope=scope, invoke_race_hook=True
         )
+        destination = await _reviewed_recipient(session, scope=scope)
 
         before = checkpoint.data_checksum_before
         after = checkpoint.data_checksum_after
@@ -1760,8 +1675,8 @@ async def run_weight_log_ownership_backfill_batch(
                 row,
                 scope=scope,
                 connections=connections,
-                raws=raws,
-                parser_invocations=parser_invocations,
+                intents=intents,
+                invocations=invocations,
                 historical=True,
                 allow_unowned=True,
             )
@@ -1773,15 +1688,26 @@ async def run_weight_log_ownership_backfill_batch(
                         _TABLE.c.id == row_id,
                         _TABLE.c.subject_id.is_(None),
                         _TABLE.c.actor_user_id.is_(None),
+                        _TABLE.c.recipient_user_id.is_(None),
                         _TABLE.c.integration_connection_id.is_(None),
                     )
-                    .values(subject_id=scope.subject_id, updated_at=row.updated_at)
+                    .values(
+                        subject_id=scope.subject_id,
+                        recipient_user_id=scope.owner_user_id,
+                        integration_connection_id=destination.id,
+                    )
                 )
                 if result.rowcount != 1:
-                    raise WeightLogOwnershipBackfillStateError(
-                        "weight fact ownership changed during adoption"
+                    raise NotificationOwnershipBackfillStateError(
+                        "notification ownership changed during adoption"
                     )
-                _set_cached_subject(session, row_id, scope.subject_id)
+                _set_cached_subject(
+                    session,
+                    row_id,
+                    scope.subject_id,
+                    scope.owner_user_id,
+                    destination.id,
+                )
                 updated_count += 1
             else:
                 unchanged_count += 1
@@ -1790,35 +1716,36 @@ async def run_weight_log_ownership_backfill_batch(
             )
             current_result = current_raw.one_or_none()
             if current_result is None:
-                raise WeightLogOwnershipBackfillStateError(
-                    "a weight fact disappeared during adoption"
+                raise NotificationOwnershipBackfillStateError(
+                    "a notification disappeared during adoption"
                 )
             current = _row_values(current_result)
-            current_connections = connections
+            current_connections = dict(connections)
+            current_connections.setdefault(destination.id, destination)
             if (
                 current.integration_connection_id is not None
                 and current.integration_connection_id not in current_connections
             ):
-                raise WeightLogOwnershipBackfillStateError(
-                    "weight fact provider connection changed during adoption"
+                raise NotificationOwnershipBackfillStateError(
+                    "notification destination changed during adoption"
                 )
             if _validate_row(
                 current,
                 scope=scope,
                 connections=current_connections,
-                raws=raws,
-                parser_invocations=parser_invocations,
+                intents=intents,
+                invocations=invocations,
                 historical=True,
                 allow_unowned=False,
             ):
-                raise WeightLogOwnershipBackfillStateError(
-                    "a processed weight remained unowned"
+                raise NotificationOwnershipBackfillStateError(
+                    "a processed notification remained unowned"
                 )
             after = _extend(after, _data_envelope(current))
             ownership = _extend(ownership, _ownership_envelope(current))
         if before != after:
-            raise WeightLogOwnershipBackfillStateError(
-                "weight fact data changed while ownership was backfilled"
+            raise NotificationOwnershipBackfillStateError(
+                "notification data changed while ownership was backfilled"
             )
         checkpoint.scanned_rows += len(ids)
         checkpoint.updated_rows += updated_count
@@ -1849,8 +1776,8 @@ async def run_weight_log_ownership_backfill_batch(
                 or data != checkpoint.data_checksum_after
                 or current_ownership != checkpoint.ownership_checksum_after
             ):
-                raise WeightLogOwnershipBackfillStateError(
-                    "the weight snapshot changed during finalization"
+                raise NotificationOwnershipBackfillStateError(
+                    "the notification log snapshot changed during finalization"
                 )
             checkpoint.last_scanned_id = checkpoint.scan_high_watermark_id
             checkpoint.status = "completed"
@@ -1875,21 +1802,21 @@ async def run_weight_log_ownership_backfill_batch(
 
 
 __all__ = [
-    "WEIGHT_LOG_OWNERSHIP_BACKFILL_PHASE",
-    "WEIGHT_LOG_OWNERSHIP_BACKFILL_TABLES",
-    "WEIGHT_LOG_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
-    "DEFAULT_WEIGHT_LOG_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "MAX_WEIGHT_LOG_OWNERSHIP_BACKFILL_BATCH_SIZE",
-    "WeightLogOwnershipBackfillStatus",
-    "WeightLogOwnershipBackfillError",
-    "WeightLogOwnershipBackfillValidationError",
-    "WeightLogOwnershipBackfillIdentityError",
-    "WeightLogOwnershipBackfillDependencyError",
-    "WeightLogOwnershipBackfillStateError",
-    "WeightLogOwnershipBackfillProvenanceError",
-    "WeightLogOwnershipBackfillPreflightResult",
-    "WeightLogOwnershipBackfillBatchResult",
-    "preflight_weight_log_ownership_backfill",
-    "run_weight_log_ownership_backfill_batch",
-    "reset_weight_log_ownership_backfill_for_portability_v1_restore",
+    "NOTIFICATION_OWNERSHIP_BACKFILL_PHASE",
+    "NOTIFICATION_OWNERSHIP_BACKFILL_TABLES",
+    "NOTIFICATION_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES",
+    "DEFAULT_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "MAX_NOTIFICATION_OWNERSHIP_BACKFILL_BATCH_SIZE",
+    "NotificationOwnershipBackfillStatus",
+    "NotificationOwnershipBackfillError",
+    "NotificationOwnershipBackfillValidationError",
+    "NotificationOwnershipBackfillIdentityError",
+    "NotificationOwnershipBackfillDependencyError",
+    "NotificationOwnershipBackfillStateError",
+    "NotificationOwnershipBackfillProvenanceError",
+    "NotificationOwnershipBackfillPreflightResult",
+    "NotificationOwnershipBackfillBatchResult",
+    "preflight_notification_ownership_backfill",
+    "run_notification_ownership_backfill_batch",
+    "prepare_notification_ownership_backfill_for_portability_v1_restore",
 ]

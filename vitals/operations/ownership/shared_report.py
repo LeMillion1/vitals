@@ -26,29 +26,36 @@ from vitals.enums import UserStatus
 from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.share import SharedReport
-from vitals.services.conflict_rule_ownership_backfill_service import (
+from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.progress_photo_ownership_backfill_service import (
+from vitals.operations.ownership.progress_photo import (
     PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.ownership_transition.bridges import (
+    SharedReportHistoricalBridgeState,
+    SharedReportOwnershipBackfillError,
+    SharedReportOwnershipBackfillStateError,
+    SharedReportOwnershipBackfillValidationError,
+    shared_report_historical_bridge_state,
+)
 from vitals.utils.timeutils import now_utc
 
 
@@ -141,16 +148,6 @@ class SharedReportOwnershipBackfillStatus(StrEnum):
     COMPLETED = "completed"
 
 
-class SharedReportOwnershipBackfillError(RuntimeError):
-    """Base class for fail-closed Stage-3K failures."""
-
-
-class SharedReportOwnershipBackfillValidationError(
-    SharedReportOwnershipBackfillError, ValueError
-):
-    """A caller argument or persisted scalar is invalid."""
-
-
 class SharedReportOwnershipBackfillIdentityError(
     SharedReportOwnershipBackfillError
 ):
@@ -163,21 +160,10 @@ class SharedReportOwnershipBackfillDependencyError(
     """A prerequisite checkpoint is absent, malformed, or in the wrong mode."""
 
 
-class SharedReportOwnershipBackfillStateError(SharedReportOwnershipBackfillError):
-    """Checkpoint progress or a report ownership root is inconsistent."""
-
-
 class SharedReportOwnershipBackfillProvenanceError(
     SharedReportOwnershipBackfillError
 ):
     """A shared report has unsupported persisted artifact provenance."""
-
-
-@dataclass(frozen=True, slots=True)
-class SharedReportHistoricalBridgeState:
-    processed_high_watermark_id: int
-    snapshot_high_watermark_id: int
-    completed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -1266,34 +1252,6 @@ async def prepare_shared_report_ownership_backfill_for_portability_v1_restore(
                 for_update=True,
             )
         await session.flush()
-
-
-async def shared_report_historical_bridge_state(
-    session: AsyncSession,
-    *,
-    subject_id: uuid.UUID,
-) -> SharedReportHistoricalBridgeState:
-    """Return the bounded legacy bridge authorized by the exact K checkpoint."""
-
-    if not isinstance(subject_id, uuid.UUID):
-        raise SharedReportOwnershipBackfillValidationError(
-            "subject_id must be a UUID"
-        )
-    rows = await _load_checkpoints(session, (_PHASE_KEY,), for_update=False)
-    checkpoint = rows.get(_PHASE_KEY)
-    if checkpoint is None:
-        return SharedReportHistoricalBridgeState(0, 0, False)
-    scope = _Scope(subject_id=subject_id, owner_user_id=uuid.UUID(int=0))
-    status = _validate_own(checkpoint, scope=scope)
-    assert status is not None
-    snapshot_high = checkpoint.scan_high_watermark_id
-    if status == "completed":
-        return SharedReportHistoricalBridgeState(snapshot_high, snapshot_high, True)
-    return SharedReportHistoricalBridgeState(
-        checkpoint.last_scanned_id,
-        snapshot_high,
-        False,
-    )
 
 
 async def _after_shared_report_projection_for_test() -> None:

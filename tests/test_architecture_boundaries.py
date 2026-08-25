@@ -185,7 +185,7 @@ def test_no_new_flat_service_modules() -> None:
     # A concurrent untracked user draft is not part of the repository baseline.
     # If implemented, it belongs in ``services/accounts`` rather than here.
     legacy.discard("account_erasure_service.py")
-    baseline = 75
+    baseline = 54
 
     assert len(legacy) <= baseline, (
         f"Flat service module count grew from the guarded ceiling {baseline} to {len(legacy)}. "

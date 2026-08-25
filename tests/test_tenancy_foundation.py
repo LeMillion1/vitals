@@ -47,11 +47,11 @@ from vitals.models.scoped_settings import (
     UserSetting,
 )
 from vitals.models.tenancy import FileAsset, IntegrationConnection
+from vitals.operations.ownership.portability_v1 import import_full
 from vitals.ownership import OWNERSHIP_REGISTRY
 from vitals.services.data_portability_service import (
     _EXCLUDED_TABLES,
     export_full,
-    import_full,
 )
 
 

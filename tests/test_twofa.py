@@ -12,6 +12,7 @@ import time
 import pytest
 
 from vitals.models.app_settings import AppSetting
+from vitals.operations.ownership import portability_v1
 from vitals.services import data_portability_service
 from vitals.services.authentication import legacy_two_factor as twofa_service
 from vitals.services.data_portability_service import _is_secret_setting_key
@@ -122,7 +123,7 @@ async def test_2fa_survives_a_backup_round_trip(db_session):
         r for r in snapshot["app_settings"] if r["key"] == twofa_service.SETTINGS_KEY
     ], "the secret must not be in the file"
 
-    await data_portability_service.import_full(db_session, snapshot)
+    await portability_v1.import_full(db_session, snapshot)
     assert (await twofa_service.get_state(db_session)).enabled is True
 
 
@@ -136,7 +137,7 @@ async def test_a_backup_cannot_plant_a_2fa_secret(db_session):
         {"key": twofa_service.SETTINGS_KEY, "value": {"secret": RFC_SECRET, "confirmed": True}}
     )
 
-    await data_portability_service.import_full(db_session, snapshot)
+    await portability_v1.import_full(db_session, snapshot)
     state = await twofa_service.get_state(db_session)
     assert state.enabled is True
     assert state.secret == secret, "the owner's secret must survive untouched"
@@ -147,7 +148,7 @@ async def test_a_restore_onto_an_empty_db_leaves_2fa_off(db_session):
     secret is deliberately not in the file. It must fail toward "password still
     works" rather than locking the owner out of their own dashboard."""
     snapshot = await data_portability_service.export_full(db_session)
-    await data_portability_service.import_full(db_session, snapshot)
+    await portability_v1.import_full(db_session, snapshot)
     assert (await twofa_service.get_state(db_session)).enabled is False
 
 

@@ -23,8 +23,8 @@ from vitals.scoped_keys import (
     LegacyKeyKind,
     ScopeKind,
 )
-from vitals.services import ownership_validation_service as validation
-from vitals.services import scoped_key_audit_service as service
+from vitals.operations.ownership import validate as validation
+from vitals.operations.ownership import audit as service
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped

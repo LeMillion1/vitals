@@ -50,8 +50,8 @@ the others remain useful provenance for the remediations named below:
 | Domain enum | 14 health domains | Verified |
 | External integration modules | 5 tracked modules under `vitals/integrations` | Verified |
 | Web routers | 32 modules under `web/routers` | Verified |
-| Application services | 105 tracked non-`__init__` modules after the care, authentication, admission, analytics, persistence, and notification moves | Verified |
-| Flat service debt | 74 tracked root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, still too high |
+| Application services | 87 non-`__init__` modules after the care, authentication, analytics, persistence, notification, and ownership-operation moves | Verified |
+| Flat service debt | 54 root modules under `vitals/services`; guarded against growth by `test_architecture_boundaries.py` | Verified, reduced by 20 |
 | Browser scenarios | 39 scenarios selected by `pytest tests/ui -m ui` | Verified collection and run |
 | Commercial Git history | 293 commits after base `c91456a` at this document's commit; 137 contain an explicit Claude Opus co-author trailer | Git metadata only |
 
@@ -354,14 +354,17 @@ layer, and RLS/transaction primitives moved to `vitals.persistence`. Static
 tests prevent core→web, services→operations, pure-analytics→I/O, flat-service
 growth, and import-time cycles.
 
-The next large correction is not a blind folder move. Eighteen ownership
-backfill programs contain about one third of service LOC, but live portability,
-share, and weight services still import historical backfill behavior. Those
-reverse dependencies must be removed before the backfills move to
-`vitals/operations/ownership`; otherwise the new tree would encode a
-`services → operations → services` cycle.
+The ownership correction is now delivered. Eighteen resumable backfill programs,
+ownership validation, and scoped-key audit live in
+`vitals/operations/ownership`. The destructive full-v1 portability restore binds
+those programs in an operational coordinator. Share and weight read the two
+remaining historical checkpoint projections through a non-mutating
+`vitals/ownership_transition` seam, so no application service imports an
+operation and no compatibility forwarding modules preserve the old flat paths.
+The architecture test fixes that direction and lowered the flat-service ceiling
+from 74 modules to 54.
 
-After that boundary is cut, move bounded contexts in dependency order and split
+Continue moving bounded contexts in dependency order and split
 the 2,000–4,000-line monoliths under characterization tests. Delivery adapters
 (`mcp.py`, settings, care/consent routers) should become thin only after the
 application-service APIs stabilize.

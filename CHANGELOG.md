@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — ownership cutover programs leave the service layer
+
+The eighteen subject-ownership backfills plus their validation and audit tools
+now live under `vitals/operations/ownership`, with no forwarding modules left in
+the flat service root. Request-time services read the two remaining historical
+checkpoint contracts through a non-mutating `ownership_transition` boundary;
+the destructive full-v1 restore binds its backfill hooks in an operational
+coordinator. Static dependency checks forbid `services → operations` imports and
+lower the guarded flat-service ceiling from 74 modules to 54.
+
 ### Changed — new medical uploads use private storage
 
 New lab documents, body scans, and progress photos are stored under the

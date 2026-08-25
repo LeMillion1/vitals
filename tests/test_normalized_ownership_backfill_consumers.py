@@ -40,11 +40,11 @@ from vitals.services import (
     weight_service,
 )
 from vitals.services.conflict_engine import ConflictScopeError
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NormalizedOwnershipBackfillStatus,
     run_normalized_ownership_backfill_batch,
 )
-from vitals.services.raw_ownership_backfill_service import (
+from vitals.operations.ownership.raw import (
     run_raw_ownership_backfill_batch,
 )
 

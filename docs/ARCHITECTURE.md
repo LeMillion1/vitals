@@ -42,6 +42,16 @@ vitals/services/authentication/
 ├── connector_authorization.py # one OAuth account-to-subject choice
 ├── mcp_tokens.py      # connector credential lifecycle
 └── legacy_two_factor.py # local-password cutover path only
+
+vitals/operations/ownership/
+├── portability_v1.py # destructive full-v1 restore coordinator
+├── validate.py       # cross-table ownership cutover validation
+├── audit.py          # scoped-key collision operator audit
+└── <phase>.py        # 18 resumable ownership backfill programs
+
+vitals/ownership_transition/
+├── bridges.py        # read-only historical checkpoint projections
+└── portability_v1.py # typed hook contract, no operation imports
 ```
 
 Callers import the concept they use, for example
@@ -52,6 +62,10 @@ a second supported API. Pure computation lives in `vitals/analytics/`, and
 persistence primitives live in `vitals/persistence/`; neither is an application
 service. Further domains should be extracted in bounded,
 behavior-preserving commits with their focused tests and the full fast suite.
+Operational programs may depend on application services, but application
+services must not import `vitals.operations`. The static architecture contract
+enforces that direction and keeps the two remaining request-time checkpoint
+reads in the lower, non-mutating `ownership_transition` seam.
 
 **How to open it.** The file is authored as an *artifact body* — no `<!doctype>`,
 `<html>`, `<head>` or `<body>` of its own — so publishing it as an artifact is

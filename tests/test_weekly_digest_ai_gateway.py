@@ -35,13 +35,13 @@ from vitals.models.ai import (
 from vitals.models.identity import User
 from vitals.models.milestones import DOMAIN, WeeklyDigest
 from vitals.models.tenancy import IntegrationConnection, PlatformIntegrationConnection
+from vitals.operations.ownership.portability_v1 import import_full
 from vitals.ownership import OWNERSHIP_REGISTRY
 from vitals.services import ai_gateway_service as gateway
 from vitals.services import digest_service
 from vitals.services.data_portability_service import (
     _EXCLUDED_TABLES,
     export_full,
-    import_full,
 )
 from vitals.services.legacy_ownership import LegacyOwnershipError
 from web.config import get_web_config

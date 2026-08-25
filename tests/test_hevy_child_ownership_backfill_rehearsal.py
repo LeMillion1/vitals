@@ -26,20 +26,20 @@ from vitals.models.base import Base
 from vitals.models.raw_payload import RawPayload
 from vitals.ownership import WriteIdentity
 from vitals.services import hevy_service
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_PHASE,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_BACKFILL_PHASE,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_PHASE,
 )
-from vitals.services.raw_ownership_backfill_service import (
+from vitals.operations.ownership.raw import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.services.tenancy_bootstrap import bootstrap_legacy_resource_roots

@@ -40,26 +40,32 @@ from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import FileAsset
 from vitals.models.weight import ProgressPhoto
 from vitals.services import file_asset_service
-from vitals.services.conflict_rule_ownership_backfill_service import (
+from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hevy_child_ownership_backfill_service import (
+from vitals.operations.ownership.hevy_child import (
     HEVY_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.hrt_compound_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_compound import (
     HRT_COMPOUND_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_CHECKPOINT_PHASES,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
 )
-from vitals.services.raw_ownership_backfill_service import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.operations.ownership.raw import RAW_OWNERSHIP_BACKFILL_PHASE
+from vitals.ownership_transition.bridges import (
+    ProgressPhotoOwnershipBackfillError,
+    ProgressPhotoOwnershipBackfillStateError,
+    ProgressPhotoOwnershipBackfillValidationError,
+    progress_photo_historical_processed_bound,
+)
 from vitals.utils.timeutils import now_utc
 
 
@@ -150,16 +156,6 @@ class ProgressPhotoOwnershipBackfillStatus(StrEnum):
     RESTORE_BLOCKED = "restore_blocked"
 
 
-class ProgressPhotoOwnershipBackfillError(RuntimeError):
-    """Base class for fail-closed Stage-3H errors."""
-
-
-class ProgressPhotoOwnershipBackfillValidationError(
-    ProgressPhotoOwnershipBackfillError, ValueError
-):
-    """A caller argument or persisted scalar is invalid."""
-
-
 class ProgressPhotoOwnershipBackfillIdentityError(
     ProgressPhotoOwnershipBackfillError
 ):
@@ -170,10 +166,6 @@ class ProgressPhotoOwnershipBackfillDependencyError(
     ProgressPhotoOwnershipBackfillError
 ):
     """A prerequisite checkpoint is absent, malformed, or nonterminal."""
-
-
-class ProgressPhotoOwnershipBackfillStateError(ProgressPhotoOwnershipBackfillError):
-    """Checkpoint progress, ownership, or a linked graph is inconsistent."""
 
 
 class ProgressPhotoOwnershipBackfillProvenanceError(
@@ -596,33 +588,6 @@ def _require_dependencies(
         allow_empty_raw_completed=allow_empty_raw,
     )
     return True
-
-
-async def progress_photo_historical_processed_bound(
-    session: AsyncSession,
-    *,
-    subject_id: uuid.UUID,
-) -> int | None:
-    """Return the migrated historical prefix consumed by compatibility reads."""
-
-    if not isinstance(subject_id, uuid.UUID):
-        raise ProgressPhotoOwnershipBackfillValidationError(
-            "subject_id must be a UUID"
-        )
-    rows = await _load_checkpoints(session, (_PHASE_KEY,), for_update=False)
-    checkpoint = rows.get(_PHASE_KEY)
-    if checkpoint is None:
-        return None
-    status = _validate_checkpoint(
-        checkpoint,
-        phase=_PHASE_KEY,
-        subject_id=subject_id,
-    )
-    if status == "running":
-        return checkpoint.last_scanned_id
-    if status == "completed":
-        return checkpoint.scan_high_watermark_id
-    return None
 
 
 def _canonical(value: Any) -> Any:

@@ -24,19 +24,19 @@ from sqlalchemy.pool import NullPool
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
 from vitals.models.base import Base
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
-from vitals.services.hrt_child_ownership_backfill_service import (
+from vitals.operations.ownership.hrt_child import (
     HRT_CHILD_OWNERSHIP_BACKFILL_PHASE,
 )
 from vitals.services.identity_bootstrap import bootstrap_legacy_owner
-from vitals.services.normalized_ownership_backfill_service import (
+from vitals.operations.ownership.normalized import (
     NORMALIZED_MANUAL_BACKFILL_PHASE,
 )
-from vitals.services.provider_raw_ownership_backfill_service import (
+from vitals.operations.ownership.provider_raw import (
     PROVIDER_RAW_OWNERSHIP_BACKFILL_PHASE,
     ProviderRawOwnershipBackfillDependencyError,
     preflight_provider_raw_ownership_backfill,
 )
-from vitals.services.raw_ownership_backfill_service import (
+from vitals.operations.ownership.raw import (
     RAW_OWNERSHIP_BACKFILL_PHASE,
     block_raw_ownership_backfill_for_portability_v1_restore,
 )

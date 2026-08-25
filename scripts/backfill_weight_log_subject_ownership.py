@@ -24,7 +24,7 @@ if str(_REPOSITORY_ROOT) not in sys.path:
 
 from vitals.config import load_config
 from vitals.database import create_session_factory
-from vitals.services import weight_log_ownership_backfill_service as backfill_service
+from vitals.operations.ownership import weight_log as backfill_service
 
 
 OUTPUT_FORMAT_VERSION = 1

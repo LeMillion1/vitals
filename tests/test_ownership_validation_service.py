@@ -14,7 +14,7 @@ from vitals.models.body_scan import BodyScan, BodyScanMetric
 from vitals.models.hrt import HrtCompound, HrtCompoundComponent
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.weight import WeightLog
-from vitals.services import ownership_validation_service as service
+from vitals.operations.ownership import validate as service
 
 
 # These tests seed rows with no owner on purpose: they pin what a scoped

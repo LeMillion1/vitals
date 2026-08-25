@@ -3,7 +3,8 @@
 Two deliberately different shapes (they pull in opposite directions, so we don't
 try to make one file serve both):
 
-  * **Full backup** (:func:`export_full` / :func:`import_full`) — a
+  * **Full backup** (:func:`export_full` plus the operational full-v1 restore
+    coordinator) — a
     machine-round-trippable snapshot of portable health data (including the
     ``raw_payloads`` JSONB data-lake and internal ``id``s). Durable identity,
     authorization, audit, published-link control-plane tables, and tenant/private
@@ -77,110 +78,13 @@ from vitals.ownership import (
     OwnershipClass,
     TargetColumn,
 )
+from vitals.ownership_transition.portability_v1 import PortabilityV1OwnershipHooks
 from vitals.i18n import t
-from vitals.services.conflict_rule_ownership_backfill_service import (
-    CONFLICT_RULE_OWNERSHIP_BACKFILL_TABLES,
-    ConflictRuleOwnershipBackfillError,
-    preflight_conflict_rule_ownership_backfill,
-    reset_conflict_rule_backfill_for_portability_v1_restore,
-)
 from vitals.services.conflict_catalog import (
     sync_catalog as sync_conflict_catalog,
 )
 from vitals.services.identity_service import acquire_identity_governance_lock
-from vitals.services.hevy_child_ownership_backfill_service import (
-    HEVY_CHILD_OWNERSHIP_BACKFILL_TABLES,
-    HevyChildOwnershipBackfillError,
-    block_hevy_child_ownership_backfill_for_portability_v1_restore,
-)
-from vitals.services.hrt_child_ownership_backfill_service import (
-    HRT_CHILD_OWNERSHIP_BACKFILL_TABLES,
-    HrtChildOwnershipBackfillError,
-    reset_hrt_child_backfill_for_portability_v1_restore,
-)
-from vitals.services.hrt_compound_ownership_backfill_service import (
-    HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES,
-    HrtCompoundOwnershipBackfillError,
-    reset_hrt_compound_backfill_for_portability_v1_restore,
-)
-from vitals.services.normalized_ownership_backfill_service import (
-    NORMALIZED_MANUAL_TABLES,
-    NormalizedOwnershipBackfillError,
-    reset_normalized_manual_backfill_for_portability_v1_restore,
-)
-from vitals.services.provider_raw_ownership_backfill_service import (
-    PROVIDER_RAW_OWNERSHIP_BACKFILL_TABLES,
-    ProviderRawOwnershipBackfillError,
-    block_provider_raw_ownership_backfill_for_portability_v1_restore,
-)
-from vitals.services.progress_photo_ownership_backfill_service import (
-    PROGRESS_PHOTO_OWNERSHIP_BACKFILL_TABLES,
-    ProgressPhotoOwnershipBackfillError,
-    block_progress_photo_ownership_backfill_for_portability_v1_restore,
-    preflight_progress_photo_ownership_backfill,
-)
-from vitals.services.raw_ownership_backfill_service import (
-    RawOwnershipBackfillError,
-    block_raw_ownership_backfill_for_portability_v1_restore,
-)
-from vitals.services.shared_report_ownership_backfill_service import (
-    SharedReportOwnershipBackfillError,
-    preflight_shared_report_ownership_backfill,
-    prepare_shared_report_ownership_backfill_for_portability_v1_restore,
-)
-from vitals.services.system_alert_ownership_backfill_service import (
-    SYSTEM_ALERT_OWNERSHIP_BACKFILL_TABLES,
-    SystemAlertOwnershipBackfillError,
-    preflight_system_alert_ownership_backfill,
-    reset_system_alert_ownership_backfill_for_portability_v1_restore,
-)
-from vitals.services.notification_ownership_backfill_service import (
-    NotificationOwnershipBackfillError,
-    preflight_notification_ownership_backfill,
-    prepare_notification_ownership_backfill_for_portability_v1_restore,
-)
-from vitals.services.weekly_digest_ownership_backfill_service import (
-    WeeklyDigestOwnershipBackfillError,
-    preflight_weekly_digest_ownership_backfill,
-    prepare_weekly_digest_ownership_backfill_for_portability_v1_restore,
-)
-from vitals.services.garmin_weight_export_ownership_backfill_service import (
-    GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_TABLES,
-    GarminWeightExportOwnershipBackfillError,
-    block_garmin_weight_export_ownership_backfill_for_portability_v1_restore,
-    preflight_garmin_weight_export_ownership_backfill,
-)
-from vitals.services.body_scan_metric_ownership_backfill_service import (
-    BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_TABLES,
-    BodyScanMetricOwnershipBackfillError,
-    preflight_body_scan_metric_ownership_backfill,
-    reset_body_scan_metric_ownership_backfill_for_portability_v1_restore,
-)
-from vitals.services.body_scan_ownership_backfill_service import (
-    BODY_SCAN_OWNERSHIP_BACKFILL_TABLES,
-    BodyScanOwnershipBackfillError,
-    block_body_scan_ownership_backfill_for_portability_v1_restore,
-    preflight_body_scan_ownership_backfill,
-)
-from vitals.services.genetic_variant_ownership_backfill_service import (
-    GENETIC_VARIANT_OWNERSHIP_BACKFILL_TABLES,
-    GeneticVariantOwnershipBackfillError,
-    preflight_genetic_variant_ownership_backfill,
-    reset_genetic_variant_ownership_backfill_for_portability_v1_restore,
-)
-from vitals.services.lab_result_ownership_backfill_service import (
-    LAB_RESULT_OWNERSHIP_BACKFILL_TABLES,
-    LabResultOwnershipBackfillError,
-    preflight_lab_result_ownership_backfill,
-    reset_lab_result_ownership_backfill_for_portability_v1_restore,
-)
 from vitals.services.labs_service import normalize_marker_key
-from vitals.services.weight_log_ownership_backfill_service import (
-    WEIGHT_LOG_OWNERSHIP_BACKFILL_TABLES,
-    WeightLogOwnershipBackfillError,
-    preflight_weight_log_ownership_backfill,
-    reset_weight_log_ownership_backfill_for_portability_v1_restore,
-)
 from vitals.utils.timeutils import now_local
 
 # Bump when the on-disk shape changes in a backward-incompatible way.
@@ -606,7 +510,8 @@ async def export_full(session: AsyncSession) -> dict[str, Any]:
 
 
 #: What a subject export is, so the whole-database importer can tell them apart.
-#: Feeding one to ``import_full`` would wipe every table for everybody and then
+#: Feeding one to the full-v1 restore coordinator would wipe every table for
+#: everybody and then
 #: restore one person into the hole — a plausible mistake with an implausible
 #: blast radius, so the two shapes are named rather than merely shaped.
 KIND_SUBJECT = "subject_export"
@@ -847,11 +752,13 @@ def _raw_replacement_snapshot_bounds(payload: dict[str, Any]) -> tuple[int, int]
 
 def _normalized_manual_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3B table bounds before any restore mutation."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in NORMALIZED_MANUAL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -875,11 +782,13 @@ def _normalized_manual_replacement_snapshot_bounds(
 
 def _hrt_child_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3C child bounds before any restore mutation."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in HRT_CHILD_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -903,11 +812,13 @@ def _hrt_child_replacement_snapshot_bounds(
 
 def _provider_raw_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3D provider-table bounds before restore mutation."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in PROVIDER_RAW_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -931,11 +842,13 @@ def _provider_raw_replacement_snapshot_bounds(
 
 def _hevy_child_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3E Hevy-child bounds before restore mutation."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in HEVY_CHILD_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -959,11 +872,13 @@ def _hevy_child_replacement_snapshot_bounds(
 
 def _hrt_compound_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3F mixed HRT catalog bounds before replacement."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in HRT_COMPOUND_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -987,11 +902,13 @@ def _hrt_compound_replacement_snapshot_bounds(
 
 def _conflict_rule_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3G conflict-rule bounds before replacement."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in CONFLICT_RULE_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -1015,11 +932,13 @@ def _conflict_rule_replacement_snapshot_bounds(
 
 def _progress_photo_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3H progress-photo bounds before replacement."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in PROGRESS_PHOTO_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -1043,11 +962,13 @@ def _progress_photo_replacement_snapshot_bounds(
 
 def _weight_log_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3L weight-log bounds before replacement."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in WEIGHT_LOG_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -1071,11 +992,13 @@ def _weight_log_replacement_snapshot_bounds(
 
 def _lab_result_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3M lab-result bounds before replacement."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in LAB_RESULT_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -1099,11 +1022,13 @@ def _lab_result_replacement_snapshot_bounds(
 
 def _genetic_variant_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3N genetic-variant bounds before replacement."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in GENETIC_VARIANT_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -1127,11 +1052,13 @@ def _genetic_variant_replacement_snapshot_bounds(
 
 def _body_scan_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3O body-scan bounds before replacement."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in BODY_SCAN_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -1155,11 +1082,13 @@ def _body_scan_replacement_snapshot_bounds(
 
 def _body_scan_metric_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3P body-scan metric bounds before replacement."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in BODY_SCAN_METRIC_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -1183,11 +1112,13 @@ def _body_scan_metric_replacement_snapshot_bounds(
 
 def _garmin_weight_export_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3Q Garmin outbox bounds before replacement."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in GARMIN_WEIGHT_EXPORT_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -1211,11 +1142,13 @@ def _garmin_weight_export_replacement_snapshot_bounds(
 
 def _system_alert_replacement_snapshot_bounds(
     payload: dict[str, Any],
+    *,
+    table_names: tuple[str, ...],
 ) -> dict[str, tuple[int, int]]:
     """Return exact Stage-3T system-alert bounds before replacement."""
 
     bounds: dict[str, tuple[int, int]] = {}
-    for table_name in SYSTEM_ALERT_OWNERSHIP_BACKFILL_TABLES:
+    for table_name in table_names:
         rows = payload.get(table_name) or ()
         high_watermark = 0
         for index, row in enumerate(rows):
@@ -1277,7 +1210,12 @@ async def _secret_settings(session: AsyncSession) -> list[dict[str, Any]]:
     ]
 
 
-async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
+async def _import_full_with_ownership_hooks(
+    session: AsyncSession,
+    payload: Any,
+    *,
+    hooks: PortabilityV1OwnershipHooks,
+) -> ImportStats:
     """Replace portable data with the file's contents, in the caller's transaction.
 
     Deletes every portable table (children first), reloads each present portable
@@ -1303,36 +1241,52 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
     raw_high_watermark, raw_snapshot_rows = _raw_replacement_snapshot_bounds(
         payload
     )
-    normalized_snapshot_bounds = (
-        _normalized_manual_replacement_snapshot_bounds(payload)
+    normalized_snapshot_bounds = _normalized_manual_replacement_snapshot_bounds(
+        payload, table_names=hooks.table_groups["normalized"]
     )
-    hrt_child_snapshot_bounds = _hrt_child_replacement_snapshot_bounds(payload)
+    hrt_child_snapshot_bounds = _hrt_child_replacement_snapshot_bounds(
+        payload, table_names=hooks.table_groups["hrt_child"]
+    )
     provider_raw_snapshot_bounds = _provider_raw_replacement_snapshot_bounds(
-        payload
+        payload, table_names=hooks.table_groups["provider_raw"]
     )
-    hevy_child_snapshot_bounds = _hevy_child_replacement_snapshot_bounds(payload)
+    hevy_child_snapshot_bounds = _hevy_child_replacement_snapshot_bounds(
+        payload, table_names=hooks.table_groups["hevy_child"]
+    )
     hrt_compound_snapshot_bounds = _hrt_compound_replacement_snapshot_bounds(
-        payload
+        payload, table_names=hooks.table_groups["hrt_compound"]
     )
     conflict_rule_snapshot_bounds = _conflict_rule_replacement_snapshot_bounds(
-        payload
+        payload, table_names=hooks.table_groups["conflict_rule"]
     )
     progress_photo_snapshot_bounds = _progress_photo_replacement_snapshot_bounds(
-        payload
+        payload, table_names=hooks.table_groups["progress_photo"]
     )
-    weight_log_snapshot_bounds = _weight_log_replacement_snapshot_bounds(payload)
-    lab_result_snapshot_bounds = _lab_result_replacement_snapshot_bounds(payload)
+    weight_log_snapshot_bounds = _weight_log_replacement_snapshot_bounds(
+        payload, table_names=hooks.table_groups["weight_log"]
+    )
+    lab_result_snapshot_bounds = _lab_result_replacement_snapshot_bounds(
+        payload, table_names=hooks.table_groups["lab_result"]
+    )
     genetic_variant_snapshot_bounds = _genetic_variant_replacement_snapshot_bounds(
-        payload
+        payload, table_names=hooks.table_groups["genetic_variant"]
     )
-    body_scan_snapshot_bounds = _body_scan_replacement_snapshot_bounds(payload)
+    body_scan_snapshot_bounds = _body_scan_replacement_snapshot_bounds(
+        payload, table_names=hooks.table_groups["body_scan"]
+    )
     body_scan_metric_snapshot_bounds = (
-        _body_scan_metric_replacement_snapshot_bounds(payload)
+        _body_scan_metric_replacement_snapshot_bounds(
+            payload, table_names=hooks.table_groups["body_scan_metric"]
+        )
     )
     garmin_weight_export_snapshot_bounds = (
-        _garmin_weight_export_replacement_snapshot_bounds(payload)
+        _garmin_weight_export_replacement_snapshot_bounds(
+            payload, table_names=hooks.table_groups["garmin_weight_export"]
+        )
     )
-    system_alert_snapshot_bounds = _system_alert_replacement_snapshot_bounds(payload)
+    system_alert_snapshot_bounds = _system_alert_replacement_snapshot_bounds(
+        payload, table_names=hooks.table_groups["system_alert"]
+    )
 
     try:
         # Freeze identity before deriving the local subject and keep governance
@@ -1355,191 +1309,191 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
         await _refuse_retained_raw_references(session)
         if local_subject_id is not None:
             try:
-                await block_raw_ownership_backfill_for_portability_v1_restore(
+                await hooks.block_raw(
                     session,
                     scan_high_watermark_id=raw_high_watermark,
                     snapshot_rows=raw_snapshot_rows,
                 )
-            except RawOwnershipBackfillError as exc:
+            except hooks.raw_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="raw ownership restore block was rejected",
                 ) from exc
             try:
-                await reset_normalized_manual_backfill_for_portability_v1_restore(
+                await hooks.reset_normalized(
                     session,
                     snapshot_bounds=normalized_snapshot_bounds,
                 )
-            except NormalizedOwnershipBackfillError as exc:
+            except hooks.normalized_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="normalized ownership restore reset was rejected",
                 ) from exc
             try:
-                await reset_hrt_child_backfill_for_portability_v1_restore(
+                await hooks.reset_hrt_child(
                     session,
                     snapshot_bounds=hrt_child_snapshot_bounds,
                 )
-            except HrtChildOwnershipBackfillError as exc:
+            except hooks.hrt_child_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="HRT child ownership restore reset was rejected",
                 ) from exc
             try:
-                await block_provider_raw_ownership_backfill_for_portability_v1_restore(
+                await hooks.block_provider_raw(
                     session,
                     snapshot_bounds=provider_raw_snapshot_bounds,
                 )
-            except ProviderRawOwnershipBackfillError as exc:
+            except hooks.provider_raw_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="provider ownership restore block was rejected",
                 ) from exc
             try:
-                await block_hevy_child_ownership_backfill_for_portability_v1_restore(
+                await hooks.block_hevy_child(
                     session,
                     snapshot_bounds=hevy_child_snapshot_bounds,
                 )
-            except HevyChildOwnershipBackfillError as exc:
+            except hooks.hevy_child_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="Hevy child ownership restore block was rejected",
                 ) from exc
             try:
-                await reset_hrt_compound_backfill_for_portability_v1_restore(
+                await hooks.reset_hrt_compound(
                     session,
                     snapshot_bounds=hrt_compound_snapshot_bounds,
                 )
-            except HrtCompoundOwnershipBackfillError as exc:
+            except hooks.hrt_compound_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="HRT compound ownership restore reset was rejected",
                 ) from exc
             try:
-                await reset_conflict_rule_backfill_for_portability_v1_restore(
+                await hooks.reset_conflict_rule(
                     session,
                     snapshot_bounds=conflict_rule_snapshot_bounds,
                 )
-            except ConflictRuleOwnershipBackfillError as exc:
+            except hooks.conflict_rule_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="conflict-rule ownership restore reset was rejected",
                 ) from exc
             try:
-                await block_progress_photo_ownership_backfill_for_portability_v1_restore(
+                await hooks.block_progress_photo(
                     session,
                     snapshot_bounds=progress_photo_snapshot_bounds,
                 )
-            except ProgressPhotoOwnershipBackfillError as exc:
+            except hooks.progress_photo_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="progress-photo ownership restore block was rejected",
                 ) from exc
             try:
                 await (
-                    prepare_shared_report_ownership_backfill_for_portability_v1_restore(
+                    hooks.prepare_shared_report(
                         session
                     )
                 )
-            except SharedReportOwnershipBackfillError as exc:
+            except hooks.shared_report_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="shared-report ownership restore preparation was rejected",
                 ) from exc
             try:
-                await reset_weight_log_ownership_backfill_for_portability_v1_restore(
+                await hooks.reset_weight_log(
                     session,
                     snapshot_bounds=weight_log_snapshot_bounds,
                 )
-            except WeightLogOwnershipBackfillError as exc:
+            except hooks.weight_log_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="weight-log ownership restore reset was rejected",
                 ) from exc
             try:
-                await reset_lab_result_ownership_backfill_for_portability_v1_restore(
+                await hooks.reset_lab_result(
                     session,
                     snapshot_bounds=lab_result_snapshot_bounds,
                 )
-            except LabResultOwnershipBackfillError as exc:
+            except hooks.lab_result_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="lab-result ownership restore reset was rejected",
                 ) from exc
             try:
                 await (
-                    reset_genetic_variant_ownership_backfill_for_portability_v1_restore(
+                    hooks.reset_genetic_variant(
                         session,
                         snapshot_bounds=genetic_variant_snapshot_bounds,
                     )
                 )
-            except GeneticVariantOwnershipBackfillError as exc:
+            except hooks.genetic_variant_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="genetic-variant ownership restore reset was rejected",
                 ) from exc
             try:
-                await block_body_scan_ownership_backfill_for_portability_v1_restore(
+                await hooks.block_body_scan(
                     session,
                     snapshot_bounds=body_scan_snapshot_bounds,
                 )
-            except BodyScanOwnershipBackfillError as exc:
+            except hooks.body_scan_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="body-scan ownership restore block was rejected",
                 ) from exc
             try:
                 await (
-                    reset_body_scan_metric_ownership_backfill_for_portability_v1_restore(
+                    hooks.reset_body_scan_metric(
                         session,
                         snapshot_bounds=body_scan_metric_snapshot_bounds,
                     )
                 )
-            except BodyScanMetricOwnershipBackfillError as exc:
+            except hooks.body_scan_metric_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="body-scan metric ownership restore reset was rejected",
                 ) from exc
             try:
                 await (
-                    block_garmin_weight_export_ownership_backfill_for_portability_v1_restore(
+                    hooks.block_garmin_weight_export(
                         session,
                         snapshot_bounds=garmin_weight_export_snapshot_bounds,
                     )
                 )
-            except GarminWeightExportOwnershipBackfillError as exc:
+            except hooks.garmin_weight_export_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="Garmin outbox ownership restore block was rejected",
                 ) from exc
             try:
                 await (
-                    prepare_weekly_digest_ownership_backfill_for_portability_v1_restore(
+                    hooks.prepare_weekly_digest(
                         session
                     )
                 )
-            except WeeklyDigestOwnershipBackfillError as exc:
+            except hooks.weekly_digest_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="weekly-digest ownership restore preparation was rejected",
                 ) from exc
             try:
                 await (
-                    prepare_notification_ownership_backfill_for_portability_v1_restore(
+                    hooks.prepare_notification(
                         session
                     )
                 )
-            except NotificationOwnershipBackfillError as exc:
+            except hooks.notification_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="notification ownership restore preparation was rejected",
                 ) from exc
             try:
-                await reset_system_alert_ownership_backfill_for_portability_v1_restore(
+                await hooks.reset_system_alert(
                     session,
                     snapshot_bounds=system_alert_snapshot_bounds,
                 )
-            except SystemAlertOwnershipBackfillError as exc:
+            except hooks.system_alert_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="system-alert ownership restore reset was rejected",
@@ -1596,86 +1550,86 @@ async def import_full(session: AsyncSession, payload: Any) -> ImportStats:
         try:
             await sync_conflict_catalog(session)
             if local_subject_id is not None:
-                await preflight_conflict_rule_ownership_backfill(session)
-        except ConflictRuleOwnershipBackfillError as exc:
+                await hooks.preflight_conflict_rule(session)
+        except hooks.conflict_rule_error as exc:
             raise _contract_error(
                 "import.error.generic",
                 exc="conflict-rule catalog validation rejected the portable restore",
             ) from exc
         if local_subject_id is not None:
             try:
-                await preflight_progress_photo_ownership_backfill(session)
-            except ProgressPhotoOwnershipBackfillError as exc:
+                await hooks.preflight_progress_photo(session)
+            except hooks.progress_photo_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="progress-photo validation rejected the portable restore",
                 ) from exc
             try:
-                await preflight_shared_report_ownership_backfill(session)
-            except SharedReportOwnershipBackfillError as exc:
+                await hooks.preflight_shared_report(session)
+            except hooks.shared_report_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="shared-report validation rejected the portable restore",
                 ) from exc
             try:
-                await preflight_weight_log_ownership_backfill(session)
-            except WeightLogOwnershipBackfillError as exc:
+                await hooks.preflight_weight_log(session)
+            except hooks.weight_log_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="weight-log validation rejected the portable restore",
                 ) from exc
             try:
-                await preflight_lab_result_ownership_backfill(session)
-            except LabResultOwnershipBackfillError as exc:
+                await hooks.preflight_lab_result(session)
+            except hooks.lab_result_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="lab-result validation rejected the portable restore",
                 ) from exc
             try:
-                await preflight_genetic_variant_ownership_backfill(session)
-            except GeneticVariantOwnershipBackfillError as exc:
+                await hooks.preflight_genetic_variant(session)
+            except hooks.genetic_variant_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="genetic-variant validation rejected the portable restore",
                 ) from exc
             try:
-                await preflight_body_scan_ownership_backfill(session)
-            except BodyScanOwnershipBackfillError as exc:
+                await hooks.preflight_body_scan(session)
+            except hooks.body_scan_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="body-scan validation rejected the portable restore",
                 ) from exc
             try:
-                await preflight_body_scan_metric_ownership_backfill(session)
-            except BodyScanMetricOwnershipBackfillError as exc:
+                await hooks.preflight_body_scan_metric(session)
+            except hooks.body_scan_metric_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="body-scan metric validation rejected the portable restore",
                 ) from exc
             try:
-                await preflight_garmin_weight_export_ownership_backfill(session)
-            except GarminWeightExportOwnershipBackfillError as exc:
+                await hooks.preflight_garmin_weight_export(session)
+            except hooks.garmin_weight_export_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="Garmin outbox validation rejected the portable restore",
                 ) from exc
             try:
-                await preflight_weekly_digest_ownership_backfill(session)
-            except WeeklyDigestOwnershipBackfillError as exc:
+                await hooks.preflight_weekly_digest(session)
+            except hooks.weekly_digest_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="weekly-digest validation rejected the portable restore",
                 ) from exc
             try:
-                await preflight_notification_ownership_backfill(session)
-            except NotificationOwnershipBackfillError as exc:
+                await hooks.preflight_notification(session)
+            except hooks.notification_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="notification validation rejected the portable restore",
                 ) from exc
             try:
-                await preflight_system_alert_ownership_backfill(session)
-            except SystemAlertOwnershipBackfillError as exc:
+                await hooks.preflight_system_alert(session)
+            except hooks.system_alert_error as exc:
                 raise _contract_error(
                     "import.error.generic",
                     exc="system-alert validation rejected the portable restore",
@@ -1827,8 +1781,9 @@ async def import_subject(
 ) -> ImportStats:
     """Replace one subject's portable rows with the file's, and nobody else's.
 
-    Different operation from :func:`import_full` in the one way that matters:
-    the delete is scoped. ``import_full`` empties every portable table and is
+    Different operation from the full-v1 restore coordinator in the one way
+    that matters: the delete is scoped. A full restore empties every portable
+    table and is
     correct only for a whole-database backup; running it per person would take
     the installation down to restore one record.
 

@@ -44,6 +44,7 @@ from vitals.config import load_config
 from vitals.i18n import t
 from vitals.integrations.garmin_client import login_breaker_state
 from vitals.models.identity import HealthSubject
+from vitals.operations.ownership import portability_v1
 from vitals.services import (
     ai_gateway_service,
     credential_vault_service,
@@ -1751,7 +1752,7 @@ async def import_backup(
         )
 
     try:
-        stats = await data_portability_service.import_full(db, payload)
+        stats = await portability_v1.import_full(db, payload)
     except data_portability_service.MultiSubjectBackupError as exc:
         await db.rollback()
         raise HTTPException(

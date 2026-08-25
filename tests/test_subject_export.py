@@ -14,6 +14,7 @@ import pytest
 
 from vitals.enums import Domain, Source, UserStatus
 from vitals.models.identity import HealthSubject, User
+from vitals.operations.ownership import portability_v1
 from vitals.services import data_portability_service as portability
 
 
@@ -233,7 +234,7 @@ async def test_a_personal_export_is_not_a_backup_the_importer_will_eat(db_sessio
 
     assert snapshot["metadata"]["kind"] == portability.KIND_SUBJECT
     with pytest.raises(portability.PortabilityError, match="personal export"):
-        await portability.import_full(db_session, snapshot)
+        await portability_v1.import_full(db_session, snapshot)
 
 
 async def test_a_full_backup_is_still_accepted(db_session, legacy_owner_roots):
@@ -241,7 +242,7 @@ async def test_a_full_backup_is_still_accepted(db_session, legacy_owner_roots):
 
     snapshot = await portability.export_full(db_session)
     assert snapshot["metadata"]["kind"] == portability.KIND_FULL
-    await portability.import_full(db_session, snapshot)
+    await portability_v1.import_full(db_session, snapshot)
 
 
 async def test_the_route_hands_back_only_the_callers_record(

@@ -21,7 +21,7 @@ from vitals.models.identity import HealthSubject, User
 from vitals.models.ownership_backfill import OwnershipBackfillCheckpoint
 from vitals.models.raw_payload import RawPayload
 from vitals.models.tenancy import IntegrationConnection
-from vitals.services.raw_ownership_backfill_service import (
+from vitals.operations.ownership.raw import (
     MAX_RAW_OWNERSHIP_BACKFILL_BATCH_SIZE,
     RAW_OWNERSHIP_BACKFILL_PHASE,
     RawOwnershipBackfillDuplicateError,
@@ -35,7 +35,7 @@ from vitals.services.raw_ownership_backfill_service import (
     run_raw_ownership_backfill_batch,
 )
 from vitals.services.tenancy_bootstrap import LEGACY_ACCOUNT_DISCRIMINATOR
-from vitals.services import raw_ownership_backfill_service as backfill_service
+from vitals.operations.ownership import raw as backfill_service
 
 
 # Every test here writes or inspects a row with no owner, which is the whole

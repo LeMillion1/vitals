@@ -21,6 +21,7 @@ from sqlalchemy import (
 
 from vitals.models.base import Base
 from vitals.ownership import OwnershipClass, OwnershipSpec, TargetColumn
+from vitals.operations.ownership import portability_v1
 from vitals.services import data_portability_service
 
 
@@ -235,7 +236,7 @@ async def test_full_backup_rebinds_subject_and_nulls_other_private_plumbing(
             }
         )
 
-        await data_portability_service.import_full(db_session, forged)
+        await portability_v1.import_full(db_session, forged)
         restored = (await db_session.execute(select(table))).mappings().one()
 
         assert restored["subject_id"] == owner.subject_id
@@ -390,7 +391,7 @@ async def test_v1_roundtrip_rebinds_required_and_preserves_mixed_subject_state(
         "weight.noisy_period_active": True,
     }
 
-    await data_portability_service.import_full(db_session, snapshot)
+    await portability_v1.import_full(db_session, snapshot)
     await db_session.flush()
     db_session.expire_all()
 
@@ -468,7 +469,7 @@ async def test_legacy_v1_required_row_without_marker_rebinds_to_local_subject(
         ],
     }
 
-    await data_portability_service.import_full(db_session, payload)
+    await portability_v1.import_full(db_session, payload)
     restored = await db_session.get(WeightLog, 91)
 
     assert restored is not None
@@ -526,7 +527,7 @@ async def test_v1_export_and_import_fail_closed_with_multiple_subjects(db_sessio
         "weight_logs": [],
     }
     with pytest.raises(data_portability_service.PortabilityError):
-        await data_portability_service.import_full(db_session, payload)
+        await portability_v1.import_full(db_session, payload)
 
     preserved = await db_session.get(WeightLog, weight_id)
     assert preserved is not None
@@ -554,7 +555,7 @@ async def test_v1_import_rejects_non_boolean_subject_marker_before_mutation(
     }
 
     with pytest.raises(data_portability_service.PortabilityError):
-        await data_portability_service.import_full(db_session, payload)
+        await portability_v1.import_full(db_session, payload)
 
     assert await db_session.get(WeightLog, weight_id) is not None
 
@@ -579,7 +580,7 @@ async def test_v1_import_without_local_subject_rejects_true_marker_before_mutati
     }
 
     with pytest.raises(data_portability_service.PortabilityError):
-        await data_portability_service.import_full(db_session, payload)
+        await portability_v1.import_full(db_session, payload)
 
     assert await db_session.get(WeightLog, weight_id) is not None
 
@@ -600,7 +601,7 @@ async def test_v1_zero_subject_roundtrip_keeps_legacy_rows_unbound(db_session):
     snapshot = await data_portability_service.export_full(db_session)
 
     assert snapshot["weight_logs"][0]["_vitals_subject_bound"] is False
-    await data_portability_service.import_full(db_session, snapshot)
+    await portability_v1.import_full(db_session, snapshot)
     restored = (await db_session.scalars(select(WeightLog))).one()
     assert restored.subject_id is None
 

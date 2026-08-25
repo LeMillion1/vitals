@@ -176,7 +176,7 @@ def _photo_checkpoint(
     scanned: int,
     status: str,
 ) -> OwnershipBackfillCheckpoint:
-    from vitals.services.progress_photo_ownership_backfill_service import (
+    from vitals.operations.ownership.progress_photo import (
         PROGRESS_PHOTO_OWNERSHIP_BACKFILL_CHECKPOINT_PHASES,
     )
 
