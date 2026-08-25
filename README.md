@@ -522,7 +522,10 @@ cp .env.example .env
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 # Bcrypt-хеш пароля для входа
-python -c "import bcrypt; print(bcrypt.hashpw(b'ваш-пароль', bcrypt.gensalt(4)).decode())"
+python -c "import bcrypt; print(bcrypt.hashpw(b'ваш-пароль', bcrypt.gensalt()).decode())"
+
+# URL-safe пароль PostgreSQL (вставьте одно значение в обе переменные ниже)
+python -c "import secrets; print(secrets.token_hex(24))"
 ```
 
 #### 3. Заполните `.env`
@@ -532,8 +535,12 @@ VITALS_SESSION_SECRET="результат-первой-команды"
 VITALS_AUTH_USERNAME="your-username"
 VITALS_AUTH_PASSWORD_HASH="результат-второй-команды"
 
-# Пароль PostgreSQL внутри Docker-сети — обязателен, без него compose не стартует
-VITALS_DB_PASSWORD="любой-длинный-пароль"
+# Эти две настройки обязаны содержать один и тот же URL-safe пароль PostgreSQL
+VITALS_DB_PASSWORD="PASTE_THIRD_COMMAND_RESULT"
+VITALS_DATABASE_URL="postgresql+asyncpg://vitals:PASTE_THIRD_COMMAND_RESULT@vitals_db:5432/vitals_db"
+
+# Только для локального http://127.0.0.1; за HTTPS оставьте true
+VITALS_COOKIE_SECURE=false
 
 # Секрет OAuth для подключения Claude.ai по MCP
 VITALS_MCP_CLIENT_SECRET="ещё-один-случайный-секрет"
@@ -542,11 +549,11 @@ VITALS_MCP_CLIENT_SECRET="ещё-один-случайный-секрет"
 #### 4. Запустите
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build vitals_db vitals_redis vitals_app
 ```
 
 > [!NOTE]
-> Миграции Alembic применяются автоматически при старте `vitals_app`. PostgreSQL 15 — внутри Docker-сети.
+> Миграции Alembic применяются автоматически при старте `vitals_app`. PostgreSQL 15 — внутри Docker-сети. Команда запускает только приложение и его зависимости; backup sidecar включайте отдельно после настройки каталога резервных копий.
 
 #### 5. Проверьте
 
@@ -1276,7 +1283,10 @@ cp .env.example .env
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 # Bcrypt password hash
-python -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt(4)).decode())"
+python -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt()).decode())"
+
+# URL-safe PostgreSQL password (use the same value in both variables below)
+python -c "import secrets; print(secrets.token_hex(24))"
 ```
 
 #### 3. Update `.env`
@@ -1286,8 +1296,12 @@ VITALS_SESSION_SECRET="your-session-secret"
 VITALS_AUTH_USERNAME="your-username"
 VITALS_AUTH_PASSWORD_HASH="your-bcrypt-hash"
 
-# PostgreSQL password inside the Docker network — required, compose refuses to start without it
-VITALS_DB_PASSWORD="any-long-password"
+# These two settings must contain the same URL-safe PostgreSQL password
+VITALS_DB_PASSWORD="PASTE_THIRD_COMMAND_RESULT"
+VITALS_DATABASE_URL="postgresql+asyncpg://vitals:PASTE_THIRD_COMMAND_RESULT@vitals_db:5432/vitals_db"
+
+# Local http://127.0.0.1 only; keep true behind HTTPS
+VITALS_COOKIE_SECURE=false
 
 # OAuth secret for connecting Claude.ai over MCP
 VITALS_MCP_CLIENT_SECRET="another-random-secret"
@@ -1296,11 +1310,11 @@ VITALS_MCP_CLIENT_SECRET="another-random-secret"
 #### 4. Launch
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build vitals_db vitals_redis vitals_app
 ```
 
 > [!NOTE]
-> Alembic migrations run automatically when `vitals_app` starts. PostgreSQL 15 runs inside the Docker network.
+> Alembic migrations run automatically when `vitals_app` starts. PostgreSQL 15 runs inside the Docker network. This starts only the app and its dependencies; enable the backup sidecar separately after configuring its host directory.
 
 #### 5. Verify
 
