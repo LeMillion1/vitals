@@ -573,7 +573,7 @@ curl -s http://127.0.0.1:8000/health
 
 ### 🛡️ Безопасный деплой (Сетап автора)
 
-Поскольку Vitals содержит чувствительные медицинские, генетические и персональные биометрические данные, **категорически не рекомендуется оставлять приложение открытым для всего интернета**. По умолчанию в `docker-compose.yml` порты привязаны только к локальному адресу (`127.0.0.1:8000`), чтобы никто извне не мог получить доступ напрямую.
+Поскольку Vitals содержит чувствительные медицинские, генетические и персональные биометрические данные, **категорически не рекомендуется оставлять приложение открытым для всего интернета**. По умолчанию в `docker-compose.yml` порты привязаны только к локальному адресу (`127.0.0.1:8000`), чтобы никто извне не мог получить доступ напрямую. Для второго параллельного Compose-проекта задайте ему другой порт хоста, например `VITALS_APP_PORT=8001`; внутренний порт приложения остаётся `8000`.
 
 #### Вариант А: Cloudflare Tunnel (Рекомендуется автором)
 Это самый простой и надежный способ опубликовать приложение с SSL-сертификатом без необходимости открывать порты наружу (ваш сервер остается невидимым для сканеров портов).
@@ -1334,7 +1334,7 @@ There is nowhere to send a brief yet: the Telegram bot is gone, while the new We
 
 ### 🛡️ Secure Deployment (Creator's Setup)
 
-Since Vitals stores sensitive medical history, genetic profiles, and personal biometric logs, **it is strongly advised not to leave the application exposed to the public internet**. By default, the port mapping in `docker-compose.yml` binds only to the loopback interface (`127.0.0.1:8000`), keeping the application hidden from outside traffic.
+Since Vitals stores sensitive medical history, genetic profiles, and personal biometric logs, **it is strongly advised not to leave the application exposed to the public internet**. By default, the port mapping in `docker-compose.yml` binds only to the loopback interface (`127.0.0.1:8000`), keeping the application hidden from outside traffic. Give a second parallel Compose project a different host port, for example `VITALS_APP_PORT=8001`; the app's internal port remains `8000`.
 
 The project creator deploys Vitals on an **Ubuntu VPS** and secures access using one of two methods:
 

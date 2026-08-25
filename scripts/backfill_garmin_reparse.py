@@ -22,9 +22,9 @@ purpose-built loop over historical activity ids) with the rate-limit caution
 the original plan called out — deliberately not attempted here.
 
 Run inside the app container so VITALS_DATABASE_URL is already the real one:
-    docker exec vitals_app python scripts/backfill_garmin_reparse.py --stats
-    docker exec vitals_app python scripts/backfill_garmin_reparse.py --limit 3
-    docker exec vitals_app python scripts/backfill_garmin_reparse.py
+    docker compose exec vitals_app python scripts/backfill_garmin_reparse.py --stats
+    docker compose exec vitals_app python scripts/backfill_garmin_reparse.py --limit 3
+    docker compose exec vitals_app python scripts/backfill_garmin_reparse.py
 """
 import argparse
 import asyncio

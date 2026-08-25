@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — parallel Compose projects stay isolated
+
+Compose no longer assigns global container names, so project names once again
+namespace containers, networks, and volumes as intended. The app has one
+loopback-only published-port mapping whose host port is selected with
+`VITALS_APP_PORT` (default `8000`), avoiding both fixed-port collisions and the
+second mapping that a ports-list override could accidentally add.
+
 ### Added — encrypted personal portability v2
 
 An owner can now download one password-protected `.vitals` record containing
