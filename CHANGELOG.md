@@ -8,6 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — expired care consent no longer looks open
+
+The professional roster now labels an expired consent explicitly and removes
+the record link at the same instant that authorization closes the record.
+
 ### Added — conversations have real per-person unread state
 
 Each patient and professional now has an independent read cursor in every care

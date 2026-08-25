@@ -21,6 +21,7 @@ those fail.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, or_, select
@@ -139,6 +140,21 @@ class ConsentNotFound(CareError):
     """No live consent to act on."""
 
 
+@dataclass(frozen=True, slots=True)
+class CareRosterEntry:
+    """One professional-to-patient relationship as it should appear today."""
+
+    relationship_id: uuid.UUID
+    subject_id: uuid.UUID
+    display_name: str
+    kind: str
+    relationship_status: str
+    consent_status: str | None
+    consent_expires_at: datetime | None
+    open: bool
+    consent_expired: bool
+
+
 def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
@@ -196,6 +212,69 @@ def default_scopes(kind: ProfessionalKind | str) -> frozenset[AccessScope]:
         for action in MESSAGE_ACTIONS
     }
     return frozenset(facts | authored | conversation)
+
+
+async def list_professional_roster(
+    session: AsyncSession, *, professional_user_id: uuid.UUID
+) -> list[CareRosterEntry]:
+    """List every non-ended relationship, including why a record is closed.
+
+    The roster is a cross-subject index, not authorization. Opening a record
+    still resolves its relationship and exact consent scopes afresh. This view
+    mirrors the same lifecycle ceiling, including expiry, so it never offers a
+    link that the next request must reject.
+    """
+
+    evaluated_at = await _now(session)
+    rows = (
+        await session.execute(
+            select(
+                CareRelationship.id,
+                CareRelationship.subject_id,
+                CareRelationship.kind,
+                CareRelationship.status,
+                HealthSubject.display_name,
+                ConsentGrant.status.label("consent_status"),
+                ConsentGrant.expires_at,
+            )
+            .join(HealthSubject, HealthSubject.id == CareRelationship.subject_id)
+            .outerjoin(
+                ConsentGrant,
+                (ConsentGrant.relationship_id == CareRelationship.id)
+                & ConsentGrant.status.in_(
+                    (ConsentStatus.ACTIVE.value, ConsentStatus.PAUSED.value)
+                ),
+            )
+            .where(
+                CareRelationship.professional_user_id == professional_user_id,
+                CareRelationship.status != CareRelationshipStatus.ENDED.value,
+            )
+            .order_by(HealthSubject.display_name, CareRelationship.id)
+        )
+    ).all()
+
+    roster: list[CareRosterEntry] = []
+    for row in rows:
+        expires_at = _as_utc(row.expires_at) if row.expires_at else None
+        expired = expires_at is not None and expires_at <= evaluated_at
+        roster.append(
+            CareRosterEntry(
+                relationship_id=row.id,
+                subject_id=row.subject_id,
+                display_name=row.display_name,
+                kind=row.kind,
+                relationship_status=row.status,
+                consent_status=row.consent_status,
+                consent_expires_at=expires_at,
+                open=(
+                    row.status == CareRelationshipStatus.ACTIVE.value
+                    and row.consent_status == ConsentStatus.ACTIVE.value
+                    and not expired
+                ),
+                consent_expired=expired,
+            )
+        )
+    return roster
 
 
 async def _relationship_of_patient(
@@ -587,6 +666,7 @@ __all__ = [
     "AUTHORED_ARTIFACTS",
     "READ_ONLY_ACTIONS",
     "CareError",
+    "CareRosterEntry",
     "CareValidationError",
     "ConsentNotFound",
     "KindMismatch",
@@ -597,6 +677,7 @@ __all__ = [
     "establish_from_invitation",
     "grant_consent",
     "load_relationship_grant",
+    "list_professional_roster",
     "revoke_consent",
     "set_consent_paused",
 ]

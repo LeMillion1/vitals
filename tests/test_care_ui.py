@@ -368,6 +368,35 @@ async def test_a_paused_consent_is_shown_as_paused_rather_than_hidden(
     ).status_code == 404
 
 
+async def test_an_expired_consent_is_not_offered_as_an_open_record(
+    doctor_client, db_session
+):
+    """The roster and the record resolver must agree at the expiry boundary."""
+
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from vitals.models.professional import ConsentGrant
+    from vitals.utils.timeutils import now_utc
+
+    client, _doctor, (_owner_a, subject_a), _b = doctor_client
+    grant = await db_session.scalar(
+        select(ConsentGrant).where(ConsentGrant.subject_id == subject_a.id)
+    )
+    grant.granted_at = now_utc() - timedelta(days=366)
+    grant.expires_at = now_utc() - timedelta(days=1)
+    await db_session.commit()
+
+    response = await client.get("/care", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    assert "Consent expired" in response.text or "Согласие истекло" in response.text
+    assert f'href="/care/{subject_a.id}"' not in response.text
+    assert (
+        await client.get(f"/care/{subject_a.id}", headers={"Accept": "text/html"})
+    ).status_code == 404
+
+
 # ── The banner ───────────────────────────────────────────────────────────────
 
 

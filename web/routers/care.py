@@ -15,13 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.access import PolicyAction, PolicyResourceType
-from vitals.enums import CarePlanStatus, CareRelationshipStatus, ConsentStatus, Domain
-from vitals.models.identity import HealthSubject
-from vitals.models.professional import (
-    CareRelationship,
-    ConsentGrant,
-    ProfessionalProfile,
-)
+from vitals.enums import CarePlanStatus, Domain
+from vitals.models.professional import ProfessionalProfile
 from vitals.services import digest_service, modules_service
 from vitals.services.care import invitations, records, relationships
 from vitals.services.care import threads as care_threads
@@ -157,51 +152,9 @@ async def roster(
     """
 
     user_id = await principal_user_id(request, db)
-    rows = (
-        await db.execute(
-            select(
-                CareRelationship.id,
-                CareRelationship.subject_id,
-                CareRelationship.kind,
-                CareRelationship.status,
-                HealthSubject.display_name,
-                ConsentGrant.status.label("consent_status"),
-                ConsentGrant.expires_at,
-            )
-            .join(HealthSubject, HealthSubject.id == CareRelationship.subject_id)
-            .outerjoin(
-                ConsentGrant,
-                (ConsentGrant.relationship_id == CareRelationship.id)
-                & ConsentGrant.status.in_(
-                    (ConsentStatus.ACTIVE.value, ConsentStatus.PAUSED.value)
-                ),
-            )
-            .where(
-                CareRelationship.professional_user_id == user_id,
-                CareRelationship.status != CareRelationshipStatus.ENDED.value,
-            )
-            .order_by(HealthSubject.display_name, CareRelationship.id)
-        )
-    ).all()
-
-    patients = [
-        {
-            "subject_id": row.subject_id,
-            "display_name": row.display_name,
-            "kind": row.kind,
-            # Open means both halves are live. Anything else is shown as its own
-            # state rather than hidden: a professional whose consent was paused
-            # should see that it was paused, not an empty list.
-            "open": (
-                row.status == CareRelationshipStatus.ACTIVE.value
-                and row.consent_status == ConsentStatus.ACTIVE.value
-            ),
-            "relationship_status": row.status,
-            "consent_status": row.consent_status,
-            "expires_at": row.expires_at,
-        }
-        for row in rows
-    ]
+    patients = await relationships.list_professional_roster(
+        db, professional_user_id=user_id
+    )
     return templates.TemplateResponse(
         request,
         "care/roster.html",

@@ -30,7 +30,7 @@ than trusting them if this date has gone stale.
 | Alembic head | `0066` — 66 revisions |
 | Schema | 77 tables; 64 carry `subject_id` and are covered by an RLS policy; 53 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,637 fast passed / 168 skipped; 518 focused UI/OAuth tests; migration plus 54 focused PostgreSQL care/RLS tests |
+| Suites | 4,638 fast passed / 168 skipped; 479 focused care/UI/auth/design tests; migration plus 54 focused PostgreSQL care/RLS tests |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -1077,7 +1077,8 @@ Delivered:
   record; `/settings/care` is the patient's side — who holds their record, what
   each sees, and pause/withdraw/end. `/care/accept/{token}` takes up an
   invitation, and a GET only asks: a one-time link must not be spent by a link
-  preview.
+  preview. Expired consent is shown as expired in the roster and is not rendered
+  as a link after the record resolver has closed it.
 - **The selected patient travels in the URL, never in the session.** That is the
   design rather than a URL style — a stale tab submitting an old form must land
   on the patient it was rendered for, not on whoever is selected now. Driven by

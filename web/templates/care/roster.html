@@ -54,6 +54,8 @@
                 <span class="v-chip v-chip-sm">{{ t("care.state.relationship_paused") }}</span>
                 {% elif p.consent_status == 'paused' %}
                 <span class="v-chip v-chip-sm">{{ t("care.state.consent_paused") }}</span>
+                {% elif p.consent_expired %}
+                <span class="v-chip v-chip-sm">{{ t("care.state.consent_expired") }}</span>
                 {% else %}
                 <span class="v-chip v-chip-sm">{{ t("care.state.no_consent") }}</span>
                 {% endif %}

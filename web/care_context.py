@@ -196,7 +196,12 @@ async def resolve_care_context(
         )
 
     grant = access.relationship_grant
-    if grant is None or not grant.active:
+    if (
+        grant is None
+        or not grant.active
+        or grant.revoked_at is not None
+        or access.evaluated_at >= grant.expires_at
+    ):
         # No relationship, or one that is paused, or a consent that is paused,
         # lapsed or revoked. All the same answer — see ``_MISSING``.
         raise _MISSING

@@ -92,6 +92,8 @@ a current validation result.
 - Accepting an invitation creates a relationship but no consent. That safety
   decision is correct. The professional now returns to the roster with an
   explicit waiting-for-sharing notice rather than entering a closed record.
+  The roster and record resolver share the same expiry ceiling: a lapsed
+  consent is labelled and cannot remain a link to a refused record.
 - The patient screen now writes granular domain, authored-guidance, and message
   scopes; changing the selection creates a new immutable consent version. Plan
   creation, author-only activation and archival are visible, and notes/plans
@@ -320,6 +322,11 @@ Post-audit care unread cutover validation on the `0066` tree:
 - Compose upgraded the retained synthetic stack to `0066`, `/health` returned
   200, and the unread-first conversation list was inspected at desktop and
   phone widths with no browser console errors.
+
+The follow-up consent-expiry repair passed 64 focused care/i18n tests, 479
+care/UI/auth/design tests, and the full 4,638-test fast suite (168 skipped, 35
+deselected). Its roster state was inspected at desktop and 390 px phone widths
+with no horizontal overflow or browser console errors.
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun
