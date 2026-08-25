@@ -71,7 +71,8 @@
             {# The action names the patient, exactly as the note form does. A
                stale tab cannot retarget this conversation through session
                state. #}
-            <form action="/care/{{ care.subject_id }}/messages" method="POST" class="pt-4 space-y-3">
+            <form action="/care/{{ care.subject_id }}/messages" method="POST"
+                  enctype="multipart/form-data" class="pt-4 space-y-3">
                 <label for="thread-title" class="v-label">{{ t("care.thread_title_label") }}</label>
                 <input id="thread-title" name="title" type="text" class="v-input" required
                        maxlength="200" placeholder="{{ t('care.thread_title_placeholder') }}">
@@ -79,6 +80,17 @@
                 <textarea id="thread-first-message" name="body" rows="4" maxlength="20000"
                           class="v-input" required
                           placeholder="{{ t('care.message_placeholder') }}"></textarea>
+                <details class="v-card-inset p-3">
+                    <summary class="v-btn-ghost cursor-pointer">{{ t("care.attachment_add") }}</summary>
+                    <label class="v-file-drop cursor-pointer mt-3">
+                        <input type="file" name="attachment"
+                               accept=".pdf,.png,.jpg,.jpeg,.webp,.heic,.heif,image/*,application/pdf"
+                               class="sr-only"
+                               onchange="const h=this.parentElement.querySelector('.v-file-drop__hint'); h.textContent=this.files[0] ? this.files[0].name : h.dataset.default;">
+                        <span class="v-file-drop__text">{{ t("care.attachment_choose") }}</span>
+                        <span class="v-file-drop__hint" data-default="{{ t('care.attachment_hint') }}">{{ t("care.attachment_hint") }}</span>
+                    </label>
+                </details>
                 <div class="flex justify-end">
                     <button type="submit" class="v-btn text-xs">{{ t("care.thread_open") }}</button>
                 </div>
@@ -114,6 +126,12 @@
                     {% if message.edited_at %} · {{ t("care.message_edited") }}{% endif %}
                 </div>
                 <p class="v-text-body" style="white-space: pre-wrap">{{ message.body }}</p>
+                {% if message.attachment %}
+                <a href="/care/{{ care.subject_id }}/messages/{{ open_thread.id }}/attachments/{{ message.attachment.id }}"
+                   class="v-btn-ghost text-xs inline-flex mt-2" download>
+                    {{ t("care.attachment_download", filename=message.attachment.original_filename) }}
+                </a>
+                {% endif %}
             </div>
             {% endfor %}
         </div>
@@ -123,10 +141,21 @@
 
         {% if may_send and open_thread.status == 'open' %}
         <form action="/care/{{ care.subject_id }}/messages/{{ open_thread.id }}"
-              method="POST" class="space-y-3">
+              method="POST" enctype="multipart/form-data" class="space-y-3">
             <label for="message-body" class="v-label">{{ t("care.message_label") }}</label>
             <textarea id="message-body" name="body" rows="4" class="v-input" required
                       placeholder="{{ t('care.message_placeholder') }}"></textarea>
+            <details class="v-card-inset p-3">
+                <summary class="v-btn-ghost cursor-pointer">{{ t("care.attachment_add") }}</summary>
+                <label class="v-file-drop cursor-pointer mt-3">
+                    <input type="file" name="attachment"
+                           accept=".pdf,.png,.jpg,.jpeg,.webp,.heic,.heif,image/*,application/pdf"
+                           class="sr-only"
+                           onchange="const h=this.parentElement.querySelector('.v-file-drop__hint'); h.textContent=this.files[0] ? this.files[0].name : h.dataset.default;">
+                    <span class="v-file-drop__text">{{ t("care.attachment_choose") }}</span>
+                    <span class="v-file-drop__hint" data-default="{{ t('care.attachment_hint') }}">{{ t("care.attachment_hint") }}</span>
+                </label>
+            </details>
             <div class="flex justify-end">
                 <button type="submit" class="v-btn text-xs">{{ t("care.message_send") }}</button>
             </div>

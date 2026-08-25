@@ -181,6 +181,14 @@ def _assert_migration_matches_models(connection: Any) -> None:
             }.get(model),
             None,
         )
+        if model is FileAsset:
+            # Revision 0067 extends this enum-backed CHECK for care-message
+            # attachments. This test exercises the frozen 0036 schema alone;
+            # the full migration-chain test proves the current constraint.
+            expected["checks"]["ck_file_assets_purpose"] = _normalized_sql(
+                "purpose IN ('progress_photo', 'lab_document', "
+                "'body_scan_document')"
+            )
         assert _migrated_schema(inspector, model.__tablename__) == expected
 
 

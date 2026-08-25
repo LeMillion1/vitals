@@ -18,6 +18,7 @@ keeping it true.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -821,3 +822,156 @@ async def test_the_conversation_list_renders(doctor_client):
     assert page.status_code == 200
     assert "Bloods" in page.text
     assert "Start conversation" in page.text or "Начать разговор" in page.text
+
+
+async def test_a_care_attachment_stays_private_and_follows_live_consent(
+    doctor_client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+):
+    """The URL is a conversation capability check, not a storage path."""
+
+    from vitals.models.care_thread import CareMessageAttachment
+    from vitals.models.professional import CareRelationship
+    from vitals.models.tenancy import FileAsset
+    from web.auth import create_session
+    from web.config import SESSION_COOKIE
+    from web.uploads import private_file_disk_path
+
+    private_root = tmp_path / "private-medical-files"
+    monkeypatch.setenv("VITALS_PRIVATE_FILE_ROOT", str(private_root))
+    client, doctor, (owner_a, subject_a), (_owner_b, subject_b) = doctor_client
+    payload = b"%PDF-1.7\nsynthetic care document\n%%EOF\n"
+
+    opened = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Bloods", "body": "Please review this result."},
+        files={
+            # The claimed content type is deliberately hostile. The server
+            # derives its response type from validated content and extension.
+            "attachment": ("synthetic-result.pdf", payload, "text/html"),
+        },
+        follow_redirects=False,
+    )
+    assert opened.status_code == 303
+    thread_id = opened.headers["location"].rsplit("/", 1)[1]
+
+    attachment = await db_session.scalar(select(CareMessageAttachment))
+    assert attachment is not None
+    asset = await db_session.get(FileAsset, attachment.file_asset_id)
+    assert asset is not None
+    assert asset.subject_id == subject_a.id
+    assert asset.storage_backend == "private_local"
+    assert asset.status == "active"
+    assert asset.purpose == "care_message_attachment"
+    assert asset.byte_size == len(payload)
+    assert len(asset.sha256_hex or "") == 64
+    assert asset.storage_ref.startswith("care/")
+    assert subject_a.id.hex not in asset.storage_ref
+    path = private_file_disk_path(str(private_root), asset.storage_ref)
+    assert Path(path).read_bytes() == payload
+
+    page = await client.get(
+        f"/care/{subject_a.id}/messages/{thread_id}",
+        headers={"Accept": "text/html"},
+    )
+    assert page.status_code == 200
+    assert "synthetic-result.pdf" in page.text
+
+    download_url = (
+        f"/care/{subject_a.id}/messages/{thread_id}/attachments/{attachment.id}"
+    )
+    downloaded = await client.get(download_url)
+    assert downloaded.status_code == 200
+    assert downloaded.content == payload
+    assert downloaded.headers["content-type"].startswith("application/pdf")
+    assert downloaded.headers["cache-control"] == "private, no-store"
+    assert "attachment" in downloaded.headers["content-disposition"]
+
+    other = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Another conversation"},
+        follow_redirects=False,
+    )
+    assert other.status_code == 303
+    other_thread_id = other.headers["location"].rsplit("/", 1)[1]
+    wrong_thread = await client.get(
+        f"/care/{subject_a.id}/messages/{other_thread_id}/attachments/{attachment.id}"
+    )
+    assert wrong_thread.status_code == 404
+
+    # The same opaque attachment under another patient is indistinguishable
+    # from one that does not exist.
+    wrong_subject = await client.get(
+        f"/care/{subject_b.id}/messages/{thread_id}/attachments/{attachment.id}"
+    )
+    assert wrong_subject.status_code == 404
+
+    relationship = await db_session.scalar(
+        select(CareRelationship).where(
+            CareRelationship.subject_id == subject_a.id,
+            CareRelationship.professional_user_id == doctor.id,
+        )
+    )
+    assert relationship is not None
+    await relationships.set_consent_paused(
+        db_session,
+        relationship_id=relationship.id,
+        actor_user_id=owner_a.id,
+        paused=True,
+    )
+    await db_session.commit()
+    assert (await client.get(download_url)).status_code == 404
+
+    # Withdrawing professional access never withdraws the patient's own record.
+    client.cookies.set(SESSION_COOKIE, create_session(owner_a.username))
+    patient_download = await client.get(download_url)
+    assert patient_download.status_code == 200
+    assert patient_download.content == payload
+
+    # A same-size replacement is not allowed to borrow the metadata row. The
+    # stored digest is checked before FileResponse starts streaming bytes.
+    Path(path).write_bytes(b"x" * len(payload))
+    assert (await client.get(download_url)).status_code == 404
+
+
+async def test_a_spoofed_care_attachment_is_rejected_before_writing_a_message(
+    doctor_client,
+    db_session,
+    monkeypatch,
+    tmp_path,
+):
+    from vitals.models.care_thread import CareMessage, CareThread
+
+    monkeypatch.setenv("VITALS_PRIVATE_FILE_ROOT", str(tmp_path / "private"))
+    client, _doctor, (_owner_a, subject_a), _b = doctor_client
+    threads_before = await db_session.scalar(
+        select(func.count()).select_from(CareThread)
+    )
+    messages_before = await db_session.scalar(
+        select(func.count()).select_from(CareMessage)
+    )
+    response = await client.post(
+        f"/care/{subject_a.id}/messages",
+        data={"title": "Spoof", "body": "This must not persist."},
+        files={
+            "attachment": (
+                "looks-like-a-report.pdf",
+                b"<html><script>bad()</script></html>",
+                "application/pdf",
+            )
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 415
+    assert (
+        await db_session.scalar(select(func.count()).select_from(CareThread))
+        == threads_before
+    )
+    assert (
+        await db_session.scalar(select(func.count()).select_from(CareMessage))
+        == messages_before
+    )
+    assert not (tmp_path / "private").exists()

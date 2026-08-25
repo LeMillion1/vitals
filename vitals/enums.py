@@ -311,6 +311,7 @@ class FileAssetPurpose(StrEnum):
     PROGRESS_PHOTO = "progress_photo"
     LAB_DOCUMENT = "lab_document"
     BODY_SCAN_DOCUMENT = "body_scan_document"
+    CARE_MESSAGE_ATTACHMENT = "care_message_attachment"
 
 
 class Severity(StrEnum):

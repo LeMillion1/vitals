@@ -29,8 +29,9 @@ def test_every_registered_table_has_exactly_one_ownership_contract():
     # thread, its participants and its messages; 74 since 0062 added the support
     # access request and its scopes; 75 since 0063 added the per-subject external
     # API token; 76 since 0064 added the revocable connector token; 77 since 0065
-    # normalized each connector's exact capabilities.
-    assert len(OWNERSHIP_REGISTRY) == 77
+    # normalized each connector's exact capabilities; 78 since 0067 attached
+    # private files to patient-visible care messages.
+    assert len(OWNERSHIP_REGISTRY) == 78
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -71,6 +72,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "ai_subject_quota_periods",
         "audit_events",
         "care_messages",
+        "care_message_attachments",
         "care_plans",
         "care_relationships",
         "care_thread_participants",

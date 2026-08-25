@@ -45,10 +45,23 @@ from vitals.access import (
     PolicyResourceType,
     is_allowed,
 )
-from vitals.enums import CareRelationshipStatus, CareThreadStatus
-from vitals.models.care_thread import CareMessage, CareThread, CareThreadParticipant
+from vitals.enums import (
+    CareRelationshipStatus,
+    CareThreadStatus,
+    FileAssetPurpose,
+    FileAssetStatus,
+    FileStorageBackend,
+)
+from vitals.models.care_thread import (
+    CareMessage,
+    CareMessageAttachment,
+    CareThread,
+    CareThreadParticipant,
+)
 from vitals.models.identity import HealthSubject
+from vitals.models.tenancy import FileAsset
 from vitals.models.professional import CareRelationship
+from vitals.services import file_asset_service
 
 #: The operation key a consent carries for this feature. It matches what
 #: ``relationships.default_scopes`` writes, and a mismatch would silently make
@@ -87,6 +100,10 @@ class ThreadNotFound(CareThreadError):
     """No such thread in this subject's scope."""
 
 
+class AttachmentNotFound(CareThreadError):
+    """No downloadable attachment in this conversation and subject scope."""
+
+
 class NotTheAuthor(CareThreadError):
     """Only the person who said it may correct it."""
 
@@ -100,6 +117,14 @@ class CareThreadSummary:
     unread: bool
 
 
+@dataclass(frozen=True, slots=True)
+class CareAttachmentDownload:
+    """Private-local metadata already authorized for this one request."""
+
+    attachment: CareMessageAttachment
+    file_asset: FileAsset
+
+
 def _text(value: object, field: str, *, limit: int) -> str:
     if not isinstance(value, str):
         raise CareThreadValidationError(f"{field} must be a string")
@@ -111,6 +136,21 @@ def _text(value: object, field: str, *, limit: int) -> str:
             f"{field} must be at most {limit} characters"
         )
     return stripped
+
+
+def _filename(value: object) -> str:
+    if not isinstance(value, str):
+        raise CareThreadValidationError("original_filename must be a string")
+    clean = value.strip()
+    if (
+        not clean
+        or len(clean) > 255
+        or "/" in clean
+        or "\\" in clean
+        or any(ord(character) < 32 or ord(character) == 127 for character in clean)
+    ):
+        raise CareThreadValidationError("original_filename is invalid")
+    return clean
 
 
 async def _now(session: AsyncSession) -> datetime:
@@ -476,6 +516,110 @@ async def revise_message(
     return message
 
 
+async def attach_file(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    message_id: uuid.UUID,
+    original_filename: str,
+    storage_ref: str,
+    media_type: str,
+    size_bytes: int,
+    content_sha256: str,
+) -> CareMessageAttachment:
+    """Attach one already-written private file to the actor's message.
+
+    This is deliberately a second flush in the same caller-owned transaction as
+    :func:`send_message`. It cannot retarget somebody else's message, another
+    subject's file metadata, or a conversation the actor may no longer use.
+    """
+
+    clean_filename = _filename(original_filename)
+    _require_scope(context, action=SEND_ACTION)
+    message = await session.scalar(
+        select(CareMessage).where(
+            CareMessage.id == message_id,
+            CareMessage.subject_id == context.subject_id,
+            CareMessage.actor_user_id == context.principal.user_id,
+        )
+    )
+    if message is None:
+        raise AttachmentNotFound("no attachable message in this record")
+    thread = await _thread(
+        session, context=context, thread_id=message.thread_id, for_update=True
+    )
+    if thread.status != CareThreadStatus.OPEN.value:
+        raise NotInTheConversation("this conversation is closed")
+    await _require_participation(
+        session, thread_id=thread.id, user_id=context.principal.user_id
+    )
+    await _live_relationship_or_none(session, context=context)
+
+    asset = await file_asset_service.register_private_local(
+        session,
+        subject_id=context.subject_id,
+        uploaded_by_user_id=context.principal.user_id,
+        purpose=FileAssetPurpose.CARE_MESSAGE_ATTACHMENT,
+        storage_ref=storage_ref,
+        media_type=media_type,
+        size_bytes=size_bytes,
+        content_sha256=content_sha256,
+    )
+    attachment = CareMessageAttachment(
+        message_id=message.id,
+        subject_id=context.subject_id,
+        file_asset_id=asset.id,
+        original_filename=clean_filename,
+    )
+    session.add(attachment)
+    await session.flush()
+    return attachment
+
+
+async def resolve_attachment_download(
+    session: AsyncSession,
+    *,
+    context: AccessContext,
+    thread_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+) -> CareAttachmentDownload:
+    """Authorize and resolve one attachment afresh for each download request."""
+
+    _require_scope(context, action=READ_ACTION)
+    thread = await _thread(session, context=context, thread_id=thread_id)
+    await _require_participation(
+        session, thread_id=thread.id, user_id=context.principal.user_id
+    )
+    # A participant row preserves history; it is not a perpetual professional
+    # grant. Ended care must close downloads just as it closes thread reads.
+    await _live_relationship_or_none(session, context=context)
+
+    row = (
+        await session.execute(
+            select(CareMessageAttachment, FileAsset)
+            .join(
+                CareMessage,
+                CareMessage.id == CareMessageAttachment.message_id,
+            )
+            .join(FileAsset, FileAsset.id == CareMessageAttachment.file_asset_id)
+            .where(
+                CareMessageAttachment.id == attachment_id,
+                CareMessageAttachment.subject_id == context.subject_id,
+                CareMessage.thread_id == thread.id,
+                FileAsset.subject_id == context.subject_id,
+                FileAsset.purpose
+                == FileAssetPurpose.CARE_MESSAGE_ATTACHMENT.value,
+                FileAsset.storage_backend == FileStorageBackend.PRIVATE_LOCAL.value,
+                FileAsset.status == FileAssetStatus.ACTIVE.value,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        raise AttachmentNotFound("no attachment in this conversation")
+    attachment, asset = row
+    return CareAttachmentDownload(attachment=attachment, file_asset=asset)
+
+
 async def list_threads(
     session: AsyncSession, *, context: AccessContext
 ) -> list[CareThread]:
@@ -583,7 +727,12 @@ async def read_thread(
         await session.scalars(
             select(CareMessage)
             .where(CareMessage.thread_id == thread.id)
-            .options(selectinload(CareMessage.author))
+            .options(
+                selectinload(CareMessage.author),
+                selectinload(CareMessage.attachment).selectinload(
+                    CareMessageAttachment.file_asset
+                ),
+            )
             .order_by(CareMessage.created_at, CareMessage.id)
         )
     )
@@ -704,6 +853,8 @@ async def unread_marker(
 
 
 __all__ = [
+    "AttachmentNotFound",
+    "CareAttachmentDownload",
     "CareThreadError",
     "CareThreadValidationError",
     "CareThreadSummary",
@@ -714,6 +865,7 @@ __all__ = [
     "SEND_ACTION",
     "ThreadNotFound",
     "add_participant",
+    "attach_file",
     "close_thread",
     "list_threads",
     "list_thread_summaries",
@@ -722,6 +874,7 @@ __all__ = [
     "read_thread",
     "remove_participant",
     "reopen_thread",
+    "resolve_attachment_download",
     "revise_message",
     "send_message",
     "unread_marker",

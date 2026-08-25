@@ -17,7 +17,7 @@ The original table-by-table inventory contains the 55 tables present at the
 Stage-0 expansion. The post-foundation and later identity/care tables below keep
 the prose inventory aligned with the machine-readable registry.
 
-**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 77 live tables today.** Revision
+**`Base.metadata` and `OWNERSHIP_REGISTRY` hold 78 live tables today.** Revision
 `0058` also dropped two historical tables: `signals` and `day_context`. Their rows below are
 kept, struck through, at their original numbers — the numbering is referenced
 from the Stage-3 narrative further down, and renumbering would silently
@@ -193,9 +193,9 @@ silently reassigned or deleted.
 
 ### Later identity, professional-care, and credential additions
 
-These thirteen live tables arrived after the earlier prose additions. Together
+These fourteen live tables arrived after the earlier prose additions. Together
 with the sections above they make this hand-reviewed inventory exhaustive for
-the same 77 live tables as `OWNERSHIP_REGISTRY`.
+the same 78 live tables as `OWNERSHIP_REGISTRY`.
 
 | Table | Ownership | Contract |
 | --- | --- | --- |
@@ -212,6 +212,7 @@ the same 77 live tables as `OWNERSHIP_REGISTRY`.
 | `mcp_access_token_scopes` / `McpAccessTokenScope` | Required S child of a connector credential | Frozen exact `(resource_type, resource_key, action)` capabilities for one token. Wildcards are forbidden, S is repeated for RLS and protected by a composite FK to the parent token, and adding a tool or domain never silently widens an issued credential. |
 | `support_access_requests` / `SupportAccessRequest` | Required S control state | A reasoned, expiring ask is distinct from a grant. The requesting admin cannot approve it; decision actor/time and the optional resulting grant are constrained and retained. |
 | `support_access_request_scopes` / `SupportAccessRequestScope` | Required S child of request | Exact non-wildcard resource/action rows shown to the patient before a decision. A composite FK prevents the child S from drifting from its request. |
+| `care_message_attachments` / `CareMessageAttachment` | Required S, message, and F | One optional private file per patient-visible message. Composite foreign keys force the repeated S to agree with both `care_messages` and `file_assets`; original filenames stay presentation metadata while random `care/…` locators remain private. The row is not ordinary-user portable because its message contains third-party authored clinical communication. |
 
 ## Critical cross-surface dependencies
 

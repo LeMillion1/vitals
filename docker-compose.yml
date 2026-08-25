@@ -47,6 +47,10 @@ services:
       - vitals_garmin_session:/data/garmin_session
       # Persist progress photos and lab document uploads across rebuilds/restarts
       - ./web/static/uploads:/app/web/static/uploads
+      # New private-local files never enter the static tree. The application
+      # resolves opaque metadata into this owner-only volume after authorizing
+      # every request (care attachments are the first caller).
+      - vitals_private_files:/data/private_files
 
     ports:
       # Loopback-only: health/genetic data must not sit open on the public
@@ -179,6 +183,8 @@ services:
       # The Garmin token store, read-only: the database can always be re-synced
       # from Garmin, but a lost session may be impossible to log back in.
       - vitals_garmin_session:/garmin_session:ro
+      # Care-message attachments and later private-local medical files.
+      - vitals_private_files:/private_files:ro
     entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh"]
     restart: unless-stopped
 
@@ -186,4 +192,5 @@ volumes:
   vitals_pgdata:
   vitals_redis_data:
   vitals_garmin_session:
+  vitals_private_files:
   vitals_idp_pgdata:

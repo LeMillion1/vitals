@@ -27,10 +27,10 @@ than trusting them if this date has gone stale.
 | | |
 | --- | --- |
 | Branch / remote | `commercial/main` on `fork` (`LeMillion1/vitals`) |
-| Alembic head | `0066` — 66 revisions |
-| Schema | 77 tables; 64 carry `subject_id` and are covered by an RLS policy; 53 have it `NOT NULL` |
+| Alembic head | `0067` — 67 revisions |
+| Schema | 78 tables; 65 carry `subject_id` and are covered by an RLS policy; 54 have it `NOT NULL` |
 | Backfill | 18 phases in `OWNERSHIP_BACKFILL_SEQUENCE`, all with a script in the runbook |
-| Suites | 4,641 fast passed / 168 skipped; 476 focused care/UI/auth/design tests; migration plus 48 current PostgreSQL care tests (80 care/RLS on the inbox cutover) |
+| Suites | 4,654 fast passed / 168 skipped; 548 focused care/UI/static/design tests; migration plus 199 current PostgreSQL care/RLS/schema tests |
 | Domains / scheduled jobs | 14 and 14, of which 11 fan out per record |
 
 **Merged:** PR-01 identity, PR-02 bootstrap and `AccessContext`, PR-03 ownership
@@ -38,7 +38,7 @@ expansion and backfill, PR-04 scoped services + policy engine + FORCE RLS,
 PR-05 OIDC, provisioning and the registration decision, PR-06
 files/portability/settings, PR-07 professionals/relationships/consent, PR-08
 professional UX, PR-09 minus its notification transport,
-PR-11 care-team messaging (minus private attachments), PR-12's read-only support
+PR-11 care-team messaging, PR-12's read-only support
 access, PR-10.
 
 **PR-10 is complete.** Its external API authenticates against per-subject
@@ -72,10 +72,8 @@ operational dashboards, retention controls and the break-glass path are named
 and not built; each needs its own review and the roadmap already sequences them
 after the read path.
 
-**Three gaps are decisions rather than unbuilt scope**, and each is named
-where it lives: private attachments on a care-team message (the download route
-still resolves through the sole-owner adapter, so a professional gets a 404 that
-is not about permission); the professional inbox from PR-08 (finding an
+**Two gaps are decisions rather than unbuilt scope**, and each is named
+where it lives: the professional invitation inbox from PR-08 (finding an
 invitation by email is a different security model, not a missing screen); and
 `import_full`, whose wipe is still unqualified — though not reachable while it
 matters: both it and `export_full` refuse a database holding more than one
@@ -1522,7 +1520,7 @@ During a bounded compatibility window, route an explicitly negotiated older
 protocol revision through the same authorization services and audit stream;
 never silently downgrade `2026-07-28` requests.
 
-### PR 11 — Care-team messaging — **landed, minus attachments**
+### PR 11 — Care-team messaging — **landed**
 
 Delivered, as three tables and one service:
 
@@ -1535,6 +1533,11 @@ Delivered, as three tables and one service:
   newer message from somebody else, not merely an open thread; opening a thread
   advances only to the latest persisted message, so a concurrent send remains
   new.
+- Revision `0067` adds one optional validated PDF/image attachment per message.
+  Its metadata is bound to both the message and the subject-owned `FileAsset` by
+  composite foreign keys. Bytes use the `private_local` backend in a dedicated
+  volume outside `/static`; the storage locator contains no patient, thread, or
+  original filename.
 - **The subject is a participant from the moment a thread exists, and cannot be
   removed by anybody including themselves.** That is enforced in
   `remove_participant` rather than documented, and it is the difference between
@@ -1561,12 +1564,12 @@ Delivered, as three tables and one service:
   conversation is a place for the two to drift apart, and the argument for a
   patient-visible thread is that they cannot.
 
-**Not done:** private attachments, and the reason is a real one rather than
-scope. `GET /files/{opaque_key}` resolves its subject through the sole-owner
-adapter, so a professional opening a patient's attachment gets a 404 that has
-nothing to do with permission. Giving that route a policy-aware branch — or
-hanging the download off `/care/{subject_id}/…` where the subject travels in the
-path — is its own change with its own authorization story.
+Attachment downloads hang from `/care/{subject_id}/messages/{thread_id}` rather
+than widening the legacy owner-only `/files` route. Each request rechecks read
+scope, current participation, live care, and the exact subject/thread binding;
+pausing consent stops the next professional download while self-ownership keeps
+the patient's copy readable. Files are forced to download with no-store caching,
+and the Compose backup sidecar archives the private volume separately.
 
 **No outbound message notification either**, which is PR-09's remaining gap
 rather than this one's: the transport went with Telegram and web push has not

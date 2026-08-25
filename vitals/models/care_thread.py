@@ -47,6 +47,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from vitals.enums import CareThreadStatus
 from vitals.models.base import Base
 from vitals.models.identity import User
+from vitals.models.tenancy import FileAsset
 
 
 def _values(enum_type: type) -> str:
@@ -198,6 +199,9 @@ class CareMessage(Base):
 
     __tablename__ = "care_messages"
     __table_args__ = (
+        UniqueConstraint(
+            "id", "subject_id", name="uq_care_messages_id_subject"
+        ),
         ForeignKeyConstraint(
             ["thread_id", "subject_id"],
             ["care_threads.id", "care_threads.subject_id"],
@@ -245,6 +249,75 @@ class CareMessage(Base):
     updated_at: Mapped[datetime] = _updated_at()
 
     author: Mapped[User] = relationship(foreign_keys=[actor_user_id])
+    attachment: Mapped[Optional["CareMessageAttachment"]] = relationship(
+        back_populates="message",
+        uselist=False,
+        viewonly=True,
+    )
 
 
-__all__ = ["CareMessage", "CareThread", "CareThreadParticipant"]
+class CareMessageAttachment(Base):
+    """One private document attached to one patient-visible message.
+
+    The attachment row carries the subject explicitly for row security. Both
+    composite foreign keys make that copy agree with the message and the file
+    metadata, so neither a stale browser nor a programming mistake can attach
+    another patient's bytes to this conversation.
+    """
+
+    __tablename__ = "care_message_attachments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["message_id", "subject_id"],
+            ["care_messages.id", "care_messages.subject_id"],
+            name="fk_care_message_attachments_message_subject",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["file_asset_id", "subject_id"],
+            ["file_assets.id", "file_assets.subject_id"],
+            name="fk_care_message_attachments_asset_subject",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "message_id", name="uq_care_message_attachments_message"
+        ),
+        UniqueConstraint(
+            "file_asset_id", name="uq_care_message_attachments_asset"
+        ),
+        CheckConstraint(
+            "length(trim(original_filename)) > 0 "
+            "AND length(original_filename) <= 255",
+            name="ck_care_message_attachments_filename",
+        ),
+        Index(
+            "ix_care_message_attachments_subject_created",
+            "subject_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    message_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("health_subjects.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    file_asset_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    message: Mapped[CareMessage] = relationship(
+        back_populates="attachment", viewonly=True
+    )
+    file_asset: Mapped[FileAsset] = relationship(viewonly=True)
+
+
+__all__ = [
+    "CareMessage",
+    "CareMessageAttachment",
+    "CareThread",
+    "CareThreadParticipant",
+]

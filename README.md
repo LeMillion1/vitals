@@ -114,6 +114,7 @@ Vitals написан с Claude в качестве основного инст�
 - Модульный дашборд — включай/выключай домены в настройках
 - Никаких внешних CDN — шрифты и стили полностью локальные
 - Отчёт для врача: снимок за период по ссылке с паролем и сроком жизни
+- Общая переписка пациента с командой помощи и приватными PDF/изображениями
 
 </td>
 </tr>
@@ -715,6 +716,7 @@ curl -s http://127.0.0.1:8000/health
 | `VITALS_GARMIN_PASSWORD` | Пароль Garmin Connect | *Опционально* |
 | `VITALS_CREDENTIAL_KEY` | Ключ шифрования для `integration_credentials` — учётные данные провайдеров каждого субъекта. Без него карточка настроек откажется принимать пароль, а не сохранит его открытым текстом. Сгенерировать: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | *Обязательно, если кто-то кроме владельца подключает Garmin/Hevy* |
 | `VITALS_GARMIN_TOKEN_DIR` | Путь к токенам Garmin | `/data/garmin_session` |
+| `VITALS_PRIVATE_FILE_ROOT` | Приватное хранилище медицинских файлов вне `/static` | `/data/private_files` |
 | `VITALS_MCP_CLIENT_ID` | OAuth Client ID для MCP | `vitals-claude-connector` |
 | `VITALS_MCP_CLIENT_SECRET` | OAuth Client Secret для MCP | *Обязательно* |
 | `VITALS_MCP_REDIRECT_HOSTS` | Разрешённые хосты OAuth-callback'ов (через запятую, только https) | `claude.ai,chatgpt.com,oauth-redirect.googleusercontent.com` |
@@ -864,6 +866,7 @@ Built with Claude as the primary coding tool — but the data model, architectur
 - Modular dashboard — toggle domains on/off in Settings
 - No external CDNs — fonts and assets are hosted locally
 - Doctor report: a snapshot for a period, behind a password-protected link that expires
+- Patient-visible care-team conversations with private PDF/image attachments
 
 </td>
 </tr>
@@ -1468,6 +1471,7 @@ runtime reader opens them any more.
 | `VITALS_GARMIN_PASSWORD` | Garmin Connect password | *Optional* |
 | `VITALS_CREDENTIAL_KEY` | Encryption key for `integration_credentials`, where each subject's provider credentials live. Without it the settings card refuses a password rather than storing it in the clear. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | *Required once anybody but the owner connects Garmin/Hevy* |
 | `VITALS_GARMIN_TOKEN_DIR` | Garmin session token path | `/data/garmin_session` |
+| `VITALS_PRIVATE_FILE_ROOT` | Private medical-file storage outside `/static` | `/data/private_files` |
 | `VITALS_MCP_CLIENT_ID` | MCP OAuth Client ID | `vitals-claude-connector` |
 | `VITALS_MCP_CLIENT_SECRET` | MCP OAuth Client Secret | *Required* |
 | `VITALS_MCP_REDIRECT_HOSTS` | Allowed OAuth callback hosts (comma-separated, https only) | `claude.ai,chatgpt.com,oauth-redirect.googleusercontent.com` |

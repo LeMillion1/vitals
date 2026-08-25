@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — care messages accept private attachments
+
+A patient, doctor, or trainer may attach one validated PDF or image to a care
+message. Bytes are stored in an owner-only volume outside `/static`; database
+constraints bind the file to the same patient and message, and every download
+rechecks current conversation participation, live care, and consent. Download
+URLs expose neither the original storage path nor the patient's identity, files
+are served as attachments with `private, no-store`, and the backup sidecar now
+archives the private-file volume.
+
 ### Added — unread conversations are visible from patient navigation
 
 The desktop rail and phone More destination now show a PHI-free unread count,
@@ -715,12 +725,14 @@ relationship lazy-loading outside the async driver's greenlet raises rather than
 loading. Every service test passed — they read messages back as objects and
 none of them renders. The reads eager-load now, and two tests render the page.
 
-**Not done, and stated rather than implied:** private attachments. The download
-route resolves its subject through the sole-owner adapter, so a professional
-opening a patient's file gets a 404 for a reason that has nothing to do with
-permission — fixing that is its own change with its own authorization story.
-There is also no notification: the transport was removed with Telegram and web
-push has not landed, so a message waits on the screen.
+Revision `0067` adds one optional private PDF/image attachment per message. Its
+metadata repeats `subject_id` and uses composite foreign keys to both the
+message and `FileAsset`; bytes live in a dedicated private volume outside the
+static mount. The download hangs from the subject/thread path and rechecks live
+read consent and participation on every request, so pausing consent stops the
+next professional download while the patient keeps their record. There is still
+no outbound notification transport: web push has not landed, so new work is
+signalled by the in-app unread count.
 
 
 ### Fixed — six defects a browser found and the suites could not

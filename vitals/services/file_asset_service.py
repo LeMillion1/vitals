@@ -1,8 +1,9 @@
-"""Flush-only metadata lifecycle for files already in legacy local storage.
+"""Flush-only metadata lifecycle for subject-owned private files.
 
-This service records ownership and storage metadata only.  It never reads file
-bytes, resolves configuration, computes hashes, or performs network I/O.  The
-caller owns the surrounding transaction and any physical-file operation.
+This service registers both legacy-local placeholders and fully described
+private-local assets. It never reads file bytes, resolves configuration,
+computes hashes, or performs network I/O. The caller owns the surrounding
+transaction and every physical-file operation.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ _PURPOSE_PREFIXES = {
     FileAssetPurpose.PROGRESS_PHOTO: "uploads/",
     FileAssetPurpose.LAB_DOCUMENT: "labs/",
     FileAssetPurpose.BODY_SCAN_DOCUMENT: "body/",
+    FileAssetPurpose.CARE_MESSAGE_ATTACHMENT: "care/",
 }
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_STORAGE_REF_LENGTH = 512
@@ -314,6 +316,62 @@ async def register_legacy_local(
     return asset
 
 
+async def register_private_local(
+    session: AsyncSession,
+    *,
+    subject_id: uuid.UUID,
+    uploaded_by_user_id: uuid.UUID,
+    purpose: FileAssetPurpose | str,
+    storage_ref: str,
+    media_type: str,
+    size_bytes: int,
+    content_sha256: str,
+) -> FileAsset:
+    """Register bytes already written below the configured private root.
+
+    Active private-local rows require complete integrity metadata. The function
+    only records that metadata and flushes; the delivery boundary owns the disk
+    write, transaction commit, and cleanup if either fails.
+    """
+
+    _validate_uuid(subject_id, "subject_id")
+    _validate_uuid(uploaded_by_user_id, "uploaded_by_user_id")
+    normalized_purpose = _coerce_purpose(purpose)
+    normalized_storage_ref = _validate_storage_ref(storage_ref, normalized_purpose)
+    normalized_media_type = _validate_media_type(media_type)
+    normalized_size = _validate_size(size_bytes)
+    normalized_sha256 = _validate_sha256(content_sha256)
+    if normalized_media_type is None:
+        raise FileAssetValidationError("media_type is required for an active file")
+    if normalized_size is None:
+        raise FileAssetValidationError("size_bytes is required for an active file")
+    if normalized_sha256 is None:
+        raise FileAssetValidationError(
+            "content_sha256 is required for an active file"
+        )
+
+    await _validate_references(
+        session,
+        subject_id=subject_id,
+        uploaded_by_user_id=uploaded_by_user_id,
+    )
+    asset = FileAsset(
+        subject_id=subject_id,
+        uploaded_by_user_id=uploaded_by_user_id,
+        opaque_key=uuid.uuid4(),
+        purpose=normalized_purpose.value,
+        storage_backend=FileStorageBackend.PRIVATE_LOCAL.value,
+        storage_ref=normalized_storage_ref,
+        media_type=normalized_media_type,
+        byte_size=normalized_size,
+        sha256_hex=normalized_sha256,
+        status=FileAssetStatus.ACTIVE.value,
+    )
+    session.add(asset)
+    await session.flush()
+    return asset
+
+
 async def mark_legacy_local_deleted(
     session: AsyncSession,
     *,
@@ -467,6 +525,7 @@ __all__ = [
     "FileAssetValidationError",
     "mark_legacy_local_deleted",
     "opaque_keys_for",
+    "register_private_local",
     "register_legacy_local",
     "resolve_for_download",
 ]

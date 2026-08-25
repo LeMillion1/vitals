@@ -45,6 +45,8 @@ OIDC_REQUIRED_ENV: tuple[str, ...] = (
     "VITALS_OIDC_REDIRECT_URL",
 )
 
+DEFAULT_PRIVATE_FILE_ROOT = "/data/private_files"
+
 
 @dataclass(frozen=True)
 class WebConfig:
@@ -68,6 +70,10 @@ class WebConfig:
     # Empty = feature off: the endpoint fails closed with 503, never a
     # wildcard-open door.
     external_api_token: str = ""
+    # Private medical bytes. This must not sit below ``web/static``: static
+    # mounts have no per-request consent check and cannot safely serve care
+    # attachments or any later private-local backend.
+    private_file_root: str = DEFAULT_PRIVATE_FILE_ROOT
 
     # ── OpenID Connect ───────────────────────────────────────────────────
     # An entirely empty provider configuration means the pre-cutover login still
@@ -137,6 +143,18 @@ def get_web_config() -> WebConfig:
             f"unset all of them. Missing: {missing}"
         )
 
+    private_file_root_raw = os.getenv(
+        "VITALS_PRIVATE_FILE_ROOT", DEFAULT_PRIVATE_FILE_ROOT
+    )
+    if not os.path.isabs(private_file_root_raw):
+        raise RuntimeError("VITALS_PRIVATE_FILE_ROOT must be an absolute path")
+    private_file_root = os.path.realpath(private_file_root_raw)
+    static_root = os.path.realpath(os.path.join(os.path.dirname(__file__), "static"))
+    if private_file_root == static_root or private_file_root.startswith(
+        static_root + os.sep
+    ):
+        raise RuntimeError("VITALS_PRIVATE_FILE_ROOT must be outside web/static")
+
     return WebConfig(
         session_secret=session_secret,
         auth_username=username,
@@ -151,6 +169,7 @@ def get_web_config() -> WebConfig:
             h.lower() for h in _env_csv("VITALS_MCP_REDIRECT_HOSTS", DEFAULT_MCP_REDIRECT_HOSTS)
         ),
         external_api_token=os.getenv("VITALS_EXTERNAL_API_TOKEN", ""),
+        private_file_root=private_file_root,
         oidc_issuer=oidc_values["VITALS_OIDC_ISSUER"],
         oidc_client_id=oidc_values["VITALS_OIDC_CLIENT_ID"],
         oidc_client_secret=oidc_values["VITALS_OIDC_CLIENT_SECRET"],

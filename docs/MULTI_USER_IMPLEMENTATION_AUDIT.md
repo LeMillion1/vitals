@@ -12,7 +12,7 @@ read during the audit.
 
 The conversion is substantial and real, but not finished. Vitals now has local
 users and additive roles, one owned health subject per patient account,
-subject-scoped facts, 64 PostgreSQL RLS tables, professional relationships and
+subject-scoped facts, 65 PostgreSQL RLS tables, professional relationships and
 consent, care-team conversations, OIDC login, revocable browser sessions,
 per-subject integrations, and controlled read-only support access.
 
@@ -32,7 +32,7 @@ the others remain useful provenance for the remediations named below:
    specific gaps.
 3. The ownership inventory called itself exhaustive but originally omitted 12
    of 76 live tables. It now includes the subsequently added MCP scope table and
-   matches all 77 machine-registry entries.
+   matches all 78 machine-registry entries.
 4. `ARCHITECTURE.html` was a historical snapshot presented as a live reference.
    Its schema, migration, router, service, RLS, ownership-class, and roadmap
    counters were synchronized during this audit.
@@ -41,11 +41,11 @@ the others remain useful provenance for the remediations named below:
 
 | Fact | Current evidence | Status |
 | --- | --- | --- |
-| Alembic head | `.venv/bin/python -m alembic heads` → `0066 (head)`; 66 files in `migrations/versions` | Verified |
-| SQLAlchemy tables | `len(Base.metadata.tables)` → 77 | Verified |
-| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 77 | Verified and exhaustive in code |
-| Subject-scoped tables | 64 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
-| Required subject columns | 53 of the 64 `subject_id` columns are non-null | Verified |
+| Alembic head | `.venv/bin/python -m alembic heads` → `0067 (head)`; 67 files in `migrations/versions` | Verified |
+| SQLAlchemy tables | `len(Base.metadata.tables)` → 78 | Verified |
+| Ownership registry | `len(OWNERSHIP_REGISTRY)` → 78 | Verified and exhaustive in code |
+| Subject-scoped tables | 65 metadata tables carry `subject_id`; the RLS revision union covers the same set | Verified |
+| Required subject columns | 54 of the 65 `subject_id` columns are non-null | Verified |
 | Ownership cutover | 18 ordered backfill phases and 18 matching scripts | Verified |
 | Domain enum | 14 health domains | Verified |
 | Web routers | 28 modules under `web/routers` | Verified |
@@ -75,7 +75,7 @@ a current validation result.
 
 ### Data isolation
 
-- 64 tables are subject-scoped and covered by FORCE RLS in PostgreSQL.
+- 65 tables are subject-scoped and covered by FORCE RLS in PostgreSQL.
 - The application binds `vitals.subject_id` transaction-locally; unbound or
   wrong-subject sessions fail closed in PostgreSQL tests.
 - Natural keys, raw payloads, normalized facts, integrations, settings, files,
@@ -105,7 +105,10 @@ a current validation result.
   message date. An accepted invitation now becomes a persistent patient task
   until the first consent decision. Patient desktop and phone navigation expose
   only the unread count and a direct conversation door; no sender, title or body
-  reaches shared chrome. Message attachments remain unbuilt.
+  reaches shared chrome. A message may carry one validated PDF or image: bytes
+  live outside `/static`, composite foreign keys bind metadata to the same
+  subject and message, and every download rechecks participation, live care,
+  and consent. The legacy owner-only `/files` route was not widened.
 
 ### Controlled support
 
@@ -161,8 +164,8 @@ verifiable GitHub pull request: the commercial history has only one merge
 commit. Keep this document as target/decision history and use this audit for the
 current state.
 
-The following roadmap targets are not shipped: notifications/web push, care
-attachments, invitation inbox, multi-subject full backup, support repair/export
+The following roadmap targets are not shipped: notifications/web push,
+invitation inbox, multi-subject full backup, support repair/export
 and break-glass, registration modes, lab
 marker collision migration, private-byte relocation outside static storage, and
 final legacy configuration contraction.
@@ -175,7 +178,7 @@ machine registry is the source of truth and is complete.
 
 The prose inventory previously listed only 64 live and two dropped tables. It
 now includes the missing identity, professional-care, support-request, and
-credential rows plus the MCP scope child and matches all 77 live tables in the
+credential rows, the MCP scope child, and the care attachment row and matches all 78 live tables in the
 machine registry.
 
 The historical Stage 3/4/5 narrative should be archived separately from a
@@ -346,6 +349,19 @@ The patient unread-navigation wiring passed 310 focused care/nav/mobile tests,
 411 care/nav/UI/design contracts, and the unchanged full 4,641-test fast suite.
 Desktop rail and phone More states were inspected at 390 px with no horizontal
 overflow or browser console errors; shared chrome contained only the count.
+
+Private care-message attachments on revision `0067` passed 548 focused
+care/UI/static/design tests. A fresh PostgreSQL 15 instance completed the full
+`head → 0034 → head` cycle and 199 care/RLS/schema tests; the full fast suite
+passed 4,654 tests (168 skipped, 35 deselected). A clean synthetic Compose stack
+built the image without the repository `.env`, migrated to `0067`, exposed a
+writable `/data/private_files` volume outside static storage, and returned 200
+from `/health` with PostgreSQL, Redis, and scheduler healthy; the temporary
+containers, volumes, network, and image were then removed. `sh -n`, Tailwind,
+full Ruff, and diff checks passed. The closed and
+open attachment composer plus an existing download action were inspected at
+1440×900 and 390×844. The phone page had no horizontal overflow
+(`scrollWidth == clientWidth == 390`).
 
 The entries below are the original audit-baseline runs on `0064`; they remain
 historical evidence rather than claims that those exact commands were rerun

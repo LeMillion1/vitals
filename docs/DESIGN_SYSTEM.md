@@ -842,6 +842,22 @@ simply data — keep the `<table>` and add `.v-rows` instead (see
 [4 · Table](#table)). Rewriting a history table into `<div>`s buys nothing the
 phone rules don't already give, and costs the desktop layout.
 
+### 5.6 Care conversations stay one shared screen
+
+Patient and professional read the same conversation template. The subject and
+authorization basis stay visible above it, active participants are named in the
+thread, and opening a thread replaces the inbox/new-thread form rather than
+stacking three unrelated tasks down the page. Unread state is a small neutral
+chip and a PHI-free count in navigation; never put sender, topic, or body into
+shared chrome.
+
+Attachments are optional supporting material, not a second composer. Keep the
+standard `.v-file-drop` inside a native disclosure below the message field so
+the ordinary text exchange stays visually primary. Render an uploaded file as
+one explicit download action inside its message; no inline medical preview, no
+storage path, and no attachment surface outside the conversation whose current
+access check protects it.
+
 ## 6. Accessibility
 
 - **Focus rings are consistent everywhere:** `border-color: var(--accent-line)`

@@ -6,11 +6,22 @@ not a URL style choice — see ``web.care_context`` for why a server-side
 """
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import date as date_type
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,10 +32,53 @@ from vitals.services import digest_service, modules_service
 from vitals.services.care import invitations, records, relationships
 from vitals.services.care import threads as care_threads
 from web.care_context import CareContext, principal_user_id, require_care_context
+from web.config import get_web_config
 from web.deps import get_session, require_auth
 from web.templating import templates
+from web.uploads import (
+    PreparedMedicalDocument,
+    care_attachment_storage_ref,
+    file_sha256_hex,
+    prepare_medical_document,
+    private_file_disk_path,
+    write_private_file,
+)
 
 router = APIRouter(prefix="/care", tags=["care"])
+
+
+async def _attach_private_document(
+    db: AsyncSession,
+    *,
+    care: CareContext,
+    message_id: uuid.UUID,
+    document: PreparedMedicalDocument,
+) -> str:
+    """Write private bytes, then bind their metadata in this transaction."""
+
+    storage_ref = care_attachment_storage_ref(document.extension)
+    private_root = get_web_config().private_file_root
+    path = await run_in_threadpool(
+        write_private_file, private_root, storage_ref, document.body
+    )
+    try:
+        await care_threads.attach_file(
+            db,
+            context=care.access,
+            message_id=message_id,
+            original_filename=document.original_filename,
+            storage_ref=storage_ref,
+            media_type=document.media_type,
+            size_bytes=document.byte_size,
+            content_sha256=document.sha256_hex,
+        )
+    except BaseException:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        raise
+    return path
 
 
 async def _professional_display_names(
@@ -479,28 +533,47 @@ async def open_conversation(
     request: Request,
     title: str = Form(""),
     body: str = Form(""),
+    attachment: UploadFile | None = File(None),
     care: CareContext = Depends(require_care_context),
     db: AsyncSession = Depends(get_session),
 ):
     """Start a conversation with this patient — the one named in the path."""
 
+    document = await prepare_medical_document(attachment)
+    if document is not None and not body.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An attachment needs a message",
+        )
     try:
         opened = await care_threads.open_thread(
             db, context=care.access, title=title
         )
         if body.strip():
-            await care_threads.send_message(
+            message = await care_threads.send_message(
                 db,
                 context=care.access,
                 thread_id=opened.id,
                 body=body,
             )
+            if document is not None:
+                await _attach_private_document(
+                    db,
+                    care=care,
+                    message_id=message.id,
+                    document=document,
+                )
     except care_threads.CareThreadValidationError as exc:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     except care_threads.CareThreadError:
+        await db.rollback()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    # If commit's outcome is indeterminate, retain the private bytes. An orphan
+    # in an inaccessible volume can be reconciled; deleting bytes after the DB
+    # may have committed would turn a preserved clinical message into data loss.
     await db.commit()
     return RedirectResponse(
         url=f"/care/{care.subject_id}/messages/{opened.id}",
@@ -513,27 +586,79 @@ async def say(
     request: Request,
     thread_id: uuid.UUID,
     body: str = Form(""),
+    attachment: UploadFile | None = File(None),
     care: CareContext = Depends(require_care_context),
     db: AsyncSession = Depends(get_session),
 ):
     """Say something in one conversation about the patient named in the path."""
 
+    document = await prepare_medical_document(attachment)
     try:
-        await care_threads.send_message(
+        message = await care_threads.send_message(
             db, context=care.access, thread_id=thread_id, body=body
         )
+        if document is not None:
+            await _attach_private_document(
+                db,
+                care=care,
+                message_id=message.id,
+                document=document,
+            )
     except care_threads.CareThreadValidationError as exc:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     except care_threads.CareThreadError:
+        await db.rollback()
         # Consent changed, care ended, or the thread was closed between the page
         # being rendered and this arriving.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    # See the first-message path above: never risk deleting a committed medical
+    # file merely because the client did not observe a clean commit response.
     await db.commit()
     return RedirectResponse(
         url=f"/care/{care.subject_id}/messages/{thread_id}",
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.get("/{subject_id}/messages/{thread_id}/attachments/{attachment_id}")
+async def download_message_attachment(
+    thread_id: uuid.UUID,
+    attachment_id: uuid.UUID,
+    care: CareContext = Depends(require_care_context),
+    db: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    """Download one attachment after re-checking live thread access."""
+
+    try:
+        resolved = await care_threads.resolve_attachment_download(
+            db,
+            context=care.access,
+            thread_id=thread_id,
+            attachment_id=attachment_id,
+        )
+        path = private_file_disk_path(
+            get_web_config().private_file_root,
+            resolved.file_asset.storage_ref,
+        )
+    except (care_threads.CareThreadError, ValueError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
+    if (
+        not os.path.isfile(path)
+        or os.path.getsize(path) != resolved.file_asset.byte_size
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if await run_in_threadpool(file_sha256_hex, path) != resolved.file_asset.sha256_hex:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    return FileResponse(
+        path,
+        media_type=resolved.file_asset.media_type or "application/octet-stream",
+        filename=resolved.attachment.original_filename,
+        content_disposition_type="attachment",
+        headers={"Cache-Control": "private, no-store"},
     )
 
 

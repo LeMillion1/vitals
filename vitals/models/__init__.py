@@ -27,6 +27,7 @@ from vitals.models.tenancy import (
 from vitals.models.credentials import IntegrationCredential
 from vitals.models.care_thread import (
     CareMessage,
+    CareMessageAttachment,
     CareThread,
     CareThreadParticipant,
 )
@@ -145,6 +146,7 @@ __all__ = [
     "ConsentScope",
     "AuditEvent",
     "CareMessage",
+    "CareMessageAttachment",
     "CareThread",
     "CareThreadParticipant",
     "IntegrationConnection",

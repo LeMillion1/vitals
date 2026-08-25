@@ -241,6 +241,12 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         actor=TargetColumn.REQUIRED,
         user_portable=False,
     ),
+    "care_message_attachments": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        file_asset=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "care_thread_participants": OwnershipSpec(
         OwnershipClass.SUBJECT_CONTROL,
         subject=TargetColumn.REQUIRED,
