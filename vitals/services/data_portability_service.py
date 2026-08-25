@@ -53,7 +53,17 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, ValidationError
-from sqlalchemy import Date, DateTime, Time, func, inspect, select, text
+from sqlalchemy import (
+    Date,
+    DateTime,
+    Time,
+    column as sql_column,
+    func,
+    inspect,
+    select,
+    table as sql_table,
+    text,
+)
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -467,6 +477,31 @@ def _is_secret_setting_key(key: str) -> bool:
 # ── Full backup: export ────────────────────────────────────────────────────────
 
 
+async def _live_schema_columns(
+    session: AsyncSession,
+) -> Mapping[str, frozenset[str]]:
+    """Return the tables and columns installed in this database.
+
+    Full-v1 is also the safety snapshot used by the staged ownership cutover.
+    During that cutover the application can legitimately be newer than the
+    deliberately paused schema. Reflecting once lets that path capture the
+    complete installed shape without selecting columns from a later migration.
+    """
+
+    connection = await session.connection()
+
+    def inspect_columns(sync_connection: Any) -> dict[str, frozenset[str]]:
+        inspector = inspect(sync_connection)
+        return {
+            table_name: frozenset(
+                column["name"] for column in inspector.get_columns(table_name)
+            )
+            for table_name in inspector.get_table_names()
+        }
+
+    return MappingProxyType(await connection.run_sync(inspect_columns))
+
+
 async def export_full(session: AsyncSession) -> dict[str, Any]:
     """Snapshot portable tables into ``{table_name: [rows]}`` plus metadata.
 
@@ -475,6 +510,7 @@ async def export_full(session: AsyncSession) -> dict[str, Any]:
     plain dict ready for ``json.dumps``.
     """
     local_subject_id = await _single_local_subject_id(session)
+    live_schema = await _live_schema_columns(session)
     out: dict[str, Any] = {
         "metadata": {
             "version": BACKUP_VERSION,
@@ -485,12 +521,17 @@ async def export_full(session: AsyncSession) -> dict[str, Any]:
     }
 
     for table in Base.metadata.sorted_tables:
-        if table.name in _EXCLUDED_TABLES:
+        if table.name in _EXCLUDED_TABLES or table.name not in live_schema:
             continue
-        result = await session.execute(select(table))
+        installed_columns = live_schema[table.name]
+        selected_columns = tuple(
+            column for column in table.columns if column.name in installed_columns
+        )
+        result = await session.execute(select(*selected_columns))
         column_names = [
             name
             for name in table.columns.keys()
+            if name in installed_columns
             if name not in GENERIC_OUTPUT_SUPPRESSED_COLUMNS
         ]
         rows: list[dict[str, Any]] = []
@@ -498,7 +539,7 @@ async def export_full(session: AsyncSession) -> dict[str, Any]:
             if table.name == "app_settings" and _is_secret_setting_key(mapping.get("key")):
                 continue
             row = {col: _serialize_value(mapping[col]) for col in column_names}
-            if "subject_id" in table.columns:
+            if "subject_id" in installed_columns:
                 subject_bound = mapping["subject_id"] is not None
                 if local_subject_id is None and subject_bound:
                     raise _contract_error("portability.error.v1_missing_subject")
@@ -1170,10 +1211,18 @@ def _system_alert_replacement_snapshot_bounds(
     return bounds
 
 
-async def _refuse_retained_raw_references(session: AsyncSession) -> None:
+async def _refuse_retained_raw_references(
+    session: AsyncSession,
+    *,
+    live_schema: Mapping[str, frozenset[str]] | None = None,
+) -> None:
     """Fail before mutation when retained control state still binds any raw."""
 
+    if live_schema is None:
+        live_schema = await _live_schema_columns(session)
     for table_name in _RETAINED_RAW_REFERENCE_TABLES:
+        if table_name not in live_schema:
+            continue
         table = Base.metadata.tables[table_name]
         has_reference = await session.scalar(
             select(
@@ -1215,6 +1264,7 @@ async def _import_full_with_ownership_hooks(
     payload: Any,
     *,
     hooks: PortabilityV1OwnershipHooks,
+    live_schema: Mapping[str, frozenset[str]] | None = None,
 ) -> ImportStats:
     """Replace portable data with the file's contents, in the caller's transaction.
 
@@ -1237,6 +1287,8 @@ async def _import_full_with_ownership_hooks(
     audit trail.
     """
     _validate_payload(payload)
+    if live_schema is None:
+        live_schema = await _live_schema_columns(session)
     payload = _upgrade_lab_marker_identity(payload)
     raw_high_watermark, raw_snapshot_rows = _raw_replacement_snapshot_bounds(
         payload
@@ -1306,7 +1358,7 @@ async def _import_full_with_ownership_hooks(
             )
             if has_bound_marker:
                 raise _contract_error("portability.error.v1_missing_subject")
-        await _refuse_retained_raw_references(session)
+        await _refuse_retained_raw_references(session, live_schema=live_schema)
         if local_subject_id is not None:
             try:
                 await hooks.block_raw(
@@ -1502,7 +1554,7 @@ async def _import_full_with_ownership_hooks(
 
         # Wipe in reverse FK order so child rows go before the parents they reference.
         for table in reversed(Base.metadata.sorted_tables):
-            if table.name in _EXCLUDED_TABLES:
+            if table.name in _EXCLUDED_TABLES or table.name not in live_schema:
                 continue
             await session.execute(table.delete())
 
@@ -1511,7 +1563,7 @@ async def _import_full_with_ownership_hooks(
         # private-resource references are assigned by a trusted tenancy-aware
         # boundary, never accepted from a portable v1 file.
         for table in Base.metadata.sorted_tables:
-            if table.name in _EXCLUDED_TABLES:
+            if table.name in _EXCLUDED_TABLES or table.name not in live_schema:
                 continue
             rows = payload.get(table.name)
             if table.name == "app_settings":
@@ -1519,23 +1571,37 @@ async def _import_full_with_ownership_hooks(
             if not rows:
                 continue
             columns = table.columns
+            installed_columns = live_schema[table.name]
             records = [
                 {
                     key: _deserialize_value(columns[key].type, val)
                     for key, val in row.items()
                     if key in columns  # tolerate columns dropped in a later schema
+                    if key in installed_columns
                     if key not in GENERIC_OUTPUT_SUPPRESSED_COLUMNS
                 }
                 for row in rows
             ]
-            if "subject_id" in columns and local_subject_id is not None:
+            if "subject_id" in installed_columns and local_subject_id is not None:
                 for row, record in zip(rows, records, strict=True):
                     record["subject_id"] = (
                         local_subject_id
                         if _subject_rebind_required(table.name, row)
                         else None
                     )
-            await session.execute(table.insert(), records)
+            # Use a lightweight physical table for staged-schema restores.
+            # Inserting through the newer ORM Table would run Python defaults
+            # for columns that do not exist yet in the paused revision.
+            insert_target = sql_table(
+                table.name,
+                *(
+                    sql_column(item.name, item.type)
+                    for item in table.columns
+                    if item.name in installed_columns
+                ),
+                schema=table.schema,
+            )
+            await session.execute(insert_target.insert(), records)
             counts[table.name] = len(records)
 
         if preserved:
@@ -1546,7 +1612,7 @@ async def _import_full_with_ownership_hooks(
         # then validate the complete current safety catalog in this same restore
         # transaction.  A stale/omitted catalog is upgraded atomically; protected
         # code collisions or retained orphan alert references roll everything back.
-        await _reset_sequences(session)
+        await _reset_sequences(session, live_schema=live_schema)
         try:
             await sync_conflict_catalog(session)
             if local_subject_id is not None:
@@ -1634,7 +1700,7 @@ async def _import_full_with_ownership_hooks(
                     "import.error.generic",
                     exc="system-alert validation rejected the portable restore",
                 ) from exc
-        await _reset_sequences(session)
+        await _reset_sequences(session, live_schema=live_schema)
         await session.flush()
     except PortabilityError:
         raise
@@ -1651,12 +1717,22 @@ async def _import_full_with_ownership_hooks(
     return ImportStats(counts=counts)
 
 
-async def _reset_sequences(session: AsyncSession) -> None:
+async def _reset_sequences(
+    session: AsyncSession,
+    *,
+    live_schema: Mapping[str, frozenset[str]] | None = None,
+) -> None:
     """Advance sequences for restored portable tables; no-op on SQLite."""
     if session.bind is None or session.bind.dialect.name != "postgresql":
         return
+    if live_schema is None:
+        live_schema = await _live_schema_columns(session)
     for table in Base.metadata.sorted_tables:
-        if table.name in _EXCLUDED_TABLES or "id" not in table.columns:
+        if (
+            table.name in _EXCLUDED_TABLES
+            or table.name not in live_schema
+            or "id" not in live_schema[table.name]
+        ):
             continue
         seq = (
             await session.execute(

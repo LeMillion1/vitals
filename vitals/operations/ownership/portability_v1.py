@@ -221,10 +221,12 @@ def _hooks() -> PortabilityV1OwnershipHooks:
 async def import_full(session: AsyncSession, payload: Any) -> _portability.ImportStats:
     """Run the destructive full-v1 restore with explicit ownership operations."""
 
+    live_schema = await _portability._live_schema_columns(session)
     return await _portability._import_full_with_ownership_hooks(
         session,
         payload,
         hooks=_hooks(),
+        live_schema=live_schema,
     )
 
 

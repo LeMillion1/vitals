@@ -23,17 +23,12 @@ from sqlalchemy.pool import NullPool
 
 
 import vitals.models  # noqa: F401 -- register the complete schema for teardown
-from vitals.enums import Source
 from vitals.models.base import Base
-from vitals.ownership import WriteIdentity
 from vitals.operations.ownership import portability_v1
 from vitals.services import (
     conflict_catalog,
-    conflict_engine,
-    conflict_registrations,
     data_portability_service,
     hrt_catalog,
-    labs_service,
 )
 from vitals.operations.ownership.conflict_rule import (
     CONFLICT_RULE_OWNERSHIP_BACKFILL_PHASE,
@@ -353,6 +348,40 @@ async def _lab_result_graph(engine: AsyncEngine) -> list[dict[str, Any]]:
         return [dict(row) for row in rows.mappings()]
 
 
+async def _add_live_result(engine: AsyncEngine, identity: Any) -> dict[str, Any]:
+    """Insert the strict live shape supported by revision 0048.
+
+    The rehearsal deliberately pauses before the ownership contract. Current
+    runtime services target migration head and therefore must not be invoked
+    against this historical schema after later business columns are added.
+    """
+
+    created_at = datetime(2026, 8, 21, 10, 15, 30)
+    async with engine.begin() as connection:
+        row = await connection.execute(
+            sa.text(
+                "INSERT INTO lab_results "
+                "(subject_id, actor_user_id, date, domain, source, marker, "
+                "value, unit, ref_low, ref_high, flag, lab_name, note, "
+                "raw_payload_id, created_at, updated_at) "
+                "VALUES (:subject, :actor, :date, 'labs', 'manual', :marker, "
+                ":value, :unit, NULL, NULL, 'normal', NULL, NULL, NULL, "
+                ":created_at, :created_at) "
+                "RETURNING id, subject_id, actor_user_id, raw_payload_id"
+            ),
+            {
+                "subject": identity.subject_id,
+                "actor": identity.user_id,
+                "date": LIVE_DATE,
+                "marker": "synthetic live marker",
+                "value": 3.3,
+                "unit": "ng/mL",
+                "created_at": created_at,
+            },
+        )
+        return dict(row.mappings().one())
+
+
 async def _phase_statuses(engine: AsyncEngine, phase: str) -> tuple[str, ...]:
     async with engine.connect() as connection:
         rows = await connection.scalars(
@@ -556,13 +585,6 @@ async def test_real_postgres_0034_lab_result_stop_resume_volatility_and_restore(
         assert all(row["subject_id"] == identity.subject_id for row in graph)
         assert all(row["actor_user_id"] is None for row in graph)
 
-        factory = async_sessionmaker(engine, expire_on_commit=False)
-        async with factory() as session:
-            listed = await labs_service.list_results(
-                session, subject_id=identity.subject_id
-            )
-            assert {row.id for row in listed} == set(LAB_IDS)
-
         completed_checkpoint = await _checkpoint_states(engine)
         idempotent = await _run_cli(
             "backfill_lab_result_subject_ownership.py",
@@ -577,34 +599,11 @@ async def test_real_postgres_0034_lab_result_stop_resume_volatility_and_restore(
 
         # Supported post-completion volatility: a strict live manual result above
         # the frozen high-water mark.
-        write_identity = WriteIdentity(identity.subject_id, identity.user_id)
-        # The live write crosses the conflict engine, which the web lifespan
-        # normally primes with every domain resolver.
-        conflict_registrations.register_all_resolvers()
-        async with factory() as session:
-            prepared = await conflict_engine.prepare_scoped_write(
-                session,
-                context=conflict_engine.ConflictWriteContext(
-                    identity=write_identity,
-                    evaluation_date=LIVE_DATE,
-                    legacy_bridge=conflict_engine.LegacyConflictBridge.REJECT,
-                ),
-            )
-            live = await labs_service.add_result(
-                session,
-                on_date=LIVE_DATE,
-                marker="synthetic live marker",
-                value=3.3,
-                unit="ng/mL",
-                source=Source.MANUAL.value,
-                identity=write_identity,
-                prepared_conflict_write=prepared,
-            )
-            assert live.subject_id == identity.subject_id
-            assert live.actor_user_id == identity.user_id
-            assert live.raw_payload_id is None
-            assert live.id > completed_checkpoint[0]["scan_high_watermark_id"]
-            await session.commit()
+        live = await _add_live_result(engine, identity)
+        assert live["subject_id"] == identity.subject_id
+        assert live["actor_user_id"] == identity.user_id
+        assert live["raw_payload_id"] is None
+        assert live["id"] > completed_checkpoint[0]["scan_high_watermark_id"]
 
         volatile = await _run_cli(
             "backfill_lab_result_subject_ownership.py",

@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — staged ownership backups follow the installed schema
+
+The operational full-v1 backup and restore path now reflects the database shape
+installed at a paused migration revision. A newer application checkout no
+longer selects or reloads columns introduced after that revision, while current
+installations continue to export their complete schema.
+
 ### Fixed — support console describes the shipped repair boundary
 
 The support introduction now states that record reading, one-time export, and
