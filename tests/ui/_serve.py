@@ -10,13 +10,58 @@ it invents looks like a defect in the product.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
 import sys
 
 import fakeredis.aioredis
 import uvicorn
 
 import web.deps
+from vitals.scheduler import jobs as scheduler_jobs
+from vitals.scheduler.scheduler import clear_jobs
+
+
+def _register_no_background_jobs(_settings=None) -> None:
+    """The browser suite exercises requests, not clocks or provider networks."""
+
+    clear_jobs()
+
+
+scheduler_jobs.register_all_jobs = _register_no_background_jobs
+
+
+_original_getaddrinfo = socket.getaddrinfo
+_OriginalSocket = socket.socket
+
+
+def _is_loopback(host: object) -> bool:
+    if not isinstance(host, str):
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _local_getaddrinfo(host, *args, **kwargs):
+    if not _is_loopback(host):
+        raise OSError("the UI test server forbids external network resolution")
+    return _original_getaddrinfo(host, *args, **kwargs)
+
+
+class _LocalOnlySocket(_OriginalSocket):
+    def connect(self, address):
+        if isinstance(address, tuple) and not _is_loopback(address[0]):
+            raise OSError("the UI test server forbids external network connections")
+        return super().connect(address)
+
+
+socket.getaddrinfo = _local_getaddrinfo
+socket.socket = _LocalOnlySocket
 
 web.deps._redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
 

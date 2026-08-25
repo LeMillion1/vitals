@@ -94,9 +94,26 @@ def _environment(database: pathlib.Path) -> dict[str, str]:
     hard way by writing a real Garmin address into it.
     """
 
-    environment = dict(os.environ)
+    # Subprocesses still need the host executable/library search paths, locale,
+    # and temporary directory. They do not need arbitrary application, cloud,
+    # proxy, or provider credentials inherited from the developer's shell.
+    passthrough = {
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "PATH",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TMPDIR",
+    }
+    environment = {
+        name: os.environ[name] for name in passthrough if name in os.environ
+    }
     environment.update(
         {
+            # config.py otherwise searches upward from the repository sources
+            # and reads the real .env even though every test value is explicit.
+            "PYTHON_DOTENV_DISABLED": "1",
             "VITALS_DATABASE_URL": f"sqlite+aiosqlite:///{database}",
             "VITALS_ENV_FILE": str(database.with_suffix(".env")),
             "VITALS_SESSION_SECRET": SESSION_SECRET,
@@ -104,7 +121,12 @@ def _environment(database: pathlib.Path) -> dict[str, str]:
             "VITALS_AUTH_PASSWORD_HASH": OWNER_PASSWORD_HASH,
             "VITALS_CREDENTIAL_KEY": CREDENTIAL_KEY,
             "VITALS_COOKIE_SECURE": "false",
+            "VITALS_GARMIN_TOKEN_DIR": str(database.parent / "garmin_tokens"),
+            "VITALS_PRIVATE_FILE_ROOT": str(database.parent / "private_files"),
+            "VITALS_REGISTRATION_UNLOCKED": "0",
+            "VITALS_TESTING": "1",
             "VITALS_TIMEZONE": "Europe/Chisinau",
+            "VITALS_WEB_PUSH_ENABLED": "false",
             "PYTHONPATH": str(REPOSITORY_ROOT),
         }
     )
