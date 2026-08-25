@@ -3,18 +3,64 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import date
+import uuid
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 import pytest
 
-from vitals.enums import Source
-from vitals.models import WeightLog, GarminDaily, GarminActivity, HevyWorkout, LabResult
+from vitals.enums import Source, UserRoleName, UserStatus
+from vitals.models import GarminActivity, GarminDaily, HevyWorkout, LabResult, WeightLog
+from vitals.models.identity import HealthSubject, User, UserRole
+from vitals.models.professional import CareRelationship, ConsentGrant, ConsentScope
 from web.auth import create_session, _get_mcp_serializer, _get_serializer
 from web.config import SESSION_COOKIE
 
 # PKCE pair used across the flow tests: CODE_CHALLENGE is the S256 of CODE_VERIFIER.
 CODE_VERIFIER = "some_challenge"
 CODE_CHALLENGE = "bhmDDzo_BXLob8jrOdLgvkzIe7gymOatjCthDDsvQIE"
+
+
+async def _professional_in_care(db_session, legacy_owner_roots):
+    professional = User(
+        username="oauth-doctor",
+        normalized_username="oauth-doctor",
+        password_hash="synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(professional)
+    await db_session.flush()
+    db_session.add(
+        UserRole(user_id=professional.id, role=UserRoleName.DOCTOR.value)
+    )
+    relationship = CareRelationship(
+        subject_id=legacy_owner_roots.subject_id,
+        subject_owner_user_id=legacy_owner_roots.user_id,
+        professional_user_id=professional.id,
+        kind="doctor",
+        status="active",
+    )
+    db_session.add(relationship)
+    await db_session.flush()
+    grant = ConsentGrant(
+        relationship_id=relationship.id,
+        subject_id=legacy_owner_roots.subject_id,
+        version=1,
+        status="active",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    db_session.add(grant)
+    await db_session.flush()
+    db_session.add(
+        ConsentScope(
+            consent_grant_id=grant.id,
+            subject_id=legacy_owner_roots.subject_id,
+            resource_type="domain",
+            resource_key="weight",
+            action="list",
+        )
+    )
+    await db_session.commit()
+    return professional, relationship, grant
 
 
 
@@ -100,8 +146,9 @@ async def test_oauth_authorize_authenticated_renders(auth_client):
     assert response.status_code == 200
     assert "Разрешение доступа" in response.text
     assert "Claude.ai" in response.text
-    assert "Дневнику питания, калорийности и приемов пищи" in response.text
-    assert "вносить записи в дневник питания" in response.text
+    assert "Только карта выбранного человека" in response.text
+    assert "разрешённые сейчас разделы и действия" in response.text
+    assert 'name="subject_id"' in response.text
     assert "read-only" not in response.text
 
 
@@ -256,6 +303,7 @@ async def test_oauth_full_flow_and_token_exchange(auth_client, redis):
     assert code_data_raw is not None
     code_data = json.loads(code_data_raw)
     assert code_data["username"] == "tester"
+    assert code_data["subject_id"]
 
     # 2. Exchange code for access token (POST /oauth/token)
     token_response = await auth_client.post(
@@ -284,10 +332,162 @@ async def test_oauth_full_flow_and_token_exchange(auth_client, redis):
     assert payload["username"] == "tester"
     assert payload["client_id"] == "vitals-claude-connector"
     assert payload["type"] == "mcp_access_token"
+    assert payload["health_subject"] == code_data["subject_id"]
+    assert payload["scopes"]
 
     # The session serializer must NOT be able to verify an MCP token (different salt).
     with pytest.raises(Exception):
         _get_serializer().loads(token_data["access_token"], max_age=3600)
+
+
+async def test_a_professional_authorizes_one_patient_and_consent_version(
+    client, db_session, legacy_owner_roots, redis
+):
+    professional, relationship, grant = await _professional_in_care(
+        db_session, legacy_owner_roots
+    )
+    client.cookies.set(SESSION_COOKIE, create_session(professional.username))
+    query = (
+        "/oauth/authorize?response_type=code"
+        "&client_id=vitals-claude-connector"
+        "&redirect_uri=https://claude.ai/callback"
+        f"&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
+    )
+    page = await client.get(query)
+    assert page.status_code == 200
+    assert "подопечный" in page.text
+    assert str(legacy_owner_roots.subject_id) in page.text
+
+    approved = await client.post(
+        "/oauth/authorize/approve",
+        data={
+            "client_id": "vitals-claude-connector",
+            "redirect_uri": "https://claude.ai/callback",
+            "code_challenge": CODE_CHALLENGE,
+            "code_challenge_method": "S256",
+            "subject_id": str(legacy_owner_roots.subject_id),
+        },
+    )
+    assert approved.status_code == 302
+    code = approved.headers["location"].split("code=")[1].split("&")[0]
+    code_data = json.loads(await redis.get(f"oauth_code:{code}"))
+    assert code_data["subject_id"] == str(legacy_owner_roots.subject_id)
+
+    exchanged = await client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/callback",
+            "client_id": "vitals-claude-connector",
+            "client_secret": "test-mcp-secret",
+            "code_verifier": CODE_VERIFIER,
+        },
+    )
+    assert exchanged.status_code == 200
+    payload = _get_mcp_serializer().loads(exchanged.json()["access_token"])
+    assert payload["health_subject"] == str(legacy_owner_roots.subject_id)
+    assert payload["relationship"] == str(relationship.id)
+    assert payload["consent_grant"] == str(grant.id)
+    assert payload["consent_version"] == 1
+    assert payload["scopes"] == ["domain:weight:list"]
+
+
+async def test_oauth_approval_cannot_substitute_an_unrelated_patient(
+    client, db_session, legacy_owner_roots
+):
+    professional, _relationship, _grant = await _professional_in_care(
+        db_session, legacy_owner_roots
+    )
+    client.cookies.set(SESSION_COOKIE, create_session(professional.username))
+    response = await client.post(
+        "/oauth/authorize/approve",
+        data={
+            "client_id": "vitals-claude-connector",
+            "redirect_uri": "https://claude.ai/callback",
+            "code_challenge": CODE_CHALLENGE,
+            "code_challenge_method": "S256",
+            "subject_id": str(uuid.uuid4()),
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "health subject is not available for connector authorization"
+    )
+
+
+async def test_a_professional_with_two_patients_must_choose_one(
+    client, db_session, legacy_owner_roots
+):
+    professional, _relationship, _grant = await _professional_in_care(
+        db_session, legacy_owner_roots
+    )
+    second_owner = User(
+        username="oauth-second-owner",
+        normalized_username="oauth-second-owner",
+        password_hash="synthetic-test-hash",
+        status=UserStatus.ACTIVE.value,
+    )
+    db_session.add(second_owner)
+    await db_session.flush()
+    second_subject = HealthSubject(
+        owner_user_id=second_owner.id,
+        display_name="Second synthetic patient",
+        timezone="UTC",
+    )
+    db_session.add(second_subject)
+    await db_session.flush()
+    second_relationship = CareRelationship(
+        subject_id=second_subject.id,
+        subject_owner_user_id=second_owner.id,
+        professional_user_id=professional.id,
+        kind="doctor",
+        status="active",
+    )
+    db_session.add(second_relationship)
+    await db_session.flush()
+    second_grant = ConsentGrant(
+        relationship_id=second_relationship.id,
+        subject_id=second_subject.id,
+        version=1,
+        status="active",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    db_session.add(second_grant)
+    await db_session.flush()
+    db_session.add(
+        ConsentScope(
+            consent_grant_id=second_grant.id,
+            subject_id=second_subject.id,
+            resource_type="domain",
+            resource_key="labs",
+            action="read",
+        )
+    )
+    await db_session.commit()
+
+    client.cookies.set(SESSION_COOKIE, create_session(professional.username))
+    page = await client.get(
+        "/oauth/authorize?response_type=code"
+        "&client_id=vitals-claude-connector"
+        "&redirect_uri=https://claude.ai/callback"
+        f"&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
+    )
+    assert page.status_code == 200
+    assert '<select class="v-select" id="oauth-subject"' in page.text
+    assert str(legacy_owner_roots.subject_id) in page.text
+    assert str(second_subject.id) in page.text
+
+    without_choice = await client.post(
+        "/oauth/authorize/approve",
+        data={
+            "client_id": "vitals-claude-connector",
+            "redirect_uri": "https://claude.ai/callback",
+            "code_challenge": CODE_CHALLENGE,
+            "code_challenge_method": "S256",
+        },
+    )
+    assert without_choice.status_code == 400
 
 
 async def test_oauth_token_missing_client_secret_rejected(auth_client, redis, monkeypatch):

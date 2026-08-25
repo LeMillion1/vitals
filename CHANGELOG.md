@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — professionals choose one patient when connecting an assistant
+
+The connector approval screen now shows the health record being authorized. A
+doctor or trainer with several patients must choose exactly one; the choice is
+sealed into the single-use OAuth code and revalidated against the live care
+relationship and consent at token exchange. The permission explanation is now
+three short guarantees instead of a long, owner-specific feature list.
+
 ### Added — MCP credentials have a durable patient and consent boundary
 
 New connector credentials now name exactly one health subject and persist exact

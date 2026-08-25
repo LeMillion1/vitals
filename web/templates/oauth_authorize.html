@@ -310,58 +310,6 @@
             {% endif %}
         </div>
 
-        <!-- Permissions -->
-        <div class="perms-box">
-            <p class="perms-title">{{ t("oauth.perms_title") }}</p>
-            <ul class="perms-list">
-                <li class="perms-item">
-                    <svg class="check" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span>{{ t("oauth.perm.weight") }}</span>
-                </li>
-                <li class="perms-item">
-                    <svg class="check" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span>{{ t("oauth.perm.garmin") }}</span>
-                </li>
-                <li class="perms-item">
-                    <svg class="check" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span>{{ t("oauth.perm.hevy") }}</span>
-                </li>
-                <li class="perms-item">
-                    <svg class="check" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span>{{ t("oauth.perm.nutrition") }}</span>
-                </li>
-                <li class="perms-item">
-                    <svg class="check" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span>{{ t("oauth.perm.glp1") }}</span>
-                </li>
-                <li class="perms-item">
-                    <svg class="check" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span>{{ t("oauth.perm.labs") }}</span>
-                </li>
-                <li class="perms-item">
-                    <svg class="check" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span>{{ t("oauth.perm.compatibility") }}</span>
-                </li>
-            </ul>
-            <p class="perms-note">
-                {{ t("oauth.note") }}
-            </p>
-        </div>
-
         {% if error %}
         <div class="error-box">{{ error }}</div>
         <!-- No approve button on an error: the request is already refused, and
@@ -371,13 +319,50 @@
         </div>
         {% else %}
 
-        <!-- Form: plain HTML, no HTMX, no Alpine -->
+        <!-- One explicit record per authorization. No session-held "current
+             patient": the selected UUID travels in the single-use code. -->
         <form action="/oauth/authorize/approve" method="POST">
             <input type="hidden" name="client_id" value="{{ client_id }}">
             <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
             <input type="hidden" name="state" value="{{ state }}">
             <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
             <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+
+            <div class="perms-box">
+                <p class="perms-title">{{ t("oauth.subject.title") }}</p>
+                {% if subject_options | length == 1 %}
+                {% set option = subject_options[0] %}
+                <input type="hidden" name="subject_id" value="{{ option.subject_id }}">
+                <p class="perms-item">
+                    <strong>{{ option.display_name }}</strong>
+                    <span>· {{ t("oauth.subject." + option.basis) }}</span>
+                </p>
+                {% else %}
+                <label class="v-label" for="oauth-subject">{{ t("oauth.subject.label") }}</label>
+                <select class="v-select" id="oauth-subject" name="subject_id" required>
+                    {% for option in subject_options %}
+                    <option value="{{ option.subject_id }}">
+                        {{ option.display_name }}
+                    </option>
+                    {% endfor %}
+                </select>
+                {% endif %}
+            </div>
+
+            <div class="perms-box">
+                <p class="perms-title">{{ t("oauth.perms_title") }}</p>
+                <ul class="perms-list">
+                    {% for key in ("one_subject", "exact_scope", "revocable") %}
+                    <li class="perms-item">
+                        <svg class="check" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span>{{ t("oauth.perm." + key) }}</span>
+                    </li>
+                    {% endfor %}
+                </ul>
+                <p class="perms-note">{{ t("oauth.note") }}</p>
+            </div>
 
             <div class="actions">
                 <a href="/" class="btn btn-cancel">{{ t("oauth.cancel") }}</a>

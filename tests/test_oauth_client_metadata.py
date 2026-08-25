@@ -337,7 +337,7 @@ def _consent(client_id: str, redirect_uri: str) -> dict[str, str]:
 
 
 async def test_a_document_client_reaches_the_consent_screen(
-    client, a_registered_client
+    client, a_registered_client, legacy_owner_roots
 ):
     """The replacement for a pre-registered id, working end to end."""
 
@@ -418,7 +418,7 @@ async def test_a_client_id_pointing_inside_the_network_is_refused_at_the_screen(
     assert "code=" not in response.text
 
 
-async def test_the_pre_registered_connector_still_works(client):
+async def test_the_pre_registered_connector_still_works(client, legacy_owner_roots):
     """Claude.ai's connector uses a plain client id today.
 
     Breaking a working connection to adopt a newer identifier would be a change
@@ -434,7 +434,9 @@ async def test_the_pre_registered_connector_still_works(client):
     assert response.status_code == 200
 
 
-async def test_the_authorization_response_names_the_issuer(client):
+async def test_the_authorization_response_names_the_issuer(
+    client, legacy_owner_roots
+):
     """RFC 9207, which the MCP profile requires a client to validate.
 
     A client talking to several authorization servers cannot otherwise tell

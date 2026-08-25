@@ -125,7 +125,7 @@ async def test_oauth_page_renders_localized(auth_client, db_session, redis):
     r = await auth_client.get("/oauth/authorize?response_type=code&client_id=test-id&redirect_uri=http://localhost&state=123", headers={"Accept": "text/html"})
     assert r.status_code == 200
     assert "Разрешение доступа" in r.text
-    assert "Истории изменения веса" in r.text
+    assert "Неверный client_id" in r.text
 
     # Set language to EN
     response = await auth_client.post("/settings/language", data={"language": "en"})
@@ -135,7 +135,7 @@ async def test_oauth_page_renders_localized(auth_client, db_session, redis):
     r = await auth_client.get("/oauth/authorize?response_type=code&client_id=test-id&redirect_uri=http://localhost&state=123", headers={"Accept": "text/html"})
     assert r.status_code == 200
     assert "Access Authorization" in r.text
-    assert "Weight history and body composition" in r.text
+    assert "Invalid client_id" in r.text
 
 
 def test_i18n_key_parity():

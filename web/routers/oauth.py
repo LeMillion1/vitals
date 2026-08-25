@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import secrets
+import uuid
 from typing import Optional
 from urllib.parse import urlencode, urlsplit
 
@@ -193,6 +194,7 @@ async def oauth_authorize(
     state: Optional[str] = None,
     code_challenge: Optional[str] = None,
     code_challenge_method: Optional[str] = None,
+    db: AsyncSession = Depends(get_session),
 ):
     """Renders the OAuth authorization consent page, prompting login if needed."""
     from web.templating import templates
@@ -238,6 +240,23 @@ async def oauth_authorize(
         login_url = f"/login?{urlencode({'next': next_path})}"
         return RedirectResponse(url=login_url, status_code=status.HTTP_302_FOUND)
 
+    from vitals.services.authentication import connector_authorization
+
+    subject_options = await connector_authorization.list_subjects(
+        db,
+        username=username,
+    )
+    if not subject_options:
+        return templates.TemplateResponse(
+            request,
+            "oauth_authorize.html",
+            {
+                "error": t("oauth.error.no_subject"),
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+            },
+        )
+
     # Render consent form
     return templates.TemplateResponse(
         request,
@@ -254,6 +273,7 @@ async def oauth_authorize(
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": code_challenge_method,
+            "subject_options": subject_options,
         },
     )
 
@@ -266,7 +286,9 @@ async def oauth_approve(
     state: Optional[str] = Form(None),
     code_challenge: Optional[str] = Form(None),
     code_challenge_method: Optional[str] = Form(None),
+    subject_id: Optional[uuid.UUID] = Form(None),
     redis = Depends(get_redis),
+    db: AsyncSession = Depends(get_session),
 ):
     """Processes user approval, stores code details in Redis, and redirects."""
     token = request.cookies.get(SESSION_COOKIE)
@@ -291,6 +313,22 @@ async def oauth_approve(
     if not _pkce_requested(code_challenge, code_challenge_method):
         raise HTTPException(status_code=400, detail="code_challenge with S256 is required")
 
+    from vitals.services.authentication import connector_authorization
+
+    try:
+        selected = await connector_authorization.resolve_subject(
+            db,
+            username=username,
+            requested_subject_id=subject_id,
+        )
+    except connector_authorization.ConnectorAuthorizationError:
+        # One answer for a missing, stale, or foreign subject id. The caller
+        # must not be able to use this endpoint as a patient-directory probe.
+        raise HTTPException(
+            status_code=400,
+            detail="health subject is not available for connector authorization",
+        ) from None
+
     # Issue a secure authorization code
     code = f"code_{secrets.token_urlsafe(32)}"
 
@@ -301,6 +339,7 @@ async def oauth_approve(
         "code_challenge": code_challenge,
         "code_challenge_method": code_challenge_method,
         "username": username,
+        "subject_id": str(selected.subject_id),
     }
     await redis.setex(f"oauth_code:{code}", 300, json.dumps(code_payload))
 
@@ -444,25 +483,17 @@ async def oauth_token(
     cfg = get_web_config()
     audience = mcp_tokens.audience_for(cfg.public_url)
     try:
-        from vitals.services.legacy_ownership import (
-            LegacyOwnershipError,
-            resolve_legacy_ownership_context,
-        )
-
-        ownership = await resolve_legacy_ownership_context(
-            db,
-            actor_username=code_data["username"],
-        )
+        subject_id = uuid.UUID(str(code_data["subject_id"]))
         token_payload, _record = await mcp_tokens.issue(
             db,
             username=code_data["username"],
-            subject_id=ownership.subject_id,
+            subject_id=subject_id,
             client_id=client_id,
             audience=audience,
             issuer=cfg.public_url.rstrip("/"),
             client_name=code_data.get("client_name"),
         )
-    except (mcp_tokens.McpTokenError, LegacyOwnershipError):
+    except (mcp_tokens.McpTokenError, ValueError, TypeError, KeyError):
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_grant",
