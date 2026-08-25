@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.i18n import current_lang
 from vitals.services import share_service
-from vitals.services.share_chart import weight_svg
+from vitals.analytics.share_chart import weight_svg
 from vitals.utils.passwords import verify_password, verify_password_dummy
 from web.config import get_web_config
 from web.deps import get_session

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from vitals.services.share_chart import weight_svg
+from vitals.analytics.share_chart import weight_svg
 
 _VIEWBOX = re.compile(r'viewBox="0 0 (\d+) (\d+)"')
 
