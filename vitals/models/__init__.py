@@ -20,6 +20,7 @@ from vitals.models.identity import (
     UserRole,
 )
 from vitals.models.registration import RegistrationInvitation, RegistrationRequest
+from vitals.models.portability import PortabilityImportReceipt
 from vitals.models.tenancy import (
     FileAsset,
     IntegrationConnection,
@@ -148,6 +149,7 @@ __all__ = [
     "SupportAccessScope",
     "RegistrationInvitation",
     "RegistrationRequest",
+    "PortabilityImportReceipt",
     "ProfessionalProfile",
     "ProfessionalReviewDecision",
     "ProfessionalInvitation",

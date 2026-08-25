@@ -36,8 +36,9 @@ def test_every_registered_table_has_exactly_one_ownership_contract():
     # immutable professional-review decision history; 83 since 0072 added the
     # invitation and operator-approval admission records; 84 since 0076 added
     # the support repair row; 87 since 0078 added the separately governed
-    # emergency session, scopes and approvals.
-    assert len(OWNERSHIP_REGISTRY) == 87
+    # emergency session, scopes and approvals; 88 since 0079 added the
+    # subject-isolated portability import receipt.
+    assert len(OWNERSHIP_REGISTRY) == 88
 
 
 def test_unknown_table_fails_closed_instead_of_inheriting_a_default():
@@ -98,6 +99,7 @@ def test_control_plane_and_live_links_are_not_user_portable():
         "notification_delivery_intents",
         "notifications",
         "ownership_backfill_checkpoints",
+        "portability_import_receipts",
         "platform_integration_connections",
         "platform_settings",
         "professional_invitations",
@@ -161,6 +163,15 @@ def test_notification_delivery_intent_is_nonportable_subject_control():
     assert intent.actor is TargetColumn.OPTIONAL
     assert intent.connection is TargetColumn.REQUIRED
     assert intent.user_portable is False
+
+
+def test_portability_import_receipt_is_nonportable_subject_control():
+    receipt = OWNERSHIP_REGISTRY["portability_import_receipts"]
+
+    assert receipt.ownership is OwnershipClass.SUBJECT_CONTROL
+    assert receipt.subject is TargetColumn.REQUIRED
+    assert receipt.actor is TargetColumn.REQUIRED
+    assert receipt.user_portable is False
 
 
 def test_portability_exclusions_follow_the_registry_contract():

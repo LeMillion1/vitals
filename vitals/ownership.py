@@ -318,6 +318,15 @@ _OWNERSHIP_REGISTRY: dict[str, OwnershipSpec] = {
         subject=TargetColumn.REQUIRED,
         user_portable=False,
     ),
+    # A completed import's replay/control receipt. It is intentionally excluded
+    # from its own archive graph: restoring receipts would let imported bytes
+    # claim that a different operation had already completed.
+    "portability_import_receipts": OwnershipSpec(
+        OwnershipClass.SUBJECT_CONTROL,
+        subject=TargetColumn.REQUIRED,
+        actor=TargetColumn.REQUIRED,
+        user_portable=False,
+    ),
     "platform_settings": OwnershipSpec(
         OwnershipClass.ACCOUNT_CONTROL,
         user_portable=False,
