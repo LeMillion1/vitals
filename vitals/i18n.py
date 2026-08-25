@@ -1495,9 +1495,9 @@ _EN: dict[str, str] = {
     "support.console_title": "Support access",
     "support.console_heading": "Support access",
     "support.console_description": (
-        "Reading somebody's record is asked for and granted by them, never taken. "
-        "Record reading and a one-time portability export are separate approvals. "
-        "Repair remains unavailable until it has a separately reviewed bounded diff."
+        "Record reading, a one-time portability export, and the fixed bounded "
+        "repair each require a separate patient approval. Broader repairs remain "
+        "unavailable."
     ),
     "support.console_1": "Asked. The patient decides.",
     "support.console_export": "Export requested. The patient decides separately.",
@@ -3593,9 +3593,8 @@ _RU: dict[str, str] = {
     "support.console_title": "Доступ поддержки",
     "support.console_heading": "Доступ поддержки",
     "support.console_description": (
-        "Доступ к чужой записи просят и получают, а не берут. Чтение записи и "
-        "одноразовая выгрузка требуют отдельных разрешений. Починка пока недоступна "
-        "без отдельно проверяемого ограниченного изменения."
+        "Чтение записи, одноразовая выгрузка и фиксированное ограниченное исправление "
+        "требуют отдельных одобрений пациента. Более широкие исправления недоступны."
     ),
     "support.console_1": "Запрошено. Решает пациент.",
     "support.console_export": "Выгрузка запрошена отдельно. Решает пациент.",

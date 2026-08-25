@@ -28,6 +28,21 @@ def test_translation_fallback():
     assert t("non_existent_key_xyz") == "non_existent_key_xyz"
 
 
+def test_support_console_explains_the_three_separate_approvals():
+    from vitals.i18n import STRINGS
+
+    assert STRINGS["en"]["support.console_description"] == (
+        "Record reading, a one-time portability export, and the fixed bounded "
+        "repair each require a separate patient approval. Broader repairs remain "
+        "unavailable."
+    )
+    assert STRINGS["ru"]["support.console_description"] == (
+        "Чтение записи, одноразовая выгрузка и фиксированное ограниченное "
+        "исправление требуют отдельных одобрений пациента. Более широкие "
+        "исправления недоступны."
+    )
+
+
 def test_plurals():
     # English plurals: 2 forms (1 vs other)
     current_lang.set("en")

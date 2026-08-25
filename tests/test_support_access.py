@@ -1626,6 +1626,11 @@ async def test_the_console_renders_for_an_administrator(
     )
     assert response.status_code == 200
     assert "<html" in response.text.lower()
+    assert (
+        "Чтение записи, одноразовая выгрузка и фиксированное ограниченное "
+        "исправление требуют отдельных одобрений пациента. Более широкие "
+        "исправления недоступны."
+    ) in response.text
     del admin, legacy_owner_roots
 
 

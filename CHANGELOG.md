@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — support console describes the shipped repair boundary
+
+The support introduction now states that record reading, one-time export, and
+the fixed bounded repair each require separate patient approval, while broader
+repairs remain unavailable.
+
 ### Fixed — new-account proactive jobs remain quiet before opt-in
 
 Daily briefs and nudges now treat a completely absent notification preference
