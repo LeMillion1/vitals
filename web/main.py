@@ -961,6 +961,7 @@ from web.routers.reports import router as reports_router  # noqa: E402
 from web.routers.nutrition import router as nutrition_router  # noqa: E402
 from web.routers.interactions import router as interactions_router  # noqa: E402
 from web.routers.settings import router as settings_router  # noqa: E402
+from web.routers.portability_v2 import router as portability_v2_router  # noqa: E402
 from web.routers.charts import router as charts_router  # noqa: E402
 from web.routers.timeline import router as timeline_router  # noqa: E402
 from web.routers.external_api import router as external_api_router  # noqa: E402
@@ -1010,6 +1011,7 @@ app.include_router(reports_router)
 # Doctor reports — the owner's side. Not gated on a module: it publishes whatever
 # modules happen to be on, and gating it would hide the revoke button with them.
 app.include_router(share_router)
+app.include_router(portability_v2_router)
 app.include_router(settings_router)
 app.include_router(charts_router)
 # Read-only JSON API for an external personal dashboard (Bearer-token guarded, not session auth).
