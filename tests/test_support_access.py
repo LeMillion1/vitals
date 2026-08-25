@@ -470,6 +470,50 @@ async def test_fixed_repair_closes_stale_instead_of_overwriting_a_new_edit(db_se
     assert (measurement.body_fat_pct, measurement.lbm_kg) == (18.25, 66.0)
 
 
+async def test_terminal_repair_history_survives_personal_fact_replacement(db_session):
+    owner, subject, _admin, measurement, _grant, context = (
+        await _approved_repair_grant(
+            db_session, slug="sup-repair-detached-history"
+        )
+    )
+    action = await support.propose_clear_derived_estimates(
+        db_session,
+        context=context,
+        measurement_id=measurement.id,
+        idempotency_key=uuid.uuid4(),
+    )
+    await support.review_repair(
+        db_session,
+        owner_user_id=owner.id,
+        action_id=action.id,
+        approve=False,
+    )
+    await db_session.commit()
+
+    # Portability replacement performs this explicit detach only after it has
+    # rejected every open proposal. The exact composite FK remains RESTRICT.
+    action.target_body_measurement_id = None
+    await db_session.flush()
+    await db_session.delete(measurement)
+    await db_session.commit()
+    await db_session.refresh(action)
+
+    assert action.status == SupportRepairStatus.DECLINED.value
+    assert action.target_body_measurement_id is None
+    assert action.target_date == date(2026, 8, 1)
+    owner_context = await resolve_access_context(
+        db_session,
+        user_id=owner.id,
+        subject_id=subject.id,
+    )
+    history = await support.repair_actions_for_subject(
+        db_session,
+        context=owner_context,
+    )
+    assert history[0].measurement_id is None
+    assert history[0].measurement_date == date(2026, 8, 1)
+
+
 async def test_repair_review_and_execution_fail_closed_after_grant_expiry(db_session):
     owner, _subject, _admin, measurement, grant, context = (
         await _approved_repair_grant(db_session, slug="sup-repair-expired-review")

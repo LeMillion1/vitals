@@ -1304,7 +1304,7 @@ class RepairActionView:
     action_id: uuid.UUID
     grant_id: uuid.UUID
     operator_username: str
-    measurement_id: int
+    measurement_id: int | None
     measurement_date: object
     before_body_fat_pct: float | None
     before_lbm_kg: float | None
@@ -1340,7 +1340,7 @@ def _repair_view(
         grant_id=action.support_access_grant_id,
         operator_username=action.proposed_by.username,
         measurement_id=action.target_body_measurement_id,
-        measurement_date=action.target.date,
+        measurement_date=action.target_date,
         before_body_fat_pct=action.before_body_fat_pct,
         before_lbm_kg=action.before_lbm_kg,
         status=_effective_repair_status(action, now=now),
@@ -1447,6 +1447,7 @@ async def propose_clear_derived_estimates(
         proposed_by_user_id=context.principal.user_id,
         operation_key=REPAIR_OPERATION_KEY,
         target_body_measurement_id=target.id,
+        target_date=target.date,
         status=SupportRepairStatus.PROPOSED.value,
         idempotency_key=idempotency_key,
         proposed_at=now,

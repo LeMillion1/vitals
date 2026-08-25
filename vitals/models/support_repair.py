@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import (
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -77,6 +78,11 @@ class SupportRepairAction(Base, TimestampMixin):
             name="ck_support_repair_actions_has_change",
         ),
         CheckConstraint(
+            "status NOT IN ('proposed', 'approved') "
+            "OR target_body_measurement_id IS NOT NULL",
+            name="ck_support_repair_actions_open_target",
+        ),
+        CheckConstraint(
             "(status = 'proposed' AND reviewed_by_user_id IS NULL "
             "AND reviewed_at IS NULL AND executed_by_user_id IS NULL "
             "AND executed_at IS NULL AND target_updated_at_after_execute IS NULL "
@@ -139,7 +145,10 @@ class SupportRepairAction(Base, TimestampMixin):
     operation_key: Mapped[str] = mapped_column(
         String(96), nullable=False, default=CLEAR_DERIVED_ESTIMATES_OPERATION
     )
-    target_body_measurement_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_body_measurement_id: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    target_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default=SupportRepairStatus.PROPOSED.value
     )
