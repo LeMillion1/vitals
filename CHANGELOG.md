@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — closing registration now fences in-flight admission
+
+Changing the stored registration mode and admitting an unknown OIDC identity
+now take the same identity-governance lock before reading policy or creating an
+account. A closure either waits for an already-authorized admission to commit or
+wins first and makes the waiter re-read `disabled`; it can no longer leave a
+post-closure account behind. Concurrent callbacks for the same immutable
+provider identity also converge on one account, link, and health record instead
+of making the second callback fail on the first callback's username.
+
 ### Fixed — federated sign-in failures keep a working retry
 
 OIDC failures now render a dedicated anonymous screen with one safe retry back

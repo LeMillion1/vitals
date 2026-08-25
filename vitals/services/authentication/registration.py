@@ -41,6 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vitals.models.scoped_settings import PlatformSetting
+from vitals.services.identity_service import acquire_identity_governance_lock
 
 #: The ``platform_settings`` key this module owns.
 REGISTRATION_MODE_KEY = "registration_mode"
@@ -141,6 +142,12 @@ async def set_stored_mode(
     """
 
     resolved = _coerce(mode)
+    # This is the same fence every account admission takes.  Row-locking only
+    # the setting is insufficient: an admission may already have read ``open``
+    # and be waiting to create identity rows.  With one lock order, either that
+    # admission commits first or the closure wins and its waiter re-reads the
+    # now-disabled mode.
+    await acquire_identity_governance_lock(session)
     row = await session.scalar(
         select(PlatformSetting)
         .where(PlatformSetting.key == REGISTRATION_MODE_KEY)

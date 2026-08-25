@@ -11,11 +11,19 @@ opened by accident.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vitals.enums import UserRoleName
-from vitals.models.identity import HealthSubject, User, UserRole
+from vitals.models.identity import (
+    HealthSubject,
+    User,
+    UserFederatedIdentity,
+    UserRole,
+)
 from vitals.models.scoped_settings import SubjectSetting
 from vitals.models.tenancy import IntegrationConnection
 from vitals.services.authentication import (
@@ -250,6 +258,50 @@ async def test_a_stored_value_this_build_does_not_understand_reads_as_closed(
     )
 
 
+async def test_changing_the_mode_takes_governance_before_the_setting_row_lock(
+    db_session, monkeypatch
+):
+    """Closing the door and admitting somebody must share one lock order.
+
+    A row lock on ``platform_settings`` is not enough: an admission reads the
+    setting and then creates identity rows, so it can otherwise observe
+    ``open`` immediately before the operator commits ``disabled``.  The shared
+    identity-governance fence has to be the first database boundary here, as it
+    is in provisioning.
+    """
+
+    assert db_session.bind is not None
+    observed: list[str] = []
+
+    async def governance(_session: AsyncSession) -> None:
+        observed.append("governance")
+
+    def statement(_conn, _cursor, sql, _parameters, _context, _many) -> None:
+        if "platform_settings" in sql:
+            observed.append("setting-row")
+
+    monkeypatch.setattr(
+        registration_service,
+        "acquire_identity_governance_lock",
+        governance,
+        raising=False,
+    )
+    event.listen(db_session.bind.sync_engine, "before_cursor_execute", statement)
+    try:
+        await registration_service.set_stored_mode(
+            db_session, registration_service.RegistrationMode.OPEN
+        )
+    finally:
+        event.remove(
+            db_session.bind.sync_engine,
+            "before_cursor_execute",
+            statement,
+        )
+
+    assert observed[0] == "governance"
+    assert observed.index("governance") < observed.index("setting-row")
+
+
 # ── The two, together ────────────────────────────────────────────────────────
 
 
@@ -360,3 +412,182 @@ async def test_the_name_falls_back_to_the_subject_when_the_provider_offers_nothi
     )
     await db_session.commit()
     assert user.username.startswith("user-")
+
+
+@pytest.mark.integration
+async def test_postgres_closing_registration_fences_an_unknown_oidc_admission(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    """Once ``disabled`` wins governance, no later account may appear.
+
+    PostgreSQL's ordinary MVCC read would still see the previously committed
+    ``open`` value while the setting row is being changed.  This test therefore
+    proves the stronger contract: the close transaction holds the same advisory
+    fence admission needs, and the waiter re-reads the mode only after closure
+    commits.
+    """
+
+    if db_session.bind.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL advisory-lock semantics")
+
+    from vitals.services.authentication import federation
+
+    monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
+    await registration_service.set_stored_mode(
+        db_session, registration_service.RegistrationMode.OPEN
+    )
+    await db_session.commit()
+
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    attempted = asyncio.Event()
+
+    async def admit() -> User | None:
+        async with factory() as session:
+            attempted.set()
+            try:
+                user = await federation.resolve_federated_user(
+                    session,
+                    issuer="https://idp.example.test",
+                    subject="registration-close-race",
+                    preferred_username="registration-close-race",
+                )
+            except federation.UnknownFederatedIdentity:
+                await session.rollback()
+                return None
+            await session.commit()
+            return user
+
+    async with factory() as closer:
+        await registration_service.set_stored_mode(
+            closer, registration_service.RegistrationMode.DISABLED
+        )
+        admission = asyncio.create_task(admit())
+        try:
+            await asyncio.wait_for(attempted.wait(), timeout=2)
+            await asyncio.sleep(0.2)
+            assert not admission.done(), (
+                "unknown OIDC admission must wait behind the mode-change "
+                "governance fence"
+            )
+            await closer.commit()
+            assert await asyncio.wait_for(admission, timeout=5) is None
+        finally:
+            if not admission.done():
+                admission.cancel()
+            await asyncio.gather(admission, return_exceptions=True)
+
+    async with factory() as verify:
+        assert await verify.scalar(
+            select(func.count())
+            .select_from(UserFederatedIdentity)
+            .where(
+                UserFederatedIdentity.issuer == "https://idp.example.test",
+                UserFederatedIdentity.subject == "registration-close-race",
+            )
+        ) == 0
+        assert await verify.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(User.normalized_username == "registration-close-race")
+        ) == 0
+        assert (
+            await registration_service.get_stored_mode(verify)
+            is registration_service.RegistrationMode.DISABLED
+        )
+
+
+@pytest.mark.integration
+async def test_postgres_duplicate_unknown_oidc_callbacks_share_one_account_graph(
+    db_session, legacy_owner_roots, monkeypatch
+):
+    """Two callbacks for one new ``(issuer, sub)`` are idempotent.
+
+    Both requests are allowed to reach the governance fence before either may
+    commit.  The winner creates the graph; after waiting, the loser must re-read
+    the immutable federated identity and return that same user rather than fail
+    on the already-taken display username.
+    """
+
+    if db_session.bind.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL advisory-lock semantics")
+
+    from vitals.services.authentication import federation
+    from vitals.services.identity_service import acquire_identity_governance_lock
+
+    monkeypatch.setenv(registration_service.REGISTRATION_UNLOCK_ENV, "1")
+    await registration_service.set_stored_mode(
+        db_session, registration_service.RegistrationMode.OPEN
+    )
+    await db_session.commit()
+
+    factory = async_sessionmaker(
+        db_session.bind,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    started = [asyncio.Event(), asyncio.Event()]
+
+    async def admit(index: int) -> User:
+        async with factory() as session:
+            started[index].set()
+            user = await federation.resolve_federated_user(
+                session,
+                issuer="https://idp.example.test",
+                subject="duplicate-registration-callback",
+                preferred_username="duplicate-registration-callback",
+            )
+            await session.commit()
+            return user
+
+    async with factory() as fence:
+        await acquire_identity_governance_lock(fence)
+        callbacks = [
+            asyncio.create_task(admit(0)),
+            asyncio.create_task(admit(1)),
+        ]
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(event.wait() for event in started)), timeout=2
+            )
+            await asyncio.sleep(0.2)
+            assert all(not callback.done() for callback in callbacks)
+            await fence.commit()
+            users = await asyncio.wait_for(asyncio.gather(*callbacks), timeout=8)
+        finally:
+            for callback in callbacks:
+                if not callback.done():
+                    callback.cancel()
+            await asyncio.gather(*callbacks, return_exceptions=True)
+
+    assert users[0].id == users[1].id
+    async with factory() as verify:
+        links = list(
+            await verify.scalars(
+                select(UserFederatedIdentity).where(
+                    UserFederatedIdentity.issuer == "https://idp.example.test",
+                    UserFederatedIdentity.subject
+                    == "duplicate-registration-callback",
+                )
+            )
+        )
+        accounts = list(
+            await verify.scalars(
+                select(User).where(
+                    User.normalized_username == "duplicate-registration-callback"
+                )
+            )
+        )
+        subjects = list(
+            await verify.scalars(
+                select(HealthSubject).where(
+                    HealthSubject.owner_user_id == users[0].id
+                )
+            )
+        )
+
+    assert len(accounts) == len(links) == len(subjects) == 1
+    assert links[0].user_id == accounts[0].id == subjects[0].owner_user_id

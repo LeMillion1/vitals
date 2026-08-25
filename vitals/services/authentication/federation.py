@@ -284,6 +284,27 @@ async def _provision_if_registration_is_open(
 
     from vitals.services.authentication import provisioning, registration
 
+    # Registration policy and identity creation are one governance decision.
+    # The lock is deliberately acquired before re-reading both the immutable
+    # provider link and the stored mode: a concurrent callback may have created
+    # the link while this transaction waited, and an operator may have closed
+    # the door after this callback first looked at it.
+    await acquire_identity_governance_lock(session)
+    existing = await session.scalar(
+        select(UserFederatedIdentity).where(
+            UserFederatedIdentity.issuer == issuer,
+            UserFederatedIdentity.subject == subject,
+        )
+    )
+    if existing is not None:
+        return await _finish_linked_login(
+            session,
+            link=existing,
+            authenticated_at=authenticated_at,
+            email=email,
+            email_verified=email_verified,
+        )
+
     try:
         await registration.require_open_registration(session)
     except registration.RegistrationClosed:
@@ -328,6 +349,36 @@ async def _provision_if_registration_is_open(
         email=email,
         email_verified=email_verified,
     )
+    user.last_login_at = datetime.now(timezone.utc)
+    await session.flush()
+    return user
+
+
+async def _finish_linked_login(
+    session: AsyncSession,
+    *,
+    link: UserFederatedIdentity,
+    authenticated_at: datetime | None,
+    email: str | None,
+    email_verified: bool,
+) -> User:
+    """Finish a known identity login after any required serialization."""
+
+    user = await session.get(User, link.user_id)
+    if user is None:
+        raise UnknownFederatedIdentity(
+            "the account behind this provider identity no longer exists"
+        )
+    if user.status != UserStatus.ACTIVE.value:
+        raise InactiveAccount("the account behind this provider identity is not active")
+
+    await _synchronize_verified_email_claim(
+        session,
+        user=user,
+        email=email,
+        email_verified=email_verified,
+    )
+    link.last_authenticated_at = authenticated_at
     user.last_login_at = datetime.now(timezone.utc)
     await session.flush()
     return user
@@ -403,24 +454,13 @@ async def resolve_federated_user(
             "this provider identity has no account on this installation"
         )
 
-    user = await session.get(User, link.user_id)
-    if user is None:
-        raise UnknownFederatedIdentity(
-            "the account behind this provider identity no longer exists"
-        )
-    if user.status != UserStatus.ACTIVE.value:
-        raise InactiveAccount("the account behind this provider identity is not active")
-
-    await _synchronize_verified_email_claim(
+    return await _finish_linked_login(
         session,
-        user=user,
+        link=link,
+        authenticated_at=authenticated_at,
         email=email,
         email_verified=email_verified,
     )
-    link.last_authenticated_at = authenticated_at
-    user.last_login_at = datetime.now(timezone.utc)
-    await session.flush()
-    return user
 
 
 __all__ = [
